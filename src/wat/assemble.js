@@ -40,4 +40,3 @@ export { stripDeadLazyTables, stripDeadInternedSpans, stripStaticDataPrefix } fr
 export { optimizeModule } from './assemble/optimize-module.js'
 
 // Phase 11 (much later — post section-ordering): WAT display-name cleanup.
-export { stripLocalRenameSuffixes } from './assemble/rename-locals.js'

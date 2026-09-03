@@ -45,7 +45,7 @@ import { typedElemAux } from '../../layout.js'
 import { invalidateBindingUsesCache, resetBindingUsesCache } from './analyze-scans.js'
 import { VAL, updateRep } from '../reps.js'
 import { inferLocals } from './infer.js'
-import { optimizeFunc, treeshake } from '../optimize/index.js'
+import { optimizeFunc } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
@@ -86,13 +86,13 @@ import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables, stripDeadInternedSpans,
-  stripLocalRenameSuffixes,
 } from '../wat/assemble.js'
+import { link } from '../link/index.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
 import { paramAllUsesNumeric, paramNeverString } from './param-numeric.js'
-import { ensureThrowRuntime, pruneUnusedThrowRuntime } from './throw-runtime.js'
+import { ensureThrowRuntime } from './throw-runtime.js'
 import { buildInternTable } from './intern-table.js'
 import { captureFuncInspect } from './func-inspect.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
@@ -730,11 +730,6 @@ export default function compile(ast, profiler) {
   if (strPoolLen())
     sec.data.push(['data', '$__strPool', '"' + escBytes(strPoolString()) + '"'])
 
-  // Custom sections "jz:schema" / "jz:errcls" (object schemas + Error-class
-  // sid→name map for JS-side interop) are built further down, AFTER the
-  // treeshake() call — see the usedSchemaIds block just below it for why
-  // (mint-vs-treeshake reconciliation, audit-evidenced size-gate fix).
-
   // Custom section: rest params for exported functions (JS-side wrapping).
   // Entry per JS-visible export name (not per internal func name) — host's
   // interop.js wrap() keys by export name. Aliased re-export
@@ -811,223 +806,23 @@ export default function compile(ast, profiler) {
   // off this same customs entry shape (no wasiCommandExports skip needed).
   sec.customs.push(...lateFacts.namedExports)
 
-  // Whole-module: prune funcs unreachable from entry points (start, exports, elem refs).
-  // Removes orphan top-level consts that never get called (e.g. watr's unused `hoist` = 26 KB).
-  // Also returns callCount Map (computed during the same walk — used below for funcidx sort).
-  // Reachability walk always runs (callCount feeds the sort even when shake is off);
-  // actual removal gated by ctx.transform.optimize.treeshake.
-  const optCfg = ctx.transform.optimize
-  const { callCount } = treeshake(
-    [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
-    [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports, ...sec.tags],
-    { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals, userGlobals: ctx.scope.userGlobals,
-      userFuncs: lateFacts.userFuncs }
-  )
-
-  // Custom sections "jz:schema" / "jz:errcls": object schemas + Error-class
-  // sid→name map, for JS-side interop (interop.js). Built HERE — after
-  // treeshake, not before — because the MINT (module/schema.js's
-  // ctx.schema.register/errorSid) and the SERIALIZE step can now legitimately
-  // disagree: emitLengthAccess (module/core.js) and Array.from's general path
-  // (module/array.js) mint 'TypeError' eagerly and unconditionally the moment
-  // either is visited during emission (commit 8954dac2 — load-bearing, keeps
-  // the schema minted before O0 catch/property planning freezes schema
-  // tables; do not make this conditional). But a later pass can still
-  // constant-fold away the one call that would have used it, or treeshake
-  // above can remove the whole function around it — so by this point some
-  // minted schema ids may have zero surviving constructors. Serializing
-  // straight from ctx.schema.list/errorSidEntries (as before) shipped every
-  // schema ever minted, dead or not — the audited size-gate regression
-  // (aos/dotprod/wav/callback, e867c3af's opaque-length TypeError).
-  //
-  // A schema id is LIVE iff a surviving PTR.OBJECT construction still carries
-  // it — determined from two EMISSION-TIME facts (ctx.js's ctx.schema doc),
-  // not a post-hoc re-derivation:
-  //
-  //  1. mkPtrIR/boxPtrIR (src/ir.js), the only two places a PTR.OBJECT
-  //     pointer is ever IR-constructed, stamp a `.schemaSid` property
-  //     directly onto the node they return — additive metadata in the same
-  //     family as `.type`/`.ptrKind`/`.ptrAux`, still a plain JS number, not
-  //     yet a WAT string for anything downstream to reformat. Collected below
-  //     by walking sec.stdlib/funcs/start/globals/elem — the SAME arrays,
-  //     already treeshaken — checking one plain property per node. A
-  //     construction whose sole containing function treeshake removed
-  //     entirely is simply never visited; no separate reachability check
-  //     needed for this, the overwhelming majority of PTR.OBJECT sites.
-  //  2. ctx.schema.namedUses: the few hand-written WAT-text templates that
-  //     build a `$__mkptr` call as a raw string instead of through mkPtrIR
-  //     (module/core.js's __throw_property_nullish, module/json.js's
-  //     per-shape __jp_shape_N parser) — no IR node exists to tag before
-  //     that text is parsed, so each instead names the ONE stdlib function
-  //     its construction lives inside; live iff that function, BY NAME,
-  //     survived treeshake (checked below against the same surviving-name
-  //     set the funcidx sort just below already needs).
-  //
-  // This replaced a WAT-AST scan (`scanMkptrAux`, audit-flagged wrong-level
-  // architecture: "re-derives schema liveness by parsing WAT helper names and
-  // packed hex literals") that walked the identical arrays POST-treeshake,
-  // pattern-matching `f64.const`/`i64.const` operand STRINGS and
-  // `$__mkptr`/`$__mkptr_*` call names to recover the SAME fact from OUTSIDE
-  // — every one of those shapes existed only because mkPtrIR/boxPtrIR had
-  // already built it from a number the scan then had to re-parse back out of
-  // text. A recursive OBJECT param's re-box (narrow.js's applyPointerParamAbi
-  // devirt — `chase`-shaped self-recursion) produced a fully-folded
-  // `f64.const nan:...` literal the scan's own strict 16-hex-digit parser
-  // rejected once self-hosted (dist/jz.wasm compiling this exact scan's own
-  // source): correct natively, silently dead-marked a live schema self-
-  // hosted-only. Tagging the node (or naming the function) where the id is
-  // still a number sidesteps that whole class, and any WAT-text-string-shape
-  // class after it, while staying exactly as post-treeshake-precise as the
-  // scan it replaces — including the ORIGINAL size-gate case it was built for
-  // (a schema whose sole constructor's containing function treeshakes away
-  // entirely; test/objects.js's "dead opaque-length TypeError schema" pin).
-  //
-  // A dynamic clone/copy helper forwarding some OTHER value's already-tagged
-  // type+aux (`local.get $sid`, not a literal — module/core.js's __obj_clone)
-  // needs no separate accounting: it can only ever reproduce a sid some
-  // OTHER, literal-bearing site already recorded for a value that must
-  // already exist, so that other site is what makes it live. The generic
-  // (non-shaped) JSON.parse path (module/json.js's __jp_obj/__jp_schema_get)
-  // is a DIFFERENT case, not merely a dynamic forward: its `$sid` is a
-  // wholly runtime-discovered schema number in its own runtime-only table
-  // ($__schema_tbl/$__schema_next, keyed by the actual JSON text's key set),
-  // never one of ctx.schema.list's compile-time ids — the old scan's own
-  // litI32 aux check already fell through it identically (a `local.get`, not
-  // a literal), so this is pre-existing, unchanged behavior, not a new gap.
-  // specializeMkptr (src/optimize/index.js), which runs earlier in this same
-  // compile, only ever REWRITES an existing literal-aux `call $__mkptr` (one
-  // mkPtrIR already tagged) into a folded literal or a named `$__mkptr_T_A_d`
-  // variant — it copies `.schemaSid` onto its replacement (see there), so it
-  // mints no schema reference mkPtrIR didn't already tag, never a NEW one.
-  // hoistConstantPool replaces a repeated literal with a `global.get`, but it
-  // runs on the tape (src/optimize/tape.js) after this walk, so every
-  // schema-carrying literal is still in place here. Over-approximating (treating
-  // a schema as live when its only construction site later got treeshaken
-  // out entirely) is always safe — it only costs bytes; under-approximating
-  // would silently corrupt a live interop decode.
-  const usedSchemaIds = new Set()
-  {
-    const collectSchemaTags = (n) => {
-      if (!Array.isArray(n)) return
-      if (n.schemaSid != null) usedSchemaIds.add(n.schemaSid)
-      for (const c of n) collectSchemaTags(c)
-    }
-    for (const arr of [sec.stdlib, sec.funcs, sec.start, sec.globals, sec.elem]) for (const f of arr) collectSchemaTags(f)
-    if (ctx.schema.namedUses.length) {
-      const survivingNames = new Set()
-      for (const arr of [sec.stdlib, sec.funcs, sec.start])
-        for (const f of arr) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') survivingNames.add(f[1])
-      for (const { sid, funcName } of ctx.schema.namedUses)
-        if (survivingNames.has('$' + funcName)) usedSchemaIds.add(sid)
-    }
-  }
-  if (usedSchemaIds.size) {
-    // Positional format (entry index === schema id, no key per entry — see
-    // STABILITY.md's "raw custom sections stay experimental": the byte FORMAT
-    // is unchanged here, only which entries carry real content). A dead id's
-    // slot must still be emitted, to keep every live id's position correct —
-    // varint(nSchemas) below stays ctx.schema.list.length either way.
-    //
-    // NOT emitted empty (`[]`) — interop.js's own ingestion (enhance(), the
-    // `newSchemas`/`schemas` merge loop) deduplicates incoming entries by
-    // CONTENT (`s.join(',')`) before appending, then indexes the merged array
-    // directly BY SID (`mem.schemas[aux(p)]`, decodeThrown's schema lookup).
-    // `[].join(',')` is `''` for every dead entry alike, so two-plus zeroed
-    // entries collide on that one key, the dedupe silently keeps only the
-    // first and drops the rest, and EVERY live sid positioned after the first
-    // collision then indexes the wrong (shifted) array slot — reproduced
-    // exactly this way: the self-hosted kernel's own `Error`/`TypeError`/
-    // `SyntaxError` schemas decoded fine in isolation (verified byte-for-byte
-    // correct in the built jz:schema section) but the kernel oracle's
-    // ambiguous-BOOL|NUMBER reject still lost its message, because some
-    // OTHER dead schema earlier in its (825-entry) list collided with
-    // another and shifted every later sid's runtime array position. A
-    // one-element placeholder keyed by the id itself (`[String(id)]`) is
-    // unique per dead entry — collides with nothing else dead, and
-    // collision with a live entry is no more likely than any other
-    // pre-existing content collision this dedupe already tolerates — while
-    // still costing far fewer bytes than the real prop list it replaces.
-    const bytes = []
-    const utf8 = new TextEncoder()
-    const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
-    const enc = (p) => {
-      if (p === null) bytes.push(0)
-      else if (Array.isArray(p)) { bytes.push(1); enc(p[1]) }
-      else { bytes.push(2); const b = utf8.encode(p); varint(b.length); for (const x of b) bytes.push(x) }
-    }
-    varint(ctx.schema.list.length)
-    ctx.schema.list.forEach((props, id) => {
-      const live = usedSchemaIds.has(id) ? props : [String(id)]
-      varint(live.length); for (const p of live) enc(p)
-    })
-    sec.customs.push(['@custom', '"jz:schema"', bytes])
-  }
-  // jz:errcls has an explicit sid per entry (unlike jz:schema above), so a
-  // dead class is simply omitted rather than zeroed.
-  //
-  // Consume the snapshot captured before stdlib realization so eager schema
-  // registration cannot perturb the error-class section while it is built.
-  if (lateFacts.errorSidEntries.length) {
-    const entries = lateFacts.errorSidEntries.filter(([sid]) => usedSchemaIds.has(sid))
-    if (entries.length) {
-      const bytes = []
-      const utf8 = new TextEncoder()
-      const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
-      varint(entries.length)
-      for (const [sid, name] of entries) {
-        varint(sid)
-        const b = utf8.encode(name)
-        varint(b.length)
-        for (const x of b) bytes.push(x)
-      }
-      sec.customs.push(['@custom', '"jz:errcls"', bytes])
-    }
-  }
-
-  pruneUnusedThrowRuntime(sec)
-
-  // WASI reactor `_initialize` conversion (the p1 ABI forbids WASI calls inside the wasm
-  // start section — top-level console.log/Date.now crashed with "Cannot read properties of
-  // null" since no host can service them before `new WebAssembly.Instance` finishes wiring
-  // memory) used to run here, mutating `sec.start`/`sec.funcs` in place. It's target
-  // legalization now (src/optimize/watr-tail.js legalizeForTarget), ported onto the fully
-  // assembled `['module', …]` tree together with the command-entry rewrite above — see that
-  // function's doc comment. `sec.start`'s `$__start` func and its `(start …)` directive are
-  // left exactly as built here; legalizeForTarget finds `$__start` by name and does the
-  // `_initialize` conversion + self-arming guard injection from there.
-
-  // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
-  // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
-  // On watr self-compile this saves ~6 KB (hot specialized helpers migrate to idx < 128).
-  // callCount was computed inline by treeshake's walk (same set of nodes).
-  const byCalls = (a, b) => {
-    const delta = (callCount.get(b[1]) || 0) - (callCount.get(a[1]) || 0)
-    if (delta) return delta
-    // Eager and lazy module registration can discover equal-use stdlib helpers
-    // in different orders. Canonicalize only stable `$__*` helper names; user
-    // function ties retain source order, preserving alpha-renaming invariance.
-    const sa = typeof a[1] === 'string' && a[1].startsWith('$__')
-    const sb = typeof b[1] === 'string' && b[1].startsWith('$__')
-    return sa && sb ? (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) : 0
-  }
+  // The module assembles here in section order with the functions in
+  // emission order (runtime, user, start); link (src/link) runs the
+  // whole-module passes on the tape: treeshake, the schema and error-class
+  // sections, the throw-runtime prune, the call-count function order, the
+  // local-name suffix strip and the constant pool.
   const startFn = sec.start.find(n => n[0] === 'func')
   const startDir = sec.start.find(n => n[0] === 'start')
-  const sortedFuncs = [
-    ...sec.stdlib, ...sec.funcs, ...(startFn ? [startFn] : []),
-  ].sort(byCalls)
-
-  // BindingId suffixes off the WAT surface LAST — every internal pass keys
-  // facts (distinctParams, boxed cells, alias bases) by the full renamed
-  // spelling; stripping earlier desyncs those sets from the tokens (the
-  // param-distinctness LICM pin caught exactly that). Display-only: binaries
-  // carry no name section.
-  stripLocalRenameSuffixes(sortedFuncs)
-
-  // Assemble: named slots → flat section list.
-  const sections = [
+  const module = ['module',
     ...sec.extStdlib, ...sec.imports, ...sec.types, ...sec.memory, ...sec.data,
-    ...sec.tags, ...sec.table, ...sec.globals, ...sortedFuncs,
+    ...sec.tags, ...sec.table, ...sec.globals, ...sec.stdlib, ...sec.funcs, ...(startFn ? [startFn] : []),
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
-  return ['module', ...sections]
+  return timePhase(profiler, 'link', () => link(module, {
+    optimize: ctx.transform.optimize,
+    userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
+    schemas: ctx.schema.list, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries,
+    throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
+    rawAbi: ctx.transform.alloc === false,
+  }))
 }

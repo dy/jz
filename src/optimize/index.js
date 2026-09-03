@@ -17,8 +17,7 @@
  *   fusedRewrite      — peephole rebox folds + inline ptr/is_* helpers + memarg-offset fold (one walk)
  *   sortLocalsByUse   — reorder local decls so hot ones get 1-byte LEB128 indices
  *   specializeMkptr   — `(call $__mkptr (i32.const T) (i32.const A) X)` → per-combo specialized helper (~4 B/site)
- *   hoistConstantPool — frequently-repeated f64.const values → globals (~7 B/reuse); a tape pass (optimize/tape.js)
- *   treeshake         — drop func decls unreachable from exports / start / elem / ref.func roots
+ *   hoistConstantPool — frequently-repeated f64.const values → globals (~7 B/reuse); a tape pass, run by src/link
  *
  * Per-function passes run over sec.funcs + sec.stdlib + sec.start.
  * Whole-module passes see the full function list + globals map.
@@ -85,9 +84,6 @@ export { unswitchTypedParamLoop } from './unswitch.js'
 // devirtConstFnArrayCalls) — see src/optimize/devirt.js for the full doc.
 export { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
 
-// Whole-module dead-code elimination (treeshake) — see
-// src/optimize/treeshake.js for the full doc.
-export { treeshake } from './treeshake.js'
 
 // Encoding-compactness local reordering (sortLocalsByUse) — see
 // src/optimize/sort-locals.js for the full doc.

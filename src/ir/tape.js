@@ -3,22 +3,23 @@
  *
  * Every node is an index. Columns: `op` (an interned name for an instruction;
  * a negative marker for an atom: string, number, bigint, null, undefined,
- * boolean), `a` (first child), `next` (next sibling), `ty` (interned result
- * type, 0 for none), `imm` (number payload), `sym` (interned string payload).
- * A pass is a loop over indices; a rewrite links children; nothing is looked
- * up by name at emission.
+ * boolean, a byte blob), `a` (first child), `next` (next sibling), `ty`
+ * (interned result type, 0 for none), `imm` (number payload), `sym` (interned
+ * string payload), `sid` (schema id, NONE for none). A pass is a loop over
+ * indices; a rewrite links children; nothing is looked up by name at emission.
  *
  * The tape enters the pipeline between the last WAT-array pass and watr:
  * `fromWat` decodes the assembled module, tape passes run, `toWat` encodes
  * it back. Each WAT-array pass ported here deletes its array version; when
- * emit builds the tape directly the decoder goes. Until then the only fact
- * carried across is the result type (`.type`); the other expando facts end
- * at the boundary, nothing after it reads them.
+ * emit builds the tape directly the decoder goes. Until then the facts
+ * carried across are the result type (`.type`) and the schema id
+ * (`.schemaSid`); the other expando facts end at the boundary, nothing after
+ * it reads them.
  *
  * @module ir/tape
  */
 
-export const OP_STR = -1, OP_NUM = -2, OP_BIG = -3, OP_NULL = -4, OP_UNDEF = -5, OP_BOOL = -6
+export const OP_STR = -1, OP_NUM = -2, OP_BIG = -3, OP_NULL = -4, OP_UNDEF = -5, OP_BOOL = -6, OP_BYTES = -7
 /** A `[null, …]` node: the reserved intern id of the empty name. */
 export const OP_NULLHEAD = 0
 export const NONE = -1
@@ -34,9 +35,11 @@ export const T = {
   ty: new Int32Array(INIT),
   imm: new Float64Array(INIT),
   sym: new Int32Array(INIT),
+  sid: new Int32Array(INIT),
   syms: [''],
   symId: new Map([['', 0]]),
   bigs: [],
+  blobs: [],
 }
 
 export function resetTape() {
@@ -44,6 +47,7 @@ export function resetTape() {
   T.syms = ['']
   T.symId = new Map([['', 0]])
   T.bigs = []
+  T.blobs = []
 }
 
 export const intern = (s) => {
@@ -60,18 +64,37 @@ const grow = () => {
   const ty = new Int32Array(cap); ty.set(T.ty); T.ty = ty
   const imm = new Float64Array(cap); imm.set(T.imm); T.imm = imm
   const sym = new Int32Array(cap); sym.set(T.sym); T.sym = sym
+  const sid = new Int32Array(cap); sid.set(T.sid); T.sid = sid
 }
 
 /** Allocate a node with no children. */
 export function node(op) {
   if (T.n === T.op.length) grow()
   const id = T.n++
-  T.op[id] = op; T.a[id] = NONE; T.next[id] = NONE; T.ty[id] = 0; T.imm[id] = 0; T.sym[id] = NONE
+  T.op[id] = op; T.a[id] = NONE; T.next[id] = NONE; T.ty[id] = 0; T.imm[id] = 0; T.sym[id] = NONE; T.sid[id] = NONE
   return id
 }
 
 export const str = (s) => { const id = node(OP_STR); T.sym[id] = intern(s); return id }
 export const num = (v) => { const id = node(OP_NUM); T.imm[id] = v; return id }
+/** A byte blob (a custom section's payload), one atom. */
+export const bytes = (b) => { const id = node(OP_BYTES); T.imm[id] = T.blobs.length; T.blobs.push(b); return id }
+export const isStr = (id, s) => T.op[id] === OP_STR && T.syms[T.sym[id]] === s
+/** The text of the string atom at `id`, or null. */
+export const text = (id) => id !== NONE && T.op[id] === OP_STR ? T.syms[T.sym[id]] : null
+/** The i-th child of `id`, or NONE. */
+export function child(id, i) {
+  let c = T.a[id]
+  while (i-- > 0 && c !== NONE) c = T.next[c]
+  return c
+}
+/** Unlink the child `old` of `parent`. */
+export function remove(parent, old) {
+  if (T.a[parent] === old) { T.a[parent] = T.next[old]; return }
+  let c = T.a[parent]
+  while (T.next[c] !== old) c = T.next[c]
+  T.next[c] = T.next[old]
+}
 
 /** Append `child` as the last child of `parent`. */
 export function push(parent, child) {
@@ -102,8 +125,10 @@ export function insertAfter(parent, prev, id) {
 export function fromWat(x) {
   if (Array.isArray(x)) {
     const head = x[0]
+    if (typeof head === 'number') return bytes(x)
     const id = node(head == null ? OP_NULLHEAD : intern(String(head)))
     if (typeof x.type === 'string') T.ty[id] = intern(x.type)
+    if (typeof x.schemaSid === 'number') T.sid[id] = x.schemaSid
     let prev = NONE
     for (let i = 1; i < x.length; i++) {
       const c = fromWat(x[i])
@@ -130,9 +155,11 @@ export function toWat(id) {
   if (op === OP_NULL) return null
   if (op === OP_UNDEF) return undefined
   if (op === OP_BOOL) return T.imm[id] !== 0
+  if (op === OP_BYTES) return T.blobs[T.imm[id]]
   const out = [op === OP_NULLHEAD ? null : T.syms[op]]
   for (let c = T.a[id]; c !== NONE; c = T.next[c]) out.push(toWat(c))
   if (T.ty[id] !== 0) out.type = T.syms[T.ty[id]]
+  if (T.sid[id] !== NONE) out.schemaSid = T.sid[id]
   return out
 }
 

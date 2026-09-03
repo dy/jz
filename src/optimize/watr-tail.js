@@ -16,7 +16,6 @@ import watOptimize from 'watr/optimize'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames,
 } from './index.js'
-import { tapeStage } from './tape.js'
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see
@@ -425,7 +424,7 @@ export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
   lazyDataSpans = [], staticDataSpan = null,
 } = {}) {
-  const legalized = legalizeForTarget(time('tape', () => tapeStage(module, cfg)), targetProfile)
+  const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts)) : legalized
   if (cfg.hoistGlobalPtrOffset !== false) {
