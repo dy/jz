@@ -21,6 +21,7 @@ import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
 import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
+import { K, tagOf, isNullable } from '../summary/index.js'
 
 const normalizeClosureBody = cb => {
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
@@ -88,6 +89,18 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
       updateRep(cb.params[i], { val: VAL.TYPED })
       ;(ctx.func.typedElem ||= new Map()).set(cb.params[i], ctor)
     }
+  }
+  // The program summary: a parameter every call of the closure passes as one
+  // kind (a method called through the receiver's schema slot, a callback the
+  // lattice above never saw) takes that kind; a closure that escapes to
+  // unknown code keeps its parameters boxed.
+  for (const p of cb.params) {
+    if (ctx.func.localReps?.get(p)?.val || cb.defaults?.[p]) continue
+    const k = ctx.summary?.kindOf(p) ?? 0
+    if (isNullable(k)) continue
+    const ctor = ctx.summary?.typedCtorOf(p)
+    if (ctor) { updateRep(p, { val: VAL.TYPED }); (ctx.func.typedElem ||= new Map()).set(p, ctor) }
+    else if (tagOf(k) === K.NUMBER) updateRep(p, { val: VAL.NUMBER })
   }
   // Usage-only numeric proof catches closure params the call lattice never saw.
   for (const p of cb.params)

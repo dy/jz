@@ -378,6 +378,11 @@ export function analyzeBody(body) {
         if (repSid != null) observeArrSchema(name, repSid)
         else { const rs = ctx.func.localReps?.get(rhs)?.arrayElemSchemaSet; if (rs) for (const sid of rs) observeArrSchema(name, sid) }
       }
+      // The program summary: an array whose every element, from every
+      // construction and store in the program, is one shape (a factory's
+      // result built by pushes, an element read from another such array).
+      const sumSid = ctx.summary?.arrayElemSidOf(name)
+      if (sumSid != null) observeArrSchema(name, sumSid)
     }
 
     // arr-elem val type (arrElemValTypes slice) — array-literal init + call return + alias + .map/.filter/.slice/.concat chain

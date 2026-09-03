@@ -1425,16 +1425,18 @@ export let f = (n) => { let h = seed; for (let i = 0; i < n; i++) h = tbl[i & 1]
   ok(wat(moduleTouch).includes('__str_concat'),
     'module-scope touch: fail-open, no false proof (generic dispatch kept)')
 
-  // 2. Loop-built table (`for (...) tbl[c] = (...) => ...`): jz's closure-in-
-  //    loop capture handling is a documented kernel-bug-adjacent class
-  //    (ledger) — this lattice doesn't build another proof on unsettled
-  //    ground, so ANY write reachable through a for/while/do loop poisons the
-  //    whole candidate. Correctness (not the proof) is what's pinned here.
+  // 2. Loop-built table (`for (...) tbl[c] = (...) => ...`): the closure-table
+  //    lattice poisons any write reachable through a loop. The program
+  //    summary proves this one instead: the table holds one closure, every
+  //    call binds its parameters to numbers, and the per-iteration capture
+  //    `cc` is a number whatever its capture semantics, so the body needs no
+  //    string path. Correctness is pinned with the proof.
   const loopBuilt = `let tbl = []
 function writer() { for (let c = 0; c < 2; c++) { let cc = c; tbl[cc] = (x, k) => (x + k + cc) | 0 } }
 export let f = (n) => { writer(); let h = 0; for (let i = 0; i < n; i++) h = tbl[i & 1](h, i); return h }`
   is(run(loopBuilt).f(4), 8)
-  ok(wat(loopBuilt).includes('__str_concat'), 'loop-built table: fail-open, no false proof')
+  is(run(loopBuilt).f(5), 12)
+  ok(!wat(loopBuilt).includes('__str_concat'), 'loop-built table: one closure, numeric at every call, no string path')
 
   // 3. Alias (subscript's own guarded idiom, `(fn = table[idx]) && fn(args)`):
   //    dyn-closure-tables.js's header comment documents this idiom as SAFE

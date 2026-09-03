@@ -266,11 +266,14 @@ export function analyzeFuncForEmit(func, programFacts) {
       if (p.type === 'f64' && p.ptrKind == null && !p.jsstring
           && !func.defaults?.[p.name] && !ctx.func.boxed?.has(p.name)
           && !ctx.func.localReps?.get(p.name)?.val
-          // Numeric either by PROOF (ToNumber-forcing uses) or by the export
-          // boundary contract (never used as a string → wrapVal guarantees a
-          // number). The latter catches `acc + cre` float kernels whose `+` would
-          // otherwise pull a per-iteration string-concat fork (julia, floatbeats).
-          && (paramAllUsesNumeric(body, p.name) || paramNeverString(body, p.name)))
+          // Numeric either by PROOF (ToNumber-forcing uses, in this body or,
+          // through the program summary's numeric demand, wherever the value
+          // flows: a slot every read of which converts, a callee's parameter),
+          // or by the export boundary contract (never used as a string →
+          // wrapVal guarantees a number). The latter catches `acc + cre` float
+          // kernels whose `+` would otherwise pull a per-iteration
+          // string-concat fork (julia, floatbeats).
+          && (ctx.summary?.numericDemand(p.name) || paramAllUsesNumeric(body, p.name) || paramNeverString(body, p.name)))
         // An f64 slot holds a genuine number (the JS API's ToNumber made
         // `undefined` NaN), and neither proof admits a nullish test, so the
         // UNDEF-pad nullability is moot: reads and loop bounds stay plain.

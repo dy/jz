@@ -120,12 +120,14 @@ test('recursive boolean results keep truthiness and declare final coercion temps
       return reads * 10 + yes
     }
   `
+  // A recursive predicate's result is the join of its returns (the program
+  // summary): a boolean, as in JS, not the 0/1 the boundary used to hand out.
   for (const optimize of [0, 2, 3]) {
     const { member, chain, other, block, effects } = jz(source, { optimize }).exports
-    is(member(), 1, `O${optimize}: direct recursive predicate`)
-    is(chain(), 1, `O${optimize}: nested recursive predicate`)
-    is(other(), 0, `O${optimize}: false arm`)
-    is(block(), 1, `O${optimize}: block-return sibling`)
+    is(member(), true, `O${optimize}: direct recursive predicate`)
+    is(chain(), true, `O${optimize}: nested recursive predicate`)
+    is(other(), false, `O${optimize}: false arm`)
+    is(block(), true, `O${optimize}: block-return sibling`)
     is(effects(), 21, `O${optimize}: recursive predicate evaluates each level once`)
   }
 })

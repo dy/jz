@@ -32,15 +32,15 @@ export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 // SNAPSHOT_N = cases behind these geomeans; it drives BOTH the caption and the
 // Porffor denominator, so the offline render is internally consistent. The live
 // bench.mjs run passes its own current count (geoCases.length) instead.
-export const SNAPSHOT_N = 52
+export const SNAPSHOT_N = 53
 export const SNAPSHOT = [
   { label: 'JZ', sub: '-O3', ratio: 1.00 },
   { label: 'native C', sub: 'clang -O3, ref', ratio: 1.04 },
   { label: 'C', sub: 'clang → wasm', ratio: 2.00 },
   { label: 'Rust', sub: 'rustc → wasm', ratio: 2.08 },
-  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.17 },
+  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.23 },
   { label: 'Zig', sub: 'zig → wasm', ratio: 2.21 },
-  { label: 'V8', sub: 'Node (JS)', ratio: 2.35 },
+  { label: 'V8', sub: 'Node (JS)', ratio: 2.36 },
   { label: 'MoonBit', sub: 'moonrun → wasm', ratio: 4.39 },
   { label: 'Go', sub: 'gc → wasm', ratio: 4.71 },
   { label: 'Porffor', sub: `native, runs 43 / ${SNAPSHOT_N}`, ratio: 23.76 },

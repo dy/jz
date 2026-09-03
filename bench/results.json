@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-09-02 20:43 UTC",
-  "commit": "e36aab3b",
+  "date": "2026-09-03 12:22 UTC",
+  "commit": "395c3fc0",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -45,46 +45,47 @@
   },
   "memory": "peak RSS per process run (/usr/bin/time -l)",
   "machineState": {
-   "swapUsedMB": 9417.81,
-   "uptimeDays": 53.93,
-   "load1": 3.55,
+   "swapUsedMB": 8616.75,
+   "uptimeDays": 54.58,
+   "load1": 4.6,
    "powermode": "AC"
   },
+  "partial": true,
   "anchors": {
    "pairs": [
     {
      "case": "mat4",
      "target": "c-wasm",
      "storedUs": 2502,
-     "freshUs": 2494,
-     "ratio": 1.0032,
+     "freshUs": 2520,
+     "ratio": 1.0072,
      "pass": true
     },
     {
      "case": "fft",
      "target": "c-wasm",
-     "storedUs": 1096,
-     "freshUs": 1097,
-     "ratio": 1.0009,
+     "storedUs": 1086,
+     "freshUs": 1163,
+     "ratio": 1.0709,
      "pass": true
     },
     {
      "case": "synth",
      "target": "as",
-     "storedUs": 2403,
-     "freshUs": 2403,
-     "ratio": 1,
+     "storedUs": 2405,
+     "freshUs": 2550,
+     "ratio": 1.0603,
      "pass": true
     }
    ],
    "ratios": {
-    "c-wasm×mat4": 1.0032,
-    "c-wasm×fft": 1.0009,
-    "as×synth": 1
+    "c-wasm×mat4": 1.0072,
+    "c-wasm×fft": 1.0709,
+    "as×synth": 1.0603
    },
-   "pass": true
-  },
-  "partial": true
+   "pass": true,
+   "carried": true
+  }
  },
  "cases": {
   "alpha": {
@@ -217,8 +218,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/alpha/alpha.tinygo.wasm /Users/div/projects/jz/bench/alpha/alpha.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/alpha/alpha.tinygo.wasm /Users/div/projects/jz/bench/alpha/alpha.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 1921,
@@ -228,7 +229,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 30
+   "compileMs": 35.7
   },
   "aos": {
    "name": "AoS to SoA",
@@ -372,8 +373,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/aos/aos.tinygo.wasm /Users/div/projects/jz/bench/aos/aos.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/aos/aos.tinygo.wasm /Users/div/projects/jz/bench/aos/aos.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 4693,
@@ -383,7 +384,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 29.2
+   "compileMs": 32.5
   },
   "base64": {
    "name": "Base64 encode + decode",
@@ -515,8 +516,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/base64/base64.tinygo.wasm /Users/div/projects/jz/bench/base64/base64.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/base64/base64.tinygo.wasm /Users/div/projects/jz/bench/base64/base64.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 9498,
@@ -526,7 +527,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 27.2
+   "compileMs": 31.8
   },
   "bezfit": {
    "name": "bezfit",
@@ -767,8 +768,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad.tinygo.wasm /Users/div/projects/jz/bench/biquad/biquad.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad.tinygo.wasm /Users/div/projects/jz/bench/biquad/biquad.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 23922,
@@ -782,7 +783,7 @@
      "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/biquad/biquad.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad-wat.was"
     }
    },
-   "compileMs": 52.1
+   "compileMs": 57.7
   },
   "bitwise": {
    "name": "bitwise mix",
@@ -926,8 +927,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/bitwise/bitwise.tinygo.wasm /Users/div/projects/jz/bench/bitwise/bitwise.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/bitwise/bitwise.tinygo.wasm /Users/div/projects/jz/bench/bitwise/bitwise.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 12485,
@@ -937,7 +938,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 15.4
+   "compileMs": 18.1
   },
   "blur": {
    "name": "blur",
@@ -1069,8 +1070,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/blur/blur.tinygo.wasm /Users/div/projects/jz/bench/blur/blur.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/blur/blur.tinygo.wasm /Users/div/projects/jz/bench/blur/blur.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 11929,
@@ -1080,7 +1081,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 57.5
+   "compileMs": 62.1
   },
   "bytebeat": {
    "name": "bytebeat",
@@ -1212,8 +1213,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/bytebeat/bytebeat.tinygo.wasm /Users/div/projects/jz/bench/bytebeat/bytebeat.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/bytebeat/bytebeat.tinygo.wasm /Users/div/projects/jz/bench/bytebeat/bytebeat.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 2526,
@@ -1223,7 +1224,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 16.3
+   "compileMs": 16.9
   },
   "callback": {
    "name": "callback map",
@@ -1367,8 +1368,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/callback/callback.tinygo.wasm /Users/div/projects/jz/bench/callback/callback.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/callback/callback.tinygo.wasm /Users/div/projects/jz/bench/callback/callback.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 530,
@@ -1378,7 +1379,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 20
+   "compileMs": 24.1
   },
   "colorconv": {
    "name": "sRGB → Oklab batch",
@@ -1785,8 +1786,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/conv2d/conv2d.tinygo.wasm /Users/div/projects/jz/bench/conv2d/conv2d.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/conv2d/conv2d.tinygo.wasm /Users/div/projects/jz/bench/conv2d/conv2d.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 21634,
@@ -1796,7 +1797,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 91.4
+   "compileMs": 101.8
   },
   "crc32": {
    "name": "CRC-32 table hash",
@@ -1934,8 +1935,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/crc32/crc32.tinygo.wasm /Users/div/projects/jz/bench/crc32/crc32.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/crc32/crc32.tinygo.wasm /Users/div/projects/jz/bench/crc32/crc32.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 7955,
@@ -1945,7 +1946,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 21.9
+   "compileMs": 23.6
   },
   "delayline": {
    "name": "delayline",
@@ -2277,8 +2278,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dict/dict.tinygo.wasm /Users/div/projects/jz/bench/dict/dict.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dict/dict.tinygo.wasm /Users/div/projects/jz/bench/dict/dict.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 4302,
@@ -2288,7 +2289,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 20.2
+   "compileMs": 22.6
   },
   "dispatch": {
    "name": "function-table dispatch",
@@ -2420,8 +2421,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dispatch/dispatch.tinygo.wasm /Users/div/projects/jz/bench/dispatch/dispatch.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dispatch/dispatch.tinygo.wasm /Users/div/projects/jz/bench/dispatch/dispatch.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 8577,
@@ -2431,7 +2432,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 20.8
+   "compileMs": 25.6
   },
   "dotprod": {
    "name": "dotprod",
@@ -2563,8 +2564,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dotprod/dotprod.tinygo.wasm /Users/div/projects/jz/bench/dotprod/dotprod.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dotprod/dotprod.tinygo.wasm /Users/div/projects/jz/bench/dotprod/dotprod.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 2098,
@@ -2574,7 +2575,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 18.4
+   "compileMs": 19.6
   },
   "fft": {
    "name": "fft",
@@ -2706,8 +2707,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/fft/fft.tinygo.wasm /Users/div/projects/jz/bench/fft/fft.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/fft/fft.tinygo.wasm /Users/div/projects/jz/bench/fft/fft.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 3206,
@@ -2717,7 +2718,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 53,
+   "compileMs": 60.8,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -3096,8 +3097,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/hash/hash.tinygo.wasm /Users/div/projects/jz/bench/hash/hash.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/hash/hash.tinygo.wasm /Users/div/projects/jz/bench/hash/hash.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 6556,
@@ -3107,7 +3108,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 17.1
+   "compileMs": 21.3
   },
   "hashjoin": {
    "name": "hashjoin",
@@ -3239,8 +3240,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/hashjoin/hashjoin.tinygo.wasm /Users/div/projects/jz/bench/hashjoin/hashjoin.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/hashjoin/hashjoin.tinygo.wasm /Users/div/projects/jz/bench/hashjoin/hashjoin.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 8600,
@@ -3250,7 +3251,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 23.4
+   "compileMs": 33.8
   },
   "heat": {
    "name": "2-D heat diffusion (5-point stencil)",
@@ -3382,8 +3383,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/heat/heat.tinygo.wasm /Users/div/projects/jz/bench/heat/heat.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/heat/heat.tinygo.wasm /Users/div/projects/jz/bench/heat/heat.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 22890,
@@ -3393,7 +3394,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 20.2
+   "compileMs": 23.5
   },
   "immutable": {
    "name": "immutable-update particle step",
@@ -3525,8 +3526,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/immutable/immutable.tinygo.wasm /Users/div/projects/jz/bench/immutable/immutable.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/immutable/immutable.tinygo.wasm /Users/div/projects/jz/bench/immutable/immutable.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 1482,
@@ -3536,7 +3537,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 26.3
+   "compileMs": 31.8
   },
   "jessie": {
    "name": "jessie parser",
@@ -3722,8 +3723,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/json/json.tinygo.wasm /Users/div/projects/jz/bench/json/json.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/json/json.tinygo.wasm /Users/div/projects/jz/bench/json/json.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 2396,
@@ -3733,7 +3734,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 84.8
+   "compileMs": 94.9
   },
   "levenshtein": {
    "name": "Levenshtein edit-distance DP",
@@ -3865,8 +3866,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/levenshtein/levenshtein.tinygo.wasm /Users/div/projects/jz/bench/levenshtein/levenshtein.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/levenshtein/levenshtein.tinygo.wasm /Users/div/projects/jz/bench/levenshtein/levenshtein.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 6470,
@@ -3876,7 +3877,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 23.9
+   "compileMs": 28.2
   },
   "lorenz": {
    "name": "lorenz",
@@ -4008,8 +4009,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/lorenz/lorenz.tinygo.wasm /Users/div/projects/jz/bench/lorenz/lorenz.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/lorenz/lorenz.tinygo.wasm /Users/div/projects/jz/bench/lorenz/lorenz.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 12758,
@@ -4019,7 +4020,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 20.8
+   "compileMs": 29
   },
   "lz": {
    "name": "LZSS compress + inflate",
@@ -4151,8 +4152,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/lz/lz.tinygo.wasm /Users/div/projects/jz/bench/lz/lz.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/lz/lz.tinygo.wasm /Users/div/projects/jz/bench/lz/lz.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 30221,
@@ -4162,7 +4163,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 68.4,
+   "compileMs": 84.5,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -4341,8 +4342,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mandelbrot/mandelbrot.tinygo.wasm /Users/div/projects/jz/bench/mandelbrot/mandelbrot.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mandelbrot/mandelbrot.tinygo.wasm /Users/div/projects/jz/bench/mandelbrot/mandelbrot.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 8270,
@@ -4352,7 +4353,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 20.9
+   "compileMs": 23.5
   },
   "mat4": {
    "name": "mat4 multiply",
@@ -4490,8 +4491,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4.tinygo.wasm /Users/div/projects/jz/bench/mat4/mat4.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4.tinygo.wasm /Users/div/projects/jz/bench/mat4/mat4.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 18190,
@@ -4505,7 +4506,7 @@
      "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/mat4/mat4.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4-wat.wasm\"\n/User"
     }
    },
-   "compileMs": 37.8
+   "compileMs": 41.3
   },
   "matmul": {
    "name": "matrix multiply (A·Bᵀ)",
@@ -4637,8 +4638,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/matmul/matmul.tinygo.wasm /Users/div/projects/jz/bench/matmul/matmul.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/matmul/matmul.tinygo.wasm /Users/div/projects/jz/bench/matmul/matmul.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 20092,
@@ -4648,7 +4649,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 21.4
+   "compileMs": 23.6
   },
   "nbody": {
    "name": "nbody",
@@ -4780,8 +4781,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nbody/nbody.tinygo.wasm /Users/div/projects/jz/bench/nbody/nbody.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nbody/nbody.tinygo.wasm /Users/div/projects/jz/bench/nbody/nbody.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 21356,
@@ -4791,7 +4792,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 39.9
+   "compileMs": 49.3
   },
   "noise": {
    "name": "Perlin fBm noise field",
@@ -4923,8 +4924,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/noise/noise.tinygo.wasm /Users/div/projects/jz/bench/noise/noise.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/noise/noise.tinygo.wasm /Users/div/projects/jz/bench/noise/noise.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 4637,
@@ -4934,7 +4935,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 99.6
+   "compileMs": 112.1
   },
   "nqueens": {
    "name": "N-Queens bitmask backtracking",
@@ -5059,8 +5060,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nqueens/nqueens.tinygo.wasm /Users/div/projects/jz/bench/nqueens/nqueens.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nqueens/nqueens.tinygo.wasm /Users/div/projects/jz/bench/nqueens/nqueens.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 2821,
@@ -5084,7 +5085,7 @@
      "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 17
+   "compileMs": 20.2
   },
   "particle": {
    "name": "particle",
@@ -5216,8 +5217,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/particle/particle.tinygo.wasm /Users/div/projects/jz/bench/particle/particle.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/particle/particle.tinygo.wasm /Users/div/projects/jz/bench/particle/particle.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 62620,
@@ -5227,7 +5228,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 22.8
+   "compileMs": 27.8
   },
   "poly": {
    "name": "polymorphic reduce",
@@ -5371,8 +5372,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/poly/poly.tinygo.wasm /Users/div/projects/jz/bench/poly/poly.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/poly/poly.tinygo.wasm /Users/div/projects/jz/bench/poly/poly.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 910,
@@ -5382,7 +5383,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 17.8
+   "compileMs": 19.9
   },
   "provenance": {
    "name": "provenance",
@@ -5582,8 +5583,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/qoi/qoi.tinygo.wasm /Users/div/projects/jz/bench/qoi/qoi.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/qoi/qoi.tinygo.wasm /Users/div/projects/jz/bench/qoi/qoi.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 18143,
@@ -5593,7 +5594,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 64.9
+   "compileMs": 94.9
   },
   "radixsort": {
    "name": "LSD radix sort (u32 keys)",
@@ -5726,8 +5727,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/radixsort/radixsort.tinygo.wasm /Users/div/projects/jz/bench/radixsort/radixsort.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/radixsort/radixsort.tinygo.wasm /Users/div/projects/jz/bench/radixsort/radixsort.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 13076,
@@ -5737,7 +5738,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 38.4,
+   "compileMs": 41.3,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -5916,8 +5917,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/raytrace/raytrace.tinygo.wasm /Users/div/projects/jz/bench/raytrace/raytrace.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/raytrace/raytrace.tinygo.wasm /Users/div/projects/jz/bench/raytrace/raytrace.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 4852,
@@ -5927,7 +5928,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 77.9
+   "compileMs": 88.8
   },
   "resample": {
    "name": "resample",
@@ -6294,8 +6295,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/shapes/shapes.tinygo.wasm /Users/div/projects/jz/bench/shapes/shapes.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/shapes/shapes.tinygo.wasm /Users/div/projects/jz/bench/shapes/shapes.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 7412,
@@ -6305,7 +6306,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 44.2,
+   "compileMs": 36.6,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -6484,8 +6485,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/sieve/sieve.tinygo.wasm /Users/div/projects/jz/bench/sieve/sieve.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/sieve/sieve.tinygo.wasm /Users/div/projects/jz/bench/sieve/sieve.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 12735,
@@ -6495,7 +6496,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 14.2
+   "compileMs": 17.5
   },
   "slices": {
    "name": "slices",
@@ -6766,8 +6767,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/sort/sort.tinygo.wasm /Users/div/projects/jz/bench/sort/sort.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/sort/sort.tinygo.wasm /Users/div/projects/jz/bench/sort/sort.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 13487,
@@ -6777,7 +6778,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 23.9
+   "compileMs": 28.8
   },
   "spmv": {
    "name": "sparse matrix×vector (CSR)",
@@ -6909,8 +6910,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/spmv/spmv.tinygo.wasm /Users/div/projects/jz/bench/spmv/spmv.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/spmv/spmv.tinygo.wasm /Users/div/projects/jz/bench/spmv/spmv.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 10124,
@@ -6920,7 +6921,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 27.1
+   "compileMs": 32.2
   },
   "strbuild": {
    "name": "per-record string formatting",
@@ -7052,8 +7053,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/strbuild/strbuild.tinygo.wasm /Users/div/projects/jz/bench/strbuild/strbuild.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/strbuild/strbuild.tinygo.wasm /Users/div/projects/jz/bench/strbuild/strbuild.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 4783,
@@ -7063,7 +7064,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 23
+   "compileMs": 27.7
   },
   "synth": {
    "name": "synth",
@@ -7195,8 +7196,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/synth/synth.tinygo.wasm /Users/div/projects/jz/bench/synth/synth.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/synth/synth.tinygo.wasm /Users/div/projects/jz/bench/synth/synth.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 2191,
@@ -7206,7 +7207,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 29.6,
+   "compileMs": 27.9,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -7397,8 +7398,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/tokenizer/tokenizer.tinygo.wasm /Users/div/projects/jz/bench/tokenizer/tokenizer.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/tokenizer/tokenizer.tinygo.wasm /Users/div/projects/jz/bench/tokenizer/tokenizer.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 82,
@@ -7415,7 +7416,7 @@
      "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 27.4
+   "compileMs": 30.8
   },
   "trace": {
    "name": "trace",
@@ -7679,8 +7680,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/vm/vm.tinygo.wasm /Users/div/projects/jz/bench/vm/vm.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/vm/vm.tinygo.wasm /Users/div/projects/jz/bench/vm/vm.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 16023,
@@ -7690,7 +7691,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 25.1,
+   "compileMs": 26.2,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -7929,8 +7930,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/wav/wav.tinygo.wasm /Users/div/projects/jz/bench/wav/wav.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/wav/wav.tinygo.wasm /Users/div/projects/jz/bench/wav/wav.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 9535,
@@ -7940,7 +7941,7 @@
      "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 23.6
+   "compileMs": 29.5
   },
   "wordcount": {
    "name": "word-frequency map (string keys)",
@@ -8072,8 +8073,8 @@
     },
     "tinygo": {
      "status": "fail",
-     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/wordcount/wordcount.tinygo.wasm /Users/div/projects/jz/bench/wordcount/wordcount.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
-     "measuredAt": "e36aab3b"
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/wordcount/wordcount.tinygo.wasm /Users/div/projects/jz/bench/wordcount/wordcount.go\nrequires go version 1.19 through 1.23, got go1.26\n",
+     "measuredAt": "35c34273"
     },
     "moonbit": {
      "medianUs": 11085,
@@ -8090,7 +8091,7 @@
      "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 53.3
+   "compileMs": 60.1
   },
   "jz": {
    "name": "jz JS compiler (self-compile)",
@@ -8139,6 +8140,37 @@
      "measuredAt": "e36aab3b"
     }
    }
+  },
+  "gainclass": {
+   "name": "gainclass",
+   "samples": 65536,
+   "stages": 8,
+   "runs": 21,
+   "ref": 1297017192,
+   "targets": {
+    "jz": {
+     "medianUs": 76,
+     "bytes": 2363,
+     "memKb": 56656,
+     "parity": "ok",
+     "measuredAt": "395c3fc0"
+    },
+    "as": {
+     "medianUs": 607,
+     "bytes": 1903,
+     "memKb": 56688,
+     "parity": "ok",
+     "measuredAt": "395c3fc0"
+    },
+    "v8": {
+     "medianUs": 214,
+     "bytes": 2019,
+     "memKb": 56768,
+     "parity": "ok",
+     "measuredAt": "395c3fc0"
+    }
+   },
+   "compileMs": 89.5
   }
  }
 }

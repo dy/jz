@@ -440,7 +440,9 @@ export function inferSchemaId(expr, lookupMap) {
   if (typeof expr === 'string') {
     if (lookupMap?.has(expr)) return lookupMap.get(expr)
     const id = ctx.schema.vars.get(expr)
-    return id != null ? id : null
+    // The program summary: a binding every assignment of which is one shape
+    // (a local holding a factory's result, a parameter of one shape).
+    return id != null ? id : ctx.summary?.sidOf(expr) ?? null
   }
   if (!Array.isArray(expr)) return null
   const op = expr[0]

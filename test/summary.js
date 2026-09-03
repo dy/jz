@@ -7,9 +7,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { K, tagOf, paramOf, isNullable } from '../src/summary/index.js'
+import { K, kind, join, orNull, tagOf, paramOf, isNullable, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, OPT_LEVEL } from './_matrix.js'
 
 // Bindings carry prepare's scope suffix; find one by function and bare name.
 const binding = (fn, bare) => {
@@ -33,8 +33,63 @@ test('summary: kinds flow through calls, fields and results; the host boundary i
   is(tagOf(kindOf('proc', 'b')), K.TYPED, 'a field read has the slot kind'); ok(!isNullable(kindOf('proc', 'b')))
   is(ctx.summary.fieldTypedCtor(sid, 'buf'), 'new.Float32Array')
   is(tagOf(kindOf('proc', 'k')), K.NUMBER, 'number literal and number parameter join to number')
-  is(tagOf(kindOf('run', 'n')), K.ANY, 'an exported function\'s parameter comes from the host')
+  is(tagOf(kindOf('run', 'n')), K.ANY, 'an exported parameter passed to a typed-array constructor is not demanded: the constructor copies an array')
+  ok(!ctx.summary.numericDemand(binding('run', 'n')))
   is(tagOf(ctx.summary.resultOf('mk')), K.OBJECT, 'a result is the join of its returns')
+  summarize(`export const h = (s, k, o) => { const t = s + ''; return t.length + k * 2 + o.x }`)
+  is(tagOf(kindOf('h', 's')), K.ANY, 'a parameter concatenated as a string comes from the host as ANY')
+  is(tagOf(kindOf('h', 'k')), K.NUMBER, 'a parameter multiplied is demanded')
+  is(tagOf(kindOf('h', 'o')), K.ANY, 'a parameter read as an object is not')
+  // Demand follows a store into a slot and a destructured read out of it.
+  summarize(`const mk = (g) => ({ gain: g })
+    const use = (o) => { const { gain } = o; return gain * 2 }
+    const use2 = ({ gain }) => gain + ''
+    export const times = (g) => use(mk(g))
+    export const text = (g) => use2(mk(g))`)
+  is(tagOf(kindOf('times', 'g')), K.ANY, 'the slot is also read as a string elsewhere: not demanded')
+  summarize(`const mk = (g) => ({ gain: g })
+    const use = (o) => { const { gain } = o; return gain * 2 }
+    export const times = (g) => use(mk(g))`)
+  is(tagOf(kindOf('times', 'g')), K.NUMBER, 'stored into a slot every read of which multiplies: demanded')
+  is(jz(`const mk = (g) => ({ gain: g })
+    const use = (o) => { const { gain } = o; return gain * 2 }
+    export const times = (g) => use(mk(g))`).exports.times('4'), 8, 'the host string converts at the boundary')
+  // A demand is evidence of a ToNumber read, never its absence: a value the
+  // program stores and never reads rests where the host reads it back.
+  summarize(`export const mk = (x, y) => ({ x, y })`)
+  is(tagOf(kindOf('mk', 'x')), K.ANY, 'a slot with no read demands nothing')
+  is(jz(`function RegExp(x) { return { x } }
+    export let regexp = x => new RegExp(x).x`).exports.regexp('r'), 'r', 'a slot returned as it is keeps the host value')
+  summarize(`export const get = (a, k) => a[k]`)
+  is(tagOf(kindOf('get', 'k')), K.ANY, 'an index is a property key, not a ToNumber context')
+  is(jz(`export const get = (k) => { const a = [10, 20, 30]; return a[k] }`).exports.get('1.0'), undefined, "a['1.0'] is no element")
+})
+
+test('summary: join is a lattice join, so the fixpoint terminates', () => {
+  // Every element and its nullable form; ANY absorbs the bit (the flagship
+  // oscillated between ANY and nullable ANY for 64 rounds and stopped short).
+  const base = [K.NONE, kind(K.NUMBER), kind(K.STRING), kind(K.NULLISH), kind(K.OBJECT, 1), kind(K.OBJECT, 2), kind(K.OBJECT, UNKNOWN), kind(K.ARRAY, 0), kind(K.CLOSURE, 3), kind(K.ANY)]
+  const all = [...base, ...base.map(orNull)]
+  for (const a of all) for (const b of all) {
+    const j = join(a, b)
+    is(join(b, a), j, 'commutative')
+    is(join(a, j), j, 'absorbing: the join is above its operands')
+    is(join(j, b), j)
+    for (const c of all) is(join(join(a, b), c), join(a, join(b, c)), 'associative')
+  }
+  is(join(kind(K.ANY), kind(K.NULLISH)), kind(K.ANY), 'ANY absorbs nullish')
+  is(join(orNull(K.NONE), kind(K.NUMBER)), orNull(kind(K.NUMBER)), 'nullable bottom joins as nullish')
+  is(join(kind(K.OBJECT, 1), orNull(kind(K.OBJECT, 2))), orNull(kind(K.OBJECT, UNKNOWN)), 'two shapes join to the tag')
+})
+
+test('summary: two closures joined are called from where the summary cannot see', () => {
+  // The lattice keeps one closure identity; the join of two is a call to
+  // either, so both take ANY parameters rather than staying at bottom.
+  summarize(`const tbl = [(x) => x.length, (x) => x * 2]
+    export const f = (i, v) => tbl[i & 1](v)`)
+  for (const id of [0, 1]) ok(ctx.summary.escaped.has(id), `closure ${id} escaped by the join`)
+  is(jz(`const tbl = [(x) => x.length, (x) => x * 2]
+    export const f = (i, v) => tbl[i & 1](v)`).exports.f(0, 'abc'), 3)
 })
 
 test('summary: stores join into the slot; a differing store or a computed write poisons it', () => {
@@ -117,4 +172,28 @@ test('summary codegen: a typed field read through a parameter, a factory, a clas
     if (name !== 'factory') ok(!/__typed_idx|__typed_set_idx|__dyn_get|__arr_typed/.test(loop), `${name}: no element dispatch in the loop`)
     is(jz(src).exports.run(64), 0.5, `${name}: 2 * 0.5 * 0.5`)
   }
+})
+
+test('summary codegen: a method called through an array of instances, an exported constructor parameter stored to a numeric slot', () => {
+  if (onKernel()) return
+  const src = `class Gain {
+      constructor(n, gain) { this.buf = new Float64Array(n); this.gain = gain }
+      process(input) { const b = this.buf, g = this.gain; for (let i = 0; i < b.length; i++) b[i] = input[i] * g; return b }
+    }
+    const mkChain = (n, count) => { const nodes = []; for (let k = 0; k < count; k++) nodes.push(new Gain(n, 0.5 + k)); return nodes }
+    const render = (input, nodes) => { let x = input; for (let k = 0; k < nodes.length; k++) x = nodes[k].process(x); return x }
+    export const run = (n) => { const input = new Float64Array(n); input[1] = 2; return render(input, mkChain(n, 3))[1] }`
+  const wat = compile(src, { wat: true })
+  ok(!/__dyn_get|__hash|__to_str/.test(wat), 'the method comes from the element\'s schema slot, the closure parameter is a typed array')
+  is(jz(src).exports.run(4), 2 * 0.5 * 1.5 * 2.5)
+  if (OPT_LEVEL === 2) ok(compile(src).length < 3000, `the typed tier's size class (${compile(src).length} B)`)
+  // An exported class: its constructor parameter is read only through a slot
+  // every read of which multiplies, so the f64 boundary is the coercion.
+  const cls = `export class Gain { constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
+      process() { const b = this.buf, g = this.gain; for (let i = 0; i < b.length; i++) b[i] = b[i] * g; return b[0] } }
+    export const run = (n, gain) => { const g = new Gain(n, gain); g.buf[0] = 2; g.process(); return g.process() }`
+  ok(!/__to_str/.test(compile(cls, { wat: true })), 'no string machinery: the gain slot is read only as a number')
+  is(jz(cls).exports.run(8, 0.5), 0.5)
+  is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
+  if (OPT_LEVEL === 2) ok(compile(cls).length < 2000, `bytes: ${compile(cls).length}`)
 })

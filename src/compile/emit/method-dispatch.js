@@ -4,7 +4,9 @@
  * @module compile/emit/method-dispatch
  */
 
-import { i64Hex, oobNanIR } from '../../../layout.js'
+import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
+import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
+import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
 import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration } from '../../autoload.js'
@@ -720,17 +722,35 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
     const propTmp = temp('mprop')
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
-    // Primitive receivers skip the override probe — see sidecarOverride (ir.js).
-    const propRead = typed(['if', ['result', 'f64'],
-      ['i32.and',
-        ['f64.ne', ['local.get', `$${objTmp}`], ['local.get', `$${objTmp}`]],
-        ['i64.ne',
-          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['i64.const', i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))]],
-          ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
-      ['then', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
-      ['else', undefExpr()]], 'f64')
-    const closureOnly = usesDynProps(vt) || !ctx.transform.targetProfile.envImports
-    inc('__dyn_get_expr', '__ptr_type')
+    // The program summary names the receiver's shape (an element of an array
+    // of one shape, a field of one shape), or that shape or nullish: one
+    // masked compare proves the tag and schema at runtime, then the method is
+    // a payload-slot load. The only other value the summary admits is
+    // nullish (an out-of-range element), which JS answers with a TypeError.
+    const rk = ctx.summary?.kindOfExpr(obj)
+    const sid = rk != null && tagOf(rk) === K.OBJECT && paramOf(rk) !== UNKNOWN ? paramOf(rk) : null
+    const slot = sid != null ? ctx.schema.list[sid]?.indexOf(method) : -1
+    const bits = ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]
+    const slotLoad = () => ctx.abi.object.ops.load(['i32.wrap_i64', ['i64.and', bits, ['i64.const', LAYOUT.OFFSET_MASK]]], slot)
+    // An element read the interval prover puts in bounds is exactly the shape.
+    const exact = slot >= 0 && (!isNullable(rk) || (Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])))
+    const propRead = exact ? typed(slotLoad(), 'f64')
+      : slot >= 0
+      ? typed(['if', ['result', 'f64'],
+          ['i64.eq', ['i64.and', bits, ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
+          ['then', slotLoad()],
+          ['else', throwTypeErrorIR('read')]], 'f64')
+      // Primitive receivers skip the override probe — see sidecarOverride (ir.js).
+      : typed(['if', ['result', 'f64'],
+          ['i32.and',
+            ['f64.ne', ['local.get', `$${objTmp}`], ['local.get', `$${objTmp}`]],
+            ['i64.ne',
+              ['i64.and', bits, ['i64.const', i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))]],
+              ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
+          ['then', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', bits, asI64(emit(['str', method]))]]],
+          ['else', undefExpr()]], 'f64')
+    const closureOnly = slot >= 0 || usesDynProps(vt) || !ctx.transform.targetProfile.envImports
+    if (slot >= 0) inc('__ptr_type'); else inc('__dyn_get_expr', '__ptr_type')
     if (!closureOnly) { inc('__ext_call'); setLinkDemand('external') }
     const extFallback = closureOnly ? undefExpr()
       : ['if', ['result', 'f64'],

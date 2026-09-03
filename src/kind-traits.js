@@ -4,6 +4,7 @@
  */
 
 import { VAL } from './reps.js'
+import { valOf as summaryVal } from './summary/index.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
 import { typedStorageCtorFromContext } from './typed-context.js'
 
@@ -157,6 +158,8 @@ export function calleeValType(callee, _args, ctx) {
   }
   const f = ctx.funcs.map?.get(callee)
   if (f?.valResult) return f.valResult
+  // The program summary: the join of the function's returns is one kind.
+  if (f && ctx.summary) return summaryVal(ctx.summary.resultOf(callee))
   return null
 }
 
