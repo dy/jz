@@ -2617,12 +2617,19 @@ function prepareModule(specifier, source) {
   }
 
   // Save caller state
-  const savedScope = ctx.scope.chain, savedExports = ctx.funcs.exports
+  const savedScope = ctx.scope.chain, savedExports = ctx.funcs.exports, savedNamespaces = ctx.module.namespaces
   // the program's export table: the outermost caller's
   if (ctx.module.moduleStack.length === 1) ctx.module.rootExports = savedExports
   const savedFuncCount = ctx.funcs.list.length  // track new funcs from this module
   const savedModulePrefix = ctx.module.currentPrefix
-  ctx.scope.chain = derive(savedScope)  // inherit parent scope
+  // A module's scope holds the builtins, its own declarations and its own
+  // imports (its namespace aliases included): derived from the root, not from
+  // the importing module, whose bindings would otherwise leak in (`import core
+  // from './core.js'` in one module resolved a local `const core = …` in a
+  // module prepared beneath it; two `import * as u` of different modules shared
+  // one alias).
+  ctx.scope.chain = derive(ctx.scope.root)
+  ctx.module.namespaces = null
   ctx.funcs.exports = Object.create(null)  // name-keyed: prototype-less (see derive)
   ctx.module.currentPrefix = prefix
 
@@ -2799,6 +2806,7 @@ function prepareModule(specifier, source) {
     // mid-prep, skipping this would leave ctx.scope/exports/prefix/moduleStack
     // corrupted for the rest of the pipeline.
     ctx.scope.chain = savedScope
+    ctx.module.namespaces = savedNamespaces
     ctx.funcs.exports = savedExports
     ctx.module.currentPrefix = savedModulePrefix
     ctx.module.moduleStack.pop()

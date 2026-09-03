@@ -378,7 +378,11 @@ export function analyzeFuncForEmit(func, programFacts) {
       for (const [n, kind] of unbox) {
         const fields = { ptrKind: kind }
         if (kind === VAL.TYPED) {
-          const aux = typedElemAux(ctx.func.typedElem?.get(n))
+          // The body's own ctor, else the program summary's (a typed field
+          // read through a parameter): recorded so the emitter's raw loads see it.
+          let ctor = ctx.func.typedElem?.get(n)
+          if (ctor == null && (ctor = ctx.summary?.typedCtorOf(n))) (ctx.func.typedElem ||= new Map()).set(n, ctor)
+          const aux = typedElemAux(ctor)
           if (aux == null) continue
           fields.ptrAux = aux
         }

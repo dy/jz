@@ -128,7 +128,9 @@ export function analyzeClosureBodyForEmit(cb) {
         if (cb.params.includes(name) || cb.captures.includes(name)) continue
         const fields = { ptrKind: kind }
         if (kind === VAL.TYPED) {
-          const aux = typedElemAux(ctx.func.typedElem?.get(name))
+          let ctor = ctx.func.typedElem?.get(name)
+          if (ctor == null && (ctor = ctx.summary?.typedCtorOf(name))) (ctx.func.typedElem ||= new Map()).set(name, ctor)
+          const aux = typedElemAux(ctor)
           if (aux == null) continue
           fields.ptrAux = aux
         }

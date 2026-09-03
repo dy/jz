@@ -321,6 +321,9 @@ export function initSchema(ctx) {
    *  refinement-union branch: a call-site fact is one resolved sid, never a
    *  branch-local refinement's multi-sid union. */
   ctx.schema.slotVTBySid = (id, prop) => {
+    // The program summary joined every construction and store of the slot.
+    const summarized = id != null ? ctx.summary?.fieldVal(id, prop) : null
+    if (summarized) return summarized
     if (id == null || slotHazarded(id, prop, true)) return null
     const idx = ctx.schema.list[id]?.indexOf(prop)
     return idx >= 0 ? (factAt(id, idx)?.kind ?? null) : null
@@ -348,12 +351,20 @@ export function initSchema(ctx) {
    *  (ctx.types.writtenProps): the ctor drives raw typed loads/stores, so a
    *  single `o.twRe = somethingElse` anywhere must keep the dynamic path —
    *  object-literal initial values are not writes and don't poison. */
+  // `idOf` is a representation fact (this binding is a heap pointer of that
+  // schema); the summary's `sidOf` is a kind fact (every value reaching the
+  // binding has that shape, a parameter's arguments included). A slot's kind
+  // follows the kind fact, whichever way the binding is materialized.
   ctx.schema.slotTypedCtorAt = (varName, prop) =>
-    ctx.schema.slotTypedCtorBySid(ctx.schema.idOf(varName), prop)
+    ctx.schema.slotTypedCtorBySid(ctx.schema.idOf(varName) ?? ctx.summary?.sidOf(varName), prop)
 
   /** Raw by-sid form for callers that resolve the receiver's schema themselves
    *  (narrow's per-caller localSids — live reps aren't trustworthy there). */
   ctx.schema.slotTypedCtorBySid = (id, prop) => {
+    // The program summary joined every construction and store of the slot:
+    // one typed kind under all of them is the ctor, a written prop included.
+    const summarized = id != null ? ctx.summary?.fieldTypedCtor(id, prop) : null
+    if (summarized) return summarized
     // fail CLOSED: without the program-wide write census the ctor can't be trusted
     if (!ctx.types.writtenProps || ctx.types.writtenProps.has(prop)) return null
     if (id == null || slotHazarded(id, prop)) return null

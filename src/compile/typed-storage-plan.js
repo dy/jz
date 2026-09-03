@@ -83,7 +83,7 @@ const programFacts = ctx => {
       if (func.sig && func.sig.ptrKind === VAL.TYPED && func.sig.ptrAux != null)
         program.calls.set(func.name, ctorFromElemAux(func.sig.ptrAux))
     }
-    program.hasTypedFields = ctx.schema?.hasTypedSlots === true
+    program.hasTypedFields = ctx.schema?.hasTypedSlots === true || ctx.summary?.hasTypedFields === true
     program.initialized = true
   }
   return program

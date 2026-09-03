@@ -1063,3 +1063,31 @@ test('export * as ns from a module binds the namespace for importers', () => {
   } })
   is(exports.f(2), 49)
 })
+
+// A module's scope is the builtins plus its own declarations and imports; it
+// never sees the importing module's bindings (ES module scopes do not nest).
+// `b.js` is first reached beneath `a.js`, after `a.js` bound `core` to another
+// module's default export; `b.js`'s own `const core` must win inside `b.js`.
+test('bundling: an importer\'s alias does not leak into a module prepared beneath it', () => {
+  const modules = {
+    './core.js': 'export default (x) => x + 100',
+    './a.js': 'import core from "./core.js"\nimport { g } from "./b.js"\nexport const f = () => core(1) + g()',
+    './b.js': 'const core = (k) => k * 2\nexport const g = () => core(5)',
+  }
+  is(jz('import { f } from "./a.js"\nexport const main = () => f()', { modules }).exports.main(), 111)
+  // The same collision through a named import, and a module-level value binding.
+  const modules2 = {
+    './util.js': 'export const scale = (x) => x * 1000\nexport const K = 7',
+    './a.js': 'import { scale, K } from "./util.js"\nimport { g } from "./b.js"\nexport const f = () => scale(1) + K + g()',
+    './b.js': 'const scale = (k) => k * 2\nconst K = 3\nexport const g = () => scale(5) + K',
+  }
+  is(jz('import { f } from "./a.js"\nexport const main = () => f()', { modules: modules2 }).exports.main(), 1000 + 7 + 10 + 3)
+  // A namespace alias is the module's own too: `u` names a different module in each.
+  const modules3 = {
+    './x.js': 'export const v = 1',
+    './y.js': 'export const v = 1000',
+    './a.js': 'import * as u from "./x.js"\nimport { g } from "./b.js"\nexport const f = () => u.v + g()',
+    './b.js': 'import * as u from "./y.js"\nexport const g = () => u.v',
+  }
+  is(jz('import { f } from "./a.js"\nexport const main = () => f()', { modules: modules3 }).exports.main(), 1001)
+})

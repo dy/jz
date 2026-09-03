@@ -3,7 +3,7 @@
  * @module jzify/classes
  */
 
-import { extractParams as paramList, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { extractParams as paramList, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from '../src/ast.js'
 import { ctx, err } from '../src/ctx.js'
 
 export function createClassLowering({ transform, names, JC, constStrings }) {
@@ -61,6 +61,20 @@ function renameThis(node, to) {
   if (node[0] === '.' || node[0] === '?.') return [node[0], renameThis(node[1], to), node[2]]
   if (node[0] === ':') return [node[0], node[1], renameThis(node[2], to)]
   return node.map(n => renameThis(n, to))
+}
+
+// The instance fields a body assigns through `this.name = …` (any assignment
+// or update operator), in first-assignment order; nested `function`/`class`
+// rebind `this` and are not crossed. A constructor that assigns `this.buf`
+// without declaring `buf` still gives the instance that field, so the shape
+// declares it up front.
+function assignedThisFields(node, out) {
+  if (!Array.isArray(node)) return out
+  if (node[0] === 'function' || node[0] === 'class') return out
+  if (MUTATE_OPS.has(node[0]) && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'this' && typeof node[1][2] === 'string' && !out.includes(node[1][2]))
+    out.push(node[1][2])
+  for (let i = 1; i < node.length; i++) assignedThisFields(node[i], out)
+  return out
 }
 
 // Two pre-class-era idioms in a class body, normalized before the lowering:
@@ -370,6 +384,16 @@ function lowerClass(name, heritage, body) {
   for (const [fname, init] of fields) {
     if (init != null && !usesThis(init)) litProps.push([':', fname, transform(init)])
     else { litProps.push([':', fname, UNDEF]); if (init != null) deferred.push([fname, init]) }
+  }
+  // Fields the constructor, an initializer or a method assigns without a
+  // declaration: declared `undefined` here, in that order, so the instance
+  // keeps one shape and its keys the order JS gives them.
+  if (heritage == null) {
+    const assigned = []
+    assignedThisFields(ctorBody, assigned)
+    for (const [, init] of fields) assignedThisFields(init, assigned)
+    for (const [, , mbody] of methods) assignedThisFields(mbody, assigned)
+    for (const fname of assigned) if (!fields.some(([f]) => f === fname)) litProps.push([':', fname, UNDEF])
   }
   const methodValue = (mparams, mbody, kind, to) => kind === 'gen'
     ? transform(['function*', null, mparams, renameThis(mbody, to)])

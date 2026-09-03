@@ -16,6 +16,7 @@ import { VAL, repOfGlobal, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
 import { exprType } from '../../type.js'
 import { typedStorageCtorFromContext } from '../../typed-context.js'
+import { valOf as summaryVal } from '../../summary/index.js'
 import { scanBindingUses, USE, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_NULL_CMP } from '../analyze-scans.js'
 
 // A directly-uint32 expression: `x >>> 0` (zero-fill shift) or a call to a function
@@ -53,7 +54,10 @@ import { scanBindingUses, USE, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_K
  * Returns Map<name, VAL> of locals to unbox.
  */
 export function unboxablePtrs(body, locals, boxed) {
-  const valOf = name => ctx.func.localReps?.get(name)?.val
+  // The body's own tracker, else the program summary: a binding whose every
+  // assignment the whole program agrees is one pointer kind (a typed field
+  // read through a parameter, `const b = o.buf`) is that kind here too.
+  const valOf = name => ctx.func.localReps?.get(name)?.val ?? (ctx.summary ? summaryVal(ctx.summary.kindOf(name)) : null)
   const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.DATE])
 
   // RHS must produce a fresh, non-null pointer of the declared VAL kind.

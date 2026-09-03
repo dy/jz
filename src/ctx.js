@@ -91,7 +91,7 @@ export const ctx = {
   bridge: {}, core: {}, module: {}, scope: {}, funcs: {}, names: {}, func: {},
   types: {}, schema: {}, closure: {}, runtime: {}, memory: {}, error: {},
   transform: {}, inspect: null, warnings: null, abi: {}, features: {},
-  linkDemand: {}, plans: {}, facts: {},
+  linkDemand: {}, plans: {}, facts: {}, summary: null,
 }
 
 /** Reset-hook registry: a subsystem that keeps MODULE-scope working state
@@ -521,6 +521,9 @@ export function reset(proto, globals, bridge) {
     // capture is never mistakenly cell-boxed.
     moduleLoopCaptured: new Set(),
   }
+  // The root scope: the builtins every module sees. A bundled module's scope
+  // derives from this, never from its importer's (ES module scopes do not nest).
+  ctx.scope.root = ctx.scope.chain
 
   // Compile-lifetime compatibility registry. Prepare appends source functions;
   // materializeVariant appends concrete specializations. ProgramIndex assigns
@@ -1067,6 +1070,7 @@ export function reset(proto, globals, bridge) {
   // second module-scope singleton swapped independently. getFactStore()
   // below reads `ctx.facts`, so every call site of it stays subtree-owned.
   ctx.facts = createFactStore()
+  ctx.summary = null  // the program summary (src/summary), built at compile() entry
 
   // Single reset choreography (see RESET_HOOKS' doc above): every subsystem that
   // keeps module-scope working state outside ctx for perf clears it HERE, driven

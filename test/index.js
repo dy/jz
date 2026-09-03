@@ -45,6 +45,7 @@ const TESTS = [
   'watr',
   'optimizer',
   'tape',
+  'summary',
   'interval-proof',
   'passes',
   'dyn-closure-tables',
