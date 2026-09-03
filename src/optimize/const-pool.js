@@ -1,74 +1,77 @@
 /**
- * Whole-module f64 constant pooling — invoked from src/wat/assemble.js
- * alongside treeshake/specializeMkptr.
+ * Whole-module f64 constant pooling, on the tape.
+ *
+ * `f64.const` is 9 bytes; `global.get` with an index under 128 is 2 bytes, so
+ * a value used N ≥ 2 times pools into a global (11 bytes of declaration
+ * against 7 bytes saved per reuse). Pool entries sort by use count, hottest
+ * first, so the hottest get the 1-byte indices; equal counts keep module
+ * order. A value is keyed by its exact 64 bits (a Float64Array/Uint32Array
+ * union): `String(number)` keeps ~9 digits in the self-compiled kernel and
+ * would both lose precision and merge distinct values, and a Map key would
+ * merge every NaN payload and -0 with +0. The number itself is emitted, so
+ * the global's initializer is the exact literal.
+ *
+ * Soundness: a `global.get` of an immutable-by-use global reads the same
+ * bits the literal carried; only bodies of `func` nodes are rewritten, never
+ * a global initializer or a data segment.
  *
  * @module optimize/const-pool
  */
-import { walkAst } from '../ast.js'
+import { T, NONE, OP_NUM, OP_STR, intern, node, str, num, push, replace, insertAfter, walk } from '../ir/tape.js'
 
-/**
- * Hoist frequently-repeated f64 constants into mutable globals.
- * f64.const is 9 bytes; global.get with idx<128 is 2 bytes — saves 7 B per reuse.
- * Pool entries sorted by usage descending, so hottest get lowest indices (1-byte LEB128).
- * Break-even: N ≥ 2 uses (pool cost: 11 B global decl + 2N bytes vs 9N original).
- *
- * Mutates `funcs` in place; writes new global decls via `addGlobal(name, constLiteral)`.
- */
-// `String(number)` keeps only ~9 significant digits in the self-compile kernel (jz's number
-// formatter — see README "differences"). The old pool keyed constants by `n:${c[1]}` (a toString)
-// and emitted them via that same string, so in the kernel a constant both LOST precision
-// (0.041666666666666664 → 0x1.5555558325751p-5) and could MERGE with a distinct value sharing its
-// 9-digit prefix. Key by the exact 64 bits instead (a Float64Array/Uint32Array union — the
-// numHashLiteral pattern, which self-compiles; the sign bit distinguishes -0/+0 for free) and emit
-// the original NUMBER, which `declGlobal` lowers to a binary `f64.const` (exact, no string).
 const _FCB = new Float64Array(1), _FCBu = new Uint32Array(_FCB.buffer)
 const f64BitsKey = (n) => { _FCB[0] = n; return `n:${_FCBu[0]}:${_FCBu[1]}` }
 
-export function hoistConstantPool(funcs, addGlobal) {
-  const MIN_USES = 2
-  // Single walk: count occurrences AND record each f64.const site for direct rewrite.
-  // Avoids a second full-AST traversal in the rewrite phase.
-  const counts = new Map()
-  // NOTE: not `valueOf` — a local named like an Object method self-compile-miscompiles (the
-  // kernel's dynamic dispatch confuses it). key → exact original c[1] (number, or source string).
-  const exactVal = new Map()
-  const sites = []  // { parent, idx, key }
-  const collectConst = (node, parent, idx) => {
-    if (!parent || !Array.isArray(node) || node[0] !== 'f64.const' ||
-        (typeof node[1] !== 'number' && typeof node[1] !== 'string')) return
-    const k = typeof node[1] === 'number' ? f64BitsKey(node[1]) : `s:${node[1]}`
-    counts.set(k, (counts.get(k) || 0) + 1)
-    if (!exactVal.has(k)) exactVal.set(k, node[1])
-    sites.push({ parent, idx, key: k })
-  }
-  for (let i = 0; i < funcs.length; i++) walkAst(funcs[i], { enter: collectConst })
+const MIN_USES = 2
 
-  const hoist = new Map()
-  const sorted = [...counts].filter(([, n]) => n >= MIN_USES).sort((a, b) => b[1] - a[1])
-  let gId = 0
-  for (const [k] of sorted) {
-    const name = `__fc${gId++}`
-    // The EXACT original c[1] (a number → binary f64.const; or a source hex/decimal string),
-    // never the lossy k-derived toString.
-    addGlobal(name, exactVal.get(k))
-    hoist.set(k, name)
+/** Pool repeated `f64.const` literals of the module at `root` into globals. */
+export function hoistConstantPool(root) {
+  const F64_CONST = intern('f64.const'), FUNC = intern('func'), GLOBAL = intern('global')
+  const counts = new Map()   // key → uses
+  const first = new Map()    // key → the literal atom of the first site
+  const sites = []           // parent, node, key per site, flat
+  for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+    if (T.op[f] !== FUNC) continue
+    walk(f, (id, parent) => {
+      if (T.op[id] !== F64_CONST) return
+      const lit = T.a[id]
+      if (lit === NONE) return
+      const key = T.op[lit] === OP_NUM ? f64BitsKey(T.imm[lit]) : T.op[lit] === OP_STR ? `s:${T.syms[T.sym[lit]]}` : null
+      if (key === null) return
+      counts.set(key, (counts.get(key) || 0) + 1)
+      if (!first.has(key)) first.set(key, lit)
+      sites.push(parent, id, key)
+    })
   }
-  if (!hoist.size) return
+  const pooled = [...counts].filter(([, n]) => n >= MIN_USES).sort((a, b) => b[1] - a[1])
+  if (!pooled.length) return
 
-  // Rewrite recorded sites directly. Idempotent: if parent[idx] is no longer the
-  // f64.const we recorded (shared subtrees), skip.
-  for (let i = 0; i < sites.length; i++) {
-    const { parent, idx, key } = sites[i]
-    const g = hoist.get(key)
-    if (!g) continue
-    const c = parent[idx]
-    if (!Array.isArray(c) || c[0] !== 'f64.const') continue
-    const gn = ['global.get', `$${g}`]
-    // Carry `.schemaSid` (mkPtrIR/specializeMkptr's fold, src/ir.js's doc)
-    // forward onto the replacement — this rewrite discards `c`, the only
-    // place the tag lived; src/compile/index.js's post-treeshake collector
-    // never sees the pre-hoist site again.
-    if (c.schemaSid != null) gn.schemaSid = c.schemaSid
-    parent[idx] = gn
+  // Declarations go after the last global, before the first function.
+  let at = NONE, prev = NONE
+  for (let c = T.a[root]; c !== NONE; c = T.next[c]) {
+    if (T.op[c] === GLOBAL) at = c
+    else if (T.op[c] === FUNC) break
+    if (at === NONE) prev = c
+  }
+  if (at === NONE) at = prev
+  const names = new Map()
+  for (const [key] of pooled) {
+    const name = `$__fc${names.size}`
+    names.set(key, name)
+    const g = node(GLOBAL)
+    push(g, str(name))
+    push(push(g, node(intern('mut'))), str('f64'))
+    const lit = first.get(key)
+    push(push(g, node(F64_CONST)), T.op[lit] === OP_NUM ? num(T.imm[lit]) : str(T.syms[T.sym[lit]]))
+    insertAfter(root, at, g)
+    at = g
+  }
+  const GLOBAL_GET = intern('global.get')
+  for (let i = 0; i < sites.length; i += 3) {
+    const name = names.get(sites[i + 2])
+    if (name === undefined) continue
+    const get = node(GLOBAL_GET)
+    push(get, str(name))
+    replace(sites[i], sites[i + 1], get)
   }
 }

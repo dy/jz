@@ -17,7 +17,7 @@ import { VAL } from '../../reps.js'
 import {
   optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
-  hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn,
+  specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
 import { foldLowWordMasks } from '../../optimize/peephole.js'
 import { findBodyStart } from '../../ir.js'
@@ -228,19 +228,6 @@ export function optimizeModule(sec, profiler) {
       if (fn) applyArenaRewind(func, fn, safeCallees)
     }
   }
-  if (!cfg || cfg.hoistConstantPool !== false)
-    hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, lit) => declGlobal(name, 'f64', lit))
-
-  // Second promoteGlobals pass disabled: promoting hoistConstantPool's __fc*
-  // globals regressed the watr perf micro-pin (WASM compile time increased).
-  // The __fc* globals are typically read 3-4 times; the local setup overhead
-  // in large functions outweighs the per-read savings.  Left as a no-op hook
-  // in case future analysis finds a profitable threshold or function-size gate.
-  // if (!cfg || cfg.promoteGlobals !== false) {
-  //   const globalTypesMap2 = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
-  //   for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) promoteGlobals(s, globalTypesMap2)
-  // }
-
   const dataBytes = dataLen()
   if (dataBytes > 1024 && !ctx.memory.shared) {
     // 64-byte heap-base alignment: the compiler's own vectorizer emits v128

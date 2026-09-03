@@ -22,7 +22,8 @@ jzify/          pre-compile desugar (index.js orchestrator + phase modules)
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
-  optimize/     WASM IR peephole passes + vectorize.js
+  optimize/     WAT-array passes + vectorize.js; tape.js runs the tape passes (const-pool.js) last
+  ir/           tape.js, the IR tape (parallel typed arrays); the WAT-array helpers until emit builds the tape
   wat/          assemble.js, codegen.js (AST → jz source printer), optimize.js
   abi/          NaN-box ABI helpers (string, array, object, number)
   op-policy.js  shared jzify/prepare reject + class-error messages
@@ -53,7 +54,9 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
 
 ## Architecture
 
-Pipeline: `source → parse (subscript/jessie) → jzify (default-on; strict skips) → prepare → compile → optimize → watr (WAT→binary)`
+Pipeline: `source → parse (subscript/jessie) → jzify (default-on; strict skips) → prepare → compile → optimize → tape → watr (WAT→binary)`
+
+The tape (`src/ir/tape.js`) is the IR the compiler converges on (PLAN.md, step 2): the assembled module is decoded onto it after the last WAT-array pass, the tape passes run, and it is encoded back for watr. A pass ported to the tape deletes its WAT-array version; when emit builds the tape directly the decoder goes.
 
 All values are f64. Heap types use NaN-boxing (see README). The shared `ctx` object is the single source of compilation state — the docstring in [`src/ctx.js`](src/ctx.js) carries the lifecycle ownership table (which phase owns which subkey, writers, readers); consult it before adding new state.
 

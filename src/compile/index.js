@@ -899,10 +899,9 @@ export default function compile(ast, profiler) {
   // mkPtrIR already tagged) into a folded literal or a named `$__mkptr_T_A_d`
   // variant — it copies `.schemaSid` onto its replacement (see there), so it
   // mints no schema reference mkPtrIR didn't already tag, never a NEW one.
-  // hoistConstantPool similarly replaces a repeated literal's call site with
-  // a `global.get` — it too copies `.schemaSid` onto that replacement (see
-  // there), so a hoisted schema-carrying literal stays visible to the walk
-  // above even though its original node is gone. Over-approximating (treating
+  // hoistConstantPool replaces a repeated literal with a `global.get`, but it
+  // runs on the tape (src/optimize/tape.js) after this walk, so every
+  // schema-carrying literal is still in place here. Over-approximating (treating
   // a schema as live when its only construction site later got treeshaken
   // out entirely) is always safe — it only costs bytes; under-approximating
   // would silently corrupt a live interop decode.

@@ -17,7 +17,7 @@
  *   fusedRewrite      — peephole rebox folds + inline ptr/is_* helpers + memarg-offset fold (one walk)
  *   sortLocalsByUse   — reorder local decls so hot ones get 1-byte LEB128 indices
  *   specializeMkptr   — `(call $__mkptr (i32.const T) (i32.const A) X)` → per-combo specialized helper (~4 B/site)
- *   hoistConstantPool — frequently-repeated f64.const values → mutable globals (~7 B/reuse)
+ *   hoistConstantPool — frequently-repeated f64.const values → globals (~7 B/reuse); a tape pass (optimize/tape.js)
  *   treeshake         — drop func decls unreachable from exports / start / elem / ref.func roots
  *
  * Per-function passes run over sec.funcs + sec.stdlib + sec.start.
