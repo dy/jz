@@ -4,7 +4,7 @@
  * @module compile/emit/shared
  */
 
-import { walkAst } from '../../ast.js'
+import { MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { dataDependentFlag, hasExpensiveOp, isPureIR, resolveValType } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
@@ -105,3 +105,17 @@ export const isLit1 = (n) => Array.isArray(n) && n[0] == null && n[1] === 1
 // zero-cost direct constant.
 export const foldOperandPure = (n) => typeof n === 'string' || !Array.isArray(n) ||
   n[0] == null || n[0] === 'str' || n[0] === 'bigint'
+
+// Side-effect-free: no writes (assignment / ++ / --), no calls, no closures, no throw. UNLIKE
+// `isCheapPureVal` this ALLOWS loads, member reads, and `/` `%` — a side-effect-free expr may read
+// memory or trap. It is the right gate for an `if` CONDITION promoted to a `select` condition: the
+// condition is evaluated exactly once whether the lowering branches or selects (any trap fires the
+// same in both, the read order vs the pure value arm is immaterial), so it need only avoid MUTATING
+// state the value arm could read — i.e. be side-effect-free, not unconditionally-evaluable.
+const SIDE_EFFECT_OPS = new Set([...MUTATE_OPS, '()', '=>', 'throw', 'new', 'await', 'yield'])
+export const isSideEffectFree = (n) => {
+  if (!Array.isArray(n)) return true
+  if (typeof n[0] === 'string' && SIDE_EFFECT_OPS.has(n[0])) return false
+  for (let i = 1; i < n.length; i++) if (!isSideEffectFree(n[i])) return false
+  return true
+}

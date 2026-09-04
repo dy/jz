@@ -5,7 +5,7 @@
  */
 
 import { i64Hex } from '../../../layout.js'
-import { MUTATE_OPS, T, TYPEOF } from '../../ast.js'
+import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
   asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanTaggedBigint, isUndef, litVal, ptrOffsetIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed,
@@ -428,19 +428,6 @@ const isCheapPureVal = (n) => {
   return false
 }
 
-// Side-effect-free: no writes (assignment / ++ / --), no calls, no closures, no throw. UNLIKE
-// `isCheapPureVal` this ALLOWS loads, member reads, and `/` `%` — a side-effect-free expr may read
-// memory or trap. It is the right gate for an `if` CONDITION promoted to a `select` condition: the
-// condition is evaluated exactly once whether the lowering branches or selects (any trap fires the
-// same in both, the read order vs the pure value arm is immaterial), so it need only avoid MUTATING
-// state the value arm could read — i.e. be side-effect-free, not unconditionally-evaluable.
-const SIDE_EFFECT_OPS = new Set([...MUTATE_OPS, '()', '=>', 'throw', 'new', 'await', 'yield'])
-export const isSideEffectFree = (n) => {
-  if (!Array.isArray(n)) return true
-  if (typeof n[0] === 'string' && SIDE_EFFECT_OPS.has(n[0])) return false
-  for (let i = 1; i < n.length; i++) if (!isSideEffectFree(n[i])) return false
-  return true
-}
 // A void statement whose whole effect is `x = <cheap pure value>` for a simple local `x` — the
 // shape if→select can lower to `x = cond ? value : x`. Recognizes the plain assignment plus the
 // increment forms `++x`/`--x` and their postfix lowerings `(++x) - 1` / `(--x) + 1` (prepare turns

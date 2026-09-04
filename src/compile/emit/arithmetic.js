@@ -6,8 +6,9 @@
 
 import { ctx, err, inc, LAYOUT } from '../../ctx.js'
 import {
-  FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, emitNum, f64rem, fromI64, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
+  FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, emitNum, f64rem, fromI64, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
 } from '../../ir.js'
+import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { exprType } from '../../type.js'
@@ -18,7 +19,7 @@ import { emit, emitBoolStr, tryConcatChain } from './dispatch.js'
 import {
   addBoundedFaithful, addFitsI32, addLiteralFitsI32, addRangeFitsI32, i32Mag, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subLiteralFitsI32, subRangeFitsI32,
 } from './i32-bounds.js'
-import { foldOperandPure, isI32Num, isLit1, isNumArm } from './shared.js'
+import { foldOperandPure, isI32Num, isLit1, isNumArm, isSideEffectFree } from './shared.js'
 
 
 // Peel an emitted operand back to its raw i32 value when it carries one: a value already
@@ -324,11 +325,24 @@ export const arithmeticOps = {
       if (checkA && checkB) {
         return typed(['if', ['result', 'f64'], ['i32.or', checkA, checkB], ['then', concat], ['else', add]], 'f64')
       }
-      // Exactly one side is checked. Pre-eval the known side first, then the if branches on the unknown.
-      const preEval = vtA == null ? ['local.set', `$${tB}`, asF64(emit(b))] : ['local.set', `$${tA}`, asF64(emit(a))]
+      // Exactly one side is checked. Both evaluate in source order (the left
+      // may write what the right reads: `bump() + a.v`), the branch on the
+      // unknown side last; a known right side that commutes with the left
+      // (both without effects; a literal; a local the left does not assign,
+      // where a call can reach a global or a captured local) is set first, and
+      // the check tees the left.
+      if (vtA == null) {
+        const commutes = (isSideEffectFree(a) && isSideEffectFree(b)) || (Array.isArray(b) && b[0] == null)
+          || (typeof b === 'string' && !isGlobal(b) && !ctx.func.boxed?.has(b) && !some(a, n => MUTATE_OPS.has(n[0]) && n[1] === b))
+        if (commutes) return block64(['local.set', `$${tB}`, asF64(emit(b))], ['if', ['result', 'f64'], checkA, ['then', concat], ['else', add]])
+        return block64(
+          ['local.set', `$${tA}`, eA],
+          ['local.set', `$${tB}`, asF64(emit(b))],
+          ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${tA}`]]], ['then', concat], ['else', add]])
+      }
       return block64(
-        preEval,
-        ['if', ['result', 'f64'], checkA ?? checkB, ['then', concat], ['else', add]])
+        ['local.set', `$${tA}`, asF64(emit(a))],
+        ['if', ['result', 'f64'], checkB, ['then', concat], ['else', add]])
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a + b)
     if (_f) return _f

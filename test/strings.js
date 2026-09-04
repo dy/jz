@@ -1250,3 +1250,13 @@ test('startsWith/endsWith position argument rejects loudly (was silently dropped
   throws(() => jz(`export let f = (s) => s.startsWith('cd', 2)`), /position argument not supported/)
   throws(() => jz(`export let f = (s) => s.endsWith('cd', 4)`), /position argument not supported/)
 })
+
+test('string +: operands evaluate in source order around a known side', () => {
+  // The left may write what the known right reads; the known side must not be hoisted before it.
+  const { f, g } = run(`let a = { v: 1 }
+    const bump = () => (a.v += 1, a.v)
+    export let f = () => bump() + a.v
+    export let g = () => { let s = 'x'; const t = () => (s = 'y', 1); return t() + s }`)
+  is(f(), 4)
+  is(g(), '1y')
+})
