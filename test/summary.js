@@ -20,9 +20,11 @@ const binding = (fn, bare) => {
   for (const n of names) if (n.startsWith(bare + MARK)) return n
   throw new Error(`no binding ${bare} in ${fn}`)
 }
-const kindOf = (fn, bare) => ctx.summary.kindOf(binding(fn, bare))
+const kindOf = (fn, bare) => ctx.summary.at(fn).kindOf(binding(fn, bare))
 const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join())
-const summarize = (src) => { compile(src); return ctx.summary }
+// The summary read after a compile is of the program the plan rewrote; these tests
+// pin the source's own functions, so the inliner is off (the speed tier splices callees).
+const summarize = (src) => { compile(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }); return ctx.summary }
 
 test('summary: kinds flow through calls, fields and results; the host boundary is ANY', () => {
   summarize(`const mk = (n, g) => ({ buf: new Float32Array(n), gain: g })
@@ -34,14 +36,14 @@ test('summary: kinds flow through calls, fields and results; the host boundary i
   is(ctx.summary.fieldTypedCtor(sid, 'buf'), 'new.Float32Array')
   is(tagOf(kindOf('proc', 'k')), K.NUMBER, 'number literal and number parameter join to number')
   is(tagOf(kindOf('run', 'n')), K.ANY, 'an exported parameter read only as a typed-array size stays ANY: the constructor copies an array')
-  ok(!ctx.summary.numericDemand(binding('run', 'n')))
+  ok(!ctx.summary.at('run').numericDemand(binding('run', 'n')))
   is(tagOf(ctx.summary.resultOf('mk')), K.OBJECT, 'a result is the join of its returns')
   summarize(`export const h = (s, k, o, p, q) => { const t = s + ''; return t.length + k * 2 + o.x + (p + 1) + (q < 3 ? 1 : 0) }`)
   is(tagOf(kindOf('h', 's')), K.ANY, 'a parameter concatenated with a string comes from the host as ANY')
-  is(tagOf(kindOf('h', 'k')), K.NUMBER, 'a parameter multiplied is demanded'); ok(ctx.summary.numericDemand(binding('h', 'k')))
+  is(tagOf(kindOf('h', 'k')), K.NUMBER, 'a parameter multiplied is demanded'); ok(ctx.summary.at('h').numericDemand(binding('h', 'k')))
   is(tagOf(kindOf('h', 'o')), K.ANY, 'a parameter read as an object is not')
-  is(tagOf(kindOf('h', 'p')), K.NUMBER, 'a parameter added to a number is compatible'); ok(!ctx.summary.numericDemand(binding('h', 'p')))
-  is(tagOf(kindOf('h', 'q')), K.NUMBER, 'a parameter compared against a number is demanded'); ok(ctx.summary.numericDemand(binding('h', 'q')))
+  is(tagOf(kindOf('h', 'p')), K.NUMBER, 'a parameter added to a number is compatible'); ok(!ctx.summary.at('h').numericDemand(binding('h', 'p')))
+  is(tagOf(kindOf('h', 'q')), K.NUMBER, 'a parameter compared against a number is demanded'); ok(ctx.summary.at('h').numericDemand(binding('h', 'q')))
   // Demand follows a store into a slot and a destructured read out of it.
   summarize(`const mk = (g) => ({ gain: g })
     const use = (o) => { const { gain } = o; return gain * 2 }
@@ -250,4 +252,16 @@ test('summary: a parameter read before its reassignment has its incoming kind', 
   is(loop.exports.f(), '2x')
   const clos = jz(`export const f = (p) => { const g = () => { p = 5 }; g(); return p * 2 }`)
   is(clos.exports.f(1), 10)
+})
+
+test('summary: a binding is keyed by its function; a specialized variant has its own kinds', () => {
+  if (onKernel()) return
+  compile(`const sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
+    export const f = () => sum(new Float32Array(4)) + sum(new Float64Array(4))`)
+  const variants = ctx.funcs.list.filter(fn => fn.name.startsWith('sum$'))
+  is(variants.length, 2, 'the bimorphic typed split made two variants')
+  const ctors = variants.map(fn => ctx.summary.at(fn.sig).typedCtorOf(fn.sig.params[0].name)).sort()
+  is(ctors.join(), 'new.Float32Array,new.Float64Array', 'each variant\'s parameter has its own constructor, though the name is shared')
+  is(ctx.summary.at(null).typedCtorOf(variants[0].sig.params[0].name), null, 'a reader naming no scope sees the join over the variants')
+  is(ctx.summary.at(variants[0].name).kindOf('nosuch'), K.NONE)
 })

@@ -102,7 +102,7 @@ export default (ctx) => {
    * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.closure.make = ({ params, body, captures, restParam, defaults, rawParams }) => {
+  ctx.closure.make = ({ params, body, captures, restParam, defaults, rawParams, scope }) => {
     const fixedN = params.length - (restParam ? 1 : 0)
     if (fixedN > MAX_CLOSURE_ARITY) err(`Closure with ${fixedN} fixed params exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
@@ -255,6 +255,7 @@ export default (ctx) => {
     // truthy/optional consumer and give the relocator one stable slot layout.
     const bodyFn = {
       name: fnName, params, body, captures: envCaptures, arity: 1,
+      scope: scope ?? null,
       rest: restParam || null,
       defaults: defaults || null,
       boxed: boxedCaptures.length ? new Set(boxedCaptures) : null,

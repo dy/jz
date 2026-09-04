@@ -366,7 +366,7 @@ export function initSchema(ctx) {
   // binding has that shape, a parameter's arguments included). A slot's kind
   // follows the kind fact, whichever way the binding is materialized.
   ctx.schema.slotTypedCtorAt = (varName, prop) =>
-    ctx.schema.slotTypedCtorBySid(ctx.schema.idOf(varName) ?? ctx.summary?.sidOf(varName), prop)
+    ctx.schema.slotTypedCtorBySid(ctx.schema.idOf(varName) ?? ctx.summary?.at(ctx.func.current).sidOf(varName), prop)
 
   /** Raw by-sid form for callers that resolve the receiver's schema themselves
    *  (narrow's per-caller localSids — live reps aren't trustworthy there). */

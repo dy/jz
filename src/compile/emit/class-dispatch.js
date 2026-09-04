@@ -30,14 +30,14 @@ const sidOf = (entry) => ctx.schema.sidOfBrand(entry.brand)
 /** The receiver's class when the summary names its schema: `{ entry, nullable }`, else null.
  *  An element read the interval prover puts in bounds is exactly the element's kind. */
 const receiverClass = (obj) => {
-  const k = ctx.summary?.kindOfExpr(obj)
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
   if (k == null || tagOf(k) !== K.OBJECT || paramOf(k) === UNKNOWN) return null
   const entry = classOfSid(paramOf(k))
   const inBounds = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
   return entry ? { entry, nullable: isNullable(k) && !inBounds } : null
 }
 /** Whether the summary rules the receiver out as a class instance: a kind other than an object. */
-const notAnObject = (obj) => { const k = ctx.summary?.kindOfExpr(obj); return k != null && tagOf(k) !== K.OBJECT && tagOf(k) !== K.ANY && tagOf(k) !== K.NONE }
+const notAnObject = (obj) => { const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj); return k != null && tagOf(k) !== K.OBJECT && tagOf(k) !== K.ANY && tagOf(k) !== K.NONE }
 
 const tagEq = (recv, sid) => ['i64.eq', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]]
 

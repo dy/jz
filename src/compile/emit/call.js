@@ -429,7 +429,7 @@ export const callOps = {
     // the plan (minted pre-emission, before this reassignment ever happened)
     // cannot be keyed on it; rawParams is untouched by this rewrite and is
     // the same reference the mint saw.
-    const closureInfo = { params, body, captures, restParam, rawParams }
+    const closureInfo = { params, body, captures, restParam, rawParams, scope: rawParams }   // scope: the summary's key for this closure (src/summary at)
     if (Object.keys(defaults).length) closureInfo.defaults = defaults
     return ctx.closure.make(closureInfo)
   },

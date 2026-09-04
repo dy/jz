@@ -10,7 +10,10 @@
  * flow-insensitive: a binding's kind is the join of everything assigned to
  * it, a slot's kind the join of every construction and store, a parameter's
  * kind the join of every argument at every direct call, a result the join
- * of every return. What the summary cannot see is ANY: an exported
+ * of every return. A binding is keyed by the function that declares it (a
+ * specialized variant declares its own), a module global by its name alone;
+ * a reader names its scope by the function body (`at(body)`). What the
+ * summary cannot see is ANY: an exported
  * function's parameters (the host calls it), a function used as a value
  * (whoever holds it calls it), a store through a receiver of unknown shape
  * (it poisons that property in every schema that has it), a computed key.
@@ -90,7 +93,7 @@ const BOOL_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', '
  *  null). An exported global keeps its kind: the host reads it, and can store only a number
  *  through its f64 export, which a number global takes and no other kind could take. */
 export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imports }) {
-  const kinds = new Map()            // binding name → kind
+  const kinds = new Map()            // binding key (keyOf) → kind
   const fields = new Map()           // sid → kind[]
   const results = new Map()          // function name or closure id → kind
   const closures = new Map()         // `=>` node → closure id
@@ -163,9 +166,10 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   // the parameter before any reassignment can run sees only this; `kinds`
   // holds the join with the reassignments too.
   const incoming = new Map()
-  const bindParam = (name, k) => { raise(incoming, name, k); raise(kinds, name, k) }
-  const bind = (names, ks) => {
-    for (let i = 0; i < names.length; i++) { if (names[i] != null) bindParam(names[i], i < ks.length ? ks[i] : NULLISH); }
+  const bindParam = (key, k) => { raise(incoming, key, k); raise(kinds, key, k) }
+  /** Bind a callee's parameters (`scope`: its name or closure id) to the argument kinds. */
+  const bind = (scope, names, ks) => {
+    for (let i = 0; i < names.length; i++) { if (names[i] != null) bindParam(keyIn(scope, names[i]), i < ks.length ? ks[i] : NULLISH); }
     for (let i = names.length; i < ks.length; i++) escape(ks[i])
   }
   const call = (callee, argKinds) => {
@@ -183,12 +187,12 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       if (callee === '__keys_ro') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
-        if (!escaped.has(callee)) bind(f.sig.params.map(p => p.rest ? null : p.name), argKinds)
+        if (!escaped.has(callee)) bind(callee, f.sig.params.map(p => p.rest ? null : p.name), argKinds)
         return results.get(callee) ?? K.NONE
       }
-      const k = kinds.get(callee)
+      const key = keyOf(callee), k = kinds.get(key)
       if (k !== undefined && tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) return callClosure(paramOf(k), argKinds)
-      if (k === undefined && modelled.has(callee)) return K.NONE  // a local callee not known yet
+      if (k === undefined && key !== null) return K.NONE  // a local callee not known yet
       // A host import returns the kind it declares; a builtin the kind its trait says (kind-traits.js).
       if (imports.has(callee)) { for (const k of argKinds) escape(k); return kindOfVal(imports.get(callee)) }
       // A builtin: the kind its trait names (kind-traits.js). A `new.X` past
@@ -201,7 +205,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     return ANY
   }
   const callClosure = (id, argKinds) => {
-    if (!escaped.has(id)) bind(closureParams[id], argKinds)
+    if (!escaped.has(id)) bind(id, closureParams[id], argKinds)
     return results.get(id) ?? K.NONE
   }
   // A class (jzify/classes.js): its members are functions of the receiver.
@@ -255,20 +259,17 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   // The receiver of a member access: a function's property (`parse.enter`, a
   // namespace) reads or stores on the function object and calls nothing, so
   // the function does not escape by it.
-  const receiver = (n) => typeof n === 'string' && funcByName.has(n) && !kinds.has(n) ? kind(K.CLOSURE) : expr(n)
+  const receiver = (n) => typeof n === 'string' && funcByName.has(n) && keyOf(n) === null ? kind(K.CLOSURE) : expr(n)
 
   /** The kind of an expression, with its effects: calls bind parameters, stores raise slots. */
   const expr = (n) => {
     if (n == null) return NULLISH
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
-      const k = pre.has(n) ? incoming.get(n) ?? K.NONE : kinds.get(n)
-      if (k !== undefined) return k
-      if (funcByName.has(n)) { escapeId(n); return kind(K.CLOSURE) }
-      // A binding whose assignments this walk models is bottom until the
-      // fixpoint reaches them; any other name, a binding bound some way the
-      // walk does not follow or a name from outside the program, is ANY.
-      return modelled.has(n) ? K.NONE : ANY
+      const key = keyOf(n)
+      if (key === null) { if (funcByName.has(n)) { escapeId(n); return kind(K.CLOSURE) } return ANY }  // a name from outside the program
+      // A binding this walk models is bottom until the fixpoint reaches its assignments.
+      return (pre.has(n) ? incoming.get(key) : kinds.get(key)) ?? K.NONE
     }
     if (!Array.isArray(n)) return ANY
     const op = n[0]
@@ -366,7 +367,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   const assign = (op, target, value) => {
     let v = op === '=' ? expr(value) : op === '++' || op === '--' ? NUMBER : op === '+=' ? plus(expr(target), expr(value)) : merge(expr(target), value == null ? NUMBER : expr(value))
     if (op !== '=' && op !== '+=' && op !== '||=' && op !== '&&=' && op !== '??=') v = tagOf(v) === K.BIGINT ? BIGINT : NUMBER
-    if (typeof target === 'string') { pre.delete(target); raise(kinds, target, v); return v }
+    if (typeof target === 'string') { pre.delete(target); const key = keyOf(target); if (key !== null) raise(kinds, key, v); return v }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       if (t === K.NONE) return v
@@ -446,25 +447,50 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     if (assigned.size) definite.set(lit, assigned)
   }
 
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') raise(kinds, d, NULLISH); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') raise(kinds, d[1], expr(d[2])); else { escape(expr(d[2])); pattern(d[1]) } } } }
-  const pattern = (p) => { if (typeof p === 'string') raise(kinds, p, ANY); else if (Array.isArray(p)) for (let i = 1; i < p.length; i++) pattern(Array.isArray(p[i]) && p[i][0] === ':' ? p[i][2] : Array.isArray(p[i]) && p[i][0] === '=' ? p[i][1] : p[i]) }
+  const declare = (name, k) => { const key = keyOf(name); if (key !== null) raise(kinds, key, k) }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, NULLISH); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], expr(d[2])); else { escape(expr(d[2])); pattern(d[1]) } } } }
+  const pattern = (p) => { if (typeof p === 'string') declare(p, ANY); else if (Array.isArray(p)) for (let i = 1; i < p.length; i++) pattern(Array.isArray(p[i]) && p[i][0] === ':' ? p[i][2] : Array.isArray(p[i]) && p[i][0] === '=' ? p[i][1] : p[i]) }
 
-  // The bindings this walk assigns: parameters, declared names, loop
-  // variables, catch parameters. Every other name is ANY from the start.
-  const modelled = new Set()
-  const collect = (n) => {
+  // Scopes: a function (its name), a closure (its id) or the module (null).
+  // A scope declares its parameters, its `let`/`const`/`var` names, loop
+  // variables and catch parameters; a closure's parent is the scope its
+  // literal sits in. A binding's key is its scope and name; a name no scope
+  // in the chain declares is the module's, and one the module does not
+  // declare either is from outside the program (null).
+  const declared = new Map()         // scope → Set of names
+  const parent = new Map()           // closure id → scope
+  const scopeOfSig = new Map(funcs.map(f => [f.sig, f.name]))   // a function's signature record → its scope, for readers
+  const scopeOfParams = new Map()    // a closure's parameter node (its stable identity through emission) → its id
+  const MODULE = ''
+  const nameScopes = new Map()       // name → the scopes declaring it (one, or a function and its specialized variants)
+  const declareIn = (scope, name) => { let d = declared.get(scope); if (!d) declared.set(scope, d = new Set()); if (!d.has(name)) { d.add(name); let ns = nameScopes.get(name); if (!ns) nameScopes.set(name, ns = []); ns.push(scope) } }
+  const collect = (n, scope) => {
     if (!Array.isArray(n)) return
     const op = n[0]
-    if (op === 'let' || op === 'const' || op === 'var') for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') modelled.add(d); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') modelled.add(d[1]) }
-    else if (op === '=>') for (const p of paramNames(n[1])) if (p != null) modelled.add(p)
-    else if (op === 'for-of' || op === 'for-in' || op === 'for-await') { const t = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]; if (typeof t === 'string') modelled.add(t) }
-    else if (op === 'catch' && typeof n[1] === 'string') modelled.add(n[1])
-    for (let i = 1; i < n.length; i++) collect(n[i])
+    if (op === 'let' || op === 'const' || op === 'var') for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declareIn(scope, d); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') declareIn(scope, d[1]) }
+    else if (op === '=>') {
+      const id = closureId(n)
+      parent.set(id, scope); scopeOfParams.set(n[1], id)
+      for (const p of paramNames(n[1])) if (p != null) declareIn(id, p)
+      collect(n[2], id)
+      return
+    }
+    else if (op === 'for-of' || op === 'for-in' || op === 'for-await') { const t = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]; if (typeof t === 'string') declareIn(scope, t) }
+    else if (op === 'catch' && typeof n[1] === 'string') declareIn(scope, n[1])
+    for (let i = 1; i < n.length; i++) collect(n[i], scope)
   }
-  for (const f of funcs) { for (const p of f.sig.params) modelled.add(p.name); if (f.rest) modelled.add(f.rest); collect(f.body) }
-  collect(ast)
+  for (const f of funcs) { for (const p of f.sig.params) declareIn(f.name, p.name); if (f.rest) declareIn(f.name, f.rest); collect(f.body, f.name) }
+  collect(ast, MODULE)
+  const keyIn = (scope, name) => scope === MODULE ? name : scope + '\0' + name
+  /** The key of `name` read in `current`'s scope chain, or null for a name from outside the program. */
+  const keyOf = (name) => {
+    for (let s = current ?? MODULE; ; s = parent.get(s) ?? MODULE) {
+      if (declared.get(s)?.has(name)) return keyIn(s, name)
+      if (s === MODULE) return null
+    }
+  }
 
-  let current = null  // the result key of the function being walked
+  let current = null  // the scope (and result key) of the function being walked; null at module scope
   const stmt = (n) => {
     if (n == null) return
     if (typeof n === 'string') { expr(n); return }
@@ -477,13 +503,13 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
       loopAssigns(n)
       const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
-      if (typeof target === 'string') raise(kinds, target, op === 'for-in' ? STRING : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? NUMBER : tagOf(it) === K.STRING ? STRING : ANY)
+      if (typeof target === 'string') declare(target, op === 'for-in' ? STRING : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? NUMBER : tagOf(it) === K.STRING ? STRING : ANY)
       else pattern(target)
       stmt(n[3]); return
     }
     if (op === 'if') { expr(n[1]); stmt(n[2]); stmt(n[3]); return }
     if (op === 'while' || op === 'do') { loopAssigns(n); expr(n[1]); stmt(n[2]); return }
-    if (op === 'try') { for (let i = 1; i < n.length; i++) stmt(Array.isArray(n[i]) && n[i][0] === 'catch' ? (typeof n[i][1] === 'string' && raise(kinds, n[i][1], ANY), n[i][2]) : n[i]); return }
+    if (op === 'try') { for (let i = 1; i < n.length; i++) stmt(Array.isArray(n[i]) && n[i][0] === 'catch' ? (typeof n[i][1] === 'string' && declare(n[i][1], ANY), n[i][2]) : n[i]); return }
     if (op === 'throw') { escapeObject(expr(n[1])); return }
     if (op === 'delete') {
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
@@ -514,10 +540,11 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     for (let i = 1; i < n.length; i++) assignsIn(n[i], names, out)
   }
   const loopAssigns = (n) => { if (pre.size) { const out = new Set(); assignsIn(n, pre, out); for (const name of out) pre.delete(name) } }
-  const walkFunction = (key, body, params) => {
+  const walkFunction = (key, body, params, defaults) => {
     const outer = current, outerPre = pre
     current = key
     pre = new Set()
+    if (defaults) for (const p in defaults) bindParam(keyIn(key, p), expr(defaults[p]))
     if (params) { const own = new Set(params.filter(p => p != null)); assignsIn(body, own, pre) }
     if (isBlock(body)) {
       stmt(body)
@@ -528,11 +555,16 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     pre = outerPre
   }
 
+  // A reader that names no scope (a body analyzed with no function entered)
+  // reads a binding through the scopes declaring its name: one function's, or
+  // the join over a function and its specialized variants.
+  const keyOfAnywhere = (name) => { const key = keyOf(name); if (key !== null || current !== null) return key; const ns = nameScopes.get(name); return ns ? ns.map(s => keyIn(s, name)) : null }
+  const readKind = (name) => { const key = keyOfAnywhere(name); if (key === null) return K.NONE; if (typeof key === 'string') return kinds.get(key) ?? K.NONE; let k = K.NONE; for (const kk of key) k = join(k, kinds.get(kk) ?? K.NONE); return k }
   /** The kind of an expression, read from the settled summary: a name, a
    *  property chain, an element read, a literal or a call to a known
    *  function; anything else is ANY. No effects. */
   const kindOfExpr = (n) => {
-    if (typeof n === 'string') return kinds.get(n) ?? (funcByName.has(n) ? kind(K.CLOSURE) : modelled.has(n) ? K.NONE : ANY)
+    if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcByName.has(n) ? kind(K.CLOSURE) : ANY) : readKind(n) }
     if (typeof n === 'number') return NUMBER
     if (!Array.isArray(n)) return ANY
     const op = n[0]
@@ -560,8 +592,9 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       return t === K.TYPED ? NUMBER : t === K.ARRAY ? orNull(elemOf(r)) : t === K.STRING ? STRING : ANY
     }
     if (op === '()' && typeof n[1] === 'string') {
-      if (funcByName.has(n[1])) return results.get(n[1]) ?? ANY
-      const k = kinds.get(n[1])
+      const key = keyOf(n[1])
+      if (key === null && funcByName.has(n[1])) return results.get(n[1]) ?? ANY
+      const k = key === null ? undefined : kinds.get(key)
       if (k !== undefined) return tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN ? results.get(paramOf(k)) ?? ANY : ANY
       return imports.has(n[1]) ? kindOfVal(imports.get(n[1])) : call(n[1], [])  // a constructor or builtin: no effect on no arguments
     }
@@ -606,6 +639,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   const mark = (key, level) => { const cur = numeric.get(key); if (cur === false) return; const next = cur === undefined ? level : Math.min(cur, level); if (next !== cur) { numeric.set(key, next); demandChanged = true } }
   /** What a flow into `into` (a key, or every key of a list) demands: false once any is denied, the weakest level when all are marked. */
   const demandOf = (into) => {
+    if (into === null) return false
     if (typeof into === 'string') return numeric.get(into)
     let level = NUM
     for (const k of into) { const v = numeric.get(k); if (v === false) return false; if (v === undefined) return undefined; if (v < level) level = v }
@@ -615,7 +649,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   const atMost = (level, cx, into) => { const l = cx === FLOW ? demandOf(into) : cx; return l === undefined || l === false ? l : Math.min(l, level) }
   const useOf = (n, cx, into) => {
     // `n` is read in context `cx`; `into` names the key(s) it flows into under FLOW.
-    const keys = typeof n === 'string' ? (modelled.has(n) ? [n] : []) : Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' ? slotKeysOf(n[1], n[2]) : null
+    const keys = typeof n === 'string' ? (keyOf(n) === null ? [] : [keyOf(n)]) : Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' ? slotKeysOf(n[1], n[2]) : null
     if (keys === null) { demand(n, cx, into); return }
     if (Array.isArray(n)) demand(n[1], OTHER)
     const level = cx === FLOW ? demandOf(into) : cx
@@ -642,10 +676,10 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       }
       return
     }
-    if (op === 'let' || op === 'const' || op === 'var') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, d[1]); else demand(d[2]) } } return }
+    if (op === 'let' || op === 'const' || op === 'var') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
     if (op === '=') {
       const t = n[1]
-      if (typeof t === 'string') { useOf(n[2], FLOW, t); return }
+      if (typeof t === 'string') { useOf(n[2], FLOW, keyOf(t)); return }
       if (Array.isArray(t) && t[0] === '.' && typeof t[2] === 'string') { demand(t[1]); const keys = slotKeysOf(t[1], t[2]); if (keys.length) useOf(n[2], FLOW, keys); else demand(n[2]); return }
       if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); demand(t[2]); demand(n[2], tagOf(r) === K.TYPED && !(paramOf(r) & 16) ? NUM : OTHER); return }
       demand(t); demand(n[2]); return
@@ -673,9 +707,9 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
         // Math takes numbers, except sumPrecise, which takes an iterable.
         if ((callee.startsWith('Math.') || callee.startsWith('math.')) && !callee.endsWith('.sumPrecise')) { for (const a of as) useOf(a, NUM); return }
         const f = funcByName.get(callee)
-        if (f && !escaped.has(callee)) { as.forEach((a, i) => { const p = f.sig.params[i]; if (p && !p.rest) useOf(a, FLOW, p.name); else demand(a) }); return }
-        const ck = kinds.get(callee)
-        if (ck !== undefined && tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN && !escaped.has(paramOf(ck))) { as.forEach((a, i) => { const p = closureParams[paramOf(ck)][i]; if (p != null) useOf(a, FLOW, p); else demand(a) }); return }
+        if (f && !escaped.has(callee)) { as.forEach((a, i) => { const p = f.sig.params[i]; if (p && !p.rest) useOf(a, FLOW, keyIn(callee, p.name)); else demand(a) }); return }
+        const ckey = keyOf(callee), ck = ckey === null ? undefined : kinds.get(ckey)
+        if (ck !== undefined && tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN && !escaped.has(paramOf(ck))) { const id = paramOf(ck); as.forEach((a, i) => { const p = closureParams[id][i]; if (p != null) useOf(a, FLOW, keyIn(id, p)); else demand(a) }); return }
         // `new Float64Array(x)` sizes by a number and copies an array: the
         // argument is no evidence either way (a parameter read only there
         // stays ANY, the host's array copies); a view's offset and length are
@@ -687,8 +721,8 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     }
     for (let i = 1; i < n.length; i++) demand(n[i])
   }
-  const seedable = new Set()   // exported parameters the demand may seed NUMBER
-  for (const f of funcs) if (exported(f)) for (const p of f.sig.params) if (!p.rest && !f.defaults?.[p.name]) seedable.add(p.name)
+  const seedable = new Set()   // exported parameters (keys) the demand may seed NUMBER
+  for (const f of funcs) if (exported(f)) for (const p of f.sig.params) if (!p.rest && !f.defaults?.[p.name]) seedable.add(keyIn(f.name, p.name))
 
   // Each round walks the whole program; a round without a change is the
   // fixpoint. Every key rises through a lattice of finite height, so the
@@ -697,13 +731,12 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   const fixpoint = () => rounds(() => {
     changed = false
     for (const f of funcs) {
-      if (f.rest) raise(kinds, f.rest, kind(K.ARRAY))
-      if (f.defaults) for (const p in f.defaults) bindParam(p, expr(f.defaults[p]))
-      if (escaped.has(f.name)) for (const p of f.sig.params) bindParam(p.name, ANY)
-      walkFunction(f.name, f.body, f.sig.params.map(p => p.rest ? null : p.name))
+      if (f.rest) raise(kinds, keyIn(f.name, f.rest), kind(K.ARRAY))
+      if (escaped.has(f.name)) for (const p of f.sig.params) bindParam(keyIn(f.name, p.name), ANY)
+      walkFunction(f.name, f.body, f.sig.params.map(p => p.rest ? null : p.name), f.defaults)
     }
     for (let id = 0; id < closureBodies.length; id++) {
-      if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(p, ANY)
+      if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(keyIn(id, p), ANY)
       walkFunction(id, closureBodies[id], closureParams[id])
     }
     current = null
@@ -712,7 +745,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   })
   // What the host may pass: an exported function's parameters.
   const seed = (numeric) => {
-    for (const f of funcs) if (exported(f)) for (const p of f.sig.params) bindParam(p.name, numeric.includes(p.name) ? NUMBER : ANY)
+    for (const f of funcs) if (exported(f)) for (const p of f.sig.params) { const key = keyIn(f.name, p.name); bindParam(key, numeric.includes(key) ? NUMBER : ANY) }
   }
   seed([])
   fixpoint()
@@ -724,8 +757,9 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   // parameter that also flows to the host stays ANY.
   rounds(() => {
     demandChanged = false
-    for (const f of funcs) demand(f.body)
-    for (const b of closureBodies) demand(b)
+    for (const f of funcs) { current = f.name; demand(f.body) }
+    for (let id = 0; id < closureBodies.length; id++) { current = id; demand(closureBodies[id]) }
+    current = null
     demand(ast)
     return demandChanged
   })
@@ -736,24 +770,39 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     fixpoint()
   }
 
+  /** The readers of one scope: `scope` is a function name, a closure id or MODULE. */
+  const view = (scope) => {
+    const inScope = (fn) => (...a) => { const outer = current; current = scope === MODULE ? null : scope; try { return fn(...a) } finally { current = outer } }
+    const kindOf = readKind
+    return {
+      kindOf: inScope(kindOf),
+      kindOfExpr: inScope(kindOfExpr),
+      sidOf: inScope((name) => { const k = kindOf(name); return tagOf(k) === K.OBJECT && !isNullable(k) && paramOf(k) !== UNKNOWN ? paramOf(k) : null }),
+      /** The typed-array constructor a binding holds under every assignment, or null. */
+      typedCtorOf: inScope((name) => { const k = kindOf(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null }),
+      /** The one schema every element of the binding's array has, or null. */
+      arrayElemSidOf: inScope((name) => { const k = kindOf(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elems[paramOf(k)]; return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null }),
+      /** The binding has a ToNumber read or a flow into a demanded key, and no other read. */
+      numericDemand: inScope((name) => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'string' ? isNumeric(key) : key.every(isNumeric)) }),
+    }
+  }
+  const views = new Map()
   return {
-    kindOf: (name) => kinds.get(name) ?? K.NONE,
-    kindOfExpr,
-    sidOf: (name) => { const k = kinds.get(name); return k !== undefined && tagOf(k) === K.OBJECT && !isNullable(k) && paramOf(k) !== UNKNOWN ? paramOf(k) : null },
+    ...view(MODULE),
+    /** The readers of one scope: a function's name or signature record, a closure's id or
+     *  parameter node (`sig.scope` on an emitted closure's frame); unknown reads as the module. */
+    at: (x) => {
+      const scope = typeof x === 'string' || typeof x === 'number' ? x : scopeOfSig.get(x) ?? scopeOfParams.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? MODULE
+      let v = views.get(scope); if (!v) views.set(scope, v = view(scope)); return v
+    },
     fieldKind: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE },
     /** The slot's value kind (reps.js VAL) when one kind holds under every construction and store, else null. */
     fieldVal: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? null : valOf(fields.get(sid)?.[i] ?? K.NONE) },
-    /** The typed-array constructor a binding holds under every assignment, or null. */
-    typedCtorOf: (name) => { const k = kinds.get(name) ?? K.NONE; return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
     /** The typed-array constructor a slot holds under every construction and store, or null. */
     fieldTypedCtor: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); const k = i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE; return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
     resultOf: (name) => results.get(name) ?? K.NONE,
     /** The result's value kind (reps.js VAL) when its returns join to one non-nullable kind, else null. */
     resultVal: (name) => valOf(results.get(name) ?? K.NONE),
-    /** The one schema every element of the binding's array has, or null. */
-    arrayElemSidOf: (name) => { const k = kinds.get(name); if (k === undefined || tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elems[paramOf(k)]; return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null },
-    /** The binding has a ToNumber read or a flow into a demanded key, and no other read. */
-    numericDemand: (name) => modelled.has(name) && isNumeric(name),
     /** Some object may carry an own property `prop` stored under that literal name, shadowing a class member. */
     memberMayBeOwn: (prop) => dynamicProps.has(prop),
     /** Some slot holds a typed array under every construction and store. */

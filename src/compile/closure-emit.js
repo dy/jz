@@ -31,7 +31,7 @@ const closureSig = cb => {
   const params = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
   const width = ctx.closure.width ?? MAX_CLOSURE_ARITY
   for (let i = 0; i < width; i++) params.push({ name: `__a${i}`, type: 'f64' })
-  return { params, results: ['f64'] }
+  return { params, results: ['f64'], scope: cb.scope }   // scope: the summary's key for the closure (src/summary at)
 }
 
 const enterClosureFrame = cb => enterFunc(closureSig(cb), cb.body, {
@@ -94,11 +94,12 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   // kind (a method called through the receiver's schema slot, a callback the
   // lattice above never saw) takes that kind; a closure that escapes to
   // unknown code keeps its parameters boxed.
+  const summary = ctx.summary?.at(cb.scope)
   for (const p of cb.params) {
     if (ctx.func.localReps?.get(p)?.val || cb.defaults?.[p]) continue
-    const k = ctx.summary?.kindOf(p) ?? 0
+    const k = summary?.kindOf(p) ?? 0
     if (isNullable(k)) continue
-    const ctor = ctx.summary?.typedCtorOf(p)
+    const ctor = summary?.typedCtorOf(p)
     if (ctor) { updateRep(p, { val: VAL.TYPED }); (ctx.func.typedElem ||= new Map()).set(p, ctor) }
     else if (tagOf(k) === K.NUMBER) updateRep(p, { val: VAL.NUMBER })
   }
@@ -142,7 +143,7 @@ export function analyzeClosureBodyForEmit(cb) {
         const fields = { ptrKind: kind }
         if (kind === VAL.TYPED) {
           let ctor = ctx.func.typedElem?.get(name)
-          if (ctor == null && (ctor = ctx.summary?.typedCtorOf(name))) (ctx.func.typedElem ||= new Map()).set(name, ctor)
+          if (ctor == null && (ctor = ctx.summary?.at(cb.scope).typedCtorOf(name))) (ctx.func.typedElem ||= new Map()).set(name, ctor)
           const aux = typedElemAux(ctor)
           if (aux == null) continue
           fields.ptrAux = aux

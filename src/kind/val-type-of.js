@@ -632,7 +632,7 @@ VT['()'] = (args) => {
     if (resolved?.valResult) return resolved.valResult
     // A class method the program summary resolves on the receiver's class
     // (src/compile/emit/class-dispatch.js): the join of its returns.
-    if (ctx.summary && ctx.transform.classes) { const vt = summaryVal(ctx.summary.kindOfExpr(['()', ...args])); if (vt != null) return vt }
+    if (ctx.summary && ctx.transform.classes) { const vt = summaryVal(ctx.summary.at(ctx.func.current).kindOfExpr(['()', ...args])); if (vt != null) return vt }
     // INVARIANT: NO `.get` short-circuit here: mapValueKindOf
     // (kind/dict-census.js) is a censusMaybeUndefinedKind-only helper —
     // VT['()'] must NOT promote a `.get()` read to an exact VT (see

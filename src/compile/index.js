@@ -141,10 +141,11 @@ export default function compile(ast, profiler) {
   ctx.funcs.names.clear()
   ctx.funcs.map.clear()
   for (const f of ctx.funcs.list) { ctx.funcs.names.add(f.name); ctx.funcs.map.set(f.name, f) }
-  ctx.summary = timePhase(profiler, 'summary', () => summarize(ast, {
+  const summarizeProgram = () => summarize(ast, {
     funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, exported: isExported,
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
-  }))
+  })
+  ctx.summary = timePhase(profiler, 'summary', summarizeProgram)
   // Include imported functions for call resolution (e.g. template interpolations).
   // Also register a synthesized sig in func.map so emit's arity-aware branches see
   // the import's declared param count — needed for arg pad/truncate to match it.
@@ -256,6 +257,9 @@ export default function compile(ast, profiler) {
   timePhase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler))
+  // The plan rewrote the program (inlined calls, scalar-replaced literals,
+  // specialized variants with their own scopes): summarize what emission sees.
+  ctx.summary = timePhase(profiler, 'summary', summarizeProgram)
 
   // A module global's declaration-time literal length holds only while nothing
   // rewrites the binding (the element kind is an all-writers fact already).

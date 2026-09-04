@@ -381,7 +381,7 @@ export function analyzeBody(body) {
       // The program summary: an array whose every element, from every
       // construction and store in the program, is one shape (a factory's
       // result built by pushes, an element read from another such array).
-      const sumSid = ctx.summary?.arrayElemSidOf(name)
+      const sumSid = ctx.summary?.at(ctx.func.current).arrayElemSidOf(name)
       if (sumSid != null) observeArrSchema(name, sumSid)
     }
 

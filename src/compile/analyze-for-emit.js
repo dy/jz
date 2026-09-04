@@ -225,11 +225,12 @@ export function analyzeFuncForEmit(func, programFacts) {
   // The program summary: a parameter every call passes as one kind takes it,
   // where the call-site lattice above saw nothing (a class method's receiver,
   // called through the class dispatch; a callee the census never named).
-  if (ctx.summary) for (const p of sig.params) {
+  const summary = ctx.summary?.at(sig)
+  if (summary) for (const p of sig.params) {
     if (p.rest || func.defaults?.[p.name] || ctx.func.localReps?.get(p.name)?.val || isReassigned(body, p.name)) continue
-    const k = ctx.summary.kindOf(p.name)
+    const k = summary.kindOf(p.name)
     if (isNullable(k)) continue
-    const sid = ctx.summary.sidOf(p.name), ctor = ctx.summary.typedCtorOf(p.name)
+    const sid = summary.sidOf(p.name), ctor = summary.typedCtorOf(p.name)
     if (sid != null) updateRep(p.name, { schemaId: sid, val: VAL.OBJECT })
     else if (ctor) { (ctx.func.typedElem ||= new Map()).set(p.name, ctor); updateRep(p.name, { val: VAL.TYPED }) }
     else if (tagOf(k) === K.NUMBER) updateRep(p.name, { val: VAL.NUMBER })
@@ -286,7 +287,7 @@ export function analyzeFuncForEmit(func, programFacts) {
           // wrapVal guarantees a number). The latter catches `acc + cre` float
           // kernels whose `+` would otherwise pull a per-iteration
           // string-concat fork (julia, floatbeats).
-          && (ctx.summary?.numericDemand(p.name) || paramAllUsesNumeric(body, p.name) || paramNeverString(body, p.name)))
+          && (summary?.numericDemand(p.name) || paramAllUsesNumeric(body, p.name) || paramNeverString(body, p.name)))
         // An f64 slot holds a genuine number (the JS API's ToNumber made
         // `undefined` NaN), and neither proof admits a nullish test, so the
         // UNDEF-pad nullability is moot: reads and loop bounds stay plain.
@@ -397,7 +398,7 @@ export function analyzeFuncForEmit(func, programFacts) {
           // The body's own ctor, else the program summary's (a typed field
           // read through a parameter): recorded so the emitter's raw loads see it.
           let ctor = ctx.func.typedElem?.get(n)
-          if (ctor == null && (ctor = ctx.summary?.typedCtorOf(n))) (ctx.func.typedElem ||= new Map()).set(n, ctor)
+          if (ctor == null && (ctor = summary?.typedCtorOf(n))) (ctx.func.typedElem ||= new Map()).set(n, ctor)
           const aux = typedElemAux(ctor)
           if (aux == null) continue
           fields.ptrAux = aux
