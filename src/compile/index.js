@@ -143,7 +143,7 @@ export default function compile(ast, profiler) {
   for (const f of ctx.funcs.list) { ctx.funcs.names.add(f.name); ctx.funcs.map.set(f.name, f) }
   ctx.summary = timePhase(profiler, 'summary', () => summarize(ast, {
     funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, exported: isExported,
-    imports: new Set(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, ''))),
+    imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
   }))
   // Include imported functions for call resolution (e.g. template interpolations).
   // Also register a synthesized sig in func.map so emit's arity-aware branches see

@@ -107,6 +107,8 @@ test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a
   // hoistLoopGlobalPtrOffset is the only pass that clears BOTH: scoped to the
   // loop (ignores the unrelated call_indirect outside it) AND reachableWrites-
   // aware (tolerates the in-loop call once the callee is proven clean).
+  // `cur` is a string by every store (src/summary): `String(s)`, not the
+  // host's `s`, which could be anything.
   const src = `
     export let idx = 0, cur = ''
     const ops = []
@@ -114,7 +116,7 @@ test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a
     reg((x) => x + 1); reg((x) => x * 2)
     export let helper = (x) => { let y = x; for (let k = 0; k < 3; k++) y = y * 2 + 1; return y }
     export let warmup = () => helper(7)
-    export let setup = (s) => { idx = 0; cur = s }
+    export let setup = (s) => { idx = 0; cur = String(s) }
     export let scanThenDispatch = (mode, x) => {
       let cc = 0, acc = 0
       while ((cc = cur.charCodeAt(idx)) <= 32) { acc = helper(acc); idx = idx + 1 }

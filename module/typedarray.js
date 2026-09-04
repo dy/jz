@@ -62,6 +62,12 @@ import { nonNegIntLiteral } from '../src/static.js'
 // and no start function. Capped so an un-optimized build (no packer) never
 // carries more than 64 KiB of zeros per array.
 const STATIC_TYPED_MAX_BYTES = 65536
+// The largest element count a typed array of `shift` may have: its byte count
+// stays an i32 the allocator can add without wrapping (module/core.js __alloc).
+// An unsigned compare rejects a negative count in the same instruction.
+const MAX_TYPED_BYTES = 0x7FFFFFF8
+const typedLenGuard = (lenLocal, shift) =>
+  ['if', ['i32.ge_u', ['local.get', `$${lenLocal}`], ['i32.const', MAX_TYPED_BYTES >>> shift]], ['then', ['unreachable']]]
 const staticStorageLen = (ctx, lenExpr) => {
   if (!ctx.func.atModuleScope || ctx.memory.shared || ctx.func.stack.some(f => f.loop)) return null
   return nonNegIntLiteral(lenExpr)
@@ -408,26 +414,32 @@ export default (ctx) => {
         // order relative to emit(lenExpr).
         const fromArrIR = ctx.core.emit[`${name}.from`](src)
         const copyTypedIR = copyFromTyped(src)
+        // A number, or any value that is no array, typed array or buffer (a NaN,
+        // a nullish or boolean atom, a string: ToIndex makes them 0), sizes a
+        // fresh array; the three pointer kinds copy or view.
+        const isKind = (k) => ptrTypeEq(['local.get', `$${src}`], k)
+        const sizeIR = ['block', ['result', 'f64'],
+          ['local.set', `$${len}`, ['i32.trunc_sat_f64_s', ['local.get', `$${src}`]]],
+          typedLenGuard(len, shift),
+          numAlloc.init,
+          numAlloc.ptr]
+        const viewIR = mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           ['if', ['result', 'f64'],
-            ['f64.eq', ['local.get', `$${src}`], ['local.get', `$${src}`]],
-            // Regular number: treat as length, allocate fresh typed array with byteLen header
-            ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${len}`, ['i32.trunc_sat_f64_s', ['local.get', `$${src}`]]],
-              numAlloc.init,
-              numAlloc.ptr]],
-            // Pointer: array → boxed-slot copy; typed → converted element copy; buffer → zero-copy view
-            ['else', ['if', ['result', 'f64'],
-              ptrTypeEq(['local.get', `$${src}`], PTR.ARRAY),
+            ['i32.or', ['f64.eq', ['local.get', `$${src}`], ['local.get', `$${src}`]],
+              ['i32.eqz', ['i32.or', isKind(PTR.ARRAY), ['i32.or', isKind(PTR.TYPED), isKind(PTR.BUFFER)]]]],
+            ['then', sizeIR],
+            ['else', ['if', ['result', 'f64'], isKind(PTR.ARRAY),
               ['then', fromArrIR],
-              ['else', ['if', ['result', 'f64'],
-                ptrTypeEq(['local.get', `$${src}`], PTR.TYPED),
+              ['else', ['if', ['result', 'f64'], isKind(PTR.TYPED),
                 ['then', copyTypedIR],
-                ['else', mkPtrIR(PTR.TYPED, aux,
-                  ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]]]], 'f64')
+                ['else', viewIR]]]]]]], 'f64')
       }
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
+      // The size is ToIndex: NaN is 0, a fraction truncates, and a negative or a
+      // byte count past the heap's i32 span traps (JS: a RangeError), where the
+      // shifted count would otherwise wrap into a short or corrupt allocation.
       const shift = SHIFT[elemType]
       const staticLen = staticStorageLen(ctx, lenExpr)
       if (staticLen != null && (staticLen << shift) <= STATIC_TYPED_MAX_BYTES)
@@ -435,8 +447,11 @@ export default (ctx) => {
       const lenL = tempI32('tan')
       const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta' })
+      const lenIR = asI32Sat(emit(lenExpr))
+      const known = lenIR[0] === 'i32.const' && typeof lenIR[1] === 'number' ? lenIR[1] >>> 0 : null
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${lenL}`, asI32(emit(lenExpr))],
+        ['local.set', `$${lenL}`, lenIR],
+        ...(known == null ? [typedLenGuard(lenL, shift)] : known >= MAX_TYPED_BYTES >>> shift ? [['unreachable']] : []),
         out.init,
         out.ptr], 'f64')
     }

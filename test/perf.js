@@ -1743,7 +1743,12 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // self-compiled watr.wasm failed official float_literals/const on real parses.
 // Correctness owns the trade; size-recovery follow-up recorded in todo (derive
 // the reciprocal half at init via 256÷128 long division instead of shipping it).
-golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 18335)
+// 18335→55: `x` is numeric-compatible (src/summary numeric demand): `x * 2` converts,
+// `x + 1` and the slot reads `p.x + p.y` are `+` operands, which JS converts for
+// every kind but a string or an object (spec/boundary.md, the guarded ABI's numeric
+// contract). The parameter arrives as f64, the record is three scalars, and nothing
+// links a string.
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)
 // Baseline 7789→8196: an empty literal `{}` grown by computed `p[k]=…` carries
 // per-object dyn props the literal's static schema doesn't enumerate. Reads
 // (`p[k]` after the write, `Object.keys`/`values`/`entries`, `JSON.stringify`,

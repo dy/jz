@@ -1011,20 +1011,21 @@ test('inferModuleGlobalValTypes: a global written only inside a closure resolves
   is(ex.getFirst(), 'h', 'closure-proven global reads correctly')
 })
 
-test('inferModuleGlobalValTypes: an exported mutable global stays unclaimed (host can write any value)', () => {
-  // A wasm export of a MUTABLE global lets the host assign it any bit pattern
-  // via `instance.exports.g.value = …`, invisible to any AST scan — must never
-  // be claimed regardless of how consistent its VISIBLE writes look.
+test('module global kinds: an exported let keeps its kind; the host stores a number through its export', () => {
+  // The wasm JS API stores only a number into an f64 global, which a number global
+  // takes; no other jz kind has a host value to store (src/summary).
   const src = `
     export let g = undefined
     export let setG = () => { g = 'x' }
     export let getFirst = () => g[0]
   `
-  keepsTypeFork(jz.compile(src, { wat: true }),
-    'an exported MUTABLE global must stay unclaimed — the host can write any bit pattern to it directly')
+  noTypeFork(jz.compile(src, { wat: true }), 'an exported let is the join of the program\'s own stores: a string')
   const ex = run(src)
   ex.setG()
-  is(ex.getFirst(), 'x', 'value is still correct even though the kind is unclaimed')
+  is(ex.getFirst(), 'x')
+  const num = run(`export let n = 0; export let bump = () => { n = n + 1 }; export let twice = () => n * 2`)
+  num.bump(); is(num.twice(), 2)
+  num.n.value = 20; is(num.twice(), 40, 'the host stores a number')
 })
 
 // ─────────────────────────────────── typed-array index arithmetic stays i32

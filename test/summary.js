@@ -33,13 +33,15 @@ test('summary: kinds flow through calls, fields and results; the host boundary i
   is(tagOf(kindOf('proc', 'b')), K.TYPED, 'a field read has the slot kind'); ok(!isNullable(kindOf('proc', 'b')))
   is(ctx.summary.fieldTypedCtor(sid, 'buf'), 'new.Float32Array')
   is(tagOf(kindOf('proc', 'k')), K.NUMBER, 'number literal and number parameter join to number')
-  is(tagOf(kindOf('run', 'n')), K.ANY, 'an exported parameter passed to a typed-array constructor is not demanded: the constructor copies an array')
+  is(tagOf(kindOf('run', 'n')), K.ANY, 'an exported parameter read only as a typed-array size stays ANY: the constructor copies an array')
   ok(!ctx.summary.numericDemand(binding('run', 'n')))
   is(tagOf(ctx.summary.resultOf('mk')), K.OBJECT, 'a result is the join of its returns')
-  summarize(`export const h = (s, k, o) => { const t = s + ''; return t.length + k * 2 + o.x }`)
-  is(tagOf(kindOf('h', 's')), K.ANY, 'a parameter concatenated as a string comes from the host as ANY')
-  is(tagOf(kindOf('h', 'k')), K.NUMBER, 'a parameter multiplied is demanded')
+  summarize(`export const h = (s, k, o, p, q) => { const t = s + ''; return t.length + k * 2 + o.x + (p + 1) + (q < 3 ? 1 : 0) }`)
+  is(tagOf(kindOf('h', 's')), K.ANY, 'a parameter concatenated with a string comes from the host as ANY')
+  is(tagOf(kindOf('h', 'k')), K.NUMBER, 'a parameter multiplied is demanded'); ok(ctx.summary.numericDemand(binding('h', 'k')))
   is(tagOf(kindOf('h', 'o')), K.ANY, 'a parameter read as an object is not')
+  is(tagOf(kindOf('h', 'p')), K.NUMBER, 'a parameter added to a number is compatible'); ok(!ctx.summary.numericDemand(binding('h', 'p')))
+  is(tagOf(kindOf('h', 'q')), K.NUMBER, 'a parameter compared against a number is demanded'); ok(ctx.summary.numericDemand(binding('h', 'q')))
   // Demand follows a store into a slot and a destructured read out of it.
   summarize(`const mk = (g) => ({ gain: g })
     const use = (o) => { const { gain } = o; return gain * 2 }
@@ -186,7 +188,7 @@ test('summary codegen: a method called through an array of instances, an exporte
   // level 2: below it the method's dispatcher, dead here, is not shaken
   if (OPT_LEVEL === 2) ok(!/__dyn_get|__hash|__to_str/.test(compile(src, { wat: true })), 'the method comes from the element\'s schema slot, the method parameter is a typed array')
   is(jz(src).exports.run(4), 2 * 0.5 * 1.5 * 2.5)
-  if (OPT_LEVEL === 2) ok(compile(src).length < 3000, `the typed tier's size class (${compile(src).length} B)`)
+  if (OPT_LEVEL === 2) ok(compile(src).length < 3100, `the typed tier's size class (${compile(src).length} B)`)
   // An exported class: its constructor parameter is read only through a slot
   // every read of which multiplies, so the f64 boundary is the coercion.
   const cls = `export class Gain { constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
@@ -196,4 +198,56 @@ test('summary codegen: a method called through an array of instances, an exporte
   is(jz(cls).exports.run(8, 0.5), 0.5)
   is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
   if (OPT_LEVEL === 2) ok(compile(cls).length < 2000, `bytes: ${compile(cls).length}`)
+})
+
+test('summary: a module global is the join of every store; the declaration\'s claim yields', () => {
+  // The declaration says number, a function stores a string: `g + 1` concatenates as JS does.
+  const m = jz(`let g = 1; export let f = () => { g = 'abc'; return g.length }; export let h = () => g + 1`)
+  is(m.exports.h(), 2); is(m.exports.f(), 3); is(m.exports.h(), 'abc1')
+  // A `let` assigned a typed array in an initializer is typed, nullable until then; a const
+  // bound to a factory's record has its schema; an exported `let` keeps its kind.
+  const src = `let mem, W = 0; const P = mk(4); export let n = 0
+    const mk = (k) => ({ x: new Float32Array(k), y: k })
+    export const init = (w) => { W = w; mem = new Float64Array(W * 2) }
+    export const at = (i) => mem[i] + P.x[0] + P.y + n`
+  compile(src)
+  is(ctx.scope.globalTypedElem.get('mem'), 'new.Float64Array'); ok(ctx.scope.globalReps.get('mem').nullable)
+  is(ctx.scope.globalValTypes.get('W'), 'number', 'a host parameter every read of which converts is a number')
+  is(ctx.schema.vars.get('P'), ctx.schema.list.findIndex(s => s.join() === 'x,y'))
+  is(ctx.scope.globalValTypes.get('n'), 'number')
+  const m2 = jz(src); m2.exports.init(3); is(m2.exports.at(0), 4)
+})
+
+test('summary: a numeric-compatible parameter arrives as a number (spec/boundary.md)', () => {
+  // `row += W` is a `+` operand, `xi < W` a compare against a number: W is a number and so is `w`.
+  const src = `let W = 0, H = 0; export let resize = (w, h) => { W = w; H = h }
+    export let area = () => { let row = 0, y = 0; while (y < H) { let x = 0; while (x < W) x++; row += W; y++ } return row }`
+  compile(src); is(ctx.scope.globalValTypes.get('W'), 'number')
+  if (OPT_LEVEL === 2) ok(!/__to_str|__str_concat/.test(compile(src, { wat: true })), 'no string machinery')
+  const m = jz(src); m.exports.resize(3, 4); is(m.exports.area(), 12)
+  // A typed array's size: ToIndex of a number; a negative or heap-sized count traps, on both the
+  // boxed path (a parameter read only there copies an array) and the numeric one.
+  const m2 = jz(`export let f = (n) => { let a = new Float64Array(n); return a.length }`)
+  is(m2.exports.f(4), 4); is(m2.exports.f(2.5), 2, 'ToIndex truncates'); is(m2.exports.f(NaN), 0)
+  let err; try { m2.exports.f(-1) } catch (e) { err = e }
+  ok(err instanceof WebAssembly.RuntimeError, 'a negative size traps (JS: a RangeError)')
+  err = null; try { m2.exports.f(2 ** 34) } catch (e) { err = e }
+  ok(err instanceof WebAssembly.RuntimeError, 'a size past the heap traps (JS: a RangeError)')
+  is(m2.exports.f(new Uint8Array([1, 2, 3])), 3, 'an array copies')
+  const m3 = jz(`export let f = (n) => { let a = new Float64Array(n * 1); return a.length }`)
+  is(m3.exports.f(2.5), 2)
+  err = null; try { m3.exports.f(2 ** 29) } catch (e) { err = e }
+  ok(err instanceof WebAssembly.RuntimeError, 'the numeric path traps too (before: a wrapped byte count, length 0)')
+})
+
+test('summary: a parameter read before its reassignment has its incoming kind', () => {
+  // subscript's parse: `cur = s` precedes `s = expr()`, so `cur` is the argument's string.
+  compile(`let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const run = () => parse('abc') + cur.length`)
+  is(ctx.scope.globalValTypes.get('cur'), 'string')
+  is(tagOf(kindOf('parse', 's')), K.ANY, 'the parameter itself joins its reassignment')
+  // A loop that assigns the parameter, and a closure that does, end the region.
+  const loop = jz(`const h = (p) => { let a = p; for (let i = 0; i < 2; i++) { a = a + p; p = 'x' } return a }; export const f = () => h(1)`)
+  is(loop.exports.f(), '2x')
+  const clos = jz(`export const f = (p) => { const g = () => { p = 5 }; g(); return p * 2 }`)
+  is(clos.exports.f(1), 10)
 })

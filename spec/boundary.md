@@ -29,7 +29,7 @@ The `any` representation is a tagged value in linear memory: a number carries it
 
 A module, or an export, selects one:
 
-- `guarded` (default): every export accepts any JS value. The adapter coerces per JS semantics (ToNumber, ToString, structured copy for arrays and objects into `any`), so calling with the wrong kind behaves as JS would. This is the JS-semantics contract and the only one that may publish JS-comparison numbers.
+- `guarded` (default): every export accepts any JS value. The adapter coerces per JS semantics (ToNumber, ToString, structured copy for arrays and objects into `any`), so calling with the wrong kind behaves as JS would. This is the JS-semantics contract and the only one that may publish JS-comparison numbers. A parameter the program reads only as a number arrives as `f64`: where every read converts (arithmetic, a compare against a number), the adapter's ToNumber is the program's own conversion; where a read would not have converted another kind (a `+` operand, a compare against an unknown, an equality against a number, a typed array's size), the number is the guarded ABI's one numeric contract, and the tier report names the function and parameter.
 - `typed`: an export keeps its typed signature. The caller passes matching kinds; a mismatch traps with a message naming the export and parameter. No coercion code is emitted. This is the kernel contract and the only one that may publish kernel-size and kernel-speed numbers.
 
 The two contracts are never mixed in one number. A README figure states which ABI produced it.

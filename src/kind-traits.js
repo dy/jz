@@ -4,7 +4,6 @@
  */
 
 import { VAL } from './reps.js'
-import { valOf as summaryVal } from './summary/index.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
 import { typedStorageCtorFromContext } from './typed-context.js'
 
@@ -117,19 +116,11 @@ const ATOMICS_VALUE_OPS = new Set(['Atomics.load', 'Atomics.store', 'Atomics.add
   'Atomics.sub', 'Atomics.and', 'Atomics.or', 'Atomics.xor', 'Atomics.exchange',
   'Atomics.compareExchange'])
 
-export function calleeValType(callee, _args, ctx) {
-  if (typeof callee !== 'string') return null
+/** The result kind of a builtin callee by its name alone (the table above, the typed
+ *  constructors and `T.from`, `math.*`), or null: the program summary and the expression
+ *  oracle below share it. */
+export function builtinCalleeVal(callee) {
   if (callee in CALLEE_VAL) return CALLEE_VAL[callee]
-  // Atomics value ops: the result kind follows the receiver's element width —
-  // a proven BigInt64Array receiver yields BIGINT (raw i64 carrier), else NUMBER.
-  if (ATOMICS_VALUE_OPS.has(callee)) {
-    // _args is the '()' node tail: [callee, argsNode] — the receiver is the
-    // first real argument (unwrap a ','-group).
-    const a1 = _args?.[1]
-    const arr = Array.isArray(a1) && a1[0] === ',' ? a1[1] : a1
-    const ctor = typedStorageCtorFromContext(ctx, arr)
-    return ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view' ? VAL.BIGINT : VAL.NUMBER
-  }
   if (callee.startsWith('new.')) return VAL.TYPED
   // `Int32Array.from(...)`/`Float64Array.from(...)` etc (module/typedarray.js
   // registers one `${name}.from` emitter per TYPED_ELEM_CODE ctor, ALWAYS
@@ -140,6 +131,23 @@ export function calleeValType(callee, _args, ctx) {
   // the ctor is a static fact, no different from `new Float64Array(...)`.
   if (callee.endsWith('.from') && callee.slice(0, -5) in TYPED_ELEM_CODE) return VAL.TYPED
   if (callee.startsWith('math.')) return VAL.NUMBER
+  return null
+}
+
+export function calleeValType(callee, _args, ctx) {
+  if (typeof callee !== 'string') return null
+  // Atomics value ops: the result kind follows the receiver's element width —
+  // a proven BigInt64Array receiver yields BIGINT (raw i64 carrier), else NUMBER.
+  if (ATOMICS_VALUE_OPS.has(callee)) {
+    // _args is the '()' node tail: [callee, argsNode] — the receiver is the
+    // first real argument (unwrap a ','-group).
+    const a1 = _args?.[1]
+    const arr = Array.isArray(a1) && a1[0] === ',' ? a1[1] : a1
+    const ctor = typedStorageCtorFromContext(ctx, arr)
+    return ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view' ? VAL.BIGINT : VAL.NUMBER
+  }
+  const builtin = builtinCalleeVal(callee)
+  if (builtin != null) return builtin
   const hostVT = ctx.module.hostImportValTypes?.get(callee)
   if (hostVT) return hostVT
   // A direct-dispatched local closure whose return-tail kind is statically
@@ -159,7 +167,7 @@ export function calleeValType(callee, _args, ctx) {
   const f = ctx.funcs.map?.get(callee)
   if (f?.valResult) return f.valResult
   // The program summary: the join of the function's returns is one kind.
-  if (f && ctx.summary) return summaryVal(ctx.summary.resultOf(callee))
+  if (f && ctx.summary) return ctx.summary.resultVal(callee)
   return null
 }
 

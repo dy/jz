@@ -32,6 +32,7 @@
 import { MUTATE_OPS, extractParams, isBrand, ACCESSOR_GET, ACCESSOR_SET, CLASS_T } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
 import { VAL } from '../reps.js'
+import { builtinCalleeVal } from '../kind-traits.js'
 
 export const K = {
   NONE: 0, NUMBER: 1, STRING: 2, BOOL: 3, BIGINT: 4, NULLISH: 5, TYPED: 6, ARRAY: 7,
@@ -71,6 +72,9 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 /** The value kind (reps.js VAL) of a monomorphic, non-nullable kind; null otherwise. */
 const VAL_OF = [null, VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT, null, VAL.TYPED, VAL.ARRAY, VAL.OBJECT, VAL.CLOSURE, VAL.MAP, VAL.SET, VAL.DATE, VAL.REGEX, VAL.HASH, null]
 export const valOf = (k) => isNullable(k) ? null : VAL_OF[tagOf(k)] ?? null
+/** The kind of a value kind: the inverse of `valOf` for the kinds that have one; ANY for a kind the lattice has no tag for. */
+export const kindOfVal = (v) => { const t = VAL_OF.indexOf(v); return v == null ? ANY : t < 0 ? ANY : kind(t) }
+export { core }
 
 const BIND = CLASS_T + 'bind'
 const TYPED_CTOR = /^new\.(\w+Array)(\.view)?$/
@@ -81,7 +85,10 @@ const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', '
 const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '++', '--'])
 const BOOL_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', 'in', 'instanceof'])
 
-/** Summarize the prepared program: `funcs` are the function records, `schemas` the schema prop lists. */
+/** Summarize the prepared program: `funcs` are the function records, `schemas` the schema prop
+ *  lists, `imports` the host imports by alias with the result kind each declares (reps.js VAL, or
+ *  null). An exported global keeps its kind: the host reads it, and can store only a number
+ *  through its f64 export, which a number global takes and no other kind could take. */
 export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imports }) {
   const kinds = new Map()            // binding name → kind
   const fields = new Map()           // sid → kind[]
@@ -152,27 +159,28 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   const dynamicProps = new Set()
   const escapeObject = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) poisonSchema(paramOf(k)); escape(k) }
   const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
+  // A parameter's incoming kind, the join of its arguments alone: a read of
+  // the parameter before any reassignment can run sees only this; `kinds`
+  // holds the join with the reassignments too.
+  const incoming = new Map()
+  const bindParam = (name, k) => { raise(incoming, name, k); raise(kinds, name, k) }
   const bind = (names, ks) => {
-    for (let i = 0; i < names.length; i++) { if (names[i] != null) raise(kinds, names[i], i < ks.length ? ks[i] : NULLISH); }
+    for (let i = 0; i < names.length; i++) { if (names[i] != null) bindParam(names[i], i < ks.length ? ks[i] : NULLISH); }
     for (let i = names.length; i < ks.length; i++) escape(ks[i])
   }
   const call = (callee, argKinds) => {
     if (typeof callee === 'string') {
       const m = TYPED_CTOR.exec(callee)
       if (m) { const aux = encodeTypedElemAux(m[1], !!m[2]); return kind(K.TYPED, aux == null ? UNKNOWN : aux) }
-      if (callee === 'new.Map') return kind(K.MAP)
-      if (callee === 'new.Set') return kind(K.SET)
-      if (callee === 'new.Date') return kind(K.DATE)
       if (callee === 'new.RegExp') return kind(K.REGEX)
-      if (callee === 'new.Array' || callee === 'Array') return kind(K.ARRAY)
+      if (callee === 'Array') return kind(K.ARRAY)
       if (callee === 'String' || callee.startsWith('String.')) return STRING
-      if (callee === 'Number' || callee === 'parseInt' || callee === 'parseFloat' || callee.startsWith('Math.') || callee.startsWith('Number.')) return NUMBER
-      if (callee === 'Boolean') return BOOL
-      if (callee === 'BigInt') return BIGINT
+      if (callee === 'Number' || callee.startsWith('Math.') || callee.startsWith('Number.')) return NUMBER
       // jzify's `for…of` lowering iterates `__iter_arr(v)` by index: an array,
       // typed array or string iterates as itself, anything else as an array
-      // of unknown elements.
+      // of unknown elements; `__keys_ro` is `for…in`'s key list.
       if (callee === '__iter_arr') { const t = argKinds.length ? tagOf(argKinds[0]) : K.NONE; return t === K.ARRAY || t === K.TYPED || t === K.STRING ? argKinds[0] : t === K.NONE ? K.NONE : kind(K.ARRAY) }
+      if (callee === '__keys_ro') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
         if (!escaped.has(callee)) bind(f.sig.params.map(p => p.rest ? null : p.name), argKinds)
@@ -181,7 +189,13 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       const k = kinds.get(callee)
       if (k !== undefined && tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) return callClosure(paramOf(k), argKinds)
       if (k === undefined && modelled.has(callee)) return K.NONE  // a local callee not known yet
-      if (PURE_BUILTINS.test(callee) || imports.has(callee)) { for (const k of argKinds) escape(k); return ANY }
+      // A host import returns the kind it declares; a builtin the kind its trait says (kind-traits.js).
+      if (imports.has(callee)) { for (const k of argKinds) escape(k); return kindOfVal(imports.get(callee)) }
+      // A builtin: the kind its trait names (kind-traits.js). A `new.X` past
+      // the typed constructors above is a DataView (a typed view) or unknown.
+      let builtin = builtinCalleeVal(callee)
+      if (builtin === VAL.TYPED && callee !== 'new.DataView') builtin = null
+      if (builtin != null || PURE_BUILTINS.test(callee)) { for (const k of argKinds) escape(k); return kindOfVal(builtin) }
     }
     for (const k of argKinds) escapeObject(k)
     return ANY
@@ -238,13 +252,17 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     return ANY
   }
   const literalKind = (v) => v == null ? NULLISH : typeof v === 'number' ? NUMBER : typeof v === 'string' ? STRING : typeof v === 'boolean' ? BOOL : typeof v === 'bigint' ? BIGINT : ANY
+  // The receiver of a member access: a function's property (`parse.enter`, a
+  // namespace) reads or stores on the function object and calls nothing, so
+  // the function does not escape by it.
+  const receiver = (n) => typeof n === 'string' && funcByName.has(n) && !kinds.has(n) ? kind(K.CLOSURE) : expr(n)
 
   /** The kind of an expression, with its effects: calls bind parameters, stores raise slots. */
   const expr = (n) => {
     if (n == null) return NULLISH
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
-      const k = kinds.get(n)
+      const k = pre.has(n) ? incoming.get(n) ?? K.NONE : kinds.get(n)
       if (k !== undefined) return k
       if (funcByName.has(n)) { escapeId(n); return kind(K.CLOSURE) }
       // A binding whose assignments this walk models is bottom until the
@@ -258,8 +276,10 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     if (op === 'str') return STRING
     if (op === 'bool') return BOOL
     if (op === 'nan') return NUMBER
-    if (op === '`') { for (let i = 1; i < n.length; i++) expr(n[i]); return STRING }
-    if (op === '=>') { const id = closureId(n); return kind(K.CLOSURE, id) }
+    if (op === 'bigint') return BIGINT
+    if (op === '//') return kind(K.REGEX)
+    if (op === '`' || op === 'strcat') { for (let i = 1; i < n.length; i++) expr(n[i]); return STRING }
+    if (op === '=>') { loopAssigns(n); const id = closureId(n); return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
     if (op === '{}') {
       const vals = [], init = definite.get(n), shape = literalShape(n)
       for (let i = 1; i < n.length; i++) {
@@ -281,7 +301,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       return arr
     }
     if (op === '.' || op === '?.') {
-      const recv = expr(n[1]), prop = n[2], t = tagOf(recv)
+      const recv = receiver(n[1]), prop = n[2], t = tagOf(recv)
       if (typeof prop !== 'string') { expr(prop); return t === K.NONE ? K.NONE : ANY }
       if (t === K.NONE) return K.NONE
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
@@ -300,7 +320,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       return ANY
     }
     if (op === '[]') {
-      const recv = expr(n[1]), idx = n[2], t = tagOf(recv)
+      const recv = receiver(n[1]), idx = n[2], t = tagOf(recv)
       if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return expr(['.', n[1], idx[1]])
       expr(idx)
       if (t === K.NONE) return K.NONE
@@ -310,9 +330,10 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       return ANY
     }
     if (op === '()') {
+      if (n.length === 2) return expr(n[1])  // a grouping `(e)`: a call always carries its argument slot
       const callee = n[1], as = args(n[2]).map(expr)
       if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
-        const recv = expr(callee[1])
+        const recv = receiver(callee[1])
         return method(recv, callee[2], as)
       }
       if (typeof callee === 'string') return call(callee, as)
@@ -323,8 +344,9 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       return ANY
     }
     if (MUTATE_OPS.has(op)) return assign(op, n[1], n[2])
-    if (op === '+') { const a = expr(n[1]), b = expr(n[2]); const ta = tagOf(a), tb = tagOf(b); if (ta === K.STRING || tb === K.STRING) return STRING; if (ta === K.NONE || tb === K.NONE) return K.NONE; if (ta === K.NUMBER && tb === K.NUMBER) return NUMBER; if (ta === K.BIGINT && tb === K.BIGINT) return BIGINT; return ANY }
-    if (NUMBER_OPS.has(op)) { let big = true; for (let i = 1; i < n.length; i++) if (tagOf(expr(n[i])) !== K.BIGINT) big = false; return big && n.length > 1 ? BIGINT : NUMBER }
+    if (op === '+') return plus(expr(n[1]), expr(n[2]))
+    if (NUMBER_OPS.has(op) || op === 'u-') { let big = true; for (let i = 1; i < n.length; i++) if (tagOf(expr(n[i])) !== K.BIGINT) big = false; return big && n.length > 1 ? BIGINT : NUMBER }
+    if (op === 'u+') { expr(n[1]); return NUMBER }
     if (BOOL_OPS.has(op)) { for (let i = 1; i < n.length; i++) expr(n[i]); return BOOL }
     if (op === '&&' || op === '||' || op === '??') return merge(expr(n[1]), expr(n[2]))
     if (op === '?' || op === '?:') { expr(n[1]); return merge(expr(n[2]), expr(n[3])) }
@@ -338,14 +360,15 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     return ANY
   }
 
+  /** `a + b`: a string concatenates, numbers and bigints add, anything else may do either. */
+  const plus = (a, b) => { const ta = tagOf(a), tb = tagOf(b); return ta === K.STRING || tb === K.STRING ? STRING : ta === K.NONE || tb === K.NONE ? K.NONE : ta === K.NUMBER && tb === K.NUMBER ? NUMBER : ta === K.BIGINT && tb === K.BIGINT ? BIGINT : ANY }
   /** `target op= value`: the stored kind reaches the binding or the slot; returns the expression's kind. */
   const assign = (op, target, value) => {
-    let v = op === '=' ? expr(value) : op === '++' || op === '--' ? NUMBER : merge(expr(target), value == null ? NUMBER : expr(value))
-    if (op === '+=') v = tagOf(v) === K.STRING ? STRING : tagOf(v) === K.NUMBER ? NUMBER : tagOf(v) === K.BIGINT ? BIGINT : ANY
-    else if (op !== '=' && op !== '||=' && op !== '&&=' && op !== '??=') v = tagOf(v) === K.BIGINT ? BIGINT : NUMBER
-    if (typeof target === 'string') { raise(kinds, target, v); return v }
+    let v = op === '=' ? expr(value) : op === '++' || op === '--' ? NUMBER : op === '+=' ? plus(expr(target), expr(value)) : merge(expr(target), value == null ? NUMBER : expr(value))
+    if (op !== '=' && op !== '+=' && op !== '||=' && op !== '&&=' && op !== '??=') v = tagOf(v) === K.BIGINT ? BIGINT : NUMBER
+    if (typeof target === 'string') { pre.delete(target); raise(kinds, target, v); return v }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
-      const recv = expr(target[1]), prop = target[2], t = tagOf(recv)
+      const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       if (t === K.NONE) return v
       if (typeof prop !== 'string') { poisonAll(recv, expr(prop)); escape(v); return v }
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
@@ -356,7 +379,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       return v
     }
     if (Array.isArray(target) && target[0] === '[]') {
-      const recv = expr(target[1]), idx = target[2], t = tagOf(recv)
+      const recv = receiver(target[1]), idx = target[2], t = tagOf(recv)
       if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return assign(op, ['.', target[1], idx[1]], value)
       const ik = expr(idx)
       if (t === K.ARRAY) raiseElem(recv, v)
@@ -450,15 +473,16 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     if (op === 'let' || op === 'const' || op === 'var') return decl(n)
     if (op === 'return') { if (current != null) raise(results, current, n.length > 1 ? expr(n[1]) : NULLISH); return }
     if (op === ';' || op === '{}') { for (let i = 1; i < n.length; i++) { noteDefinite(n, i); stmt(n[i]) } return }
-    if (op === 'for') { stmt(n[1]); expr(n[2]); expr(n[3]); stmt(n[4]); return }
+    if (op === 'for') { loopAssigns(n); stmt(n[1]); expr(n[2]); expr(n[3]); stmt(n[4]); return }
     if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
+      loopAssigns(n)
       const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
       if (typeof target === 'string') raise(kinds, target, op === 'for-in' ? STRING : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? NUMBER : tagOf(it) === K.STRING ? STRING : ANY)
       else pattern(target)
       stmt(n[3]); return
     }
     if (op === 'if') { expr(n[1]); stmt(n[2]); stmt(n[3]); return }
-    if (op === 'while' || op === 'do') { expr(n[1]); stmt(n[2]); return }
+    if (op === 'while' || op === 'do') { loopAssigns(n); expr(n[1]); stmt(n[2]); return }
     if (op === 'try') { for (let i = 1; i < n.length; i++) stmt(Array.isArray(n[i]) && n[i][0] === 'catch' ? (typeof n[i][1] === 'string' && raise(kinds, n[i][1], ANY), n[i][2]) : n[i]); return }
     if (op === 'throw') { escapeObject(expr(n[1])); return }
     if (op === 'delete') {
@@ -479,15 +503,29 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   // a shorthand name, a spread); a block holds statements.
   const isLiteral = (n) => n.length > 1 && n.slice(1).every(p => typeof p === 'string' || (Array.isArray(p) && (p[0] === ':' || p[0] === '...')))
   const isBlock = (body) => Array.isArray(body) && body[0] === '{}' && !isLiteral(body)
-  const walkFunction = (key, body) => {
-    const outer = current
+  // The parameters whose reads, so far in the walk, precede every reassignment
+  // of them: a straight-line read sees the incoming kind. A loop that assigns a
+  // parameter ends the region at its head (a read may follow the previous
+  // iteration's store); a closure's body sees the join (it runs whenever).
+  let pre = new Set()
+  const assignsIn = (n, names, out) => {
+    if (!Array.isArray(n)) return
+    if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string' && names.has(n[1])) out.add(n[1])
+    for (let i = 1; i < n.length; i++) assignsIn(n[i], names, out)
+  }
+  const loopAssigns = (n) => { if (pre.size) { const out = new Set(); assignsIn(n, pre, out); for (const name of out) pre.delete(name) } }
+  const walkFunction = (key, body, params) => {
+    const outer = current, outerPre = pre
     current = key
+    pre = new Set()
+    if (params) { const own = new Set(params.filter(p => p != null)); assignsIn(body, own, pre) }
     if (isBlock(body)) {
       stmt(body)
       const last = body.length > 1 && Array.isArray(body[1]) && body[1][0] === ';' ? body[1][body[1].length - 1] : body[1]
       if (!(Array.isArray(last) && last[0] === 'return')) raise(results, key, NULLISH)
     } else raise(results, key, expr(body))
     current = outer
+    pre = outerPre
   }
 
   /** The kind of an expression, read from the settled summary: a name, a
@@ -499,7 +537,12 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     if (!Array.isArray(n)) return ANY
     const op = n[0]
     if (op == null) return literalKind(n[1])
-    if (op === 'str') return STRING
+    if (op === 'str' || op === 'strcat' || op === '`') return STRING
+    if (op === 'bool') return BOOL
+    if (op === 'bigint') return BIGINT
+    if (op === '//') return kind(K.REGEX)
+    if (op === '=>') { const id = closures.get(n); return id === undefined ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
+    if (op === '()' && n.length === 2) return kindOfExpr(n[1])
     if (op === '.' || op === '?.') {
       const r = kindOfExpr(n[1]), t = tagOf(r)
       if (typeof n[2] !== 'string') return ANY
@@ -516,7 +559,12 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       if (Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
       return t === K.TYPED ? NUMBER : t === K.ARRAY ? orNull(elemOf(r)) : t === K.STRING ? STRING : ANY
     }
-    if (op === '()' && typeof n[1] === 'string') return TYPED_CTOR.test(n[1]) ? call(n[1], []) : results.get(n[1]) ?? ANY
+    if (op === '()' && typeof n[1] === 'string') {
+      if (funcByName.has(n[1])) return results.get(n[1]) ?? ANY
+      const k = kinds.get(n[1])
+      if (k !== undefined) return tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN ? results.get(paramOf(k)) ?? ANY : ANY
+      return imports.has(n[1]) ? kindOfVal(imports.get(n[1])) : call(n[1], [])  // a constructor or builtin: no effect on no arguments
+    }
     if (op === '()' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') {
       const r = kindOfExpr(n[1][1]), fn = classMember(r, n[1][2])
       return fn && !memberMayBeOwn(n[1][2]) ? results.get(fn) ?? ANY : ANY
@@ -524,22 +572,28 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     return ANY
   }
 
-  // Numeric demand: a binding or slot is numeric-demanded when it has a
-  // ToNumber read (an arithmetic or bitwise operand, a compound assignment
-  // other than `+=`, a relational compare against a number, a `Math`
-  // argument, a typed-array store) or a flow into a demanded binding or
-  // slot (an argument, a store, a copy), and no other read. An index is not
-  // one: `a[k]` converts `k` to a property key, and `a['1.0']` is no
-  // element. Nor is a typed-array constructor's argument, which copies an
-  // array. A demanded parameter of an exported function arrives as f64: the
-  // host's ToNumber is the coercion the program would have applied at each
-  // use, so the summary seeds it NUMBER instead of ANY; a parameter with no
-  // read at all stays ANY, its value resting where the host may read it
-  // back. A slot read through a receiver of unknown shape may be any slot
-  // of that name.
-  const numeric = new Map()   // binding name or `sid\0prop` → true: every read seen is numeric; false: one is not
-  const NUM = 1, FLOW = 2, OTHER = 0
-  const isNumeric = (key) => numeric.get(key) === true
+  // Numeric demand: a binding or slot is numeric-demanded when every read
+  // of it converts: a ToNumber read (an arithmetic or bitwise operand, a
+  // compound assignment other than `+=`, a relational compare against a
+  // number, a `Math` argument, a typed-array store) or a flow into a demanded
+  // binding or slot (an argument, a store, a copy). It is numeric-compatible
+  // when its other reads are those of a number that JS would not convert
+  // another kind at: a `+` operand (a string concatenates), a relational
+  // compare against an unknown (two strings compare as strings), an equality
+  // against a number, the tested arm of `??`. An index is neither: `a[k]`
+  // converts `k` to a property key, and `a['1.0']` is no element; nor is a
+  // typed-array constructor's argument, which copies an array. A demanded or
+  // compatible parameter of an exported function arrives as f64 (spec/
+  // boundary.md): for a demanded one the host's ToNumber is the coercion the
+  // program would have applied at each use; for a compatible one it is the
+  // guarded ABI's numeric contract, the one divergence the tier report names
+  // per function. A parameter with no read at all stays ANY, its value
+  // resting where the host may read it back. A slot read through a receiver
+  // of unknown shape may be any slot of that name.
+  const numeric = new Map()   // binding name or `sid\0prop` → NUM: every read converts; COMPAT: or is a `+` operand; false: one read is neither
+  const OTHER = 0, COMPAT = 1, NUM = 2, FLOW = 3, NEUTRAL = 4   // NEUTRAL: a read that is no evidence
+  const isNumeric = (key) => numeric.get(key) === NUM
+  const isCompatible = (key) => numeric.get(key) >= COMPAT
   const slotKey = (sid, prop) => sid + '\0' + prop
   const slotKeysOf = (recv, prop) => {
     const r = kindOfExpr(recv), t = tagOf(r)
@@ -548,17 +602,27 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   }
   let demandChanged = false
   const deny = (key) => { if (numeric.get(key) !== false) { numeric.set(key, false); demandChanged = true } }
-  const mark = (key) => { if (!numeric.has(key)) { numeric.set(key, true); demandChanged = true } }
-  /** What a flow into `into` (a key, or every key of a list) demands: false once any is denied, true when all are numeric. */
-  const demandOf = (into) => typeof into === 'string' ? numeric.get(into) : into.some(k => numeric.get(k) === false) ? false : into.every(k => numeric.get(k) === true) ? true : undefined
+  /** A read at `level` (NUM or COMPAT): the key holds the weakest level of its reads. */
+  const mark = (key, level) => { const cur = numeric.get(key); if (cur === false) return; const next = cur === undefined ? level : Math.min(cur, level); if (next !== cur) { numeric.set(key, next); demandChanged = true } }
+  /** What a flow into `into` (a key, or every key of a list) demands: false once any is denied, the weakest level when all are marked. */
+  const demandOf = (into) => {
+    if (typeof into === 'string') return numeric.get(into)
+    let level = NUM
+    for (const k of into) { const v = numeric.get(k); if (v === false) return false; if (v === undefined) return undefined; if (v < level) level = v }
+    return level
+  }
+  /** The context `cx` (FLOW resolved through `into`), no stronger than `level`. */
+  const atMost = (level, cx, into) => { const l = cx === FLOW ? demandOf(into) : cx; return l === undefined || l === false ? l : Math.min(l, level) }
   const useOf = (n, cx, into) => {
     // `n` is read in context `cx`; `into` names the key(s) it flows into under FLOW.
     const keys = typeof n === 'string' ? (modelled.has(n) ? [n] : []) : Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' ? slotKeysOf(n[1], n[2]) : null
     if (keys === null) { demand(n, cx, into); return }
     if (Array.isArray(n)) demand(n[1], OTHER)
-    const flow = cx === FLOW ? demandOf(into) : undefined
-    for (const key of keys) if (cx === OTHER || flow === false) deny(key); else if (cx === NUM || flow === true) mark(key)
+    const level = cx === FLOW ? demandOf(into) : cx
+    if (level === NEUTRAL) return
+    for (const key of keys) if (level === OTHER || level === false) deny(key); else if (level !== undefined) mark(key, level)
   }
+  const isStringExpr = (e) => tagOf(kindOfExpr(e)) === K.STRING
   const isNumberExpr = (e) => typeof e === 'number' || (Array.isArray(e) && ((e[0] == null && typeof e[1] === 'number') || NUMBER_OPS.has(e[0]) || e[0] === 'u-' || e[0] === 'u+' || (e[0] === '.' && e[2] === 'length'))) || tagOf(kindOfExpr(e)) === K.NUMBER
   const demand = (n, cx = OTHER, into = null) => {
     if (n == null || typeof n === 'number') return
@@ -586,10 +650,23 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); demand(t[2]); demand(n[2], tagOf(r) === K.TYPED && !(paramOf(r) & 16) ? NUM : OTHER); return }
       demand(t); demand(n[2]); return
     }
-    if (MUTATE_OPS.has(op)) { const c = op === '+=' ? OTHER : NUM; useOf(n[1], c); if (n[2] !== undefined) demand(n[2], c); return }
+    // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
+    if (op === '+=') { const str = isStringExpr(n[1]) || isStringExpr(n[2]); useOf(n[1], str ? OTHER : COMPAT); useOf(n[2], str ? OTHER : COMPAT); return }
+    if (MUTATE_OPS.has(op)) { useOf(n[1], NUM); if (n[2] !== undefined) useOf(n[2], NUM); return }
     if (NUMBER_OPS.has(op) || op === 'u-' || op === 'u+') { for (let i = 1; i < n.length; i++) useOf(n[i], NUM); return }
-    if (op === '<' || op === '<=' || op === '>' || op === '>=') { useOf(n[1], isNumberExpr(n[2]) ? NUM : OTHER); useOf(n[2], isNumberExpr(n[1]) ? NUM : OTHER); return }
+    if (op === '+') { useOf(n[1], isStringExpr(n[2]) ? OTHER : COMPAT); useOf(n[2], isStringExpr(n[1]) ? OTHER : COMPAT); return }
+    // A relational compare converts against a number; two strings compare as strings, so an unknown pair is compatible.
+    if (op === '<' || op === '<=' || op === '>' || op === '>=') { const cxOf = (o) => isStringExpr(o) ? OTHER : isNumberExpr(o) ? NUM : COMPAT; useOf(n[1], cxOf(n[2])); useOf(n[2], cxOf(n[1])); return }
     if (op === '[]') { useOf(n[1], OTHER); demand(n[2]); return }
+    // A value-carrying operator reads its arms in the context of its own read;
+    // `??` tests its left arm for nullish, which ToNumber would make NaN.
+    if (op === '?' || op === '?:') { demand(n[1]); useOf(n[2], cx, into); useOf(n[3], cx, into); return }
+    if (op === '&&' || op === '||') { useOf(n[1], cx, into); useOf(n[2], cx, into); return }
+    if (op === '??') { useOf(n[1], atMost(COMPAT, cx, into)); useOf(n[2], cx, into); return }
+    // Equality against a number converts nothing: a compatible read, the number the host must pass.
+    if (op === '==' || op === '!=' || op === '===' || op === '!==') { useOf(n[1], isNumberExpr(n[2]) ? COMPAT : OTHER); useOf(n[2], isNumberExpr(n[1]) ? COMPAT : OTHER); return }
+    if (op === ',') { for (let i = 1; i < n.length - 1; i++) demand(n[i]); useOf(n[n.length - 1], cx, into); return }
+    if (op === '()' && n.length === 2) { useOf(n[1], cx, into); return }
     if (op === '()') {
       const callee = n[1], as = args(n[2])
       if (typeof callee === 'string') {
@@ -599,8 +676,11 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
         if (f && !escaped.has(callee)) { as.forEach((a, i) => { const p = f.sig.params[i]; if (p && !p.rest) useOf(a, FLOW, p.name); else demand(a) }); return }
         const ck = kinds.get(callee)
         if (ck !== undefined && tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN && !escaped.has(paramOf(ck))) { as.forEach((a, i) => { const p = closureParams[paramOf(ck)][i]; if (p != null) useOf(a, FLOW, p); else demand(a) }); return }
-        // `new Float64Array(x)` copies an array or typed array and sizes by a
-        // number: the argument is not converted, so it is no numeric use.
+        // `new Float64Array(x)` sizes by a number and copies an array: the
+        // argument is no evidence either way (a parameter read only there
+        // stays ANY, the host's array copies); a view's offset and length are
+        // numbers.
+        if (TYPED_CTOR.test(callee) || callee === 'new.ArrayBuffer') { as.forEach((a, i) => useOf(a, i === 0 ? NEUTRAL : NUM)); return }
       } else demand(callee)
       for (const a of as) demand(a)
       return
@@ -618,24 +698,30 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     changed = false
     for (const f of funcs) {
       if (f.rest) raise(kinds, f.rest, kind(K.ARRAY))
-      if (f.defaults) for (const p in f.defaults) raise(kinds, p, expr(f.defaults[p]))
-      if (escaped.has(f.name)) for (const p of f.sig.params) raise(kinds, p.name, ANY)
-      walkFunction(f.name, f.body)
+      if (f.defaults) for (const p in f.defaults) bindParam(p, expr(f.defaults[p]))
+      if (escaped.has(f.name)) for (const p of f.sig.params) bindParam(p.name, ANY)
+      walkFunction(f.name, f.body, f.sig.params.map(p => p.rest ? null : p.name))
     }
     for (let id = 0; id < closureBodies.length; id++) {
-      if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) raise(kinds, p, ANY)
-      walkFunction(id, closureBodies[id])
+      if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(p, ANY)
+      walkFunction(id, closureBodies[id], closureParams[id])
     }
     current = null
     stmt(ast)
     return changed
   })
-  for (const f of funcs) if (exported(f)) for (const p of f.sig.params) raise(kinds, p.name, ANY)
+  // What the host may pass: an exported function's parameters.
+  const seed = (numeric) => {
+    for (const f of funcs) if (exported(f)) for (const p of f.sig.params) bindParam(p.name, numeric.includes(p.name) ? NUMBER : ANY)
+  }
+  seed([])
   fixpoint()
-  // The demand pass, then the kinds again with the demanded exported
-  // parameters NUMBER. A numeric-demanded parameter is read only where a
-  // string would be converted anyway, so the f64 boundary is the program's
-  // own coercion; a parameter that also flows to the host stays ANY.
+  // The demand pass, then the kinds again with the demanded and compatible
+  // exported parameters NUMBER. A numeric-demanded parameter is read only
+  // where a string would be converted anyway, so the f64 boundary is the
+  // program's own coercion; a compatible one is also a `+` operand, and the
+  // wrapper rejects the string or object JS would have concatenated; a
+  // parameter that also flows to the host stays ANY.
   rounds(() => {
     demandChanged = false
     for (const f of funcs) demand(f.body)
@@ -643,10 +729,10 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     demand(ast)
     return demandChanged
   })
-  const seeded = [...seedable].filter(p => isNumeric(p) && tagOf(kinds.get(p) ?? K.NONE) === K.ANY)
+  const seeded = [...seedable].filter(p => isCompatible(p) && tagOf(kinds.get(p) ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.clear(); fields.clear(); results.clear(); escaped.clear(); for (let i = 0; i < elems.length; i++) elems[i] = K.NONE
-    for (const f of funcs) if (exported(f)) for (const p of f.sig.params) raise(kinds, p.name, seeded.includes(p.name) ? NUMBER : ANY)
+    kinds.clear(); incoming.clear(); fields.clear(); results.clear(); escaped.clear(); for (let i = 0; i < elems.length; i++) elems[i] = K.NONE
+    seed(seeded)
     fixpoint()
   }
 
@@ -662,6 +748,8 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     /** The typed-array constructor a slot holds under every construction and store, or null. */
     fieldTypedCtor: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); const k = i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE; return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
     resultOf: (name) => results.get(name) ?? K.NONE,
+    /** The result's value kind (reps.js VAL) when its returns join to one non-nullable kind, else null. */
+    resultVal: (name) => valOf(results.get(name) ?? K.NONE),
     /** The one schema every element of the binding's array has, or null. */
     arrayElemSidOf: (name) => { const k = kinds.get(name); if (k === undefined || tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elems[paramOf(k)]; return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null },
     /** The binding has a ToNumber read or a flow into a demanded key, and no other read. */

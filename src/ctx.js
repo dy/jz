@@ -352,7 +352,6 @@ function createFactStore() {
     bodyFacts: new Map(),
     bindingUses: new WeakMap(),
     mutationNames: new WeakMap(),
-    scopeBoundNames: new WeakMap(),
     mayBeUndefinedTrace: new WeakMap(),
     mapGetShapedTrace: new WeakMap(),
     presentValTrace: new WeakMap(),

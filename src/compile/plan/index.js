@@ -46,7 +46,7 @@ import { adviseProgram } from './advise.js'
 import { scanInplaceStores } from '../inplace-store.js'
 import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
-  inferModuleLetTypes, inferModuleGlobalValTypes, unboxConstTypedGlobals, inferModuleIntGlobals, refineFieldProvenance,
+  moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals,
   flattenFuncNamespaces, devirtGlobalCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
@@ -82,11 +82,9 @@ export default function plan(ast, profiler) {
     if (t(name, pass)) _dirty = true
   }
 
-  t('inferModuleLetTypes', () => inferModuleLetTypes(ast))
-  // Pass 1 (no call-site param facts yet): literal/alias/global-to-global
-  // evidence only. Early enough that a freshly-proven NUMBER global still
-  // reaches inferModuleIntGlobals's candidacy check below.
-  t('inferModuleGlobalValTypes', () => inferModuleGlobalValTypes(ast))
+  // The module globals' kinds are the summary's, whole-program from the start:
+  // a NUMBER global reaches inferModuleIntGlobals's candidacy below.
+  t('moduleGlobalKinds', () => moduleGlobalKinds(ctx.summary))
   t('unboxConstTypedGlobals', unboxConstTypedGlobals)
   t('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
@@ -208,11 +206,6 @@ export default function plan(ast, profiler) {
   // only ever SETS an unset valResult (see narrowBoolResults doc).
   t('narrowBoolResults', () => narrowBoolResults())
 
-  // Pass 2: narrowSignatures has now settled `programFacts.paramReps`, so a
-    // global written from a bare parameter alias (`cur = s`, subscript's parse-
-    // state shape) resolves — pass 1 saw only an untyped param and poisoned it.
-    // Idempotent: names pass 1 already claimed are skipped.
-    t('inferModuleGlobalValTypes2', () => inferModuleGlobalValTypes(ast, programFacts.paramReps))
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
     // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.
     if (optimizing()) t('analyzeParamDistinctness', () => analyzeParamDistinctness(programFacts))
@@ -244,12 +237,6 @@ export default function plan(ast, profiler) {
     if (optimizing()) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
     if (optimizing()) t('speculateTypedParams', () => speculateTypedParams(programFacts, ast))
     t('refineDynKeys', () => refineDynKeys(programFacts))
-    // Late: return sids (narrowSignatures) + the slot/write censuses are complete —
-    // bind module consts' schemas from returned objects, then re-run the module-let
-    // ctor fixpoint whose FIELD evidence (slotTypedCtorAt, write-gated) resolves
-    // only now. Upgrade-only: strictly more evidence than the early run.
-    t('refineFieldProvenance', () => refineFieldProvenance(ast))
-  t('refineModuleLetTypes', () => inferModuleLetTypes(ast))
   // Freeze point (.work/archive/program-facts-split.md §7): paramReps/callSites' true last
   // producer WITHIN plan() is this round just above — specializeValKindDichotomy/
   // speculateTypedParams when optimizing() (both write through materializeVariant),
