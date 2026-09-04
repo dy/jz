@@ -47,7 +47,7 @@ import { scanInplaceStores } from '../inplace-store.js'
 import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
   moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals,
-  flattenFuncNamespaces, devirtGlobalCalls, classifyHashDictGlobals,
+  flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
@@ -107,6 +107,8 @@ export default function plan(ast, profiler, summarize) {
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
   t('devirtGlobalCalls', () => devirtGlobalCalls(ast))
+  // A method call on a receiver the summary names calls the class's function directly.
+  sweep('devirtClassCalls', devirtClassCalls)
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)

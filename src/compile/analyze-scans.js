@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, collectAssignedNames, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -537,25 +537,31 @@ function flatObjectCandidate(name, s, body) {
   // `undefined` until the write runs, exactly as JS does). An ARRAY has a *fixed*
   // positional schema: `a.length = …` / `a[n] = …` (off the literal indices) resize
   // or grow it — not a field add — so arrays never extend, and any off-schema write
-  // (including `.length`, which isn't a slot) disqualifies below.
+  // (including `.length`, which isn't a slot) disqualifies below. A class
+  // instance's literal (jzify/classes.js, branded) has the class's members
+  // beside its fields: an access under a member's name is the accessor or the
+  // method, never a slot, so it keeps the instance whole.
   // `written` = the keys a MEMBER_W reassigns — a slot is write-once (its
   // value-type is exactly its literal initializer's) iff its key is absent here.
+  const cls = props.brand ? ctx.transform.classes?.get(props.brand) : null
+  const member = (k) => cls != null && (cls.methods.has(k) || cls.methods.has(k + ACCESSOR_GET) || cls.methods.has(k + ACCESSOR_SET))
   const schema = new Set(props.names)
   const written = new Set()
   for (const u of s[BINDING_USE_USES])
     if (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] &&
-        !u[BINDING_USE_COMPUTED] && u[BINDING_USE_KEY] != null) {
+        !u[BINDING_USE_COMPUTED] && u[BINDING_USE_KEY] != null && !member(u[BINDING_USE_KEY])) {
       if (!isArr) schema.add(u[BINDING_USE_KEY])
       written.add(u[BINDING_USE_KEY])
     }
 
   // Flat iff every mention is an in-schema literal-key `.`/`[]` READ, or an
   // in-schema literal-key plain `.`/`[]` WRITE. Any other use kind — `?.`,
-  // computed/off-schema key, reassignment, compound or `delete` member write,
-  // `++`/`--`, call arg, closure capture, bare ref — leaves the object live.
+  // computed/off-schema key, a class member, reassignment, compound or `delete`
+  // member write, `++`/`--`, call arg, closure capture, bare ref — leaves the
+  // object live.
   const flat = s[BINDING_USE_USES].every(u =>
     (u[BINDING_USE_KIND] === USE.MEMBER_R && !u[BINDING_USE_OPTIONAL] &&
-      !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY])) ||
+      !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY]) && !member(u[BINDING_USE_KEY])) ||
     (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] &&
       !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY])))
   if (!flat) return null

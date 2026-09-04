@@ -290,6 +290,13 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
       const shape = args && inlinedBody(candidates.get(decl[2][1]), args)
       if (shape && shape.value !== null) {
         const { hoisted, rest } = partitionInvariantPrefix(shape.prefix, loopVariantNames)
+        // The callee returns one of its own locals (`let self = {…}; …; return self`,
+        // a class factory): the caller's name takes the local's place, so the
+        // literal has no alias to escape into and scalar replacement sees it.
+        if (typeof shape.value === 'string' && rest.some(st => stmtDeclName(st) === shape.value)) {
+          const splice = rest.map(st => substIdents(st, new Map([[shape.value, decl[1]]])))
+          return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
+        }
         const splice = [...rest, [stmt[0], ['=', decl[1], shape.value]]]
         return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
       }
@@ -585,20 +592,21 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const fixedTypedArraySite = hasFixedTypedArraySites(func, sites)
     const fullyFixedTypedArraySite = hasFullyFixedTypedArraySites(func, sites)
     const hasLoop = some(func.body, n => LOOP_OPS.has(n[0]))
-    const isTinyLeaf = !hasLoop && nodeSize(func.body) <= 15
+    const size = nodeSize(func.body)
+    const isTinyLeaf = !hasLoop && size <= 15
     // A small leaf (no loop, ≤40 nodes) is cheap to splice even when called several times — its
     // per-call overhead + lost cross-call fusion dwarfs the ≤8× duplication, and temp-binding +
     // flattenPrefix keep the spliced body bounded (no arg re-evaluation, CSE collapses copies).
     // The 2-site non-tiny-leaf cap would otherwise outline a hot helper like noise's `grad`
     // (~30 nodes, called 4× from perlin) and freeze the call overhead per pixel.
-    const isSmallLeaf = !hasLoop && nodeSize(func.body) <= 48
+    const isSmallLeaf = !hasLoop && size <= 48
     // Leaf site cap scales with body size — the cost of inlining N sites is
     // N·size nodes, not N: a 30-node pure leaf hammered from 9 sites (colorpq's
     // spow) is 270 spliced nodes, cheaper than 9 call frames per pixel, while a
     // 48-node body keeps the old 8-site bound (360/48 → 8). Full inlining also
     // restores shape identity for downstream CSE — a PARTIAL split (some sites
     // inlined, some calls) makes duplicate pure subtrees structurally unequal.
-    const leafSiteCap = (isTinyLeaf || isSmallLeaf) ? Math.max(8, Math.floor(360 / Math.max(1, nodeSize(func.body)))) : 8
+    const leafSiteCap = (isTinyLeaf || isSmallLeaf) ? Math.max(8, Math.floor(360 / Math.max(1, size))) : 8
     if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
     // Size tier: a looped kernel is spliced only where that duplicates nothing.
     if (hasLoop && sites.length > 1 && cfg && cfg.sourceInlineDup === false) continue
@@ -622,9 +630,13 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // body saves the per-iteration call+reinterpret overhead (tokenizer hot path).
     if (!hasLoop) {
       // Calls to functions that are THEMSELVES candidates are fine — they inline away;
-      // only a call to a non-candidate user function blocks (a later fixpoint pass re-checks).
-      // Speed-tier only; lower tiers keep the strict "any user call ⇒ outline" rule.
-      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !(speedTier && candidates.has(n[1])))) continue
+      // only a call to a non-candidate user function blocks (the fixpoint re-checks:
+      // a class factory calls its initializer, a candidate leaf, and is one itself).
+      // Below speed, the callee must have this one site, so that splicing the caller
+      // duplicates nothing a call kept shared (a guard's string compares into four
+      // callers cost the flagship 6 KB).
+      const inlinesAway = (callee) => candidates.has(callee) && (speedTier || sitesByCallee.get(callee)?.length === 1)
+      if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1]))) continue
       // Per-iteration call overhead dwarfs body-size bloat when EVERY site sits
       // inside a caller's loop (game-of-life's rot: ~40 nodes × 2 sites, fired
       // for most of 260k cells/frame; cloth's relax: ~160 nodes × 2 sites, fired
@@ -654,7 +666,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // Non-in-loop cap is 40 (not 30) so a small leaf called from a straight-line but
       // transitively-hot caller still inlines (noise's grad is called from perlin, which has
       // no loop of its own but is itself the per-pixel kernel). Still tightly bounded.
-      if (nodeSize(func.body) > (allSitesInLoop ? 200 : 48)) continue
+      if (size > (allSitesInLoop ? 200 : 48)) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
@@ -673,7 +685,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       forwarders.add(func.name)
     if (!hasLoop) leaves.add(func.name)
     candidates.set(func.name, func)
-    if (speedTier) recollect = true  // only the speed-tier transitive relaxation needs a re-pass
+    recollect = true  // a function this one blocked (a caller of it) may qualify now
   }
   }
   if (!candidates.size) return false
