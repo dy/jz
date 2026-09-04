@@ -402,20 +402,33 @@ const hoistNestedCalls = (body, blockNames, bodies = null) => {
   // it does NOT advance the outer eff (the whole unit relocates together, order intact).
   // `eff.seen` is `true` for an opaque effect, or the SET of names a preceding plain
   // assignment wrote (`out[w++] = rnd()`): a callee whose body (`bodies`) touches no
-  // memory, calls nothing and shares no name with that set commutes with it.
-  const commutes = (name, seen) => {
-    if (seen === false) return true
-    if (seen === true) return false
+  // memory, calls nothing and shares no name with that set commutes with it. A
+  // preceding READ (`eff.mem`: a member or element; `eff.reads`: the names) must
+  // see the value before the callee's writes: `s.v * 1000 + bump(s)` keeps the
+  // read first, so a callee that stores to memory, calls, or assigns a name read
+  // stays in place.
+  // A body stores to memory, or calls past the candidates (whose bodies are followed).
+  const touchesMemory = (b, seen = new Set()) => some(b, n => n[0] === 'new' || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string')
+    || (n[0] === '()' && (typeof n[1] !== 'string' || !bodies?.has(n[1]) || (!seen.has(n[1]) && touchesMemory(bodies.get(n[1]), seen.add(n[1]))))))
+  const assigns = (b, x, seen = new Set()) => some(b, n => (MUTATE_OPS.has(n[0]) && n[1] === x)
+    || (n[0] === '()' && typeof n[1] === 'string' && bodies?.has(n[1]) && !seen.has(n[1]) && assigns(bodies.get(n[1]), x, seen.add(n[1]))))
+  const commutes = (name, eff) => {
+    if (eff.seen === true) return false
+    if (eff.seen === false && !eff.mem && !eff.reads.size) return true
     const b = bodies?.get(name)
-    if (!b || some(b, n => n[0] === '()' || n[0] === 'new' || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string'))) return false
-    for (const x of seen) if (refsName(b, x, REFS_IN_EXPR)) return false
+    if (!b) return false
+    if ((eff.seen !== false || eff.mem) && touchesMemory(b)) return false
+    if (eff.seen !== false) for (const x of eff.seen) if (refsName(b, x, REFS_IN_EXPR)) return false
+    for (const x of eff.reads) if (assigns(b, x)) return false
     return true
   }
+  const effState = (seen = false) => ({ seen, mem: false, reads: new Set() })
   const note = (eff, w) => { eff.seen = eff.seen === true || w === true ? true : w === false ? eff.seen : eff.seen === false ? w : new Set([...eff.seen, ...w]) }
   const hExpr = (n, pre, cond, eff) => {
+    if (typeof n === 'string') { eff.reads.add(n); return n }
     if (!Array.isArray(n) || n[0] === '=>') return n
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1]) && commutes(n[1], eff.seen)) {
-      const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, { seen: false }))]
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1]) && commutes(n[1], eff)) {
+      const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, effState()))]
       const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
       changed = true
@@ -437,6 +450,7 @@ const hoistNestedCalls = (body, blockNames, bodies = null) => {
     const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond, eff))]
     if (n[0] === '()' && !pureSIMDCall(n)) eff.seen = true  // an effectful call left in place is an opaque effect
     else if (MUTATE_OPS.has(n[0])) note(eff, typeof n[1] === 'string' ? new Set([n[1]]) : true)
+    else if (n[0] === '.' || n[0] === '[]') eff.mem = true  // a read left in place sees the value before a later callee's store
     return out
   }
   // A RHS that is DIRECTLY a candidate call is already folded by inlineInStmt's
@@ -456,14 +470,14 @@ const hoistNestedCalls = (body, blockNames, bodies = null) => {
       case 'while': return [['while', s[1], seq(hStmt(s[2]))]]
       case 'let': case 'const': {
         if (s.length === 2 && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && !directCall(s[1][2])) {
-          const pre = []; const rhs = hExpr(s[1][2], pre, false, { seen: false })
+          const pre = []; const rhs = hExpr(s[1][2], pre, false, effState())
           return pre.length ? [...pre, [s[0], ['=', s[1][1], rhs]]] : [s]
         }
         // Several declarators evaluate left to right; one effect state threads
         // through them (a declared name is out of the callee's scope, so the
         // binding itself is not an effect the callee can observe).
         if (s.length > 2 && s.slice(1).every(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && !directCall(d[2]))) {
-          const pre = [], eff = { seen: false }
+          const pre = [], eff = effState()
           const decls = s.slice(1).map(d => ['=', d[1], hExpr(d[2], pre, false, eff)])
           return pre.length ? [...pre, [s[0], ...decls]] : [s]
         }
@@ -471,11 +485,11 @@ const hoistNestedCalls = (body, blockNames, bodies = null) => {
       }
       // A computed assign target (`a[i]=…`) evaluates its index BEFORE the RHS, so an effect
       // there (`a[j++]=…`) must block hoisting too — seed eff.seen from the LHS.
-      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, { seen: lhsWrites(s[1]) }); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
+      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, effState(lhsWrites(s[1]))); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
       // Compound assignment reads its target before the RHS (a read, not an effect).
       case '+=': case '-=': case '*=': case '|=': case '&=': case '^=': case '<<=': case '>>=': case '>>>=':
-        { const pre = []; const rhs = hExpr(s[2], pre, false, { seen: lhsWrites(s[1]) }); return pre.length ? [...pre, [s[0], s[1], rhs]] : [s] }
-      case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false, { seen: false }); return pre.length ? [...pre, ['return', v]] : [s] }
+        { const pre = []; const rhs = hExpr(s[2], pre, false, effState(lhsWrites(s[1]))); return pre.length ? [...pre, [s[0], s[1], rhs]] : [s] }
+      case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false, effState()); return pre.length ? [...pre, ['return', v]] : [s] }
       default: return [s]  // unrecognized shape (break/continue/throw/try/switch): leave alone
     }
   }
@@ -732,7 +746,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     for (let iter = 0; iter < 4; iter++) {
       let iterChanged = false
       if (speedTier && !isExprBody && blockNames.size) {
-        const h = hoistNestedCalls(body, blockNames)
+        const h = hoistNestedCalls(body, blockNames, new Map([...activeCandidates].filter(([n]) => blockNames.has(n)).map(([n, f]) => [n, f.body])))
         if (h.changed) { body = h.node; iterChanged = true }
       }
       if (isExprBody) {

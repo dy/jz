@@ -685,6 +685,21 @@ test('inline: expression-position hoist preserves evaluation order of side effec
   const ALL_CAND = NONCAND_FIRST.replace('let a = () => { let s = 0; for (let i = 0; i < 1; i = i + 1) s = s + 1; log[n] = 1', 'let a = () => { log[n] = 1')
   is(order(ALL_CAND), 610000123, 'all-candidate chain: order a,helper,b preserved')
   if (!onKernel()) is((jz.compile(ALL_CAND, { wat: true, optimize: { level: 'speed' } }).match(/call \$helper/g) || []).length, 0, 'helper still inlines when nothing effectful precedes it')
+
+  // A READ before the call sees the value before the callee's store: `s.v * 1000 + bump(s)`
+  // reads 99, then bump stores 100 (the hoist would have read 100). A callee that stores
+  // nothing an earlier read could see still folds (`sum + amp * perlin(x)`).
+  const READ_FIRST = `const reveal = (s) => s.v
+    const bump = (s) => { s.v = s.v + 1; return s.v }
+    let g = 1
+    const inc = () => { g = g + 1; return g }
+    export let f = () => { let s = { v: 99 }; return reveal(s) * 1000 + bump(s) }
+    export let direct = () => { let s = { v: 99 }; return s.v * 1000 + bump(s) }
+    export let global = () => g * 1000 + inc()`
+  for (const optimize of [2, 'speed']) {
+    const e = jz(READ_FIRST, { optimize }).exports
+    is(e.f(), 99100, `${optimize}: the read through an inlined accessor precedes the store`); is(e.direct(), 99100, `${optimize}: the member read precedes the store`); is(e.global(), 1002, `${optimize}: the global read precedes the store`)
+  }
 })
 
 test('known numeric coercions elide __to_num', () => {
