@@ -217,12 +217,14 @@ test("carrier: specializeMkptr's inline $__mkptr fast-path template matches i64H
 
 test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt) matches i64Hex natively", () => {
   if (onKernel()) return
-  // narrow.js's applyPointerParamAbi devirtualizes a non-exported, never-
-  // mutated, provably-single-kind pointer param to a raw i32 offset; asF64
-  // (ir.js) re-boxes it via boxPtrIR whenever the value must cross back out
-  // as f64 — here, chase's own recursive return. PTR.BUFFER's aux is always
-  // 0 by construction (no schema id involved, unlike OBJECT), keeping the
-  // expected prefix exact without depending on schema-registration order.
+  // narrow's applyPointerParamAbi devirtualizes a non-exported, never-mutated,
+  // provably-single-kind pointer param to a raw i32 offset, and the summary's
+  // result kind (BUFFER through the recursive passthrough) gives chase a raw
+  // i32 pointer result too, so no box crosses inside; asF64 (ir.js) re-boxes
+  // the offset via boxPtrIR where the value must cross back out as f64: the
+  // export wrapper. PTR.BUFFER's aux is always 0 by construction (no schema
+  // id involved, unlike OBJECT), keeping the expected prefix exact without
+  // depending on schema-registration order.
   const src = `
     const chase = (o, n) => n <= 0 ? o : chase(o, n - 1)
     const chaseFromBuf = (n) => chase(new ArrayBuffer(8), n)
@@ -232,9 +234,12 @@ test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt
   const fn = findFunc(tree, '$chase')
   ok(fn, "applyPointerParamAbi must devirtualize chase's BUFFER param to a raw i32 offset")
   const oParam = fn.find(n => Array.isArray(n) && n[0] === 'param' && n[1] === '$o')
-  is(oParam[2], 'i32', "chase's o param must be narrowed to i32 for this pin to exercise boxPtrIR's re-box")
-  is(i64ConstsOf(fn).join(','), i64Hex(ptrBits(PTR.BUFFER, 0)),
-    "boxPtrIR's re-box template must be byte-identical to i64Hex(ptrBits(PTR.BUFFER,0))")
+  is(oParam[2], 'i32', "chase's o param must be narrowed to i32")
+  const result = fn.find(n => Array.isArray(n) && n[0] === 'result')
+  is(result[1], 'i32', "chase's result is the raw pointer (the summary proves every return a BUFFER)")
+  is(i64ConstsOf(fn).length, 0, 'no box crosses the recursion')
+  is(i64ConstsOf(findFunc(tree, '$roundTrip$exp')).join(','), i64Hex(ptrBits(PTR.BUFFER, 0)),
+    "boxPtrIR's re-box template at the export must be byte-identical to i64Hex(ptrBits(PTR.BUFFER,0))")
 })
 
 // === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/archive/carrier-

@@ -162,9 +162,9 @@ test('warnings: jsstring-declined when concat blocks externref carrier', () => {
   if (onWasi()) return  // wasi: jsstring externref interop
   if (belowOpt(2)) return  // jsstring ABI (and its decline advisory) is engaged at optimize >= 2
   const ws = warningsFor(`export let f = (s = '') => s + '!'`)
-  is(ws.length, 1)
-  is(ws[0].code, 'jsstring-declined')
-  ok(/concatenation/.test(ws[0].message))
+  // The export also returns a fresh string, a heap value: the heap-return advisory rides along.
+  is(ws.map(w => w.code).sort().join(), 'heap-return,jsstring-declined')
+  ok(/concatenation/.test(ws.find(w => w.code === 'jsstring-declined').message))
 })
 
 test('warnings: jsstring-declined when param is reassigned', () => {

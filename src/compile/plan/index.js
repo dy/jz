@@ -37,7 +37,7 @@ import { buildProgramIndex, releaseLiftedAddressTakenNames } from '../program-in
 import { buildDictKindIndex } from '../dict-kind-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
-  applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
+  applyJsstringBoundaryCarrierStandalone, seedResultKinds,
   strictBoundaryTypeCheck, applyExportTypedArrayAbi,
 } from '../narrow.js'
 
@@ -189,10 +189,11 @@ export default function plan(ast, profiler, summarize) {
     programFacts.paramReps = readonlyParamReps(programFacts.paramReps)
     // Phase J (jsstring boundary opt-in) is body-local and call-site-independent;
     // run it even when the rest of narrowing is skipped so simple `export let
-    // f = (s) => s.length` still flips to externref. Likewise the boolean-result
-    // fact, so `export let f = (a) => a > 2` boxes its boundary atom.
+    // f = (s) => s.length` still flips to externref. Likewise the result kinds,
+    // so `export let f = (a) => a > 2` boxes its boundary atom.
     applyJsstringBoundaryCarrierStandalone(programFacts)
-    narrowBoolResults()
+    ctx.summary = t('summary', summarize)
+    seedResultKinds()
     strictBoundaryTypeCheck(programFacts)
     adviseProgram(programFacts)
     solveRepresentationBoundaries(ctx, programFacts, ast)
@@ -211,11 +212,6 @@ export default function plan(ast, profiler, summarize) {
   // with the export contract: narrowing reads the parameter kinds from it.
   ctx.summary = t('summary', summarize)
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
-  // Boolean/bigint result kinds for funcs the call-site census can't reach —
-  // value-used-only functions have no direct sites, but their results still
-  // cross boxed positions (closure trampolines, boundary wrappers). Guarded:
-  // only ever SETS an unset valResult (see narrowBoolResults doc).
-  t('narrowBoolResults', () => narrowBoolResults())
 
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
     // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.

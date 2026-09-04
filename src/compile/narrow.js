@@ -25,7 +25,7 @@
 export { default as default } from './narrow/index.js'
 export { applyExportTypedArrayAbi } from './narrow/param-abi.js'
 export { applyJsstringBoundaryCarrierStandalone, adviseJsstringCarrier } from './narrow/jsstring-carrier.js'
-export { narrowBoolResults } from './narrow/results.js'
+export { seedResultKinds } from './narrow/results.js'
 export { strictBoundaryTypeCheck } from './narrow/strict-boundary.js'
 export { specializeBimorphicTyped, specializeValKindDichotomy, specializeUnionCursorParams, speculateTypedParams } from './narrow/specialize.js'
 export { refineDynKeys } from './narrow/dyn-keys.js'

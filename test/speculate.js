@@ -16,10 +16,13 @@ import jz from '../index.js'
 
 const opts = { wat: true, optimize: { level: 'speed', watr: false } }
 
-// fftplan in miniature: plan built once, cached in a Map + last-plan memo,
-// tables reach the kernel as returned-object fields. No edge here is provable.
+// fftplan in miniature: plan built once, cached in a dictionary + last-plan
+// memo, tables reach the kernel as returned-object fields. No edge here is
+// provable: a dictionary's values are not a kind the summary carries (a Map's
+// are, so a Map cache proves the kernel's parameters typed outright, and the
+// guard never enters).
 const PLAN_SRC = `
-const cache = new Map()
+const cache = {}
 let lastN = 0, lastPlan = null
 const makePlan = (n) => {
   const tw = new Float64Array(n)
@@ -30,8 +33,8 @@ const makePlan = (n) => {
 }
 const getPlan = (n) => {
   if (n === lastN) return lastPlan
-  let p = cache.get(n)
-  if (p === undefined) { p = makePlan(n); cache.set(n, p) }
+  let p = cache[n]
+  if (p === undefined) { p = makePlan(n); cache[n] = p }
   lastN = n; lastPlan = p
   return p
 }
@@ -107,7 +110,11 @@ export let go = (n) => {
   return h
 }`
   const w = jz.compile(src, opts)
-  ok(w.includes('$kernel$spec'), 'clone from arrow-param evidence')
+  // The summary follows the arrow: every argument to `edge` is a Float64Array
+  // (a call's result, a field, a Map's value, a memo), so `kernel`'s tw is
+  // proven typed and takes the pointer ABI outright; no guarded clone is needed.
+  ok(!w.includes('$kernel$spec'), 'no clone: the parameter is proven')
+  ok(/\(func \$kernel\n\s+\(param \$tw i32\)/.test(w), 'kernel reads its typed parameter raw')
   const { exports } = jz(src)
   // n=8: ret contributes 8·1, each pair edge 8·2 → 8 + 3·16 = 56
   is(exports.go(8), 56)

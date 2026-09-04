@@ -51,7 +51,7 @@
 import { ctx } from '../ctx.js'
 import { collectParamNames, ASSIGN_OPS, typeofPredicate } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
-import { staticObjectProps, staticArrayElems } from '../static.js'
+import { staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
 import { typedStaticLen } from '../type.js'
 import { typedStorageCtorFromContext } from '../typed-context.js'
@@ -361,53 +361,10 @@ export function recordGlobalRep(name, expr) {
 
 // === Call-site argument inference =========================================
 //
-// The value kinds of a call-site argument are the program summary's
-// (src/summary, narrow/index.js seedParamKinds). What remains here resolves
-// the facts the summary does not carry: a constant schema id for a return
-// expression (narrowPointerResults) and the closed element-schema union.
-
-/** Resolve a constant schemaId for an expression in a caller-or-return scope.
- *  Sources (in order): per-name `lookupMap` (caller's per-param schemaId map),
- *  module-level `ctx.schema.vars` binding, static-key `{}` literal,
- *  call to an OBJECT-narrowed function (carries schemaId in `f.sig.ptrAux`),
- *  recursive descent through `?:` / `&&` / `||` when both branches agree.
- *  Returns the schemaId (number) or null when no constant exists.
- *
- *  Used at both call sites (narrow.js D-phase mergeRule for `schemaId`) and
- *  return sites (narrow.js phase G's `narrowReturnArrayElems` and the per-fn
- *  return-schema narrowing). At early D-iterations the call-result branch
- *  is a no-op (valResult not yet seeded by phase F); strictly accretive. */
-export function inferSchemaId(expr, lookupMap) {
-  if (typeof expr === 'string') {
-    if (lookupMap?.has(expr)) return lookupMap.get(expr)
-    const id = ctx.schema.vars.get(expr)
-    // The program summary: a binding every assignment of which is one shape
-    // (a local holding a factory's result, a parameter of one shape).
-    return id != null ? id : ctx.summary?.sidOf(expr) ?? null
-  }
-  if (!Array.isArray(expr)) return null
-  const op = expr[0]
-  if (op === '{}') {
-    const parsed = staticObjectProps(expr.slice(1))
-    return parsed ? ctx.schema.register(parsed.names) : null
-  }
-  if (op === '()' && typeof expr[1] === 'string') {
-    const f = ctx.funcs.map?.get(expr[1])
-    if (f?.valResult === VAL.OBJECT && f.sig.ptrAux != null) return f.sig.ptrAux
-    return null
-  }
-  if (op === '?:') {
-    const a = inferSchemaId(expr[2], lookupMap)
-    const b = inferSchemaId(expr[3], lookupMap)
-    return a != null && a === b ? a : null
-  }
-  if (op === '&&' || op === '||') {
-    const a = inferSchemaId(expr[1], lookupMap)
-    const b = inferSchemaId(expr[2], lookupMap)
-    return a != null && a === b ? a : null
-  }
-  return null
-}
+// The value kinds of a call-site argument and of a result are the program
+// summary's (src/summary, narrow/index.js seedParamKinds, results.js
+// seedResultKinds). What remains here resolves the one fact the summary
+// does not carry: the closed element-schema union.
 
 /** Infer arg closed elem-schema UNION as its canonical 'a,b,…' key. Sources:
  *  caller's body set census (Set values, `cx.callerElems`), caller's param fact

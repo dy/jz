@@ -1,29 +1,23 @@
 /**
- * Numeric/VAL-kind/pointer/bool function-result narrowing, plus return-path
- * array-elem propagation — Phases E/E2/E3 of narrowSignatures' fixpoint
- * (narrowI32Results/narrowValResults/narrowPointerResults/narrowReturnArrayElems)
- * and narrowBoolResults, the leaf-module-skip-path bool/bigint inference that
- * runs even when whole-program narrowing itself is skipped.
+ * Function results: the value kind is the program summary's (`seedResultKinds`:
+ * the join of the returns), the pointer ABI it licenses (`narrowPointerResults`)
+ * and the numeric i32 result the range channels prove (`narrowI32Results`),
+ * plus the closed element-schema union of an array result.
  *
  * @module compile/narrow/results
  */
 
 import { ctx } from '../../ctx.js'
-import { withCurrentFunction, withFunctionFields, withTypedElems } from '../flow-state.js'
-import {
-  isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, walkAst, some, isReassigned,
-} from '../../ast.js'
+import { withCurrentFunction, withTypedElems } from '../flow-state.js'
+import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, walkAst, isReassigned } from '../../ast.js'
 import { analyzeBody, reanalyzeBody, invalidateBodies } from '../analyze.js'
-import { exprType, typedElemCtor, typedStaticLen } from '../../type.js'
-import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
-import {
-  valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn,
-} from '../../kind.js'
+import { exprType, typedStaticLen } from '../../type.js'
+import { ctorFromElemAux } from '../../../layout.js'
+import { valTypeOfWithLocals, hasAmbiguousBoolMerge } from '../../kind.js'
 import { VAL, KIND_UNIVERSE, lookupValType } from '../../reps.js'
 import { paramFactsOf } from '../../param-reps.js'
-import { inferSchemaId } from '../infer.js'
 import { isExported } from '../func-exports.js'
-import { valsOf } from '../../summary/index.js'
+import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN } from '../../summary/index.js'
 
 /**
  * Phase E: numeric result narrowing.
@@ -234,132 +228,30 @@ export function narrowI32Results(funcs) {
   }
 }
 
-/**
- * Phase E2: VAL-kind result inference.
- *
- * When every return-tail resolves to the same VAL.* kind, record it on
- * func.valResult so call-site valTypeOf inherits it (enables static dispatch
- * on .length / [i] / .prop through the call chain). Fixpoint propagates
- * through helper chains. Exports are safe — same boundary-wrapper guarantee
- * as numeric narrowing.
- */
-// Install THIS function's own arr-elem VAL-kind facts (a body's analyzeBody(...)
-// .arrElemValTypes slice) onto ctx.func.localReps for the duration of a
-// return-kind resolution — the ARRAY sibling of the ctx.func.flatObjects
-// install both narrowValResults and narrowBoolResults already do (same call
-// site, same reasoning): kind.js VT['[]']'s `ctx.func.localReps?.get(name)?.
-// arrayElemValType` rule is what a bare `return arr[i]` on a proven-element-
-// kind array resolves through, and both return-kind pre-passes otherwise run
-// "ABOVE" the per-function localReps state that fact normally rides on
-// (populated at emit time — compile/index.js's analyzeFuncForEmit-equivalent
-// `updateRep` loop over the identical `facts.arrElemValTypes` slice). Without
-// this, `let a = [1n]; return a[0]` reads as an unproven (Number) boundary
-// kind even though the i64 VALUE is already correct (.work/archive/todo.md
-// "NOT FIXED, BANKED" entry — BigInt array literals never
-// qualify for flat SRoA, so this whole-program fact is the only path to the
-// correct kind).
-//
-// Only NON-NULL facts are installed. Fail-open is load-bearing here, not
-// incidental: analyzeBody's observeArrValType poisons an entry to null the
-// moment any element disagrees or an unknown-origin mutation touches the
-// array (see analyze.js's `elemOrigin` comment — a fact only ever SETTLES
-// non-null for a name whose contents trace to a construction origin: an
-// array-literal init with every element statically visible, a fresh-ctor
-// call, or a chained alias/call-return/`.map` of another already-proven
-// source). "non-null in this Map" already IS the elemOrigin-gated proof this
-// needs — asserting a kind (especially BIGINT, whose wrong-boxing is the
-// documented historical hazard) off an unproven or poisoned entry would be
-// the unsound direction; this only ever narrows, never widens, a claim.
-function installArrElemReps(arrElemValTypes, prevReps) {
-  if (!arrElemValTypes?.size) return prevReps
-  let reps = null
-  for (const [name, vt] of arrElemValTypes) {
-    if (vt == null) continue
-    if (!reps) reps = new Map(prevReps)
-    reps.set(name, { ...reps.get(name), arrayElemValType: vt })
-  }
-  return reps || prevReps
-}
-
-export function narrowValResults(funcs) {
-  // Delegates to kind.js's shared local-aware resolver (valTypeOfWithLocals) —
-  // round-6 prereq (a): a plain valTypeOf(['++','n']) can't see a LOCAL's kind
-  // (numericUnaryVT's own recursion always hits the GLOBAL lookupValType, never
-  // this function's localValTypes/globalValTypes), which left `return ++n` on a
-  // proven-BIGINT local exporting raw f64. The '+'/'?:'/'&&'/'||' cases (and the
-  // SOUND-`+` rule below) used to be duplicated here; they now live once in
-  // valTypeOfWithLocals. SOUND `+` at the result-stamping boundary: VT['+'] is
-  // optimistic (unknown side → NUMBER — load-bearing for local inference), but
-  // a func.valResult claim crosses into call-site compare dispatch, where a
-  // misproved NUMBER on a string-building helper (watr's `hex + hex` _sb) made
-  // `'7fff…' < '8000…'` compare raw NaN-boxed pointers (always false), folding
-  // watr-in-kernel's i64.lt_s(-1,0) to 0. Unknown side → no claim. Named-
-  // function call results (`f?.valResult`) route through valTypeOf(expr)'s own
-  // VT['()'] → calleeValType, same as before this delegation.
-  //
-  // INVARIANT: NOT wired here — a same-body local-closure
-  // extension — resolving `return parse(v)` (watr's uleb/limits shape) through
-  // closureBodyReturnKind (flow-types.js) the moment a typeof-guard is
-  // involved — round-tripped correctly NATIVE but diverged self-hosted
-  // (JZ_TEST_TARGET=jz.wasm): narrowing to "typeof-refined closure return-kind
-  // feeding an ENCLOSING function's own valResult" reproduced across two
-  // independent closureBodyReturnKind implementations (extractRefinements-
-  // driven and a hand-rolled typeofPredicate walk; shared-mutable-state and
-  // pure-functional site collection) — same divergence both times, so it isn't
-  // this function's own algorithm. Left OUT rather than shipped uncertain:
-  // ctx.closure.valResult (module/function.js + kind-traits.js calleeValType)
-  // is the part verified value-correct self-hosted (a call-site __to_num skip
-  // through the identical typeof-guarded closure round-trips right under
-  // kernel) and is what actually ships. A same-body `let parse = …; return
-  // parse(v)` tail simply stays unproven here, same as any other call whose
-  // callee valResult isn't yet knowable at planning time — fails open.
-  const valTypeOfWithCalls = (expr, localValTypes) =>
-    valTypeOfWithLocals(expr, name => localValTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null)
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const func of funcs) {
-      if (func.valResult) continue
-      const body = func.body
-      const isBlock = isBlockBody(body)
-      if (isBlock && hasBareReturn(body)) continue
-      const exprs = returnExprs(body)
-      if (!exprs.length) continue
-      const bodyFacts = isBlock ? analyzeBody(body) : null
-      const localValTypes = bodyFacts ? bodyFacts.valTypes : new Map()
-      // A `.`/`[]` return tail (`return obj.p`) resolves its kind through
-      // kind.js VT['.'], which consults ctx.func.flatObjects for the SRoA
-      // flat-object fast path — normally populated per-function at emit time
-      // (compile/index.js), well AFTER this pass runs. Without it, a proven-
-      // BIGINT flat field's return tail reads as unproven here (this pass ran
-      // "ABOVE" per-function state, same class of gap as the schema.vars note
-      // below) and the exported function keeps the wrong (Number) boundary
-      // decode even though the value itself is correct. bodyFacts.flatObjects
-      // is body-local and pure — safe to install for the duration of this
-      // func's own valTypeOfWithCalls calls, then restore.
-      const evaluate = () => {
-        const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
-        return [vt0, vt0 && exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)]
-      }
-      const [vt0, allSame] = bodyFacts
-        ? withFunctionFields({
-          flatObjects: bodyFacts.flatObjects,
-          localReps: installArrElemReps(bodyFacts.arrElemValTypes, ctx.func.localReps),
-        }, evaluate)
-        : evaluate()
-      if (!vt0) continue
-      if (allSame) {
-        func.valResult = vt0
-        // mayBeUndefined return-kind join (Slice 2, .work/archive/todo.md
-        // §deletion-sweep §3 "Return kinds"): OR across every return-tail
-        // expr this SAME allSame fold already unified — a `return d[missing]`
-        // arm's census shape, or a `return x` whose `x` traces to one through
-        // this func's own writes (exprMayBeUndefinedIn — ctx-independent, see
-        // kind.js), makes the whole result maybeUndefined. Additive-only, like
-        // valResult itself: never re-checked once true.
-        if (!func.valResultMayBeUndefined && exprs.some(e => exprMayBeUndefinedIn(e, body)))
-          func.valResultMayBeUndefined = true
-        changed = true
+/** The summary's result kinds onto every function: `valResult` (the join of the
+ *  returns, one value kind), its presence (an ABSENT return), and an array
+ *  result's element facts. A nullish return is no claim, except BIGINT, whose
+ *  i64 bits carry no tag. Runs on the narrowing path and the skip path alike
+ *  (a boolean result crosses the host boundary as its atom, a bigint as a
+ *  Number, so a leaf module needs the kind too). */
+export function seedResultKinds() {
+  for (const func of ctx.funcs.list) {
+    // A multi-value result (a scalarized array return) is no one value.
+    if (func.raw || !func.body || func.valResult || func.sig.results.length !== 1) continue
+    const k = ctx.summary.resultOf(func.name), t = tagOf(k)
+    if (t === K.NONE || t === K.ABSENT || t === K.NULLISH) continue
+    if (hasTag(k, K.NULLISH) && t !== K.BIGINT) continue
+    const v = valOf(core(k))
+    if (v == null) continue
+    func.valResult = v
+    // Presence beside the kind, as for a parameter (narrow/index.js seedParamKinds), BIGINT excepted.
+    if (hasTag(k, K.ABSENT) && v !== VAL.BIGINT) func.valResultMayBeUndefined = true
+    if (v === VAL.ARRAY) {
+      const e = ctx.summary.elemKindOf(k)
+      if (!hasTag(e, K.NULLISH)) {
+        if (tagOf(e) === K.OBJECT && paramOf(e) !== UNKNOWN) func.arrayElemSchema = paramOf(e)
+        const ev = valOf(core(e))
+        if (ev != null) func.arrayElemValType = ev
       }
     }
   }
@@ -367,253 +259,55 @@ export function narrowValResults(funcs) {
 
 const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
 
-// Per-body local elemAux map: scans `let/const x = new TypedArray(...)` decls so a return
-// like `let a = new Float64Array(...); return a` resolves to a constant aux.
-function localElemAuxMap(body) {
-  const m = new Map()
-  walkAst(body, { enter: n => {
-    const op = n[0]
-    if (op === '=>') return false
-    if ((op === 'let' || op === 'const') && n.length > 1) {
-      for (let i = 1; i < n.length; i++) {
-        const a = n[i]
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
-          const aux = typedElemAux(typedElemCtor(a[2]))
-          if (aux != null) m.set(a[1], aux)
-        }
-      }
-    }
-  } })
-  return m
-}
-
-function typedAuxOfReturn(expr, localElemMap) {
-  if (typeof expr === 'string') return localElemMap?.get(expr) ?? null
-  if (!Array.isArray(expr)) return null
-  const op = expr[0]
-  if (op === '()' && typeof expr[1] === 'string') {
-    if (expr[1].startsWith('new.')) {
-      const ctor = typedElemCtor(expr)
-      return ctor != null ? typedElemAux(ctor) : null
-    }
-    const f = ctx.funcs.map.get(expr[1])
-    if (f?.valResult === VAL.TYPED && f.sig.ptrAux != null) return f.sig.ptrAux
-    return null
-  }
-  if (op === '?:') {
-    const a = typedAuxOfReturn(expr[2], localElemMap)
-    const b = typedAuxOfReturn(expr[3], localElemMap)
-    return a != null && a === b ? a : null
-  }
-  if (op === '&&' || op === '||') {
-    const a = typedAuxOfReturn(expr[1], localElemMap)
-    const b = typedAuxOfReturn(expr[2], localElemMap)
-    return a != null && a === b ? a : null
-  }
-  return null
-}
-
 /**
  * Phase E3: pointer result narrowing.
  *
- * For narrowable funcs whose valResult is a non-ambiguous pointer kind with a
- * constant aux, narrow sig.results[0] from f64 to i32 and tag sig.ptrKind/.ptrAux.
+ * For narrowable funcs whose result is one pointer kind with a constant aux,
+ * narrow sig.results[0] from f64 to i32 and tag sig.ptrKind/.ptrAux.
  * Eliminates the f64.reinterpret_i64+i64.or rebox at every return and the
  * matching unbox dance at every call site that uses the value as a pointer.
  *
  * Aux strategy:
  *   - SET/MAP/BUFFER: aux always 0 — no per-callsite preservation needed.
- *   - OBJECT: aux is schema-id; narrow only when all return exprs share a constant
- *     schema (literal, schemaId-bound param, module-bound var, or call to another
- *     OBJECT-narrowed func). Caller picks aux up via callIR.ptrAux → readVar →
- *     localReps.schemaId, restoring property-slot dispatch through the call boundary.
- *   - TYPED: aux is elem-type; require all return tails to agree on a single aux.
+ *   - OBJECT: aux is the schema id the summary names (every return one shape).
+ *   - TYPED: aux is the element type the summary names.
  *
  * Skipped: ARRAY forwards on realloc, STRING dual-encoded SSO/heap, CLOSURE
  * (aux carries funcIdx for call_indirect). Body must guarantee-return so the
  * fallthrough fallback can't produce a wrong-typed undef.
- *
- * Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so
- * outer's call to inner contributes a known schema-id.
  */
-/** True iff return-expr `e` is provably just `paramName` unchanged: either the bare
- *  name itself, or a recursive call to `func.name` that forwards `paramName` at its
- *  OWN parameter index (`return f(x, out, y)` inside `f`) — by induction on recursion
- *  depth, that call's result is whatever `f` would return given that same value, which
- *  bottoms out at the direct-return arms below. Strict AST-identity match only (no
- *  attempt to prove two *different* expressions are equal at runtime). */
-function passesParamThrough(e, paramName, paramIdx, funcName) {
-  if (e === paramName) return true
-  if (!Array.isArray(e) || e[0] !== '()' || e[1] !== funcName) return false
-  return callArgs(e)[paramIdx] === paramName
-}
-
-/** A function whose every return is the same parameter that was pointer-ABI
- *  narrowed to an unboxed i32 (p.ptrKind set) — directly, or via a same-function
- *  recursive call that forwards it unchanged (see passesParamThrough). Without the
- *  recursive case, a function like flow-types.js's extractRefinements — whose `!`
- *  branch delegates via `return extractRefinements(cond[1], out, !sense)` instead of
- *  a bare `return out` — fails the naive all-return-exprs-are-the-bare-name check on
- *  that ONE path, so the whole function loses ptrKind tracking (see
- *  narrowPointerResults below): the caller then numeric-converts the returned offset
- *  bits into a bogus float instead of reboxing them into a NaN-boxed pointer — a
- *  silent value corruption, not a compile error, that only a receiver expecting the
- *  real pointer (e.g. Map.prototype.size's raw __len dispatch) turns into a wild
- *  offset read.
- *
- *  Every path must also yield a real value, not fall through / bare-`return` into
- *  `undefined` (an f64 atom) — a match here forces this function's signature to
- *  unconditional i32, so a value-less path would be a genuine wasm type error
- *  (validated on encode, not just a mistracked type). Same guarantee
- *  narrowPointerResults' func.valResult-driven arm takes via alwaysReturns, and
- *  narrowValResults skips via hasBareReturn, for the identical reason: a recursive
- *  walker whose tail happens to read `return helper(...)` (a value only its OWN
- *  recursive call consumes) commonly has OTHER arms that are bare `return;`
- *  early-exits — real shape, not hypothetical (plan/literals.js's
- *  _disqualifyPromotion: single value-bearing return via self-recursion, but
- *  multiple bare `return`s alongside it that returnExprs below never sees).
- *
- *  Returns that param, else null. */
-function passthroughPtrParam(func) {
-  const body = func.body
-  if (isBlockBody(body) && (!alwaysReturns(body) || hasBareReturn(body))) return null
-  const exprs = returnExprs(body)
-  if (!exprs.length) return null
-  return func.sig.params.find((p, idx) =>
-    p.ptrKind && exprs.every(e => passesParamThrough(e, p.name, idx, func.name))) || null
-}
-
-/** A function whose every return is a plain call `callee(...)` INTO another,
- *  already pointer-ABI-narrowed function (own-param passthrough one call-hop
- *  removed — `mk = () => { let x = new Map(); return pick(x) }`, `pick`'s
- *  OWN param already narrowed to VAL.MAP by passthroughPtrParam above). The
- *  result IS the callee's pointer, so mk's sig must inherit its ptrKind (+
- *  ptrAux) exactly like the param case.
- *
- *  This is NOT a redundant restatement of the `func.valResult`-driven arm
- *  below: narrowSignatures' earlier E-phase sweep (src/compile/plan/index.js
- *  runs narrowI32Results there, before this function's own first call)
- *  classifies a call tail purely by the callee's WASM-level result TYPE
- *  ('i32' vs 'f64') — it has no notion of ptrKind, so once a param
- *  passthrough like `pick` narrows to i32 for genuinely being a pointer,
- *  any CALLER whose return is `pick(x)` reads that i32 as an ordinary
- *  number on the very same fixpoint sweep and
- *  (finding valResult still unset) commits `valResult = VAL.NUMBER` — wrong,
- *  and load-bearing-wrong: the `func.valResult`-driven arm below requires
- *  `sig.results[0] === 'f64'`, a precondition narrowI32Results has already
- *  destroyed by the time THIS function gets a chance to run, so the mistake
- *  is never revisited. `passthroughPtrParam` above survives the identical
- *  race only because its branch has no such precondition — it overwrites
- *  unconditionally. This does the same, one call-hop out: found live via an
- *  O0 `let m = mk(); m.set(k, v); m.has(k)` receiver laundered through a
- *  `mk`/`pick` pair — the miss was `m`'s NaN-boxed pointer bits getting
- *  numerically converted (f64.convert_i32_s) instead of reboxed at the
- *  `.set`/`.has` call sites, corrupting the Map identity into an ordinary
- *  finite double every key silently missed against.
- *
- *  Returns the callee's `sig` (ptrKind/.ptrAux already resolved), else null. */
-function passthroughPtrCall(func) {
-  const body = func.body
-  if (isBlockBody(body) && (!alwaysReturns(body) || hasBareReturn(body))) return null
-  const exprs = returnExprs(body)
-  if (!exprs.length) return null
-  let calleeSig = null
-  for (const e of exprs) {
-    if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string' || e[1] === func.name) return null
-    const callee = ctx.funcs.map?.get(e[1])
-    const sig = callee?.sig
-    if (sig?.ptrKind == null) return null
-    if (calleeSig == null) calleeSig = sig
-    else if (calleeSig.ptrKind !== sig.ptrKind || calleeSig.ptrAux !== sig.ptrAux) return null
-  }
-  return calleeSig
-}
-
-export function narrowPointerResults(funcs, paramReps) {
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const func of funcs) {
-      // Pointer pass-through: every return is the same parameter that
-      // applyPointerParamAbi narrowed to an unboxed i32 pointer. The result IS that
-      // pointer, so its sig must carry the param's ptrKind (+ schemaId for OBJECT).
-      // Without this the result is a bare i32 the caller numeric-converts
-      // (`f64.convert_i32_s`) instead of reboxing — dropping the schema-id so a
-      // later `.prop` read mis-resolves to `undefined`. narrowValResults can't see
-      // this (it reads body-locals, not param facts) and narrowI32Results steals it
-      // as a numeric i32, so resolve it here from the settled param lattice.
-      if (func.sig.ptrKind == null) {
-        const pp = passthroughPtrParam(func)
-        if (pp) {
-          // OBJECT reboxes by schema-id; TYPED by the param's ELEM-TYPE bits
-          // (pp.ptrAux) — without them the caller reboxes with aux 0 (Int8
-          // dispatch) and every read of the returned array mis-strides to 0.
-          const aux = pp.ptrKind === VAL.OBJECT
-            ? paramFactsOf(paramReps, func, 'schemaId')?.get(pp.name) ?? null
-            : pp.ptrAux ?? null
-          // OBJECT needs a known schema-id to rebox; a polymorphic pass-through
-          // (conflicting schemas → null) keeps its current handling.
-          if (pp.ptrKind !== VAL.OBJECT || aux != null) {
-            func.sig.results = ['i32']
-            func.sig.ptrKind = pp.ptrKind
-            func.valResult = pp.ptrKind
-            if (aux != null) func.sig.ptrAux = aux
-            changed = true
-            continue
-          }
-        }
-        // Call pass-through (passthroughPtrCall's own doc comment): every return is a
-        // call straight into an already ptrKind-narrowed function. Same unconditional
-        // overwrite as the param case just above, for the same reason (survives
-        // narrowI32Results' earlier wrong NUMBER guess, which the func.valResult arm
-        // below cannot — its `sig.results[0] === 'f64'` precondition is already gone).
-        const cp = passthroughPtrCall(func)
-        if (cp) {
-          func.sig.results = ['i32']
-          func.sig.ptrKind = cp.ptrKind
-          func.valResult = cp.ptrKind
-          if (cp.ptrAux != null) func.sig.ptrAux = cp.ptrAux
-          changed = true
-          continue
-        }
-      }
-      if (!func.valResult) continue
-      if (func.sig.results[0] !== 'f64') continue
-      const isBlock = isBlockBody(func.body)
-      if (isBlock && !alwaysReturns(func.body)) continue
-      if (PTR_RESULT_KINDS_NOAUX.has(func.valResult)) {
-        func.sig.results = ['i32']
-        func.sig.ptrKind = func.valResult
-        changed = true
-        continue
-      }
+export function narrowPointerResults(funcs, paramReps, calledInside) {
+  for (const func of funcs) {
+    if (func.sig.ptrKind != null || !func.valResult) continue
+    if (func.sig.results[0] !== 'f64') continue
+    // An export no site calls has only the host as a caller, whose wrapper would rebox the offset: no gain.
+    if (isExported(func) && !calledInside.has(func.name)) continue
+    const isBlock = isBlockBody(func.body)
+    if (isBlock && (!alwaysReturns(func.body) || hasBareReturn(func.body))) continue
+    const k = ctx.summary.resultOf(func.name)
+    if (isNullable(k)) continue
+    if (PTR_RESULT_KINDS_NOAUX.has(func.valResult)) {
+      func.sig.results = ['i32']
+      func.sig.ptrKind = func.valResult
+      continue
+    }
+    if (func.valResult === VAL.OBJECT) {
+      if (paramOf(k) === UNKNOWN) continue
+      func.sig.results = ['i32']
+      func.sig.ptrKind = VAL.OBJECT
+      func.sig.ptrAux = paramOf(k)
+    } else if (func.valResult === VAL.TYPED) {
+      if (paramOf(k) === UNKNOWN) continue
+      func.sig.results = ['i32']
+      func.sig.ptrKind = VAL.TYPED
+      func.sig.ptrAux = paramOf(k)
+      // A factory returning one local of static length (`const out = new
+      // Float64Array(n)` with `n` a call-site constant) publishes that length:
+      // the caller's binding (`const sig = mkSignal(N)`) then proves its
+      // own accesses exactly as a local constructor would.
       const exprs = returnExprs(func.body)
-      if (!exprs.length) continue
-      if (func.valResult === VAL.OBJECT) {
-        const paramSchemasMap = paramFactsOf(paramReps, func, 'schemaId')
-        const sid0 = inferSchemaId(exprs[0], paramSchemasMap)
-        if (sid0 == null) continue
-        if (!exprs.every(e => inferSchemaId(e, paramSchemasMap) === sid0)) continue
-        func.sig.results = ['i32']
-        func.sig.ptrKind = VAL.OBJECT
-        func.sig.ptrAux = sid0
-        changed = true
-      } else if (func.valResult === VAL.TYPED) {
-        const localMap = isBlock ? localElemAuxMap(func.body) : null
-        const aux0 = typedAuxOfReturn(exprs[0], localMap)
-        if (aux0 == null) continue
-        if (!exprs.every(e => typedAuxOfReturn(e, localMap) === aux0)) continue
-        func.sig.results = ['i32']
-        func.sig.ptrKind = VAL.TYPED
-        func.sig.ptrAux = aux0
-        // A factory returning one local of static length (`const out = new
-        // Float64Array(n)` with `n` a call-site constant) publishes that length:
-        // the caller's binding (`const sig = mkSignal(N)`) then proves its
-        // own accesses exactly as a local constructor would.
-        const L = isBlock ? typedLenOfReturns(func, exprs, paramFactsOf(paramReps, func, 'intConst')) : null
-        if (L != null) func.sig.typedLen = L
-        changed = true
-      }
+      const L = isBlock && exprs.length ? typedLenOfReturns(func, exprs, paramFactsOf(paramReps, func, 'intConst')) : null
+      if (L != null) func.sig.typedLen = L
     }
   }
 }
@@ -640,15 +334,10 @@ function typedLenOfReturns(func, exprs, intConsts) {
   return L
 }
 
-const _FIELD_TO_SLICE = {
-  arrayElemSchema: 'arrElemSchemas',
-  arrayElemSchemaSet: 'arrElemSchemaSets',
-  arrayElemValType: 'arrElemValTypes',
-}
-
-/** Propagate Array<T> element facts from return paths into caller paramReps (phase G). */
-export function narrowReturnArrayElems(field, paramReps, addressTaken) {
-  const sliceKey = _FIELD_TO_SLICE[field]
+/** Propagate the closed element-schema union from return paths into `func.arrayElemSchemaSet`
+ *  (the one array-element fact the summary does not carry: a set of shapes). */
+export function narrowReturnArrayElemSets(paramReps, addressTaken) {
+  const field = 'arrayElemSchemaSet', sliceKey = 'arrElemSchemaSets'
   const targets = ctx.funcs.list.filter(f =>
     !f.raw && !isExported(f) && !addressTaken.has(f.name) &&
     f.valResult === VAL.ARRAY && f[field] == null
@@ -700,75 +389,6 @@ export function narrowReturnArrayElems(field, paramReps, addressTaken) {
       func[field] = v0
       changed = true
     }
-  }
-}
-
-/**
- * Body-local boolean/bigint-result inference. `narrowValResults` is the general
- * (any VAL.*) pass, but it lives inside whole-program narrowing, which is skipped
- * for trivial leaf modules (no call sites). Boolean and bigint are the two kinds
- * whose internal carrier differs from the host-boundary carrier — bool rides a 0/1
- * number internally but crosses as the TRUE_NAN/FALSE_NAN atom; bigint rides an
- * i64-reinterpreted f64 internally but must cross as a real Number — so an exported
- * `(a) => a > 2` or `() => 100n` still needs its boundary thunk even on the skip path.
- * This pass only ever *sets* valResult to VAL.BOOL / VAL.BIGINT, so it is safe to run
- * unconditionally — pointer/array/number results are untouched.
- */
-export function narrowBoolResults() {
-  for (const func of ctx.funcs.list) {
-    if (func.raw || func.valResult || !func.body || func.sig.results.length !== 1) continue
-    const body = func.body
-    const isBlock = isBlockBody(body)
-    if (isBlock && hasBareReturn(body)) continue
-    const exprs = returnExprs(body)
-    if (!exprs.length) continue
-    const bodyFacts = isBlock ? analyzeBody(body) : null
-    const localValTypes = bodyFacts ? bodyFacts.valTypes : null
-    // Locals-aware FIRST, like narrowValResults' own valTypeOfWithCalls (same
-    // helper — kind.js valTypeOfWithLocals): a compound return tail (e.g.
-    // `return m.has(k)`) has its receiver's kind only known through THIS body's
-    // own analyzeBody facts, invisible to the global-only plain valTypeOf.
-    // UNLIKE narrowValResults, still falls back to the plain (locals-blind)
-    // valTypeOf when the local resolver can't decide: narrowValResults omits
-    // that fallback on purpose (its own doc comment — the optimistic `+`
-    // default is unsound to hand back as a whole-function result claim), but
-    // narrowBoolResults' pre-existing behavior already relied on that same
-    // optimistic default to catch e.g. `return x + 1n` on an untyped param as
-    // BIGINT (`RepresentationPlan: direct call edges…` regression, caught
-    // live) — losing it outright regressed a previously-working case instead
-    // of only ADDING the missing method-call proof. valTypeOfWithLocals's own
-    // local proofs are sound by construction, so preferring them and falling
-    // back to the historical default is strictly additive, not a new risk.
-    const vt = e => valTypeOfWithLocals(e, name => localValTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null) ?? valTypeOf(e)
-    // Same ctx.func.flatObjects gap as narrowValResults above — a `return
-    // obj.p` tail on a proven-BIGINT flat field needs it to resolve BIGINT
-    // here (this is the leaf-module skip path's own valResult pass, so there
-    // is no later chance to correct an unproven result). Same for a `return
-    // arr[i]` tail on a proven-BIGINT array element — installArrElemReps'
-    // array sibling of the same install (see its own doc comment above).
-    const evaluate = () => {
-      // Solve a direct-recursive result coinductively through the existing
-      // valType authority. The provisional fact affects only self-call nodes;
-      // every other arm must still prove BOOL normally. Restore before testing
-      // BigInt or publishing the final answer.
-      const priorResult = func.valResult
-      let isBool
-      try {
-        func.valResult = VAL.BOOL
-        isBool = exprs.every(e => vt(e) === VAL.BOOL)
-      } finally {
-        func.valResult = priorResult
-      }
-      return [isBool, !isBool && exprs.every(e => vt(e) === VAL.BIGINT)]
-    }
-    const [isBool, isBigint] = bodyFacts
-      ? withFunctionFields({
-        flatObjects: bodyFacts.flatObjects,
-        localReps: installArrElemReps(bodyFacts.arrElemValTypes, ctx.func.localReps),
-      }, evaluate)
-      : evaluate()
-    if (isBool) func.valResult = VAL.BOOL
-    else if (isBigint) func.valResult = VAL.BIGINT
   }
 }
 

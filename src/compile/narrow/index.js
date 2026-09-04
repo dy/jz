@@ -33,7 +33,7 @@ import { paramFactsOf, ensureParamRep, mergeParamFact, latticeMeet } from '../..
 import { inferArrElemSchemaSet } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
-import { narrowI32Results, narrowValResults, narrowPointerResults, narrowReturnArrayElems } from './results.js'
+import { narrowI32Results, seedResultKinds, narrowPointerResults, narrowReturnArrayElemSets } from './results.js'
 import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { isExported } from '../func-exports.js'
@@ -114,12 +114,8 @@ export default function narrowSignatures(programFacts, ast) {
     }
   }
   seedParamKinds(paramReps, addressTaken)
-
-  // Body-driven result kinds do not depend on the parameter lattice. Settle
-  // them before caller contexts are built so those contexts are born against
-  // the final value-result view instead of immediately becoming stale.
+  seedResultKinds()
   const funcsWithNarrowableResult = narrowableFuncs(addressTaken)
-  narrowValResults(funcsWithNarrowableResult)
 
   // Per-caller analysis is stable across fixpoint iterations — precompute once.
   // callerCtx[null] (top-level) uses module globals for locals.
@@ -437,11 +433,8 @@ export default function narrowSignatures(programFacts, ast) {
   // result inference ran up front — see above.) funcsWithNarrowableResult hoisted there.
   narrowI32Results(funcsWithNarrowableResult)
 
-  // Now that E2 set `valResult` on funcs, narrow per-func `arrayElem*` facts for
-  // VAL.ARRAY-returning funcs (via push observations + call chains).
-  narrowReturnArrayElems('arrayElemSchema', paramReps, addressTaken)
-  narrowReturnArrayElems('arrayElemSchemaSet', paramReps, addressTaken)
-  narrowReturnArrayElems('arrayElemValType', paramReps, addressTaken)
+  // The closed element-schema union of an array result, from its return paths.
+  narrowReturnArrayElemSets(paramReps, addressTaken)
   phase.clearNarrowingBodyState()
   // Re-observe schema slot val-types now that E2 has set `valResult` on user
   // funcs. First pass runs in collectProgramFacts before valResult is known, so
@@ -529,7 +522,7 @@ export default function narrowSignatures(programFacts, ast) {
   }])
   // E3: pointer-kind result narrowing — once valResult is set, lift the wasm
   // return type to i32 + ptrKind/ptrAux when aux is statically resolvable.
-  narrowPointerResults(funcsWithNarrowableResult, paramReps)
+  narrowPointerResults(funcsWithNarrowableResult, paramReps, sitesByCallee)
   phase.clearNarrowingBodyState()
 
   // STATIC LENGTH down call chains: when every call site passes a typed array
@@ -609,7 +602,7 @@ export default function narrowSignatures(programFacts, ast) {
   // (the cross-module memo miscompile: `g._w = norm(w)` stored a number, the
   // slot read dispatched on it as a pointer → undefined). The rerun stamps
   // sig.ptrKind first; I2's f64-results guard then skips these functions.
-  narrowPointerResults(funcsWithNarrowableResult, paramReps)
+  narrowPointerResults(funcsWithNarrowableResult, paramReps, sitesByCallee)
   // I2: Re-narrow i32 RESULTS now that Phase G (applyTypedPointerParamAbi) has tagged
   // typed-array params ptrKind=TYPED. Phase E ran before G, so a function returning a
   // typed-array element — dict's `lookup = (keys, vals, k) => { … return vals[h] }` with

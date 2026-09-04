@@ -308,3 +308,23 @@ test('summary: the parameter records take their value kinds from the summary (na
     { modules: { './t.jz': 'export let hex = (v) => v.toString(16)\nexport const T = { x2: (x) => hex(BigInt(x) * 2n), x3: (x) => hex(BigInt(x) * 3n) }' }, memory: 64 })
   is(b.exports.go(1, 255), (510n).toString(16))
 })
+
+test('summary: the result kinds are the summary\'s (narrow/results.js seedResultKinds); a map\'s values, a typeof guard, a try that returns', () => {
+  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect`
+  const src = `const cache = new Map()
+    const mk = (n) => ({ tw: new Float64Array(n) })
+    const plan = (n) => { let p = cache.get(n); if (p === undefined) { p = mk(n); cache.set(n, p) } return p }
+    const sum = (tw, n) => { let s = 0; for (let i = 0; i < n; i++) s += tw[i]; return s }
+    const norm = (v) => typeof v === 'bigint' ? v : BigInt(v)
+    const caught = (x) => { try { if (x) throw new TypeError('t') ; return x > 0 } catch (e) { return e instanceof TypeError } }
+    const first = (a) => a[0]
+    export const run = (n) => sum(plan(n).tw, n) + Number(norm(2) + norm(3n)) + (caught(1) ? 1 : 0) + first([7])`
+  const insp = compile(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
+  const F = insp.functions
+  is(F.plan.valResult, 'object', 'a map\'s value cell: get reads what set stored (with the miss as presence)')
+  is(F.sum.callerReps[0].typedCtor, 'new.Float64Array', 'the plan\'s field reaches the kernel typed')
+  is(F.norm.valResult, 'bigint', 'the typeof guard proves the taken arm')
+  is(F.caught.valResult, 'boolean', 'a try whose block and catch both return does not fall through')
+  is(F.first.valResult, 'number'); ok(F.first.valResultMayBeUndefined, 'an element read past the end is absent')
+  is(jz(src).exports.run(4), 0 + 5 + 1 + 7)
+})
