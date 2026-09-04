@@ -20,6 +20,7 @@ import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationResultTagRequired, representationStorageWriteAction } from '../representation-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, materializeMulti } from './call-args.js'
 import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
+import { classMethodCall } from './class-dispatch.js'
 import { stringOps } from './shared.js'
 
 
@@ -840,6 +841,21 @@ const TYPED_STRATEGIES = [
   tryRuntimeNumberMethod, trySchemaClosureCall, tryGenericEmitter, tryDynamicPropCall,
   externalMethodFallback,
 ]
+const runTyped = (c) => { for (const strategy of TYPED_STRATEGIES) { const r = strategy(c); if (r !== undefined) return r } }
+
+// 0. A class method (jzify/classes.js): a direct call of the class's function
+// with the receiver when the summary names the receiver's class; a schema-id
+// compare per class that has the method when it does not, every other
+// receiver taking the chain below on the same value.
+function tryClassMethodCall(c) {
+  const { obj, method, parsed } = c
+  const args = []
+  for (let pos = 0; pos <= parsed.normal.length; pos++) {
+    for (const s of parsed.spreads) if (s.pos === pos) args.push(['...', s.expr])
+    if (pos < parsed.normal.length) args.push(parsed.normal[pos])
+  }
+  return classMethodCall(obj, method, args, (recv) => runTyped({ ...c, obj: recv, vt: null }))
+}
 
 /** Method-call dispatch: `obj.method(args)`. Linear strategy chain, first
  *  match wins. 1–4 are context-free (LEADING_STRATEGIES); 5–12 share the
@@ -888,8 +904,6 @@ export function emitMethodCall(callee, parsed, callArgs) {
     obj, method, parsed, vt,
     callMethod: (objArg, methodEmitter) => emitMethodCallSpread(objArg, methodEmitter, parsed, method),
   }
-  for (const strategy of TYPED_STRATEGIES) {
-    const r = strategy(c)
-    if (r !== undefined) return r
-  }
+  const cls = tryClassMethodCall(c)
+  return cls !== undefined ? cls : runTyped(c)
 }

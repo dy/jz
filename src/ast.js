@@ -9,6 +9,19 @@
 /** Template placeholder in prepared AST (prepare.js). */
 export const T = '\uE000'
 
+// jzify's class namespace (jzify/names.js): the names a class lowers to
+// (`P\uE003len`, the receiver `\uE003self0`) may appear in lowered source
+// (jz/transform), so they take a private-use character the parser accepts
+// rather than the reserved prefix T.
+export const CLASS_T = '\uE003'
+// A class instance's literal carries its class as a property named with the
+// class namespace (`{ x, y, [BRAND + id]: undefined }`): every pass sees one
+// more static property, and the schema registry takes it as the salt that
+// gives the class its own schema id, so it names no slot. Class identity
+// lives in the schema id, as an Error's does (module/schema.js).
+export const BRAND = CLASS_T + 'class'
+export const isBrand = (name) => typeof name === 'string' && name.startsWith(BRAND)
+
 // === Atom sentinels (shared by prepare + emit \u2014 keeps the stage boundary
 // import-clean: emit must not reach into prepare for a constant) ===
 

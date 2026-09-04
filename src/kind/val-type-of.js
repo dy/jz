@@ -28,6 +28,7 @@ import {
 import { typedStorageCtorFromContext } from '../typed-context.js'
 import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
+import { valOf as summaryVal } from '../summary/index.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 
 /**
@@ -629,6 +630,9 @@ VT['()'] = (args) => {
     const sourceId = programIndex?.resolveMemberSourceId(obj, method) ?? -1
     const resolved = programIndex?.sourceFunctionById(sourceId)
     if (resolved?.valResult) return resolved.valResult
+    // A class method the program summary resolves on the receiver's class
+    // (src/compile/emit/class-dispatch.js): the join of its returns.
+    if (ctx.summary && ctx.transform.classes) { const vt = summaryVal(ctx.summary.kindOfExpr(['()', ...args])); if (vt != null) return vt }
     // INVARIANT: NO `.get` short-circuit here: mapValueKindOf
     // (kind/dict-census.js) is a censusMaybeUndefinedKind-only helper —
     // VT['()'] must NOT promote a `.get()` read to an exact VT (see

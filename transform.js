@@ -121,10 +121,10 @@ export default function transform(code, { onlyLowered = false, warnings = null }
   try {
     if (onlyLowered) {
       const before = key(parse(code))
-      const lowered = canonEq(jzify(canonEq(parse(code), code)), null)   // fresh parse — jzify mutates its input
+      const lowered = canonEq(jzify(canonEq(parse(code), code), { structs: false }), null)   // fresh parse — jzify mutates its input
       if (key(lowered) === before) return null
       return codegen(renameSynthetic(lowered))
     }
-    return codegen(renameSynthetic(canonEq(jzify(canonEq(parse(code), code)), null)))
+    return codegen(renameSynthetic(canonEq(jzify(canonEq(parse(code), code), { structs: false }), null)))
   } finally { initWarnings(null) }
 }

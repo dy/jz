@@ -17,7 +17,7 @@
  */
 
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
-import { JZ_UNDEF, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, walkAst } from '../ast.js'
+import { JZ_UNDEF, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, walkAst } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -399,7 +399,7 @@ const handlers = {
         recordGlobalRep(plhs, prhs)
         if (Array.isArray(prhs) && prhs[0] === '{}') {
           const props = staticObjectProps(prhs.slice(1))
-          if (props) bindAssignSchema(plhs, ctx.schema.register(props.names))
+          if (props) bindAssignSchema(plhs, ctx.schema.register(props.names, props.brand))
         } else bindAssignSchema(plhs, null)
       } else bindAssignSchema(plhs, objLiteralSid(prhs))
       // Static string/array facts hold only while every assignment is constant.
@@ -1231,8 +1231,9 @@ const handlers = {
     let prepped = items.map(prop)
     const result = ['{}', ...prepped]
     // Register schema so property access works for function params (duck typing)
-    const props = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-    if (props.length && ctx.schema.register) ctx.schema.register(props)
+    const names = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+    const props = names.filter(n => !isBrand(n)), brand = names.find(isBrand) ?? null
+    if ((props.length || brand) && ctx.schema.register) ctx.schema.register(props, brand)
     return result
   },
 
@@ -1632,6 +1633,8 @@ const handlers = {
   // RHS may arrive as a bare name ('Array') or, if parenthesized (`x instanceof (Array)`),
   // as a length-2 grouping call node (['()', 'Array']) — same shape 'new' unwraps above.
   'instanceof'(lhs, rhs) {
+    // A user class lowered to a schema (jzify/classes.js): its brand names it.
+    if (isBrand(rhs)) return ['instanceof', prep(lhs), rhs]
     const rawName = typeof rhs === 'string' ? rhs
       : (Array.isArray(rhs) && rhs[0] === '()' && rhs.length === 2 && typeof rhs[1] === 'string') ? rhs[1]
       : null
@@ -2253,12 +2256,13 @@ function prepDecl(op, ...inits) {
         // A conditional-spread group's key colliding with anything else (see
         // conditionalSpreadGroupPrepare below) bails `allKnown` instead of
         // deduping — mirrors module/object.js mergeSpreadNames' identical bail.
+        let brand = null
         const addProp = (n) => {
           if (seen.has(n)) return
           seen.add(n); props.push(n)
         }
         for (const p of normed.slice(1)) {
-          if (Array.isArray(p) && p[0] === ':') addProp(p[1])
+          if (Array.isArray(p) && p[0] === ':') { if (isBrand(p[1])) brand = p[1]; else addProp(p[1]) }
           else if (Array.isArray(p) && p[0] === '...') {
             // Conditional presence needs HASH insertion; do not bind a fixed
             // schema that would conflate absent with present-undefined.
@@ -2271,8 +2275,8 @@ function prepDecl(op, ...inits) {
         // An unknown spread source makes the value a runtime HASH (see
         // emitObjectSpread). Binding a static schema would compile `decl.prop`
         // to a fixed slot load that misreads the hash, so leave reads dynamic.
-        if (allKnown && props.length && ctx.schema.register) {
-          const sid = ctx.schema.register(props)
+        if (allKnown && (props.length || brand) && ctx.schema.register) {
+          const sid = ctx.schema.register(props, brand)
           bindDeclSchema(declName, sid)
         }
         else censusUnknownInitDecl(declName)
@@ -2784,6 +2788,13 @@ function prepareModule(specifier, source) {
     }
     // Also rename init code AST
     if (moduleInit) walk(moduleInit)
+    // A class of this module (jzify/classes.js): its functions were renamed with the others.
+    if (ctx.transform.classes) for (const e of ctx.transform.classes.values()) {
+      if (e.module !== prefix) continue
+      const renamed = (n) => moduleExports.get(n) ?? n
+      e.factory = renamed(e.factory); e.init = renamed(e.init)
+      for (const [m, fn] of e.methods) e.methods.set(m, renamed(fn))
+    }
   }
 
   // Collect sub-module init code (variable initializations) for __start

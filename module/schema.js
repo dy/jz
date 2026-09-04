@@ -12,6 +12,7 @@ import { emit } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { err, inc } from '../src/ctx.js'
+import { isBrand } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -25,13 +26,15 @@ export function initSchema(ctx) {
 
   // `salt` (optional): forces a schema id DISTINCT from every other registration
   // of the identical prop list, without adding a source-visible property to
-  // that list. Used ONLY by the Error-class brand below — every other caller
-  // omits it, so their dedupe-by-content key is byte-identical to before this
-  // parameter existed. \x02 can't collide with a real prop name landing in the
+  // that list. Used by the Error-class brand below and by a user class's
+  // brand (ast.js BRAND) — every other caller omits it, so their
+  // dedupe-by-content key is byte-identical to before this parameter
+  // existed. \x02 can't collide with a real prop name landing in the
   // \x01-joined content prefix: prop names are validated identifiers/string
   // keys, and even a pathological one contributes to the segment BEFORE any
   // \x02, never straddling it (the length-prefix discipline above already
   // established this class of non-collision for \x01).
+  const brandBySid = new Map(), sidByBrand = new Map()   // a class brand and its schema id, both ways
   ctx.schema.register = (props, salt) => {
     // Length prefix disambiguates [] from [''] (both join to '') and any
     // shorter prop list from a longer one whose extra entries are empty.
@@ -46,8 +49,15 @@ export function initSchema(ctx) {
       if (!bucket) byProp.set(p, bucket = [])
       bucket.push({ id, slot: i })
     }
+    // A class instance's literal salts with its brand (ast.js BRAND): the
+    // schema is the class's own, found again from the id.
+    if (salt && isBrand(salt)) { brandBySid.set(id, salt); sidByBrand.set(salt, id) }
     return id
   }
+  /** The class brand a schema was registered under, or null for a plain shape. */
+  ctx.schema.brandOf = (id) => brandBySid.get(id) ?? null
+  /** The schema id of a class brand, or null while no instance literal has registered it. */
+  ctx.schema.sidOfBrand = (brand) => sidByBrand.get(brand) ?? null
 
   // === Error-class brand (see .work/archive/todo.md §deletion-sweep redesign) ===
   //

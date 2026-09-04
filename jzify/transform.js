@@ -3,7 +3,7 @@
  * @module jzify/transform
  */
 
-import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, paramList } from '../src/ast.js'
+import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, paramList, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { usesArguments } from './arguments.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
@@ -95,7 +95,17 @@ export const bindGenerators = (g) => { _gen = g }
 
 export function createTransform(opts) {
   const { names, lowerArguments, transformPattern, normalizeCaseBody, transformSwitch } = opts
-  const lowerClass = (...a) => opts.lowerClass()(...a)
+  // A class lowered to a schema and shared method functions (jzify/classes.js)
+  // hoists those functions to the module's statement list; the class value
+  // itself stays where the class was.
+  const classHoists = []
+  const lowerClass = (name, heritage, body, trailers) => opts.lowerClass()(name, heritage, body, classHoists, trailers)
+  /** A class declaration's statements: its hoisted functions, the binding, then its static members. */
+  const lowerClassDecl = (name, heritage, body) => {
+    const trailers = []
+    const value = lowerClass(name, heritage, body, trailers)
+    return [';', ...classHoists.splice(0), ['let', ['=', name, value]], ...trailers]
+  }
   const lowerObjectLiteralThis = (...a) => opts.lowerObjectLiteralThis()(...a)
   const shadowsBuiltin = opts.shadowsBuiltin
   const withBuiltinScope = opts.withBuiltinScope
@@ -126,8 +136,12 @@ export function createTransform(opts) {
     return ['()', ['.', transform(other[1]), 'hasOwnProperty'], [null, proto[2]]]
   }
 
+  // Function nesting depth: a class's shared functions hoist to the module's
+  // statement list, the list at depth 0.
+  let fnDepth = 0
+  const inFunction = (fn) => { fnDepth++; try { return fn() } finally { fnDepth-- } }
   function wrapArrowBody(body) {
-    const t = transformScope(body)
+    const t = inFunction(() => transformScope(body))
     if (!Array.isArray(t)) return ['{}', [';', t]]
     if (t[0] === ';') return ['{}', t]
     if (t[0] !== '{}') return ['{}', [';', t]]
@@ -200,7 +214,7 @@ export function createTransform(opts) {
       return ['const', ['=', args[0][1], transform(_gen.lowerAsync(...argsLowered(args[0][2], args[0][3])))]]
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function*' && args[0][1] && _gen?.lowerAsyncGen)
       return ['const', ['=', args[0][1], transform(_gen.lowerAsyncGen(...argsLowered(args[0][2], args[0][3])))]]
-    if (op === 'class' && args[0]) return ['let', ['=', args[0], lowerClass(...args)]]
+    if (op === 'class' && args[0]) return lowerClassDecl(...args)
     if (op === 'using') return lowerUsing(args, [])
 
     if (op === ';') {
@@ -228,7 +242,7 @@ export function createTransform(opts) {
           continue
         }
         if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
-          rest.push(['let', ['=', stmt[1], lowerClass(stmt[1], stmt[2], stmt[3])]])
+          rest.push(...lowerClassDecl(stmt[1], stmt[2], stmt[3]).slice(1))
           continue
         }
         // `using` consumes the REST of the scope into its try body (disposal
@@ -247,6 +261,7 @@ export function createTransform(opts) {
           continue
         }
         const t = transform(stmt)
+        if (fnDepth === 0) rest.push(...classHoists.splice(0))   // a class expression's shared functions
         if (t == null) continue
         if (Array.isArray(t) && t[0] === 'const' && t._hoisted) {
           hoisted.push(t)
@@ -274,7 +289,8 @@ export function createTransform(opts) {
       return all.length === 0 ? null : all.length === 1 ? all[0] : [';', ...all]
     }
 
-    return transform(node)
+    const t = transform(node)
+    return classHoists.length && fnDepth === 0 ? [';', ...classHoists.splice(0), t] : t
     } finally {
       releaseScopeArgs(args)
     }
@@ -444,7 +460,7 @@ export function createTransform(opts) {
         b = b[0] === ';' ? ['{}', b] : ['{}', [';', b]]
       }
       const [p2, b2] = lowerArguments(params, b)
-      return ['=>', p2, transform(b2)]
+      return ['=>', p2, inFunction(() => transform(b2))]
     },
 
     'class'(name, heritage, body) { return lowerClass(name, heritage, body) },
@@ -497,6 +513,14 @@ export function createTransform(opts) {
 
     '='(lhs, rhs) {
       if (isDestructurePat(lhs)) return ['=', transformPattern(lhs), transform(rhs)]
+      // a static accessor of a class of this module: the slot function on the class (classes.js)
+      if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string' && opts.classStaticAccessor(lhs[1], lhs[2] + ACCESSOR_SET))
+        return ['()', ['.', lhs[1], lhs[2] + ACCESSOR_SET], transform(rhs)]
+    },
+
+    '.'(obj, prop) {
+      if (typeof obj === 'string' && typeof prop === 'string' && opts.classStaticAccessor(obj, prop + ACCESSOR_GET))
+        return ['()', ['.', obj, prop + ACCESSOR_GET], null]
     },
 
     'switch'(disc, ...cases) {
@@ -538,6 +562,9 @@ export function createTransform(opts) {
       // Preserve the operation so prepare can reject it cleanly.
       if (typeof rawName === 'string' && shadowsBuiltin(rawName))
         return ['instanceof', transform(val), transform(ctor)]
+      // A class of this module lowered to a schema: the brand names it (classes.js).
+      const brand = typeof rawName === 'string' ? opts.classBrand(rawName) : null
+      if (brand) return ['instanceof', transform(val), brand]
       // promise-shape probe — promises are fixed-shape objects, no ctor chain
       if (ctor === 'Promise' && _gen) {
         const t0 = transform(val)
@@ -677,7 +704,8 @@ export function createTransform(opts) {
           return ['export', ['const', ['=', fn[1], transform(_gen.lowerAsyncGen(...argsLowered(fn[2], fn[3])))]]]
       }
       if (Array.isArray(inner) && inner[0] === 'class' && inner[1]) {
-        return ['export', ['let', ['=', inner[1], lowerClass(inner[1], inner[2], inner[3])]]]
+        const decl = lowerClassDecl(inner[1], inner[2], inner[3])
+        return [';', ...decl.slice(1).map(s => Array.isArray(s) && s[0] === 'let' && s[1][1] === inner[1] ? ['export', s] : s)]
       }
       if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'function' && inner[1][1]) {
         // Route a named default-export function through the named-export path: a bare
@@ -689,7 +717,7 @@ export function createTransform(opts) {
         return [';', ['export', decl], ['export', ['{}', ['as', inner[1][1], 'default']]]]
       }
       if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'class' && inner[1][1]) {
-        return [';', ['let', ['=', inner[1][1], lowerClass(inner[1][1], inner[1][2], inner[1][3])]], ['export', ['default', inner[1][1]]]]
+        return [';', ...lowerClassDecl(inner[1][1], inner[1][2], inner[1][3]).slice(1), ['export', ['default', inner[1][1]]]]
       }
       return ['export', transform(inner)]
     },

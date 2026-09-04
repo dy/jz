@@ -14,7 +14,8 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, T
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
-import { T, ACCESSOR_GET } from '../src/ast.js'
+import { T, ACCESSOR_GET, isBrand } from '../src/ast.js'
+import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -1519,8 +1520,9 @@ export default (ctx) => {
     const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ','
       ? props[0].slice(1) : props
     const names = []
-    for (const p of flat) if (Array.isArray(p) && p[0] === ':') names.push(p[1])
-    return ctx.schema.register(names)
+    let brand = null
+    for (const p of flat) if (Array.isArray(p) && p[0] === ':') { if (isBrand(p[1])) brand = p[1]; else names.push(p[1]) }
+    return ctx.schema.register(names, brand)
   }
 
   // An unknown chain can carry a host object through aliases, helpers, and
@@ -1848,6 +1850,13 @@ export default (ctx) => {
     // factory as dynamic properties); every other kind carries no accessors
     if (vt != null && vt !== VAL.OBJECT && vt !== VAL.CLOSURE) return null
     const getter = prop + ACCESSOR_GET
+    // a class's getter is a function of the receiver (class-dispatch.js);
+    // any other receiver keeps the slot paths below
+    const cls = classAccessor(obj, getter, [], (recv) => slotAccessorRead(recv, getter, prop) ?? emit(['.raw', recv, prop]))
+    if (cls !== undefined) return cls
+    return slotAccessorRead(obj, getter, prop)
+  }
+  const slotAccessorRead = (obj, getter, prop) => {
     // a schema carrying the slot resolves statically
     if ((typeof obj === 'string' && ctx.schema.idOf(obj) != null && ctx.schema.slotOf(obj, getter) >= 0)
         || (Array.isArray(obj) && ctx.schema.list[literalSid(obj)]?.includes(getter)))
@@ -1871,6 +1880,11 @@ export default (ctx) => {
     if (!raw && ctx.transform.accessorNames?.has(prop)) {
       const acc = accessorRead(obj, prop)
       if (acc) return acc
+    }
+    // A class method read as a value is the method bound to its receiver.
+    if (!raw) {
+      const bound = classMethodValue(obj, prop, (recv) => dotRead(recv, prop, true))
+      if (bound !== undefined) return bound
     }
     // `C.prototype` of a class (a factory closure): jz classes have no
     // prototype object – methods live on the instance – so the read is a

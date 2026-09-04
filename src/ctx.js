@@ -494,6 +494,7 @@ export function reset(proto, globals, bridge) {
     resolvedModules: new Map(),
     moduleStack: [],
     moduleInits: [],
+    entryInit: null,    // the entry module's prepared statements (compile/index.js), beside moduleInits
     initFacts: null,
     currentPrefix: null,
   }
@@ -894,6 +895,8 @@ export function reset(proto, globals, bridge) {
     helperCallsites: false, // profiling-only: export mutable i64 counters for selected runtime
                             // helper callsites after optimization, so hot helpers can be traced
                             // back to the compiled function that calls them.
+    classes: null,      // Map brand → class entry (jzify/classes.js lowerStruct): the classes lowered to schemas
+    memberUses: null,   // the member names the program calls, reads and stores (src/compile/emit/class-dispatch.js memberUses)
     accessorNames: null, // Set of property names some class or object literal defines an accessor
     dynamicAccessorNames: null, // the subset a derived class installs dynamically (jzify/classes.js recordAccessor)
                          // for (jzify/classes.js records `get x`/`set x` as it lowers them to the

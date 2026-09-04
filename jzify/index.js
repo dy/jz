@@ -28,8 +28,10 @@ const SHADOW_SENSITIVE = new Set([
 ])
 let builtinScopes = new WeakMap()
 let activeBuiltinScope = null
+// Every declared name: the shadow test filters by SHADOW_SENSITIVE, the
+// class lowering asks whether a name is the module's own (declaredAtModuleScope).
 const addBuiltinName = (scope, name) => {
-  if (SHADOW_SENSITIVE.has(name)) scope.names.add(name)
+  if (typeof name === 'string') scope.names.add(name)
 }
 const addPatternNames = (scope, pattern) => {
   const bound = collectParamNames([pattern])
@@ -48,6 +50,12 @@ const scopeHasBuiltin = (scope, name) => {
   return false
 }
 const shadowsJzifyBuiltin = name => SHADOW_SENSITIVE.has(name) && scopeHasBuiltin(activeBuiltinScope, name)
+// The nearest declaration of `name` from the active scope is the module's own.
+const atModuleScope = () => activeBuiltinScope != null && activeBuiltinScope.parent == null
+const declaredAtModuleScope = (name) => {
+  for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.parent == null
+  return false
+}
 const withBuiltinScope = (node, fn) => {
   const prior = activeBuiltinScope
   activeBuiltinScope = builtinScopes.get(node) || prior
@@ -160,7 +168,7 @@ const buildBuiltinScopes = root => {
 }
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
 
-let lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, transformSwitch
+let lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses, transformSwitch
 let transform, transformScope
 
 ;({ transform, transformScope } = createTransform({
@@ -170,6 +178,8 @@ let transform, transformScope
   normalizeCaseBody,
   transformSwitch: (...a) => transformSwitch(...a),
   lowerClass: () => lowerClass,
+  classBrand: (name) => declaredAtModuleScope(name) ? classBrand(name) : null,
+  classStaticAccessor: (name, slot) => declaredAtModuleScope(name) && classStaticAccessor(name, slot),
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,
@@ -178,7 +188,7 @@ let transform, transformScope
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors } = createClassLowering({ transform, names, JC, constStrings }))
+;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope }))
 const generatorNames = new Set()
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
@@ -314,10 +324,16 @@ function implicitStdImports(ast) {
 /**
  * Transform AST in-place. Returns transformed AST.
  * @param {Array} ast - subscript/jessie parsed AST
+ * @param {object} [opts]
+ * @param {boolean} [opts.structs=true] - lower a module-scope class to a schema
+ *   and functions of the receiver (jzify/classes.js lowerStruct). The dispatch
+ *   is the compiler's (its class registry), so source that must stand alone
+ *   (jz/transform) keeps every class as per-instance closures.
  * @returns {Array} Transformed AST
  */
-export default function jzify(ast) {
+export default function jzify(ast, { structs = true } = {}) {
   names.reset()
+  resetClasses(structs)
   activeBuiltinScope = null
   builtinScopes = buildBuiltinScopes(ast)
   // Module-scope `const K = 'str'` bindings — lets class lowering fold computed

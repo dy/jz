@@ -183,8 +183,8 @@ test('summary codegen: a method called through an array of instances, an exporte
     const mkChain = (n, count) => { const nodes = []; for (let k = 0; k < count; k++) nodes.push(new Gain(n, 0.5 + k)); return nodes }
     const render = (input, nodes) => { let x = input; for (let k = 0; k < nodes.length; k++) x = nodes[k].process(x); return x }
     export const run = (n) => { const input = new Float64Array(n); input[1] = 2; return render(input, mkChain(n, 3))[1] }`
-  const wat = compile(src, { wat: true })
-  ok(!/__dyn_get|__hash|__to_str/.test(wat), 'the method comes from the element\'s schema slot, the closure parameter is a typed array')
+  // level 2: below it the method's dispatcher, dead here, is not shaken
+  if (OPT_LEVEL === 2) ok(!/__dyn_get|__hash|__to_str/.test(compile(src, { wat: true })), 'the method comes from the element\'s schema slot, the method parameter is a typed array')
   is(jz(src).exports.run(4), 2 * 0.5 * 1.5 * 2.5)
   if (OPT_LEVEL === 2) ok(compile(src).length < 3000, `the typed tier's size class (${compile(src).length} B)`)
   // An exported class: its constructor parameter is read only through a slot
@@ -192,7 +192,7 @@ test('summary codegen: a method called through an array of instances, an exporte
   const cls = `export class Gain { constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
       process() { const b = this.buf, g = this.gain; for (let i = 0; i < b.length; i++) b[i] = b[i] * g; return b[0] } }
     export const run = (n, gain) => { const g = new Gain(n, gain); g.buf[0] = 2; g.process(); return g.process() }`
-  ok(!/__to_str/.test(compile(cls, { wat: true })), 'no string machinery: the gain slot is read only as a number')
+  if (OPT_LEVEL === 2) ok(!/__to_str/.test(compile(cls, { wat: true })), 'no string machinery: the gain slot is read only as a number')
   is(jz(cls).exports.run(8, 0.5), 0.5)
   is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
   if (OPT_LEVEL === 2) ok(compile(cls).length < 2000, `bytes: ${compile(cls).length}`)

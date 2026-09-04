@@ -14,6 +14,8 @@ import { valTypeOf } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
+import { classInstanceof } from './class-dispatch.js'
+import { isBrand } from '../../ast.js'
 
 
 // === instanceof (.work/archive/todo.md §deletion-sweep §4) ===
@@ -157,6 +159,7 @@ function emitErrorInstanceof(a, rhs) {
 }
 
 export function emitInstanceof(a, rhs) {
+  if (isBrand(rhs)) return classInstanceof(a, rhs)
   if (rhs in INSTANCEOF_TAG) return emitTagInstanceof(a, rhs)
   if (TYPED_ELEM_NAMES.includes(rhs)) return emitTypedInstanceof(a, rhs)
   return emitErrorInstanceof(a, rhs)

@@ -89,6 +89,7 @@ import {
 } from '../wat/assemble.js'
 import { link } from '../link/index.js'
 import { summarize } from '../summary/index.js'
+import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
@@ -135,11 +136,13 @@ export default function compile(ast, profiler) {
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
   // Populate known function names + lookup map on ctx.func for direct call detection
+  ctx.module.entryInit = ast   // the entry module's own statements, beside `moduleInits`
+  synthesizeClassDispatchers()   // the class dispatchers, functions like any other from here on
   ctx.funcs.names.clear()
   ctx.funcs.map.clear()
   for (const f of ctx.funcs.list) { ctx.funcs.names.add(f.name); ctx.funcs.map.set(f.name, f) }
   ctx.summary = timePhase(profiler, 'summary', () => summarize(ast, {
-    funcs: ctx.funcs.list, schemas: ctx.schema.list, exported: isExported,
+    funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, exported: isExported,
     imports: new Set(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, ''))),
   }))
   // Include imported functions for call resolution (e.g. template interpolations).

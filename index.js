@@ -58,7 +58,7 @@ import { beginSession, registerSessionResetHook } from './src/session.js'
 import compile from './src/compile/index.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
 import { resolveOptimize } from './src/optimize/index.js'
-import { resolveWatrOpts, watrTail } from './src/optimize/watr-tail.js'
+import { resolveWatrOpts, watrTail, programPins } from './src/optimize/watr-tail.js'
 export { resolveWatrOpts }
 import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
@@ -656,14 +656,7 @@ const jzCompileInner = (code, opts = {}) => {
   // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
   const optimized = watrTail(module, cfg, {
     funcCount: ctx.funcs.list.length,
-    boundaryPins: [
-      ...(cfg._vectorizedFnNames?.size
-        ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
-        : []),
-      ...(ctx.linkDemand.typedRuntime
-        ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
-          .filter(name => ctx.core.includes.has(name.slice(1))) : []),
-    ],
+    boundaryPins: programPins(cfg),
     time,
     targetProfile: ctx.transform.targetProfile,
     lazyDataSpans: ctx.runtime.lazySpans,

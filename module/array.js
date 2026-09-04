@@ -1188,7 +1188,7 @@ export default (ctx) => {
       const flat = []
       for (const v of vals) {
         const parsed = Array.isArray(v) && v[0] === '{}' ? staticObjectProps(v.slice(1)) : null
-        const msid = parsed ? ctx.schema.register(parsed.names) : null
+        const msid = parsed ? ctx.schema.register(parsed.names, parsed.brand) : null
         if (msid == null || !inlUnion.sids.includes(msid))
           err(`Array.push on this union-typed array expects a literal matching one of: ${inlUnion.sids.map(sid => `{ ${ctx.schema.list[sid].join(', ')} }`).join(' or ')}`)
         const fields = structLiteralFields(v, msid)

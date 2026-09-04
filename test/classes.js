@@ -1,13 +1,17 @@
 // `class` lowering (jzify): constructor + instance fields + methods + `new` + `this`,
 // plus `extends`, `super(…)`, `static` members, and private `#fields`.
-// Classes are pure desugaring — an instance is a plain object, methods are
-// per-instance arrows capturing it, `this` is renamed to that object, `new C(a)`
-// becomes `C(a)`, `get x()`/`set x(v)` become the `x__get`/`x__set` slots the
-// property reader and store dispatch through. Rejected: full `super.x`
-// property semantics, non-constant computed member names.
+// A class at module scope whose base is none or a class of its module is a
+// schema with identity and functions of the receiver: an instance holds its
+// fields alone, `o.m()` on a receiver the summary knows is a direct call, an
+// unknown receiver dispatches on its schema id. Every other class (nested,
+// a dynamic base) is pure desugaring — an instance is a plain object, methods
+// are per-instance arrows capturing it. `this` is renamed to the instance,
+// `new C(a)` becomes `C(a)`, `get x()`/`set x(v)` become the `x__get`/`x__set`
+// members the property reader and store dispatch through. Rejected: full
+// `super.x` property semantics, non-constant computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, OPT_LEVEL } from './_matrix.js'
 import jz from '../index.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
@@ -488,4 +492,66 @@ test('class: static fields, methods, and blocks', () => {
   is(j(`class A { static x = 41; static m(k) { return A.x + k } } export let f = () => A.m(1)`), 42)
   is(j(`class C { static base = 10; static mk(v) { return this.base + v } } export let f = () => C.mk(5)`), 15)
   is(j(`class E { static a = 1; static { E.b = E.a + 10 } static c = 100 } export let f = () => E.b + E.c`), 111)
+})
+
+// === Classes as structs (jzify/classes.js lowerStruct, src/compile/emit/class-dispatch.js) ===
+
+test('class struct: an instance holds its fields alone; a method is a function of the receiver', () => {
+  const src = `export class P { constructor(x, y) { this.x = x; this.y = y } len() { return this.x * this.x + this.y * this.y } }
+    export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { const p = new P(i, 2); s += p.len() } return s }`
+  const { f, P } = jz(src).exports
+  is(f(4), 30)
+  is(jz(src + `\nexport const keys = () => Object.keys(new P(1, 2)).join()`).exports.keys(), 'x,y', 'no method slots')
+  if (!onWasi()) is(JSON.stringify(P(3, 4)), '{"x":3,"y":4}', 'the host sees the fields alone')
+  // level 2: below it the member's dispatcher, dead here, is not shaken
+  if (OPT_LEVEL === 2) {
+    ok(!/__dyn_get|__hash|__str_concat|__closure/.test(jz.compile(src, { wat: true })), 'a direct call: no dynamic read, no closure, no string path')
+    ok(jz.compile(src).length < 1200, `the struct's size class (${jz.compile(src).length} B)`)
+  }
+})
+
+test('class struct: two classes of one shape dispatch on the schema id through an unknown receiver', () => {
+  const { f, plain } = compile(`
+    class Cat { constructor(n) { this.name = n } speak() { return this.name + ' meows' } }
+    class Dog { constructor(n) { this.name = n } speak() { return this.name + ' barks' } }
+    const pick = (i) => i ? new Dog('rex') : new Cat('tom')
+    export const f = (i) => pick(i).speak()
+    export const plain = () => ({ name: 'x', speak: () => 'plain' }).speak()`)
+  is(f(0), 'tom meows'); is(f(1), 'rex barks')
+  is(plain(), 'plain', 'a plain object with a closure property keeps its own dispatch')
+})
+
+test('class struct: a method read as a value is bound to its receiver; an own property shadows the method', () => {
+  const j = (code) => jz(code).exports.f()
+  is(j(`class P { constructor(x) { this.x = x } dbl() { return this.x * 2 } }
+    export const f = () => { const p = new P(4); const f = p.dbl; return f() + [1].map(p.dbl)[0] }`), 16)
+  is(j(`class P { constructor(x) { this.x = x } dbl() { return this.x * 2 } }
+    export const f = () => { const p = new P(4); p.dbl = () => 1; return p.dbl() + new P(5).dbl() }`), 11)
+})
+
+test('class struct: accessors on a known receiver, an unknown receiver, a plain object', () => {
+  const { f, unknown } = compile(`
+    class T { #c = 0; constructor(v) { this.v = v } get twice() { return this.v * 2 } set twice(x) { this.v = x / 2 } }
+    export const f = () => { const t = new T(3); t.twice = 10; return t.twice * 100 + t.v }
+    const any = (o) => o.twice
+    export const unknown = (i) => any(i ? new T(4) : { twice: 7 })`)
+  is(f(), 1005); is(unknown(1), 8); is(unknown(0), 7)
+})
+
+test('class struct: a derived class shares the base fields and functions; super; instanceof', () => {
+  const { f } = compile(`
+    class B { constructor(x) { this.x = x } value() { return this.x + 1 } describe() { return 'b' + this.value() } }
+    class D extends B { constructor(x, y) { super(x); this.y = y } value() { return super.value() * 2 + this.y } }
+    class E extends D {}
+    export const f = () => { const d = new D(5, 1), e = new E(1, 1)
+      return d.describe() + ',' + e.describe() + ',' + (d instanceof B) + (d instanceof D) + (new B(1) instanceof D) + (e instanceof B) + (({}) instanceof B) }`)
+  is(f(), 'b13,b5,truetruefalsetruefalse')
+})
+
+test('class struct: an imported class keeps its identity across modules', () => {
+  const modules = { './p.js': `export class P { constructor(x) { this.x = x } dbl() { return this.x * 2 } get sq() { return this.x * this.x } }
+    export const mk = (x) => new P(x)` }
+  const { f } = jz(`import { P, mk } from './p.js'
+    export const f = () => { const p = new P(3); const q = mk(4); return p.dbl() + q.sq }`, { modules }).exports
+  is(f(), 22)
 })

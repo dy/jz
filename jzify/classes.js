@@ -3,10 +3,10 @@
  * @module jzify/classes
  */
 
-import { extractParams as paramList, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from '../src/ast.js'
+import { extractParams as paramList, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T } from '../src/ast.js'
 import { ctx, err } from '../src/ctx.js'
 
-export function createClassLowering({ transform, names, JC, constStrings }) {
+export function createClassLowering({ transform, names, JC, constStrings, atModuleScope }) {
 // === class lowering ===
 //
 // A class is lowered to a factory arrow. Instance state is a plain object;
@@ -159,7 +159,9 @@ function collectSuperMethodCalls(node, out = new Set()) {
   return out
 }
 
-function rewriteSuperMethodCalls(node, baseMethodVars) {
+// `recv`, when given, is passed as the first argument: the base's method is a
+// shared function taking the receiver (the struct lowering below).
+function rewriteSuperMethodCalls(node, baseMethodVars, recv) {
   if (!Array.isArray(node)) return node
   if (node[0] === 'function' || node[0] === 'class') return node
   if (node[0] === '()') {
@@ -167,11 +169,15 @@ function rewriteSuperMethodCalls(node, baseMethodVars) {
     if (name) {
       const fn = baseMethodVars.get(name)
       if (!fn) jzifyError(`super.${name} is not available on the base class`)
-      return ['()', fn, ...node.slice(2).map(n => rewriteSuperMethodCalls(n, baseMethodVars))]
+      const args = node.slice(2).map(n => rewriteSuperMethodCalls(n, baseMethodVars, recv))
+      return ['()', fn, ...(recv ? [withReceiver(args[0], recv)] : args)]
     }
   }
-  return node.map(n => rewriteSuperMethodCalls(n, baseMethodVars))
+  return node.map(n => rewriteSuperMethodCalls(n, baseMethodVars, recv))
 }
+
+// A call's argument node with `recv` prepended: `null` → recv, `a` → `[',', recv, a]`.
+const withReceiver = (args, recv) => args == null ? recv : Array.isArray(args) && args[0] === ',' ? [',', recv, ...args.slice(1)] : [',', recv, args]
 
 function splitCtorSuper(body) {
   if (body == null) return { args: null, body }
@@ -268,7 +274,119 @@ function accessorMethod(it, constStrings, dynamic) {
   return [accessorSlot(it[0], key), arrowParams(it[2] ?? null), it[3]]
 }
 
-function lowerClass(name, heritage, body) {
+// === struct lowering ===
+//
+// A class at module scope whose base is none or a class of this module is a
+// schema with identity and functions taking the receiver:
+//
+//   class P { x = 1; constructor(a) { this.y = a } len() { return this.x * this.y } }
+//   →
+//   let P⟨len⟩ = (self) => { return self.x * self.y }
+//   let P⟨init⟩ = (self, a) => { self.x = 1; self.y = a }
+//   let P = (a) => { let self = { x: undefined, y: undefined, ⟨class1⟩: undefined }
+//                    P⟨init⟩(self, a); return self }
+//
+// (⟨…⟩ marks jzify's class namespace character, ast.js CLASS_T.) The brand property names no slot: the
+// schema registry takes it as the salt that gives the class its own schema
+// id (module/schema.js), so class identity lives in the id, as an Error's
+// does. A derived class declares its base's fields too and its init calls
+// the base's first; `super.m(…)` is the base's function. A method read as a
+// value is bound by `P⟨len⟩⟨bind⟩`. Every class is recorded in
+// `ctx.transform.classes` by brand: the summary resolves `o.len()` on a
+// receiver it knows as P to a direct call, an unknown receiver dispatches on
+// its schema id, `o instanceof P` compares it (src/compile/emit/class-dispatch.js).
+// Static members are properties of the factory, assigned after it.
+//
+// The contract: an instance holds its fields and nothing else, so a member
+// is shadowed by an own property only when the program stores one under the
+// member's literal name (`o.len = …`); a computed-key store or a store by
+// code the compiler cannot see (a host, `Object.assign`) does not reach a
+// member, `'len' in o` is false, and a method read as a value is bound to
+// its receiver.
+const structClasses = new Map()   // this module's classes by local name
+const methodFn = (cls, m) => `${cls}${CLASS_T}${m}`
+const INIT = CLASS_T + 'init', BIND = CLASS_T + 'bind'
+function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers }) {
+  const cls = name ?? names.classStatic()
+  const id = ctx.transform.classId = (ctx.transform.classId ?? 0) + 1
+  const brand = BRAND + id
+  const self = names.classSelf()
+  const UNDEF = []
+  // Every field the class declares or assigns through `this`, after the base's.
+  const own = fields.map(([f]) => f)
+  const assigned = []
+  assignedThisFields(ctorBody, assigned)
+  for (const [, init] of fields) assignedThisFields(init, assigned)
+  for (const [, , mbody] of methods) assignedThisFields(mbody, assigned)
+  for (const f of assigned) if (!own.includes(f)) own.push(f)
+  const allFields = base ? [...base.fields, ...own.filter(f => !base.fields.includes(f))] : own
+  const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls, init: methodFn(cls, INIT), fields: allFields, methods: new Map(base?.methods), base: base?.brand ?? null, staticAccessors: new Set(base?.staticAccessors) }
+  for (const [mname] of methods) entry.methods.set(mname, methodFn(cls, mname))
+  structClasses.set(cls, entry)
+  ;(ctx.transform.classes ??= new Map()).set(brand, entry)
+  const superVars = new Map([...superMethods].map(m => [m, base?.methods.get(m)]))
+  for (const [m, fn] of superVars) if (!fn) jzifyError(`super.${m} is not available on the base class`)
+  const rewrite = (node) => renameThis(rewriteSuperMethodCalls(node, superVars, self), self)
+  const withSelf = (params) => { const list = paramList(arrowParams(params ?? null)); return ['()', list.length ? [',', self, ...list] : self] }
+  // The methods, each a function of the receiver, and a binder for a method read as a value.
+  for (const [mname, mparams, mbody] of methods) {
+    hoists.push(['let', ['=', methodFn(cls, mname), transform(['=>', withSelf(mparams), block(rewrite(mbody))])]])
+    const plist = paramList(arrowParams(mparams ?? null))
+    const simple = plist.every(p => typeof p === 'string')
+    const args = simple ? plist.map((_, i) => names.classSuperArg(i)) : [['...', names.classSuperArg(0)]]
+    hoists.push(['let', ['=', methodFn(cls, mname) + BIND,
+      ['=>', ['()', self], ['=>', ['()', args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]],
+        ['()', methodFn(cls, mname), withReceiver(args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args], self)]]]]])
+  }
+  // The initializer: the base's first, then the field initializers, then the constructor body.
+  const split = base ? splitCtorSuper(ctorBody) : { args: null, body: ctorBody }
+  const forwarded = ctorParams == null && base ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i)) : null
+  const ctorList = forwarded ?? (ctorParams == null ? [] : paramList(ctorParams))
+  const initStmts = []
+  if (base) {
+    // `super(a, b)` passes its arguments; a constructor without one, or none, forwards its own
+    const given = split.args == null ? null : split.args.length === 0 ? [] : Array.isArray(split.args[0]) && split.args[0][0] === ',' ? split.args[0].slice(1) : split.args
+    const superArgs = given ?? ctorList.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? p : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' ? p[1] : null)
+    if (superArgs.includes(null)) jzifyError('a derived class constructor with a destructured parameter must call super(…) itself')
+    initStmts.push(['()', base.init, [',', self, ...superArgs]])
+  }
+  for (const [fname, init] of fields) if (init != null) initStmts.push(['=', ['.', self, fname], init])
+  if (split.body != null) {
+    let cb = split.body
+    if (Array.isArray(cb) && cb[0] === '{}') cb = cb[1]
+    if (Array.isArray(cb) && cb[0] === ';') initStmts.push(...cb.slice(1).filter(s => s != null))
+    else if (cb != null) initStmts.push(cb)
+  }
+  hoists.push(['let', ['=', entry.init, transform(['=>', withSelf(['()', ctorList.length === 0 ? null : ctorList.length === 1 ? ctorList[0] : [',', ...ctorList]]), ['{}', [';', ...rewrite(initStmts)]]])]])
+  // The factory: the instance with every field, initialized, returned. Its
+  // parameters forward to the initializer, which holds any default or pattern.
+  const fparams = ctorList.map((p, i) => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? p : names.classSuperArg(i))
+  const props = [...allFields.map(f => [':', f, UNDEF]), [':', brand, UNDEF]]
+  const lit = ['{}', props.length === 1 ? props[0] : [',', ...props]]
+  const factory = ['=>', ['()', fparams.length === 0 ? null : fparams.length === 1 ? fparams[0] : [',', ...fparams]], ['{}', [';',
+    ['let', ['=', self, lit]],
+    ['()', entry.init, [',', self, ...fparams]],
+    ['return', self]]]]
+  for (const [sname, value, kind] of statics) {
+    if (kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))) entry.staticAccessors.add(sname)
+    if (kind === 'block') {
+      let b = transform(renameThis(value, cls))
+      if (Array.isArray(b) && b[0] === '{}') b = b[1]
+      if (Array.isArray(b) && b[0] === ';') trailers.push(...b.slice(1).filter(x => x != null))
+      else if (b != null) trailers.push(b)
+      continue
+    }
+    const rhs = kind === 'gen'
+      ? transform(['function*', null, value[2], renameThis(value[3], cls)])
+      : kind
+        ? transform(['=>', value[1], block(renameThis(value[2], cls))])
+        : value == null ? UNDEF : transform(renameThis(value, cls))
+    trailers.push(['=', ['.', cls, sname], rhs])
+  }
+  return factory
+}
+
+function lowerClass(name, heritage, body, hoists, trailers) {
   let ctorParams = null, ctorBody = null
   const methods = [], fields = [], statics = []
   const items = classBodyItems(normalizeClassIdioms(body, typeof heritage === 'string' ? heritage : null))
@@ -375,6 +493,9 @@ function lowerClass(name, heritage, body) {
     )
       jzifyError(JC.superProp)
   }
+  const base = typeof heritage === 'string' ? structClasses.get(heritage) : null
+  if (structsOn && hoists && atModuleScope() && (heritage == null || base) && !methods.some(m => m[3]) && (statics.length === 0 || trailers))
+    return lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
   const self = names.classSelf()
   const UNDEF = []                                  // jessie's node for `undefined`
   // Object literal: every declared field (its initializer inline when it doesn't
@@ -469,7 +590,14 @@ function lowerClass(name, heritage, body) {
   return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]
 }
 
-  return { lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors }
+  /** The brand of a class of this module lowered to a schema, by local name; null otherwise. */
+  const classBrand = (name) => structClasses.get(name)?.brand ?? null
+  /** Whether a class of this module has the static accessor slot (`x__get` / `x__set`). */
+  const classStaticAccessor = (name, slot) => structClasses.get(name)?.staticAccessors.has(slot) ?? false
+  /** The module's classes are its own: cleared at every jzify entry; `structs` false keeps every class a closure. */
+  let structsOn = true
+  const resetClasses = (structs = true) => { structClasses.clear(); structsOn = structs }
+  return { lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses }
 }
 
 // ── Pseudo-classical fold ────────────────────────────────────────────────────

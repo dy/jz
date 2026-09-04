@@ -29,7 +29,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, extractParams } from '../ast.js'
+import { MUTATE_OPS, extractParams, isBrand, ACCESSOR_GET, ACCESSOR_SET, CLASS_T } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
 import { VAL } from '../reps.js'
 
@@ -72,6 +72,7 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 const VAL_OF = [null, VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT, null, VAL.TYPED, VAL.ARRAY, VAL.OBJECT, VAL.CLOSURE, VAL.MAP, VAL.SET, VAL.DATE, VAL.REGEX, VAL.HASH, null]
 export const valOf = (k) => isNullable(k) ? null : VAL_OF[tagOf(k)] ?? null
 
+const BIND = CLASS_T + 'bind'
 const TYPED_CTOR = /^new\.(\w+Array)(\.view)?$/
 const NUMBER_METHODS = new Set(['length', 'size', 'byteLength', 'byteOffset'])
 const TYPED_SAME = new Set(['subarray', 'slice', 'map', 'filter', 'fill', 'reverse', 'sort', 'copyWithin', 'set'])
@@ -81,7 +82,7 @@ const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>',
 const BOOL_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', 'in', 'instanceof'])
 
 /** Summarize the prepared program: `funcs` are the function records, `schemas` the schema prop lists. */
-export function summarize(ast, { funcs, schemas, exported, imports }) {
+export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imports }) {
   const kinds = new Map()            // binding name → kind
   const fields = new Map()           // sid → kind[]
   const results = new Map()          // function name or closure id → kind
@@ -89,8 +90,21 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
   const closureParams = []           // closure id → param names
   const closureBodies = []           // closure id → body
   const escaped = new Set()          // closure ids and function names whose callers are unknown
-  const schemaKey = (props) => props.length + '\x01' + props.join('\x01')
-  const sidByKey = new Map(schemas.map((props, sid) => [schemaKey(props), sid]))
+  // The registry's key (module/schema.js): the props, and a class's brand as the salt.
+  const schemaKey = (props, brand) => props.length + '\x01' + props.join('\x01') + (brand ? '\x02' + brand : '')
+  const sidByKey = new Map(schemas.map((props, sid) => [schemaKey(props, brandOf(sid)), sid]))
+  /** A literal's static keys and its brand: `{ props, brand }`, or null when a key is computed or spread. */
+  const literalShape = (n) => {
+    const props = []
+    let brand = null
+    for (let i = 1; i < n.length; i++) {
+      const p = n[i]
+      const key = typeof p === 'string' ? p : Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string' ? p[1] : null
+      if (key === null) return null
+      if (isBrand(key)) brand = key; else props.push(key)
+    }
+    return { props, brand }
+  }
   const byProp = new Map()
   schemas.forEach((props, sid) => props.forEach((p, i) => { let b = byProp.get(p); if (!b) byProp.set(p, b = []); b.push([sid, i]) }))
   const funcByName = new Map(funcs.map(f => [f.name, f]))
@@ -130,6 +144,12 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (tagOf(k) === K.ARRAY) { escape(elemOf(k)); raiseElem(k, ANY) }
   }
   /** An object handed to code the summary cannot see: its fields may be stored to. */
+  // An own property stored under a class member's name shadows the member
+  // (jzify/classes.js): a store of a non-field property on an instance, or
+  // through a receiver of unknown shape. The name must be literal: a
+  // computed-key store, or a store by code the summary cannot see, does not
+  // reach a class member (the class contract, jzify/classes.js).
+  const dynamicProps = new Set()
   const escapeObject = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) poisonSchema(paramOf(k)); escape(k) }
   const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   const bind = (names, ks) => {
@@ -170,9 +190,27 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (!escaped.has(id)) bind(closureParams[id], argKinds)
     return results.get(id) ?? K.NONE
   }
+  // A class (jzify/classes.js): its members are functions of the receiver.
+  // A receiver of one class calls its function; a receiver the summary
+  // cannot name may be any class with the member, so each is called.
+  const classOfSid = (sid) => { const b = brandOf(sid); return b ? classes?.get(b) ?? null : null }
+  const classMember = (recv, name) => tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN ? classOfSid(paramOf(recv))?.methods.get(name) ?? null : null
+  const memberMayBeOwn = (prop) => dynamicProps.has(prop)
+  /** The class member's result, or ANY when an own property may shadow it. */
+  const memberResult = (recv, name, r) => memberMayBeOwn(name) ? ANY : r
+  const unknownReceiver = (recv) => { const t = tagOf(recv); return t === K.ANY || (t === K.OBJECT && paramOf(recv) === UNKNOWN) }
+  const callCandidates = (recv, name, argKinds) => {
+    if (!classes || !unknownReceiver(recv)) return
+    for (const e of classes.values()) { const fn = e.methods.get(name); if (fn) call(fn, [recv, ...argKinds]) }
+  }
   const method = (recv, name, argKinds) => {
     const t = tagOf(recv)
     if (t === K.NONE) return K.NONE  // the receiver is not known yet; a later round sees it
+    // A member access on a nullish receiver throws before the call: the
+    // function's receiver is the class alone.
+    const classFn = classMember(recv, name)
+    if (classFn) { const r = call(classFn, [core(recv), ...argKinds]); if (memberMayBeOwn(name)) for (const k of argKinds) escape(k); return memberResult(recv, name, r) }
+    callCandidates(recv, name, argKinds)
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
       const sid = paramOf(recv), i = schemas[sid].indexOf(name)
       if (i >= 0) {
@@ -223,16 +261,16 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (op === '`') { for (let i = 1; i < n.length; i++) expr(n[i]); return STRING }
     if (op === '=>') { const id = closureId(n); return kind(K.CLOSURE, id) }
     if (op === '{}') {
-      const props = [], vals = [], init = definite.get(n)
+      const vals = [], init = definite.get(n), shape = literalShape(n)
       for (let i = 1; i < n.length; i++) {
         const p = n[i]
-        if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { props.push(p[1]); vals.push(init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
-        else if (typeof p === 'string') { props.push(p); vals.push(expr(p)) }
+        if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (!isBrand(p[1])) vals.push(init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
+        else if (typeof p === 'string') vals.push(expr(p))
         else { if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j])); return kind(K.HASH) }
       }
-      const sid = sidByKey.get(schemaKey(props))
+      const sid = shape ? sidByKey.get(schemaKey(shape.props, shape.brand)) : undefined
       if (sid === undefined) { for (const v of vals) escape(v); return kind(K.HASH) }
-      for (let i = 0; i < props.length; i++) raiseSlot(sid, i, vals[i])
+      for (let i = 0; i < vals.length; i++) raiseSlot(sid, i, vals[i])
       return kind(K.OBJECT, sid)
     }
     if (op === '[') {
@@ -248,8 +286,16 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
       if (t === K.NONE) return K.NONE
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
         const i = schemas[paramOf(recv)].indexOf(prop)
-        return i >= 0 ? slots(paramOf(recv))[i] : NULLISH
+        if (i >= 0) return slots(paramOf(recv))[i]
+        // a class's getter, or a method read as a value: bound by its binder
+        const getter = classMember(recv, prop + ACCESSOR_GET)
+        if (getter) return memberResult(recv, prop, call(getter, [core(recv)]))
+        const fn = classMember(recv, prop)
+        if (fn) return memberResult(recv, prop, call(fn + BIND, [core(recv)]))
+        return memberMayBeOwn(prop) ? ANY : NULLISH
       }
+      callCandidates(recv, prop + ACCESSOR_GET, [])
+      if (classes && unknownReceiver(recv) && !prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const e of classes.values()) { const fn = e.methods.get(prop); if (fn) call(fn + BIND, [recv]) }
       if (NUMBER_METHODS.has(prop) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET)) return NUMBER
       return ANY
     }
@@ -301,23 +347,34 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = expr(target[1]), prop = target[2], t = tagOf(recv)
       if (t === K.NONE) return v
-      if (typeof prop !== 'string') { poisonAll(recv); escape(v); return v }
-      if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { const i = schemas[paramOf(recv)].indexOf(prop); if (i >= 0) raiseSlot(paramOf(recv), i, v); else poisonSchema(paramOf(recv)) }
-      else if (t !== K.ARRAY && t !== K.TYPED && t !== K.STRING && t !== K.MAP && t !== K.SET) { poisonProp(prop); escape(v) }
+      if (typeof prop !== 'string') { poisonAll(recv, expr(prop)); escape(v); return v }
+      if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
+        const i = schemas[paramOf(recv)].indexOf(prop), setter = i < 0 ? classMember(recv, prop + ACCESSOR_SET) : null
+        if (i >= 0) raiseSlot(paramOf(recv), i, v); else if (setter) call(setter, [core(recv), v]); else { poisonSchema(paramOf(recv)); dynamicProps.add(prop) }
+      }
+      else if (t !== K.ARRAY && t !== K.TYPED && t !== K.STRING && t !== K.MAP && t !== K.SET) { callCandidates(recv, prop + ACCESSOR_SET, [v]); poisonProp(prop); dynamicProps.add(prop); escape(v) }
       return v
     }
     if (Array.isArray(target) && target[0] === '[]') {
       const recv = expr(target[1]), idx = target[2], t = tagOf(recv)
       if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return assign(op, ['.', target[1], idx[1]], value)
-      expr(idx)
+      const ik = expr(idx)
       if (t === K.ARRAY) raiseElem(recv, v)
-      else if (t !== K.NONE && t !== K.TYPED && t !== K.STRING) { poisonAll(recv); escapeObject(v) }
+      else if (t !== K.NONE && t !== K.TYPED && t !== K.STRING) { poisonAll(recv, ik); escapeObject(v) }
       return v
     }
     escape(v)
     return v
   }
-  const poisonAll = (recv) => { if (tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN) poisonSchema(paramOf(recv)); else for (let sid = 0; sid < schemas.length; sid++) poisonSchema(sid) }
+  // A computed-key store may reach any slot; one with a number key only a
+  // slot named like an index. A key of bottom kind is not known yet: a
+  // later round decides.
+  const poisonAll = (recv, key = ANY) => {
+    if (tagOf(key) === K.NONE) return
+    const numeric = tagOf(key) === K.NUMBER
+    const hit = (sid) => { if (!numeric) poisonSchema(sid); else schemas[sid].forEach((p, i) => { if (/^\d+$/.test(p)) raiseSlot(sid, i, ANY) }) }
+    if (tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN) hit(paramOf(recv)); else for (let sid = 0; sid < schemas.length; sid++) hit(sid)
+  }
 
   // Definite initialization: `let self = { f: undefined, … }` followed, in the
   // same statement list and before `self` is used any other way, by
@@ -332,6 +389,29 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     for (let i = 1; i < v.length; i++) if (mentions(v[i], name, assigned)) return true
     return false
   }
+  // The fields `name` is definitely assigned by the statements from `from`
+  // on: a store `name.f = v` whose value does not read the object, or a call
+  // `F(name, …)` to a function that so assigns its first parameter (a class
+  // initializer, jzify/classes.js), until a statement uses `name` otherwise.
+  const definiteStores = (list, from, name, assigned, seen) => {
+    for (let i = from; i < list.length; i++) {
+      const st = list[i]
+      if (!Array.isArray(st)) return
+      if (st[0] === '=' && Array.isArray(st[1]) && st[1][0] === '.' && st[1][1] === name && typeof st[1][2] === 'string') {
+        if (mentions(st[2], name, assigned) || isNullishLit(st[2])) return
+        assigned.add(st[1][2])
+        continue
+      }
+      const f = st[0] === '()' && typeof st[1] === 'string' ? funcByName.get(st[1]) : undefined
+      const as = f ? args(st[2]) : null
+      if (!f || as[0] !== name || seen.has(f) || as.slice(1).some(a => mentions(a, name, assigned))) return
+      const p0 = f.sig.params[0]
+      if (!p0 || p0.rest) return
+      seen.add(f)
+      const body = f.body, stmts = isBlock(body) ? (Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]) : []
+      definiteStores(stmts, 0, p0.name, assigned, seen)
+    }
+  }
   const noteDefinite = (list, from) => {
     const d = list[from]
     if (!Array.isArray(d) || (d[0] !== 'let' && d[0] !== 'const') || d.length !== 2 || !Array.isArray(d[1]) || d[1][0] !== '=' || typeof d[1][1] !== 'string') return
@@ -339,12 +419,7 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (!Array.isArray(lit) || lit[0] !== '{}' || lit.length < 2 || !lit.slice(1).every(p => Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string')) return
     if (!lit.slice(1).some(p => isNullishLit(p[2]))) return
     const assigned = new Set()
-    for (let i = from + 1; i < list.length; i++) {
-      const st = list[i]
-      if (!Array.isArray(st) || st[0] !== '=' || !Array.isArray(st[1]) || st[1][0] !== '.' || st[1][1] !== name || typeof st[1][2] !== 'string') break
-      if (mentions(st[2], name, assigned) || isNullishLit(st[2])) break
-      assigned.add(st[1][2])
-    }
+    definiteStores(list, from + 1, name, assigned, new Set())
     if (assigned.size) definite.set(lit, assigned)
   }
 
@@ -389,8 +464,8 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (op === 'delete') {
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
       // is rejected downstream; a computed key may remove any slot.
-      const r = expr(n[1]); expr(n[2])
-      if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r)
+      const r = expr(n[1]), k = expr(n[2])
+      if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k)
       return
     }
     if (op === 'switch') { expr(n[1]); for (let i = 2; i < n.length; i++) stmt(n[i]); return }
@@ -428,7 +503,12 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (op === '.' || op === '?.') {
       const r = kindOfExpr(n[1]), t = tagOf(r)
       if (typeof n[2] !== 'string') return ANY
-      if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { const i = schemas[paramOf(r)].indexOf(n[2]); return i >= 0 ? slots(paramOf(r))[i] : NULLISH }
+      if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
+        const i = schemas[paramOf(r)].indexOf(n[2])
+        if (i >= 0) return slots(paramOf(r))[i]
+        const getter = classMember(r, n[2] + ACCESSOR_GET), fn = getter ?? (classMember(r, n[2]) ? classMember(r, n[2]) + BIND : null)
+        return fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH
+      }
       return NUMBER_METHODS.has(n[2]) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET) ? NUMBER : ANY
     }
     if (op === '[]') {
@@ -437,6 +517,10 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
       return t === K.TYPED ? NUMBER : t === K.ARRAY ? orNull(elemOf(r)) : t === K.STRING ? STRING : ANY
     }
     if (op === '()' && typeof n[1] === 'string') return TYPED_CTOR.test(n[1]) ? call(n[1], []) : results.get(n[1]) ?? ANY
+    if (op === '()' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') {
+      const r = kindOfExpr(n[1][1]), fn = classMember(r, n[1][2])
+      return fn && !memberMayBeOwn(n[1][2]) ? results.get(fn) ?? ANY : ANY
+    }
     return ANY
   }
 
@@ -486,9 +570,12 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     if (op === '.' || op === '?.') { if (typeof n[2] === 'string') useOf(n, cx, into); else { demand(n[1]); demand(n[2]) } return }
     if (op === '{}' && isLiteral(n)) {
       // A literal's value flows into its slot; a shorthand `{ g }` reads `g`.
-      const props = n.slice(1).map(p => typeof p === 'string' ? p : p[1])
-      const sid = props.every(k => typeof k === 'string') ? sidByKey.get(schemaKey(props)) : undefined
-      for (let i = 1; i < n.length; i++) { const p = n[i]; const value = typeof p === 'string' ? p : p[0] === ':' ? p[2] : p[1]; if (sid !== undefined) useOf(value, FLOW, slotKey(sid, props[i - 1])); else demand(value) }
+      const shape = literalShape(n)
+      const sid = shape ? sidByKey.get(schemaKey(shape.props, shape.brand)) : undefined
+      for (let i = 1; i < n.length; i++) {
+        const p = n[i], key = typeof p === 'string' ? p : p[0] === ':' ? p[1] : null, value = typeof p === 'string' ? p : p[0] === ':' ? p[2] : p[1]
+        if (sid !== undefined && typeof key === 'string' && !isBrand(key)) useOf(value, FLOW, slotKey(sid, key)); else demand(value)
+      }
       return
     }
     if (op === 'let' || op === 'const' || op === 'var') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, d[1]); else demand(d[2]) } } return }
@@ -579,6 +666,8 @@ export function summarize(ast, { funcs, schemas, exported, imports }) {
     arrayElemSidOf: (name) => { const k = kinds.get(name); if (k === undefined || tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elems[paramOf(k)]; return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null },
     /** The binding has a ToNumber read or a flow into a demanded key, and no other read. */
     numericDemand: (name) => modelled.has(name) && isNumeric(name),
+    /** Some object may carry an own property `prop` stored under that literal name, shadowing a class member. */
+    memberMayBeOwn: (prop) => dynamicProps.has(prop),
     /** Some slot holds a typed array under every construction and store. */
     hasTypedFields: [...fields.values()].some(a => a.some(k => tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k))),
     escaped,

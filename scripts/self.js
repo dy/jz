@@ -22,7 +22,7 @@ import compileAst from '../src/compile/index.js'
 import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
 } from '../src/compile/emit.js'
-import { watrTail } from '../src/optimize/watr-tail.js'
+import { watrTail, programPins } from '../src/optimize/watr-tail.js'
 import jzify from '../jzify/index.js'
 
 // Final-optimizer tail shared with the host pipeline. Keep the live compile
@@ -30,14 +30,7 @@ import jzify from '../jzify/index.js'
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
     funcCount: ctx.funcs.list.length,
-    boundaryPins: [
-      ...(cfg._vectorizedFnNames?.size
-        ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
-        : []),
-      ...(ctx.linkDemand.typedRuntime
-        ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
-          .filter(name => ctx.core.includes.has(name.slice(1))) : []),
-    ],
+    boundaryPins: programPins(cfg),
     targetProfile: ctx.transform.targetProfile,
     lazyDataSpans: ctx.runtime.lazySpans,
     staticDataSpan: ctx.runtime.staticPrefixSpan,

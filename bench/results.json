@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-09-03 12:22 UTC",
-  "commit": "395c3fc0",
+  "date": "2026-09-04 00:39 UTC",
+  "commit": "098a9895",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -45,9 +45,9 @@
   },
   "memory": "peak RSS per process run (/usr/bin/time -l)",
   "machineState": {
-   "swapUsedMB": 8616.75,
-   "uptimeDays": 54.58,
-   "load1": 4.6,
+   "swapUsedMB": 11434.19,
+   "uptimeDays": 55.09,
+   "load1": 5.79,
    "powermode": "AC"
   },
   "partial": true,
@@ -8150,10 +8150,10 @@
    "targets": {
     "jz": {
      "medianUs": 76,
-     "bytes": 2363,
-     "memKb": 56656,
+     "bytes": 1847,
+     "memKb": 56448,
      "parity": "ok",
-     "measuredAt": "395c3fc0"
+     "measuredAt": "098a9895"
     },
     "as": {
      "medianUs": 607,
@@ -8170,7 +8170,7 @@
      "measuredAt": "395c3fc0"
     }
    },
-   "compileMs": 89.5
+   "compileMs": 92.5
   }
  }
 }

@@ -16,7 +16,7 @@ import { assignSid, declInitUnknown } from './state.js'
 export function objLiteralSid(prhs) {
   if (!Array.isArray(prhs) || prhs[0] !== '{}') return null
   const props = staticObjectProps(prhs.slice(1))
-  return props ? ctx.schema.register(props.names) : null
+  return props ? ctx.schema.register(props.names, props.brand) : null
 }
 
 // Shape-consensus accounting for every `name = …` assignment. `sid` is the

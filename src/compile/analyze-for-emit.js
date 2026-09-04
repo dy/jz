@@ -6,6 +6,7 @@ import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
 import { paramValTrustworthy } from '../param-reps.js'
+import { K, tagOf, isNullable } from '../summary/index.js'
 import { I32_MIN, I32_MAX } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
 import { enterFunc } from './func-entry.js'
@@ -220,6 +221,18 @@ export function analyzeFuncForEmit(func, programFacts) {
       // caller-side join below has no view into).
       if (r.mayBeUndefined) updateRep(pname, { mayBeUndefined: true, presence: 'maybe-undef' })
     }
+  }
+  // The program summary: a parameter every call passes as one kind takes it,
+  // where the call-site lattice above saw nothing (a class method's receiver,
+  // called through the class dispatch; a callee the census never named).
+  if (ctx.summary) for (const p of sig.params) {
+    if (p.rest || func.defaults?.[p.name] || ctx.func.localReps?.get(p.name)?.val || isReassigned(body, p.name)) continue
+    const k = ctx.summary.kindOf(p.name)
+    if (isNullable(k)) continue
+    const sid = ctx.summary.sidOf(p.name), ctor = ctx.summary.typedCtorOf(p.name)
+    if (sid != null) updateRep(p.name, { schemaId: sid, val: VAL.OBJECT })
+    else if (ctor) { (ctx.func.typedElem ||= new Map()).set(p.name, ctor); updateRep(p.name, { val: VAL.TYPED }) }
+    else if (tagOf(k) === K.NUMBER) updateRep(p.name, { val: VAL.NUMBER })
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
   // site omits its position (narrow's missing rule poisons r.val) or when callers

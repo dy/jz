@@ -15,7 +15,7 @@ import { GROW_QUAD_CAP } from './collection.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
-import { isReassigned, MUTATE_OPS, some, JZ_UNDEF } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS, some, JZ_UNDEF, isBrand } from '../src/ast.js'
 import { staticObjectProps } from '../src/static.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
@@ -153,8 +153,9 @@ export default (ctx) => {
     if (hasSpreads) return emitObjectSpread(props, target)
 
     const names = [], values = []
+    let brand = null   // a class instance: the schema salt, no slot (ast.js BRAND)
     for (const p of props) {
-      if (Array.isArray(p) && p[0] === ':') { names.push(p[1]); values.push(p[2]) }
+      if (Array.isArray(p) && p[0] === ':') { if (isBrand(p[1])) brand = p[1]; else { names.push(p[1]); values.push(p[2]) } }
     }
 
     // Use variable's merged schema if available (from Object.assign inference),
@@ -166,7 +167,7 @@ export default (ctx) => {
     // it would size the alloc to the wrong schema and overflow the object's
     // slots, corrupting adjacent heap. The literal is authoritative for its own
     // shape, so re-bind the variable to it for precise same-function reads.
-    const litId = ctx.schema.register(names)
+    const litId = ctx.schema.register(names, brand)
     let schemaId = litId
     if (target) {
       const merged = ctx.schema.resolve(target)
@@ -208,7 +209,8 @@ export default (ctx) => {
     // schema-arm on every evaluation (an accidental reset that still leaked
     // runtime-ADDED keys); with the mirror gone (tier 2), mutable literals must
     // allocate fresh per evaluation — the runtime path below.
-    if (neverWritten && !shadow && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
+    // A class instance (brand) is never one shared static instance: each `new` is its own identity.
+    if (neverWritten && !shadow && !brand && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       // storedValueNarrow, NOT storedValue: this branch only runs when
       // `!shadow` (just checked above), so there is NEVER a __dyn_get mirror
       // for this literal's fields — no registry-aware dynamic reader can ever

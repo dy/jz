@@ -2,7 +2,7 @@
  * Compile-time static evaluation — literals, property keys, schema ids.
  * @module static
  */
-import { I32_MIN, I32_MAX } from './ast.js'
+import { I32_MIN, I32_MAX, isBrand } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
@@ -540,14 +540,19 @@ export function staticValue(node) {
  *  emitter's flatten rule for comma-grouped props. Used by collectProgramFacts,
  *  narrowSignatures, and objLiteralSchemaId; the emitter (module/object.js)
  *  does its own decoding because it must handle the spread/computed-key paths. */
+/** The static props of an object literal: `{ names, values, brand }`, or null
+ *  when a key is computed, spread or shorthand. A class instance's brand
+ *  entry (ast.js BRAND) is the schema salt, not a slot: it is split off. */
 export function staticObjectProps(args) {
   const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
   const names = [], values = []
+  let brand = null
   for (const p of raw) {
     if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+    if (isBrand(p[1])) { brand = p[1]; continue }
     names.push(p[1]); values.push(p[2])
   }
-  return names.length ? { names, values } : null
+  return names.length || brand ? { names, values, brand } : null
 }
 
 export function staticArrayElems(expr) {
@@ -563,7 +568,7 @@ export function staticArrayElems(expr) {
 export function objLiteralSchemaId(expr) {
   if (!Array.isArray(expr) || expr[0] !== '{}' || !ctx.schema?.register) return null
   const parsed = staticObjectProps(expr.slice(1))
-  return parsed ? ctx.schema.register(parsed.names) : null
+  return parsed ? ctx.schema.register(parsed.names, parsed.brand) : null
 }
 
 /** Canonical content key for an inplace/structInline replace-store site —

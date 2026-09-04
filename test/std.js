@@ -42,7 +42,7 @@ test('std: one class identity across modules', () => {
     export const f = () => { const e = mk(); const t = new T(); let n = 0; t.addEventListener('go', () => n++); t.go(); return (e instanceof Event ? 1 : 0) + (e.type === 'tick' ? 10 : 0) + n * 100 }`
   is(run(src, { modules }), 111)
   const wat = compile(src, { modules, wat: true })
-  is((wat.match(/\(func \$\S*\$Event\b/g) || []).length, 1, 'one Event factory for the program')
+  is((wat.match(/\(func \$\S*\$Event\n/g) || []).length, 1, 'one Event factory for the program')
 })
 
 test('std: one promise runtime across modules – a promise settled in one module resolves an await in another', async () => {

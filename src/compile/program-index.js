@@ -1,6 +1,7 @@
 import { MUTATE_OPS, isFuncRef, isLiteralStr, collectAllBoundNames, walkAst } from '../ast.js'
 import { staticObjectProps } from '../static.js'
 import { isExported } from './func-exports.js'
+import { classRootNames } from './emit/class-dispatch.js'
 
 // ProgramIndex member-target family (.work/archive/v1-architecture-campaign.md finish-order item 1).
 // This is the canonical, frozen, same-module resolver for a `.`-member call's
@@ -1017,6 +1018,14 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   for (let i = 0; i < memberRootIds.length; i++) {
     const id = memberRootIds[i]
     if (!rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+  }
+  // A class's functions (jzify/classes.js) are reached through member
+  // accesses on receivers the call census cannot name, so each one whose
+  // member the program uses in the matching position is a root; the link
+  // treeshake keeps only those the emitted code calls.
+  for (const name of classRootNames()) {
+    const id = graphNameIds.get(name) ?? -1
+    if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   for (let i = 0; i < memberReadRootIds.length; i++) {
     const id = memberReadRootIds[i]

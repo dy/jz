@@ -13,6 +13,7 @@
  * @module optimize/watr-tail
  */
 import watOptimize from 'watr/optimize'
+import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames,
 } from './index.js'
@@ -30,6 +31,23 @@ import {
  * cfg-only approximation (fine for small/synthetic corpora).
  * @returns {Object|false} watr options, or `false` when `cfg.watr` is off.
  */
+/**
+ * The functions watr's single-caller inliner must leave intact, from the live
+ * compile: JS-boundary vectorized functions (their `$name$exp` wrapper must
+ * not swallow the body the host tests inspect) and the typed runtime the
+ * typed-index proofs name. One list for both callers (index.js, scripts/self.js).
+ */
+export function programPins(cfg) {
+  return [
+    ...(cfg._vectorizedFnNames?.size
+      ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
+      : []),
+    ...(ctx.linkDemand.typedRuntime
+      ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
+        .filter(name => ctx.core.includes.has(name.slice(1))) : []),
+  ]
+}
+
 export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) {
   if (!cfg.watr) return false
   let watrOpts = typeof cfg.watr === 'object' ? { ...cfg.watr } : true

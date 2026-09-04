@@ -13,6 +13,7 @@ import { OPTF } from '../ctx.js'
 
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, walkAst, ACCESSOR_SET } from '../ast.js'
+import { classAccessor, classesWith } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
@@ -817,6 +818,20 @@ export function emitElementAssign(arr, idx, val) {
 // `o.x = v` on an OBJECT/unknown receiver calls the `x__set` slot when the
 // schema is known to carry it, or probes for it at runtime and falls back to
 // the plain store (`.raw` target). The expression's value stays `v`.
+function classSetterStore(obj, prop, val) {
+  if (!classesWith(prop + ACCESSOR_SET).length) return undefined
+  const void_ = ctx.func._expect === 'void'
+  const vT = temp('accv')
+  // JS order: the receiver, then the value; the expression's value stays `v`
+  const rT = temp('acc')
+  // the fallback store is a value here whatever the statement expects; the void form is applied below
+  const store = classAccessor(obj, prop + ACCESSOR_SET, [vT], (recv) => { ctx.func._expect = null; return accessorStore(recv, prop, vT) ?? emit(['=', ['.raw', recv, prop], vT]) }, rT)
+  if (store === undefined) return undefined
+  const pre = [['local.set', `$${rT}`, asF64(emit(obj))], ['local.set', `$${vT}`, asF64(emit(val))]]
+  if (void_) return typed(['block', ...pre, ['drop', asF64(store)]], 'void')
+  return typed(['block', ['result', 'f64'], ...pre, ['drop', asF64(store)], ['local.get', `$${vT}`]], 'f64')
+}
+
 function accessorStore(obj, prop, val) {
   const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
   if (vt != null && vt !== VAL.OBJECT && vt !== VAL.CLOSURE) return null
@@ -846,6 +861,10 @@ function accessorStore(obj, prop, val) {
 
 export function emitPropertyAssign(obj, prop, val, raw = false) {
   if (!raw && ctx.transform.accessorNames?.has(prop)) {
+    // a class's setter is a function of the receiver (class-dispatch.js);
+    // any other receiver keeps the slot paths of accessorStore
+    const cls = classSetterStore(obj, prop, val)
+    if (cls !== undefined) return cls
     const acc = accessorStore(obj, prop, val)
     if (acc) return acc
   }
