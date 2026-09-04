@@ -19,10 +19,11 @@ import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
 import {
   valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn,
 } from '../../kind.js'
-import { VAL, lookupValType } from '../../reps.js'
+import { VAL, KIND_UNIVERSE, lookupValType } from '../../reps.js'
 import { paramFactsOf } from '../../param-reps.js'
 import { inferSchemaId } from '../infer.js'
 import { isExported } from '../func-exports.js'
+import { valsOf } from '../../summary/index.js'
 
 /**
  * Phase E: numeric result narrowing.
@@ -181,11 +182,16 @@ export function narrowI32Results(funcs) {
     }
     return te ? withTypedElems(te, classify) : classify()
   })
+  // A pointer result is not a number, though an unboxed pointer parameter or
+  // call reads as i32 to exprType: a result the summary proves a pointer kind
+  // is not narrowed (an unknown one, a v128 helper's, is exprType's to decide).
+  const numericResult = (func) => { const vs = valsOf(ctx.summary.resultOf(func.name)); return vs.length >= KIND_UNIVERSE.length || vs.every(v => v === VAL.NUMBER || v === VAL.BOOL || v === VAL.BIGINT) }
   let changed = true
   while (changed) {
     changed = false
     for (const func of funcs) {
       if (func.sig.results[0] === 'i32' || func.sig.results[0] === 'v128') continue
+      if (!numericResult(func)) continue
       const body = func.body
       if (isBlockBody(body) && hasBareReturn(body)) continue
       const exprs = returnExprs(body)

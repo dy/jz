@@ -142,8 +142,9 @@ export default function compile(ast, profiler) {
   ctx.funcs.map.clear()
   for (const f of ctx.funcs.list) { ctx.funcs.names.add(f.name); ctx.funcs.map.set(f.name, f) }
   const summarizeProgram = () => summarize(ast, {
-    funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, exported: isExported,
+    inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, exported: isExported,
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
+    hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
   })
   ctx.summary = timePhase(profiler, 'summary', summarizeProgram)
   // Include imported functions for call resolution (e.g. template interpolations).
@@ -256,7 +257,7 @@ export default function compile(ast, profiler) {
   // every reference is a static read. The scalar analog of the constInts fold above.
   timePhase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
 
-  const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler))
+  const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, summarizeProgram))
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = timePhase(profiler, 'summary', summarizeProgram)

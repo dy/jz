@@ -1,8 +1,10 @@
 /**
  * Cross-call paramReps lattice — Map<funcName, Map<paramIdx, ValueRep fields>>.
  *
- * Cycle-free leaf consumed by narrow.js (fixpoint) and infer.js (call-site
- * evidence producers).
+ * Cycle-free leaf consumed by narrow/index.js. The value fields (`val`,
+ * `schemaId`, `typedCtor`, the array element facts, `possibleKinds`) are the
+ * program summary's (src/summary), copied onto the record at narrowing entry;
+ * the call-site lattices below fill the rest.
  *
  * THE LATTICE (per field). Three states:
  *   - BOTTOM = `undefined`  — unobserved / "no site has spoken yet".
@@ -10,19 +12,7 @@
  *   - TOP    = `null`        — conflict: two sites disagreed. Sticky.
  *
  * The meet is monotone: meet(BOTTOM, x) = x, meet(x, x) = x, meet(x, y≠x) = TOP,
- * meet(TOP, _) = TOP. Over a finite height-2 lattice it converges with NO resets —
- * narrow.js's clearStickyNull (which used to un-stick a spurious "can't tell yet"
- * poison) is gone entirely (root B closed). Two complementary policies keep it so:
- *
- *   - `val` runs SOFT (narrow.js mergeRule soft=true): a can't-tell-yet site is
- *     skipped (stays BOTTOM), never poisoned, so a later pass — e.g. once pointer-
- *     ABI enrichment puts VAL.TYPED into callerValTypes — simply fills it in. A
- *     signature-mutating consumer (applyPointerParamAbi) can't trust this partial
- *     soft value, so it re-folds the sites HARD (hardParamVal); a final hard sweep
- *     settles `val` for emit + late readers (specializeBimorphicTyped, …).
- *   - `schemaId` (and the others) stay HARD, but no longer get stuck: narrowValResults
- *     is hoisted ABOVE the param lattice, so a call arg `f()` resolves to its VAL
- *     result on the first pass and the can't-tell poison never forms.
+ * meet(TOP, _) = TOP. Over a finite height-2 lattice it converges with no resets.
  *
  * @module param-reps
  */

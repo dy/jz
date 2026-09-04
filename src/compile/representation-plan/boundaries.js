@@ -20,10 +20,13 @@ const boundaryParamSemantic = (rep, uncovered) => {
   return uncovered ? sem & ~SEM_CLOSED_BIT : sem
 }
 
-const currentParamRep = (rep, sem, uncovered) => {
+// A parameter's incoming carrier: the kind says BigInt or not, never which
+// carrier the arguments arrive in (a literal is raw, a storage read a box);
+// RAW only when every call site's argument is (provenance's paramRawOnly).
+const currentParamRep = (rep, sem, uncovered, rawOnly) => {
   if (excludesBigint(sem)) return NO_BIGINT
   if (uncovered) return ANY_BIGINT
-  if (onlyBigintKind(sem)) return RAW_BIGINT
+  if (onlyBigintKind(sem) && rawOnly) return RAW_BIGINT
   return ANY_BIGINT
 }
 
@@ -147,7 +150,8 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
           )
         : legacySemantic)
       : noBigintSemantic()
-    const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, legacySemantic, uncovered)) : NO_BIGINT
+    const rawRow = options.provenance && options.provenance.paramRawOnly ? options.provenance.paramRawOnly.get(func.name) : null
+    const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, legacySemantic, uncovered, rawRow != null && rawRow.has(k))) : NO_BIGINT
     return {
       semantic,
       observed,

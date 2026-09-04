@@ -54,8 +54,8 @@ import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
 import { typedStaticLen } from '../type.js'
-import { typedStorageCtorFromContext, typedStorageCtorFromMaps } from '../typed-context.js'
-import { shapeOfObjectLiteralAst, valTypeOf, valTypeOfWithLocals } from '../kind.js'
+import { typedStorageCtorFromContext } from '../typed-context.js'
+import { shapeOfObjectLiteralAst, valTypeOf } from '../kind.js'
 import { includeForStringValue } from '../autoload.js'
 import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 
@@ -361,46 +361,10 @@ export function recordGlobalRep(name, expr) {
 
 // === Call-site argument inference =========================================
 //
-// Each `infer*(expr, ...callerCtx)` resolves an argument expression to a
-// single fact (val / schemaId / elem-schema / elem-VAL / typedCtor) using the
-// caller's body-local observations plus module-level program facts. Returns
-// null when the fact can't be pinned down at this call site.
-//
-// These are the call-site mirror of the body-walk evidence sources above:
-// body sources answer "what shape does this binding have?"; call-site
-// extractors answer "what shape does this argument carry into a callee?".
-// Both feed the same `paramReps` lattice via narrow.js' signature fixpoint.
-
-/** Infer arg val type using caller's body-local valTypes and module globals.
- *  A bare name resolves straight through `resolveLocal`. A compound expr
- *  (audit-#4: re-audit finding 4) used to fall to the plain, LOCALS-BLIND
- *  `valTypeOf`, which re-derives every nested bare name through the GLOBAL-
- *  only `lookupValType` — invisible to a name whose kind is only known
- *  body-locally in the CALLER (`let a = BigInt(x)`). `inferValType(['+','a',
- *  'b'], callerValTypes-with-a,b-BIGINT)` answered NUMBER (VT['+']'s own
- *  "unknown side → optimistic NUMBER" default, kind.js) instead of BIGINT —
- *  a call site whose argument is genuinely BigInt got counted as NUMBER by
- *  both consumers below (narrow.js's `inferValAtSite` paramReps `val`
- *  census and `specializeValKindDichotomy`'s per-site kind tally), which
- *  can settle the callee's param `val` to a confidently WRONG NUMBER and
- *  license an identity-observing static fold (emitStrictEq's differing-
- *  primitive-class fold) or a NUMBER-only method dispatch on real i64 bigint
- *  bits — not just a missed optimization.
- *  kind.js's `valTypeOfWithLocals` is the shared local-aware resolver
- *  (round-6 prereq (a)'s sibling — narrowValResults/narrowBoolResults in
- *  narrow.js already delegate to it the same way for the return-kind case);
- *  routing the compound fallback through it recovers the local BigInt proof.
- *  `?? valTypeOf(expr)` keeps the fail-open contract identical to before for
- *  every shape valTypeOfWithLocals itself can't settle (its own SOUND '+'/
- *  '?:'/'&&'/'||' rules return null on an unproven operand rather than
- *  guess, and its '?:' handling omits valTypeOf's own literalTruthiness/
- *  BOOL-coercion/BIGINT-nullish-arm branches) — strictly additive, same
- *  shape as narrowBoolResults' own delegation (narrow.js). */
-export function inferValType(expr, callerValTypes) {
-  const resolveLocal = name => callerValTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null
-  if (typeof expr === 'string') return resolveLocal(expr)
-  return valTypeOfWithLocals(expr, resolveLocal) ?? valTypeOf(expr)
-}
+// The value kinds of a call-site argument are the program summary's
+// (src/summary, narrow/index.js seedParamKinds). What remains here resolves
+// the facts the summary does not carry: a constant schema id for a return
+// expression (narrowPointerResults) and the closed element-schema union.
 
 /** Resolve a constant schemaId for an expression in a caller-or-return scope.
  *  Sources (in order): per-name `lookupMap` (caller's per-param schemaId map),
@@ -413,29 +377,6 @@ export function inferValType(expr, callerValTypes) {
  *  return sites (narrow.js phase G's `narrowReturnArrayElems` and the per-fn
  *  return-schema narrowing). At early D-iterations the call-result branch
  *  is a no-op (valResult not yet seeded by phase F); strictly accretive. */
-// === Fixpoint call-site inference context ==================================
-//
-// Every `infer*(expr, cx)` below that participates in narrow.js's
-// runArrElemFixpoint (inferArrElemSchema/Set/ValType, inferTypedCtor, and
-// narrow.js's own local inferTypedLen) takes ONE named context object rather
-// than a positional tail: a shared positional dispatch signature
-// (`inferFn(arg, elems, paramFacts, callerSids, callerSchemaIds)`) has
-// per-consumer contracts that look interchangeable but aren't — overloading
-// one position for a new channel in one consumer can silently break a
-// neighbor's use of that same position (see test/provenance-inference.js's
-// paramViaField for the regression shape). Named fields make each consumer's
-// dependency explicit and immune to a neighbor's field getting added.
-//
-// cx fields (each inferFn reads only the ones it needs):
-//   - callerElems:     this field's caller body-local map (per-caller census —
-//                       narrow.js's phase.callerElems(sliceKey) / callerTypedCtx).
-//   - paramFacts:       this field's own caller PARAM facts (transitive —
-//                       paramFactsOf(paramReps, callerFunc, field)).
-//   - callerSids:       typedCtor-only — caller's per-body schema-id map for
-//                       field-provenance reads (`plan.twRe`).
-//   - callerSchemaIds:  arrElemSchema-only — caller's own `schemaId` param
-//                       facts, for resolving an inline array-literal arg's
-//                       elements (state.callerParamFacts('schemaId')).
 export function inferSchemaId(expr, lookupMap) {
   if (typeof expr === 'string') {
     if (lookupMap?.has(expr)) return lookupMap.get(expr)
@@ -468,61 +409,11 @@ export function inferSchemaId(expr, lookupMap) {
   return null
 }
 
-/** Infer arg arr-elem-schema. Sources: caller's body-local arr-elem map, caller's
- *  per-param arr-elem (transitive), a call to an arr-narrowed user fn, or an
- *  inline array-literal argument (`f([a, b, c])`) whose elements all resolve to
- *  the same schemaId via `cx.callerSchemaIds` (the caller's own param schemaId
- *  facts) — mirrors analyze.js's processDecl literal-init observation
- *  (`exprSchemaId` over `staticArrayElems`) one hop further out, across the
- *  call boundary, for a record array built and passed in one expression rather
- *  than bound to a local first (subscript's `register(d)` →
- *  `dispatch([d, ...fn.ops], …)` shape). A spread element poisons (returns
- *  null) — same fail-closed rule as the `arr.push(...x)` observation above:
- *  an unprovable source kills the fact rather than being traced further.
- *  See the fixpoint call-site context doc above for cx's field shape. */
-export function inferArrElemSchema(expr, cx) {
-  // Hoist cx fields once per call: cx arrives through the fixpoint runner's
-  // INDIRECT dispatch (inferFn is a parameter), so the self-compiled kernel
-  // can't schema-prove it — every cx.field read is a generic dyn-get in the
-  // hottest narrowSignatures loop. One read per field per call keeps the
-  // named-context API without paying per-use.
-  const callerElems = cx.callerElems, paramFacts = cx.paramFacts
-  if (typeof expr === 'string') {
-    if (callerElems?.has(expr)) {
-      const v = callerElems.get(expr)
-      if (v != null) return v
-    }
-    if (paramFacts?.has(expr)) {
-      const v = paramFacts.get(expr)
-      if (v != null) return v
-    }
-    return null
-  }
-  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.funcs.map?.get(expr[1])
-    if (f?.arrayElemSchema != null) return f.arrayElemSchema
-  }
-  if (Array.isArray(expr) && expr[0] === '[') {
-    const elems = staticArrayElems(expr)
-    if (!elems?.length) return null
-    let common
-    for (const e of elems) {
-      if (e == null || (Array.isArray(e) && e[0] === '...')) return null
-      const sid = inferSchemaId(e, cx.callerSchemaIds)
-      if (sid == null) return null
-      if (common === undefined) common = sid
-      else if (common !== sid) return null
-    }
-    return common
-  }
-  return null
-}
-
-/** Infer arg closed elem-schema UNION as its canonical 'a,b,…' key. Mirrors
- *  inferArrElemSchema; sources: caller's body set census (Set values), caller's
- *  param fact (already canonical), or a set-narrowed user fn return. */
+/** Infer arg closed elem-schema UNION as its canonical 'a,b,…' key. Sources:
+ *  caller's body set census (Set values, `cx.callerElems`), caller's param fact
+ *  (already canonical, `cx.paramFacts`), or a set-narrowed user fn return. */
 export function inferArrElemSchemaSet(expr, cx) {
-  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
+  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoisted once: cx arrives through an indirect call
   const canon = (v) => v instanceof Set
     ? (v.size >= 2 ? [...v].sort((a, b) => a - b).join(',') : null)
     : typeof v === 'string' ? v : null
@@ -538,32 +429,4 @@ export function inferArrElemSchemaSet(expr, cx) {
     if (typeof f?.arrayElemSchemaSet === 'string') return f.arrayElemSchemaSet
   }
   return null
-}
-
-/** Infer arg arr-elem-VAL. Mirrors inferArrElemSchema but tracks VAL.* element kind. */
-export function inferArrElemValType(expr, cx) {
-  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
-  if (typeof expr === 'string') {
-    if (callerElems?.has(expr)) {
-      const v = callerElems.get(expr)
-      if (v != null) return v
-    }
-    if (paramFacts?.has(expr)) {
-      const v = paramFacts.get(expr)
-      if (v != null) return v
-    }
-    return null
-  }
-  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.funcs.map?.get(expr[1])
-    if (f?.arrayElemValType != null) return f.arrayElemValType
-  }
-  return null
-}
-
-/** Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a call site.
- *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
- *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
-export function inferTypedCtor(expr, cx) {
-  return typedStorageCtorFromMaps(ctx, expr, cx.callerElems, cx.paramFacts, cx.callerSids)
 }

@@ -14,13 +14,17 @@ import {
 } from '../../ast.js'
 import { analyzeBody } from '../analyze.js'
 import { typedElemCtor } from '../../type.js'
-import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
+import { typedElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
-import { paramFactsOf, joinKinds } from '../../param-reps.js'
-import { inferValType, inferTypedCtor } from '../infer.js'
+import { joinKinds } from '../../param-reps.js'
 import { materializeVariant } from '../variant.js'
-import { assertValKindConsistent, buildCallerTypedCtx, buildCallerCtx } from './caller-ctx.js'
+import { assertValKindConsistent } from './caller-ctx.js'
 import { isExported } from '../func-exports.js'
+
+// A call-site argument's kind is the summary's, read in the caller's scope
+// (src/summary): the typed constructor it holds under every assignment, its value kind.
+const siteTypedCtor = (site, k) => ctx.summary.at(site.callerFunc?.sig).typedCtorOfExpr(site.argList[k])
+const siteVal = (site, k) => ctx.summary.at(site.callerFunc?.sig).valOfExpr(site.argList[k])
 
 /**
  * Phase: bimorphic typed-array param specialization.
@@ -57,24 +61,6 @@ export function specializeBimorphicTyped(programFacts) {
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
 
-  // Per-caller typedElem map: body-local `new TypedArray(N)` bindings layered
-  // over the module's typed globals (shared with buildCallerTypedCtx).
-  const callerTypedCtx = buildCallerTypedCtx()
-  // Per-caller typed-param map: caller's own params that F/G already narrowed
-  // (so transitive `sum(arr)` inside a func that took `arr` from above resolves).
-  const callerTypedParamsCtx = new Map()
-  for (const func of ctx.funcs.list) {
-    const m = paramFactsOf(paramReps, func, 'typedCtor') || null
-    let acc = m
-    if (func.sig?.params) for (const p of func.sig.params) {
-      if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
-        acc ||= new Map()
-        if (!acc.has(p.name)) acc.set(p.name, ctorFromElemAux(p.ptrAux))
-      }
-    }
-    if (acc) callerTypedParamsCtx.set(func, acc)
-  }
-
   // Snapshot ctx.funcs.list — we'll be appending clones during the loop.
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
@@ -104,12 +90,10 @@ export function specializeBimorphicTyped(programFacts) {
     const siteCombos = []
     let abort = false
     for (const site of sites) {
-      const callerTypedElems = callerTypedCtx.get(site.callerFunc)
-      const callerTypedParams = callerTypedParamsCtx.get(site.callerFunc)
       const combo = []
       for (const k of bimorphic) {
         if (k >= site.argList.length) { abort = true; break }
-        const c = inferTypedCtor(site.argList[k], { callerElems: callerTypedElems, paramFacts: callerTypedParams })
+        const c = siteTypedCtor(site, k)
         if (c == null || typedElemAux(c) == null) { abort = true; break }
         combo.push(c)
       }
@@ -187,16 +171,11 @@ export function specializeBimorphicTyped(programFacts) {
  * landslide majority/minority split (932/934, never a balanced polymorphic
  * spread, §1a).
  *
- * `r.val === null` on a settled paramReps entry is ALREADY exactly "≥2
- * call sites disagreed on the kind" (param-reps.js's meet: BOTTOM stays
- * `undefined` while every site is merely unclassifiable — `mergeParamFact`
- * is never even called for those — and only flips to TOP/`null` on a real
- * kind-vs-kind conflict). So the trigger is a single field read; the work
- * is re-deriving each site's kind from its own `argList[k]` (mirroring
- * specializeBimorphicTyped's `inferTypedCtor` re-derivation, step 3) via
- * `inferValType` — the same call-site inferrer narrow.js's own D-phase
- * `mergeRule('val', ...)` runs, over the identical per-caller `valTypes`
- * context `buildCallerCtx()` already builds for that fixpoint.
+ * `r.val === null` on a settled paramReps entry is exactly "≥2 call sites
+ * disagreed on the kind" (the summary's join of the arguments names no one
+ * kind). So the trigger is a single field read; the work is reading each
+ * site's own kind from the summary (`siteVal`, mirroring
+ * specializeBimorphicTyped's per-site constructor, step 3).
  *
  * Unlike the typed case, a VAL-kind pin is NOT an ABI change — `val` is
  * read as a dispatch HINT everywhere in emit.js (method-call static
@@ -226,10 +205,6 @@ export function specializeValKindDichotomy(programFacts) {
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
 
-  // Per-caller val-type context (D-phase's own `inferValType(arg, callerValTypes)`
-  // inputs) — module-scope, built once, same shape narrowSignatures' D-phase uses.
-  const callerCtx = buildCallerCtx()
-
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
     if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
@@ -255,15 +230,14 @@ export function specializeValKindDichotomy(programFacts) {
       if (p.type !== 'f64' || p.ptrKind != null) continue  // already narrowed away from generic boxed — nothing to add
       if (func.defaults?.[p.name] != null) continue
 
-      // Re-derive each site's kind fresh from argList[k] — same inference the
-      // fixpoint itself used, just re-run per site instead of joined.
+      // Each site's kind, read per site instead of joined.
       const counts = new Map()
       const siteKinds = new Array(sites.length).fill(null)
       let resolved = 0
       for (let si = 0; si < sites.length; si++) {
         const site = sites[si]
         if (k >= site.argList.length) continue
-        const kind = inferValType(site.argList[k], callerCtx.get(site.callerFunc)?.callerValTypes)
+        const kind = siteVal(site, k)
         if (kind == null) continue
         siteKinds[si] = kind
         resolved++
@@ -418,7 +392,7 @@ export function specializeUnionCursorParams(programFacts) {
  * is, in practice, the same typed array.
  *
  * When every static call site's arg at a position carries the SAME ctor as
- * evidence — a proven inferTypedCtor, or the program-wide write-gated slot
+ * evidence — the summary's proven constructor, or the program-wide write-gated slot
  * census for a bare field read (ctx.schema.slotTypedCtorByProp, the
  * guardedSlotOf contract) — clone the callee with those params typed
  * (identical machinery to the bimorphic clones) and record it in
@@ -435,7 +409,7 @@ export function specializeUnionCursorParams(programFacts) {
  *
  * Evidence is a recursive WEAK lattice (soundness never depends on it — the
  * runtime guard does; evidence only decides where speculating is worth it):
- *   - proven inferTypedCtor at the site (strong)
+ *   - the summary's proven constructor at the site (strong)
  *   - `x.prop` → program-wide write-gated slot census (slotTypedCtorByProp)
  *   - a name → its single `=` binding's init, chased recursively
  *   - a name that is an ENCLOSING ARROW's param → meet over the arrow's own
@@ -455,20 +429,6 @@ export function speculateTypedParams(programFacts, ast) {
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
-  const callerTypedCtx = buildCallerTypedCtx()
-  const callerTypedParamsCtx = new Map()
-  for (const func of ctx.funcs.list) {
-    const m = paramFactsOf(paramReps, func, 'typedCtor') || null
-    let acc = m
-    if (func.sig?.params) for (const p of func.sig.params) {
-      if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
-        acc ||= new Map()
-        if (!acc.has(p.name)) acc.set(p.name, ctorFromElemAux(p.ptrAux))
-      }
-    }
-    if (acc) callerTypedParamsCtx.set(func, acc)
-  }
-
   const hasLoop = (n) => Array.isArray(n)
     && (n[0] === 'for' || n[0] === 'while' || n[0] === 'do' || n.some((c, i) => i > 0 && hasLoop(c)))
 
@@ -524,7 +484,7 @@ export function speculateTypedParams(programFacts, ast) {
   }
   function evidenceOfArgInner(arg, callerFunc, siteNode, depth, seen) {
     if (arg == null || depth > MAX_DEPTH) return null
-    const proven = inferTypedCtor(arg, { callerElems: callerTypedCtx.get(callerFunc), paramFacts: callerTypedParamsCtx.get(callerFunc) })
+    const proven = ctx.summary.at(callerFunc?.sig).typedCtorOfExpr(arg)
     if (proven) return proven
     if (Array.isArray(arg)) {
       if (arg[0] === '.' && typeof arg[2] === 'string') return ctx.schema.slotTypedCtorByProp(arg[2])
@@ -628,7 +588,7 @@ export function speculateTypedParams(programFacts, ast) {
       for (const site of sites) {
         const arg = site.argList[k]
         if (arg == null) continue
-        const proven = inferTypedCtor(arg, { callerElems: callerTypedCtx.get(site.callerFunc), paramFacts: callerTypedParamsCtx.get(site.callerFunc) })
+        const proven = siteTypedCtor(site, k)
         const c = proven ?? evidenceOfArg(arg, site.callerFunc, site.node, 0, new Set())
         if (DBG) console.error('[spec]', func.name, 'k=' + k, JSON.stringify(arg)?.slice(0, 60), 'proven=' + proven, 'c=' + c)
         if (c == null) continue

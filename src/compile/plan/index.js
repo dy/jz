@@ -38,7 +38,7 @@ import { buildDictKindIndex } from '../dict-kind-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
-  strictBoundaryTypeCheck,
+  strictBoundaryTypeCheck, applyExportTypedArrayAbi,
 } from '../narrow.js'
 
 import { optimizing } from './common.js'
@@ -57,7 +57,8 @@ import {
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
 } from './literals.js'
 
-export default function plan(ast, profiler) {
+/** Plan the program: `summarize` computes the program summary (src/summary) of the AST as it stands. */
+export default function plan(ast, profiler, summarize) {
   // Per-pass timing under `plan:` — the plan stage is the compile pipeline's
   // multi-pass hot spot (each mutating pass triggers a whole-program fact
   // refresh), so the profile must show WHICH pass and refresh dominate.
@@ -199,6 +200,16 @@ export default function plan(ast, profiler) {
     return programFacts
   }
 
+  // Dead callers must not poison live signature facts: ProgramIndex owns the
+  // reachability set; the call-site census compacts to it here, once.
+  programFacts.programIndex.filterCallSitesToReachable(programFacts.callSites)
+  // Export parameters used only as numeric array-likes take the typed pointer
+  // ABI before the summary runs, so every callee fed from them sees a typed
+  // argument (the wrapper normalizes the host value at entry).
+  t('applyExportTypedArrayAbi', () => applyExportTypedArrayAbi(programFacts.paramReps, programFacts.callSites, programFacts.programIndex.addressTaken))
+  // The program the sweeps rewrote (inlined calls, scalar-replaced literals),
+  // with the export contract: narrowing reads the parameter kinds from it.
+  ctx.summary = t('summary', summarize)
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
   // Boolean/bigint result kinds for funcs the call-site census can't reach —
   // value-used-only functions have no direct sites, but their results still

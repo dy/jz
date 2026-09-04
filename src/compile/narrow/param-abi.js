@@ -215,7 +215,7 @@ export function validateIntConstParams(paramReps, addressTaken) {
   }
 }
 
-export function applyPointerParamAbi(paramReps, addressTaken, hardParamVal) {
+export function applyPointerParamAbi(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
     if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
@@ -229,10 +229,8 @@ export function applyPointerParamAbi(paramReps, addressTaken, hardParamVal) {
     // narrowing applies, for the same reason.
     let mutated = null
     for (const [k, r] of reps) {
-      // Re-fold call sites HARD (the shared val lattice is soft, so r.val may be a
-      // partial consensus from typed sites alone) — only specialize when every site
-      // proves the same pointer kind.
-      const hv = hardParamVal(func.name, k)
+      // The summary's kind: every argument at every site proves the same pointer kind.
+      const hv = r.val
       if (!PTR_ABI_KINDS.has(hv)) continue
       if (k === restIdx) continue
       if (k >= func.sig.params.length) continue

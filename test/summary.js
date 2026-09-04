@@ -86,12 +86,16 @@ test('summary: join is a lattice join, so the fixpoint terminates', () => {
   is(join(kind(K.OBJECT, 1), orNull(kind(K.OBJECT, 2))), orNull(kind(K.OBJECT, UNKNOWN)), 'two shapes join to the tag')
 })
 
-test('summary: two closures joined are called from where the summary cannot see', () => {
-  // The lattice keeps one closure identity; the join of two is a call to
-  // either, so both take ANY parameters rather than staying at bottom.
+test('summary: two closures joined are a set; a call through the join calls each member', () => {
+  // A dispatch table's members are called through the table: each binds the arguments.
   summarize(`const tbl = [(x) => x.length, (x) => x * 2]
-    export const f = (i, v) => tbl[i & 1](v)`)
-  for (const id of [0, 1]) ok(ctx.summary.escaped.has(id), `closure ${id} escaped by the join`)
+    const T = { a: (s) => s.length, b: (s) => s + '!' }
+    const g = (k) => T[k]('abc')
+    export const f = (i, v) => tbl[i & 1](v) + g('a')`)
+  for (const id of [0, 1, 2, 3]) ok(!ctx.summary.escaped.has(id), `closure ${id} is called through the table, not escaped`)
+  is(tagOf(ctx.summary.resultOf('g')), K.ANY, 'a computed key on a known shape reads one of its slots: the call is the join of the members\' results (a number, a string), and may miss')
+  is(jz(`const T = { a: (s) => s.length, b: (s) => s + '!' }
+    export const g = (k) => T[k]('abc')`).exports.g('b'), 'abc!')
   is(jz(`const tbl = [(x) => x.length, (x) => x * 2]
     export const f = (i, v) => tbl[i & 1](v)`).exports.f(0, 'abc'), 3)
 })
@@ -267,4 +271,40 @@ test('summary: a binding is keyed by its function; a specialized variant has its
   is(ctors.join(), 'new.Float32Array,new.Float64Array', 'each variant\'s parameter has its own constructor, though the name is shared')
   is(ctx.summary.at(null).typedCtorOf(variants[0].sig.params[0].name), null, 'a reader naming no scope sees the join over the variants')
   is(ctx.summary.at(variants[0].name).kindOf('nosuch'), K.NONE)
+})
+
+test('summary: the parameter records take their value kinds from the summary (narrow/index.js seedParamKinds)', () => {
+  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect`
+  // A parameter's record: the kind's value, schema, constructor and element facts, the tag set, the nullish tags.
+  const src = `const mk = () => ({ v: 1 })
+    const takes = (o, t, rows, mixed, maybe, arr) => o.v + t[0] + rows[0].v + (mixed ? 1 : 0) + (maybe == null ? 0 : maybe.v) + arr.length
+    export const run = (k) => { const rows = [mk(), mk()]; return takes(mk(), new Float32Array(2), rows, k ? 1 : true, k ? mk() : null, [1, 2]) + takes(mk(), new Float32Array(1), rows, 0, mk(), [3]) }`
+  const insp = compile(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
+  const P = insp.functions.takes.callerReps, sid = sidOf(['v'])
+  is(P[0].val, 'object'); is(P[0].schemaId, sid)
+  is(P[1].val, 'typed'); is(P[1].typedCtor, 'new.Float32Array')
+  is(P[2].val, 'array'); is(P[2].arrayElemSchema, sid, 'the element schema, though an element read past the end would be absent')
+  is(P[3]?.val, undefined, 'number and boolean join to no one kind')
+  is(P[4]?.val, undefined, 'a null argument leaves the reads dynamic'); ok(P[4].nullable, 'and the nullish test live')
+  is(P[5].val, 'array'); is(P[5].arrayElemValType, 'number')
+  is(jz(src).exports.run(0), 9)
+  // Nullish narrowing: a guard proves its name on the path it guards (`if (out) write(out)`,
+  // `if (x == null) return`, `x && f(x)`), so the callee's parameter keeps the kind alone.
+  const guarded = compile(`const write = (buf, x) => { buf.push(x); return buf }
+    const relay = (buf, v, out) => { buf.push(v); if (out) write(out, v); return buf }
+    const early = (o) => { if (o == null) return 0; return write(o, 1).length }
+    const both = (o) => o && write(o, 2)
+    export const main = () => { const a = [], b = []; relay(a, 1, b); relay(a, 2); return early(b) + early(null) + (both(a) ? 1 : 0) + (both(null) ? 1 : 0) }`,
+    { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
+  is(guarded.functions.write.callerReps[0].val, 'array', 'the parameter out is nullish from the short call, an array inside its guard')
+  ok(!guarded.functions.write.callerReps[0].nullable)
+  // A binding declared without a value is absent until assigned: the callee's nullish test stays live.
+  const m = jz(`const f = (c) => { let x; if (c) x = 1; return x }
+    const g = (v) => v == null ? -1 : v + 1
+    export const run = (c) => g(f(c))`)
+  is(m.exports.run(1), 2); is(m.exports.run(0), -1, 'the undefined of the untaken path reaches the callee')
+  // The bundled modules' top-level statements are part of the program: a call from an init table binds the callee.
+  const b = jz('import { T } from "./t.jz"; export let go = (k, n) => T[k ? "x2" : "x3"](n)',
+    { modules: { './t.jz': 'export let hex = (v) => v.toString(16)\nexport const T = { x2: (x) => hex(BigInt(x) * 2n), x3: (x) => hex(BigInt(x) * 3n) }' }, memory: 64 })
+  is(b.exports.go(1, 255), (510n).toString(16))
 })

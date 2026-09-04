@@ -2,7 +2,7 @@ import { ASSIGN_OPS, commaList, returnExprs, walkAst } from '../../ast.js'
 import { nullishArm } from '../../kind.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
 import {
-  ANY_BIGINT, BIGINT_READ_METHODS, BIGINT_REP_NONE, BIGINT_REP_TOP, BIGINT_TYPED_CTORS, BOXED_BIGINT, DEF_RHS,
+  ANY_BIGINT, BIGINT_READ_METHODS, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BIGINT_TYPED_CTORS, BOXED_BIGINT, DEF_RHS,
   NO_BIGINT, NUMERIC_VALUE_OPS, RAW_BIGINT, STORAGE_READ_METHODS, STORAGE_WRITE_METHODS, VALUE_COERCERS,
   bigintRepBits, bigintRepIsClosed, callMember, collectDefs, collectLocalClosures, isBigintOrigin, isExported,
   joinRep, memberReceiver,
@@ -601,6 +601,22 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     if (!pureSet) { pureSet = new Set(); paramBigintOnly.set(calleeName, pureSet) }
     pureSet.add(k)
   }
+  // The incoming CARRIER, which the kind cannot say: a param earns
+  // paramRawOnly when EVERY call site's argument is a closed RAW bigint (a
+  // literal, a BigInt() call, bigint arithmetic); a storage read (a box), a
+  // bare name, or an arity gap marks it, permanently, as arriving in any
+  // carrier, and the boundary keeps the boxed default for it.
+  const paramRawOnly = new Map()
+  const paramNotRaw = new Map()
+  const markRawArg = (calleeName, k, raw) => {
+    let notRaw = paramNotRaw.get(calleeName)
+    if (!notRaw) { notRaw = new Set(); paramNotRaw.set(calleeName, notRaw) }
+    if (notRaw.has(k)) return
+    if (!raw) { notRaw.add(k); paramRawOnly.get(calleeName)?.delete(k); return }
+    let set = paramRawOnly.get(calleeName)
+    if (!set) { set = new Set(); paramRawOnly.set(calleeName, set) }
+    set.add(k)
+  }
   // Shape #7 (encode.i64's real watr shape): a param can be BODY-WRITE
   // provenant for BigInt (`if (typeof n==='string') n = BigInt(n)`, a
   // genuine mixed string/number/bigint entry) while its ONLY call-site
@@ -735,6 +751,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
           const closedBigint = bigintRepIsClosed(rep) &&
             bigintRepBits(rep) !== BIGINT_REP_NONE && bigintRepBits(rep) !== BIGINT_REP_TOP
           markCallArg(callee.name, k, closedBigint)
+          markRawArg(callee.name, k, closedBigint && bigintRepBits(rep) === BIGINT_REP_RAW)
           markNeverBoolArg(callee.name, k, k < args.length && argStructurallyNeverBool(args[k], func))
         }
       }
@@ -745,7 +762,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   visitCallSites(ast, null, globals)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) visitCallSites(init, null, globals)
 
-  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramNeverBool, resolveMemberCallee }
+  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramRawOnly, paramNeverBool, resolveMemberCallee }
 }
 
 export function deriveLocalProvenance(sig, body, localReps, program) {

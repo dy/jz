@@ -3721,24 +3721,23 @@ test('closed computed-dispatch table: a member forwarded into a named function g
       return out.length
     }
   `
-  // Negative control: byte-identical shape, except HANDLER is also handed to
-  // an unrelated function (`leak`) — a genuine value-escaping use (passed as
-  // an argument, not a `[]`-receiver/`__keys_ro` read), so resolveComputedSourceIds
-  // must decline the whole table, same as resolveMemberSourceId already would.
-  // push2's `buf` stays exactly as unprovable as it always was: real runtime
-  // dispatch, not a wrong guess.
+  // Negative control: byte-identical shape, except HANDLER also reaches the
+  // host (returned from an export), which may call its members with anything:
+  // the summary escapes them (src/summary escapeToHost), so push2's `buf`
+  // stays exactly as unprovable as it always was: real runtime dispatch, not
+  // a wrong guess. (A pass through a same-module function that only returns
+  // its argument is no escape: the summary sees the whole program.)
   const escapedSrc = `
     const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }
     const HANDLER = {
       a: (buf, v) => push2(buf, v),
       b: (buf, v) => { buf.push(v); return buf },
     }
-    function leak(h) { return h }
+    export function leak() { return HANDLER }
     function instr(buf, key, v) { return HANDLER[key](buf, v) }
     export function main() {
       let out = []
       instr(out, 'a', 5)
-      leak(HANDLER)
       return out.length
     }
   `
@@ -3750,7 +3749,7 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   const closedWat = String(compile(closedSrc, { optimize: false, wat: true }))
   const escapedWat = String(compile(escapedSrc, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractBody(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_expr/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also escapes via leak(HANDLER) — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
+  ok(/__dyn_get_expr/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also reaches the host — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
   for (const optimize of [false, 2, 3]) {
     is(jz(closedSrc, { optimize }).exports.main(), 2, `O${optimize || 0}: closed-table computed dispatch still computes the correct value (push2 pushes 5 then 6)`)
   }
@@ -4175,7 +4174,7 @@ test('DictKindIndex: `??=`/`||=`/`&&=` fold their RHS the same as a plain `=` wr
     is(jz(src, { optimize }).exports.main(), 9, `O${optimize || 0}: JS-correct through the ??= write`)
 })
 
-test('DictKindIndex negative: a target that escapes through an unrelated function keeps runtime dispatch', () => {
+test('DictKindIndex: an alias through a function that returns its argument is the same array, so its write is accounted', () => {
   const src = `
     const SECTION = { type: 1, func: 2 }
     function id(nm, list) { return list[nm] }
@@ -4192,8 +4191,8 @@ test('DictKindIndex negative: a target that escapes through an unrelated functio
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: ctx escapes through leak()'s own return, an unaccounted alias could write ANY key — must decline, not guess")
-  is(jz(src, { optimize: false }).exports.main(), 5, 'O0: still JS-correct through the declined, slower runtime-dispatch path')
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: leak() returns its argument, so `alias` and `ctx` are one array in the summary: `alias.type = [5]` reaches ctx.type, an array still, direct codegen")
+  is(jz(src, { optimize: false }).exports.main(), 5, 'O0: JS-correct')
 })
 
 test('DictKindIndex negative: a same-key kind disagreement declines only that key, a sibling key from the same target stays clean', () => {
@@ -4218,7 +4217,7 @@ test('DictKindIndex negative: a same-key kind disagreement declines only that ke
   ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'idB')), 'O0: idB reads ctx.func, a SIBLING key of the SAME target that never disagreed — must stay clean, proving the poison is per-key, not whole-target')
 })
 
-test('DictKindIndex negative: a non-constant (reassignable) source object declines the whole target', () => {
+test('DictKindIndex: a non-constant (reassignable) source object: the read of a never-written key is absent', () => {
   const src = `
     let SECTION = { type: 1, func: 2 }
     function id(nm, list) { return list[nm] }
@@ -4232,8 +4231,14 @@ test('DictKindIndex negative: a non-constant (reassignable) source object declin
     export function main() { corrupt(); return assemble() }
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
-  const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'id')), 'O0: SECTION is reassigned elsewhere (corrupt()) — a stale key-name snapshot could misreport PRESENCE, not just kind — must decline')
+  // SECTION is reassigned (corrupt()) before the unroll, so `ctx.type` is
+  // never written: the summary reads it as absent (ABSENT beside the
+  // entries' array kind), the parameter carries the presence, and the read
+  // returns undefined where JS would throw on `undefined[0]` (a divergence
+  // of the absent-read class, .work/ledger-correctness.md 9).
+  const insp = compile(src, { optimize: false, wat: true, inspect: true }).inspect
+  ok(insp.functions.id.callerReps[1].mayBeUndefined, 'O0: the entry may be absent')
+  is(jz(src, { optimize: false }).exports.main(), undefined)
 })
 
 test('DictKindIndex: pass-order-independent — swapping the target/reader declaration order yields byte-identical codegen for the reader', () => {

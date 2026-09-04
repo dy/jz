@@ -885,3 +885,56 @@ installs the accessor dynamically (`self.x__set = …` after the base
 factory); jzify records those names (`ctx.transform.dynamicAccessorNames`)
 and only they probe. A literal schema, a flat object, or any other schema
 without the slot stores and reads plainly. Gate: test/std.js "accessors".
+
+## 9. A binding declared without a value read as its assigned kind (2026-09-04, CLOSED for locals, OPEN for a module `let`)
+
+**Symptom**: `const f = (c) => { let x; if (c) x = 1; return x }; const g =
+(v) => v == null ? -1 : v + 1; g(f(0))` returned `undefined` (JS: -1): the
+callee's `v == null` folded, its parameter having the kind NUMBER from the
+one assignment.
+
+**Root cause**: every value channel (analyzeBody's trackers, the call-site
+lattice, the summary's module globals) took a declaration without a value
+as no value at all, so the untaken path's `undefined` reached no callee.
+
+**Fix**: the summary's ABSENT tag (src/summary): a declaration without a
+value, and an element read past the end, are nullish the program does not
+mean to read; the parameter keeps its kind and carries the absence as
+presence (`mayBeUndefined`), which keeps the nullish tests live. Gate:
+test/summary.js "the parameter records take their value kinds from the summary".
+
+**Open**: a module-scope `let cache;` global is initialized to `f64.const
+0`, not the undefined box, so `if (cache == null) cache = build()` never
+builds (`let cache = null` does). The global's own kind is ABSENT|TYPED
+in the summary and its rep nullable; the emitted initializer is the
+divergence. The fix is the initializer (the undefined box) with the
+integer-global narrowing (`inferModuleIntGlobals`) excluding a bare `let`.
+
+## 10. A BigInt's carrier implied by its kind (2026-09-04, CLOSED)
+
+**Symptom**: once the summary proved a BigInt kind where the call-site
+lattice had not (a `nodes.shift()` argument; a closure's or `m.get(k)`'s
+result), `leb(nodes.shift())` read the box pointer's bits as the i64
+payload (3.5e-323 for 7n), and an export returning a closure's BigInt
+result crossed the box's bits raw.
+
+**Root cause**: two legacy assumptions of the representation plan and the
+boundary: a parameter whose kind is closed BIGINT arrives in the raw
+carrier (`currentParamRep`'s onlyBigintKind arm), and a result whose
+valResult is BIGINT is raw unless the plan proves a tag required
+(`exprMayBox` answered "unknown" for a call through a non-name callee).
+Both held only because the lattice resolved BIGINT for raw producers alone.
+
+**Fix**: the carrier is the plan's own census: `paramRawOnly` (every call
+site's argument a closed RAW bigint) gates the raw parameter carrier;
+`exprMayBox` answers true for a call through a non-name callee (a closure's
+uniform f64 ABI boxes its result, a storage-read method boxes by
+construction); `Number(n)` reads a plan-materialized raw parameter
+(`isPlanRawBigint`) as an i64, which `n >>= 7n; return Number(n)` needed
+in HEAD already (3.5e-323 there too). Gates: test/data.js bigint shapes
+#6-#9, test/watr.js uleb (no box in either function now).
+
+**Open (O0)**: a parameter whose kind is HASH (`{}` with computed keys)
+read at O0 with `val: hash` returned 0 for `counts[keys[1]] | 0`; the
+summary does not claim HASH for a parameter (as moduleGlobalKinds does not
+for a global) until the dictionary read path takes the kind at O0.

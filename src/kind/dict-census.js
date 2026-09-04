@@ -183,9 +183,8 @@ export function censusKindsOf(name) {
 // `setPresentVal` tracker, mirroring `setVal`'s poison-on-disagreement
 // discipline exactly, NOT `mayBeUndefined`'s spread-merge boolean OR). For a
 // PARAM, though, `val` stays load-bearing: `mayBeUndefined = true` can
-// coexist with a `val` set by narrow.js's ENTIRELY SEPARATE call-site-
-// argument fixpoint (`hardParamVal`/`inferValAtSite`, no census involvement
-// at all) — Slice 2's own deliberate over-approximation (`censusShapedNode`
+// coexist with a `val` set by the program summary's join of the call-site
+// arguments (narrow/index.js seedParamKinds, no census involvement at all) — Slice 2's own deliberate over-approximation (`censusShapedNode`
 // flags ANY `[]`/`.` 2-arg read, not just a dict/Map one, so a plain
 // array/typed-array OOB-possible index read on a call-site argument flags
 // the receiving param too). Dropping the `val` fallback regresses

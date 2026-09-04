@@ -1,8 +1,9 @@
 /**
  * Shared per-caller context builders + tiny shared data for narrowSignatures'
- * fixpoint phases: the `Map<func, ...>` factories (buildCallerCtx/buildCallerElems/
- * buildCallerTypedCtx/buildCallerTypedLenCtx), their refresh/reset counterparts, and
- * createPhaseState — the lazily-cached bundle the driver threads through every phase.
+ * call-site lattices: the `Map<func, ...>` factories (buildCallerCtx/
+ * buildCallerElems/buildCallerTypedLenCtx), their refresh/reset counterparts,
+ * and createPhaseState — the lazily-cached bundle the driver threads through
+ * every phase. The value kinds themselves are the program summary's.
  *
  * @module compile/narrow/caller-ctx
  */
@@ -40,8 +41,7 @@ export function assertValKindConsistent(paramReps) {
 
 export function buildCallerCtx() {
   const callerCtx = new Map()
-  const globalTE = ctx.scope.globalTypedElem || new Map()
-  callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes, callerTypedElems: globalTE })
+  callerCtx.set(null, { callerLocals: ctx.scope.globalTypes })
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
@@ -49,11 +49,7 @@ export function buildCallerCtx() {
     // and is not cloned once per function.
     const callerLocals = makeMapOverlay(facts.locals)
     for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
-    // Shadow-aware local+global typed-array map: a `const buf = new Int32Array(…)`
-    // local makes `buf[i]` arg reads type i32 at this caller's sites, so a callee
-    // param fed only such elements narrows (else it stays f64 and `1 << p` drags in
-    // __to_num → the whole string↔number stdlib). Mirrors callerTypedElemsFor.
-    callerCtx.set(func, { callerLocals, callerValTypes: facts.valTypes, callerTypedElems: callerTypedElemsFor(func, globalTE) })
+    callerCtx.set(func, { callerLocals })
   }
   return callerCtx
 }
@@ -68,49 +64,9 @@ function buildCallerElems(sliceKey) {
   return m
 }
 
-function refreshCallerValTypes(callerCtx) {
-  for (const func of ctx.funcs.list) {
-    if (!func.body || func.raw) continue
-    const entry = callerCtx.get(func)
-    if (entry) entry.callerValTypes = analyzeBody(func.body).valTypes
-  }
-}
-
-// Per-caller typed-elem context: the caller's body-local typed arrays, layered
-// over the module's typed-array globals so a call like `f(globalArr)` resolves
-// `globalArr`'s ctor (inferTypedCtor reads only this map for a bare-name arg).
-// A global is visible UNLESS the caller shadows the name with a param or local
-// of its own — only then could the name denote a non-typed value. Globals are
-// sound to consult: globalTypedElem holds a name only when EVERY assignment to
-// it is the same single typed-array ctor (scope.js invalidates on any conflict),
-// so it can't denote a different kind at the call site.
-function callerTypedElemsFor(func, globalTE) {
-  const facts = analyzeBody(func.body)
-  const local = facts.typedElems
-  if (!globalTE.size) return local
-  const merged = makeMapOverlay(globalTE)
-  // Every local/param shadows a same-named global; typed locals then replace
-  // their tombstone in the overlay's own layer.
-  for (const name of facts.locals.keys()) merged.delete(name)
-  for (const p of func.sig?.params || []) merged.delete(p.name)
-  for (const [k, v] of local) merged.set(k, v)
-  return merged
-}
-
-export function buildCallerTypedCtx() {
-  const callerTypedCtx = new Map()
-  const globalTE = ctx.scope.globalTypedElem || new Map()
-  callerTypedCtx.set(null, globalTE)
-  for (const func of ctx.funcs.list) {
-    if (!func.body || func.raw) continue
-    callerTypedCtx.set(func, callerTypedElemsFor(func, globalTE))
-  }
-  return callerTypedCtx
-}
-
 // Static LENGTHS visible per caller — analyzeBody's typedLens (stable
 // single-def `new T(<n>)` bindings; the tracker poisons on redef) shadowing
-// module globals, same shadowing rule as callerTypedElemsFor.
+// module globals: every local/param shadows a same-named global.
 export function buildCallerTypedLenCtx() {
   const out = new Map()
   const globalTL = ctx.scope.globalTypedLen || new Map()
@@ -127,19 +83,6 @@ export function buildCallerTypedLenCtx() {
     out.set(func, merged)
   }
   return out
-}
-
-export function enrichCallerValTypesFromPointerParams(callerCtx) {
-  for (const func of ctx.funcs.list) {
-    if (!func.body || func.raw) continue
-    const entry = callerCtx.get(func)
-    if (!entry) continue
-    for (const p of func.sig.params) {
-      if (p.ptrKind == null) continue
-      if (entry.callerValTypes.has(p.name)) continue
-      entry.callerValTypes.set(p.name, p.ptrKind)
-    }
-  }
 }
 
 function refreshCallerLocals(callerCtx) {
@@ -185,12 +128,6 @@ export function resetParamWasmFacts(paramReps) {
 export function createPhaseState() {
   const callerCtx = buildCallerCtx()
   const elemCtx = new Map()
-  let callerTypedCtx = null
-
-  const clearDerived = () => {
-    elemCtx.clear()
-    callerTypedCtx = null
-  }
 
   return {
     callerCtx,
@@ -201,29 +138,14 @@ export function createPhaseState() {
       return m
     },
 
-    callerTyped() {
-      callerTypedCtx ||= buildCallerTypedCtx()
-      return callerTypedCtx
-    },
-
-    // Renamed from invalidateBodyFacts (FINDING-5, .work/archive/lattice-design.md §4): the
-    // product-lattice design reserves that name for a future module-level
-    // `invalidateBodyFacts(body, reason)` entry point (research.md:704-708) —
-    // this phase-local, bulk, no-args method is a different shape and had to
-    // move out of the way first.
     clearNarrowingBodyState() {
       invalidateAllBodyFacts()
-      clearDerived()
-    },
-
-    refreshValTypes() {
-      refreshCallerValTypes(callerCtx)
-      clearDerived()
+      elemCtx.clear()
     },
 
     refreshLocals() {
       refreshCallerLocals(callerCtx)
-      clearDerived()
+      elemCtx.clear()
     },
   }
 }

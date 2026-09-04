@@ -48,29 +48,6 @@ export function typedStorageFactFromName(ctx, expr, resolveName) {
   return typedStorageFact(expr, resolve)
 }
 
-export function typedStorageCtorFromMaps(ctx, expr, callerElems, paramFacts, fieldSids) {
-  const resolve = (kind, a, b) => {
-    if (kind === TYPED_SOURCE_NAME) {
-      if (callerElems?.has(a)) return callerElems.get(a) ?? null
-      if (paramFacts?.has(a)) return paramFacts.get(a) ?? null
-      return null
-    }
-    if (kind === TYPED_SOURCE_CALL) {
-      const f = typeof a === 'string' ? ctx.funcs?.map?.get?.(a) : null
-      return f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null
-        ? ctorFromElemAux(f.sig.ptrAux) : null
-    }
-    if (kind === TYPED_SOURCE_FIELD && typeof a === 'string' && typeof b === 'string') {
-      const sid = fieldSids?.get?.(a)
-      if (sid != null && ctx.schema?.slotTypedCtorBySid)
-        return ctx.schema.slotTypedCtorBySid(sid, b) ?? null
-      return ctx.schema?.slotTypedCtorAt?.(a, b) ?? null
-    }
-    return null
-  }
-  return typedStorageCtor(expr, resolve)
-}
-
 export function typedStorageCtorFromContext(ctx, expr, options) {
   options ||= EMPTY_OPTIONS
   const maps = options.nameMaps || EMPTY_MAPS

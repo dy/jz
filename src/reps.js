@@ -106,9 +106,8 @@ export const VAL = {
  *   emit.js nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-
  *   concat). INVARIANT: the arm must read `presentVal` here, not `val` —
  *   `val` never settles non-null for a census-shaped RHS at ANY hop (a
- *   census-shaped call-site ARGUMENT still contributes null to
- *   hardParamVal's own fold, poisoning specialization rather than claiming a
- *   kind), so `val` stays permanently unproven for this shape. `presentVal`
+ *   census-shaped call-site ARGUMENT reads as absent in the summary,
+ *   which keeps the kind beside `mayBeUndefined` rather than poisoning it), so `val` stays permanently unproven for this shape. `presentVal`
  *   (this file, its own entry below) is a SEPARATE, poison-disciplined kind
  *   claim that never touches `val`. Whether any given chokepoint above also
  *   needs its own outer `valTypeOf(node) === VAL.SOMETHING` gate widened to
@@ -174,9 +173,9 @@ export const VAL = {
  *   write contributes `null` to `val`'s own tracker (censusMaybeUndefinedKind
  *   never feeds `val`), `val` and `presentVal` are mutually exclusive by
  *   construction for a DECL/REASSIGN local — never both non-null for the
- *   same such binding. NOT true for a PARAM: `val` there is set by narrow.js's
- *   entirely separate call-site-argument fixpoint (`hardParamVal`), which
- *   proves a kind from the argument's OWN valTypeOf, independent of whether
+ *   same such binding. NOT true for a PARAM: `val` there is the program summary's
+ *   join of the call-site arguments (narrow/index.js seedParamKinds), which
+ *   proves a kind from the argument's OWN kind, independent of whether
  *   the argument expression happens to be census-shaped — so a param CAN
  *   carry both a real `val` AND `mayBeUndefined = true` (Slice 2's
  *   `censusShapedNode` deliberately over-approximates to any `[]`/`.`
@@ -195,7 +194,7 @@ export const VAL = {
  *
  *   PARAM propagation extends the decl/reassign-only scope above to params,
  *   the same size-of-surface split `mayBeUndefined` itself went through:
- *   narrow.js's `hardParamPresentVal`, modeled on `hardParamVal` (the SAME
+ *   narrow/index.js's `hardParamPresentVal` (the SAME
  *   poison-on-disagreement fold this field's decl producer already uses, NOT
  *   `mayBeUndefined`'s monotonic OR) — every live call site's argument must
  *   independently resolve the SAME presentVal kind (kind.js
@@ -266,9 +265,9 @@ export const VAL = {
  *   ptrTypeEq tag TEST module/array.js's numeric-key unproven-receiver guard
  *   emits, straight to the bare `__typed_idx` call — sound because OBJECT/HASH
  *   (the case the guard exists to catch) is EXCLUDED by the proof, not because
- *   the exact kind is known. A narrower, class-level sibling of `val` — same
- *   monotone-meet discipline (src/compile/narrow.js hardParamRecvArrTyped mirrors
- *   hardParamVal's site fold), stored alongside it rather than replacing it so
+ *   the exact kind is known. A narrower, class-level sibling of `val` — set
+ *   by the summary's tag set (narrow/index.js seedParamKinds: every argument an
+ *   array or a typed array), stored alongside it rather than replacing it so
  *   every OTHER `val`-exact consumer (`.push`, method dispatch, dot-property…)
  *   is untouched. Purely an optimization fact: false/absent is always safe (the
  *   guard just stays); never gates soundness.

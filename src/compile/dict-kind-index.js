@@ -22,9 +22,8 @@ import { valTypeOf } from '../kind.js'
 //
 // Altitude: option (b) from the task brief — a pure FACT, never an AST
 // rewrite. T's own codegen (array representation, push/length/etc.) is
-// completely unchanged; only a NEW per-key kind census feeds narrow.js's
-// inferValAtSite `.`-read case (session seven's own landed mechanism) as an
-// additional source alongside ctx.schema.slotVTBySid. kind.js's own
+// completely unchanged; only a NEW per-key kind census feeds the `.`-read
+// resolvers as an additional source alongside ctx.schema.slotVTBySid. kind.js's own
 // INVARIANT comment on dictValueTypes/dictValueKindOf (three prior reverts
 // for unsoundness) is the reason this is its OWN, narrower mechanism instead
 // of widening that one: every fact here is presence-and-kind PROVEN from a

@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
@@ -1936,7 +1936,9 @@ export default (ctx) => {
   // Number(x) — identity for numbers, i64→f64 conversion for BigInt
   ctx.core.emit['Number'] = (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
-    if (valTypeOf(x) === VAL.BIGINT)
+    // A BigInt by its valType, or by the representation plan (a reassigned raw
+    // parameter's valType is unknown to the body; its bits are still an i64).
+    if (valTypeOf(x) === VAL.BIGINT || isPlanRawBigint(x))
       return typed(['f64.convert_i64_s', readI64(x, emit(x))], 'f64')
     return toNumF64(x, emit(x))
   }

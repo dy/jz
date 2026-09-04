@@ -14,7 +14,7 @@
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from '../compile/representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from '../compile/representation-plan.js'
 import { typed } from './tag.js'
 import { temp, tempI32, blockTyped } from './locals.js'
 import { mkPtrIR, ptrOffsetIR } from './pointers.js'
@@ -194,6 +194,10 @@ export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(na
  *  schema-slot census says the emitted value is a PTR.BIGINT box. */
 export const isPlanTaggedBigint = node =>
   representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
+/** The plan holds the value's raw i64 bits (a reassigned raw parameter, whose valType
+ *  the body cannot name): a BigInt for certain, unlike a tagged carrier, which may hold a Number. */
+export const isPlanRawBigint = node =>
+  representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_RAW | BIGINT_REP_CLOSED)
 
 /** Shared proof gate for consumers that need to distinguish a tagged BigInt
  *  carrier from the raw-i64 path before calling readI64. */

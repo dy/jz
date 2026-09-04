@@ -169,8 +169,8 @@ export function analyzeFuncForEmit(func, programFacts) {
       // parameter compiled with an unconditionally-hardcoded PTR.OBJECT tag).
       if (r.val && !reassigned && paramValTrustworthy(r) && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       // presentVal (§16→§18 "presentVal param producers") — narrow.js's
-      // inter-procedural hardParamPresentVal fold (mirroring hardParamVal's
-      // own poison-on-disagreement discipline, NOT mayBeUndefined's monotonic
+      // inter-procedural hardParamPresentVal fold (a poison-on-disagreement
+      // discipline like `val`'s own, NOT mayBeUndefined's monotonic
       // boolean OR further below). An EXACT KIND claim, same "mutually
       // exclusive with val, same discipline as val" contract reps.js's own
       // presentVal doc establishes — so it gets the SAME `!reassigned` guard

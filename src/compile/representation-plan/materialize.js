@@ -355,6 +355,9 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
           return (bigintRepBits(calleeBody.resultTarget ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0
         return representationResultTagRequired(ctx, callee, seen, strict)
       }
+      // A closure's result crosses its uniform f64 ABI boxed; a storage read
+      // through a method (`m.get(k)`, `a.pop()`) is boxed by construction.
+      if (op === '()' && typeof e[1] !== 'string') return true
       if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
         return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
           : ctx.schema.slotBigintBoxedAt?.(e[1], e[2]) === true

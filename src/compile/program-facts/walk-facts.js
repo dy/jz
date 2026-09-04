@@ -665,8 +665,8 @@ export function collectProgramFacts(ast) {
  *     collide with any OTHER binding anywhere in the module, so every
  *     name-keyed lookup this call site's `callerFunc` (a real, unrelated
  *     function — e.g. `instr`, not the arrow) is later checked against
- *     (narrow.js's `inferValAtSite`'s `callerValTypes`/`callerParamFacts`
- *     lookups, inplace-store.js's `callSiteElemInfo`) misses cleanly and
+ *     (narrow/index.js's `callerParamFacts` lookups, inplace-store.js's
+ *     `callSiteElemInfo`) misses cleanly and
  *     falls back to its own conservative "unproven" default — the same
  *     outcome a normal, non-synthesized unresolvable argument already
  *     produces everywhere else in this codebase, never a fabricated claim.

@@ -335,17 +335,18 @@ test('jz: bigint param loop-reassigned through a sink keeps one representation',
     is(exports.run(), 44002, `uleb bytes O${optimize || 0}`)
   }
 
-  // RepresentationPlan owns both transitions: BigInt(s) boxes at the call
-  // edge and n >> 7n boxes at the reassignment edge. One allocation in each
-  // function proves neither legacy fallback stacked a second box on the plan.
+  // RepresentationPlan owns the carrier: every argument to `n` is a raw
+  // producer (BigInt(s)), so the parameter stays a raw i64 through its
+  // reassignment (n >> 7n) and its ToNumber (Number(n) reads the plan's
+  // carrier): no box is allocated in either function.
   const wat = jz.compile(src, { jzify: true, optimize: false, wat: true })
   const bodyOf = name => {
     const start = wat.indexOf(`(func $${name}`)
     const end = wat.indexOf('\n  (func ', start + 1)
     return wat.slice(start, end < 0 ? wat.length : end)
   }
-  is((bodyOf('limits').match(/call \$__alloc\b/g) || []).length, 1, 'BigInt(s) boxes exactly once at the call edge')
-  is((bodyOf('uleb').match(/call \$__alloc\b/g) || []).length, 1, 'n >> 7n boxes exactly once at the binding-write edge')
+  is((bodyOf('limits').match(/call \$__alloc\b/g) || []).length, 0, 'BigInt(s) crosses raw: no box at the call edge')
+  is((bodyOf('uleb').match(/call \$__alloc\b/g) || []).length, 0, 'n >> 7n stays raw: no box at the binding-write edge')
 })
 
 test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {
