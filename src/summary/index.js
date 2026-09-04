@@ -1,12 +1,16 @@
 /**
  * The program summary: one kind per binding, per schema slot, per function
  * result, computed once over the prepared program by a fixpoint before any
- * per-function analysis runs. A kind is one lattice element:
+ * per-function analysis runs. A kind is a set of tags
  *
- *   NONE < NUMBER STRING BOOL BIGINT NULLISH TYPED(elem) ARRAY(elem)
- *          OBJECT(sid) CLOSURE(id) MAP SET DATE REGEX HASH < ANY
+ *   NUMBER STRING BOOL BIGINT NULLISH TYPED(elem) ARRAY(cell)
+ *   OBJECT(sid) CLOSURE(id) MAP SET DATE REGEX HASH
  *
- * with a nullable bit (NULLISH joins into any kind as that bit). Joins are
+ * with one parameter when the set names one tag besides NULLISH: the typed
+ * array's element type, the array's element cell, the object's schema, the
+ * closure's identity. NONE is the empty set, ANY every tag. A join is the
+ * union; a parameter survives it when both sides agree, and two arrays
+ * joined share one element cell from then on. Joins are
  * flow-insensitive: a binding's kind is the join of everything assigned to
  * it, a slot's kind the join of every construction and store, a parameter's
  * kind the join of every argument at every direct call, a result the join
@@ -39,33 +43,39 @@ import { builtinCalleeVal } from '../kind-traits.js'
 
 export const K = {
   NONE: 0, NUMBER: 1, STRING: 2, BOOL: 3, BIGINT: 4, NULLISH: 5, TYPED: 6, ARRAY: 7,
-  OBJECT: 8, CLOSURE: 9, MAP: 10, SET: 11, DATE: 12, REGEX: 13, HASH: 14, ANY: 15,
+  OBJECT: 8, CLOSURE: 9, MAP: 10, SET: 11, DATE: 12, REGEX: 13, HASH: 14, BUFFER: 15, ANY: 16,
 }
-const PARAM_BITS = 20, NULLABLE = 1 << 30
+// A kind packs its tag set above its parameter: bit `PARAM_BITS + tag - 1`
+// for each of the 15 tags, the parameter below. The parameter is UNKNOWN
+// unless the set names one tag besides NULLISH.
+const PARAM_BITS = 16
 /** The parameter of a kind whose parameter is not known (any schema, any element, any closure). */
 export const UNKNOWN = (1 << PARAM_BITS) - 1
-export const kind = (tag, param = UNKNOWN) => (tag << PARAM_BITS) | (param & UNKNOWN)
-export const tagOf = (k) => (k >>> PARAM_BITS) & 0x3FF
+const bitOf = (tag) => 1 << (PARAM_BITS + tag - 1)
+const TAGS = ((1 << K.BUFFER) - 1) << PARAM_BITS, NULL_BIT = bitOf(K.NULLISH), TAGS_NOT_NULL = TAGS & ~NULL_BIT
+export const kind = (tag, param = UNKNOWN) => tag === K.NONE ? 0 : tag === K.ANY ? TAGS | UNKNOWN : bitOf(tag) | (param & UNKNOWN)
+/** The one tag of a kind: NONE for the empty set, NULLISH for the nullish set, ANY for two tags or more besides NULLISH. */
+export const tagOf = (k) => { const m = k & TAGS_NOT_NULL; return m === 0 ? (k & NULL_BIT ? K.NULLISH : K.NONE) : (m & (m - 1)) !== 0 ? K.ANY : 32 - Math.clz32(m) - PARAM_BITS }
 export const paramOf = (k) => k & UNKNOWN
-export const isNullable = (k) => (k & NULLABLE) !== 0
-const core = (k) => k & ~NULLABLE
+/** The kind holds nullish beside one tag; ANY holds every tag and answers no. */
+export const isNullable = (k) => (k & NULL_BIT) !== 0 && (k & TAGS_NOT_NULL) !== 0 && tagOf(k) !== K.ANY
+/** The tags of a kind as a bit set (`hasTag`), NULLISH among them. */
+export const tagsOf = (k) => k & TAGS
+export const hasTag = (k, tag) => (k & bitOf(tag)) !== 0
 const ANY = kind(K.ANY), NUMBER = kind(K.NUMBER), STRING = kind(K.STRING), BOOL = kind(K.BOOL), BIGINT = kind(K.BIGINT), NULLISH = kind(K.NULLISH)
+const core = (k) => tagOf(k) === K.ANY ? ANY : k & ~NULL_BIT
 
 /** The nullable form of a kind; ANY absorbs the bit, so the lattice has one top. */
-export const orNull = (k) => tagOf(k) === K.ANY ? ANY : k | NULLABLE
+export const orNull = (k) => tagOf(k) === K.ANY ? ANY : (k & TAGS_NOT_NULL) === 0 ? NULLISH : k | NULL_BIT
 
+/** The union of the tag sets; the parameter survives when the sides agree on it. */
 export function join(a, b) {
   if (a === b) return a
-  const n = (a | b) & NULLABLE
-  a = core(a); b = core(b)
-  if (a === ANY || b === ANY) return ANY
-  if (a === K.NONE) return b | n
-  if (b === K.NONE || a === b) return a | n
-  const ta = tagOf(a), tb = tagOf(b)
-  if (ta === K.NULLISH) return b | NULLABLE
-  if (tb === K.NULLISH) return a | NULLABLE
-  if (ta !== tb) return ANY
-  return kind(ta) | n  // same tag, different parameter: the tag alone
+  const m = (a | b) & TAGS, mn = m & ~NULL_BIT
+  if (mn === 0) return m === 0 ? 0 : m | UNKNOWN
+  if ((mn & (mn - 1)) !== 0) return m | UNKNOWN
+  const pa = a & mn ? paramOf(a) : undefined, pb = b & mn ? paramOf(b) : undefined
+  return m | (pa === undefined ? pb : pb === undefined || pa === pb ? pa : UNKNOWN)
 }
 
 // Builtins that read their arguments and never write a field of them; any
@@ -73,7 +83,7 @@ export function join(a, b) {
 const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|JSON\.stringify|Array\.isArray|console\.\w+|Math\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt|Symbol(\.\w+)?|isNaN|isFinite|parseInt|parseFloat|structuredClone)$/
 
 /** The value kind (reps.js VAL) of a monomorphic, non-nullable kind; null otherwise. */
-const VAL_OF = [null, VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT, null, VAL.TYPED, VAL.ARRAY, VAL.OBJECT, VAL.CLOSURE, VAL.MAP, VAL.SET, VAL.DATE, VAL.REGEX, VAL.HASH, null]
+const VAL_OF = [null, VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT, null, VAL.TYPED, VAL.ARRAY, VAL.OBJECT, VAL.CLOSURE, VAL.MAP, VAL.SET, VAL.DATE, VAL.REGEX, VAL.HASH, VAL.BUFFER, null]
 export const valOf = (k) => isNullable(k) ? null : VAL_OF[tagOf(k)] ?? null
 /** The kind of a value kind: the inverse of `valOf` for the kinds that have one; ANY for a kind the lattice has no tag for. */
 export const kindOfVal = (v) => { const t = VAL_OF.indexOf(v); return v == null ? ANY : t < 0 ? ANY : kind(t) }
@@ -121,13 +131,19 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   let changed = false
 
   const escapeId = (id) => { if (!escaped.has(id)) { escaped.add(id); changed = true } }
-  // Two closures joined lose their identities: whoever holds the join calls
-  // either, and a call through it binds neither's parameters, so both are
-  // called from where the summary cannot see.
+  // A join that loses a parameter loses what it named: two closures joined
+  // are called through the join, which binds neither's parameters, so both
+  // are called from where the summary cannot see; an array joined with
+  // another kind is stored to through the join. Two arrays joined share one
+  // cell from then on (`unify`), so a store through either reaches both.
   const merge = (a, b) => {
-    if (tagOf(a) === K.CLOSURE && tagOf(b) === K.CLOSURE && paramOf(a) !== paramOf(b)) { if (paramOf(a) !== UNKNOWN) escapeId(paramOf(a)); if (paramOf(b) !== UNKNOWN) escapeId(paramOf(b)) }
-    return join(a, b)
+    a = canon(a); b = canon(b)
+    if (tagOf(a) === K.ARRAY && tagOf(b) === K.ARRAY && paramOf(a) !== UNKNOWN && paramOf(b) !== UNKNOWN && paramOf(a) !== paramOf(b)) b = (b & ~UNKNOWN) | unify(paramOf(a), paramOf(b))
+    const j = join(a, b)
+    if (paramOf(j) === UNKNOWN) { lose(a); lose(b) }
+    return j
   }
+  const lose = (k) => { if (paramOf(k) !== UNKNOWN) escape(k) }
   const slots = (sid) => { let a = fields.get(sid); if (!a) fields.set(sid, a = new Array(schemas[sid].length).fill(K.NONE)); return a }
   const raise = (map, key, k) => { const old = map.get(key) ?? K.NONE; const nk = merge(old, k); if (nk !== old) { map.set(key, nk); changed = true } }
   const raiseSlot = (sid, i, k) => { const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true } }
@@ -141,17 +157,23 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   }
   // An array's element kind lives in a cell its construction site owns; every
   // store and push joins into it, so a read sees every element the program
-  // can put there. Two arrays with different cells join to an array of
-  // unknown elements.
-  const elems = []               // cell id → element kind
+  // can put there. Cells joined are one cell (a union-find over ids); a kind
+  // names a cell by any id in it, `canon` by the root.
+  const elems = []               // cell root → element kind
+  const cellUp = []              // cell id → its parent; a root is its own
   const arrayCells = new Map()   // array literal node → cell id
-  const elemOf = (k) => tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? elems[paramOf(k)] : ANY
-  const arrayOf = (node, elem) => { let id = arrayCells.get(node); if (id === undefined) { id = elems.length; elems.push(elem); arrayCells.set(node, id) } return kind(K.ARRAY, id) }
-  const raiseElem = (arr, k) => { if (tagOf(arr) !== K.ARRAY || paramOf(arr) === UNKNOWN) return; const id = paramOf(arr), nk = merge(elems[id], k); if (nk !== elems[id]) { elems[id] = nk; changed = true } }
+  const cell = (id) => { while (cellUp[id] !== id) id = cellUp[id] = cellUp[cellUp[id]]; return id }
+  const canon = (k) => tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
+  const elemOf = (k) => tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? elems[cell(paramOf(k))] : ANY
+  // A cell, closure or schema past the parameter's range is one the kind cannot name: it escapes.
+  const arrayOf = (node, elem) => { let id = arrayCells.get(node); if (id === undefined) { id = elems.length; elems.push(elem); cellUp.push(id); arrayCells.set(node, id) } if (id >= UNKNOWN) { escape(elem); return kind(K.ARRAY) } return kind(K.ARRAY, id) }
+  const raiseElem = (arr, k) => { if (tagOf(arr) !== K.ARRAY || paramOf(arr) === UNKNOWN) return; const id = cell(paramOf(arr)), nk = merge(elems[id], k); if (nk !== elems[id]) { elems[id] = nk; changed = true } }
+  const unify = (a, b) => { a = cell(a); b = cell(b); if (a !== b) { cellUp[b] = a; changed = true; raiseElem(kind(K.ARRAY, a), elems[b]) } return a }
   /** A value the summary no longer follows: a closure's callers become unknown, an array's elements too. */
   const escape = (k) => {
     if (tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) escapeId(paramOf(k))
-    if (tagOf(k) === K.ARRAY) { escape(elemOf(k)); raiseElem(k, ANY) }
+    // The cell goes to ANY before its elements escape: an array of itself ends there.
+    if (tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN) { const id = cell(paramOf(k)), e = elems[id]; if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) } }
   }
   /** An object handed to code the summary cannot see: its fields may be stored to. */
   // An own property stored under a class member's name shadows the member
@@ -177,6 +199,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       const m = TYPED_CTOR.exec(callee)
       if (m) { const aux = encodeTypedElemAux(m[1], !!m[2]); return kind(K.TYPED, aux == null ? UNKNOWN : aux) }
       if (callee === 'new.RegExp') return kind(K.REGEX)
+      if (callee === 'new.ArrayBuffer' || callee === 'new.SharedArrayBuffer') return kind(K.BUFFER)
       if (callee === 'Array') return kind(K.ARRAY)
       if (callee === 'String' || callee.startsWith('String.')) return STRING
       if (callee === 'Number' || callee.startsWith('Math.') || callee.startsWith('Number.')) return NUMBER
@@ -238,8 +261,9 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
         return K.NONE
       }
     }
-    if (t === K.TYPED) { if (TYPED_SAME.has(name)) return name === 'set' ? NULLISH : kind(K.TYPED, paramOf(recv)); if (name === 'indexOf' || name === 'lastIndexOf' || name === 'at' || name === 'reduce') return name === 'at' ? NUMBER | NULLABLE : NUMBER }
+    if (t === K.TYPED) { if (TYPED_SAME.has(name)) return name === 'set' ? NULLISH : kind(K.TYPED, paramOf(recv)); if (name === 'indexOf' || name === 'lastIndexOf' || name === 'at' || name === 'reduce') return name === 'at' ? orNull(NUMBER) : NUMBER }
     if (t === K.STRING) { if (STRING_METHODS.has(name)) return STRING; if (STRING_NUMBER_METHODS.has(name)) return NUMBER; if (name === 'split') return kind(K.ARRAY) }
+    if (t === K.BUFFER && name === 'slice') return kind(K.BUFFER)
     if (t === K.ARRAY) {
       if (name === 'push' || name === 'unshift') { for (const k of argKinds) raiseElem(recv, k); return NUMBER }
       if (name === 'indexOf' || name === 'lastIndexOf' || name === 'findIndex') { for (const k of argKinds) escape(k); return NUMBER }
@@ -280,7 +304,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     if (op === 'bigint') return BIGINT
     if (op === '//') return kind(K.REGEX)
     if (op === '`' || op === 'strcat') { for (let i = 1; i < n.length; i++) expr(n[i]); return STRING }
-    if (op === '=>') { loopAssigns(n); const id = closureId(n); return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
+    if (op === '=>') { loopAssigns(n); const id = closureId(n); if (id >= UNKNOWN) { escapeId(id); return kind(K.CLOSURE) } return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
     if (op === '{}') {
       const vals = [], init = definite.get(n), shape = literalShape(n)
       for (let i = 1; i < n.length; i++) {
@@ -292,6 +316,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       const sid = shape ? sidByKey.get(schemaKey(shape.props, shape.brand)) : undefined
       if (sid === undefined) { for (const v of vals) escape(v); return kind(K.HASH) }
       for (let i = 0; i < vals.length; i++) raiseSlot(sid, i, vals[i])
+      if (sid >= UNKNOWN) { poisonSchema(sid); return kind(K.OBJECT) }
       return kind(K.OBJECT, sid)
     }
     if (op === '[') {
@@ -317,7 +342,8 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       }
       callCandidates(recv, prop + ACCESSOR_GET, [])
       if (classes && unknownReceiver(recv) && !prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const e of classes.values()) { const fn = e.methods.get(prop); if (fn) call(fn + BIND, [recv]) }
-      if (NUMBER_METHODS.has(prop) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET)) return NUMBER
+      if (NUMBER_METHODS.has(prop) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return NUMBER
+      if (prop === 'buffer' && t === K.TYPED) return kind(K.BUFFER)
       return ANY
     }
     if (op === '[]') {
@@ -559,7 +585,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   // reads a binding through the scopes declaring its name: one function's, or
   // the join over a function and its specialized variants.
   const keyOfAnywhere = (name) => { const key = keyOf(name); if (key !== null || current !== null) return key; const ns = nameScopes.get(name); return ns ? ns.map(s => keyIn(s, name)) : null }
-  const readKind = (name) => { const key = keyOfAnywhere(name); if (key === null) return K.NONE; if (typeof key === 'string') return kinds.get(key) ?? K.NONE; let k = K.NONE; for (const kk of key) k = join(k, kinds.get(kk) ?? K.NONE); return k }
+  const readKind = (name) => { const key = keyOfAnywhere(name); if (key === null) return K.NONE; if (typeof key === 'string') return canon(kinds.get(key) ?? K.NONE); let k = K.NONE; for (const kk of key) k = join(k, canon(kinds.get(kk) ?? K.NONE)); return k }
   /** The kind of an expression, read from the settled summary: a name, a
    *  property chain, an element read, a literal or a call to a known
    *  function; anything else is ANY. No effects. */
@@ -573,7 +599,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
     if (op === 'bool') return BOOL
     if (op === 'bigint') return BIGINT
     if (op === '//') return kind(K.REGEX)
-    if (op === '=>') { const id = closures.get(n); return id === undefined ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
+    if (op === '=>') { const id = closures.get(n); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
     if (op === '()' && n.length === 2) return kindOfExpr(n[1])
     if (op === '.' || op === '?.') {
       const r = kindOfExpr(n[1]), t = tagOf(r)
@@ -584,7 +610,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
         const getter = classMember(r, n[2] + ACCESSOR_GET), fn = getter ?? (classMember(r, n[2]) ? classMember(r, n[2]) + BIND : null)
         return fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH
       }
-      return NUMBER_METHODS.has(n[2]) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET) ? NUMBER : ANY
+      return NUMBER_METHODS.has(n[2]) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER) ? NUMBER : n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY
     }
     if (op === '[]') {
       const r = kindOfExpr(n[1]), t = tagOf(r)
@@ -765,7 +791,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
   })
   const seeded = [...seedable].filter(p => isCompatible(p) && tagOf(kinds.get(p) ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.clear(); incoming.clear(); fields.clear(); results.clear(); escaped.clear(); for (let i = 0; i < elems.length; i++) elems[i] = K.NONE
+    kinds.clear(); incoming.clear(); fields.clear(); results.clear(); escaped.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     seed(seeded)
     fixpoint()
   }
@@ -781,7 +807,7 @@ export function summarize(ast, { funcs, schemas, brandOf, classes, exported, imp
       /** The typed-array constructor a binding holds under every assignment, or null. */
       typedCtorOf: inScope((name) => { const k = kindOf(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null }),
       /** The one schema every element of the binding's array has, or null. */
-      arrayElemSidOf: inScope((name) => { const k = kindOf(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elems[paramOf(k)]; return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null }),
+      arrayElemSidOf: inScope((name) => { const k = kindOf(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null }),
       /** The binding has a ToNumber read or a flow into a demanded key, and no other read. */
       numericDemand: inScope((name) => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'string' ? isNumeric(key) : key.every(isNumeric)) }),
     }

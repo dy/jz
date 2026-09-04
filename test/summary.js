@@ -7,7 +7,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { K, kind, join, orNull, tagOf, paramOf, isNullable, UNKNOWN } from '../src/summary/index.js'
+import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
 import { onKernel, OPT_LEVEL } from './_matrix.js'
 
@@ -146,11 +146,14 @@ test('summary: delete, a host import, for-of, a binding read before its assignme
   is(ctx.summary.fieldTypedCtor(sidOf(['a']), 'a'), 'new.Float32Array', 'an object passed to a host import keeps its field kinds (the boundary is a contract)')
 })
 
-test('summary: array cells join every store; a joined pair of arrays is unknown', () => {
+test('summary: array cells join every store; two arrays joined share one cell', () => {
   summarize(`const mk = () => ({ v: 1 })
-    export const f = (k) => { const arr = [mk()]; arr.push({ v: 2 }); const o = arr[0]; const two = k ? [1] : ['s']; return o.v + two.length }`)
+    const fill = (a, v) => { a[0] = v }
+    export const f = (k) => { const arr = [mk()]; arr.push({ v: 2 }); const o = arr[0]; const two = k ? [1] : ['s']; const nums = [1]; const strs = ['a']; fill(nums, 2); fill(strs, 'b'); const n = nums[0]; return o.v + two.length + (k ? two[0] : n) }`)
   is(tagOf(kindOf('f', 'o')), K.OBJECT, 'a push of the same shape keeps the element shape'); ok(isNullable(kindOf('f', 'o')), 'an element read may be out of range')
-  is(paramOf(kindOf('f', 'two')), (1 << 20) - 1, 'two arrays with different cells join to an array of unknown elements')
+  ok(paramOf(kindOf('f', 'two')) !== UNKNOWN, 'two arrays joined name one cell'); is(tagOf(ctx.summary.at('f').kindOfExpr(['[]', 'two', 0])), K.ANY, 'whose elements are the join')
+  is(tagOf(kindOf('f', 'n')), K.ANY, 'a store through a parameter both arrays flow into reaches both')
+  is(tagOf(join(kind(K.NUMBER), kind(K.BOOL))), K.ANY, 'two tags read as ANY through the one-tag API'); ok(hasTag(join(kind(K.NUMBER), kind(K.BOOL)), K.BOOL) && !hasTag(join(kind(K.NUMBER), kind(K.BOOL)), K.STRING), 'and keep their set')
 })
 
 test('summary codegen: a typed field read through a parameter, a factory, a class, a method closure lowers to typed storage', () => {
