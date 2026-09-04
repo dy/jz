@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, extractParams, isBrand, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
+import { MUTATE_OPS, extractParams, isBrand, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'
@@ -76,6 +76,9 @@ export const isNullable = (k) => (k & NULL_BITS) !== 0 && (k & TAGS_NOT_NULL) !=
 export const tagsOf = (k) => k & TAGS
 export const hasTag = (k, tag) => (k & bitOf(tag)) !== 0
 const ANY = kind(K.ANY), NUMBER = kind(K.NUMBER), STRING = kind(K.STRING), BOOL = kind(K.BOOL), BIGINT = kind(K.BIGINT), NULLISH = kind(K.NULLISH), ABSENT = kind(K.ABSENT)
+// A spread literal: a fixed shape when every source's key set is known at emit
+// time, a dictionary otherwise (module/object.js emitObjectSpread), so either.
+const OBJECT_OR_HASH = kind(K.OBJECT) | bitOf(K.HASH)
 /** The kind without its nullish tags. */
 const core = (k) => k & ~NULL_BITS
 
@@ -110,7 +113,9 @@ export { core }
 
 const BIND = CLASS_T + 'bind'
 const TYPED_CTOR = /^new\.(\w+Array)(\.view)?$/
-const NUMBER_METHODS = new Set(['length', 'size', 'byteLength', 'byteOffset'])
+/** The count properties, by the kinds that carry them (`.size` on a Set, not on an object or a string). */
+const COUNT_PROPS = new Map([['length', [K.ARRAY, K.TYPED, K.STRING]], ['size', [K.MAP, K.SET]], ['byteLength', [K.TYPED, K.BUFFER]], ['byteOffset', [K.TYPED]]])
+const isCount = (prop, t) => COUNT_PROPS.get(prop)?.includes(t) === true
 // Array.prototype's members: a `.name` past these on an array is a dictionary entry the program stored.
 const ARRAY_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'indexOf', 'lastIndexOf', 'includes', 'join', 'concat', 'sort', 'reverse', 'find', 'findIndex', 'findLast', 'findLastIndex', 'some', 'every', 'fill', 'flat', 'flatMap', 'at', 'entries', 'keys', 'values', 'copyWithin', 'toString', 'toSorted', 'toReversed', 'with'])
 const TYPED_SAME = new Set(['subarray', 'slice', 'map', 'filter', 'fill', 'reverse', 'sort', 'copyWithin', 'set'])
@@ -126,7 +131,7 @@ const BOOL_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', '
  *  `hostGlobals` the module globals the host reads. An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, exported, imports, hostGlobals = [] }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [] }) {
   const tops = [...inits, ast]
   const kinds = new Map()            // binding key (keyOf) → kind
   const fields = new Map()           // sid → kind[]
@@ -138,6 +143,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   // The registry's key (module/schema.js): the props, and a class's brand as the salt.
   const schemaKey = (props, brand) => props.length + '\x01' + props.join('\x01') + (brand ? '\x02' + brand : '')
   const sidByKey = new Map(schemas.map((props, sid) => [schemaKey(props, brandOf(sid)), sid]))
+  /** A static literal's slot value kinds in key order; a definite initialization's `undefined` is no value. */
+  const literalVals = (n) => {
+    const vals = [], init = definite.get(n)
+    for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p === 'string') vals.push(expr(p)); else if (!isBrand(p[1])) vals.push(init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
+    return vals
+  }
   /** A literal's static keys and its brand: `{ props, brand }`, or null when a key is computed or spread. */
   const literalShape = (n) => {
     const props = []
@@ -192,6 +203,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   const lose = (k) => { if (paramOf(k) !== UNKNOWN) escape(k) }
   const slots = (sid) => { let a = fields.get(sid); if (!a) fields.set(sid, a = new Array(schemas[sid].length).fill(K.NONE)); return a }
   const raise = (map, key, k) => { const old = map.get(key) ?? K.NONE; const nk = merge(old, k); if (nk !== old) { map.set(key, nk); changed = true } }
+  // The bindings stored to under a computed key (`o[k] = v`, Object.assign's
+  // target; program-facts' dynWriteVars): an empty `{}` declared into one is a
+  // dictionary (literalInto).
+  const dictKeys = new Set()
   const raiseSlot = (sid, i, k) => { const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true } }
   const poisonProp = (prop) => { for (const [sid, i] of byProp.get(prop) ?? []) raiseSlot(sid, i, ANY) }
   const poisonSchema = (sid) => { const a = slots(sid); for (let i = 0; i < a.length; i++) raiseSlot(sid, i, ANY) }
@@ -287,10 +302,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       if (traitVal != null && traitVal !== VAL.TYPED) return kindOfVal(traitVal)
       if (callee === 'String' || callee.startsWith('String.')) return STRING
       if (callee === 'Number' || callee.startsWith('Math.') || callee.startsWith('Number.')) return NUMBER
-      // jzify's `for…of` lowering iterates `__iter_arr(v)` by index: an array,
-      // typed array or string iterates as itself, anything else as an array
-      // of unknown elements; `__keys_ro` is `for…in`'s key list.
-      if (callee === '__iter_arr') { const t = argKinds.length ? tagOf(argKinds[0]) : K.NONE; return t === K.ARRAY || t === K.TYPED || t === K.STRING ? argKinds[0] : t === K.NONE ? K.NONE : kind(K.ARRAY) }
+      // jzify's `for…of` lowering iterates `__iter_arr(v)` by index (module/collection.js):
+      // an array, a typed array, a string or a buffer iterates as itself, a Set or a Map as
+      // an array it materializes, an iterable of unknown kind as the runtime resolves it;
+      // `__keys_ro` is `for…in`'s key list.
+      if (callee === '__iter_arr') { const t = argKinds.length ? tagOf(argKinds[0]) : K.NONE; return t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.BUFFER ? argKinds[0] : t === K.MAP || t === K.SET ? kind(K.ARRAY) : t === K.NONE ? K.NONE : ANY }
       if (callee === '__keys_ro') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
@@ -403,15 +419,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     if (op === '`' || op === 'strcat') { for (let i = 1; i < n.length; i++) expr(n[i]); return STRING }
     if (op === '=>') { loopAssigns(n); const id = closureId(n); if (id >= UNKNOWN) { escapeId(id); return kind(K.CLOSURE) } return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
     if (op === '{}') {
-      const vals = [], init = definite.get(n), shape = literalShape(n)
-      for (let i = 1; i < n.length; i++) {
-        const p = n[i]
-        if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (!isBrand(p[1])) vals.push(init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
-        else if (typeof p === 'string') vals.push(expr(p))
-        else { if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j])); return kind(K.HASH) }
-      }
-      const sid = shape ? sidByKey.get(schemaKey(shape.props, shape.brand)) : undefined
-      if (sid === undefined) { for (const v of vals) escape(v); return kind(K.HASH) }
+      const shape = literalShape(n)
+      if (!shape) { for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p === 'string') escape(expr(p)); else for (let j = 1; j < p.length; j++) escape(expr(p[j])) } return OBJECT_OR_HASH }
+      const vals = literalVals(n), sid = sidByKey.get(schemaKey(shape.props, shape.brand))
+      if (sid === undefined) { for (const v of vals) escape(v); return kind(K.OBJECT) }
       for (let i = 0; i < vals.length; i++) raiseSlot(sid, i, vals[i])
       if (sid >= UNKNOWN) { poisonSchema(sid); return kind(K.OBJECT) }
       return kind(K.OBJECT, sid)
@@ -439,7 +450,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       }
       callCandidates(recv, prop + ACCESSOR_GET, [])
       if (classes && unknownReceiver(recv) && !prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const e of classes.values()) { const fn = e.methods.get(prop); if (fn) call(fn + BIND, [recv]) }
-      if (NUMBER_METHODS.has(prop) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return NUMBER
+      if (isCount(prop, t)) return NUMBER
       if (prop === 'buffer' && t === K.TYPED) return kind(K.BUFFER)
       if (t === K.ARRAY && paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return orAbsent(propOf(recv, prop))
       return ANY
@@ -531,11 +542,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   }
   // A computed-key store may reach any slot; one with a number key only a
   // slot named like an index. A key of bottom kind is not known yet: a
-  // later round decides.
+  // later round decides. A dictionary has no slots.
   const poisonAll = (recv, key = ANY) => {
     if (tagOf(key) === K.NONE) return
     const numeric = tagOf(key) === K.NUMBER
     const hit = (sid) => { if (!numeric) poisonSchema(sid); else schemas[sid].forEach((p, i) => { if (/^\d+$/.test(p)) raiseSlot(sid, i, ANY) }) }
+    if (tagOf(recv) === K.HASH) return   // a dictionary has no slots
     if (tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN) hit(paramOf(recv)); else for (let sid = 0; sid < schemas.length; sid++) hit(sid)
   }
 
@@ -590,7 +602,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make).
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], expr(d[2])); else { escape(expr(d[2])); pattern(d[1]) } } } }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], literalInto(d[1], d[2])); else { escape(expr(d[2])); pattern(d[1]) } } } }
+  // A `{}` declared into a name is allocated as the runtime allocates it
+  // (module/object.js's `{}`): with the binding's schema when that holds every
+  // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
+  // into a computed-key binding with no schema as a HASH, else as its own shape.
+  const literalInto = (name, value) => {
+    const shape = Array.isArray(value) && value[0] === '{}' ? literalShape(value) : null
+    if (!shape) return expr(value)
+    const bound = boundSchema(name), props = bound == null ? null : schemas[bound]
+    if (props && shape.props.every(p => props.includes(p))) {
+      const vals = literalVals(value)
+      for (let i = 0; i < vals.length; i++) raiseSlot(bound, props.indexOf(shape.props[i]), vals[i])
+      return kind(K.OBJECT, bound)
+    }
+    return value.length === 1 && !props?.length && dictKeys.has(keyOf(name)) ? kind(K.HASH) : expr(value)
+  }
   const pattern = (p) => { if (typeof p === 'string') declare(p, ANY); else if (Array.isArray(p)) for (let i = 1; i < p.length; i++) pattern(Array.isArray(p[i]) && p[i][0] === ':' ? p[i][2] : Array.isArray(p[i]) && p[i][0] === '=' ? p[i][1] : p[i]) }
 
   // Scopes: a function (its name), a closure (its id) or the module (null).
@@ -619,8 +646,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     }
     else if (op === 'for-of' || op === 'for-in' || op === 'for-await') { const t = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]; if (typeof t === 'string') declareIn(scope, t) }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
+    // The root of a computed-key store (`o[k] = v`, `o[i][j] = v`), Object.assign's target: a dictionary.
+    if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && !isLiteralStr(n[1][2])) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
+    if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
     for (let i = 1; i < n.length; i++) collect(n[i], scope)
   }
+  const dictUses = []   // [scope, name] of every computed-key store root, resolved to keys once every scope is declared
   for (const f of funcs) { for (const p of f.sig.params) declareIn(f.name, p.name); if (f.rest) declareIn(f.name, f.rest); collect(f.body, f.name) }
   for (const top of tops) collect(top, MODULE)
   const keyIn = (scope, name) => scope === MODULE ? name : scope + '\0' + name
@@ -633,6 +664,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   }
 
   let current = null  // the scope (and result key) of the function being walked; null at module scope
+  for (const [scope, name] of dictUses) { current = scope === MODULE ? null : scope; const key = keyOf(name); if (key !== null) dictKeys.add(key) }
+  current = null
   const stmt = (n) => {
     if (n == null) return
     if (typeof n === 'string') { expr(n); return }
@@ -797,7 +830,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
         const getter = classMember(r, n[2] + ACCESSOR_GET), fn = getter ?? (classMember(r, n[2]) ? classMember(r, n[2]) + BIND : null)
         return fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH
       }
-      if (NUMBER_METHODS.has(n[2]) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return NUMBER
+      if (isCount(n[2], t)) return NUMBER
       if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return orAbsent(propOf(r, n[2]))
       return n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY
     }
@@ -1025,10 +1058,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       paramKindOf: inScope((name) => { const key = keyOf(name); return key === null ? K.NONE : canon(incoming.get(key) ?? K.NONE) }),
       /** The element kind of an array kind: every element the program can put in its cell. */
       elemKindOf: (k) => elemOf(k),
+      /** The value kind (reps.js VAL) of a binding's kind when it is one non-nullable kind, else null. */
+      valOf: inScope((name) => valOf(readKind(name))),
       /** The value kind (reps.js VAL) of an expression's kind when it is one non-nullable kind, else null. */
       valOfExpr: inScope((e) => valOf(kindOfExpr(e))),
       /** The typed-array constructor an expression holds under every assignment, or null. */
       typedCtorOfExpr: inScope((e) => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null }),
+      /** The class function `recv.name(…)` calls when the receiver is one class's instance for certain, else null. */
+      classCallee: inScope((recv, name) => { const r = kindOfExpr(recv); if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null; const fn = classMember(r, name); return fn && !memberMayBeOwn(name) ? fn : null }),
     }
   }
   const views = new Map()

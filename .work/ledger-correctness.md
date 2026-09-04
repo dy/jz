@@ -934,7 +934,13 @@ construction); `Number(n)` reads a plan-materialized raw parameter
 in HEAD already (3.5e-323 there too). Gates: test/data.js bigint shapes
 #6-#9, test/watr.js uleb (no box in either function now).
 
-**Open (O0)**: a parameter whose kind is HASH (`{}` with computed keys)
-read at O0 with `val: hash` returned 0 for `counts[keys[1]] | 0`; the
-summary does not claim HASH for a parameter (as moduleGlobalKinds does not
-for a global) until the dictionary read path takes the kind at O0.
+**Closed (2026-09-04)**: a parameter whose kind is HASH (`{}` with computed
+keys) read at O0 with `val: hash` returned 0 for `counts[keys[1]] | 0`.
+The kind was wrong, not the read path: the summary called every empty
+`{}` a HASH, while the runtime allocates one as a HASH only when it is
+declared into a computed-key binding with no schema (module/object.js
+`{}`), an argument or a dot-written one being an OBJECT with a dyn
+sidecar. The summary now allocates a literal as the runtime does
+(src/summary literalInto) and a parameter claims HASH. A module global
+still does not (plan/scope.js moduleGlobalKinds runs on the entry summary,
+before materializeAutoBoxSchemas gives a dot-written `{}` its schema).

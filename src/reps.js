@@ -322,7 +322,8 @@ export const lookupValType = name => {
   const ov = ctx.func.localValTypesOverlay
   const hasOverlayValues = ov?.size || (ov?.mapOverlay === true && (ov.own?.size || ov.base?.size))
   if (hasOverlayValues) { const v = ov.get(name); if (v) return v }
-  return ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || null
+  // The program summary (src/summary): the binding's kind in the current function's scope.
+  return ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || ctx.summary?.at(ctx.func.current)?.valOf(name) || null
 }
 
 export const lookupNotString = name => {

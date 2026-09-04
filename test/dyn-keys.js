@@ -44,11 +44,10 @@ test('dyn-keys: ToPropertyKey for atom keys (the prec[undefined] class)', () => 
     const u = hole[0]
     return (prec[u] <= 5 ? 1000 : 2000) + (prec['('] === 6 ? 100 : 200) + (prec[u] === undefined ? 10 : 20) + (prec['nope'] <= 5 ? 1 : 2)`), 2112)
   is(run(`const d = {}; d['null'] = 8; return d[null]`), 8)
-  // KNOWN GAP (carrier-level, pre-existing): jz booleans are bare-number
-  // carriers (true ≡ 1.0 at runtime), so a DYNAMIC d[true] coerces to key '1',
-  // not 'true'. Static bool keys fold correctly; only runtime-flowing bools
-  // diverge. Pin the current behavior so a carrier change surfaces here.
-  is(run(`const d = {}; d['true'] = 9; return d[true] === undefined ? 1 : 0`), 1)
+  // A bool key names its own string, static or computed (jz booleans are
+  // number carriers; the key read keeps the kind).
+  is(run(`const d = {}; d['true'] = 9; return d[true] === undefined ? 1 : 0`), 0)
+  is(jz(`export let f = (b) => { const d = {}; d['true'] = 9; return d[b > 0] === undefined ? 1 : 0 }`).exports.f(1), 0)
 })
 
 // dyn-prop KEYING on a NUMERIC (non-string) key against an OBJECT receiver
@@ -1591,11 +1590,9 @@ test('single-call-site unary `-` param-hop: absent Map key (module-level Map) th
   `, { jzify: true })), /BigInt value at this collection/)
 })
 
-// Plan-time has no caller localReps installed. A straight-line local Map proof
-// therefore scans only the caller's top-level statement prefix: one new Map,
-// literal-key set writes of one exact kind, no control flow, alias, delete, or
-// dynamic key. Anything broader that may carry BigInt rejects instead of
-// falling through to Number unary arithmetic.
+// The summary carries a Map's values in one cell (BigInt here) beside the
+// miss, so the parameter keeps the present key's BigInt through the hop and a
+// miss negates to NaN, as in JS; a control-dependent write is no different.
 test('local Map present-key BigInt crosses a unary parameter hop', () => {
   for (const optimize of [false, 2, 3]) {
     const { f } = jz(`
@@ -1606,13 +1603,15 @@ test('local Map present-key BigInt crosses a unary parameter hop', () => {
   }
 })
 
-test('control-dependent local Map BigInt unary hop rejects cleanly', () => {
-  throws(() => jz(`
+test('control-dependent local Map BigInt unary hop is JS-correct', () => {
+  const { f } = jz(`
     const g = (v) => -v
     export let f = (cond) => {
       const m = new Map()
       if (cond) m.set('a', 5n)
       return g(m.get('a'))
     }
-  `), /control-dependent BigInt writes/)
+  `).exports
+  is(f(1), -5n)
+  ok(Number.isNaN(f(0)), 'a miss negates undefined to NaN')
 })

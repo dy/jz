@@ -744,10 +744,12 @@ test('boxedCaptures: mutated capture allocates a heap cell', () => {
   // `let n = 0; const inc = () => { n = n + 1; ... }` — the closure mutates
   // the outer var. boxedCaptures marks n boxed → cell allocated on
   // heap, captured by the closure, read/written via the cell pointer.
-  // Force escape via `keep(...)` so inlineLocalLambdas doesn't splice the
-  // closure away (which would leave n as a plain wasm local).
+  // Force escape via `keep(...)`, which stores the closure, so
+  // inlineLocalLambdas doesn't splice it away (which would leave n as a plain
+  // wasm local).
   const wat = jz.compile(`
-    const keep = (f) => f
+    let sink
+    const keep = (f) => (sink = f, f)
     export const main = () => {
       let n = 0
       const inc = keep(() => { n = n + 1; return n })
@@ -3232,8 +3234,8 @@ test('receiver-HASH: does NOT fire when the name is absent from dynWriteVars (no
     export let touch = () => { bag.x = 5 }
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalValTypes?.get('bag'), undefined,
-    'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim')
+  is(ctx.scope.globalValTypes?.get('bag'), 'object',
+    'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim: the summary\'s object')
 })
 
 // ───────────────────────────────────────────────────────────── constIntExpr: i32 boundary clamp
