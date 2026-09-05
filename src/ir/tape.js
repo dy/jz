@@ -76,6 +76,8 @@ export function node(op) {
 }
 
 export const str = (s) => { const id = node(OP_STR); T.sym[id] = intern(s); return id }
+/** A string atom of an interned symbol. */
+export const sym = (id) => { const a = node(OP_STR); T.sym[a] = id; return a }
 export const num = (v) => { const id = node(OP_NUM); T.imm[id] = v; return id }
 /** A byte blob (a custom section's payload), one atom. */
 export const bytes = (b) => { const id = node(OP_BYTES); T.imm[id] = T.blobs.length; T.blobs.push(b); return id }
@@ -112,6 +114,15 @@ export function replace(parent, old, id) {
   let c = T.a[parent]
   while (T.next[c] !== old) c = T.next[c]
   T.next[c] = id
+}
+
+/** A deep copy of the subtree at `id` (a sibling-less root). */
+export function clone(id) {
+  const c = node(T.op[id])
+  T.ty[c] = T.ty[id]; T.imm[c] = T.imm[id]; T.sym[c] = T.sym[id]; T.sid[c] = T.sid[id]
+  let prev = NONE
+  for (let k = T.a[id]; k !== NONE; k = T.next[k]) { const kc = clone(k); if (prev === NONE) T.a[c] = kc; else T.next[prev] = kc; prev = kc }
+  return c
 }
 
 /** Insert `id` after the child `prev` of `parent`, or first when `prev` is NONE. */

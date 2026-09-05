@@ -2,8 +2,8 @@
  * Generic IR feature probes — "does this subtree contain opcode/shape X".
  * Both linear-scan a WAT-as-array subtree without assuming a tree (optimizer
  * nodes may share large subgraphs via CSE), and are consumed by several
- * otherwise-unrelated pass families (locals, peephole, globals), so they live
- * here rather than inside any one of them.
+ * otherwise-unrelated pass families (locals, globals), so they live here
+ * rather than inside any one of them.
  *
  * @module optimize/ir-scan
  */

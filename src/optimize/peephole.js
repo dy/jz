@@ -2,9 +2,9 @@
  * Peephole / rewrite family: the fused bottom-up peephole+inline+memarg walk
  * (fusedRewrite/walkRewrite — the generic rewrite walker), the branchless
  * select conversions (boolConvertToSelect, if→select inside walkRewrite),
- * boolean-context canonicalization (simplifyBoolContexts, tied to loop
- * rotation), loop rotation (rotateLoops), and the late ptr_offset inliner
- * (inlinePtrOffsetFastPass) + its v128-memarg twin (foldV128Memargs).
+ * and the late ptr_offset inliner (inlinePtrOffsetFastPass) + its
+ * v128-memarg twin (foldV128Memargs). Loop rotation and the boolean-context
+ * canonicalization run on the tape (rotate-loops.js, bool-contexts.js).
  *
  * @module optimize/peephole
  */
@@ -12,7 +12,6 @@ import { LAYOUT, ctx, FORWARDING_MASK } from '../ctx.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR } from '../ir.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
-import { containsV128 } from './ir-scan.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()
@@ -201,156 +200,6 @@ export function inlinePtrOffsetFastPass(fn) {
   }
   for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
-}
-
-// i32 comparison/eqz negations — used to flip a break-condition into the
-// loop-continue condition. f64 compares are deliberately ABSENT: ¬(a<b) ≠ (a≥b)
-// across NaN, so those fall through to the `i32.eqz` wrap below.
-const ROT_NEG = {
-  'i32.eqz': null, // sentinel: strip the eqz (handled specially)
-  'i32.eq': 'i32.ne', 'i32.ne': 'i32.eq',
-  'i32.lt_s': 'i32.ge_s', 'i32.ge_s': 'i32.lt_s', 'i32.gt_s': 'i32.le_s', 'i32.le_s': 'i32.gt_s',
-  'i32.lt_u': 'i32.ge_u', 'i32.ge_u': 'i32.lt_u', 'i32.gt_u': 'i32.le_u', 'i32.le_u': 'i32.gt_u',
-}
-
-// Boolean-context canonicalization. At a true zero/nonzero position — a `br_if`,
-// `if`, `i32.eqz`, or `select` CONDITION — these are all equivalent to the inner
-// value: `i32.ne(X, 0) → X`, `i32.ne(0, X) → X`, `i32.eqz(i32.eqz(X)) → X`. jz
-// emits the redundant compare from `while (x !== 0)` lowering and from rotateLoops'
-// `negate` (which strips one `eqz` but leaves the `i32.ne`). V8 happens to fold it,
-// but JSC/wasmtime needn't — so strip it for MINIMAL output regardless of engine.
-// Only applied at proven boolean positions (never on a value-position `ne`/`eqz`,
-// which produce a real 0/1).
-const boolSimp = (n) => {
-  for (;;) {
-    if (!Array.isArray(n)) return n
-    if (n[0] === 'i32.ne' && n.length === 3) {
-      if (Array.isArray(n[2]) && n[2][0] === 'i32.const' && (n[2][1] === 0 || n[2][1] === '0')) { n = n[1]; continue }
-      if (Array.isArray(n[1]) && n[1][0] === 'i32.const' && (n[1][1] === 0 || n[1][1] === '0')) { n = n[2]; continue }
-    }
-    if (n[0] === 'i32.eqz' && Array.isArray(n[1]) && n[1][0] === 'i32.eqz' && n[1].length === 2) { n = n[1][1]; continue }
-    return n
-  }
-}
-export function simplifyBoolContexts(fn) {
-  const nodes = []
-  const bodyStart = findBodyStart(fn)
-  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: node => { if (Array.isArray(node)) nodes.push(node) } })
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    const node = nodes[i], op = node[0]
-    if (op === 'br_if' && node.length === 3) node[2] = boolSimp(node[2])
-    else if (op === 'i32.eqz' && node.length === 2) node[1] = boolSimp(node[1])
-    else if (op === 'if') { const ci = (Array.isArray(node[1]) && node[1][0] === 'result') ? 2 : 1; if (Array.isArray(node[ci])) node[ci] = boolSimp(node[ci]) }
-    else if (op === 'select' && node.length === 4 && Array.isArray(node[3])) node[3] = boolSimp(node[3])
-  }
-}
-
-/**
- * Loop rotation (loop inversion). Convert jz's top-test loop idiom
- *   (block $brk (loop $loop (br_if $brk ¬C) BODY… (br $loop)))
- * into a guarded bottom-test loop with a FUSED conditional back-edge:
- *   (block $brk (br_if $brk ¬C) (loop $loop BODY… (br_if $loop C)))
- *
- * V8/TurboFan lowers the fused `br_if $loop C` to one hardware loop branch — the
- * shape LLVM gives rust/zig, and the reason their hot scalar loops (lz's greedy
- * match-scan, qoi's run-length scan) beat jz's top-test form, which compiles to a
- * forward exit-branch PLUS a separate unconditional back-jump. Measured 1.35× on
- * the lz inner loop; nothing else jz runs reaches this shape — watr's `loopify`
- * collapses to `loop { if C { …; br } }`, whose back-jump stays UNfused (no win).
- *
- * Evaluation count of C is unchanged: guard-once + one back-edge per iteration ==
- * the top-test form's once-per-loop-top — so it's sound even when C has side
- * effects (a `local.tee` recurrence, a call). The condition is duplicated only in
- * the EMITTED text (guard + back-edge), a small size-for-speed trade — speed-tier.
- *
- * Conservative skips:
- *   - any v128/SIMD op in the loop — already register-tight; reshaping risks
- *     disturbing the lane structure (mirrors hoistInvariantLoop's hasV128 guard).
- *   - a body that branches to $loop: a `continue` with no step lands on the loop
- *     label, which after rotation sits BEFORE the back-edge test — rotating would
- *     skip it. (jz wraps continue-with-step in a `$cont` block → targets that, not
- *     $loop → still rotatable.)
- */
-export function rotateLoops(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-
-  // Break-condition C → loop-continue condition ¬C for the back-edge. Fold the
-  // i32 forms so the back-edge stays ONE fused compare-and-branch (a wrapping
-  // `i32.eqz` would add an op inside the hot loop); everything else wraps.
-  const negate = (c) => {
-    if (Array.isArray(c) && c[0] === 'i32.eqz' && c.length === 2) return c[1]
-    if (Array.isArray(c) && c.length === 3 && ROT_NEG[c[0]]) return [ROT_NEG[c[0]], c[1], c[2]]
-    return ['i32.eqz', c]
-  }
-  const targetsLabel = (n, label) => {
-    let found = false
-    walkAst(n, { enter: x => {
-      if (found) return false
-      const op = x[0]
-      if (op === 'br' || op === 'br_if') { if (x[1] === label) { found = true; return false } }
-      else if (op === 'br_table') { for (let i = 1; i < x.length; i++) if (x[i] === label) { found = true; return false } }
-    } })
-    return found
-  }
-
-  const tryRotate = (blk) => {
-    let bi = 1, blockLabel = null
-    if (typeof blk[1] === 'string' && blk[1][0] === '$') { blockLabel = blk[1]; bi = 2 }
-    if (!blockLabel) return null
-    // The loop must be the block's final child; LICM may hoist invariant snaps into
-    // a `local.set` pre-header before it — keep those ahead of the guard (the guard
-    // condition can read them). Bail on anything else (typed blocks, side computations).
-    const preamble = []
-    let loop = null
-    for (let i = bi; i < blk.length; i++) {
-      const c = blk[i]
-      if (Array.isArray(c) && c[0] === 'loop') { if (loop || i !== blk.length - 1) return null; loop = c }
-      else if (Array.isArray(c) && c[0] === 'local.set' && !loop) preamble.push(c)
-      else return null
-    }
-    if (!loop) return null
-    let li = 1, loopLabel = null
-    if (typeof loop[1] === 'string' && loop[1][0] === '$') { loopLabel = loop[1]; li = 2 }
-    if (!loopLabel) return null
-    const loopHeader = []
-    while (li < loop.length) {
-      const c = loop[li]
-      if (Array.isArray(c) && c[0] === 'type') { loopHeader.push(c); li++; continue }
-      if (Array.isArray(c) && (c[0] === 'param' || c[0] === 'result')) return null
-      break
-    }
-    const body = loop.slice(li)
-    if (body.length < 2) return null
-    const head = body[0], tail = body[body.length - 1]
-    if (!(Array.isArray(head) && head[0] === 'br_if' && head[1] === blockLabel && head.length === 3)) return null
-    if (!(Array.isArray(tail) && tail[0] === 'br' && tail[1] === loopLabel && tail.length === 2)) return null
-    const inner = body.slice(1, -1)
-    if (inner.some((s) => targetsLabel(s, loopLabel))) return null   // continue → loop top: unsafe
-    if (containsV128(head) || inner.some(containsV128)) return null  // vectorized: leave tight
-    const cond = head[2]
-    return ['block', blockLabel, ...preamble,
-      ['br_if', blockLabel, cloneIR(cond)],
-      ['loop', loopLabel, ...loopHeader, ...inner, ['br_if', loopLabel, negate(cond)]]]
-  }
-
-  // Rotate a (block …) at container[i] in place, else descend. Returns true if it fired.
-  const tryAt = (container, i) => {
-    const c = container[i]
-    if (!Array.isArray(c) || c[0] !== 'block') return false
-    const rot = tryRotate(c)
-    if (!rot) return false
-    container[i] = rot
-    walk(rot)
-    return true
-  }
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 0; i < node.length; i++) if (!tryAt(node, i)) walk(node[i])
-  }
-  // Top-level statements (a loop block can BE fn[i], not just nested under one).
-  for (let i = bodyStart; i < fn.length; i++) if (!tryAt(fn, i)) walk(fn[i])
 }
 
 // The i32 form of an integer-valued f64 expression, or null. Used to push ToInt32
