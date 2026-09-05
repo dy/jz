@@ -6,12 +6,13 @@
 
 import { ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
-import { ctx, err } from '../../ctx.js'
+import { ctx, err, PTR } from '../../ctx.js'
 import {
-  asF64, asI64, boxBigInt, fromI64, isUndef, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, typed,
+  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, ptrTypeEq, readI64, temp, tempI32, tempI64, typed,
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
+import { K, core, hasTag, tagOf } from '../../summary/index.js'
 import {
   REP_EDGE_BOX, representationComputedExprAction, representationProgramHasBigint,
 } from '../representation-plan.js'
@@ -113,9 +114,25 @@ export function bigintMixReject(op, a, b) {
 //              heuristic's own scoping note below for why both restrictions
 //              (never-reassigned AND exported-function-only) are required.
 function bigIntDomain(node) {
-  const vt = valTypeOf(node)
-  if (vt === VAL.BIGINT) return 'bigint'
-  if (numLiteralNode(node)) return 'number'
+  const view = ctx.summary?.at(ctx.func.current)
+  const vt = valTypeOf(node) ?? view?.valOfExpr(node)
+  const summaryKind = view?.kindOfExpr(node) ?? K.NONE
+  const summaryTag = tagOf(core(summaryKind))
+  const summaryBigint = hasTag(summaryKind, K.BIGINT)
+  const summaryExactBigint = summaryTag === K.BIGINT
+  const summaryOnlyNumberBigint = summaryBigint && [K.STRING, K.BOOL, K.TYPED,
+    K.ARRAY, K.OBJECT, K.CLOSURE, K.MAP, K.SET, K.DATE, K.REGEX, K.HASH,
+    K.BUFFER, K.NULLISH, K.ABSENT].every(kind => !hasTag(summaryKind, kind))
+  // A mixed Number/BigInt parameter is normalized by RepresentationPlan:
+  // Number stays raw f64, BigInt is a PTR.BIGINT cell. This exact tag is the
+  // runtime evidence an internal (non-exported) helper previously discarded,
+  // causing arithmetic to reinterpret the box as a Number.
+  if (isPlanTaggedBigint(node) ||
+      (summaryOnlyNumberBigint && isSchemaSlotBigintPossible(node))) return 'tagged'
+  if ((vt === VAL.BIGINT || summaryExactBigint) &&
+      (censusMaybeUndefinedKind(node) === VAL.BIGINT || view?.mayBeNullishExpr(node))) return 'census'
+  if (vt === VAL.BIGINT || summaryExactBigint) return 'bigint'
+  if (numLiteralNode(node) || summaryTag === K.NUMBER) return 'number'
   if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return 'census'
   // The runtime magnitude heuristic (`typeof x === 'bigint'`'s own subnormal-
   // abs check, reused as isBigIntCarrierBits below) is ONLY reliable for a
@@ -143,6 +160,32 @@ function bigIntDomain(node) {
   if (ctx.func.exported && typeof node === 'string' && ctx.func.current?.params?.some(p => p.name === node) &&
       !(ctx.func.body && isReassigned(ctx.func.body, node))) return null
   return 'skip'
+}
+
+/** True when the operand has a statically classifiable BigInt runtime arm. */
+export const hasBigintDomain = node => {
+  const domain = bigIntDomain(node)
+  return domain === 'bigint' || domain === 'census' || domain === 'tagged'
+}
+
+/** Emit unary plus when a nullable/tagged operand can be BigInt at runtime. */
+export function bigIntUnaryPlus(node) {
+  const domain = bigIntDomain(node)
+  if (domain === 'bigint')
+    return err('unary `+` on a BigInt is a TypeError in JS — use Number(x)')
+  if (domain !== 'census' && domain !== 'tagged') return null
+  const t = temp('bigUPlus')
+  const get = typed(['local.get', `$${t}`], 'f64')
+  const isBig = domain === 'tagged' ? ptrTypeEq(get, PTR.BIGINT) : ['i32.eqz', isUndef(get)]
+  ctx.runtime.throws = true
+  const throwIR = typed(['block', ['result', 'f64'],
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
+    ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]], 'f64')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
+    ['if', ['result', 'f64'], isBig,
+      ['then', throwIR],
+      ['else', coerceNullishToNum(get)]]], 'f64')
 }
 
 // Runtime "is this f64 bit pattern a BigInt carrier" heuristic — mirrors
@@ -198,7 +241,8 @@ export function bigIntDomainsCanMix(a, b, allowUnresolved) {
   // did for this operand, unaffected by this whole mechanism.
   if (domA === 'skip' || domB === 'skip') return false
   if (!allowUnresolved && (domA == null || domB == null)) return false
-  if (domA !== 'bigint' && domA !== 'census' && domB !== 'bigint' && domB !== 'census') return false
+  if (domA !== 'bigint' && domA !== 'census' && domA !== 'tagged' &&
+      domB !== 'bigint' && domB !== 'census' && domB !== 'tagged') return false
   return !(domA === 'bigint' && domB === 'bigint')   // both proven-same → existing fast path, byte-identical
 }
 
@@ -213,17 +257,9 @@ export function bigIntDomainsCanMix(a, b, allowUnresolved) {
 // carrier; BOX materializes only the runtime BigInt branch.
 export const computedBoxOf = (self) => self != null && representationComputedExprAction(ctx, self) === REP_EDGE_BOX
 
-// `box` (funded-deletion item 4, .work/archive/todo.md WALL 2026-08-22): true when
-// RepresentationPlan proved the OUTER node's target BOXED_BIGINT — only ever
-// passed true when `domA`/`domB` are BOTH 'census' (representation-plan.js's
-// census admission mirrors kind.js censusBigintResultShape's joint shape
-// exactly: both operands independently census-BIGINT), so `definite` below
-// is always null whenever `box` is true — the runtime-forked `if` branch
-// (never the `definite` shortcut) is the only place boxing can apply. Kept
-// as an explicit `definite == null` guard anyway rather than trusted
-// implicitly, so a future caller with a looser admission fails closed
-// (falls back to the untouched raw carrier) instead of silently boxing a
-// value some OTHER, unaudited domain combination produces.
+// `box` is true when RepresentationPlan proved the OUTER node needs a tagged
+// mixed result. Box only the runtime BigInt arm; the Number arm must remain a
+// genuine f64 (not a BigInt box containing the Number's bit pattern).
 export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   const domA = bigIntDomain(a), domB = bigIntDomain(b)
   const ta = temp('bigJ'), tb = temp('bigJ')
@@ -231,6 +267,7 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   const flagIR = (dom, get) => dom === 'bigint' ? ['i32.const', 1]
     : dom === 'number' ? ['i32.const', 0]
     : dom === 'census' ? ['i32.eqz', isUndef(get)]
+    : dom === 'tagged' ? ptrTypeEq(get, PTR.BIGINT)
     : isBigIntCarrierBits(get)
   const needFlag = (dom) => dom !== 'bigint' && dom !== 'number'
   const fta = needFlag(domA) ? tempI32('bigJf') : null
@@ -250,8 +287,9 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   // sourced — `asI64` stays correct, unchanged, for both. Reached only when
   // flagA===flagB picked the BigInt arm, so a 'census' operand here is
   // provably present (not the UNDEF_NAN sentinel) — safe to dereference.
-  const i64Operand = (dom, get) => dom === 'census' ? maybeUnboxBigInt(get) : asI64(typed(get, 'f64'))
-  const rawBigIR = i64Compute(i64Operand(domA, getA), i64Operand(domB, getB))
+  const i64Operand = (dom, node, get) => dom === 'census' || dom === 'tagged'
+    ? maybeUnboxBigInt(get) : dom === 'bigint' ? readI64(node, typed(get, 'f64')) : asI64(typed(get, 'f64'))
+  const rawBigIR = i64Compute(i64Operand(domA, a, getA), i64Operand(domB, b, getB))
   // Number-domain operand normalization: a `census` operand only ever reaches
   // numCompute when its OWN flag proved it undef (the flagA===flagB join
   // above), so its TRUE ToNumeric value is the Number NaN (ES2024 13.5.6/
@@ -274,12 +312,14 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   // control flow, not a `select` — unlike bigIntUnary's arm, boxBigInt's own
   // $__alloc call is gated by THIS if (only the taken branch's code runs), so
   // no wasted-allocation hazard exists at this level.
-  const bigResult = box && definite == null ? boxBigInt(rawBigIR) : fromI64(rawBigIR)
+  const bigResult = box ? boxBigInt(rawBigIR) : fromI64(rawBigIR)
   const bothBranch = definite ? (definite === 'bigint' ? bigResult : numResult)
     : typed(['if', ['result', 'f64'], flagA, ['then', bigResult], ['else', numResult]], 'f64')
+  const emitOperand = (dom, node) => dom === 'census' || dom === 'tagged'
+    ? materializeDeferredBigint(emit(node)) : emit(node)
   return typed(['block', ['result', 'f64'],
-    ['local.set', `$${ta}`, asF64(emit(a))],
-    ['local.set', `$${tb}`, asF64(emit(b))],
+    ['local.set', `$${ta}`, asF64(emitOperand(domA, a))],
+    ['local.set', `$${tb}`, asF64(emitOperand(domB, b))],
     ...(fta ? [['local.set', `$${fta}`, flagIR(domA, getA)]] : []),
     ...(ftb ? [['local.set', `$${ftb}`, flagIR(domB, getB)]] : []),
     typed(['if', ['result', 'f64'], ['i32.eq', flagA, flagB], ['then', bothBranch], ['else', throwIR]], 'f64')], 'f64')
@@ -319,7 +359,9 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
 // already sound); for a dynamic-key member (`d[k]++`) — verified live, not
 // assumed — the same is true, confirmed byte-for-byte against the JS oracle.
 export function bigIntOperand(node) {
-  const v = emit(node)
+  const emitted = emit(node)
+  const deferred = emitted && typeof emitted.bigintBox === 'function'
+  const v = materializeDeferredBigint(emitted)
   // censusMaybeUndefinedKind, not valTypeOf(node) === VAL.BIGINT: for a bracket
   // read with a non-canonical-numeric string-literal key (`d['missing']`),
   // VT['[]'] itself resolves to `null` (its own array-vs-property disambiguation,
@@ -327,7 +369,8 @@ export function bigIntOperand(node) {
   // valTypeOf(node) is NOT a reliable "is this dict/Map read's census kind
   // bigint" proxy the way it is for a plain local. censusMaybeUndefinedKind
   // queries the census directly (see its own doc comment in kind.js).
-  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return readI64(node, v)
+  if (!deferred && censusMaybeUndefinedKind(node) !== VAL.BIGINT &&
+      ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) !== true) return readI64(node, v)
   ctx.runtime.throws = true
   const t = temp('bigU')
   // Past the throw check, `$t` is provably PRESENT (the UNDEF_NAN branch
@@ -389,7 +432,11 @@ export function bigIntOperand(node) {
 // vs-if tradeoff) — so boxing switches to the `if`/`else` control-flow form
 // instead, matching that established discipline.
 export function bigIntUnary(node, mkI64, undefF64, box) {
-  if (censusMaybeUndefinedKind(node) !== VAL.BIGINT) return fromI64(mkI64(readI64(node, emit(node))))
+  const emitted = emit(node)
+  const deferred = emitted && typeof emitted.bigintBox === 'function'
+  const maybeAbsent = deferred || censusMaybeUndefinedKind(node) === VAL.BIGINT ||
+    ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true
+  if (!maybeAbsent) return fromI64(mkI64(readI64(node, emitted)))
   const t = temp('unaryBigU')
   // Same CARRIER_BOX gap as bigIntOperand's own throw-check branch above,
   // narrower consequence (a wrong VALUE, not a wrong-address dereference —
@@ -399,7 +446,7 @@ export function bigIntUnary(node, mkI64, undefF64, box) {
   // same plain reinterpret this arm always ran, and its result is discarded
   // regardless). Off-flag: byte-identical to the prior plain reinterpret.
   const bits = maybeUnboxBigInt(['local.get', `$${t}`])
-  const setup = ['local.set', `$${t}`, asF64(emit(node))]
+  const setup = ['local.set', `$${t}`, asF64(materializeDeferredBigint(emitted))]
   const cond = isUndef(['local.get', `$${t}`])
   if (!box)
     return typed(['block', ['result', 'f64'], setup,

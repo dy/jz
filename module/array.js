@@ -9,7 +9,7 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
@@ -653,7 +653,10 @@ export default (ctx) => {
       if (typedCtor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, typedCtor)
       const setup = ['local.set', `$${h}`, asF64(emit(arr))]
       const result = ctx.core.emit['[]'](h, idx)
-      return typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')
+      const wrapped = typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')
+      if (result && typeof result.bigintBox === 'function')
+        deferBigintBox(wrapped, () => typed(['block', ['result', 'f64'], setup, asF64(result.bigintBox())], 'f64'))
+      return wrapped
     }
     const keyType = typeof idx === 'string' ? lookupValType(idx) : valTypeOf(idx)
     const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
@@ -1826,6 +1829,15 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
+  // A fold without an explicit seed must have consumed a first element.
+  // Plain/map folds use the captured input length; filter folds use their
+  // existing seeded flag, since a nonempty source can have no passing item.
+  const reductionResult = (acc, seed) => {
+    const value = typed(['local.get', `$${acc}`], 'f64')
+    return seed == null ? value : typed(['if', ['result', 'f64'],
+      ['local.get', `$${seed}`], ['then', value], ['else', throwTypeErrorIR()]], 'f64')
+  }
+
   ctx.core.emit['.reduce'] = (arr, fn, init) => {
     const up = detectUpstream(arr)
     // .map(f).reduce(g, init) → single loop: apply f, accumulate with g
@@ -1837,18 +1849,22 @@ export default (ctx) => {
       const mget = typed(['local.get', `$${mapped}`], 'f64')
       // map preserves indices → the reduce callback's index is the loop counter.
       const fold = i => ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), mget, idxArg(redCb, i, 2)]))]
-      const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
-        // No-init: seed accumulator with the first mapped element (see base path).
-        init !== undefined ? fold(i)
-          : ['if', ['i32.eqz', ['local.get', `$${i}`]],
-              ['then', ['local.set', `$${acc}`, mget]],
-              ['else', fold(i)]]
-      ])
+      let inputLen
+      const loop = arrayLoop(recv.value, (_p, len, i, item) => {
+        inputLen = len
+        return [
+          ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
+          // No-init: seed accumulator with the first mapped element (see base path).
+          init !== undefined ? fold(i)
+            : ['if', ['i32.eqz', ['local.get', `$${i}`]],
+                ['then', ['local.set', `$${acc}`, mget]],
+                ['else', fold(i)]]
+        ]
+      })
       return typed(['block', ['result', 'f64'],
         recv.setup, mapCb.setup, redCb.setup,
         ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
-        ...loop, ['local.get', `$${acc}`]], 'f64')
+        ...loop, reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
     }
     // .filter(f).reduce(g, init) → single loop: test f, accumulate with g if passes
     if (up && up.method === 'filter') {
@@ -1884,7 +1900,7 @@ export default (ctx) => {
         ...(fpos ? [['local.set', `$${fpos}`, ['i32.const', 0]]] : []),
         ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 0]]] : []),
         ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
-        ...loop, ['local.get', `$${acc}`]], 'f64')
+        ...loop, reductionResult(acc, seeded)], 'f64')
     }
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
@@ -1901,18 +1917,20 @@ export default (ctx) => {
     // for `+` (additive identity) but wrong for `*` (→0) and corrupts non-numeric
     // folds (string reduce emits a bare `0` in the joined result). Seed at i==0.
     const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
-    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      init !== undefined ? fold(item, i)
+    let inputLen
+    const loop = arrayLoop(recv.value, (_ptr, len, i, item) => {
+      inputLen = len
+      return [init !== undefined ? fold(item, i)
         : ['if', ['i32.eqz', ['local.get', `$${i}`]],
             ['then', ['local.set', `$${acc}`, asF64(item)]],
-            ['else', fold(item, i)]]
-    ])
+            ['else', fold(item, i)]]]
+    })
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
       ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
       ...loop,
-      ['local.get', `$${acc}`]], 'f64')
+      reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
   }
 
   // .reduceRight(fn, init) — same accumulator fold as .reduce but the last
@@ -1927,18 +1945,20 @@ export default (ctx) => {
     const cb = makeCallback(fn, [null, reps[0], { val: VAL.NUMBER }])
     // No-init: reverse walk seeds with the last element (i == len-1), folds down.
     const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
-    const loop = arrayLoop(recv.value, (_ptr, len, i, item) => [
-      init !== undefined ? fold(item, i)
+    let inputLen
+    const loop = arrayLoop(recv.value, (_ptr, len, i, item) => {
+      inputLen = len
+      return [init !== undefined ? fold(item, i)
         : ['if', ['i32.eq', ['local.get', `$${i}`], ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
             ['then', ['local.set', `$${acc}`, asF64(item)]],
-            ['else', fold(item, i)]]
-    ], null, null, true)
+            ['else', fold(item, i)]]]
+    }, null, null, true)
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
       ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
       ...loop,
-      ['local.get', `$${acc}`]], 'f64')
+      reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
   }
 
   ctx.core.emit['.forEach'] = (arr, fn) => {
@@ -2195,7 +2215,7 @@ export default (ctx) => {
 
   ctx.core.emit['.indexOf'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = storedValue(val)
+    const vv = val === undefined ? undefExpr() : storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('ix')
     const exit = `$exit${freshId(ctx)}`
@@ -2212,7 +2232,7 @@ export default (ctx) => {
 
   ctx.core.emit['.includes'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = storedValue(val)
+    const vv = val === undefined ? undefExpr() : storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('ic')
     const exit = `$exit${freshId(ctx)}`
@@ -2233,7 +2253,7 @@ export default (ctx) => {
   // (which returned -1 for every array). fromIndex is unsupported, matching .indexOf's array path.
   ctx.core.emit['.lastIndexOf'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = storedValue(val)
+    const vv = val === undefined ? undefExpr() : storedValue(val)
     const eq = arrEqIR(val)
     const result = tempI32('lx')
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
@@ -2268,7 +2288,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]]],
         ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
-        ['local.set', `$${t}`, asI32Sat(emit(idx))],
+        ['local.set', `$${t}`, idx === undefined ? ['i32.const', 0] : asI32Sat(emit(idx))],
         ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
           ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
         ['if', ['result', 'f64'],
@@ -2281,7 +2301,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${a}`, asF64(emit(arr))],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${a}`]]]],
-      ['local.set', `$${t}`, asI32Sat(emit(idx))],
+      ['local.set', `$${t}`, idx === undefined ? ['i32.const', 0] : asI32Sat(emit(idx))],
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],

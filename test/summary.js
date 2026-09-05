@@ -69,6 +69,40 @@ test('summary: kinds flow through calls, fields and results; the host boundary i
   is(jz(`export const get = (k) => { const a = [10, 20, 30]; return a[k] }`).exports.get('1.0'), undefined, "a['1.0'] is no element")
 })
 
+test('summary: result kinds keep payload, presence, typed elements, and resolved method producers separate', () => {
+  summarize(`
+    function sub(a, b) { return a - b }
+    export function partial(c) { if (c) return 1n }
+    export function reduced() { return new BigInt64Array([2n, 3n]).reduce((a, b) => a + b) }
+    export function reducedIndex() { return new Float64Array([1, 2, 3]).reduce((a, b, i) => i) }
+    export function reducedArray() { return new Float64Array([1, 2, 3]).reduce((a, b, i, value) => value.length) }
+    export function optionalReduced(c) {
+      let value = c ? new BigInt64Array([2n, 3n]) : null
+      return value?.reduce((a, b) => a + b)
+    }
+    export function mixed(c) { return c ? sub(3n, 1n) : sub(3, 1) }
+    export function checkedPairAdd(i) { let value = new BigInt64Array([7n]); return value[i] + value[i] }
+    export function ownArrayMethod() { let value = []; value.includes = () => 7n; return value.includes() }
+  `)
+  const partial = ctx.summary.resultOf('partial')
+  ok(hasTag(partial, K.BIGINT) && hasTag(partial, K.NULLISH), 'implicit fallthrough is presence, not a BigInt payload')
+  const reduced = ctx.summary.resultOf('reduced')
+  is(tagOf(reduced), K.BIGINT, 'typed reduce follows the callback recurrence and element kind')
+  ok(!isNullable(reduced), 'direct reduce has no optional absence arm')
+  is(tagOf(ctx.summary.resultOf('reducedIndex')), K.NUMBER, 'typed reduce supplies a numeric callback index')
+  is(tagOf(ctx.summary.resultOf('reducedArray')), K.NUMBER, 'typed reduce supplies the typed-array callback receiver')
+  const optional = ctx.summary.resultOf('optionalReduced')
+  ok(hasTag(optional, K.BIGINT) && hasTag(optional, K.NULLISH), 'optional reduce keeps BigInt and absence')
+  const value = binding('optionalReduced', 'value')
+  is(ctx.summary.at('optionalReduced').typedCtorOfExpr(value), null, 'presence-sensitive typed query declines a nullable value')
+  is(ctx.summary.at('optionalReduced').typedPayloadCtorOfExpr(value), 'new.BigInt64Array', 'payload query retains its typed constructor')
+  const mixed = ctx.summary.resultOf('mixed')
+  ok(hasTag(mixed, K.NUMBER) && hasTag(mixed, K.BIGINT), 'mixed call paths retain both numeric domains')
+  const pair = ctx.summary.resultOf('checkedPairAdd')
+  ok(hasTag(pair, K.NUMBER) && hasTag(pair, K.BIGINT), 'two absent-capable BigInt operands retain their Number completion')
+  is(tagOf(ctx.summary.resultOf('ownArrayMethod')), K.ANY, 'an own array method is not classified by its builtin-looking name')
+})
+
 test('summary: join is a lattice join, so the fixpoint terminates', () => {
   // Every element and its nullable form; ANY absorbs the bit (the flagship
   // oscillated between ANY and nullable ANY for 64 rounds and stopped short).

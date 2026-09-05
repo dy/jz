@@ -60,6 +60,7 @@ export function createActiveFunction({
     ternaryBoxedNames: new Set(),
     boxedResult: false,
     valResult: null,
+    valResultMayBeUndefined: false,
     mixedAtomReturn: false,
 
     charDecomp: null,

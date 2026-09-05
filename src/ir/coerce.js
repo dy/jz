@@ -19,7 +19,7 @@ import { typed } from './tag.js'
 import { temp, tempI32, tempI64, block64, freshId } from './locals.js'
 import { ptrOffsetIR, ptrTypeEq } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
-import { readI64 } from './bigint.js'
+import { isPlanTaggedBigint, materializeDeferredBigint, readI64, unboxBigInt } from './bigint.js'
 import { NULL_NAN, UNDEF_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
@@ -428,6 +428,7 @@ export function toNumF64(node, v) {
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
+  const summaryNullable = ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true
   // STRING-census widening (.work/archive/todo.md §deletion-sweep):
   // mirrors toNumF64's NUMBER-census widening for the
   // STRING case. Two shapes both currently fall all the way through to the
@@ -485,6 +486,31 @@ export function toStrI64(node, v) {
   // THIS chokepoint (not the caller) so every caller (String(), strcat's
   // per-part loop) inherits it.
   if (vt === VAL.STRING && !censusMaybeUndefined(node)) return asI64(v)
+  // A statically-proven BigInt may deliberately use the raw i64 carrier.
+  // Generic __to_str cannot infer that carrier from its f64 interpretation
+  // (7n looks like the finite subnormal 3.5e-323), so format the mathematical
+  // payload directly. A nullable census stays on the dynamic path so its
+  // undefined arm still renders "undefined".
+  if (vt === VAL.BIGINT && !censusMaybeUndefined(node) && !summaryNullable) {
+    inc('__radix_str')
+    return typed(['i64.reinterpret_f64',
+      ['call', '$__radix_str', readI64(node, v), ['i32.const', 10]]], 'i64')
+  }
+  // A mixed Number/BigInt value uses RepresentationPlan's tagged carrier.
+  // Keep the tag until this dispatch: the BigInt arm formats the cell payload,
+  // while every other tag and raw Number retains __to_str's normal semantics.
+  if (isPlanTaggedBigint(node) || vt === VAL.BIGINT ||
+      censusMaybeUndefinedKind(node) === VAL.BIGINT || typeof v?.bigintBox === 'function') {
+    inc('__radix_str', '__to_str')
+    const t = temp('bstr')
+    const get = () => typed(['local.get', `$${t}`], 'f64')
+    return typed(['block', ['result', 'i64'],
+      ['local.set', `$${t}`, asF64(materializeDeferredBigint(v))],
+      ['if', ['result', 'i64'], ptrTypeEq(get(), PTR.BIGINT),
+        ['then', ['i64.reinterpret_f64',
+          ['call', '$__radix_str', unboxBigInt(get()), ['i32.const', 10]]]],
+        ['else', ['call', '$__to_str', asI64(get())]]]], 'i64')
+  }
   // Error-schema special case (.work/archive/todo.md §deletion-sweep §Consequence): `${e}`/
   // String(e) on a real Error object must format via spec's Error.prototype.toString
   // (name if message empty / message if name empty / name+': '+message otherwise /

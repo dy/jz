@@ -28,6 +28,7 @@ export {
   REP_EDGE_HOST_BOX,
   REP_EDGE_REJECT,
   JOIN_OPS,
+  STORAGE_READ_METHODS,
 } from './representation-plan/common.js'
 
 export { solveRepresentationBoundaries } from './representation-plan/boundaries.js'

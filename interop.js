@@ -565,6 +565,7 @@ export const memory = (src) => {
     if (!isBox(p)) return i64ToF64(p)    // non-NaN bits → genuine number
     const m = dv(), t = type(p), a = aux(p), off = offset(p)
     if (t === 0 && off === 0) {
+      if (a === 0) return NaN
       if (a === 1) return null
       if (a === 2) return undefined
       if (a === 4) return false

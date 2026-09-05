@@ -83,7 +83,7 @@ export function synthesizeBoundaryWrappers() {
     // tag decode instead; interop's PTR.BIGINT arm derefs the box.
     const resultTaggedUnion = !resultPtr && representationResultTagRequired(ctx, func)
     const resultRawBigint = !resultPtr && !resultTaggedUnion && representationResultRawBigint(ctx, func)
-    const resultBool = func.valResult === VAL.BOOL && !resultPtr
+    const resultBool = func.valResult === VAL.BOOL && !func.valResultMayBeUndefined && !resultPtr
     const resultBigint = (func.valResult === VAL.BIGINT || resultRawBigint) && !resultPtr && !resultTaggedUnion
     // Dynamic f64 result: not pointer/bool/raw-bigint and not a proven number.
     // It may be a NaN box, so cross i64 and let interop's generic decoder own it.

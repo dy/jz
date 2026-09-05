@@ -252,6 +252,10 @@ export function solveRepresentationBoundaries(ctx, programFacts, ast) {
     const data = makeBoundaryData(ctx, func, programFacts.paramReps, {
       addressTaken: programFacts.programIndex.addressTaken,
       provenance: program.provenance,
+      // A class dispatcher joins direct raw method results with generic
+      // closure/storage branches. Give that synthesized boundary one tagged
+      // result ABI instead of asking each caller to recover branch provenance.
+      forceTaggedResult: func.sig.dispatcher === true,
     })
     if (isExported(ctx, func)) for (let k = 0; k < data.params.length; k++) {
       const p = data.params[k]

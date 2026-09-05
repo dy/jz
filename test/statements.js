@@ -844,8 +844,9 @@ test('typeof: string check', () => {
   is(jz('export let f = () => typeof 42 === "string"').exports.f(), false)
 })
 
-test('typeof: undefined check', () => {
-  is(jz('export let f = () => typeof null === "undefined"').exports.f(), true)
+test('typeof: undefined check distinguishes null', () => {
+  is(jz('export let f = () => typeof undefined === "undefined"').exports.f(), true)
+  is(jz('export let f = () => typeof null === "undefined"').exports.f(), false)
   is(jz('export let f = () => typeof 1 === "undefined"').exports.f(), false)
 })
 

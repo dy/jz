@@ -50,7 +50,9 @@ export const moduleGlobalKinds = (summary) => {
     if (isNullable(k)) updateGlobalRep(name, { nullable: true })
     const vt = valOf(core(k))
     const vts = ctx.scope.globalValTypes ||= new Map()
-    if (vt === VAL.HASH) continue
+    // HASH and payload-less OBJECT are semantic object-family answers, not
+    // physical allocation proofs. Leave them to the dictionary/schema plan.
+    if (vt === VAL.HASH || (vt === VAL.OBJECT && summary.sidOf(name) == null)) continue
     if (vt == null) { vts.delete(name); ctx.scope.globalTypedElem?.delete(name); continue }
     vts.set(name, vt)
     if (vt === VAL.TYPED) {

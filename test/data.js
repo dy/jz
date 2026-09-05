@@ -54,6 +54,271 @@ test('RepresentationPlan: direct call edges preserve raw-only helpers and normal
   }
 })
 
+test('summary result carriers preserve BigInt payloads, absence, and arithmetic domains', () => {
+  const sentinelBits = 9221120245631025152n
+  const src = `
+    function sub(a, b) { return a - b }
+    export function partialNumber(c) { if (c) return 1 }
+    export function partialBigInt(c) { if (c) return 1n }
+    export function index(i) { return new BigInt64Array([7n])[i] }
+    export function at(i) { return new BigInt64Array([7n]).at(i) }
+    export function checkedAdd(i) { return new BigInt64Array([7n])[i] + 1n }
+    export function checkedPairAdd(i) { let value = new BigInt64Array([7n]); return value[i] + value[i] }
+    export function reduce() { return new BigInt64Array([2n, 3n]).reduce((a, b) => a + b) }
+    export function reduceIndex() { return new Float64Array([1, 2, 3]).reduce((a, b, i) => i) }
+    export function reduceArray() { return new Float64Array([1, 2, 3]).reduce((a, b, i, value) => value.length) }
+    export function optionalReduce(c) {
+      let value = c ? new BigInt64Array([2n, 3n]) : null
+      return value?.reduce((a, b) => a + b)
+    }
+    export function iter() {
+      let value = 0n
+      for (let item of new BigInt64Array([7n])) value = item
+      return value
+    }
+    export function mixed(c) { return c ? sub(3n, 1n) : sub(3, 1) }
+    export function mismatch() { return sub(3n, 1) }
+    export function collision(i) { return new BigInt64Array([${sentinelBits}n])[i] }
+    export function collisionAdd(i) { return new BigInt64Array([${sentinelBits}n])[i] + 1n }
+    export function collisionPair(i) {
+      let value = new BigInt64Array([${sentinelBits}n])
+      return value[i] - value[i]
+    }
+    export function collisionNeg(i) { return -new BigInt64Array([${sentinelBits}n])[i] }
+    export function collisionNot(i) { return ~new BigInt64Array([${sentinelBits}n])[i] }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.partialNumber(0), undefined, `O${optimize || 0}: numeric fallthrough stays undefined`)
+    is(e.partialNumber(1), 1, `O${optimize || 0}: numeric present arm stays Number`)
+    is(e.partialBigInt(0), undefined, `O${optimize || 0}: BigInt fallthrough stays undefined`)
+    is(e.partialBigInt(1), 1n, `O${optimize || 0}: BigInt present arm is boxed before the join`)
+    is(e.index(0), 7n, `O${optimize || 0}: checked bracket read preserves BigInt`)
+    is(e.index(1), undefined, `O${optimize || 0}: checked bracket miss stays undefined`)
+    is(e.at(0), 7n, `O${optimize || 0}: .at present arm preserves BigInt`)
+    is(e.at(1), undefined, `O${optimize || 0}: .at miss stays undefined`)
+    is(e.checkedAdd(0), 8n, `O${optimize || 0}: checked read enters BigInt arithmetic`)
+    throws(() => e.checkedAdd(1), /Cannot mix BigInt/)
+    is(e.checkedPairAdd(0), 14n, `O${optimize || 0}: two present checked reads add as BigInt`)
+    ok(Number.isNaN(e.checkedPairAdd(1)), `O${optimize || 0}: two absent checked reads add as Number NaN`)
+    is(e.reduce(), 5n, `O${optimize || 0}: typed reduce keeps its raw BigInt result`)
+    is(e.reduceIndex(), 2, `O${optimize || 0}: typed reduce supplies the callback index`)
+    is(e.reduceArray(), 3, `O${optimize || 0}: typed reduce supplies the callback array`)
+    is(e.optionalReduce(0), undefined, `O${optimize || 0}: optional reduce nullish arm stays undefined`)
+    is(e.optionalReduce(1), 5n, `O${optimize || 0}: optional reduce boxes only its present arm`)
+    is(e.iter(), 7n, `O${optimize || 0}: for-of write chains keep one tagged carrier`)
+    is(e.mixed(0), 2, `O${optimize || 0}: Number call path remains Number`)
+    is(e.mixed(1), 2n, `O${optimize || 0}: BigInt call path remains BigInt`)
+    throws(() => e.mismatch(), /Cannot mix BigInt/)
+    is(e.collision(0), sentinelBits, `O${optimize || 0}: sentinel-shaped i64 payload is data`)
+    is(e.collision(1), undefined, `O${optimize || 0}: absence is not inferred from payload bits`)
+    is(e.collisionAdd(0), sentinelBits + 1n, `O${optimize || 0}: collision payload unboxes after presence test`)
+    throws(() => e.collisionAdd(1), /Cannot mix BigInt/)
+    is(e.collisionPair(0), 0n, `O${optimize || 0}: two present checked reads stay BigInt`)
+    ok(Number.isNaN(e.collisionPair(1)), `O${optimize || 0}: two absent reads compute Number NaN`)
+    is(e.collisionNeg(0), -sentinelBits, `O${optimize || 0}: unary minus preserves collision payload`)
+    ok(Number.isNaN(e.collisionNeg(1)), `O${optimize || 0}: unary minus of undefined is NaN`)
+    is(e.collisionNot(0), ~sentinelBits, `O${optimize || 0}: complement preserves collision payload`)
+    is(e.collisionNot(1), -1, `O${optimize || 0}: complement of undefined is Number -1`)
+  }
+})
+
+test('typed reads evaluate receiver and index once across present, empty, and boundary reads', () => {
+  const src = `
+    let trace = 0
+    function receiver(n) {
+      trace = trace * 10 + 1
+      let a = new BigInt64Array(n)
+      if (n) a[0] = 9221120245631025152n
+      return a
+    }
+    function index(i) { trace = trace * 10 + 2; return i }
+    export function at(n, i) { trace = 0; let v = receiver(n).at(index(i)); return [v, trace] }
+    export function first(n) { trace = 0; let v = receiver(n).at(); return [v, trace] }
+  `
+  const oracle = new Function(src.replaceAll('export ', '') + '; return { at, first }')()
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    // A → A → empty B → A on one instance, then both relative-index bounds.
+    for (const [n, i] of [[1, 0], [1, 0], [0, 0], [1, 0], [1, -1], [1, 1], [1, -2], [1, Infinity]])
+      is(e.at(n, i), oracle.at(n, i), `O${optimize || 0}: at(${n}, ${i}) payload and effect order`)
+    for (const n of [1, 0, 1]) is(e.first(n), oracle.first(n), `O${optimize || 0}: omitted index, length ${n}`)
+  }
+})
+
+test('typed reduce validates empty inputs and preserves callback arguments and evaluation order', () => {
+  const src = `
+    let trace = 0
+    function receiver() { trace = trace * 10 + 1; return new Float64Array([2, 3]) }
+    function callback() { trace = trace * 10 + 2; return (a, v, i, r) => a + v + i + r.length }
+    function seed() { trace = trace * 10 + 3; return 0 }
+    export function order() { trace = 0; let v = receiver().reduce(callback(), seed()); return [v, trace] }
+    export function empty() { return new Float64Array(0).reduce((a, v) => a + v) }
+    export function seeded() { return new BigInt64Array(0).reduce((a, v) => a + v, 7n) }
+    export function undefinedSeed() { return new Float64Array(0).reduce((a, v) => a + v, undefined) }
+    export function invalid() { return new Float64Array(0).reduce(1, 0) }
+    export function missing() { return new Float64Array(0).reduce() }
+    export function single() { return new BigInt64Array([7n]).reduce(() => { throw 1 }) }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    for (let i = 0; i < 2; i++) is(e.order(), [10, 123], `O${optimize || 0}: receiver, callback, seed; four callback args`)
+    throws(() => e.empty(), error => error instanceof TypeError)
+    is(e.seeded(), 7n, `O${optimize || 0}: empty BigInt reduction keeps its seed`)
+    is(e.undefinedSeed(), undefined, `O${optimize || 0}: explicit undefined is a supplied seed`)
+    throws(() => e.invalid(), error => error instanceof TypeError)
+    throws(() => e.missing(), error => error instanceof TypeError)
+    is(e.single(), 7n, `O${optimize || 0}: singleton does not invoke the callback`)
+  }
+})
+
+test('typed iteration and scalar map evaluate receiver and callback producers once', () => {
+  const src = `
+    let reads = 0, callbacks = 0
+    function receiver(empty) { reads++; return empty ? new Float64Array(0) : new Float64Array([2, 3]) }
+    function callback() { callbacks++; return v => v + 1 }
+    export function map(empty) { reads = 0; callbacks = 0; let a = receiver(empty).map(callback()); return [a[0], a[1], reads, callbacks] }
+    export function index() { reads = 0; let v = receiver(false).indexOf(3); return [v, reads] }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.map(false), [3, 4, 1, 1], `O${optimize || 0}: scalar map evaluates both producers once`)
+    is(e.map(true), [undefined, undefined, 1, 1], `O${optimize || 0}: empty map still evaluates its callback producer`)
+    is(e.map(false), [3, 4, 1, 1], `O${optimize || 0}: nonempty after empty on the same instance`)
+    is(e.index(), [1, 1], `O${optimize || 0}: shared typed loop evaluates its receiver once`)
+  }
+})
+
+test('checked BigInt indices preserve an absent inner read', () => {
+  const src = `export function result(i) {
+    let indices = new BigInt64Array([0n])
+    let values = new Float64Array([11])
+    return values[indices[i]]
+  }`
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.result(0), 11, `O${optimize || 0}: present BigInt index zero`)
+    is(e.result(1), undefined, `O${optimize || 0}: absent index must not become zero`)
+    is(e.result(-1), undefined, `O${optimize || 0}: negative inner index`)
+  }
+})
+
+test('typed some result retains boolean identity beside a Number in an array', () => {
+  const src = `function receiver() { return new Float64Array([2, 3]) }
+    export function result() { let value = receiver().some(x => x === 3); return [value, 1] }`
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.result(), [true, 1], `O${optimize || 0}: boolean, not Number 1`)
+})
+
+for (const method of ['reduce', 'reduceRight']) test(`plain array ${method} rejects empty unseeded input`, () => {
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(`export function result() { return [].${method}((a, b) => a + b) }`, { optimize }).exports
+    throws(() => e.result(), error => error instanceof TypeError)
+  }
+})
+
+test('array reductions require a seed across direct, reverse, map, and filter folds', () => {
+  for (const fold of ['a.reduce', 'a.reduceRight', 'a.map(x => x).reduce', 'a.filter(x => x > 0).reduce']) {
+    const src = `
+      let calls = 0
+      export function count() { return calls }
+      export function result(n) {
+        calls = 0
+        let a = []; for (let i = 0; i < n; i++) a.push(i + 1)
+        return ${fold}((a, b) => { calls++; return a + b })
+      }
+      export function seeded() { let a = []; return ${fold}((a, b) => a + b, 0) }
+      export function undefinedSeed() { let a = []; return ${fold}((a, b) => a + b, undefined) }
+    `
+    for (const optimize of [false, 2, 3]) {
+      const e = jz(src, { optimize }).exports
+      // A → A → empty B → singleton → A on the same instance.
+      for (const n of [2, 2, 0, 1, 2]) {
+        if (!n) throws(() => e.result(n), error => error instanceof TypeError)
+        else is(e.result(n), n * (n + 1) / 2, `O${optimize || 0}: ${fold}, n=${n}`)
+        is(e.count(), Math.max(0, n - 1), 'only elements after the seed invoke the reducer')
+      }
+      is(e.seeded(), 0, 'an explicit zero is a seed')
+      is(e.undefinedSeed(), undefined, 'an explicit undefined is also a seed')
+    }
+  }
+})
+
+test('filter reduction completes predicate effects before reporting no seed', () => {
+  const src = `let visits = 0
+    export function count() { return visits }
+    export function result() {
+      visits = 0
+      return [1, 2].filter(x => { visits++; return x < 0 }).reduce((a, b) => a + b)
+    }`
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    for (let i = 0; i < 2; i++) {
+      throws(() => e.result(), error => error instanceof TypeError)
+      is(e.count(), 2, `O${optimize || 0}: a nonempty source can have no passing element`)
+    }
+  }
+})
+
+test('optional BigInt typed reduction preserves a Number accumulator', () => {
+  const src = `export function result(c) {
+    let a = c ? new BigInt64Array([2n, 3n]) : null
+    return a?.reduce(() => 42, 0)
+  }`
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.result(0), undefined, `O${optimize || 0}: null receiver`)
+    is(e.result(1), 42, `O${optimize || 0}: Number callback and seed do not inherit the element kind`)
+  }
+})
+
+test('method result carriers follow the resolved producer', () => {
+  const src = `
+    class A { foo() { return 7n } }
+    function includes(value) { return value.includes('a') }
+    export function builtin(c) { return c ? includes('a') : includes({ includes: () => 7 }) }
+    export function ownBigIncludes() { let value = { includes: () => 7n }; return value.includes() }
+    export function arrayIncludes() { let value = []; value.includes = () => 7; return value.includes() }
+    export function arrayBigIncludes() { let value = []; value.includes = () => 7n; return value.includes() }
+    export function arrayAt() { let value = []; value.at = () => 7n; return value.at() }
+    export function conditionalIncludes(c) { let value = [2]; if (c) value.includes = () => 7; return value.includes(2) }
+    export function conditionalAt(c) { let value = [3]; if (c) value.at = () => 7n; return value.at(0) }
+    export function own() { let value = { foo: () => 7n }; return value.foo() + 1n }
+    export function optionalOwn(c) { let value = c ? { foo: () => 7n } : null; return value?.foo() }
+    export function klass() { return new A().foo() + 1n }
+    export function optionalClass(c) { let value = c ? new A() : null; return value?.foo() }
+    export function optionalClosure(c) { let value = c ? () => 7n : null; return value?.() }
+    export function nullableIncludes(value) { return value?.includes('a') }
+    export function defined(value) { return typeof value !== 'undefined' }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.builtin(0), 7, `O${optimize || 0}: own includes result is not boolean-coerced`)
+    is(e.builtin(1), true, `O${optimize || 0}: builtin includes result is boxed boolean`)
+    is(e.ownBigIncludes(), 7n, `O${optimize || 0}: own object includes may return BigInt`)
+    is(e.arrayIncludes(), 7, `O${optimize || 0}: own array includes shadows the builtin`)
+    is(e.arrayBigIncludes(), 7n, `O${optimize || 0}: own array includes keeps a BigInt result`)
+    is(e.arrayAt(), 7n, `O${optimize || 0}: own array at shadows the builtin`)
+    is(e.conditionalIncludes(0), true, `O${optimize || 0}: absent includes override falls back to builtin boolean`)
+    is(e.conditionalIncludes(1), 7, `O${optimize || 0}: present includes override keeps its declared result`)
+    is(e.conditionalAt(0), 3, `O${optimize || 0}: absent at override falls back to builtin element`)
+    is(e.conditionalAt(1), 7n, `O${optimize || 0}: present at override keeps BigInt`)
+    is(e.own(), 8n, `O${optimize || 0}: own closure method uses its tagged ABI`)
+    is(e.optionalOwn(0), undefined, `O${optimize || 0}: optional own method miss stays undefined`)
+    is(e.optionalOwn(1), 7n, `O${optimize || 0}: optional own method keeps BigInt`)
+    is(e.klass(), 8n, `O${optimize || 0}: direct class method result stays raw BigInt`)
+    is(e.optionalClass(0), undefined, `O${optimize || 0}: optional class miss stays undefined`)
+    is(e.optionalClass(1), 7n, `O${optimize || 0}: class dispatcher tags its BigInt result`)
+    is(e.optionalClosure(0), undefined, `O${optimize || 0}: optional closure miss stays undefined`)
+    is(e.optionalClosure(1), 7n, `O${optimize || 0}: optional closure keeps BigInt`)
+    is(e.nullableIncludes(undefined), undefined, `O${optimize || 0}: optional builtin miss stays undefined`)
+    is(e.nullableIncludes('a'), true, `O${optimize || 0}: optional builtin true stays boolean`)
+    is(e.nullableIncludes('b'), false, `O${optimize || 0}: optional builtin false stays boolean`)
+    is(e.defined(null), true, `O${optimize || 0}: typeof undefined test does not match null`)
+    is(e.defined(undefined), false, `O${optimize || 0}: typeof undefined test matches undefined`)
+  }
+})
+
 test('RepresentationPlan: plain local writes normalize a Number-or-BigInt binding', () => {
   const src = `
     export let classify = c => {

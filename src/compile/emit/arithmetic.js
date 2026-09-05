@@ -6,14 +6,14 @@
 
 import { ctx, err, inc, LAYOUT } from '../../ctx.js'
 import {
-  FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, emitNum, f64rem, fromI64, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
+  FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, boxBigInt, emitNum, f64rem, fromI64, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
 } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
-import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { exprType } from '../../type.js'
 import {
-  bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigintMemberAssignTarget, bigintMixReject, computedBoxOf,
+  bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
 import { emit, emitBoolStr, tryConcatChain } from './dispatch.js'
 import {
@@ -117,15 +117,9 @@ const emitNeg = (a, self) => {
   // NUMBER literal here — see parse.js). No magnitude heuristic needed for
   // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
   // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
-  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (.work/archive/todo.md
-  // §deletion-sweep §6/§12 Slice 5): a census-shaped operand's exact-kind claim reaches
-  // `valTypeOf` here only via VT['[]']/['.']/['()']'s own Slice-4 exact-kind
-  // promotion (kind.js) — a SEPARATE mechanism from the census helpers
-  // (dictValueKindOf/mapValueKindOf) themselves, which this OR-arm consults
-  // DIRECTLY (censusMaybeUndefinedKind, unchanged since Slice 1/79082fb2). Keeps
-  // this activation gate reachable for a dynamic dict/Map-read operand
-  // independent of whether that promotion stays wired.
-  if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
+  // Use the full summary kind as well as legacy value-type evidence so a
+  // present-or-undefined BigInt producer still takes the branch-aware path.
+  if (hasBigintDomain(a))
     return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'], computedBoxOf(self))
   const v = emit(a)
   // `.unsigned` carries its uint32 value as a signed i32 bit pattern (litVal/i32.sub
@@ -163,6 +157,11 @@ const emitNeg = (a, self) => {
 const foldConst = (va, vb, fn, guard) =>
   isLit(va) && isLit(vb) && !va.unsigned && !vb.unsigned && (!guard || guard(litVal(vb)))
     ? emitNum(fn(litVal(va), litVal(vb))) : null
+
+// Postfix recovery computes a fresh raw i64 after the update. Materialize that
+// producer when its frozen expression edge is tagged, just like the ordinary
+// BigInt arithmetic branches below.
+const postfixBigint = (raw, self) => computedBoxOf(self) ? boxBigInt(raw) : fromI64(raw)
 export const arithmeticOps = {
   // === Arithmetic (type-preserving) ===
 
@@ -178,11 +177,11 @@ export const arithmeticOps = {
     // entry above); recover the old value with the same i64.add-by-constant
     // shape instead of falling into the generic BIGINT-mix check below.
     if (isPostfix(a, '--', b) && valTypeOf(a) === VAL.BIGINT)
-      return fromI64(['i64.add', readI64(a, emit(a)), ['i64.const', 1]])
+      return postfixBigint(['i64.add', readI64(a, emit(a)), ['i64.const', 1]], self)
     // Member BIGINT `obj.p++`'s postfix OLD-value recovery — see
     // bigintMemberAssignTarget above.
     if (isLit1(b) && bigintMemberAssignTarget(a))
-      return fromI64(['i64.add', readI64(a, emit(a)), ['i64.const', 1]])
+      return postfixBigint(['i64.add', readI64(a, emit(a)), ['i64.const', 1]], self)
     // A self-accumulation `a = a + …` lets the concat bump-EXTEND `a` in place (a is dead-after).
     // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
     const selfAccum = typeof a === 'string' && a === ctx.func._selfAccumConcat
@@ -275,7 +274,7 @@ export const arithmeticOps = {
         (ia, ib) => ['i64.add', ia, ib],
         (fa, fb) => typed(['f64.add', fa, fb], 'f64'), computedBoxOf(self))
     }
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+    if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('+', a, b)
       return fromI64(['i64.add', bigIntOperand(a), bigIntOperand(b)])
     }
@@ -365,11 +364,11 @@ export const arithmeticOps = {
     // handler's `(--n) + 1` case just above; see its comment for why this
     // bypasses bigintMixReject (compiler-synthesized constant, not a source mix).
     if (isPostfix(a, '++', b) && valTypeOf(a) === VAL.BIGINT)
-      return fromI64(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]])
+      return postfixBigint(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]], self)
     // Member BIGINT `obj.p--`'s postfix OLD-value recovery — see
     // bigintMemberAssignTarget above ('+').
     if (isLit1(b) && bigintMemberAssignTarget(a))
-      return fromI64(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]])
+      return postfixBigint(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]], self)
     // §14 point 4: joint runtime-domain dispatch (see bigIntDomain's own doc
     // comment) — binary form only; `b === undefined` here is unary minus
     // (reached through this same table entry, see the plain OR-gate below),
@@ -388,7 +387,7 @@ export const arithmeticOps = {
         (ia, ib) => ['i64.sub', ia, ib],
         (fa, fb) => typed(['f64.sub', fa, fb], 'f64'), computedBoxOf(self))
     }
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+    if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('-', a, b)
       // b===undefined here is UNARY minus (0n - a) reached through this same table
       // entry — a single-operand op, so a maybeUndefined `a` decays to NaN in real
@@ -411,8 +410,8 @@ export const arithmeticOps = {
     return typed(['f64.sub', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   'u+': a => {
-    if (valTypeOf(a) === VAL.BIGINT)
-      return err('unary `+` on a BigInt is a TypeError in JS — use Number(x)')
+    const bigint = bigIntUnaryPlus(a)
+    if (bigint) return bigint
     const v = emit(a)
     if (v.type === 'i32') return asF64(v)
     // Deliberately NOT routed through toNumF64 for every non-NUMBER operand
@@ -442,7 +441,7 @@ export const arithmeticOps = {
         (ia, ib) => ['i64.mul', ia, ib],
         (fa, fb) => typed(['f64.mul', fa, fb], 'f64'), computedBoxOf(self))
     }
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+    if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('*', a, b)
       return fromI64(['i64.mul', bigIntOperand(a), bigIntOperand(b)])
     }
@@ -486,7 +485,7 @@ export const arithmeticOps = {
         (ia, ib) => ['i64.div_s', ia, ib],
         (fa, fb) => typed(['f64.div', fa, fb], 'f64'), computedBoxOf(self))
     }
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+    if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('/', a, b)
       return fromI64(['i64.div_s', bigIntOperand(a), bigIntOperand(b)])
     }
@@ -516,7 +515,7 @@ export const arithmeticOps = {
         (ia, ib) => ['i64.rem_s', ia, ib],
         (fa, fb) => f64rem(fa, fb), computedBoxOf(self))
     }
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+    if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('%', a, b)
       return fromI64(['i64.rem_s', bigIntOperand(a), bigIntOperand(b)])
     }

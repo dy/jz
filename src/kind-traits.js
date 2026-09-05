@@ -172,6 +172,15 @@ export function calleeValType(callee, _args, ctx) {
 }
 
 export function methodValType(method, obj, objType, ctx) {
+  // A builtin-looking name is not a result-kind proof when this receiver
+  // family can carry an own method with that name. Passing a null `obj` asks
+  // specifically for the prototype builtin's contract (used by a fallback
+  // arm after an explicit sidecar probe).
+  if (obj != null && (ctx?.summary?.memberMayBeOwn(method) ||
+      ctx?.summary?.memberMayBeOwnOn(method, objType)) &&
+      (objType === VAL.ARRAY || objType === VAL.TYPED || objType === VAL.MAP ||
+       objType === VAL.SET || objType === VAL.REGEX || objType === VAL.CLOSURE ||
+       objType === VAL.OBJECT || objType === VAL.HASH)) return null
   // Element-returning typed methods inherit the receiver's storage domain.
   // In particular BigInt64Array#at yields raw i64 BigInt bits; classifying it
   // as unknown/Number sends Number(at(...)) through the NaN-box decoder and

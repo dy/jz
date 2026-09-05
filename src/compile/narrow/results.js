@@ -43,9 +43,9 @@ import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN } f
  * consults ctx.funcs.map for narrowed user-function results plus the
  * Math.imul/Math.clz32/charCodeAt stdlib subset.
  *
- * Safe for exports — boundary wrapper restores the f64 JS ABI. `return;`
- * (bare) is preserved as f64; multi-value / raw / value-used are skipped by
- * the narrowable filter.
+ * Safe for exports — boundary wrapper restores the f64 JS ABI. A block that
+ * can fall through or execute `return;` is preserved as f64; multi-value / raw /
+ * value-used functions are skipped by the narrowable filter.
  */
 export function narrowI32Results(funcs) {
   // A return tail's SIGN — 'unsigned' (a uint32 magnitude that needs
@@ -179,7 +179,10 @@ export function narrowI32Results(funcs) {
   // A pointer result is not a number, though an unboxed pointer parameter or
   // call reads as i32 to exprType: a result the summary proves a pointer kind
   // is not narrowed (an unknown one, a v128 helper's, is exprType's to decide).
-  const numericResult = (func) => { const vs = valsOf(ctx.summary.resultOf(func.name)); return vs.length >= KIND_UNIVERSE.length || vs.every(v => v === VAL.NUMBER || v === VAL.BOOL || v === VAL.BIGINT) }
+  const numericResult = (func) => {
+    const vs = valsOf(ctx.summary.resultOf(func.name))
+    return vs.length >= KIND_UNIVERSE.length || vs.every(v => v === VAL.NUMBER || v === VAL.BOOL)
+  }
   let changed = true
   while (changed) {
     changed = false
@@ -187,7 +190,7 @@ export function narrowI32Results(funcs) {
       if (func.sig.results[0] === 'i32' || func.sig.results[0] === 'v128') continue
       if (!numericResult(func)) continue
       const body = func.body
-      if (isBlockBody(body) && hasBareReturn(body)) continue
+      if (isBlockBody(body) && (!alwaysReturns(body) || hasBareReturn(body))) continue
       const exprs = returnExprs(body)
       if (!exprs.length) continue
       let r = evalTails(func, body, exprs)
@@ -230,22 +233,23 @@ export function narrowI32Results(funcs) {
 
 /** The summary's result kinds onto every function: `valResult` (the join of the
  *  returns, one value kind), its presence (an ABSENT return), and an array
- *  result's element facts. A nullish return is no claim, except BIGINT, whose
- *  i64 bits carry no tag. Runs on the narrowing path and the skip path alike
- *  (a boolean result crosses the host boundary as its atom, a bigint as a
- *  Number, so a leaf module needs the kind too). */
+ *  result's element facts. A deliberate nullish result makes no value-kind
+ *  claim; an absent container read keeps its present kind and records presence.
+ *  Runs on the narrowing path and the skip path alike (a boolean crosses the
+ *  host boundary as its atom and a BigInt through its tagged carrier). */
 export function seedResultKinds() {
   for (const func of ctx.funcs.list) {
     // A multi-value result (a scalarized array return) is no one value.
     if (func.raw || !func.body || func.valResult || func.sig.results.length !== 1) continue
     const k = ctx.summary.resultOf(func.name), t = tagOf(k)
     if (t === K.NONE || t === K.ABSENT || t === K.NULLISH) continue
-    if (hasTag(k, K.NULLISH) && t !== K.BIGINT) continue
     const v = valOf(core(k))
     if (v == null) continue
     func.valResult = v
-    // Presence beside the kind, as for a parameter (narrow/index.js seedParamKinds), BIGINT excepted.
-    if (hasTag(k, K.ABSENT) && v !== VAL.BIGINT) func.valResultMayBeUndefined = true
+    // Presence beside the kind, as for a parameter (narrow/index.js seedParamKinds).
+    // BigInt needs this especially: without it the raw i64 result would reinterpret
+    // an out-of-range read's undefined atom as an integer payload.
+    if (hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) func.valResultMayBeUndefined = true
     if (v === VAL.ARRAY) {
       const e = ctx.summary.elemKindOf(k)
       if (!hasTag(e, K.NULLISH)) {

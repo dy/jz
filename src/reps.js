@@ -13,7 +13,11 @@
  *   2. `ctx.func.localValTypesOverlay`  call-site / loop-iter overlay (transient)
  *   3. `ctx.func.localReps`             per-function plan/analyze fact (durable)
  *   4. `ctx.scope.globalValTypes`       module-level binding (durable)
+ *   5. settled summary, except HASH     semantic fallback (read-only)
  *
+ * A summary HASH is not physical allocation provenance: a prepared IIFE or
+ * spread can have that flow kind while carrying an OBJECT. Dictionary lowering
+ * is owned by the local/global plans above, so HASH deliberately falls through.
  * Writes go through `updateRep` (#3 mutator) / `updateGlobalRep` (#4 mutator).
  * Refinements (#1) are managed by `withRefinements` in emit; overlay (#2) is
  * scoped by call/loop-emit code and torn down when the scope exits.
@@ -322,7 +326,11 @@ export const lookupValType = name => {
   const ov = ctx.func.localValTypesOverlay
   const hasOverlayValues = ov?.size || (ov?.mapOverlay === true && (ov.own?.size || ov.base?.size))
   if (hasOverlayValues) { const v = ov.get(name); if (v) return v }
-  return ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || null
+  // The program summary (src/summary): the binding's kind in the current function's scope.
+  const planned = ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name)
+  if (planned) return planned
+  const summarized = ctx.summary?.at(ctx.func.current)?.valOf(name)
+  return summarized === VAL.HASH ? null : summarized || null
 }
 
 export const lookupNotString = name => {

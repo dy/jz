@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
+  applyBigintRepresentationAction, asF64, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -305,8 +305,11 @@ export const statementOps = {
     // opaque f64 boolean carrier turns every NaN-boxed true/false atom into 0.
     // Select the boolean emitter up front so expr is still evaluated once.
     let emitted = resultBool ? toBool(expr) : ambiguous ? emitIdentitySafe(expr) : emit(expr)
-    if (!resultBool)
+    if (!resultBool) {
       emitted = applyBigintRepresentationAction(emitted, expr, representationReturnAction(ctx, expr))
+      if (pk == null && rt === 'f64' && ctx.func.valResult === VAL.BOOL && ctx.func.valResultMayBeUndefined)
+        emitted = nullableBoolBoxIR(emitted)
+    }
     // Slice 2 (CARRIER PROGRAM, .work/archive/carrier-representation-design.md §7)
     // return def-side wiring — carrierF64Narrow (ir.js), NOT the plain
     // carrierF64 `boxes` used pre-Slice-2: see its own doc comment for why an

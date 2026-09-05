@@ -493,13 +493,13 @@ export function analyzeValTypes(body) {
         const a = node[i]
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
         declared.add(a[1])
-        // Empty object used exclusively as a computed-key sink is represented
-        // as HASH by object.js. Stamp the same kind during analysis (before
-        // emission), so every subsequent read/write takes the strict one-table
-        // path and hash-RMW fusion needs no speculative runtime-type fallback.
+        // A direct empty-object initializer with property writes but no
+        // materialized schema is represented as HASH by object.js. Stamp the
+        // same kind before emission so allocation, reads, and writes agree.
         const merged = ctx.schema.resolve?.(a[1])
         const emptyLit = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1
-        const dict = emptyLit && ctx.types.dynWriteVars?.has(a[1]) && !merged?.length
+        const hasPropertyWrites = ctx.types.dynWriteVars?.has(a[1]) || ctx.types.literalWriteKeys?.get(a[1])?.size
+        const dict = emptyLit && hasPropertyWrites && !merged?.length
         // INVARIANT: a truly EMPTY `{}` still binds a real (0-prop) schema
         // decl — prepare/index.js's own decl-schema tracking (the props.length
         // guard right next to the non-empty-literal case this mirrors) only
@@ -507,9 +507,9 @@ export function analyzeValTypes(body) {
         // isClosedObjNoStringMethod (`new Error(o).message` for a bound
         // object) needs a resolvable schema to prove a truly-empty `o`
         // closed, same as it already can for `{x:1}`. Bound HERE, not in
-        // prepare, and ONLY for the non-dict arm: `dict` (computed above,
-        // WHOLE-PROGRAM `ctx.types.dynWriteVars` context prepare's earlier,
-        // single-pass walk never has) is the one fact that must gate whether
+        // prepare, and ONLY for the non-dict arm: `dict` (computed above from
+        // the whole-program dynamic and literal write censuses, which this
+        // single-pass walk cannot derive) is the fact that must gate whether
         // this schema is minted AT ALL — not just whether it's bound to this
         // name. Minting an unused schema for a dict-mode binding (one that
         // NEVER reads it — HASH mode bypasses schema dispatch entirely, and
@@ -662,8 +662,9 @@ export function analyzeValTypes(body) {
     if (op === '=' && typeof node[1] === 'string') {
       walk(node[2], cond)
       const merged = ctx.schema.resolve?.(node[1])
+      const hasPropertyWrites = ctx.types.dynWriteVars?.has(node[1]) || ctx.types.literalWriteKeys?.get(node[1])?.size
       const dict = Array.isArray(node[2]) && node[2][0] === '{}' && node[2].length === 1 &&
-        ctx.types.dynWriteVars?.has(node[1]) && !merged?.length
+        hasPropertyWrites && !merged?.length
       const vt = dict ? VAL.HASH : valTypeOf(node[2])
       // Dict-value-type census, local half (design §1a) — reassignment site
       // sibling of the decl-site stamp above.

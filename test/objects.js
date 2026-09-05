@@ -9,6 +9,22 @@ import { i64ToF64 } from '../interop.js'
 import { onWasi, belowOpt } from './_matrix.js'
 import { run } from './util.js'
 
+test('empty literal allocation follows its own writes, not a forwarded result kind', () => {
+  const sources = [
+    ['dot write', 'let o={};o.a=3;return o.a', 3],
+    ['subnormal write', 'let o={};o.a=5e-324;return o.a', 5e-324],
+    ['computed write', 'let k="a";let o={};o[k]=3;return o[k]', 3],
+    ['computed initializer', 'let k="a";let o={[k="kk"]:3};return o.kk', 3],
+    ['spread enumeration', 'const s={a:1,b:2};const o={...s,z:9};let keys="";for(const k in o)keys+=k;return keys', 'abz'],
+  ]
+  for (const optimize of [false, 2, 3]) for (const [name, body, expected] of sources) {
+    is(Function(body)(), expected, `${name}: JavaScript oracle`)
+    const { f } = jz(`export function f(){${body}}`, { optimize }).exports
+    is(f(), expected, `${name}: O${optimize || 0}`)
+    is(f(), expected, `${name}: repeated call O${optimize || 0}`)
+  }
+})
+
 test('user constructors shadow built-in new lowering', () => {
   const source = `
     function RegExp(x) { return { x } }

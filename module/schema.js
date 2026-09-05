@@ -537,12 +537,11 @@ export function initSchema(ctx) {
 
   /** WRITE-usable fact: true iff a BIGINT value stored at (sid, prop) must be
    *  boxed (a real PTR.BIGINT heap cell) rather than left as raw i64-as-f64
-   *  bits. TRUE iff (a) slotBigintObserved (ctx.js) ever joined a BIGINT
-   *  write at this slot ANYWHERE in the program — a pure OR, so a slot that
-   *  also holds plain NUMBER writes elsewhere still boxes its BIGINT
-   *  instances — AND (b) SOME constructor/assignment of this schema is
-   *  dyn-shadowed (schemaShadowed above, the program-level mirror of
-   *  needsDynShadow's own two conditions). Deliberately WIDER than the read-
+   *  bits. TRUE iff slotBigintObserved (ctx.js) ever joined a BIGINT write
+   *  and either the named-written slot is heterogeneous/unknown or some
+   *  constructor of this schema is dyn-shadowed. The first arm separates a
+   *  BigInt from a plain Number in the same fixed slot; the second serves a
+   *  registry-aware dynamic reader. Deliberately WIDER than the read-
    *  side twin below (slotBigintProvenBySid): it does NOT require the slot to
    *  be uniformly BIGINT, because carrierF64/carrierF64Narrow (src/ir.js)
    *  already gate boxing PER VALUE (`valTypeOf(value) === VAL.BIGINT`) — a
@@ -557,7 +556,8 @@ export function initSchema(ctx) {
     if (sid == null) return false
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
-    if (!factAt(sid, idx)?.bigintObserved) return false
+    const fact = factAt(sid, idx)
+    if (!fact?.bigintObserved) return false
     // DECL-LITERAL-ONLY slot → RAW, not boxed (bigint retirement §4: the boxed
     // pairing exists only for the UNPROVEN case). A prop name never NAMED-
     // written anywhere in the program means every write to this slot is an
@@ -574,6 +574,10 @@ export function initSchema(ctx) {
     // blanket-nulls under pointsTo='ALL' (LAYOUT.NAN_PREFIX_BITS is the live
     // case: decl-literal-only, uniformly BIGINT, kind census null).
     if (!ctx.types?.writtenProps?.has(prop)) return false
+    // A heterogeneous/unknown named-written slot must self-describe each
+    // BigInt value even without dynamic-key reach. A raw i64 payload cannot be
+    // distinguished from an ordinary Number loaded from the same fixed slot.
+    if (fact.kind !== VAL.BIGINT) return true
     return schemaShadowed(sid)
   }
   /** varName convenience form — resolves sid via idOf (precise path only,
@@ -581,7 +585,7 @@ export function initSchema(ctx) {
    *  answers false here, leaving the caller's own raw-shadow fallback in
    *  charge, exactly the pre-fix behavior for that narrow edge). */
   ctx.schema.slotBigintBoxedAt = (varName, prop) => {
-    const id = ctx.schema.idOf(varName)
+    const id = ctx.schema.idOf(varName) ?? ctx.summary?.at(ctx.func.current)?.sidOf(varName)
     return id != null && ctx.schema.slotBigintBoxedBySid(id, prop)
   }
 

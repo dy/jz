@@ -92,6 +92,18 @@ export function boolBoxIR(e) {
   return mkPtrIR(['i32.const', PTR.ATOM], ['i32.or', ['i32.const', BOOL_ATOM_BASE], i], ['i32.const', 0])
 }
 
+/** Canonical carrier for BOOL|nullish. Evaluate once, preserve null/undefined
+ *  and an existing boolean atom, and box only a raw present boolean. Unlike BigInt, raw 0/1 cannot collide with
+ *  a nullish sentinel, so this normalization is safe after emission. */
+export function nullableBoolBoxIR(e) {
+  const t = temp('nbool')
+  const get = () => typed(['local.get', `$${t}`], 'f64')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(e)],
+    ['if', ['result', 'f64'], ['i32.or', isNullish(get()), isBoolAtom(get())],
+      ['then', get()], ['else', boolBoxIR(get())]]], 'f64')
+}
+
 /** Value-preserving f64 carrier for a value entering an untyped slot — container
  *  stores, collection keys/values, dyn-prop writes, generic call args. A boolean
  *  keeps its identity as the TRUE/FALSE atom box (typeof/String/strict-eq survive

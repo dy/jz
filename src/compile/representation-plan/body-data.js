@@ -2,9 +2,10 @@ import { ASSIGN_OPS, commaList, returnExprs } from '../../ast.js'
 import { DBG_INVARIANTS } from '../../ctx.js'
 import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
+import { K as SUMMARY_KIND, core as summaryCore, hasTag as summaryHasTag, tagOf as summaryTagOf } from '../../summary/index.js'
 import { closureBodyReturnKind } from '../flow-types.js'
 import {
-  ANY_BIGINT, BIGINT_KIND_BIT, BIGINT_REP_BOXED, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BOXED_BIGINT,
+  ANY_BIGINT, BIGINT_DEMAND_TAG_REQUIRED, BIGINT_KIND_BIT, BIGINT_REP_BOXED, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BOXED_BIGINT,
   CONDITIONAL_ASSIGN_OPS, DEF_OWNER, DEF_RHS, EDGE_KIND, EDGE_KIND_NAME, JOIN_OPS, NO_BIGINT, NUMERIC_VALUE_OPS,
   RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_UNBOX, STORAGE_READ_METHODS,
   bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures,
@@ -59,8 +60,13 @@ const paramForwardsToReturn = (body, paramName) => returnExprs(body).some(e => e
 // fixpoint's local state, so it lives at module scope like this file's
 // other single-purpose predicates.
 const edgeMaterializable = (source, target, node, sourceReady = false) => {
+  // A branch-aware/storage producer marked ready can materialize its present
+  // BigInt arm directly even when the coarse pre-emission carrier is open.
+  if (sourceReady && target === BOXED_BIGINT) return true
   const action = edgeAction(source, target)
-  if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
+  if (action === REP_EDGE_BOX)
+    return sourceReady || valTypeOf(node) === VAL.BIGINT || isBigintOrigin(node)
+  if (action === REP_EDGE_UNBOX)
     return valTypeOf(node) === VAL.BIGINT || isBigintOrigin(node)
   if (action !== REP_EDGE_KEEP) return false
   // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
@@ -84,6 +90,7 @@ const hasClosedBool = sem => semanticClosed(sem) && (semanticKinds(sem) & bitOfK
 function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const defs = collectDefs(body)
   const provenance = options.provenance
+  const summary = ctx.summary?.at(sig)
   const taintedNames = options.localProvenance?.names || provenance?.namesByFunc.get(identity)
   const localStorage = options.localProvenance ? options.localProvenance.storage : null
   const localStorageRead = node => {
@@ -189,6 +196,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (!Array.isArray(node)) return semAll()
     const cached = nodeSemantic.get(node)
     if (cached) return cached
+    const summaryKind = summary?.kindOfExpr(node) ?? SUMMARY_KIND.NONE
     let out
     // Join structure is precise even when provenance says neither arm can
     // carry BigInt. Preserve its actual kind/nullish union instead of falling
@@ -200,7 +208,10 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     else if (node[0] === '?:') out = joinSem(semanticJoinArm(node[2]), semanticJoinArm(node[3]))
     else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
       out = joinSem(semanticJoinArm(node[1]), semanticJoinArm(node[2]))
-    else if (!mayCarryBigint(node)) {
+    else if (summaryTagOf(summaryCore(summaryKind)) === SUMMARY_KIND.BIGINT)
+      out = semKind(VAL.BIGINT,
+        summaryHasTag(summaryKind, SUMMARY_KIND.NULLISH) || summaryHasTag(summaryKind, SUMMARY_KIND.ABSENT))
+    else if (!mayCarryBigint(node) && !NUMERIC_VALUE_OPS.has(node[0])) {
       const vt = valTypeOf(node) ?? closureCalleeKind(node)
       out = vt ? semKind(vt) : noBigintSemantic()
     }
@@ -251,7 +262,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       const census = censusMaybeUndefinedKind(node)
       const vt = valTypeOf(node) ?? closureCalleeKind(node)
       if (census) out = semKind(census, true)
-      else if (vt) out = semKind(vt)
+      else if (vt) out = semKind(vt,
+        vt === VAL.BIGINT && summary?.mayBeNullishExpr(node) === true)
       else out = semAll()
     }
     nodeSemantic.set(node, out)
@@ -279,6 +291,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   for (const name of defs.keys()) {
     const sem = semanticNames.get(name)
     if (!semanticObserved(sem)) semanticNames.set(name, semanticFromRep(localReps?.get(name)))
+    // The program summary is the kind authority. Preserve its BigInt tag and
+    // its separate presence bit when the older provenance walk under-classifies
+    // a checked storage read (for-of lowering is the canonical case).
+    const sk = summary?.kindOf(name)
+    if (summaryTagOf(sk ?? 0) === SUMMARY_KIND.BIGINT)
+      semanticNames.set(name, semKind(VAL.BIGINT,
+        summaryHasTag(sk, SUMMARY_KIND.NULLISH) || summaryHasTag(sk, SUMMARY_KIND.ABSENT)))
   }
   nodeSemantic.clear()
 
@@ -485,10 +504,12 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const rep = currentOf(expr)
     bodyResultCurrent = bodyResultCurrent == null ? rep : joinRep(bodyResultCurrent, rep)
   }
-  if (!semanticObserved(bodyResultSemantic) || definiteBigint(boundary.result.semantic))
+  if (!semanticObserved(bodyResultSemantic) || definiteBigint(boundary.result.semantic) ||
+      boundary.result.demand === BIGINT_DEMAND_TAG_REQUIRED)
     bodyResultSemantic = boundary.result.semantic
   bodyResultCurrent ??= boundary.result.current
-  const bodyResultTarget = (options.forceTaggedResult || boundary.result.forceTagged) && canBeBigint(bodyResultSemantic)
+  const bodyResultTarget = (options.forceTaggedResult || boundary.result.forceTagged ||
+      boundary.result.demand === BIGINT_DEMAND_TAG_REQUIRED) && canBeBigint(boundary.result.semantic)
     ? BOXED_BIGINT : targetRepFor(bodyResultSemantic, bodyResultCurrent)
 
   const walkEdges = (node, root = false) => {
@@ -570,9 +591,10 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // storage" — reusing it here closes the gap with no new analysis.
   const isStorageReadProducer = node => {
     if (!Array.isArray(node)) return false
-    const isTrackedStorage = recv => typeof recv === 'string' &&
-      ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
-       (provenance && provenance.bigintTyped.has(recv)))
+    const isTrackedStorage = recv => valTypeOf(recv) === VAL.TYPED || summary?.valOfExpr(recv) === VAL.TYPED ||
+      (typeof recv === 'string' &&
+       ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
+        (provenance && provenance.bigintTyped.has(recv)) || summary?.valOf(recv) === VAL.TYPED))
     const recv = memberReceiver(node)
     if (recv != null) return isTrackedStorage(recv)
     const cm = callMember(node)
@@ -682,6 +704,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
     if (Array.isArray(node)) {
       if (materializedJoins.has(node)) return { rep: nodeTarget.get(node) ?? ANY_BIGINT, ready: true }
+      if (isStorageReadProducer(node)) return { rep: currentOf(node), ready: true }
       if (node[0] === '()') {
         const calleeName = calleeNameOf(node)
         if (calleeName) {
@@ -747,37 +770,64 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // no iteration is needed.
   for (const [node, target] of nodeTarget) {
     if (materializedJoins.has(node) || target !== BOXED_BIGINT) continue
+    // The summary result channel outranks a stale expression-local union: an
+    // exact BigInt return uses the raw result lane, and the static emitter does
+    // not run the dynamic computed-result boxer.
+    if (bodyResultTarget === RAW_BIGINT && definiteBigint(bodyResultSemantic) && resultExprs.includes(node)) continue
     const op = node[0]
-    const sentinelUnary = (op === 'u-' || op === '~') && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT
+    const maybeAbsentBigint = arg => {
+      const kind = summary?.kindOfExpr(arg) ?? SUMMARY_KIND.NONE
+      return ((valTypeOf(arg) ?? summary?.valOfExpr(arg)) === VAL.BIGINT ||
+          summaryTagOf(summaryCore(kind)) === SUMMARY_KIND.BIGINT) &&
+        (censusMaybeUndefinedKind(arg) === VAL.BIGINT || summary?.mayBeNullishExpr(arg) === true)
+    }
+    const sentinelUnary = (op === 'u-' || op === '~') && maybeAbsentBigint(node[1])
+    const operands = [node[1], node[2]]
     const sentinelJoint = BIGINT_JOINT_BINARY_OPS.has(op) &&
-      censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT
-    if (!sentinelUnary && !sentinelJoint) continue
+      operands.some(maybeAbsentBigint) && operands.every(arg =>
+        maybeAbsentBigint(arg) || definiteBigint(semanticOf(arg)) || excludesBigint(semanticOf(arg)))
+    // A covered mixed Number/BigInt parameter is normalized to a tagged
+    // carrier at entry. bigIntJointDispatch can therefore discriminate both
+    // operands exactly and box only its BigInt result arm. This is the same
+    // producer capability as the census-shaped joint case above, generalized
+    // to every operand whose carrier is ready or whose domain is definite.
+    const bothExactBigint = operands.every(arg =>
+      (valTypeOf(arg) ?? summary?.valOfExpr(arg)) === VAL.BIGINT && !maybeAbsentBigint(arg))
+    const taggedJoint = !bothExactBigint && BIGINT_JOINT_BINARY_OPS.has(op) && operands.every(arg => {
+      const candidate = emittedCandidate(arg), sem = semanticOf(arg)
+      return (candidate.ready && candidate.rep === BOXED_BIGINT) || definiteBigint(sem) || excludesBigint(sem)
+    }) && operands.some(arg => canBeBigint(semanticOf(arg)))
+    if (!sentinelUnary && !sentinelJoint && !taggedJoint) continue
     const sem = semanticOf(node)
     if (hasClosedBool(sem)) continue
     materializedJoins.add(node)
   }
 
-  // Propagate newly-materialized ternaries — and, closure-forwarding slice,
-  // closureCallNeedsBox-proven closure calls (`let a = parse(v)`) — through
-  // their immediate plain-write binding edges. Other producer dependencies
-  // stay deferred to their own slices; this pass cannot accidentally admit
-  // an unrelated raw expression. emittedCandidate already resolves BOTH
-  // proofs to `ready: true`, so one shared gate/body covers both — the gate
-  // only widens which defs are worth re-checking, the check itself is
-  // unchanged.
-  for (const [name, list] of defs) {
-    if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
-    if (params.has(name) && boundary.covered !== true) continue
-    if (!list.some(def => Array.isArray(def[DEF_RHS]) && (materializedJoins.has(def[DEF_RHS]) || closureCallNeedsBox(def[DEF_RHS])))) continue
-    const nameSemantic = semanticNames.get(name) ?? semAll()
-    if (hasClosedBool(nameSemantic)) continue
-    const target = targetNames.get(name) ?? ANY_BIGINT
-    if (list.every(def => {
-      if (def[DEF_RHS] == null) return true
-      if (def[DEF_OWNER]?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def[DEF_OWNER]?.[0])) return false
-      const source = emittedCandidate(def[DEF_RHS])
-      return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready)
-    })) materializedNames.add(name)
+  // Propagate every newly-materialized producer through plain-write binding
+  // chains. This is a monotone fixpoint: a checked read can materialize `x`,
+  // which can make `y = x` ready, which can in turn make a later `z = y`
+  // ready. Restricting this pass to join/call spellings left those equivalent
+  // chains with a boxed physical value in a raw-planned local.
+  let namesChanged = true
+  while (namesChanged) {
+    namesChanged = false
+    for (const [name, list] of defs) {
+      if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
+      if (params.has(name) && boundary.covered !== true) continue
+      if (!list.some(def => def[DEF_RHS] != null && emittedCandidate(def[DEF_RHS]).ready)) continue
+      const nameSemantic = semanticNames.get(name) ?? semAll()
+      if (hasClosedBool(nameSemantic)) continue
+      const target = targetNames.get(name) ?? ANY_BIGINT
+      if (list.every(def => {
+        if (def[DEF_RHS] == null) return true
+        if (def[DEF_OWNER]?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def[DEF_OWNER]?.[0])) return false
+        const source = emittedCandidate(def[DEF_RHS])
+        return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready)
+      })) {
+        materializedNames.add(name)
+        namesChanged = true
+      }
+    }
   }
 
   const resultHasClosedBool = hasClosedBool(bodyResultSemantic)
@@ -822,7 +872,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // keeps its own job for a genuinely param-sourced result.
   const resultForwardsProvenCallee = !!closureAbiIdentity && resultExprs.length > 0 &&
     resultExprs.every(expr => expr != null && emittedCandidate(expr).ready === true)
+  // A result with a nullable/heterogeneous BigInt member cannot use the raw
+  // i64 carrier: null/undefined and an arbitrary i64 payload share the same
+  // bits. Materialize the BigInt-producing return tails even at an uncovered
+  // (exported/address-taken) boundary; the nullish fallthrough arm already
+  // emits its tagged sentinel. Previously only covered and explicitly-forced
+  // closure boundaries qualified, so `if (x) return 1n` exported the
+  // UNDEF_NAN bits as the BigInt 9221120245631025152n.
   const materializedResult = (boundary.covered === true || boundary.result.forceTagged === true ||
+      boundary.result.demand === BIGINT_DEMAND_TAG_REQUIRED ||
       (!!closureAbiIdentity && closureBoxParams.size > 0) || resultForwardsProvenCallee) &&
     !resultHasClosedBool &&
     sig?.results?.length === 1 && sig.results[0] === 'f64' &&
@@ -850,7 +908,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     keptCurrent.set(name, currentNames.get(name) ?? ANY_BIGINT)
     keptTarget.set(name, targetNames.get(name) ?? ANY_BIGINT)
   }
-  const trivial = packedSemantics.size === 0 && nodeFacts.size === 0 && edges.length === 0
+  const trivial = !materializedResult && packedSemantics.size === 0 && nodeFacts.size === 0 && edges.length === 0
 
   return trivial ? {
     kind: 'body', identity, boundary, trivial: true,

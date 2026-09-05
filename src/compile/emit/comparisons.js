@@ -95,7 +95,7 @@ function emitTypeofCmp(a, b, cmpOp) {
     return wrap(['i32.or', notNan, numberNan])
   }
   if (code === TYPEOF.string) return isPtrKind(PTR.STRING)
-  if (code === TYPEOF.undefined) return wrap(isNullish(va))
+  if (code === TYPEOF.undefined) return wrap(isUndef(va))
   if (code === TYPEOF.boolean) return staticFold(VAL.BOOL) ?? wrap(isBoolAtom(['local.tee', `$${t}`, va]))
   if (code === TYPEOF.object) {
     // object: a NaN-box whose ptr_type is a heap kind — NOT STRING (typeof "string"),

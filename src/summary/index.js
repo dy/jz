@@ -49,7 +49,7 @@
  * @module summary
  */
 import { MUTATE_OPS, extractParams, isBrand, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
-import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
+import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'
 
@@ -254,6 +254,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   // computed-key store, or a store by code the summary cannot see, does not
   // reach a class member (the class contract, jzify/classes.js).
   const dynamicProps = new Set()
+  // Own properties on builtin receiver families are tracked by family, not as
+  // one global name set: `{push: fn}` must not pessimize every real Array#push.
+  const builtinOwnProps = new Map()
   const escapeObject = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) poisonSchema(paramOf(k)); escape(k) }
   const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   /** A value the host holds (an export's result, an exported global, an import's argument): every closure it reaches may be called with anything. */
@@ -320,18 +323,63 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     }
     return r
   }
+  const closureResult = param => {
+    let r = K.NONE
+    for (const id of membersOf(param)) r = merge(r, results.get(id) ?? K.NONE)
+    return r
+  }
   // A class (jzify/classes.js): its members are functions of the receiver.
   // A receiver of one class calls its function; a receiver the summary
   // cannot name may be any class with the member, so each is called.
   const classOfSid = (sid) => { const b = brandOf(sid); return b ? classes?.get(b) ?? null : null }
   const classMember = (recv, name) => tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN ? classOfSid(paramOf(recv))?.methods.get(name) ?? null : null
   const memberMayBeOwn = (prop) => dynamicProps.has(prop)
+  const builtinReceiverTag = t => t === K.ARRAY || t === K.TYPED ||
+    t === K.MAP || t === K.SET || t === K.REGEX || t === K.CLOSURE
+  const markBuiltinOwn = (t, prop) => {
+    if (builtinReceiverTag(t)) builtinOwnProps.set(prop, (builtinOwnProps.get(prop) ?? 0) | bitOf(t))
+  }
+  const builtinReceiverMayHaveOwn = (t, prop) =>
+    builtinReceiverTag(t) && ((builtinOwnProps.get(prop) ?? 0) & bitOf(t)) !== 0
   /** The class member's result, or ANY when an own property may shadow it. */
   const memberResult = (recv, name, r) => memberMayBeOwn(name) ? ANY : r
   const unknownReceiver = (recv) => { const t = tagOf(recv); return t === K.ANY || (t === K.OBJECT && paramOf(recv) === UNKNOWN) }
   const callCandidates = (recv, name, argKinds) => {
     if (!classes || !unknownReceiver(recv)) return
     for (const e of classes.values()) { const fn = e.methods.get(name); if (fn) call(fn, [recv, ...argKinds]) }
+  }
+  const typedElemKind = (recv) => paramOf(recv) === UNKNOWN
+    ? join(NUMBER, BIGINT)
+    : (paramOf(recv) & TYPED_ELEM_BIGINT_FLAG) !== 0 ? BIGINT : NUMBER
+  // methodValType's name-only traits are useful once the receiver is a known
+  // builtin family. They are not facts about an unknown/dictionary receiver:
+  // `o['includes'] = () => 7` is still an ordinary own method.
+  const builtinMethodResult = (recv, name) => {
+    const v = valOf(core(recv))
+    return v == null || v === VAL.OBJECT || v === VAL.HASH || v === VAL.CLOSURE
+      ? ANY : kindOfVal(methodValType(name, null, v, null))
+  }
+  const optionalResult = (op, recv, result) => {
+    if (op !== '?.' || !hasTag(recv, K.NULLISH) && !hasTag(recv, K.ABSENT)) return result
+    return tagOf(core(recv)) === K.NONE ? NULLISH : join(result, NULLISH)
+  }
+  // A reduce accumulator starts with the explicit initial value, or an
+  // element. Later iterations feed the callback's own result back into its
+  // first parameter; joining the prior-round result makes that recurrence a
+  // monotone part of the surrounding summary fixpoint.
+  const reduceResult = (recv, argKinds) => {
+    const elem = typedElemKind(recv)
+    const initial = argKinds.length > 1 ? argKinds[1] : elem
+    const cb = argKinds[0]
+    if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) {
+      for (const k of argKinds) escape(k)
+      return ANY
+    }
+    const prior = closureResult(paramOf(cb))
+    const out = callClosure(paramOf(cb), [merge(initial, prior), elem, NUMBER, recv])
+    // The input is observable for a zero/one-element array; the callback
+    // result for every iteration that actually invokes it.
+    return merge(initial, out)
   }
   const method = (recv, name, argKinds) => {
     const t = tagOf(recv)
@@ -341,6 +389,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     const classFn = classMember(recv, name)
     if (classFn) { const r = call(classFn, [core(recv), ...argKinds]); if (memberMayBeOwn(name)) for (const k of argKinds) escape(k); return memberResult(recv, name, r) }
     callCandidates(recv, name, argKinds)
+    // A proven builtin receiver still permits an own data property to shadow
+    // its prototype method. The packed summary does not retain per-instance
+    // sidecar values, so decline to ANY rather than assert the builtin result.
+    if (builtinReceiverMayHaveOwn(t, name)) {
+      for (const k of argKinds) escape(k)
+      return ANY
+    }
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
       const sid = paramOf(recv), i = schemas[sid].indexOf(name)
       if (i >= 0) {
@@ -350,8 +405,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
         return K.NONE
       }
     }
-    if (t === K.TYPED) { if (TYPED_SAME.has(name)) return name === 'set' ? NULLISH : kind(K.TYPED, paramOf(recv)); if (name === 'indexOf' || name === 'lastIndexOf' || name === 'at' || name === 'reduce') return name === 'at' ? orAbsent(NUMBER) : NUMBER }
-    if (t === K.STRING) { if (STRING_METHODS.has(name)) return STRING; if (STRING_NUMBER_METHODS.has(name)) return NUMBER; if (STRING_BOOL_METHODS.has(name)) return BOOL; if (name === 'split') return kind(K.ARRAY) }
+    if (t === K.TYPED) {
+      if (TYPED_SAME.has(name)) { if (name === 'map' || name === 'filter' || name === 'sort') for (const k of argKinds) escape(k); return name === 'set' ? NULLISH : kind(K.TYPED, paramOf(recv)) }
+      if (name === 'at') return orAbsent(typedElemKind(recv))
+      if (name === 'indexOf' || name === 'lastIndexOf') return NUMBER
+      if (name === 'reduce') return reduceResult(recv, argKinds)
+    }
+    if (t === K.STRING) {
+      if (name === 'at') return orAbsent(STRING)
+      if (name === 'codePointAt') return orAbsent(NUMBER)
+      if (STRING_METHODS.has(name)) return STRING
+      if (STRING_NUMBER_METHODS.has(name)) return NUMBER
+      if (STRING_BOOL_METHODS.has(name)) return BOOL
+      if (name === 'split') return kind(K.ARRAY)
+    }
     if (t === K.BUFFER && name === 'slice') return kind(K.BUFFER)
     if (t === K.ARRAY) {
       if (name === 'push' || name === 'unshift') { for (const k of argKinds) raiseElem(recv, k); return NUMBER }
@@ -370,9 +437,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     if (t === K.SET && (name === 'add' || name === 'has' || name === 'delete')) { for (const k of argKinds) escapeObject(k); return name === 'add' ? recv : BOOL }
     for (const k of argKinds) escapeObject(k)
     if (t === K.OBJECT || t === K.HASH || t === K.ANY || t === K.ARRAY) escapeObject(recv)
-    // The method's trait (kind-traits.js): a name the emitter dispatches by (`includes`, `every`, `test`) has
-    // the builtin's result kind on any receiver; the boundary boxes a boolean's atom by it.
-    return kindOfVal(methodValType(name, null, valOf(recv), null))
+    return builtinMethodResult(recv, name)
   }
   const literalKind = (v) => v == null ? NULLISH : typeof v === 'number' ? NUMBER : typeof v === 'string' ? STRING : typeof v === 'boolean' ? BOOL : typeof v === 'bigint' ? BIGINT : ANY
   // The receiver of a member access: a function's property (`parse.enter`, a
@@ -403,16 +468,38 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     if (op === '`' || op === 'strcat') { for (let i = 1; i < n.length; i++) expr(n[i]); return STRING }
     if (op === '=>') { loopAssigns(n); const id = closureId(n); if (id >= UNKNOWN) { escapeId(id); return kind(K.CLOSURE) } return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
     if (op === '{}') {
-      const vals = [], init = definite.get(n), shape = literalShape(n)
+      const writes = [], names = [], init = definite.get(n), shape = literalShape(n)
+      let brand = shape?.brand ?? null
+      const add = (name, value) => { if (!names.includes(name)) names.push(name); writes.push([name, value]) }
       for (let i = 1; i < n.length; i++) {
         const p = n[i]
-        if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (!isBrand(p[1])) vals.push(init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
-        else if (typeof p === 'string') vals.push(expr(p))
-        else { if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j])); return kind(K.HASH) }
+        if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') {
+          if (isBrand(p[1])) brand = p[1]
+          else add(p[1], init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2]))
+        } else if (typeof p === 'string') add(p, expr(p))
+        else if (Array.isArray(p) && p[0] === '...') {
+          const source = expr(p[1]), sourceSid = tagOf(source) === K.OBJECT ? paramOf(source) : UNKNOWN
+          if (sourceSid === UNKNOWN || !schemas[sourceSid]) {
+            escape(source)
+            for (const [, v] of writes) escape(v)
+            return kind(K.HASH)
+          }
+          const sourceSlots = slots(sourceSid)
+          for (let j = 0; j < schemas[sourceSid].length; j++) add(schemas[sourceSid][j], sourceSlots[j])
+        } else {
+          if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j]))
+          for (const [, v] of writes) escape(v)
+          return kind(K.HASH)
+        }
       }
-      const sid = shape ? sidByKey.get(schemaKey(shape.props, shape.brand)) : undefined
-      if (sid === undefined) { for (const v of vals) escape(v); return kind(K.HASH) }
-      for (let i = 0; i < vals.length; i++) raiseSlot(sid, i, vals[i])
+      const sid = sidByKey.get(schemaKey(names, brand))
+      if (sid === undefined) {
+        for (const [, v] of writes) escape(v)
+        // An empty literal is physically an OBJECT unless its binding's
+        // dictionary-use analysis explicitly selects HASH at lowering time.
+        return names.length === 0 ? kind(K.OBJECT) : kind(K.HASH)
+      }
+      for (const [name, value] of writes) raiseSlot(sid, schemas[sid].indexOf(name), value)
       if (sid >= UNKNOWN) { poisonSchema(sid); return kind(K.OBJECT) }
       return kind(K.OBJECT, sid)
     }
@@ -425,31 +512,33 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     }
     if (op === '.' || op === '?.') {
       const recv = receiver(n[1]), prop = n[2], t = tagOf(recv)
-      if (typeof prop !== 'string') { expr(prop); return t === K.NONE ? K.NONE : ANY }
-      if (t === K.NONE) return K.NONE
+      const done = result => optionalResult(op, recv, result)
+      if (op === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
+      if (typeof prop !== 'string') { expr(prop); return done(t === K.NONE ? K.NONE : ANY) }
+      if (t === K.NONE) return done(K.NONE)
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
         const i = schemas[paramOf(recv)].indexOf(prop)
-        if (i >= 0) return slots(paramOf(recv))[i]
+        if (i >= 0) return done(slots(paramOf(recv))[i])
         // a class's getter, or a method read as a value: bound by its binder
         const getter = classMember(recv, prop + ACCESSOR_GET)
-        if (getter) return memberResult(recv, prop, call(getter, [core(recv)]))
+        if (getter) return done(memberResult(recv, prop, call(getter, [core(recv)])))
         const fn = classMember(recv, prop)
-        if (fn) return memberResult(recv, prop, call(fn + BIND, [core(recv)]))
-        return memberMayBeOwn(prop) ? ANY : NULLISH
+        if (fn) return done(memberResult(recv, prop, call(fn + BIND, [core(recv)])))
+        return done(memberMayBeOwn(prop) ? ANY : NULLISH)
       }
       callCandidates(recv, prop + ACCESSOR_GET, [])
       if (classes && unknownReceiver(recv) && !prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const e of classes.values()) { const fn = e.methods.get(prop); if (fn) call(fn + BIND, [recv]) }
-      if (NUMBER_METHODS.has(prop) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return NUMBER
-      if (prop === 'buffer' && t === K.TYPED) return kind(K.BUFFER)
-      if (t === K.ARRAY && paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return orAbsent(propOf(recv, prop))
-      return ANY
+      if (NUMBER_METHODS.has(prop) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return done(NUMBER)
+      if (prop === 'buffer' && t === K.TYPED) return done(kind(K.BUFFER))
+      if (t === K.ARRAY && paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return done(orAbsent(propOf(recv, prop)))
+      return done(ANY)
     }
     if (op === '[]') {
       const recv = receiver(n[1]), idx = n[2], t = tagOf(recv)
       if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return expr(['.', n[1], idx[1]])
       const ik = expr(idx)
       if (t === K.NONE) return K.NONE
-      if (t === K.TYPED) return paramOf(recv) !== UNKNOWN && (paramOf(recv) & 16) ? BIGINT : NUMBER
+      if (t === K.TYPED) return orAbsent(typedElemKind(recv))
       if (t === K.ARRAY) return orAbsent(entryOf(recv, ik))
       if (t === K.STRING) return STRING
       // A computed key on a known shape reads one of its slots (a dispatch table's member), or misses.
@@ -461,7 +550,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       const callee = n[1], as = args(n[2]).map(expr)
       if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
         const recv = receiver(callee[1])
-        return method(recv, callee[2], as)
+        return optionalResult(callee[0], recv, method(recv, callee[2], as))
       }
       if (callee === 'new.Map') { for (const k of as) escape(k); return cellOf(n, K.MAP, as.length ? ANY : K.NONE) }
       if (typeof callee === 'string') return call(callee, as)
@@ -473,8 +562,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     }
     if (MUTATE_OPS.has(op)) return assign(op, n[1], n[2])
     if (op === '+') return plus(expr(n[1]), expr(n[2]))
-    if (NUMBER_OPS.has(op) || op === 'u-') { let big = false; for (let i = 1; i < n.length; i++) if (tagOf(expr(n[i])) === K.BIGINT) big = true; return arith(big) }
-    if (op === '+1' || op === '-1') return arith(tagOf(expr(n[1])) === K.BIGINT)  // a member's ++/-- (prepare)
+    if (NUMBER_OPS.has(op) || op === 'u-') { const ks = []; for (let i = 1; i < n.length; i++) ks.push(expr(n[i])); return arith(op, ks) }
+    if (op === '+1' || op === '-1') return arith(op, [expr(n[1])])  // a member's ++/-- (prepare)
     if (op === 'u+') { expr(n[1]); return NUMBER }
     if (BOOL_OPS.has(op)) { for (let i = 1; i < n.length; i++) expr(n[i]); return BOOL }
     if (op === '&&' || op === '||' || op === '??') { const a = expr(n[1]); return merge(a, onPath(() => narrowed(proves(n[1], op === '&&'), () => expr(n[2])))) }
@@ -489,17 +578,55 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     return ANY
   }
 
-  /** `a + b`: a string concatenates, numbers and bigints add, anything else may do either. */
-  const plus = (a, b) => { const ta = tagOf(a), tb = tagOf(b); return ta === K.STRING || tb === K.STRING ? STRING : ta === K.NONE || tb === K.NONE ? K.NONE : ta === K.NUMBER && tb === K.NUMBER ? NUMBER : ta === K.BIGINT || tb === K.BIGINT ? BIGINT : ANY }
-  // An arithmetic result: a BigInt when an operand is one for certain (the
-  // other must be too, or the operation throws), else a number, as the value
-  // channels have always read an operand of unknown kind.
-  const arith = (big) => big ? BIGINT : NUMBER
+  const COERCION_UNKNOWN = bitOf(K.TYPED) | bitOf(K.ARRAY) | bitOf(K.OBJECT) |
+    bitOf(K.CLOSURE) | bitOf(K.MAP) | bitOf(K.SET) | bitOf(K.DATE) |
+    bitOf(K.REGEX) | bitOf(K.HASH) | bitOf(K.BUFFER)
+  /** `a + b`: preserve each normal-completion domain independently. A
+   * Number/BigInt union plus a definite BigInt can only complete as BigInt;
+   * the Number pairing throws and must not widen the result to ANY. */
+  const PLUS_NUMBER = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
+  const plusModes = k => {
+    if (tagOf(k) === K.NONE) return 0
+    const tags = k & TAGS
+    let modes = tags & PLUS_NUMBER ? 1 : 0
+    if (tags & bitOf(K.BIGINT)) modes |= 2
+    if (tags & bitOf(K.STRING)) modes |= 4
+    // Object coercion may produce any primitive domain.
+    if (tags & COERCION_UNKNOWN) modes |= 1 | 2 | 4
+    return modes
+  }
+  const plus = (a, b) => {
+    const ma = plusModes(a), mb = plusModes(b)
+    if (!ma || !mb) return K.NONE
+    let out = K.NONE
+    if (ma & 1 && mb & 1) out = merge(out, NUMBER)
+    if (ma & 2 && mb & 2) out = merge(out, BIGINT)
+    if (ma & 4 || mb & 4) out = merge(out, STRING)
+    return out
+  }
+  // ToNumeric can produce Number or BigInt. For a binary operation, a normal
+  // result exists only where every operand converts to the same numeric kind;
+  // a union therefore keeps both result tags instead of guessing Number.
+  const numericModes = k => {
+    if (tagOf(k) === K.NONE) return 0
+    let modes = hasTag(k, K.BIGINT) ? 2 : 0
+    const nonBig = (k & TAGS) & ~bitOf(K.BIGINT)
+    if (nonBig) { modes |= 1; if (nonBig & COERCION_UNKNOWN) modes |= 2 }
+    return modes
+  }
+  const arith = (op, ks) => {
+    let number = true, bigint = op !== '>>>' && op !== '>>>='
+    for (const k of ks) { const modes = numericModes(k); if (!modes) return K.NONE; number = number && !!(modes & 1); bigint = bigint && !!(modes & 2) }
+    return number ? (bigint ? join(NUMBER, BIGINT) : NUMBER) : bigint ? BIGINT : K.NONE
+  }
   /** `target op= value`: the stored kind reaches the binding or the slot; returns the expression's kind. */
   const assign = (op, target, value) => {
     const logical = op === '||=' || op === '&&=' || op === '??='
-    const v = op === '=' ? expr(value) : op === '+=' ? plus(expr(target), expr(value)) : logical ? merge(expr(target), expr(value))
-      : arith(tagOf(expr(target)) === K.BIGINT || (value != null && tagOf(expr(value)) === K.BIGINT))
+    let v
+    if (op === '=') v = expr(value)
+    else if (op === '+=') v = plus(expr(target), expr(value))
+    else if (logical) v = merge(expr(target), expr(value))
+    else { const a = expr(target), b = value == null ? null : expr(value); v = arith(op, b == null ? [a] : [a, b]) }
     if (typeof target === 'string') {
       pre.delete(target); refined.delete(target)
       // A straight-line assignment is the value the reads after it see; one on a path is not.
@@ -510,12 +637,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       if (t === K.NONE) return v
       if (typeof prop !== 'string') { poisonAll(recv, expr(prop)); escape(v); return v }
+      markBuiltinOwn(t, prop)
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
         const i = schemas[paramOf(recv)].indexOf(prop), setter = i < 0 ? classMember(recv, prop + ACCESSOR_SET) : null
         if (i >= 0) raiseSlot(paramOf(recv), i, v); else if (setter) call(setter, [core(recv), v]); else { poisonSchema(paramOf(recv)); dynamicProps.add(prop) }
       }
       else if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) raiseProp(recv, prop, v); else escape(v) }
-      else if (t !== K.TYPED && t !== K.STRING && t !== K.MAP && t !== K.SET) { callCandidates(recv, prop + ACCESSOR_SET, [v]); poisonProp(prop); dynamicProps.add(prop); escape(v) }
+      else if (builtinReceiverTag(t)) escape(v)
+      else if (t !== K.STRING) { callCandidates(recv, prop + ACCESSOR_SET, [v]); poisonProp(prop); dynamicProps.add(prop); escape(v) }
       return v
     }
     if (Array.isArray(target) && target[0] === '[]') {
@@ -655,7 +784,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
       loopAssigns(n)
       const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
-      if (typeof target === 'string') declare(target, op === 'for-in' ? STRING : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? NUMBER : tagOf(it) === K.STRING ? STRING : ANY)
+      if (typeof target === 'string') declare(target, op === 'for-in' ? STRING : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY)
       else pattern(target)
       onPath(() => stmt(n[3])); return
     }
@@ -728,7 +857,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     const tp = typeofPredicate(c)
     if (tp) {
       const bits = TYPEOF_TAGS[typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]]
-      if (bits !== undefined) out.push([tp.name, tp.eq === when ? bits : TAGS & ~bits])
+      if (bits !== undefined) {
+        // NULLISH conflates null (`typeof` object) and undefined. A negative
+        // test against either category cannot remove that shared tag: one of
+        // its runtime members still takes the branch.
+        const inverse = (TAGS & ~bits) | (bits & bitOf(K.NULLISH))
+        out.push([tp.name, tp.eq === when ? bits : inverse])
+      }
       return out
     }
     if ((op === '!=' || op === '!==') && typeof c[1] === 'string' && isNullishRef(c[2])) { if (when) out.push([c[1], NOT_NULLISH]) }
@@ -787,27 +922,50 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     if (op === 'bigint') return BIGINT
     if (op === '//') return kind(K.REGEX)
     if (op === '=>') { const id = closures.get(n); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
+    if (op === '{}' && isLiteral(n)) {
+      const shape = literalShape(n), names = []
+      let brand = shape?.brand ?? null
+      const add = name => { if (!names.includes(name)) names.push(name) }
+      for (let i = 1; i < n.length; i++) {
+        const p = n[i]
+        if (typeof p === 'string') add(p)
+        else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') {
+          if (isBrand(p[1])) brand = p[1]; else add(p[1])
+        } else if (Array.isArray(p) && p[0] === '...') {
+          const source = kindOfExpr(p[1]), sourceSid = tagOf(source) === K.OBJECT ? paramOf(source) : UNKNOWN
+          if (sourceSid === UNKNOWN || !schemas[sourceSid]) return kind(K.HASH)
+          for (const name of schemas[sourceSid]) add(name)
+        } else return kind(K.HASH)
+      }
+      const sid = sidByKey.get(schemaKey(names, brand))
+      return sid !== undefined ? kind(K.OBJECT, sid)
+        : names.length === 0 ? kind(K.OBJECT) : kind(K.HASH)
+    }
     if (op === '()' && n.length === 2) return kindOfExpr(n[1])
     if (op === '.' || op === '?.') {
-      const r = kindOfExpr(n[1]), t = tagOf(r)
-      if (typeof n[2] !== 'string') return ANY
+      const r = kindOfExpr(n[1]), t = tagOf(r), done = result => optionalResult(op, r, result)
+      if (op === '?.' && tagOf(core(r)) === K.NONE) return NULLISH
+      if (typeof n[2] !== 'string') return done(ANY)
       if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
         const i = schemas[paramOf(r)].indexOf(n[2])
-        if (i >= 0) return slots(paramOf(r))[i]
+        if (i >= 0) return done(slots(paramOf(r))[i])
         const getter = classMember(r, n[2] + ACCESSOR_GET), fn = getter ?? (classMember(r, n[2]) ? classMember(r, n[2]) + BIND : null)
-        return fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH
+        return done(fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH)
       }
-      if (NUMBER_METHODS.has(n[2]) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return NUMBER
-      if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return orAbsent(propOf(r, n[2]))
-      return n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY
+      if (NUMBER_METHODS.has(n[2]) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return done(NUMBER)
+      if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return done(orAbsent(propOf(r, n[2])))
+      return done(n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY)
     }
     if (op === '[]') {
       const r = kindOfExpr(n[1]), t = tagOf(r)
       if (Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
       if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const s of slots(paramOf(r))) k = join(k, s); return orAbsent(k) }
-      return t === K.TYPED ? NUMBER : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
+      return t === K.TYPED ? orAbsent(typedElemKind(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
     }
     if (op === '()' && typeof n[1] === 'string') {
+      // Constructor names may also appear in the ambient binding table; their
+      // language-level result contract wins over that storage entry.
+      if (TYPED_CTOR.test(n[1])) return call(n[1], [])
       const key = keyOf(n[1])
       if (key === null && funcByName.has(n[1])) return results.get(n[1]) ?? ANY
       const k = key === null ? undefined : kinds.get(key)
@@ -815,16 +973,29 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       return imports.has(n[1]) ? kindOfVal(imports.get(n[1])) : call(n[1], [])  // a constructor or builtin: no effect on no arguments
     }
     if (op === '()' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') {
-      const r = kindOfExpr(n[1][1]), fn = classMember(r, n[1][2])
-      if (fn) return !memberMayBeOwn(n[1][2]) ? results.get(fn) ?? ANY : ANY
-      return tagOf(r) === K.MAP && n[1][2] === 'get' ? orAbsent(elemOf(r)) : kindOfVal(methodValType(n[1][2], null, valOf(r), null))
+      const r = kindOfExpr(n[1][1]), name = n[1][2], t = tagOf(r), fn = classMember(r, name)
+      let result
+      if (fn) result = !memberMayBeOwn(name) ? results.get(fn) ?? ANY : ANY
+      else if (builtinReceiverMayHaveOwn(t, name)) result = ANY
+      else if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
+        const i = schemas[paramOf(r)].indexOf(name), fk = i < 0 ? K.NONE : slots(paramOf(r))[i]
+        result = tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN
+          ? closureResult(paramOf(fk)) : tagOf(fk) === K.NONE ? K.NONE : ANY
+      }
+      else if (t === K.MAP && name === 'get') result = orAbsent(elemOf(r))
+      else if (t === K.TYPED && name === 'at') result = orAbsent(typedElemKind(r))
+      else if (t === K.TYPED && name === 'reduce') result = reduceResult(r, args(n[2]).map(kindOfExpr))
+      else if (t === K.STRING && name === 'at') result = orAbsent(STRING)
+      else if (t === K.STRING && name === 'codePointAt') result = orAbsent(NUMBER)
+      else result = builtinMethodResult(r, name)
+      return optionalResult(n[1][0], r, result)
     }
     if (op === '?' || op === '?:') return join(kindOfExpr(n[2]), kindOfExpr(n[3]))
     if (op === '&&' || op === '||' || op === '??') return join(kindOfExpr(n[1]), kindOfExpr(n[2]))
     if (op === ',') return kindOfExpr(n[n.length - 1])
     if (op === '+') return plus(kindOfExpr(n[1]), kindOfExpr(n[2]))
-    if (NUMBER_OPS.has(op) || op === 'u-') { let big = false; for (let i = 1; i < n.length; i++) if (tagOf(kindOfExpr(n[i])) === K.BIGINT) big = true; return arith(big) }
-    if (op === '+1' || op === '-1') return arith(tagOf(kindOfExpr(n[1])) === K.BIGINT)
+    if (NUMBER_OPS.has(op) || op === 'u-') { const ks = []; for (let i = 1; i < n.length; i++) ks.push(kindOfExpr(n[i])); return arith(op, ks) }
+    if (op === '+1' || op === '-1') return arith(op, [kindOfExpr(n[1])])
     if (op === 'u+') return NUMBER
     if (BOOL_OPS.has(op)) return BOOL
     if (op === 'typeof') return STRING
@@ -1015,6 +1186,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       kindOf: inScope(kindOf),
       kindOfExpr: inScope(kindOfExpr),
       sidOf: inScope((name) => { const k = kindOf(name); return tagOf(k) === K.OBJECT && !isNullable(k) && paramOf(k) !== UNKNOWN ? paramOf(k) : null }),
+      /** The sole object payload schema of an expression, independent of nullish presence. */
+      objectSidOfExpr: inScope((e) => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? paramOf(k) : null }),
       /** The typed-array constructor a binding holds under every assignment, or null. */
       typedCtorOf: inScope((name) => { const k = kindOf(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null }),
       /** The one schema every element of the binding's array has, or null. */
@@ -1025,10 +1198,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       paramKindOf: inScope((name) => { const key = keyOf(name); return key === null ? K.NONE : canon(incoming.get(key) ?? K.NONE) }),
       /** The element kind of an array kind: every element the program can put in its cell. */
       elemKindOf: (k) => elemOf(k),
-      /** The value kind (reps.js VAL) of an expression's kind when it is one non-nullable kind, else null. */
+      /** The value kind (reps.js VAL) of a binding's kind when it is one non-nullable kind, else null. */
+      valOf: inScope((name) => valOf(readKind(name))),
+      /** The value kind (reps.js VAL) of an expression's kind when it is one non-nullable kind. */
       valOfExpr: inScope((e) => valOf(kindOfExpr(e))),
+      /** Whether an expression can complete with null, undefined, or an absent read. */
+      mayBeNullishExpr: inScope((e) => isNullable(kindOfExpr(e))),
       /** The typed-array constructor an expression holds under every assignment, or null. */
       typedCtorOfExpr: inScope((e) => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null }),
+      /** The sole typed-array payload constructor, independent of nullish presence. */
+      typedPayloadCtorOfExpr: inScope((e) => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && paramOf(k) !== UNKNOWN ? ctorFromElemAux(paramOf(k)) : null }),
     }
   }
   const views = new Map()
@@ -1050,6 +1229,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     resultVal: (name) => valOf(results.get(name) ?? K.NONE),
     /** Some object may carry an own property `prop` stored under that literal name, shadowing a class member. */
     memberMayBeOwn: (prop) => dynamicProps.has(prop),
+    /** Whether this concrete builtin value family may carry an own property. */
+    memberMayBeOwnOn: (prop, valueKind) => builtinReceiverMayHaveOwn(tagOf(kindOfVal(valueKind)), prop),
+    /** Whether any builtin family may carry this own property (unknown receiver dispatch). */
+    builtinMemberMayBeOwn: (prop) => builtinOwnProps.has(prop),
     /** Some slot holds a typed array under every construction and store. */
     hasTypedFields: [...fields.values()].some(a => a.some(k => tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k))),
     escaped,

@@ -1,8 +1,9 @@
 import { returnExprs } from '../../ast.js'
-import { BIGINT_JOINT_BINARY_OPS } from '../../kind.js'
+import { BIGINT_JOINT_BINARY_OPS, valTypeOf } from '../../kind.js'
+import { VAL } from '../../reps.js'
 import {
-  BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_REJECT, bigintRepBits,
-  bigintRepIsClosed, definiteBigint, edgeAction, isBigintOrigin, programPlanRecord,
+  BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_REJECT, STORAGE_READ_METHODS, bigintRepBits,
+  bigintRepIsClosed, canBeBigint, definiteBigint, edgeAction, isBigintOrigin, programPlanRecord,
 } from './common.js'
 import { boundaryDataOf } from './boundaries.js'
 
@@ -172,12 +173,16 @@ export function representationJoinArmAction(ctx, join, arm) {
  *  so join and arm collapse to the same node. */
 export function representationComputedExprAction(ctx, node) {
   const body = activeBody(ctx, 'representationComputedExprAction')
-  if (!body?.materializedJoins?.has(node)) return REP_EDGE_REJECT
+  const target = activeRep(ctx, node, true)
+  // Some emitter wrappers rebuild an equivalent arithmetic node and therefore
+  // cannot share the planner's WeakSet identity. The retained nodeFacts entry
+  // is the stable fallback: only a BOXED target licenses materialization.
+  if (!body?.materializedJoins?.has(node) && target !== BOXED_BIGINT) return REP_EDGE_REJECT
   // This emitter branch computes a fresh raw i64 result even though the
   // expression's planned value is materialized. Name the actual producer
   // carrier explicitly; consulting activeEmittedRep(node) would become KEEP
   // if generic materialized-expression lookup later learns this node shape.
-  return edgeAction(RAW_BIGINT, activeRep(ctx, node, true))
+  return edgeAction(RAW_BIGINT, target)
 }
 
 /** Frozen action for one materialized return edge. */
@@ -186,7 +191,15 @@ export function representationReturnAction(ctx, source) {
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   if (record?.body?.materializedResult !== true) return REP_EDGE_REJECT
-  return edgeAction(activeEmittedRep(ctx, source), record.body.resultTarget ?? record.body.boundary.result.target)
+  const target = record.body.resultTarget ?? record.body.boundary.result.target
+  const current = activeEmittedRep(ctx, source)
+  const action = edgeAction(current, target)
+  // The summary may prove a nullable BigInt result one expression-level
+  // provenance census still calls NO_BIGINT (notably a checked typed read).
+  // Preserve the normal KEEP for its nullish arm, but request BOX so the
+  // producer's branch-aware deferred materializer can box the present arm.
+  return current !== BOXED_BIGINT && target === BOXED_BIGINT &&
+    canBeBigint(record.body.resultSemantic) ? REP_EDGE_BOX : action
 }
 
 /** Frozen action for one plain declaration/assignment write. */
@@ -334,6 +347,12 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
   // name may box iff this body materialized it to a BOXED target. Anything
   // unresolved falls back to the boundary current's BOXED bit.
   const body = record.body
+  // The body's result edge is the authoritative proof once materialized.
+  // Check it before re-deriving from explicit tails: returnExprs deliberately
+  // omits implicit fallthrough, so a BigInt|undefined result otherwise looks
+  // like a lone raw-BigInt tail and the export wrapper chooses the raw lane.
+  if (body?.materializedResult === true &&
+      (bigintRepBits(body.resultTarget ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0) return true
   const fb = func.body
   const tails = Array.isArray(fb) && fb[0] === '{}' ? returnExprs(fb) : [fb]
   const exprMayBox = (e) => {
@@ -355,8 +374,29 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
           return (bigintRepBits(calleeBody.resultTarget ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0
         return representationResultTagRequired(ctx, callee, seen, strict)
       }
-      // A closure's result crosses its uniform f64 ABI boxed; a storage read
-      // through a method (`m.get(k)`, `a.pop()`) is boxed by construction.
+      // A closure's result crosses its uniform f64 ABI boxed, as do the known
+      // absent-capable storage methods (`get`/`pop`/`shift`/`at`). The one
+      // proved raw family here is a TypedArray method such as `reduce`; its
+      // element-domain result must not be mistaken for a generic closure box.
+      if (op === '()' && Array.isArray(e[1]) && (e[1][0] === '.' || e[1][0] === '?.')) {
+        // `recv?.method()` lowers through the optional member value and the
+        // generic closure trampoline, whose result carrier is always boxed.
+        if (e[1][0] === '?.') return true
+        const receiver = e[1][1], method = e[1][2]
+        const view = ctx.summary?.at(func.sig)
+        const sid = view?.objectSidOfExpr(receiver)
+        const className = sid == null ? null : ctx.schema.brandOf?.(sid)
+        const classFn = className == null ? null : ctx.transform.classes?.get(className)?.methods.get(method)
+        if (classFn) {
+          const callee = ctx.funcs.map?.get(classFn)
+          return callee ? representationResultTagRequired(ctx, callee, seen, strict) : false
+        }
+        const receiverVal = valTypeOf(receiver) ?? view?.valOfExpr(receiver)
+        // TypedArray.reduce is a raw element-domain producer. Other member
+        // calls cross either boxed storage or the uniform closure ABI; a
+        // method name alone is never used to classify an unknown receiver.
+        return receiverVal === VAL.TYPED ? STORAGE_READ_METHODS.has(method) : true
+      }
       if (op === '()' && typeof e[1] !== 'string') return true
       if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
         return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
@@ -370,8 +410,8 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
       // Census-shaped unary '-'/'~'/joint-binary result: same ground truth
       // as the JOIN_OPS line above — the body fixpoint's computed-expression pass (buildBodyData, beside the
       // JOIN_OPS materialization loop) already proved this exact node boxed.
-      if ((op === 'u-' || op === '~' || BIGINT_JOINT_BINARY_OPS.has(op)) &&
-          body?.materializedJoins?.has(e) === true) return true
+      if (op === 'u-' || op === '~' || BIGINT_JOINT_BINARY_OPS.has(op))
+        return body?.materializedJoins?.has(e) === true
       // Symmetric tri-state join (re-audit: bare `||` collapsed null||false
       // to false but false||null to null — arm ORDER changed the verdict):
       // TRUE dominates, else UNKNOWN (null) dominates, else FALSE.

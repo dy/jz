@@ -6,7 +6,7 @@ import { VAL, updateRep } from '../reps.js'
 import { paramValTrustworthy } from '../param-reps.js'
 import { i64Hex } from '../../layout.js'
 import {
-  typed, asF64, asI32, asPtrOffset, asParamType, ptrTypeEq, undefExpr,
+  typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
   isUndef, dollar, tcoTailRewrite, applyBigintRepresentationAction,
 } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
@@ -81,6 +81,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   // isn't BOOL, so a genuinely mixed func's NUMBER (or other) arms — and
   // every non-bool-mixed function, period — are untouched either way.
   ctx.func.valResult = func.valResult
+  ctx.func.valResultMayBeUndefined = !!func.valResultMayBeUndefined
   {
     const returns = isBlockBody(body) ? returnExprs(body) : [body]
     ctx.func.mixedAtomReturn = func.valResult !== VAL.BOOL &&
@@ -344,8 +345,11 @@ export function emitFunc(func, functionPlan, programFacts) {
     // not ToInt32 of its temporary f64 carrier. Choose toBool before emission
     // so effects still execute once and short-circuit order stays intact.
     let ir = resultBool ? toBool(body) : ambiguous ? emitIdentitySafe(body) : emit(body)
-    if (!resultBool)
+    if (!resultBool) {
       ir = applyBigintRepresentationAction(ir, body, representationReturnAction(ctx, body))
+      if (func.valResult === VAL.BOOL && func.valResultMayBeUndefined && sig.results[0] === 'f64')
+        ir = nullableBoolBoxIR(ir)
+    }
     // dyn-closure-tables.js: an expression-bodied function whose return value
     // is unconditionally a closure literal (e.g. `mk = (n) => (x) => x + n`) —
     // a direct-return closure factory, no defaulted-param indirection needed.

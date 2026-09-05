@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, deferBigintBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS, isUndefinedLiteral } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -110,12 +110,11 @@ export default (ctx) => {
     __str_join: [...(ctx.core.stdlibDeps.__str_join ?? []), '__typed_idx'],
   })
 
-  // .map/.forEach/.find/.some/.every/.filter/.findIndex all invoke with
-  // (item, idx) → arity 2. Reduce with (acc, item) → arity 2. (jz omits the
-  // `arr` arg array-spec callbacks normally receive — matches array.js
-  // convention; agent/typed-map-index closed .map's own gap, formerly the one
-  // holdout that invoked with item only.)
-  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 2)
+  // .map/.forEach/.find/.some/.every/.filter/.findIndex invoke with
+  // (item, idx). Reduce has the full ECMAScript callback contract:
+  // (accumulator, item, index, typedArray). Keep the uniform closure signature
+  // wide enough even when no source callback declares all four parameters.
+  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 4)
 
   inc('__mkptr', '__alloc', '__len')
 
@@ -1693,26 +1692,30 @@ export default (ctx) => {
         // Preserve the old zero-metadata path for ordinary reads. Only a read
         // currently serving as another index pays to materialize its miss bit.
         if (!ctx.types.indexConsumer) {
-          const rd = typed(['if', ['result', 'f64'],
-            bundleIn
-              ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, idx(i)], bundleIn]
-              : ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)],
-            ['then', loadIR], ['else', undefExpr()]], 'f64')
+          const valid = bundleIn
+            ? ['block', ['result', 'i32'], ['local.set', `$${ti}`, idx(i)], bundleIn]
+            : ['i32.lt_u', ['local.tee', `$${ti}`, idx(i)], leanLen(arr, et, isView)]
+          const makeRead = value => typed(['if', ['result', 'f64'], valid,
+            ['then', value], ['else', undefExpr()]], 'f64')
+          const rd = makeRead(loadIR)
           if (!isBigInt) rd.checkedNumRead = true
+          else deferBigintBox(rd, () => makeRead(boxBigInt(asI64(typed(loadIR, 'f64')))))
           return rd
         }
         const tin = tempI32('tbn'), innerIdx = idx(i), innerValid = innerIdx.indexValid
         const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], leanLen(arr, et, isView)]
         const condition = innerValid ? ['i32.and', innerValid, ownValid] : ownValid
-        const rd = typed(['block', ['result', 'f64'],
+        const makeRead = value => typed(['block', ['result', 'f64'],
           ['local.set', `$${ti}`, innerIdx],
           ['local.set', `$${tin}`, condition],
-          ['if', ['result', 'f64'], ['local.get', `$${tin}`], ['then', loadIR], ['else', undefExpr()]],
+          ['if', ['result', 'f64'], ['local.get', `$${tin}`], ['then', value], ['else', undefExpr()]],
         ], 'f64')
+        const rd = makeRead(loadIR)
         rd.indexValid = ['local.get', `$${tin}`]
         // number|undefined with the undefined confined to a CONST arm — a numeric
         // consumer (toNumF64) folds ToNumber into that arm statically
         if (!isBigInt) rd.checkedNumRead = true
+        else deferBigintBox(rd, () => makeRead(boxBigInt(asI64(typed(loadIR, 'f64')))))
         return rd
       }
       // BRANCHLESS checked read: `select(load(in ? idx : 0), undefined, in)`. The
@@ -1736,12 +1739,17 @@ export default (ctx) => {
       const innerIdx = idx(i)
       const innerValid = ctx.types.indexConsumer ? innerIdx.indexValid : null
       const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], lenIR]
-      const rd = typed(['block', ['result', 'f64'],
+      const setup = [
         ['local.set', `$${ti}`, innerIdx],
         ['local.set', `$${tin}`, innerValid ? ['i32.and', innerValid, ownValid] : ownValid],
+      ]
+      const rd = typed(['block', ['result', 'f64'], ...setup,
         ['select', loadIR, undefExpr(), ['local.get', `$${tin}`]]], 'f64')
       if (ctx.types.indexConsumer) rd.indexValid = ['local.get', `$${tin}`]
       if (!isBigInt) rd.checkedNumRead = true
+      else deferBigintBox(rd, () => typed(['block', ['result', 'f64'], ...setup,
+        ['if', ['result', 'f64'], ['local.get', `$${tin}`],
+          ['then', boxBigInt(asI64(typed(loadIR, 'f64')))], ['else', undefExpr()]]], 'f64'))
       return rd
     }
     const objIR = emit(arr), post = postIncI32Index(i)
@@ -1753,17 +1761,24 @@ export default (ctx) => {
       vi = ['local.get', `$${ti}`]
     }
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    const loadIR = loadOf(off)
     // A post-increment read of an integer element keeps the convert outermost
     // (`convert(block (result i32) pre… load)`), so an integer store or `|0`
     // consumer peels it back to the raw i32 exactly as for a plain read.
     const intElem = et <= 5 && !isBigInt && !r.isF16
     const value = post ? (intElem
         ? [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['block', ['result', 'i32'], ...post.pre, [LOAD[et], off]]]
-        : ['block', ['result', 'f64'], ...post.pre, loadOf(off)])
+        : ['block', ['result', 'f64'], ...post.pre, loadIR])
       : indexPre ? ['block', ['result', 'f64'], indexPre,
-          ['if', ['result', 'f64'], indexValid, ['then', loadOf(off)], ['else', undefExpr()]]]
-      : loadOf(off)
-    if (isBigInt) return typed(value, 'f64')
+          ['if', ['result', 'f64'], indexValid, ['then', loadIR], ['else', undefExpr()]]]
+      : loadIR
+    if (isBigInt) {
+      const rd = typed(value, 'f64')
+      if (indexPre) deferBigintBox(rd, () => typed(['block', ['result', 'f64'], indexPre,
+        ['if', ['result', 'f64'], indexValid,
+          ['then', boxBigInt(asI64(typed(loadIR, 'f64')))], ['else', undefExpr()]]], 'f64'))
+      return rd
+    }
     // Non-bigint typed elements are plain NUMBERS — tag the load so numeric-arm
     // predicates (isNumArm: `+` dispatch numSide, ?:/?? canon) skip box guards.
     const t = typed(value, 'f64')
@@ -1794,20 +1809,30 @@ export default (ctx) => {
     const oob = ['i32.or', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
       ['i32.ge_s', ['local.get', `$${t}`], ['local.get', `$${len}`]]]
     const relIdxSetup = [
-      ['local.set', `$${t}`, asI32Sat(emit(i))],
+      ['local.set', `$${t}`, i == null ? ['i32.const', 0] : asI32Sat(emit(i))],
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
     ]
     if (r) {
       const { et, isView } = r
-      const va = emit(arr)
+      const av = temp('taa'), va = typed(['local.get', `$${av}`], 'f64')
       const ptr = tempI32('tap')
       const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${t}`], ['i32.const', SHIFT[et]]]]
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
+      const loadIR = elemLoadIR(r, off)
+      const setup = [
+        ['local.set', `$${av}`, asF64(emit(arr))],
+        ['local.set', `$${ptr}`, typedDataAddr(va, isView)],
         ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
         ...relIdxSetup,
-        ['if', ['result', 'f64'], oob, ['then', undefExpr()], ['else', elemLoadIR(r, off)]]], 'f64')
+      ]
+      const rd = typed(['block', ['result', 'f64'], ...setup,
+        ['if', ['result', 'f64'], oob, ['then', undefExpr()], ['else', loadIR]]], 'f64')
+      // Keep the proven-present hot path raw. A tagged consumer can invoke the
+      // branch-aware recipe, which boxes only the successful BigInt arm.
+      if (r.isBigInt) deferBigintBox(rd, () => typed(['block', ['result', 'f64'], ...setup,
+        ['if', ['result', 'f64'], oob, ['then', undefExpr()],
+          ['else', boxBigInt(asI64(typed(loadIR, 'f64')))]]], 'f64'))
+      return rd
     }
     // Element kind not provable statically (opaque flow) — same runtime aux-tag
     // dispatch as typedLoop's dynamic fallback, correct for any concrete kind
@@ -2168,7 +2193,8 @@ export default (ctx) => {
     // routed to generic Array.prototype.map above, which returns PTR.ARRAY —
     // wrong species, even though the 8-byte payload itself survived unharmed).
     if (elemType != null && !r.isBigInt) {
-      const va = emit(arr), vf = emit(fn)
+      const av = temp('tma'), cb = temp('tmc')
+      const va = typed(['local.get', `$${av}`], 'f64'), vf = typed(['local.get', `$${cb}`], 'f64')
       const len = tempI32('tml'), ptr = tempI32('tmp'), i = tempI32('tmi')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
       const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(elemName),
@@ -2186,15 +2212,16 @@ export default (ctx) => {
 
       const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
+        ['local.set', `$${av}`, asF64(emit(arr))],
+        ['local.set', `$${cb}`, asF64(emit(fn))],
         ['local.set', `$${ptr}`, typedDataAddr(va, isView)],
         ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
         dst.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          // Callback receives (item, idx) — matches array.js/forEach/find/
-          // some/every's convention (JS itself also passes a 3rd `array` arg;
-          // jz omits it everywhere, see the closure.floor=2 comment above).
+          // Callback receives (item, idx), matching the other non-reduce
+          // typed iteration emitters. Reduce alone uses the wider four-slot ABI.
           storeElem(asF64(ctx.closure.call(vf,
             [loadElem(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
@@ -2243,8 +2270,8 @@ export default (ctx) => {
     // output length is always EXACTLY the input length (no worst-case-then-
     // patch-the-count dance; one-shot alloc, like __typed_slice_rt's own
     // shape). Calling convention matches the scalar-fallback branch just
-    // above — (item, idx), the `arr` 3rd arg omitted (closure.floor=2 comment
-    // above) — the two branches must stay semantically identical; only which
+    // above — (item, idx), with the receiver omitted — so the two branches
+    // must stay semantically identical; only which
     // one a given receiver reaches (compile-time-known-non-BigInt vs
     // runtime-resolved-or-BigInt element kind) differs.
     // No extra scoping block around the locals below (matches `.typed:filter`'s
@@ -2315,7 +2342,8 @@ export default (ctx) => {
     // compile time — direct-typed load, no per-element dispatch.
     if (r && !r.isBigInt) {
       const { et, isView } = r
-      const va = emit(arr)
+      const va = emit(arr), arrLoc = temp('tla')
+      const arrValue = typed(['local.get', `$${arrLoc}`], 'f64')
       const ptr = tempI32('tlp')
       inc('__len')
       const loadElem = () => {
@@ -2323,12 +2351,13 @@ export default (ctx) => {
         return typed(elemLoadIR(r, off), 'f64')
       }
       const setup = [
-        ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
-        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
+        ['local.set', `$${arrLoc}`, asF64(va)],
+        ['local.set', `$${ptr}`, typedDataAddr(arrValue, isView)],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', arrValue]]],
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', exit, ['loop', `$loop${id}`,
           ['br_if', exit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          ...bodyFn(loadElem, i, len, ptr, exit),
+          ...bodyFn(loadElem, i, len, ptr, exit, arrValue),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]]]
       return { setup, ptr, len, i, exit, et, isView, loadElem }
@@ -2359,7 +2388,7 @@ export default (ctx) => {
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', exit, ['loop', `$loop${id}`,
         ['br_if', exit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ...bodyFn(loadElem, i, len, null, exit),
+        ...bodyFn(loadElem, i, len, null, exit, typed(['local.get', `$${av}`], 'f64')),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]]]
     return { setup, ptr: null, len, i, exit, et: null, isView: false, loadElem }
@@ -2372,10 +2401,9 @@ export default (ctx) => {
   // is VAL.TYPED ('typed'), so a user-visible `arr.forEach(...)` on a tracked
   // typed-array binding routes here automatically.
   //
-  // Calling convention: callbacks receive (item, idx) — matches array.js
-  // (omits the `arr` arg that array-method spec passes; jz keeps the closure
-  // ABI width at 2 to spare a slot across the whole program). Reduce passes
-  // (acc, item). Closure invocation goes through `ctx.closure.call` directly.
+  // Calling convention: ordinary iteration callbacks receive (item, idx).
+  // Reduce receives (accumulator, item, index, typedArray), matching ECMAScript.
+  // Closure invocation goes through `ctx.closure.call` directly.
   // The element-type-name list is needed by allocPtr for typedAux:
   const ET_NAME = TYPED_ELEM_NAMES
 
@@ -2398,15 +2426,16 @@ export default (ctx) => {
       ['f64.const', 0]], 'f64')
   }
 
-  // .reduce: callback (acc, item) → acc. Without init, slot 0 seeds acc and
-  // the callback skips on iteration 0. Matches JS semantics; the (idx, arr)
-  // callback args are dropped (consistent with array.js).
+  // .reduce: callback (acc, item, index, typedArray) → acc. Without init,
+  // slot 0 seeds acc and the callback skips on iteration 0.
   ctx.core.emit['.typed:reduce'] = (arr, fn, init) => {
+    ctx.module.include('fn')
     const cbLoc = temp('trc'), acc = temp('trv'), seeded = init !== undefined
-    const loop = typedLoop(arr, (load, i) => {
+    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, receiver) => {
       const step = ['local.set', `$${acc}`, asF64(ctx.closure.call(
         typed(['local.get', `$${cbLoc}`], 'f64'),
-        [typed(['local.get', `$${acc}`], 'f64'), load()]))]
+        [typed(['local.get', `$${acc}`], 'f64'), load(),
+          typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver]))]
       if (seeded) return [step]
       // Unseeded: iteration 0 just stashes the value into acc.
       return [
@@ -2416,9 +2445,14 @@ export default (ctx) => {
     })
     if (!loop) return null
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      loop.setup[0], // receiver before callback and initial-value arguments
+      ['local.set', `$${cbLoc}`, fn == null ? undefExpr() : asF64(emit(fn))],
       ['local.set', `$${acc}`, seeded ? asF64(emit(init)) : undefExpr()],
-      ...loop.setup,
+      ['if', ['i32.eqz', ptrTypeEq(typed(['local.get', `$${cbLoc}`], 'f64'), PTR.CLOSURE)],
+        ['then', ['drop', throwTypeErrorIR('call')]]],
+      ...loop.setup.slice(1),
+      ...(!seeded ? [['if', ['i32.eqz', ['local.get', `$${loop.len}`]],
+        ['then', ['drop', throwTypeErrorIR()]]]] : []),
       ['local.get', `$${acc}`]], 'f64')
   }
 

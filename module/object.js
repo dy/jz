@@ -101,15 +101,15 @@ export default (ctx) => {
       // schema-slot writes to offsets >= 8 land out-of-bounds.
       const target = takeLiteralTarget()
       const merged = target ? ctx.schema.resolve(target) : null
-      // Dictionary mode: a `{}` whose binding takes ONLY computed-key access (no
-      // static prop ever — merged schema empty) is a string-keyed dictionary, not
-      // a fixed-shape record. Represent it as a real HASH so every get/set is one
-      // strict probe instead of the OBJECT dyn-sidecar detour, and the RMW fusion
-      // (`o[k] = f(o[k])`, emit-assign.js) can hold a slot address. The same
-      // heuristic V8 uses to send such objects to dictionary mode. Sound: all dyn
-      // paths dispatch on the runtime tag, and mem.Hash marshals it as a plain
-      // object at the boundary.
-      if (target && !merged?.length && ctx.types.dynWriteVars?.has(target)) {
+      // Dictionary mode: a direct `{}` initializer with property writes but no
+      // materialized schema is a string-keyed dictionary, not a fixed record.
+      // Represent it as a real HASH so get/set uses one strict probe and RMW
+      // fusion can hold a slot address. The direct target plus the two frozen
+      // write censuses is physical allocation provenance; a broad flow kind is
+      // not, because prepared IIFEs and spreads can forward another literal.
+      const writtenAsRecord = target && ctx.types.literalWriteKeys?.get(target)?.size
+      if (target && !merged?.length &&
+          (ctx.types.dynWriteVars?.has(target) || writtenAsRecord)) {
         ctx.module.include('collection')
         const domain = ctx.func.leanHashDomains?.get(target)
         const old = asI64(emit(target))

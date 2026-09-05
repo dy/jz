@@ -14,7 +14,7 @@
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from '../compile/representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_UNBOX, STORAGE_READ_METHODS, representationActiveMaterializedRep } from '../compile/representation-plan.js'
 import { typed } from './tag.js'
 import { temp, tempI32, blockTyped } from './locals.js'
 import { mkPtrIR, ptrOffsetIR } from './pointers.js'
@@ -61,6 +61,22 @@ export function boxBigInt(i64IR) {
     ['local.set', `$${p}`, ['call', '$__alloc', ['i32.const', 8]]],
     ['i64.store', ['local.get', `$${p}`], i64IR],
     mkPtrIR(PTR.BIGINT, 0, ['local.get', `$${p}`]))
+}
+
+/** Attach a lazy, branch-aware BOX materializer to emitted f64 IR. Checked
+ *  BigInt reads use this because their miss sentinel and one valid i64 value
+ *  can have identical bits; boxing the completed expression cannot recover
+ *  which branch produced it. Raw consumers can retain the original IR;
+ *  consumers needing a tagged value invoke the alternate recipe. */
+export function deferBigintBox(ir, materialize) {
+  ir.bigintBox = materialize
+  return ir
+}
+
+/** Resolve a checked producer's branch-aware result before a consumer strips
+ *  the annotated IR wrapper through a numeric coercion or local hoist. */
+export function materializeDeferredBigint(ir) {
+  return ir && typeof ir.bigintBox === 'function' ? ir.bigintBox() : ir
 }
 
 /** Recover the raw i64 payload from a boxed BigInt pointer (f64). Safe to
@@ -126,6 +142,14 @@ export function unboxBigInt(f64expr) {
 // watr's float_memory family, see .work/archive/member-callee-binding-write-notes.md.
 // valTypeOf asks the plain semantic question directly and needs no proxy.)
 export function applyBigintRepresentationAction(ir, node, action) {
+  // A checked producer's branch-aware recipe is itself the stronger proof:
+  // its outer nullable expression intentionally has no exact valTypeOf kind.
+  // KEEP here means "already in the planned representation"; for a deferred
+  // producer that planned representation is its tagged alternate, not the raw
+  // hot-path IR returned to immediate consumers such as strict comparison.
+  if (ir && typeof ir.bigintBox === 'function' &&
+      (action === REP_EDGE_KEEP || action === REP_EDGE_BOX || isPlanTaggedBigint(node)))
+    return materializeDeferredBigint(ir)
   if (valTypeOf(node) !== VAL.BIGINT) return ir
   if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
   if (action === REP_EDGE_UNBOX) return fromI64(maybeUnboxBigInt(asF64(ir)))
@@ -147,6 +171,7 @@ export function applyBigintRepresentationAction(ir, node, action) {
  *  choice to invoke this, never on a proven-BIGINT or proven-not-BIGINT
  *  read. Returns i64, matching unboxBigInt's own convention. */
 export function maybeUnboxBigInt(f64expr) {
+  f64expr = materializeDeferredBigint(f64expr)
   const t = temp('mbig')
   inc('__ptr_type')
   return typed(['if', ['result', 'i64'],
@@ -201,11 +226,28 @@ export const isPlanRawBigint = node =>
 
 /** Shared proof gate for consumers that need to distinguish a tagged BigInt
  *  carrier from the raw-i64 path before calling readI64. */
+const isBoxedStorageMethodRead = node => {
+  if (!Array.isArray(node) || node[0] !== '()' || !Array.isArray(node[1]) ||
+      (node[1][0] !== '.' && node[1][0] !== '?.')) return false
+  const result = valTypeOf(node) ?? ctx.summary?.at(ctx.func.current)?.valOfExpr(node)
+  if (result !== VAL.BIGINT) return false
+  const receiver = node[1][1], method = node[1][2], recv = valTypeOf(receiver)
+  if (recv === VAL.TYPED) return STORAGE_READ_METHODS.has(method)
+  if (recv === VAL.ARRAY || recv === VAL.MAP || recv === VAL.HASH) return true
+  // A schema slot holding a callable crosses the generic closure ABI boxed;
+  // class prototype methods are not slots and retain their named raw result.
+  if (recv !== VAL.OBJECT || typeof receiver !== 'string') return false
+  const sid = ctx.summary?.at(ctx.func.current)?.sidOf(receiver)
+  return sid != null && ctx.schema.list[sid]?.includes(method) === true
+}
+
 export const readI64MayUnbox = node =>
   (typeof node === 'string' && isTernaryBoxedBigint(node)) ||
-  isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node)
+  isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node)
 
 export function readI64(node, emitted) {
+  if (emitted && typeof emitted.bigintBox === 'function')
+    return maybeUnboxBigInt(materializeDeferredBigint(emitted))
   if (readI64MayUnbox(node))
     // maybeUnboxBigInt, not unboxBigInt (range-boundary BOX/UNBOX OOB fix,
     // 2026-08 — the same fix already applied to applyBigintRepresentationAction's

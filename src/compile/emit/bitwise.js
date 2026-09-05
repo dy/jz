@@ -6,12 +6,12 @@
 
 import { ctx, err } from '../../ctx.js'
 import { asF64, asI32, emitNum, fromI64, isLit, litVal, toI32, toNumF64, typed } from '../../ir.js'
-import { censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
+import { valTypeOf } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { intExprRange, intLiteralValue } from '../../static.js'
 import { exprType } from '../../type.js'
 import {
-  bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, computedBoxOf,
+  bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
 import { emit } from './dispatch.js'
 import { isI32Num } from './shared.js'
@@ -74,7 +74,12 @@ export const bitwiseOps = {
     if (Array.isArray(a) && a[0] === '~') {
       const inner = a[1]
       // ~~x === x for BigInt; the int32-truncation fold below is number-only.
-      if (valTypeOf(inner) === VAL.BIGINT) return emit(inner)
+      // A nullable BigInt would need a runtime BigInt/Number result join.
+      if (hasBigintDomain(inner)) {
+        if (ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(inner))
+          err('~~ on a nullable BigInt value is not supported; branch on nullishness first')
+        return emit(inner)
+      }
       const iv = emit(inner)
       return isLit(iv) ? emitNum(~~litVal(iv)) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
     }
@@ -82,9 +87,8 @@ export const bitwiseOps = {
     // bigIntUnary: a maybeUndefined-BIGINT operand's real
     // JS value is ToInt32(NaN)'s complement, NUMBER -1 — not `x ^ -1` on the raw
     // UNDEF_NAN sentinel bits (see emitNeg's identical substitution above).
-    // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` — see emitNeg's identical
-    // OR-arm comment (§6/§12 Slice 5): keeps this gate VT-Slice-4-independent.
-    if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
+    // The full summary kind keeps nullable BigInt producers on this branch.
+    if (hasBigintDomain(a))
       return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1], computedBoxOf(self))
     const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
   },
@@ -100,7 +104,7 @@ export const bitwiseOps = {
         op === '<<' || op === '>>' ? (ia, ib) => bigIntShiftIR(op, ia, ib) : (ia, ib) => [`i64.${fn}`, ia, ib],
         (fa, fb) => asF64(typed([`i32.${fn}`, toI32(fa), toI32(fb)], 'i32')), computedBoxOf(self))
     }
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
+    if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject(op, a, b)
       // `<<`/`>>` need the sign-aware direction flip (bigIntShiftIR) — see its
       // own doc comment. `&`/`|`/`^` have no such hazard (bitwise ops are
@@ -130,7 +134,7 @@ export const bitwiseOps = {
     // ops above, which fall to i64.shr_s/etc — `>>>` has no i64 arm at all
     // to fall to). Checked before either side emits, so no side effect runs
     // ahead of the throw.
-    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+    if (hasBigintDomain(a) || hasBigintDomain(b))
       err('BigInt has no unsigned right shift (>>>) — TypeError in JS; convert with Number(x) first if you need an unsigned shift')
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) {

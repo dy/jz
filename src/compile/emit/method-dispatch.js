@@ -9,12 +9,13 @@ import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
 import { T, isLeaf, isReassigned } from '../../ast.js'
-import { includeForRuntimeKeyIteration } from '../../autoload.js'
+import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boxBigInt, carrierF64, dispatchByPtrType, freshId, isGlobal, isNullish, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, boxBigInt, carrierF64, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationResultTagRequired, representationStorageWriteAction } from '../representation-plan.js'
@@ -329,11 +330,30 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
   }
 }
 
-// 7. Known type → static dispatch
-function tryStaticDispatch({ obj, method, vt, callMethod }) {
-  if (vt && ctx.core.emit[`.${vt}:${method}`]) {
-    return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
+// 7. Known type → static dispatch. Sidecar-bearing builtins can still have an
+// own callable property with the same name; when the summary observed such a
+// write, probe it before falling back to the prototype emitter.
+function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
+  const emitter = vt && ctx.core.emit[`.${vt}:${method}`]
+  if (!emitter) return
+  const mayShadow = vt !== VAL.STRING && usesDynProps(vt) &&
+    ctx.summary?.memberMayBeOwnOn(method, vt) && ctx.closure.call && ctx.core.emit.str
+  if (!mayShadow) return callMethod(obj, emitter)
+
+  includeModule('collection')
+  const targets = bigintMethodTargets(obj, method)
+  const callOverride = prop => {
+    const native = parsed.hasSpread
+      ? ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'),
+          [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
+      : ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'), parsed.normal)
+    return tagDynamicMethodResult(prop, native, targets)
   }
+  const callBuiltin = receiver => {
+    const value = materializeDeferredBigint(callMethod(receiver, emitter))
+    return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
+  }
+  return sidecarOverride(emit(obj), asI64(emit(['str', method])), callOverride, callBuiltin)
 }
 
 // 8. Unknown / guessed-array type, (string and/or typed) + generic exist → runtime
@@ -430,13 +450,23 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     // declined outright. Reuses `t` (already holds the once-evaluated
     // receiver) as the receiver for both, so a non-pure `obj` expression is
     // never re-evaluated.
+    const materializeBuiltinResult = (kind, value) => {
+      value = materializeDeferredBigint(value)
+      return methodValType(method, null, kind, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
+    }
     const canShadowProbe = genEmitter && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
+    // The core stub can only miss. When this program actually defines such an
+    // own method, load the real schema/sidecar lookup before stdlib linking.
+    const ownMethodPossible = ctx.summary?.memberMayBeOwn(method) ||
+      ctx.summary?.builtinMemberMayBeOwn(method) ||
+      ctx.schema.list.some(schema => schema.includes(method))
+    if (canShadowProbe && ownMethodPossible) includeModule('collection')
     const genericCall = genEmitter
       ? (canShadowProbe
           ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
               (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
-              () => asF64(callMethod(t, genEmitter)))
-          : callMethod(t, genEmitter))
+              () => materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
+          : materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
       : (tryDynamicPropCall({ obj: t, method, parsed, vt: null })
           ?? externalMethodFallback({ obj: t, method, parsed }))
     const generic = mayBeUndef ? typed(['if', ['result', 'f64'],
@@ -444,8 +474,8 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
       ['then', throwTypeErrorIR()],
       ['else', genericCall]], 'f64') : genericCall
     const cases = []
-    if (strEmitter) cases.push([PTR.STRING, callMethod(t, strEmitter)])
-    if (typedEmitter) cases.push([PTR.TYPED, callMethod(t, typedEmitter)])
+    if (strEmitter) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
+    if (typedEmitter) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
     // Date carve-out — see dateAuxFallback's doc for the discrimination
     // rationale (.work/archive/printer-trio.md residual). `tt` is already computed
     // below (the ptr-type local this fork uses for its own STRING/TYPED
@@ -592,8 +622,16 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
     // repro (test/data.js) still passes on `vt == null` alone, same as the
     // STRING twin — nothing downstream can hand this branch a wrongly-proven
     // ARRAY/STRING `vt` anymore.
-    if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
-      && ctx.module.demanded.has('string') && ctx.module.demanded.has('fn')) {
+    const knownOwnShadow = vt != null && vt !== VAL.STRING && usesDynProps(vt) &&
+      ctx.summary?.memberMayBeOwnOn(method, vt)
+    const unknownOwnShadow = vt == null && ctx.module.demanded.has('string') &&
+      ctx.module.demanded.has('fn')
+    if ((knownOwnShadow || unknownOwnShadow) && ctx.closure.call &&
+        !parsed.hasSpread && ctx.core.emit.str) {
+      // A known builtin receiver normally takes this generic emitter directly,
+      // but an observed own-property write requires the same sidecar lookup as
+      // an unknown receiver. Ensure the real lookup replaces the core miss stub.
+      if (knownOwnShadow) includeModule('collection')
       // HOISTED override probe: for a stable module-global receiver (the same
       // proof as charCodeAt shape-1b — never assigned in this function, and the
       // body's only calls are .charCodeAt, so nothing that runs here can change
@@ -623,9 +661,14 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
       // module-global string receiver reaches the ABI op as `global.get` and
       // the charCodeAt shape-1b entry decomposition can fire (the layered-
       // parser `cur.charCodeAt(idx)` hot shape; a local temp would hide it).
+      const targets = bigintMethodTargets(obj, method)
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
-        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
-        (o) => asF64(callFlat(typeof obj === 'string' ? obj : o)))
+        (p) => tagDynamicMethodResult(p,
+          ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal), targets),
+        (o) => {
+          const value = materializeDeferredBigint(callFlat(typeof obj === 'string' ? obj : o))
+          return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
+        })
     }
     return callFlat(obj)
   }

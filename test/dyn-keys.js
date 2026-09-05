@@ -44,11 +44,8 @@ test('dyn-keys: ToPropertyKey for atom keys (the prec[undefined] class)', () => 
     const u = hole[0]
     return (prec[u] <= 5 ? 1000 : 2000) + (prec['('] === 6 ? 100 : 200) + (prec[u] === undefined ? 10 : 20) + (prec['nope'] <= 5 ? 1 : 2)`), 2112)
   is(run(`const d = {}; d['null'] = 8; return d[null]`), 8)
-  // KNOWN GAP (carrier-level, pre-existing): jz booleans are bare-number
-  // carriers (true ≡ 1.0 at runtime), so a DYNAMIC d[true] coerces to key '1',
-  // not 'true'. Static bool keys fold correctly; only runtime-flowing bools
-  // diverge. Pin the current behavior so a carrier change surfaces here.
-  is(run(`const d = {}; d['true'] = 9; return d[true] === undefined ? 1 : 0`), 1)
+  // Dynamic booleans use ToPropertyKey just like static boolean keys.
+  is(run(`const d = {}; d['true'] = 9; return d[true]`), 9)
 })
 
 // dyn-prop KEYING on a NUMERIC (non-string) key against an OBJECT receiver
@@ -1606,13 +1603,18 @@ test('local Map present-key BigInt crosses a unary parameter hop', () => {
   }
 })
 
-test('control-dependent local Map BigInt unary hop rejects cleanly', () => {
-  throws(() => jz(`
+test('control-dependent local Map BigInt unary hop preserves both domains', () => {
+  const src = `
     const g = (v) => -v
     export let f = (cond) => {
       const m = new Map()
       if (cond) m.set('a', 5n)
       return g(m.get('a'))
     }
-  `), /control-dependent BigInt writes/)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const { f } = jz(src, { optimize }).exports
+    is(f(true), -5n, `O${optimize || 0}: present BigInt stays BigInt`)
+    ok(Number.isNaN(f(false)), `O${optimize || 0}: absent value negates to NaN`)
+  }
 })

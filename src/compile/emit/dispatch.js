@@ -1461,12 +1461,18 @@ function liftOptionalChain(node) {
   }
   if (optIdx <= 0) return null
   const opt = path[optIdx]
+  const payloadCtor = opt[0] === '?.' ? ctx.summary?.at(ctx.func.current)?.typedPayloadCtorOfExpr(opt[1]) : null
+  const boxedTypedReduce = opt[0] === '?.' && opt[2] === 'reduce' &&
+    (payloadCtor === 'new.BigInt64Array' || payloadCtor === 'new.BigUint64Array')
   return withNullGuard(asF64(emit(opt[1])), t => {
     let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
                 : opt[0] === '?.[]' ? ['[]', t, opt[2]]
                                     : ['()', t, ...opt.slice(2)]
     for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
-    return asF64(emit(rebuilt))
+    const result = emit(rebuilt)
+    // TypedArray.reduce's BigInt result is raw, but optional chaining adds an
+    // undefined arm. Box inside the successful branch before the carriers join.
+    return asF64(boxedTypedReduce ? boxBigInt(asI64(result)) : result)
   }, 'oc')
 }
 
@@ -1575,7 +1581,7 @@ export function emit(node, expect) {
           // boxed-value position, so rebox to the true/false ATOM — the exact
           // mirror of the boundary wrapper (index.js resultBool). Without it a
           // field-held function's `=== true` / typeof observed a plain number.
-          const boolResult = !ptrResult && func?.valResult === VAL.BOOL
+          const boolResult = !ptrResult && func?.valResult === VAL.BOOL && !func?.valResultMayBeUndefined
           const wrapped = ptrResult
             ? `(call $__mkptr (i32.const ${valKindToPtr(func.sig.ptrKind)}) (i32.const ${func.sig.ptrAux ?? 0}) ${callExpr})`
             : boolResult
