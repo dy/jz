@@ -22,6 +22,51 @@ import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { run } from './util.js'
+import { initSchema } from '../module/schema.js'
+
+// A multi-schema static read unboxes only if EVERY alternative is proven
+// boxed BigInt. Per-schema (raw OR unboxed) does not prove a raw merged read.
+test('slot carriers: refinements require one common read representation', () => {
+  const facts = { schema: { list: [['n'], ['n'], ['n'], []] }, func: { refinements: new Map() } }
+  initSchema(facts)
+  const s = facts.schema
+  s.idOf = name => name === 'record' ? 0 : null
+  // Isolate the composition of the writer/read contracts: raw, unboxed,
+  // still-boxed, and missing. These are not executable compiler fixtures.
+  s.slotBigintBoxedBySid = (sid, prop) => prop === 'n' && (sid === 1 || sid === 2)
+  s.slotBigintProvenBySid = (sid, prop) => prop === 'n' && sid === 1
+  is(s.slotBigintRawAt('record', 'n'), true, 'known raw slot')
+  is(s.slotBigintRawAt('missing', 'n'), false, 'unknown receiver')
+  is(s.slotBigintRawAt('record', 'missing'), false, 'off-schema property')
+  for (const [schemaIds, expected] of [
+    [[0, 0], true], [[0, 0], true], [[0, 1], false], [[0, 0], true],
+    [[1, 1], true], [[2], false], [[0, 2], false], [[3], false], [[4], false], [[], true],
+  ]) {
+    facts.func.refinements.set('record', { schemaIds })
+    is(s.slotBigintRawAt('record', 'n'), expected, `schema alternatives ${schemaIds}`)
+  }
+  facts.func.refinements.clear()
+  is(s.slotBigintRawAt('record', 'n'), true, 'unrefined query recovers after other views')
+})
+
+test('slot carriers: static brackets share dot access unboxing of uniform BigInt slots', () => {
+  const bits = 0x1234567812345678n
+  for (const optimize of [false, 1, 2, 3]) {
+    const { exports } = jz(`
+      const table = {bits: ${bits}n}
+      table.bits = ${bits}n
+      const high = n => Number((n >> 32n) & 0xffffffffn)
+      export const bracket = () => high(table['bits'])
+      export const dot = () => high(table.bits)
+      export const observe = key => table[key]
+    `, { optimize })
+    const sid = ctx.schema.idOf('table')
+    ok(ctx.schema.slotBigintBoxedBySid(sid, 'bits'), 'precondition: writes box the slot')
+    ok(ctx.schema.slotBigintProvenBySid(sid, 'bits'), 'precondition: dot read unboxes the slot')
+    is(exports.bracket(), Number(bits >> 32n), 'bracket reads the payload, not the box address')
+    is(exports.dot(), Number(bits >> 32n), 'dot and bracket use the same carrier')
+  }
+})
 
 const LEVELS = [0, 2]
 

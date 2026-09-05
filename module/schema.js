@@ -614,4 +614,21 @@ export function initSchema(ctx) {
     return ctx.schema.slotBigintProvenBySid(ctx.schema.idOf(varName), prop)
   }
 
+  // The static read emits raw BigInt either because the slot stores raw bits,
+  // or because a uniformly boxed slot is unboxed by emitSchemaSlotRead. This
+  // is a carrier contract, not proof of the slot's semantic kind. An unknown
+  // schema/missing property cannot prove a raw read from a dynamic fallback.
+  const slotStoresRawBigint = (sid, prop) => sid != null && ctx.schema.list[sid]?.includes(prop) === true &&
+    !ctx.schema.slotBigintBoxedBySid(sid, prop)
+  ctx.schema.slotBigintRawAt = (varName, prop) => {
+    if (ctx.schema.slotBigintProvenAt(varName, prop)) return true
+    const ids = ctx.func.refinements?.get(varName)?.schemaIds
+    // A merged read unboxes all arms or none, not each schema independently.
+    if (ids?.length) {
+      for (const id of ids) if (!slotStoresRawBigint(id, prop)) return false
+      return true
+    }
+    return slotStoresRawBigint(ctx.schema.idOf(varName), prop)
+  }
+
 }

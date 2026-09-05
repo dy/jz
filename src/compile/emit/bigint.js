@@ -84,19 +84,10 @@ export function bigintMixReject(op, a, b) {
 //              maybeUndefined (censusMaybeUndefinedKind never feeds `val` —
 //              the permanent invariant §14's Slice-4 revert restored).
 //              Always a real BigInt at runtime — no runtime check needed.
-//   'number' — a plain numeric LITERAL (bigintMixReject's own numLiteralNode)
-//              ONLY — always a real Number, no runtime check needed.
-//              Deliberately NOT `valTypeOf(node) === VAL.NUMBER` in general:
-//              that claim can be a kind-DEFAULT, not a proof (bigintMixReject's
-//              own doc comment — "kernel carriers read NUMBER as a kind-
-//              DEFAULT" — the SAME reason it only ever rejects a LITERAL
-//              mismatch, never a general NUMBER-claimed expression). Confirmed
-//              live, not assumed: layout.js's `i64Hex` (part of the self-compile
-//              graph) and a self-compiled-build-only inlined-local shape both
-//              mix a `valTypeOf===NUMBER`-optimistic-default operand with a
-//              real BigInt LITERAL/expression on purpose — treating that
-//              NUMBER claim as throw-worthy broke the self-compiled kernel
-//              build outright (caught by the gate, not assumed safe).
+//   'number' — a numeric literal or summary-proven Number, possibly nullish
+//              (ToNumeric(null/undefined) is still Number). A tagged carrier
+//              does not add BigInt to this semantic domain. `valTypeOf`'s
+//              optimistic NUMBER default alone is not such a proof.
 //   'census' — censusMaybeUndefinedKind(node) === VAL.BIGINT: the container
 //              proves its value is BIGINT whenever present, but PRESENCE
 //              itself is runtime-only — needs isUndef: present → BigInt,
@@ -123,12 +114,17 @@ function bigIntDomain(node) {
   const summaryOnlyNumberBigint = summaryBigint && [K.STRING, K.BOOL, K.TYPED,
     K.ARRAY, K.OBJECT, K.CLOSURE, K.MAP, K.SET, K.DATE, K.REGEX, K.HASH,
     K.BUFFER, K.NULLISH, K.ABSENT].every(kind => !hasTag(summaryKind, kind))
+  // Tagged storage does not add a BigInt member to a proven Number domain.
+  // Captured Map reads can be Number|undefined while using a tagged carrier;
+  // probing its tags invents a BigInt arm (also breaking ~ / ~~ on absence).
+  // Keep explicit BigInt producer handling below: normalized postfix recovery
+  // uses a synthetic Number 1 whose summary alone describes ordinary JS math.
   // A mixed Number/BigInt parameter is normalized by RepresentationPlan:
   // Number stays raw f64, BigInt is a PTR.BIGINT cell. This exact tag is the
   // runtime evidence an internal (non-exported) helper previously discarded,
   // causing arithmetic to reinterpret the box as a Number.
-  if (isPlanTaggedBigint(node) ||
-      (summaryOnlyNumberBigint && isSchemaSlotBigintPossible(node))) return 'tagged'
+  if (summaryTag !== K.NUMBER && (isPlanTaggedBigint(node) ||
+      (summaryOnlyNumberBigint && isSchemaSlotBigintPossible(node)))) return 'tagged'
   if ((vt === VAL.BIGINT || summaryExactBigint) &&
       (censusMaybeUndefinedKind(node) === VAL.BIGINT || view?.mayBeNullishExpr(node))) return 'census'
   if (vt === VAL.BIGINT || summaryExactBigint) return 'bigint'

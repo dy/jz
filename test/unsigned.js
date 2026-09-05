@@ -33,9 +33,76 @@
  *                  convert) on disagreement.
  */
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, throws } from 'tst/assert.js'
 import { run, evaluate, compileSrc } from './util.js'
 import { scalarCase } from './_scalar-core-cases.js'
+
+// A captured Map read uses a tagged storage carrier even when the summary
+// proves Number|undefined. The carrier must not invent a BigInt runtime arm.
+for (const expression of ['value >>> 5', '2147483648 >>> value', '~value', '~~value', '+value', 'value & 31', 'value << 1']) {
+  test(`numeric domains: captured Number/undefined stays numeric in ${expression}`, () => {
+    const source = `
+      export const big = () => 9221120245631025152n
+      function create() {
+        const values = new Map()
+        values.set('present', 65)
+        values.set('negative', -1)
+        values.set('fractional', 3.75)
+        values.set('tiny', 5e-324)
+        values.set('null', null)
+        values.set('undefined', undefined)
+        values.set('zero', -0)
+        values.set('large', 4294967295)
+        values.set('nan', NaN)
+        values.set('infinity', Infinity)
+        let reads = 0
+        return {
+          get(key) { reads++; const value = values.get(key); return ${expression} },
+          count() { return reads }
+        }
+      }
+      const reader = create()
+      export const f = key => reader.get(key)
+      export const count = () => reader.count()
+    `
+    for (const optimize of [false, 1, 2, 3]) {
+      const expected = Function(source.replaceAll('export ', '') + '; return { f, count, big }')()
+      const actual = run(source, { optimize })
+      for (const key of ['missing', 'missing', 'present', 'present', 'negative', 'fractional', 'tiny', 'null', 'undefined', 'zero', 'large', 'nan', 'infinity', 'missing', 'present']) {
+        is(actual.f(key), expected.f(key), `O${optimize || 0}: ${key}`)
+        is(actual.count(), expected.count(), 'one producer evaluation per call')
+      }
+      is(actual.big(), expected.big(), 'the unrelated BigInt payload stays intact')
+    }
+  })
+}
+
+test('numeric domains: captured BigInt-capable operands still reject unsigned shift', () => {
+  for (const initializer of [
+    "const values = new Map([['present', 1n]])",
+    "const values = new Map([['present', 65], ['big', 1n]])",
+    "const values = new Map(); values.set('present', 65); values.set('big', 1n)",
+  ]) for (const expression of ['value >>> 5', '5 >>> value']) {
+    const source = `function create() {
+      ${initializer}
+      return { get(key) { const value = values.get(key); return ${expression} } }
+    }
+    const reader = create()
+    export const f = key => reader.get(key)`
+    for (const optimize of [false, 1, 2, 3])
+      throws(() => run(source, { optimize }), /BigInt has no unsigned right shift/)
+  }
+})
+
+test('numeric domains: normalized postfix recovery retains its BigInt producer', () => {
+  for (const update of ['++', '--']) for (const optimize of [false, 1, 2, 3]) {
+    const source = `export const f = () => {
+      let a = [4611686018427387903n]
+      return a[0]${update} + 0n
+    }`
+    is(run(source, { optimize }).f(), 4611686018427387903n, `O${optimize || 0}: ${update} keeps the old value`)
+  }
+})
 
 // ───────────────────────────────────────────────── canonical uint32 boundary
 

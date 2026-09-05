@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
 import { onWasi, adaptI64 } from './_matrix.js'
 import jz, { compile } from '../index.js'
+import { instantiate } from '../interop.js'
 
 // Helper: compile and run
 function run(code) {
@@ -10,6 +11,109 @@ function run(code) {
   const mod = new WebAssembly.Module(wasm)
   return adaptI64(mod, new WebAssembly.Instance(mod).exports)
 }
+
+// Imported initializers execute in __start too: their call edges must use the
+// same representation plan as the entry module, including unary producers.
+for (const optimize of [false, 1, 2, 3]) test(`imported BigInt initializers normalize call arguments O${optimize || 0}`, () => {
+  const consumer = `export const consume = bits => Number((bits >> 32n) & 0xffffffffn)`
+  for (const expression of ['~(1n << BigInt(32))', '-(1n << BigInt(32))', '1n << BigInt(32)']) {
+    const { exports } = jz(`
+      import {value} from './init.js'
+      import {consume} from './consumer.js'
+      export const result = () => value
+      export const other = x => consume(x ? 4294967296n : undefined)
+    `, { optimize, modules: {
+      './consumer.js': consumer,
+      './init.js': `import {consume} from './consumer.js'; export const value = consume(${expression})`,
+    } })
+    const bits = Function(`return ${expression}`)()
+    is(exports.result(), Number((bits >> 32n) & 0xffffffffn), expression)
+    for (const present of [true, true, false, true]) {
+      if (present) is(exports.other(true), 1, 'later calls use the same parameter carrier')
+      else throws(() => exports.other(false), /Cannot mix BigInt/, 'absence is not a raw payload')
+    }
+  }
+})
+
+for (const optimize of [false, 1, 2, 3]) test(`imported raw BigInt slots normalize at a tagged call boundary O${optimize || 0}`, () => {
+  for (const [bits, access] of [
+    [0n, 'table.bits'], [0x7ff8000000000000n, 'table.bits'],
+    [0x7ffa800000000000n, 'table.bits'], [-1n, 'table.bits'],
+    [0x7ffa800000000000n, "table['bits']"],
+  ]) for (const shift of [0n, 32n]) {
+    const { exports } = jz(`
+      import {value} from './init.js'
+      import {consume} from './consumer.js'
+      export const result = () => value
+      export const other = x => consume(x ? 4294967296n : undefined)
+      export const poison = (o, k, v) => { o[k] = v; return o }
+    `, { optimize, modules: {
+      './consumer.js': `export const consume = bits => Number((bits >> ${shift}n) & 0xffffffffn)`,
+      './init.js': `
+        import {consume} from './consumer.js'
+        const table = {bits:${bits}n}
+        const load = () => consume(${access})
+        export const value = load()
+      `,
+    } })
+    is(exports.result(), Number((bits >> shift) & 0xffffffffn), `raw payload ${bits} >> ${shift} via ${access}`)
+    for (const present of [true, true, false, true]) {
+      if (present) is(exports.other(true), Number((4294967296n >> shift) & 0xffffffffn), 'other caller retains its tagged carrier')
+      else throws(() => exports.other(false), /Cannot mix BigInt/, 'absence is not a raw payload')
+    }
+  }
+})
+
+test('imported start plans preserve effects and retained A→A→B→empty→error→A outputs', () => {
+  const source = `
+    import {value} from './init.js'
+    import {consume} from './consumer.js'
+    import {mark, trace} from './state.js'
+    mark(4)
+    export const result = () => value
+    export const readTrace = () => trace
+    export const other = c => consume(c ? 4294967296n : undefined)
+  `
+  const options = shift => ({ optimize: false, modules: {
+    './state.js': `export let trace = 0; export function mark(n) { trace = trace * 10 + n; return n }`,
+    './consumer.js': `
+      import {mark} from './state.js'
+      export function consume(bits) { mark(3); return Number((bits >> 32n) & 0xffffffffn) }
+    `,
+    './init.js': `
+      import {mark} from './state.js'
+      import {consume} from './consumer.js'
+      const record = {buf: new Float64Array([${shift}])}
+      mark(1)
+      export const value = consume(~(1n << BigInt(record.buf[0] + mark(2) - 2)))
+    `,
+  } })
+  const retained = []
+  const build = shift => {
+    const bytes = compile(source, options(shift))
+    const instance = instantiate(bytes)
+    is(instance.exports.readTrace(), 1234, 'dependency → operand → callee → entry, each exactly once')
+    is(instance.exports.result(), Number((~(1n << BigInt(shift)) >> 32n) & 0xffffffffn), `shift ${shift}`)
+    retained.push({ bytes, instance, shift })
+    return bytes
+  }
+  const a = build(0)
+  is(build(0), a, 'A→A bytes')
+  build(32)
+  for (const code of ['', `import './empty.js'`]) {
+    const empty = compile(code, { optimize: false, modules: { './empty.js': '' } })
+    ok(WebAssembly.validate(empty), 'zero-work program is valid wasm')
+    is(typeof instantiate(empty).exports.result, 'undefined', 'empty program has no retained user export')
+  }
+  throws(() => compile('export function broken(', options(0)))
+  is(build(0), a, 'A after B, empty graphs, and a compile error')
+  for (const { bytes, instance, shift } of retained) {
+    is(instance.exports.readTrace(), 1234, 'later compiles do not rerun an earlier initializer')
+    const fresh = instantiate(bytes)
+    is(fresh.exports.readTrace(), 1234, 'retained bytes initialize a fresh instance once')
+    is(fresh.exports.result(), Number((~(1n << BigInt(shift)) >> 32n) & 0xffffffffn), 'retained semantic output')
+  }
+})
 
 // Named imports
 test('import { sin } from math', () => {

@@ -700,13 +700,10 @@ export default (ctx) => {
       const fi = flatKey != null ? fo.names.indexOf(flatKey) : -1
       if (fi >= 0) return typed(['local.get', `$${arr}#${fi}`], 'f64')
     }
-    if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
-      const slot = ctx.schema.slotOf(arr, litKey)
-      if (slot >= 0) {
-        inc('__ptr_offset')
-        return typed(ctx.abi.object.ops.load(['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]], slot), 'f64')
-      }
-    }
+    // Share dot access's slot carrier contract, including unboxing. A second
+    // plain-load path here disagrees with the representation plan on BigInts.
+    if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf?.(arr, litKey) >= 0)
+      return emit(['.', arr, litKey])
     if (litKey != null && typeof arr === 'string' && lookupValType(arr) === VAL.HASH) {
       inc('__hash_get_local_h')
       return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', asI64(emit(arr)), asI64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]]], 'f64')

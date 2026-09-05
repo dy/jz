@@ -90,17 +90,14 @@ const programFacts = ctx => {
 }
 
 /** Publish after local/signature/schema facts settle and before body emission. */
-export function mintTypedStoragePlan(ctx, identity, sig, body, localReps, options = {}) {
+export function mintTypedStoragePlan(ctx, identity, sig, body, localReps) {
   const prior = ctx.plans.typedStorage.get(identity)
   if (prior && dataOf(ctx, prior))
     throw new Error(`TypedStoragePlan already published for ${identity?.name || '<anonymous>'}`)
 
   const program = programFacts(ctx)
   const fieldKeys = new Map()
-  if (program.hasTypedFields) {
-    collectFieldKeys(ctx, body, fieldKeys)
-    for (const extra of options.extraBodies || []) collectFieldKeys(ctx, extra, fieldKeys)
-  }
+  if (program.hasTypedFields) collectFieldKeys(ctx, body, fieldKeys)
   if (identity?.name && sig?.ptrKind === VAL.TYPED && sig.ptrAux != null)
     program.calls.set(identity.name, ctorFromElemAux(sig.ptrAux))
 

@@ -230,7 +230,8 @@ VT['[]'] = (args) => {
   { const li = intLiteralValue(args[1]); if (li != null && li < 0) return null }
   // A non-numeric STRING-literal key is a PROPERTY read, not an element read:
   // on arrays/typed arrays it yields undefined (or a builtin method), never the
-  // element kind. Typing it by elem let `a['@@iterator'] != null` fold TRUE on
+  // element kind. A proven OBJECT uses the same named-property facts as dot
+  // access. Typing by elem let `a['@@iterator'] != null` fold TRUE on
   // a known array — the drain/GetIterator guards then called undefined (table
   // OOB). Canonical numeric strings ('0','1',…) DO address elements
   // (ToPropertyKey) and keep the elem typing below.
@@ -238,7 +239,8 @@ VT['[]'] = (args) => {
     const k = args[1]
     const lit = Array.isArray(k) && k.length === 2 && k[0] == null ? k[1]
       : Array.isArray(k) && k[0] === 'str' ? k[1] : undefined
-    if (typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit)) return null
+    if (typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit))
+      return valTypeOf(args[0]) === VAL.OBJECT ? VT['.']([args[0], lit]) : null
   }
   // SRoA flat-array slot read: `a[k]` (static index) where `a` dissolved into
   // scalar `a#i` locals (scanFlatObjects). A write-once slot's value-type is its

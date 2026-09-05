@@ -35,10 +35,13 @@ function seedStartGeneratedLocals(body) {
 
 /** Publish the synthetic module-init FunctionPlan before any start IR emits. */
 function analyzeStartForEmit(ast) {
-  const start = { name: '__start', body: ast }
+  // Plan the complete emitted start body, preserving the imported AST nodes
+  // that representation call/write edges are keyed by. No expression cloning.
+  const body = ctx.module.moduleInits?.length ? ['{}', ...ctx.module.moduleInits, ast] : ast
+  const start = { name: '__start', body }
   const previousFrame = enterActiveFunction(ctx, {
     sig: { name: '__start', params: [], results: [] },
-    body: ast,
+    body,
     moduleScope: true,
   })
   try {
@@ -63,11 +66,9 @@ function analyzeStartForEmit(ast) {
       seedStartGeneratedLocals(mi)
     }
     seedStartGeneratedLocals(ast)
-    mintTypedStoragePlan(ctx, start, ctx.func.current, ast, ctx.func.localReps, {
-      extraBodies: ctx.module.moduleInits || [],
-    })
+    mintTypedStoragePlan(ctx, start, ctx.func.current, body, ctx.func.localReps)
     if (representationProgramHasBigint(ctx))
-      mintRepresentationPlan(ctx, start, ctx.func.current, ast, ctx.func.localReps)
+      mintRepresentationPlan(ctx, start, ctx.func.current, body, ctx.func.localReps)
     publishPreparedFunctionPlan(ctx, start, ctx.func)
     ctx.plans.start = start
     return start

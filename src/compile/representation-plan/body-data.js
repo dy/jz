@@ -1,4 +1,5 @@
-import { ASSIGN_OPS, commaList, returnExprs } from '../../ast.js'
+import { ASSIGN_OPS, commaList, isLiteralStr, returnExprs } from '../../ast.js'
+import { staticPropertyKey } from '../../static.js'
 import { DBG_INVARIANTS } from '../../ctx.js'
 import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -23,6 +24,15 @@ const NON_BIGINT_OPS = new Set([
   'str', 'bool', 'new', 'delete', 'in', 'instanceof',
 ])
 const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[2]]
+
+// Static bracket keys use the same slot reader as dot access (module/array.js).
+const rawSchemaRead = (ctx, node) => {
+  const recv = node[1]
+  if (typeof recv !== 'string') return false
+  const prop = node[0] === '.' ? node[2] : isLiteralStr(node[2]) ? node[2][1]
+    : valTypeOf(recv) === VAL.OBJECT ? staticPropertyKey(node[2]) : null
+  return prop != null && ctx.schema.slotBigintRawAt?.(recv, prop) === true
+}
 
 const directCallBoundary = (ctx, name) => {
   const func = ctx.funcs.map.get(name)
@@ -381,8 +391,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       if (recv != null) {
         const rv = valTypeOf(recv)
         if (rv === VAL.TYPED) out = RAW_BIGINT
-        else if (node[0] === '.' && typeof recv === 'string' && typeof node[2] === 'string' &&
-                 ctx.schema.slotBigintProvenAt?.(recv, node[2])) out = RAW_BIGINT
+        else if (rawSchemaRead(ctx, node)) out = RAW_BIGINT
         else out = BOXED_BIGINT
       // Shape #6 layer 1: every STORAGE_READ_METHODS call (get/pop/shift/at),
       // not just 'get' — exprRep (solveBigintProvenance, above) already
@@ -470,8 +479,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       const cm = callMember(node)
       if (recv != null) {
         target = valTypeOf(recv) === VAL.TYPED ? RAW_BIGINT :
-          (node[0] === '.' && typeof recv === 'string' && typeof node[2] === 'string' &&
-           ctx.schema.slotBigintProvenAt?.(recv, node[2]) ? RAW_BIGINT : BOXED_BIGINT)
+          (rawSchemaRead(ctx, node) ? RAW_BIGINT : BOXED_BIGINT)
         normalizedElsewhere = true // storage's write edge owns the carrier
       // Shape #6 layer 1 (mirrors currentOf's identical fix above): the full
       // STORAGE_READ_METHODS set, not just 'get'.

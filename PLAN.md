@@ -179,11 +179,63 @@ this milestone is complete; existing red checkpoints are not a new baseline.
   61 lines versus published 5.10.1, including the earlier CSE change; tests and
   docs are additional maintained work. Consolidation is not yet a net deletion.
 
+### Bootstrap contract review — 2026-09-05
+
+The unsigned-shift build rejection and two startup carrier faults are repaired;
+this is not yet a green bootstrap or result-contract milestone.
+
+- Captured Map values proven Number/nullish no longer acquire a BigInt domain
+  merely from tagged storage. `test/unsigned.js` covers both unsigned-shift
+  operands, unary plus/complement/double-complement, AND and left shift; missing
+  and repeated keys, null, undefined, -0, fractions, subnormal Numbers, uint32
+  max, NaN and Infinity; one producer evaluation; and genuine BigInt rejection.
+  The normalized postfix BigInt control prevents overriding explicit producer
+  semantics with the synthetic Number 1 in the current normalization.
+- The start plan now covers imported initializers and the entry AST together,
+  without cloning expression nodes. This replaces typed storage's separate
+  `extraBodies` path. `test/imports.js` pins unary/raw-slot call edges at O0–O3,
+  both halves of collision-shaped payloads, true→true→error→true calls, and
+  A→A→B→empty→error→A compiles. The latter also includes an empty imported module,
+  a typed field read, initializer trace 1234 (dependency/operand/callee/entry),
+  retained instances and executable retained bytes.
+- Slot read representation follows both storage and read-side unboxing. The
+  review caught mixed refined schemas incorrectly satisfying per-arm raw OR
+  unboxed: a merged read must unbox all arms or none. `test/slot-hazards.js`
+  isolates that contract, including unknown/missing schemas. Static bracket
+  reads now share dot-access kind facts and slot lowering; the duplicate plain
+  load was deleted. Tests cover raw collision payloads through brackets and a
+  uniformly boxed slot with explicit writer/unbox precondition assertions.
+- Final focused native: **156 tests / 1,509 assertions pass** (`imports unsigned
+  slot-hazards`); WASI: **156 / 1,495**. Opt3 plus `objects dyn-keys pointers
+  array-methods summary-queries self-compile-source`: **615 / 2,832 pass**.
+  Source guards cover 291 compiler files. An earlier opt0 selection including
+  minimal-output, determinism and the op-count ratchet passed 571 / 2,748 before
+  the bracket sibling repair; it is not a final whole-matrix result.
+- `data statements watr inference`: **604 tests, 598 pass / six fail** (2,473
+  assertions): the five existing carrier defects plus the receiver-HASH
+  no-computed-write expectation. The latter also fails with unmodified
+  `18aab52a` production sources. Final `npm test` reached its 420-second review
+  limit in cursor-versioning tests after reproducing the first four carrier
+  defects. No full matrix is certified.
+- Private fresh `npm run test:self`: **17 pass / six fail**, 61 assertions.
+  Remaining failures: L2 inliner BigInt mixing; SIMD output execution OOB;
+  eq-zero native/hosted byte parity; warm charCodeAt bytes after clear;
+  bare-return bytes after A→A→B→A→empty; and Map/property output execution OOB
+  without clear. Performance does not run after the failing correctness leg.
+- Eighty valid numeric corpus outputs (`perf-corpus.mjs`, all ten categories,
+  seeds 1/2, O0/O1/O2/O3) are byte-identical to `18aab52a`. This bounds unaffected
+  output size/runtime, not whole-compiler speed or the cost of required boxes
+  at previously incorrect edges. No timing claim. `dist/jz.wasm` is unchanged;
+  owned bootstrap/review scratch and diagnostic artifacts were removed.
+- Recursive OOM remains separate: the other session attributes it to plan after
+  `refineSlotIntCensus`, with two summary runs allocating about 2.5 GB before
+  emit/link/watr are reached. This review does not recertify recursive memory.
+
 ### Next ownership and order
 
 1. Integration/result-contract session owns summary, representation, emitter,
-   and combined-tree certification. Repair the bootstrap unsigned-shift
-   rejection and the five value defects through producer/callable contracts;
+   and combined-tree certification. Repair the remaining fresh-hosted failures
+   and the five value defects through producer/callable contracts;
    keep the private fresh gate. Do not add source-spelling exceptions.
 2. Optimizer session owns watr, transport allocation evidence, and coordinated
    dependency release. Supply committed shared changes and an explicit handoff;
