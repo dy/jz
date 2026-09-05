@@ -57,14 +57,39 @@ test('tape: decode then encode is the identity on a WAT module, atoms and `.type
   is(n, T.n, 'every node reached once')
 })
 
-test('tape: a consuming decode empties the tree it reads; a shared subtree decodes once and copies after', () => {
+test('tape: a shared subtree decodes into a node at each use; the tree read stays; the encode is a fresh tree the caller owns', () => {
   resetTape()
-  const shared = ['i32.add', ['local.get', '$a'], ['i32.const', 1]]
-  const m = ['module', ['func', '$f', ['drop', shared], ['drop', shared]]]
-  const root = fromWat(m, true)
+  const shared = ['i32.add', ['local.get', '$a'], ['i32.const', 1]], leaf = ['i32.const', 2]
+  const f = ['func', '$f', ['drop', shared], ['drop', shared], ['drop', leaf]]
+  const m = ['module', f]
+  const root = fromWat(m)
   is(verify(root), null, 'a tree, not a graph')
-  ok(same(toWat(root), ['module', ['func', '$f', ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]], ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]]]]), 'both uses of the shared subtree are on the tape')
-  is(m.length, 0, 'the source tree is consumed')
+  is(m.length, 2, 'the tree read is untouched'); is(f.length, 5); is(f[2][1], shared)
+  const full = ['module', ['func', '$f', ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]], ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]], ['drop', ['i32.const', 2]]]]
+  const out = toWat(root)
+  ok(out !== m && out[1] !== f && out[1][2][1] !== out[1][3][1] && same(out, full), 'both uses of the shared subtree are on the tape; the encode is a fresh tree')
+  // the encoded tree is the caller's: a second encode is another fresh tree, and a
+  // rewrite of the tape after the encode does not reach into either
+  const again = toWat(root)
+  ok(again !== out && again[1] !== out[1] && same(again, full), 'a repeated encode is a fresh, equal tree')
+  const fn = T.a[root], last = T.next[T.next[T.next[T.a[fn]]]]
+  T.next[T.next[T.next[T.a[fn]]]] = NONE   // drop the last statement
+  ok(same(toWat(root), ['module', ['func', '$f', ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]], ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]]]]), 'the tape rewrite encodes')
+  ok(same(out, full) && same(again, full) && same(m, ['module', ['func', '$f', ['drop', shared], ['drop', shared], ['drop', leaf]]]), 'a retained output owns its arrays; the input is as it was')
+  T.next[T.next[T.next[T.a[fn]]]] = last
+  resetTape()
+  ok(same(toWat(fromWat(out)), full), 'decode∘encode∘decode∘encode is the identity')
+  is(T.op.length >= T.n, true)
+})
+
+test('tape: the decode reserves the columns for the whole tree in one step', () => {
+  resetTape()
+  const before = T.op.length
+  const wide = ['module', ['func', '$f', ...Array.from({ length: before }, (_, i) => ['drop', ['i32.const', i]])]]
+  const root = fromWat(wide)
+  is(verify(root), null)
+  ok(T.n > before && T.op.length >= T.n, 'grown to hold every node')
+  ok(T.op.length === T.a.length && T.a.length === T.next.length && T.next.length === T.ty.length && T.ty.length === T.imm.length && T.imm.length === T.sym.length && T.sym.length === T.sid.length, 'every column the same capacity')
 })
 
 test('tape: the verifier catches a broken link and a cycle', () => {

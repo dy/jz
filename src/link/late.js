@@ -23,7 +23,7 @@ const DBG = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS =
 export function lateLink(module, cfg) {
   if (cfg && cfg.fusedRewrite === false && cfg.sortLocalsByUse === false) return module   // level 0: nothing to run
   resetTape()
-  const root = fromWat(module, true)   // watr's output is a private tree: consumed as it is read
+  const root = fromWat(module)
   if (!cfg || cfg.fusedRewrite !== false) for (const f of funcs(root)) { fold(f); vacuum(f); mergeBlocks(f) }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(root)
   if (DBG) { const bad = verify(root); if (bad) throw new Error(`[link] module invalid after the late link: ${bad}`) }

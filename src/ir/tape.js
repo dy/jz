@@ -56,8 +56,16 @@ export const intern = (s) => {
   return id
 }
 
-const grow = () => {
-  const cap = T.op.length * 2
+/** Column capacity for at least `n` nodes. The decode reserves the tree it read
+ *  in one step: a growth by doubling allocates twice the final size in all, and
+ *  the self-hosted compiler's arena reclaims nothing. */
+export const reserve = (n) => {
+  if (n <= T.op.length) return
+  let cap = T.op.length
+  while (cap < n) cap *= 2
+  grow(cap)
+}
+const grow = (cap = T.op.length * 2) => {
   const op = new Int32Array(cap); op.set(T.op); T.op = op
   const a = new Int32Array(cap); a.set(T.a); T.a = a
   const next = new Int32Array(cap); next.set(T.next); T.next = next
@@ -132,28 +140,35 @@ export function insertAfter(parent, prev, id) {
   T.next[prev] = id
 }
 
-/** Decode a WAT-array tree into the tape; returns the root index. With `consume`, an
- *  array with array children is emptied once decoded, so the tree it came from is
- *  collectable as the tape takes it (a module the size of the compiler is held once,
- *  not twice); an array the tree shares decodes once and copies after. A leaf's array
- *  (`['i32.const', 0]`: atoms alone) holds no subtree and stays: watr's peephole shares
- *  such constants across every module it optimizes. */
-export function fromWat(x, consume = false, seen = consume ? new Map() : null) {
+/** The nodes a WAT-array tree decodes to (a byte blob is one). */
+const count = (x) => {
+  if (!Array.isArray(x) || typeof x[0] === 'number') return 1
+  let n = 1
+  for (let i = 1; i < x.length; i++) n += count(x[i])
+  return n
+}
+
+/** Decode a WAT-array tree into the tape; returns the root index. The tree is
+ *  read, not taken: an array it shares decodes into a node at each use (the tape is
+ *  a tree), and emptying arrays would reclaim nothing where it matters, in the
+ *  self-hosted compiler's arena. The columns are reserved for the whole tree first. */
+export function fromWat(x) {
+  reserve(T.n + count(x))
+  return decode(x)
+}
+function decode(x) {
   if (Array.isArray(x)) {
     const head = x[0]
     if (typeof head === 'number') return bytes(x)
-    if (seen) { const was = seen.get(x); if (was !== undefined) return clone(was) }
     const id = node(head == null ? OP_NULLHEAD : intern(String(head)))
     if (typeof x.type === 'string') T.ty[id] = intern(x.type)
     if (typeof x.schemaSid === 'number') T.sid[id] = x.schemaSid
-    let prev = NONE, leaf = true
+    let prev = NONE
     for (let i = 1; i < x.length; i++) {
-      if (Array.isArray(x[i])) leaf = false
-      const c = fromWat(x[i], consume, seen)
+      const c = decode(x[i])
       if (prev === NONE) T.a[id] = c; else T.next[prev] = c
       prev = c
     }
-    if (seen) { seen.set(x, id); if (!leaf) x.length = 0 }
     return id
   }
   if (typeof x === 'string') return str(x)
@@ -165,7 +180,10 @@ export function fromWat(x, consume = false, seen = consume ? new Map() : null) {
   throw new Error(`tape: cannot decode a ${typeof x} node`)
 }
 
-/** Encode a tape subtree back into WAT arrays. */
+/** Encode a tape subtree back into WAT arrays: a fresh tree, every array sized to
+ *  its node (a pushed-up array carries a spare capacity that outweighs the node;
+ *  on the flagship, 30 MB for the tree against 81 MB). Nothing on the tape refers
+ *  to the tree returned: it is the caller's. */
 export function toWat(id) {
   const op = T.op[id]
   if (op === OP_STR) return T.syms[T.sym[id]]
@@ -175,8 +193,12 @@ export function toWat(id) {
   if (op === OP_UNDEF) return undefined
   if (op === OP_BOOL) return T.imm[id] !== 0
   if (op === OP_BYTES) return T.blobs[T.imm[id]]
-  const out = [op === OP_NULLHEAD ? null : T.syms[op]]
-  for (let c = T.a[id]; c !== NONE; c = T.next[c]) out.push(toWat(c))
+  let n = 1
+  for (let c = T.a[id]; c !== NONE; c = T.next[c]) n++
+  const out = new Array(n)
+  out[0] = op === OP_NULLHEAD ? null : T.syms[op]
+  n = 1
+  for (let c = T.a[id]; c !== NONE; c = T.next[c]) out[n++] = toWat(c)
   if (T.ty[id] !== 0) out.type = T.syms[T.ty[id]]
   if (T.sid[id] !== NONE) out.schemaSid = T.sid[id]
   return out
