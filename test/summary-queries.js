@@ -88,10 +88,14 @@ test('summary queries: class methods and import kinds are retained by value', ()
   })
   const call = ['()', ['.', 'record', 'value'], null]
   is(summary.kindOfExpr(call), kind(K.NUMBER))
+  is(summary.classCallee('record', 'value'), 'method')
+  is(summary.classCallee('record', 'missing'), null)
+  is(summary.classCallee(['?', lit(true), 'record', lit(null)], 'value'), null, 'nullable receiver keeps dispatch')
   is(summary.kindOfExpr(['()', 'foreign', null]), kind(K.NUMBER))
   methods.set('value', 'different'); classes.clear(); imports.set('foreign', 'string')
   allowBrandLookup = false
   is(summary.kindOfExpr(call), kind(K.NUMBER), 'method target survives registry changes')
+  is(summary.classCallee('record', 'value'), 'method', 'devirtualization uses retained metadata too')
   is(summary.kindOfExpr(['()', 'foreign', null]), kind(K.NUMBER), 'import result survives registry changes')
 })
 

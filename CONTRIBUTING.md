@@ -9,6 +9,16 @@ npm test              # 2800+ tests
 node bench/bench.mjs  # run benchmarks
 ```
 
+### Local watr integration checkpoint
+
+This checkout currently requires sibling `../watr` at
+`5ff0037d4dd5d38d6779a7c1965e581f1870adc5`. `package.json` and the lockfile
+consume it explicitly; `.npmrc` installs a copy, keeping self-build module
+paths under `node_modules/watr`. Check the sibling revision before `npm install`.
+The proposed watr 5.11.0 release is not published. Replace the local dependency
+with the released version and regenerate the lockfile before distributing JZ.
+See [PLAN.md](PLAN.md) for the red gates and integration evidence.
+
 ## Code layout
 
 ```

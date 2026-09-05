@@ -7,7 +7,7 @@ import { VAL } from '../reps.js'
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith,
-  TYPED_CTOR, NUMBER_METHODS, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
+  TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
 } from './kind.js'
 
 export function summaryQueries(facts) {
@@ -106,7 +106,7 @@ export function summaryQueries(facts) {
           const getter = classMember(r, n[2] + ACCESSOR_GET), fn = getter ?? (classMember(r, n[2]) ? classMember(r, n[2]) + CLASS_T + 'bind' : null)
           return done(fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH)
         }
-        if (NUMBER_METHODS.has(n[2]) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return done(NUMBER)
+        if (isCount(n[2], t)) return done(NUMBER)
         if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return done(orAbsent(propOf(r, n[2])))
         return done(n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY)
       }
@@ -175,6 +175,8 @@ export function summaryQueries(facts) {
       paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : canon(incoming.get(key) ?? K.NONE) },
       elemKindOf: elemOf,
       valOf: name => valOf(readKind(name)),
+      // One non-nullish class receiver, with no possible own-member shadow.
+      classCallee: (recv, name) => { const r = kindOfExpr(recv); if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null; const fn = classMember(r, name); return fn && !memberMayBeOwn(name) ? fn : null },
       // valOf deliberately declines nullable kinds; payload queries do not.
       valOfExpr: e => valOf(kindOfExpr(e)),
       mayBeNullishExpr: e => isNullable(kindOfExpr(e)),

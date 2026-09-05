@@ -1,6 +1,6 @@
 # Optimizer and transport evidence
 
-Measurements behind PLAN step 4's decisions. Corpus: `bench/*` at levels 0/2/3/size, `examples/*` at speed, 300 rows; the flagship: web-audio-api at level 2. Dates are the measurement dates.
+Branch measurements behind PLAN step 4's decisions, not certification of the reconciled main tree. The shared changes are committed in watr at `5ff0037` (including `a137283` and `b53c92c`); the proposed 5.11.0 release is not published. Main currently consumes that sibling checkout through an explicit local dependency. Corpus: `bench/*` at levels 0/2/3/size, `examples/*` at speed, 300 rows; the flagship: web-audio-api at level 2. Dates are the measurement dates.
 
 ## watr pass ablation on the flagship (2026-09-04, watr 5.10.1)
 
@@ -62,7 +62,7 @@ Live heap after the encode, one variant per process (the parsed input tree: 122 
 | consuming (87–90 ms) | the emptied arrays refilled by push | 92.1 MB | 86.1 MB | 34 ms |
 | consuming | exact | 51.5 MB | 30.0 MB | 10 ms |
 
-The columns: 1,048,576 slots × 32 B = 32 MB (the compiler's own module: 11,774,031 nodes, 16,777,216 slots by doubling, 512 MB; reserved from a count, 377 MB). Consuming lowered the live set only during the passes (121 → 4 MB); the peak is in watr's optimizer; in the kernel's arena an emptied array reclaims nothing and the mark that told a shared array (the emitter shares 2.7% of the flagship's arrays: `local.get` leaves, `i64.reinterpret_f64` reads) was the cost. Kept: exact encode, no consuming, columns reserved from a count.
+The columns: 1,048,576 slots × 32 B = 32 MB (the compiler's own module: 11,774,031 nodes, 16,777,216 slots by doubling, 512 MB; an exact reservation would be 377 MB, but the committed count-first reserve still rounds to a power of two, avoiding intervening reallocations rather than reducing the final capacity). Consuming lowered the live set only during the passes (121 → 4 MB); the peak is in watr's optimizer; in the kernel's arena an emptied array reclaims nothing and the mark that told a shared array (the emitter shares 2.7% of the flagship's arrays: `local.get` leaves, `i64.reinterpret_f64` reads) was the cost. Kept: exact encode, no consuming, columns reserved from a count.
 
 ## Allocation, sampled (2026-09-05, flagship, `HeapProfiler.startSampling`, collected objects included)
 

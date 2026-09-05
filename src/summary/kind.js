@@ -43,7 +43,9 @@ export const kindOfVal = v => { const t = VAL_OF.indexOf(v); return v == null ? 
 export const valsOf = k => { const out = []; for (let t = K.NUMBER; t < K.ANY; t++) if (t !== K.NULLISH && t !== K.ABSENT && hasTag(k, t)) out.push(VAL_OF[t]); return out }
 
 export const TYPED_CTOR = /^new\.(\w+Array)(\.view)?$/
-export const NUMBER_METHODS = new Set(['length', 'size', 'byteLength', 'byteOffset'])
+/** Count properties belong to their receiver family, not just their name. */
+const COUNT_PROPS = new Map([['length', [K.ARRAY, K.TYPED, K.STRING]], ['size', [K.MAP, K.SET]], ['byteLength', [K.TYPED, K.BUFFER]], ['byteOffset', [K.TYPED]]])
+export const isCount = (prop, t) => COUNT_PROPS.get(prop)?.includes(t) === true
 // Other literal names on an array are dictionary entries, not prototype members.
 export const ARRAY_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'indexOf', 'lastIndexOf', 'includes', 'join', 'concat', 'sort', 'reverse', 'find', 'findIndex', 'findLast', 'findLastIndex', 'some', 'every', 'fill', 'flat', 'flatMap', 'at', 'entries', 'keys', 'values', 'copyWithin', 'toString', 'toSorted', 'toReversed', 'with'])
 export const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '++', '--'])
