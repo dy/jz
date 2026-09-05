@@ -56,11 +56,13 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
 
 ## Architecture
 
-Pipeline: `source → parse (subscript/jessie) → jzify (default-on; strict skips) → prepare → compile → optimize → link → watr (WAT→binary)`
+Current pipeline: `source → parse (subscript/jessie) → jzify (default-on; strict skips) → prepare → compile → optimize → link → watr (WAT→binary)`
 
-The tape (`src/ir/tape.js`) is the IR the compiler converges on (PLAN.md, step 2): link (`src/link`) decodes the assembled module onto it after the last WAT-array pass, runs the whole-module passes there, and encodes it back for watr. A pass ported to the tape deletes its WAT-array version; when emit builds the tape directly the decoder goes.
+**One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
-All values are f64. Heap types use NaN-boxing (see README). The shared `ctx` object is the single source of compilation state — the docstring in [`src/ctx.js`](src/ctx.js) carries the lifecycle ownership table (which phase owns which subkey, writers, readers); consult it before adding new state.
+The tape (`src/ir/tape.js`) currently transports WAT through link; it is not semantic FunctionIR. [PLAN.md](PLAN.md) defines the target: immutable program summaries and explicit producer contracts, disposable verified FunctionIR, and shared optimization in watr. Each migration slice deletes the authority it replaces.
+
+Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
 ## Adding a stdlib method
 
@@ -71,6 +73,9 @@ All values are f64. Heap types use NaN-boxing (see README). The shared `ctx` obj
 5. Run `npm test`
 
 ## Adding an auto-vectorizer recognizer
+
+Generic recognizer work belongs in watr. The discipline below also applies to the
+existing JZ implementation while it migrates.
 
 The lane vectorizer (`vectorizeLaneLocal` in [`src/optimize/vectorize.js`](src/optimize/vectorize.js))
 lifts typed-array loops to WASM-SIMD. Recognizers are tried in order in its dispatch; each consumes the
@@ -107,7 +112,7 @@ gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scat
 - **JZ source is JavaScript source.** Supported programs must parse and run as standard JavaScript. Parser acceptance of an ECMAScript early-error-invalid program is a bug/temporary hole, never a language extension or compatibility promise.
 - **A finite speed dialect, not an open-ended escape hatch.** Compiled output follows the machine semantics explicitly listed under [“What differs from JS?”](README.md#what-differs-from-js): i32/i64 wrapping, unchecked typed-array access, UTF-8 positions, and the other enumerated cases. Outside that list, preserve JavaScript answers, exceptions, evaluation order, and effects or reject. “A native compiler could do it” is not sufficient authority for a new divergence: update the public contract and add cross-tier exact tests before landing one. Never trade away a meaningful result's f64 accuracy (no mantissa trimming or arbitrary precision loss).
 - **Minimal surface.** Every feature must justify its weight. If it can be a library, it should be.
-- **No runtime.** Compiled WASM has no jz-specific runtime — just WASM + WASI.
+- **No external runtime and no GC.** Needed JZ runtime operations are linked into the module; unused operations are omitted.
 
 ## Testing
 

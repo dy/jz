@@ -30,10 +30,11 @@ jobs:
         with:
           node-version: 24
       - run: npm install
-      # Build the self-compile kernel once (dist/jz.wasm = jz compiled by jz).
+      # Build the artifact consumed by the recursive and full-suite gates.
       - name: build dist/jz.wasm
         run: npm run build
-      # Quick gate: round-trip sample programs through self.default(source).
+      # Correctness/performance gates each build a fresh private compiler;
+      # they do not reuse the disk artifact above.
       - name: self-compile round-trip
         run: npm run test:self
       # Release gate: compile the complete compiler graph recursively and

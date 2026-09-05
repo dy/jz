@@ -9,7 +9,8 @@
 // Workload = the bench corpus (mat4, fft, mandelbrot, crc32, …) — the same programs
 // the cross-engine bench compiles — each inlining benchlib so it's a standalone module
 // (matches bench.mjs's benchSource()). Output bytes are checksummed and the wasm/JS
-// results compared, so the timing run doubles as a determinism + parity gate.
+// results compared. This is diagnostic: mismatches and skipped cases are reported,
+// not fatal, so its timing summary is not release certification.
 //
 // Methodology note: the self-compile kernel bump-allocates per compile and its cross-
 // compile caches assume an immortal arena (see DESIGN / _clear), so we cannot reset and
@@ -78,7 +79,7 @@ const ensureWasm = () => {
     ? { ...process.env, JZ_HELPER_COUNTERS: '1', ...(COUNT_SITES ? { JZ_HELPER_SITES: HELPER_SITE_FILTER } : {}) }
     : process.env
   const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', env, timeout: 600_000 })
-  if (r.status !== 0) throw new Error(`self-compile build failed (exit ${r.status})`)
+  if (r.error || r.signal || r.status !== 0) throw new Error(`self-compile build failed (exit ${r.status})\n${r.error?.message || r.signal || ''}`)
 }
 
 const fnv = (bytes) => { let h = 0x811c9dc5 | 0; for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193); return h >>> 0 }

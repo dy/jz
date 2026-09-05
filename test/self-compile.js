@@ -1,55 +1,28 @@
 /**
- * Self-compile gate: build dist/jz.wasm, instantiate it, and verify its
+ * Self-compile gate: build a fresh compiler, instantiate it, and verify its
  * `default(source)` round-trips real programs through the in-wasm pipeline.
  *
  * Contract (matches scripts/self-compile-build.mjs + scripts/self.js):
- *   host:   self   = instantiate(dist/jz.wasm)
+ *   host:   self   = instantiate(fresh compiler bytes)
  *   wasm:   bytes  = self.default(source)   // parse → jzify → prepare → compile → watr
  *   host:   result = instantiate(bytes).exports.main()
  *
  * The whole compiler runs in wasm — the host only passes the source string in and
- * reads the wasm bytes out. dist/jz.wasm is jz, compiled by jz.
+ * reads the wasm bytes out. The gate never reads an existing dist/jz.wasm.
  *
  * Run: node test/self-compile.js   |   CI: npm run test:self
  */
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { readFileSync, existsSync } from 'node:fs'
 import { instantiate } from '../interop.js'
 import jz from '../index.js'   // native compiler — the correctness reference for the kernel's output
 import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B } from './_optimizer-kernels.js'
+import { selfBytes } from './_self-build.js'
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const BUILD = join(ROOT, 'scripts/self-compile-build.mjs')
-const SELF = join(ROOT, 'dist/jz.wasm')
-
-const ensureSelf = () => {
-  if (existsSync(SELF)) return
-  // 1200s build timeout (was 600s): the self-compile build measures 330s wall on a
-  // loaded M-series local machine; CI's ubuntu runner is ~2× slower, which put it
-  // right at the old cap (CI "build exit null" = spawnSync's timeout SIGKILL, no
-  // OOM — local peak RSS is 3.1 GB). The compact-facts campaign knowingly traded
-  // some native build time for the self-hosted memory wins (its ledger records the
-  // creep); the streaming-encoder work reworks this pipeline and re-earns it.
-  const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, encoding: 'utf8', timeout: 1_200_000 })
-  if (r.status !== 0) {
-    console.log(r.stdout); console.log(r.stderr)
-    throw new Error(`self-compile build exit ${r.status}`)
-  }
-}
-
-// One instance reused across samples — instantiation is the slow part (~4 MB
-// wasm). compileSelf resets its internal ctx on each call, so samples don't
-// contaminate each other.
+// Reuse the compiler across samples; compileSelf resets its state per call.
 let self
 const getSelf = () => {
-  if (!self) {
-    ensureSelf()
-    self = instantiate(readFileSync(SELF), { memory: 8192 })
-  }
+  if (!self) self = instantiate(selfBytes(), { memory: 8192 })
   return self
 }
 
@@ -57,19 +30,16 @@ const compileViaSelf = (src) => {
   const s = getSelf()
   const out = s.exports.default(s.memory.String(src))
   const bin = s.memory.read(out)
-  const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
-  if (bytes.length <= 8) throw new Error('self-compile returned empty wasm: ' + bytes.length + ' bytes')
+  const bytes = (bin instanceof Uint8Array ? bin : new Uint8Array(bin)).slice()
+  if (!WebAssembly.validate(bytes)) throw new Error('self-compile returned invalid wasm')
   return bytes
 }
 
-test('self-compile: build dist/jz.wasm', () => {
-  const r = spawnSync(process.execPath, [BUILD], {
-    cwd: ROOT, encoding: 'utf8', timeout: 1_200_000,
-  })
-  if (r.status !== 0) { console.log(r.stdout); console.log(r.stderr) }
-  ok(r.status === 0, `build exit ${r.status}`)
-  ok(r.stdout.includes('jz.wasm'), 'self-compile artifact reported')
-  ok(readFileSync(SELF).byteLength > 100_000, 'self-compile wasm has substance')
+test('self-compile: build a fresh compiler', () => {
+  const bytes = selfBytes()
+  ok(WebAssembly.validate(bytes), 'fresh compiler validates')
+  ok(bytes.byteLength > 100_000, 'self-compile wasm has substance')
+  is(typeof instantiate(compileViaSelf('')).exports.main, 'undefined', 'empty source has no user entry')
 })
 
 // Sample programs the self-compile compiler must lower correctly. Each tuple is
@@ -105,11 +75,9 @@ const SAMPLES = [
   // optimize's object-config form on the exact self.js entry: {level:1, watr:true} and
   // {level:2, watr:false} both compile the kernel correctly; watr + internStrings
   // TOGETHER are required, and disabling watr's packData pass alone (its ~20 other
-  // passes + internStrings stay on) fixes it. Fixed in scripts/self-compile-build.mjs
-  // (optimize: {level, watr:{packData:false}}) — jz's own build orchestration choosing a
-  // watr config safe for self-compile, not a source workaround (watr is de-forked; jz
-  // doesn't patch it). math-exp/math-expm1 above already cover this path; sin/cos/pow
-  // add coverage for Math functions no other self-compile.js sample reaches.
+  // passes + internStrings stay on) isolated it. The fix shipped in watr 5.1.1;
+  // the build now uses the default packData configuration. math-exp/math-expm1
+  // above cover this path; sin/cos/pow reach additional WAT-text kernels.
   ['math-sin',    'export let main = () => (Math.abs(Math.sin(1.2) - 0.9320390859672263) < 1e-6) | 0', 1],
   ['math-cos',    'export let main = () => (Math.abs(Math.cos(1.2) - 0.3623577544766736) < 1e-6) | 0', 1],
   ['math-pow',    'export let main = () => (Math.abs(Math.pow(2.5, 3.7) - 29.67413253642086) < 1e-6) | 0', 1],
@@ -140,8 +108,7 @@ for (const [label, src, expected] of SAMPLES) {
 // small scope; a future re-inline would re-break this. forEach's `x=>s+=x` is the single-
 // call helper inlineOnce lifts, so this routes straight through the once-trapping path.
 test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
-  getSelf()  // ensure dist/jz.wasm built
-  const s = instantiate(readFileSync(SELF), { memory: 8192 })  // fresh instance, as a real self-compile run does
+  const s = instantiate(selfBytes(), { memory: 8192 })  // fresh instance of this run's build
   const src = 'export let main = () => { let s = 0; [1,2,3,4].forEach(x => s += x); return s }'
   const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
   const bin = s.memory.read(out)
@@ -157,8 +124,7 @@ test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
 // exact 64 bits and emitting the number itself. A 17-digit literal used twice (so it pools) whose
 // reciprocal is a clean integer makes any precision loss numerically visible.
 test('self-compile: level-2 f64-constant pool keeps full precision', () => {
-  getSelf()
-  const s = instantiate(readFileSync(SELF), { memory: 8192 })
+  const s = instantiate(selfBytes(), { memory: 8192 })
   // 0.041666666666666664 === 1/24 exactly; pooled (two uses) → its reciprocal must stay 24.
   const src = 'export let main = () => { const a = 0.041666666666666664; const b = 0.041666666666666664; return 1/a + 1/b }'
   const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
@@ -177,8 +143,7 @@ test('self-compile: level-2 f64-constant pool keeps full precision', () => {
 // comparison mantissas with an explicit Set. Needs the LICM shape: Math.round(p0) loop-invariant in
 // the INNER of two nested loops, p0 reassigned in the OUTER → the round's f64.nearest is hoisted.
 test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.round in nested loops)', () => {
-  getSelf()
-  const s = instantiate(readFileSync(SELF), { memory: 8192 })
+  const s = instantiate(selfBytes(), { memory: 8192 })
   const src = 'let f = (p0) => { let r = 0; let i = 0; while (i < 4) { let j = 0; while (j < 3) { r = r + Math.round(p0); j = j + 1; } p0 = p0 + 0.4; i = i + 1; } return r }; export let main = () => f(2.6)'
   const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
   const bin = s.memory.read(out)
@@ -197,7 +162,7 @@ test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.rou
 // A tone-map kernel lifts Math.log → f64x2.log_v, exercising both. Compile it SIMD ('speed') and
 // scalar (optimize:false) through the kernel; both must instantiate and yield the same checksum.
 test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib)', () => {
-  getSelf()
+  const s = instantiate(selfBytes(), { memory: 8192 })
   const TONE = `
     let dens = new Uint32Array(64), px = new Uint32Array(64)
     export let main = () => {
@@ -209,7 +174,6 @@ test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late st
       return s
     }`
   const native = jz(TONE, { optimize: 'speed' }).exports.main()   // the correct checksum
-  const s = instantiate(readFileSync(SELF), { memory: 8192 })
   // {level:'speed'} (object form, as the kernel-target always passes) → the f64x2 tone-map vectorizer
   const out = s.exports.default(s.memory.String(TONE), 0, s.memory.String(JSON.stringify({ level: 'speed' })))
   const bin = s.memory.read(out), bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
@@ -220,8 +184,7 @@ test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late st
 })
 
 test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B state', () => {
-  getSelf()
-  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
+  const warm = instantiate(selfBytes(), { memory: 8192 })
   const compileWarm = (src) => {
     const opt = warm.memory.String(JSON.stringify({ level: 2 }))
     const out = warm.exports.default(warm.memory.String(src), 0, opt)
@@ -267,21 +230,22 @@ test('self-compile: warm-instance reuse — compile, _clear(), compile again, by
   const src = 'export let main = (s) => { let h = 0; for (let i = 0; i < 10; i++) h += i * i + s.charCodeAt(0); return h }'
   const level = '0'
   const fresh = () => {
-    const inst = instantiate(readFileSync(SELF), { memory: 8192 })
+    const inst = instantiate(selfBytes(), { memory: 8192 })
     const out = inst.exports.default(inst.memory.String(src), 0, inst.memory.String(level))
     const bin = inst.memory.read(out)
-    return bin instanceof Uint8Array ? bin : new Uint8Array(bin)
+    return (bin instanceof Uint8Array ? bin : new Uint8Array(bin)).slice()
   }
   const baseline = fresh()
   ok(baseline.length > 8, 'fresh-instance baseline compiled')
 
-  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
+  const warm = instantiate(selfBytes(), { memory: 8192 })
   for (let round = 0; round < 3; round++) {
     const out = warm.exports.default(warm.memory.String(src), 0, warm.memory.String(level))
     const bin = warm.memory.read(out)
     const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
     is(bytes.length, baseline.length, `round ${round}: byte length matches fresh instance`)
     ok(bytes.every((b, i) => b === baseline[i]), `round ${round}: byte-identical to fresh instance`)
+    is(instantiate(bytes, { memory: 64 }).exports.main('a'), 1255, `round ${round}: sum of squares + 10 * charCodeAt('a')`)
     warm.instance.exports._clear()
   }
 })
@@ -292,20 +256,34 @@ test('self-compile: warm-instance reuse — compile, _clear(), compile again, by
 // trapped on the first compile after `_clear()`. Keep this source separate from
 // the string-only warm case above because one real caller-to-callee edge is the
 // trigger this pin must preserve.
-test('self-compile: warm direct-call graph survives repeated clear', () => {
-  getSelf()
-  const src = 'let mul=(x,y)=>x*y;export let main=(x,y)=>{x=+x;y=+y;return mul(x,y)+1}'
-  const fresh = instantiate(readFileSync(SELF), { memory: 8192 })
-  const freshOut = fresh.exports.default(fresh.memory.String(src), 0, fresh.memory.String('false'))
-  const baseline = new Uint8Array(fresh.memory.read(freshOut))
-  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
-  for (let round = 0; round < 4; round++) {
-    const out = warm.exports.default(warm.memory.String(src), 0, warm.memory.String('false'))
-    const bytes = new Uint8Array(warm.memory.read(out))
-    is(bytes.length, baseline.length, `round ${round}: direct-call byte length matches fresh`)
-    ok(bytes.every((byte, i) => byte === baseline[i]), `round ${round}: direct-call bytes match fresh`)
-    is(instantiate(bytes, { memory: 64 }).exports.main(3, 4), 13, `round ${round}: direct call executes`)
+test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare-return→A and repeated clear', () => {
+  const sources = [
+    'let mul=(x,y)=>x*y;export let main=(x,y)=>{x=+x;y=+y;return mul(x,y)+1}',
+    'let add=(x,y)=>x+y;export let main=(x,y)=>add(x,y)*2',
+    '',
+    'export let main=()=>{return}',
+  ]
+  const check = (id, bytes) => {
+    const { exports } = instantiate(bytes, { memory: 64 })
+    if (id === 2) is(typeof exports.main, 'undefined', 'empty source exports no main')
+    else is(exports.main(3, 4), [13, 14, undefined, undefined][id], `${id}: main preserves its result`)
+  }
+  const compileOn = (inst, src) => {
+    const out = inst.exports.default(inst.memory.String(src), 0, inst.memory.String('false'))
+    return new Uint8Array(inst.memory.read(out))
+  }
+  const baselines = sources.map(src => compileOn(instantiate(selfBytes(), { memory: 8192 }), src))
+  const warm = instantiate(selfBytes(), { memory: 8192 }), retained = []
+  for (const id of [0, 0, 1, 0, 2, 3, 0]) {
+    const bytes = compileOn(warm, sources[id]), baseline = baselines[id]
+    is([...bytes], [...baseline], `${id}: reused compile matches fresh bytes`)
+    check(id, bytes)
+    retained.push([id, bytes])
     warm.instance.exports._clear()
+  }
+  for (const [id, bytes] of retained) {
+    is([...bytes], [...baselines[id]], `${id}: earlier output survives later compiles and clears`)
+    check(id, bytes)
   }
 })
 
@@ -349,8 +327,7 @@ test('self-compile: warm direct-call graph survives repeated clear', () => {
 // the correct outcome, not a bug). Keep at or above 40 rather than shrinking it
 // back down to "looks clean in a quick run".
 test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
-  getSelf()
-  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
+  const warm = instantiate(selfBytes(), { memory: 8192 })
   const PROGRAMS = [
     "export let go = () => { const m = new Map(); m.set('a', { zzqqxxdiagfield: true }); const g = m.get('a'); return g.zzqqxxdiagfield ? 1 : 0 }",
     "export let go = () => { const m = new Map(); m.set('a', { mut: true }); const g = m.get('a'); return g.mut ? 1 : 0 }",

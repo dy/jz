@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Build and validate the jz self-compile compiler (dist/jz.wasm). */
+/** Build and validate the jz compiler. Optional first argument: output path. */
 import { writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -7,8 +7,8 @@ import { compile } from '../index.js'
 import { resolveSelfCompileBuild } from './build-profile.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const OUT_DIR = resolve(ROOT, 'dist')
-const OUT = resolve(OUT_DIR, 'jz.wasm')
+const OUT = resolve(process.argv[2] || resolve(ROOT, 'dist/jz.wasm'))
+const OUT_DIR = dirname(OUT)
 
 // Build from scripts/self.js: its default export is `compileSelf`, the whole jz
 // pipeline (parse → jzify → prepare → compile → watr-encode) as one source→bytes
@@ -45,8 +45,8 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // on the in-wasm jz×jz ceiling either way (self.js's own compileSelf() never
 // calls snapshotInit). A first pass turned this off by default on that basis --
 // wrong: it trades a one-time BUILD cost for a per-INSTANTIATION cost every
-// consumer of dist/jz.wasm pays forever after (website REPL, every kernel test,
-// bench-self-compile.mjs). That self-compile timing gates exclude instantiate()
+// hosted compiler instance pays afterward (kernel tests and self benchmarks;
+// dist/jz.wasm is not a web asset). That timing gates exclude instantiate()
 // from their timed region is a gap in what they measure, not evidence the cost
 // is free. Reverted. The actual fix worth landing is making the bake cheap
 // (avoid the second full encode: patch the already-encoded module's data/start

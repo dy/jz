@@ -12,9 +12,10 @@
  *  1. STRUCTURAL pins (deterministic, stopwatch-free): each perf lever leaves a
  *     named artifact in emitted WAT; deleting or breaking a lever fails these
  *     even on the noisiest machine.
- *  2. RATIO gates (wall-clock, machine-independent by construction): jz.wasm and
- *     jz.js compile the SAME programs in the SAME process — the ratio cancels
- *     machine speed. Both modes have a strict 0.99× victory cap.
+ *  2. RATIO gates (paired wall-clock): jz.wasm and jz.js compile the SAME
+ *     programs in the SAME process. Pairing reduces shared timing noise;
+ *     ratios remain hardware-dependent. Warm cap: 1.03×; fresh cap: 0.99×.
+ *     Each standalone run builds its own fresh compiler outside timed windows.
  *
  * A warm-mode TRAP on the pinned corpus is a hard failure too — warm-instance
  * reuse (one instance, _clear between compiles) is part of the milestone.
@@ -23,16 +24,15 @@
  */
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { instantiate } from '../interop.js'
 import { compile } from '../index.js'
 import compileSelf from '../scripts/self.js'
+import { selfBytes } from './_self-build.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const SELF = join(ROOT, 'dist/jz.wasm')
 const BENCH = join(ROOT, 'bench')
 
 // ── Layer 1: structural lever pins (no stopwatch) ───────────────────────────
@@ -64,7 +64,7 @@ test('perf-pin: __dyn_props membership filter present and gating __dyn_move', ()
 // (The proven-decode lever — __arr_grow_known's inline offset extract — is
 // WAT-shape-pinned in test/feature-gating.js alongside its feature gates.)
 
-// ── Layer 2: ratio gates (wall-clock, ratio cancels machine speed) ──────────
+// ── Layer 2: ratio gates (paired wall-clock) ──────────────────────────────
 
 // Warm-safe subset of the bench corpus (tokenizer/json excluded until the
 // watr-internal warm-recompile bug is fixed — see groundtruth). Spans math,
@@ -113,12 +113,6 @@ const sourceFor = (name) => {
   return src
 }
 
-const ensureSelf = () => {
-  if (existsSync(SELF)) return
-  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', timeout: 1_200_000 })
-  if (r.status !== 0) throw new Error(`self-compile build exit ${r.status}`)
-}
-
 const timed = (fn) => { const t = performance.now(); fn(); return performance.now() - t }
 const pairedRatio = (jsFn, prepareWasm) => {
   // Pair and alternate substrate order so suite heat / CPU-frequency drift
@@ -138,9 +132,8 @@ const pairedRatio = (jsFn, prepareWasm) => {
 
 const geo = (xs) => Math.exp(xs.reduce((a, b) => a + Math.log(b), 0) / xs.length)
 
-test('perf-pin: warm-instance self-compile compile < V8 JS', () => {
-  ensureSelf()
-  const wasmBytes = readFileSync(SELF)
+test('perf-pin: warm-instance self-compile stays within V8 parity band', () => {
+  const wasmBytes = selfBytes()
   const measure = () => {
     const ratios = []
     for (const name of CASES) {
@@ -171,7 +164,7 @@ test('perf-pin: warm-instance self-compile compile < V8 JS', () => {
   }
   const best = rounds.reduce((a, b) => (b.g < a.g ? b : a))
   okTiming(best.g <= WARM_CAP,
-    `warm self-compile geomean > strict-win cap ${WARM_CAP}× on ALL ${rounds.length} rounds ` +
+    `warm self-compile geomean > parity cap ${WARM_CAP}× on ALL ${rounds.length} rounds ` +
     `(${rounds.map(r => r.g.toFixed(3) + '×').join(', ')}; best per-case: ` +
     `${CASES.map((c, i) => `${c} ${best.ratios[i].toFixed(2)}`).join(', ')}). ` +
     `Find the regressing change; do NOT loosen this cap without a justified re-baseline.`)
@@ -180,8 +173,7 @@ test('perf-pin: warm-instance self-compile compile < V8 JS', () => {
 })
 
 test('perf-pin: fresh-instance self-compile compile < V8 JS', () => {
-  ensureSelf()
-  const wasmBytes = readFileSync(SELF)
+  const wasmBytes = selfBytes()
   const ratios = []
   for (const name of CASES) {
     const src = sourceFor(name)

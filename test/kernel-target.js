@@ -5,12 +5,12 @@
 // wasm BY jz. The wasm takes a source string and returns wasm bytes; the host only
 // marshals the string in and reads the bytes out. Running the whole suite this way is
 // the test matrix with the compiler being jz-compiled-by-jz: any divergence from the
-// native run is a self-compile bug. Subsumes the sample-based self-compile gate.
+// native run is a self-compile bug. This tests the selected disk artifact;
+// test:self separately requires a fresh build from current source.
 //
-// The wasm owns the entire source→bytes pipeline, so host-side opts that shape
-// compilation (imports, modules, optimize level, inspect, --wat) do NOT reach it —
-// tests relying on those surface as failures to triage (feature gaps), distinct from
-// genuine miscompiles.
+// Supported options (strict, optimize, modules, host, sourceType, warnings, WAT)
+// travel through scripts/self.js's compiler ABI. Native-only inspection hooks
+// do not reach the wasm compiler.
 import { readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -55,16 +55,23 @@ const DEFAULT_OPT = (() => {
 // fresh instance per compile both models that and keeps the test:wasm signal free of
 // cross-compile contamination. `instantiate` accepts a Module, so this is just a new
 // Instance (fresh memory) — no recompile.
-let selfModule
+// Cache failure as well: a later test must not retry or consume an artifact
+// that appeared after this run's build/read failed. Program errors are separate.
+let selfModule, selfFailure
 const getSelfModule = () => {
   if (selfModule) return selfModule
-  if (!existsSync(SELF)) {
-    console.log('dist/jz.wasm missing — building (npm run build)…')
-    const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, stdio: 'inherit', timeout: 1_200_000 })
-    if (r.status !== 0) throw new Error(`failed to build dist/jz.wasm (exit ${r.status})`)
+  if (selfFailure) throw selfFailure
+  try {
+    if (!existsSync(SELF)) {
+      console.log('dist/jz.wasm missing — building (npm run build)…')
+      const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, stdio: 'inherit', timeout: 1_200_000 })
+      if (r.error || r.signal || r.status !== 0) throw new Error(`failed to build dist/jz.wasm (exit ${r.status})\n${r.error?.message || r.signal || ''}`)
+    }
+    return selfModule = instantiate(readFileSync(SELF), { memory: 8192 }).module
+  } catch (e) {
+    selfFailure = e
+    throw e
   }
-  selfModule = instantiate(readFileSync(SELF), { memory: 8192 }).module
-  return selfModule
 }
 
 // Compile-level optimize config (matching the native default) as a kernel optJSON
