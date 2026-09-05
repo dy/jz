@@ -127,20 +127,6 @@ export function i32Const(id) {
   return s === null ? null : Number(s)
 }
 
-/** Whether the subtree at `id` has no effect: no store, call, transfer, local or global
- *  write, no memory instruction, no exception scope; a load stays pure (value-pure
- *  between stores), so a site that speculates evaluation checks for loads as well. */
-export function pure(id) {
-  const stack = [id]
-  while (stack.length) {
-    const n = stack.pop(), fx = fxOf(n)
-    if (fx !== FX.PURE && fx !== FX.GET && fx !== FX.GLOBAL_GET && fx !== FX.LOAD && fx !== FX.CONTROL) return false
-    if (fx === FX.CONTROL && T.syms[T.op[n]].startsWith('try')) return false
-    for (let c = T.a[n]; c !== NONE; c = T.next[c]) stack.push(c)
-  }
-  return true
-}
-
 /** Whether the statements from `first` (and their siblings) branch to the label symbol `label`
  *  (a `br`, a `br_table`, a `try_table` catch clause), outside a nested block or loop of the same label. */
 export function targetsLabel(first, label) {
@@ -162,14 +148,5 @@ export function targetsLabel(first, label) {
     for (let c = T.a[n]; c !== NONE; c = T.next[c]) stack.push(c, inner)
   }
   return false
-}
-
-/** Structural equality of two subtrees. */
-export function same(a, b) {
-  if (a === b) return true
-  if (T.op[a] !== T.op[b] || T.imm[a] !== T.imm[b] && !(Number.isNaN(T.imm[a]) && Number.isNaN(T.imm[b])) || T.sym[a] !== T.sym[b]) return false
-  let x = T.a[a], y = T.a[b]
-  for (; x !== NONE && y !== NONE; x = T.next[x], y = T.next[y]) if (!same(x, y)) return false
-  return x === NONE && y === NONE
 }
 

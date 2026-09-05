@@ -13,7 +13,6 @@
  * @module optimize/watr-tail
  */
 import watOptimize from 'watr/optimize'
-import { lateLink } from '../link/late.js'
 import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames,
@@ -455,5 +454,5 @@ export function watrTail(module, cfg, {
     }
   }
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
-  return time('lateLink', () => lateLink(optimized, cfg))
+  return optimized
 }

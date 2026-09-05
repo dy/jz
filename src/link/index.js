@@ -6,8 +6,9 @@
  * rewind. Then the module's shape: dead functions and globals go
  * (treeshake), the custom sections the interop layer reads describe what
  * survived, the throw runtime goes when nothing can catch. Then the
- * encoding: locals order by use, functions by call count, local names lose
- * their scope suffixes, repeated literals pool into globals.
+ * encoding: locals order by use when watr does not follow to order them,
+ * functions by call count, local names lose their scope suffixes, repeated
+ * literals pool into globals.
  *
  * `facts` are the compile's whole-module facts, passed explicitly: the
  * resolved optimize config, the user's function and global names, the
@@ -59,7 +60,8 @@ export function link(module, facts) {
   const callCount = treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })
   schemaSections(root, facts)
   pruneUnusedThrowRuntime(root, facts)
-  if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(root)
+  // watr's `sortLocals` orders the final body's declarations; the tape orders them only when watr does not run
+  if ((!cfg || cfg.sortLocalsByUse !== false) && !(cfg && cfg.watr)) sortLocalsByUse(root)
   orderFuncs(root, callCount)
   stripLocalRenameSuffixes(root)
   if (!cfg || cfg.hoistConstantPool !== false) hoistConstantPool(root)

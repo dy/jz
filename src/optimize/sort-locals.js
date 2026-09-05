@@ -7,7 +7,8 @@
  * Above 128 the hottest locals take the one-byte indices, counted over the
  * body as it is now, after every rewrite, and each side of the boundary
  * groups by type again: an index past it costs the same wherever it lands.
- * Parameters never move: their slots are the call ABI.
+ * Parameters never move: their slots are the call ABI. Runs when watr does
+ * not: watr's `sortLocals` orders the final body, after its coalescing.
  *
  * @module optimize/sort-locals
  */
