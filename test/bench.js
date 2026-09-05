@@ -27,7 +27,7 @@ import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js'
 import { timedBenchmarkRow } from '../assets/headline.js'
-import { PORFFOR_REV, porfforFloor } from './_porffor-floor.js'
+import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -696,10 +696,9 @@ test('bench: memKb present in committed evidence', () => {
 // No fast row may hide a JZ loss. Artifact bytes are pinned by case and geomean.
 test('bench: JZ does not lose to Porffor native by case or geomean (committed evidence)', () => {
   const res = JSON.parse(readFileSync(join(ROOT, 'bench/results.json'), 'utf8'))
-  const revision = PORFFOR_REV.slice(0, 8)
   const porfforVersion = res.meta?.versions?.porffor || ''
-  ok(porfforVersion.includes(revision), `Porffor evidence ${porfforVersion || 'missing'}; required alpha 3 ${revision}`)
-  ok(readFileSync(join(ROOT, '.github/workflows/bench.yml'), 'utf8').includes(PORFFOR_REV),
+  ok(porfforEvidenceMatches(porfforVersion), `Porffor evidence ${porfforVersion || 'missing'}; required ${PORFFOR_RELEASE} ${PORFFOR_REV.slice(0, 7)}`)
+  ok(readFileSync(join(ROOT, '.github/workflows/bench.yml'), 'utf8').includes(PORFFOR_REV.slice(0, 7)),
     `bench workflow Porffor pin drifted from ${PORFFOR_REV}`)
   const { speed, size, speedLosses, sizeLosses, speedGeomean, sizeGeomean } = porfforFloor(res.cases)
   ok(speed.length >= 40, `${speed.length} comparable porf-native speed rows (need 40)`)

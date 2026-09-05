@@ -89,7 +89,18 @@ const imports = {
   },
 }
 
-instance = (await WebAssembly.instantiate(bytes, imports)).instance
+// A case's graph may declare host modules the bench does not provide (a
+// library's device, codec and worklet adapters, compiled as externals): each
+// such import answers `undefined`, the host's honest value for a module it
+// lacks. A case whose result depends on one diverges in its checksum or fails
+// in the wasm, never silently in the host.
+const UNDEF_NAN = 0x7ff8000200000000n
+const module = await WebAssembly.compile(bytes)
+for (const { module: m, name, kind } of WebAssembly.Module.imports(module)) {
+  if (kind !== 'function' || imports[m]?.[name]) continue
+  ;(imports[m] ??= {})[name] = () => UNDEF_NAN
+}
+instance = await WebAssembly.instantiate(module, imports)
 if (typeof instance.exports.main !== 'function') {
   console.error('wasm has no exported main()')
   process.exit(2)

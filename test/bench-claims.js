@@ -25,7 +25,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from '../bench/machine-state.mjs'
-import { PORFFOR_REV, porfforFloor } from './_porffor-floor.js'
+import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WASM_BAND_TOL = 1.05   // keep in lockstep with test/bench.js
@@ -316,9 +316,8 @@ test('Porffor floor: ties pass, losses surface, and invalid rows do not compare'
 })
 
 test('claims: JZ does not lose to pinned Porffor native by case or geomean', () => {
-  const revision = PORFFOR_REV.slice(0, 8)
   const version = res.meta?.versions?.porffor || ''
-  ok(version.includes(revision), `Porffor evidence ${version || 'missing'}; required alpha 3 ${revision}`)
+  ok(porfforEvidenceMatches(version), `Porffor evidence ${version || 'missing'}; required ${PORFFOR_RELEASE} ${PORFFOR_REV.slice(0, 7)}`)
   const { speed, size, speedLosses, sizeLosses, speedGeomean, sizeGeomean } = porfforFloor(cases)
   const need = Math.ceil(Object.keys(cases).length * COVERAGE_FLOOR)
   ok(speed.length >= need, `${speed.length} comparable Porffor speed rows (need ${need})`)

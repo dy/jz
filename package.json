@@ -122,6 +122,7 @@
     "esbuild": "^0.28.0",
     "sprae": "^13.3.8",
     "tst": "^9.4.0",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "web-audio-api": "^1.5.5"
   }
 }

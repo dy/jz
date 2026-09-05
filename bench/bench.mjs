@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { cpus, tmpdir } from 'node:os'
+import { cpus, homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
@@ -62,11 +62,14 @@ const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
-// Porffor: prefer the current git/release line (alpha 3 at the 2026-08-27
-// reference refresh), while npm's 0.61.x is the frozen pre-rewrite engine. Same
+// Porffor: the release binary its installer puts under ~/.local/bin
+// (`curl -fsSL https://porffor.dev/install.sh | sh`, the install the author
+// asks for; alpha 4 at the 2026-09-05 refresh), else a git checkout of the
+// same line, else PATH; npm's 0.61.x is the frozen pre-rewrite engine. Same
 // committed-absolute-path pattern as WABT_W2C_DIR; override via PORF_BIN.
+const PORF_RELEASE = join(process.env.PORFFOR_INSTALL || join(homedir(), '.local/bin'), 'porf')
 const PORF_GIT = '/Users/div/projects/porffor/porf'
-const PORF_BIN = process.env.PORF_BIN || (existsSync(PORF_GIT) ? PORF_GIT : 'porf')
+const PORF_BIN = process.env.PORF_BIN || (existsSync(PORF_RELEASE) ? PORF_RELEASE : existsSync(PORF_GIT) ? PORF_GIT : 'porf')
 // Porffor's 2026 rewrite (git main) replaced the CLI: no `run` subcommand,
 // no --allocator-chunks (the new allocator sizes itself). Probe the version once and pick
 // the invocation shape, so both the npm release (0.61.x) and a git checkout work.
@@ -121,6 +124,7 @@ const CASE_NAMES = {
   watr: 'watr WAT compiler',
   jessie: 'jessie parser',
   jz: 'jz JS compiler (self-compile)',
+  webaudio: 'Web Audio graph render (web-audio-api engine)',
 }
 
 // Cases whose source pulls in a real multi-file library: the whole relative-
@@ -128,7 +132,15 @@ const CASE_NAMES = {
 // `jz` additionally resolves bare node_modules specifiers (watr) — its
 // workload IS the compiler (scripts/self.js), so the jz row runs the full
 // self-compile: jz.wasm compiling JavaScript.
-const GRAPH_CASES = new Set(['jessie', 'jz'])
+const GRAPH_CASES = new Set(['jessie', 'jz', 'webaudio'])
+// A library case's host adapters: the device and codec packages a render never
+// calls. jz compiles them as host imports (run-jz-host.mjs answers each
+// `undefined`); the JS-engine bundle aliases them to a null-export stub. The
+// worklet host module is a jz external as well: its async private method is
+// outside jz's parser today, and an offline render never loads a worklet.
+const HOST_ADAPTERS = { webaudio: ['@audio/decode', '@audio/decode-ape', '@audio/speaker', '@audio/mic', 'pcm-convert'] }
+const JZ_EXTERNALS = { webaudio: [...HOST_ADAPTERS.webaudio, 'src/AudioWorklet.js'] }
+const HOST_STUB = join(BENCH_DIR, '_lib', 'host-stub.js')
 // The LAB set (imported — one definition in assets/headline.js): self-referential
 // 'compiler' cases (jz/watr/jessie compiling code) plus the JS-only intrinsic
 // probes (color*). Excluded from every aggregate — the headline geomean SVG here,
@@ -139,10 +151,15 @@ const GRAPH_CASES = new Set(['jessie', 'jz'])
 const HIDDEN_FROM_GEOMEAN = LAB
 // Only the self-compile graph bundles stay out of bench/web/ — their wasm is multi-MB
 // (jz.wasm embeds the whole compiler). The color* lab kernels stay playable in-page.
-const NO_WEB = new Set(['watr', 'jessie', 'jz'])
+// webaudio stays out too: its host-adapter imports need the stubs
+// run-jz-host.mjs wires, which the page's instantiate does not.
+const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio'])
 const graphSources = (c) => {
-  const g = resolveModuleGraph(c.js, { resolveNode: c.id === 'jz' })
-  return { code: g.code, modules: g.modules }
+  const g = resolveModuleGraph(c.js, { resolveNode: c.id === 'jz' || c.id in JZ_EXTERNALS, external: JZ_EXTERNALS[c.id] })
+  // Every name a declared external exports is a host import (the boundary ABI: any arity)
+  const imports = {}
+  for (const [k, v] of Object.entries(g.externals ?? {})) imports[k] = Object.fromEntries(v.map(n => [n, { params: 8 }]))
+  return { code: g.code, modules: g.modules, imports }
 }
 // Non-jz cases get the 1-page wasm default — plenty for a bench kernel's own
 // data. The `jz` CASE (self-compile: jz compiling itself) is its own path
@@ -227,14 +244,17 @@ const versionText = cmd => {
     return ''
   }
 }
-// Porffor checkout identity for evidence metadata and the prep cache. Alpha 3's
-// `porf --version` still prints alpha 1, so clean checkouts use git HEAD. Dirty
-// checkouts are labeled and bypass persistent caching.
+// Porffor identity for evidence metadata and the prep cache. A release binary
+// names its commit in its version text (`alpha 4 (a415d19 2026-08-29)`), which
+// identifies the artifact. Alpha 3's checkout `porf --version` still prints
+// alpha 1, so clean checkouts use git HEAD. Dirty checkouts, and a PATH entry
+// with no commit in its version, are labeled and bypass persistent caching.
 let _porfIdentity
 let _porfCheckoutDirty = false
 const porfIdentity = () => {
   if (_porfIdentity !== undefined) return _porfIdentity
   const version = versionText(PORF_BIN).trim().split('\n')[0] || null
+  if (version && PORF_BIN === PORF_RELEASE && /\([0-9a-f]{7,} \d{4}-\d{2}-\d{2}\)/.test(version)) return (_porfIdentity = version)
   if (!version || !PORF_BIN.includes('/')) {
     // Version text alone is not an artifact identity. A PATH entry can change
     // between runs without changing that string, so never reuse its binary.
@@ -500,9 +520,9 @@ const compileJzAt = (c, optimize) => {
   // Graph cases resolve their whole import graph (GRAPH_CASES), then swap the
   // real benchlib for the env.logResult-patched host build.
   const isGraph = GRAPH_CASES.has(c.id)
-  let code, modules
+  let code, modules, hostImports = {}
   if (isGraph) {
-    ;({ code, modules } = graphSources(c))
+    ;({ code, modules, imports: hostImports } = graphSources(c))
     modules[resolve(LIB, 'benchlib.js')] = benchlibHostSource()
   } else {
     code = readFileSync(c.js, 'utf8')
@@ -515,6 +535,7 @@ const compileJzAt = (c, optimize) => {
     jzify: isWatr || isGraph,
     modules,
     imports: {
+      ...hostImports,
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },
     },
@@ -665,6 +686,7 @@ if (typeof TextEncoder === 'undefined') {
       },
       bundle: true, format: 'iife', write: false, platform: 'neutral',
       mainFields: ['module', 'main'], conditions: ['import'],
+      alias: Object.fromEntries((HOST_ADAPTERS[c.id] ?? []).map(name => [name, HOST_STUB])),
       logLevel: 'silent',
     })
     body += r.outputFiles[0].text

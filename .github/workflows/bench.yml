@@ -99,18 +99,20 @@ jobs:
         run: rustup target add wasm32-wasip1 || true
       # Competitor toolchains + binaryen (provides wasm-opt).
       - run: npm install --no-save assemblyscript@~0.27.0 binaryen
-      # Porffor's npm 0.61.x is the frozen pre-rewrite engine. Pin the latest
-      # tested release commit instead: alpha 3 (2026-08-27). Exact SHA keeps the
-      # comparison reproducible; unlike the old best-effort clone/checkout, a
-      # failed rival install is fatal rather than silently weakening coverage.
-      - name: porffor alpha 3 (git, pinned)
+      # Porffor's npm 0.61.x is the frozen pre-rewrite engine. The author's
+      # install is the release binary (porffor.dev/install.sh); pin the tested
+      # release, alpha 4 (a415d19, 2026-08-29), by its tag so the comparison is
+      # reproducible; a failed rival install is fatal rather than silently
+      # weakening coverage.
+      - name: porffor alpha 4 (release, pinned)
         env:
-          PORFFOR_REV: 03b6b54fda4bdf242e085d23768a6e31490fa58d
+          PORFFOR_RELEASE: alpha-4
+          PORFFOR_REV: a415d194e74948f0ac32b9d608153ea8720c71fd
         run: |
-          git clone https://github.com/CanadaHonk/porffor.git "$RUNNER_TEMP/porffor"
-          git -C "$RUNNER_TEMP/porffor" checkout "$PORFFOR_REV"
-          test "$(git -C "$RUNNER_TEMP/porffor" rev-parse HEAD)" = "$PORFFOR_REV"
-          echo "PORF_BIN=$RUNNER_TEMP/porffor/porf" >> "$GITHUB_ENV"
+          curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
+          test -x "$HOME/.local/bin/porf"
+          "$HOME/.local/bin/porf" --version | grep -q "${PORFFOR_REV:0:7}"
+          echo "PORF_BIN=$HOME/.local/bin/porf" >> "$GITHUB_ENV"
       - name: expose toolchains on PATH
         run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - name: versions
@@ -118,7 +120,6 @@ jobs:
           node --version
           asc --version || true
           "$PORF_BIN" --version
-          git -C "$(dirname "$PORF_BIN")" describe --tags --always --dirty
           wasm-opt --version || true
       - run: npm run test:bench
       # ── native-lane smoke gate (audit-#12 step 4) ──────────────────────────
