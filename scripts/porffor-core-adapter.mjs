@@ -25,7 +25,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-export const PORFFOR_COMPAT_REV = '03b6b54fda4bdf242e085d23768a6e31490fa58d'
+export const PORFFOR_COMPAT_REV = 'a415d194e74948f0ac32b9d608153ea8720c71fd'
 export const PORFFOR_COMPAT_IMPORT = 'porffor:compat'
 
 const here = dirname(fileURLToPath(import.meta.url))
