@@ -137,6 +137,13 @@ this milestone is complete; existing red checkpoints are not a new baseline.
   was dropped. At this reconciliation checkpoint the reserve still rounded
   capacity to a power of two. The reviewed integration below replaces that
   final rounding; the original count-first change avoided intermediate growth.
+- `bench/webaudio`: the web-audio-api render is a bench case, the flagship's
+  speed against V8 in the table: V8 4.7 ms, jz 55 ms, 594 KB and 462 MB peak.
+  jz's checksum differs from V8's: `Math.sin`, `cos` and `exp` are off by 7.5M,
+  83M and 6.2M ulps (a biquad coefficient by 1.2e-6), and at O0/O1 the
+  BiquadFilterNode path diverges by up to 0.39 (O2/O3 within 1.7e-6). Both are
+  compiler defects the case now pins; neither is the transport's. Porffor
+  alpha 4 is the bench's Porffor; it fails the case.
 - The late link and its duplicate vacuum/block-merge implementations are gone.
   Their useful generic effects are in watr: numeric-local CSE (`b53c92c`), final
   local ordering (`a137283`), and `memory.size` read semantics (`5ff0037`).
