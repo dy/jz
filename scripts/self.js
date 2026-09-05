@@ -23,6 +23,7 @@ import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
 } from '../src/compile/emit.js'
 import { watrTail, programPins } from '../src/optimize/watr-tail.js'
+import { T } from '../src/ir/tape.js'
 import jzify from '../jzify/index.js'
 
 // Final-optimizer tail shared with the host pipeline. Keep the live compile
@@ -91,7 +92,7 @@ function front(source, strict, sourceType) {
 }
 
 function emitIR(ast) {
-  const module = compileAst(ast)
+  const module = compileAst(ast, stageMarks)
   if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
   return module
 }
@@ -165,6 +166,27 @@ function checkpointIR(module) {
   return unparkValue()
 }
 
+// The heap pointer at each stage boundary of the last compileSelf, as exported
+// globals: the arena is a bump allocator with no reclaim before the checkpoint,
+// so a stage's mark minus the one before it is the stage's allocation, and the
+// marks written before a trap survive it (scripts/recursive-self-check.mjs).
+// Inside emit, the compile phases' own boundaries (compileAst's profiler hook).
+export let heapFront = 0, heapPlan = 0, heapEmitFuncs = 0, heapEmitClosures = 0, heapOptimizeModule = 0, heapLinkStart = 0, heapEmit = 0, heapOptimize = 0, heapCheckpoint = 0
+// The tape after link: its node count and the column capacity it grew to.
+export let tapeNodes = 0, tapeCapacity = 0
+const stageMarks = {
+  time(name, fn) {
+    if (name === 'link') heapLinkStart = __heap_mark()
+    const out = fn()
+    const mark = __heap_mark()
+    if (name === 'plan') heapPlan = mark
+    else if (name === 'emitFuncs') heapEmitFuncs = mark
+    else if (name === 'emitClosures') heapEmitClosures = mark   // the last wave's
+    else if (name === 'optimizeModule') heapOptimizeModule = mark
+    return out
+  },
+}
+
 /**
  * @param {string} source - JS source
  * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
@@ -173,9 +195,18 @@ function checkpointIR(module) {
  */
 export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
   const heapMark = __heap_mark()
+  heapFront = heapPlan = heapEmitFuncs = heapEmitClosures = heapOptimizeModule = heapLinkStart = heapEmit = heapOptimize = heapCheckpoint = 0
   setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
-  const optimized = optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize)
-  return watrCompile(__heap_large(heapMark) ? checkpointIR(optimized) : optimized)
+  const ast = front(source, strict, sourceType)
+  heapFront = __heap_mark()
+  const module = emitIR(ast)
+  heapEmit = __heap_mark()
+  tapeNodes = T.n; tapeCapacity = T.op.length
+  const optimized = optimizeTail(module, ctx.transform.optimize)
+  heapOptimize = __heap_mark()
+  const checkpointed = __heap_large(heapMark) ? checkpointIR(optimized) : optimized
+  heapCheckpoint = __heap_mark()
+  return watrCompile(checkpointed)
 }
 
 /**

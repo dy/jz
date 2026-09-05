@@ -22,8 +22,23 @@ const build = self.memory.String(JSON.stringify({
   compactCollections: profile.compactCollections,
 }))
 
+// The kernel's stage marks (scripts/self.js): the heap pointer after the front,
+// the compile phases, link, watr and the checkpoint; the tape's node count and
+// column capacity. Read after a trap too: what the compiler had allocated
+// by the last stage it finished is the evidence the trap leaves.
+const marks = () => ({
+  heapFront: ex.heapFront.value, heapPlan: ex.heapPlan.value, heapEmitFuncs: ex.heapEmitFuncs.value, heapEmitClosures: ex.heapEmitClosures.value,
+  heapOptimizeModule: ex.heapOptimizeModule.value, heapLinkStart: ex.heapLinkStart.value, heapEmit: ex.heapEmit.value,
+  heapOptimize: ex.heapOptimize.value, heapCheckpoint: ex.heapCheckpoint.value,
+  tapeNodes: ex.tapeNodes.value, tapeCapacity: ex.tapeCapacity.value,
+})
 const started = Date.now()
-const output = self.exports.default(source, 0, optimize, modules, 0, 0, build)
+let output
+try { output = self.exports.default(source, 0, optimize, modules, 0, 0, build) }
+catch (e) {
+  console.log(JSON.stringify({ outcome: 'trap', message: e.message, heap: heap(), memoryBytes: memoryBytes(), elapsedMs: Date.now() - started, ...marks() }))
+  process.exit(1)
+}
 const elapsedMs = Date.now() - started
 new WebAssembly.Module(output)
 
@@ -55,4 +70,5 @@ console.log(JSON.stringify({
   headroom,
   memoryBytes: memoryBytes(),
   elapsedMs,
+  ...marks(),
 }))

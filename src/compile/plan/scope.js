@@ -21,7 +21,7 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { warningsView } from '../../session-views.js'
-import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, T, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, isNullable, valOf, core, UNKNOWN } from '../../summary/index.js'
@@ -38,8 +38,9 @@ import { invalidateProgramFactsCache } from '../program-facts.js'
  *  global assigned nowhere keeps the declaration's claim. A typed-array kind
  *  names its constructor (`let mem; init = n => { mem = new Float64Array(n) }`);
  *  a const bound to an object of one schema names the schema. A hash kind is
- *  not claimed: `{}`'s storage is decided by its writes (classifyHashDictGlobals,
- *  materializeAutoBoxSchemas). An exported global keeps its kind: the host can
+ *  not claimed: this runs on the entry summary, before materializeAutoBoxSchemas
+ *  gives a dot-written `{}` its schema (classifyHashDictGlobals decides the
+ *  dictionaries). An exported global keeps its kind: the host can
  *  store only a number through its export (src/summary). */
 export const moduleGlobalKinds = (summary) => {
   if (!summary || !ctx.scope.userGlobals?.size) return
@@ -471,6 +472,46 @@ export const flattenFuncNamespaces = (ast) => {
  * callee: it cannot change behavior, only drop dispatch overhead. The result is
  * recorded in `ctx.funcs.globalDevirt` (`Map<global, fn>`) and consumed by emit.
  */
+/** A member access on a receiver the summary names as one class's instance is
+ *  the call of the class's function (jzify/classes.js): `p.len()` → `P⟨len⟩(p)`,
+ *  `p.twice` → `P⟨twice__get⟩(p)`, the statement `p.twice = v` →
+ *  `P⟨twice__set⟩(p, v)`. The direct call inlines like any other, and an
+ *  instance that then never escapes scalarizes (plan/literals.js) with its
+ *  accessors already lowered. A receiver the summary cannot name, or that may
+ *  be nullish, keeps the dispatcher (emit/class-dispatch.js). */
+export const devirtClassCalls = () => {
+  if (!ctx.transform.classes?.size) return false
+  let changed = false
+  const call = (fn, recv, args) => { changed = true; return ['()', fn, args.length ? [',', recv, ...args] : recv] }
+  // `stmt`: the node is a statement of a `;` list, its value unused (a setter's result is not the value assigned).
+  const rewrite = (n, view, stmt = false) => {
+    if (!Array.isArray(n)) return n
+    if (n[0] === '=>') { const body = rewrite(n[2], ctx.summary.at(n[1])); return body === n[2] ? n : [n[0], n[1], body] }
+    let out = n
+    // A mutated member is no read: its receiver alone rewrites.
+    const target = MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '.'
+    for (let i = 1; i < n.length; i++) {
+      const c = i === 1 && target ? (r => r === n[1][1] ? n[1] : [n[1][0], r, n[1][2]])(rewrite(n[1][1], view)) : rewrite(n[i], view, n[0] === ';')
+      if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c }
+    }
+    if (out[0] === '()' && Array.isArray(out[1]) && out[1][0] === '.' && typeof out[1][2] === 'string') {
+      const fn = view.classCallee(out[1][1], out[1][2])
+      if (fn) return call(fn, out[1][1], out[2] == null ? [] : Array.isArray(out[2]) && out[2][0] === ',' ? out[2].slice(1) : [out[2]])
+    }
+    else if (out[0] === '.' && typeof out[2] === 'string') {
+      const fn = view.classCallee(out[1], out[2] + ACCESSOR_GET)
+      if (fn) return call(fn, out[1], [])
+    }
+    else if (out[0] === '=' && stmt && Array.isArray(out[1]) && out[1][0] === '.' && typeof out[1][2] === 'string') {
+      const fn = view.classCallee(out[1][1], out[1][2] + ACCESSOR_SET)
+      if (fn) return call(fn, out[1][1], [out[2]])
+    }
+    return out
+  }
+  for (const f of ctx.funcs.list) if (f.body && !f.raw) f.body = rewrite(f.body, ctx.summary.at(f.sig))
+  return changed
+}
+
 export const devirtGlobalCalls = (ast) => {
   const fnNames = ctx.funcs.names
   if (!fnNames?.size || !ctx.scope.globals?.size) return

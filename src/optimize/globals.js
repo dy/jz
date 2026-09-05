@@ -13,7 +13,6 @@ import { VAL } from '../reps.js'
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { hasIROp } from './ir-scan.js'
-import { simplifyBoolContexts } from './peephole.js'
 
 /**
  * Module-wide scan for "volatile" globals — those mutated (`global.set`) in any
@@ -967,10 +966,6 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites
     }
   }
   for (let i = insertIdx; i < fn.length; i++) walkAst(fn[i], { enter: replace })
-  // Promotion can expose `i32.ne(local.get, 0)` conditions after the ordinary
-  // function peephole already ran. Canonicalize now so native and self-hosted
-  // module pipelines converge on the same boolean IR.
-  simplifyBoolContexts(fn)
 }
 
 /**

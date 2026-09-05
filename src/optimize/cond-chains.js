@@ -1,5 +1,5 @@
 /**
- * Short-circuit conditions as branch chains.
+ * Short-circuit conditions as branch chains, on the tape.
  *
  * `&&` / `||` emit as VALUE diamonds so they can stand in any expression:
  *   (if (result i32) (local.tee $t A) (then B) (else (local.get $t)))     ;; A && B
@@ -24,143 +24,144 @@
  *
  * @module optimize/cond-chains
  */
-import { findBodyStart } from '../ir.js'
+import { T, NONE, OP_STR, node, str, sym, push, remove, replace, insertAfter, intern } from '../ir/tape.js'
+import { ops, bodyOf, stmtsOf, tallies, dropLocals, i32Const } from './fn.js'
 
-let uid = 0
-
-const isGet = (n, t) => Array.isArray(n) && n[0] === 'local.get' && n[1] === t
-
-/** AND/OR diamond → { kind, t, a, b } or null. */
-function diamond(n) {
-  if (!Array.isArray(n) || n[0] !== 'if' || n.length !== 5) return null
-  const [, res, cond, thn, els] = n
-  if (!Array.isArray(res) || res[0] !== 'result' || res[1] !== 'i32') return null
-  if (!Array.isArray(cond) || cond[0] !== 'local.tee' || typeof cond[1] !== 'string') return null
-  const t = cond[1]
-  if (!Array.isArray(thn) || thn[0] !== 'then' || thn.length !== 2 || !Array.isArray(els) || els[0] !== 'else' || els.length !== 2) return null
-  if (isGet(els[1], t)) return { kind: 'and', t, a: cond[2], b: thn[1] }
-  if (isGet(thn[1], t)) return { kind: 'or', t, a: cond[2], b: els[1] }
-  return null
-}
-
-const isEqz = (c) => Array.isArray(c) && c[0] === 'i32.eqz' && c.length === 2
-const isZero = (c) => Array.isArray(c) && c[0] === 'i32.const' && (c[1] === 0 || c[1] === '0')
-// `X != 0` is X in a boolean context (the truthiness canonicalization
-// simplifyBoolContexts strips later)
-const bool = (c) => {
-  while (Array.isArray(c) && c[0] === 'i32.ne' && c.length === 3 && (isZero(c[2]) || isZero(c[1]))) c = isZero(c[2]) ? c[1] : c[2]
-  return c
-}
-
-const hasDiamond = (c0) => { const c = bool(c0); return !!diamond(c) || (isEqz(c) && hasDiamond(c[1])) }
-
-export function chainConditions(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-  // reads and writes per local: a diamond's temp goes only when the diamond is its sole user
-  const reads = new Map(), writes = new Map()
-  const tally = (n) => {
-    if (!Array.isArray(n)) return
-    if (typeof n[1] === 'string') {
-      if (n[0] === 'local.get') reads.set(n[1], (reads.get(n[1]) || 0) + 1)
-      else if (n[0] === 'local.set' || n[0] === 'local.tee') writes.set(n[1], (writes.get(n[1]) || 0) + 1)
-    }
-    for (let i = 1; i < n.length; i++) tally(n[i])
+export function chainConditions(f) {
+  const O = ops(), body = bodyOf(f)
+  if (body === NONE) return
+  const I32 = intern('i32')
+  const isGet = (n, t) => T.op[n] === O.LOCAL_GET && T.sym[T.a[n]] === t
+  const only = (n) => T.a[n] !== NONE && T.next[T.a[n]] === NONE ? T.a[n] : NONE   // the sole child
+  const children = (n) => { const out = []; for (let c = T.a[n]; c !== NONE; c = T.next[c]) out.push(c); return out }
+  const arms = (s) => { let thn = NONE, els = NONE; for (let c = T.a[s]; c !== NONE; c = T.next[c]) { if (T.op[c] === O.THEN) thn = c; else if (T.op[c] === O.ELSE) els = c } return { thn, els } }
+  /** AND/OR diamond → { kind, t, a, b } or null. */
+  const diamond = (n) => {
+    if (n === NONE || T.op[n] !== O.IF) return null
+    const res = T.a[n], cond = res === NONE ? NONE : T.next[res], thn = cond === NONE ? NONE : T.next[cond], els = thn === NONE ? NONE : T.next[thn]
+    if (els === NONE || T.next[els] !== NONE) return null
+    if (T.op[res] !== O.RESULT || only(res) === NONE || T.sym[only(res)] !== I32) return null
+    if (T.op[cond] !== O.LOCAL_TEE || T.a[cond] === NONE || T.op[T.a[cond]] !== OP_STR) return null
+    const t = T.sym[T.a[cond]], a = T.next[T.a[cond]]
+    if (a === NONE || T.next[a] !== NONE) return null
+    if (T.op[thn] !== O.THEN || T.op[els] !== O.ELSE) return null
+    const tv = only(thn), ev = only(els)
+    if (tv === NONE || ev === NONE) return null
+    if (isGet(ev, t)) return { kind: 'and', t, a, b: tv }
+    if (isGet(tv, t)) return { kind: 'or', t, a, b: ev }
+    return null
   }
-  for (let i = bodyStart; i < fn.length; i++) tally(fn[i])
+  const isEqz = (c) => c !== NONE && T.op[c] === O.I32_EQZ && only(c) !== NONE
+  // `X != 0` is X in a boolean context (the truthiness canonicalization simplifyBoolContexts strips later)
+  const bool = (c) => {
+    for (;;) {
+      if (c === NONE || T.op[c] !== O.I32_NE) return c
+      const x = T.a[c], y = x === NONE ? NONE : T.next[x]
+      if (y === NONE || T.next[y] !== NONE) return c
+      if (i32Const(y) === 0) c = x; else if (i32Const(x) === 0) c = y; else return c
+    }
+  }
+  const hasDiamond = (c0) => { const c = bool(c0); return !!diamond(c) || (isEqz(c) && hasDiamond(only(c))) }
+  // reads and writes per local: a diamond's temp goes only when the diamond is its sole user
+  const { sets, gets, tees } = tallies(body, true)
   const dropped = new Set()
+  let uid = 0
   const fresh = () => `$__cc${uid++}`
+  const detach = (id) => { T.next[id] = NONE; return id }
+  const mk = (op, ...kids) => { const n = node(op); for (const k of kids) push(n, detach(k)); return n }
+  const eqz = (c) => mk(O.I32_EQZ, c)
+  const brIf = (L, c) => mk(O.BR_IF, str(L), c)
+  const result = (ty) => { const r = node(O.RESULT); push(r, sym(ty)); return r }
   // A diamond's left operand as a plain condition; the tee stays when the temp has other users.
   const left = (d) => {
-    if ((reads.get(d.t) || 0) <= 1 && (writes.get(d.t) || 0) <= 1) { dropped.add(d.t); return d.a }
-    return ['local.tee', d.t, d.a]
+    if ((gets.get(d.t) || 0) <= 1 && (sets.get(d.t) || 0) + (tees.get(d.t) || 0) <= 1) { dropped.add(d.t); return d.a }
+    return mk(O.LOCAL_TEE, sym(d.t), d.a)
   }
   // jump to F when c is false; fall through when true
   const jf = (c0, F, out) => {
     const c = bool(c0), d = diamond(c)
     if (d && d.kind === 'and') { jf(left(d), F, out); jf(d.b, F, out); return }
     if (d && d.kind === 'or') {
-      const T = fresh(), inner = []
-      jt(left(d), T, inner); jf(d.b, F, inner)
-      out.push(['block', T, ...inner]); return
+      const L = fresh(), inner = []
+      jt(left(d), L, inner); jf(d.b, F, inner)
+      out.push(mk(O.BLOCK, str(L), ...inner)); return
     }
-    if (isEqz(c) && hasDiamond(c[1])) { jt(c[1], F, out); return }
-    out.push(['br_if', F, isEqz(c) ? c[1] : ['i32.eqz', c]])
+    if (isEqz(c) && hasDiamond(only(c))) { jt(only(c), F, out); return }
+    out.push(brIf(F, isEqz(c) ? only(c) : eqz(c)))
   }
-  // jump to T when c is true; fall through when false
-  const jt = (c0, T, out) => {
+  // jump to L when c is true; fall through when false
+  const jt = (c0, L, out) => {
     const c = bool(c0), d = diamond(c)
-    if (d && d.kind === 'or') { jt(left(d), T, out); jt(d.b, T, out); return }
+    if (d && d.kind === 'or') { jt(left(d), L, out); jt(d.b, L, out); return }
     if (d && d.kind === 'and') {
       const F = fresh(), inner = []
-      jf(left(d), F, inner); jf(d.b, F, inner); inner.push(['br', T])
-      out.push(['block', F, ...inner]); return
+      jf(left(d), F, inner); jf(d.b, F, inner); inner.push(mk(O.BR, str(L)))
+      out.push(mk(O.BLOCK, str(F), ...inner)); return
     }
-    if (isEqz(c) && hasDiamond(c[1])) { jf(c[1], T, out); return }
-    out.push(['br_if', T, c])
+    if (isEqz(c) && hasDiamond(only(c))) { jf(only(c), L, out); return }
+    out.push(brIf(L, c))
   }
-  // A VALUE if whose test holds a diamond, anywhere in an expression: the
-  // then arm becomes the branch value and the else arm the fallthrough of a
-  // result block. Returns the replacement or null.
+  // A VALUE if whose test holds a diamond, anywhere in an expression: the then arm becomes the
+  // branch value and the else arm the fallthrough of a result block. Returns the replacement or NONE.
   const valueIf = (s) => {
-    if (!Array.isArray(s) || s[0] !== 'if' || !Array.isArray(s[1]) || s[1][0] !== 'result' || s[1].length !== 2 || !hasDiamond(s[2])) return null
-    const thn = s.find(c => Array.isArray(c) && c[0] === 'then'), els = s.find(c => Array.isArray(c) && c[0] === 'else')
-    if (!thn || !els || thn.length < 2 || els.length < 2) return null
-    const T = s[1][1]
-    const val = (arm) => arm.length === 2 ? arm[1] : ['block', ['result', T], ...arm.slice(1)]
+    if (T.op[s] !== O.IF) return NONE
+    const res = T.a[s]
+    if (res === NONE || T.op[res] !== O.RESULT || only(res) === NONE) return NONE
+    const cond = T.next[res]
+    if (cond === NONE || !hasDiamond(cond)) return NONE
+    const { thn, els } = arms(s)
+    if (thn === NONE || els === NONE || T.a[thn] === NONE || T.a[els] === NONE) return NONE
+    const ty = T.sym[only(res)]
+    const val = (arm) => { const kids = children(arm); return kids.length === 1 ? kids[0] : mk(O.BLOCK, result(ty), ...kids) }
     const x = fresh(), end = fresh(), inner = []
-    jf(s[2], x, inner)
-    return ['block', end, ['result', T], ['block', x, ...inner, ['br', end, val(thn)]], val(els)]
+    jf(cond, x, inner)
+    return mk(O.BLOCK, str(end), result(ty), mk(O.BLOCK, str(x), ...inner, mk(O.BR, str(end), val(thn))), val(els))
   }
   const rewriteExpr = (n) => {
-    if (!Array.isArray(n)) return
-    for (let i = 1; i < n.length; i++) {
-      const c = n[i]
-      if (!Array.isArray(c)) continue
+    for (let c = T.a[n]; c !== NONE; c = T.next[c]) {
+      if (T.op[c] < 0) continue
       const r = valueIf(c)
-      if (r) { n[i] = r; rewriteExpr(r); continue }
+      if (r !== NONE) { replace(n, c, r); c = r }
       rewriteExpr(c)
     }
   }
-  const rewriteList = (list, start) => {
-    for (let i = start; i < list.length; i++) {
-      const s = list[i]
-      if (!Array.isArray(s)) continue
-      const op = s[0]
+  const rewriteList = (parent, first) => {
+    for (let s = first, next; s !== NONE; s = next) {
+      next = T.next[s]
+      if (T.op[s] < 0) continue
+      const op = T.op[s]
       const r = valueIf(s)
-      if (r) { list[i] = r; rewriteExpr(r); continue }
-      if (op === 'if' && Array.isArray(s[1]) && s[1][0] !== 'result' && hasDiamond(s[1])) {
-        const thn = s.find(c => Array.isArray(c) && c[0] === 'then'), els = s.find(c => Array.isArray(c) && c[0] === 'else')
-        const T = thn ? thn.slice(1) : [], E = els ? els.slice(1) : []
-        rewriteList(T, 0); rewriteList(E, 0)
+      if (r !== NONE) { replace(parent, s, r); rewriteExpr(r); continue }
+      const c1 = T.a[s]
+      if (op === O.IF && c1 !== NONE && T.op[c1] !== O.RESULT && hasDiamond(c1)) {
+        const { thn, els } = arms(s)
+        if (thn !== NONE) rewriteList(thn, T.a[thn])
+        if (els !== NONE) rewriteList(els, T.a[els])
         const x = fresh(), inner = []
-        jf(s[1], x, inner)
-        let node
-        if (E.length) { const end = fresh(); inner.push(...T, ['br', end]); node = ['block', end, ['block', x, ...inner], ...E] }
-        else { inner.push(...T); node = ['block', x, ...inner] }
-        list[i] = node
+        jf(c1, x, inner)
+        const Ts = thn === NONE ? [] : children(thn), Es = els === NONE ? [] : children(els)
+        let out
+        if (Es.length) { const end = fresh(); inner.push(...Ts, mk(O.BR, str(end))); out = mk(O.BLOCK, str(end), mk(O.BLOCK, str(x), ...inner), ...Es) }
+        else { inner.push(...Ts); out = mk(O.BLOCK, str(x), ...inner) }
+        replace(parent, s, out)
         continue
       }
-      if (op === 'br_if' && s.length === 3 && hasDiamond(s[2])) {
+      if (op === O.BR_IF && c1 !== NONE && T.next[c1] !== NONE && T.next[T.next[c1]] === NONE && hasDiamond(T.next[c1])) {
         const out = []
-        jt(s[2], s[1], out)
-        list.splice(i, 1, ...out); i += out.length - 1
+        jt(T.next[c1], T.syms[T.sym[c1]], out)
+        let prev = s
+        for (const o of out) { insertAfter(parent, prev, o); prev = o }
+        remove(parent, s)
         continue
       }
-      if (op === 'block' || op === 'loop') {
-        let k = 1
-        while (k < s.length && (typeof s[k] === 'string' || (Array.isArray(s[k]) && s[k][0] === 'result'))) k++
-        rewriteList(s, k)
-      } else if (op === 'if') {
-        rewriteExpr(s[1][0] === 'result' ? [null, s[2]] : [null, s[1]])
-        for (let k = 1; k < s.length; k++) { const c = s[k]; if (Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')) rewriteList(c, 1) }
+      if (op === O.BLOCK || op === O.LOOP) rewriteList(s, stmtsOf(s))
+      else if (op === O.IF) {
+        const cond = c1 !== NONE && T.op[c1] === O.RESULT ? T.next[c1] : c1
+        if (cond !== NONE && T.op[cond] >= 0) { const r = valueIf(cond); if (r !== NONE) { replace(s, cond, r); rewriteExpr(r) } else rewriteExpr(cond) }
+        for (const c of children(s)) if (T.op[c] === O.THEN || T.op[c] === O.ELSE) rewriteList(c, T.a[c])
       } else rewriteExpr(s)
     }
   }
-  rewriteList(fn, bodyStart)
-  if (dropped.size) for (let i = fn.length - 1; i >= 2; i--) {
-    const c = fn[i]
-    if (Array.isArray(c) && c[0] === 'local' && dropped.has(c[1])) fn.splice(i, 1)
-  }
+  rewriteList(f, body)
+  if (dropped.size) dropLocals(f, dropped)
 }

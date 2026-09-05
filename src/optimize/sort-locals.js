@@ -1,11 +1,14 @@
 /**
  * Local declaration order, on the tape. A `local.get/set/tee` encodes its
- * index as a ULEB128: one byte under 128, two above. With at most 128
- * declarations every index is one byte and only the locals vector matters,
- * so locals group by type (stable within a type) and the vector squashes to
- * one run per type. Above 128 the hottest locals take the low indices,
- * counted over the body as it is now, after every rewrite; equal counts
- * tie by type. Parameters never move: their slots are the call ABI.
+ * index as a ULEB128: one byte under 128, two above, and the locals vector
+ * costs one entry per run of a type. With at most 128 declarations every
+ * index is one byte and only the vector matters, so locals group by type
+ * (stable within a type) and the vector squashes to one run per type.
+ * Above 128 the hottest locals take the one-byte indices, counted over the
+ * body as it is now, after every rewrite, and each side of the boundary
+ * groups by type again: an index past it costs the same wherever it lands.
+ * Parameters never move: their slots are the call ABI. Runs when watr does
+ * not: watr's `sortLocals` orders the final body, after its coalescing.
  *
  * @module optimize/sort-locals
  */
@@ -21,18 +24,20 @@ export function sortLocalsByUse(root) {
   for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
     const locals = []
-    let decls = 0, body = NONE
+    let params = 0, body = NONE
     for (let c = T.next[T.a[f]]; c !== NONE; c = T.next[c]) {
       const op = T.op[c]
-      if (op === PARAM || op === RESULT) { decls++; continue }
-      if (op === LOCAL) { locals.push(c); decls++; continue }
+      if (op === PARAM) { params++; continue }
+      if (op === RESULT) continue
+      if (op === LOCAL) { locals.push(c); continue }
       if (op < 0 || op === EXPORT || op === IMPORT || op === TYPE) continue  // a comment atom, or a header entry
       body = c
       break
     }
     if (locals.length < 2) continue
     const order = locals.map((l, k) => [T.a[l], typeOf(l), k])
-    if (decls <= 128) order.sort((a, b) => (a[1] - b[1]) || (a[2] - b[2]))
+    const byType = (a, b) => (a[1] - b[1]) || (a[2] - b[2])
+    if (params + locals.length <= 128) order.sort(byType)
     else {
       const counts = new Map()
       for (let c = body; c !== NONE; c = T.next[c]) walk(c, (id) => {
@@ -41,6 +46,8 @@ export function sortLocalsByUse(root) {
       })
       const uses = (a) => counts.get(text(a[0])) || 0
       order.sort((a, b) => (uses(b) - uses(a)) || (a[1] - b[1]) || (a[2] - b[2]))
+      const head = order.slice(0, 128 - params).sort(byType), tail = order.slice(head.length).sort(byType)
+      order.splice(0, order.length, ...head, ...tail)
     }
     // Every declaration is `(local $name type)`: the slots stay, their children move.
     locals.forEach((l, k) => { T.a[l] = order[k][0] })

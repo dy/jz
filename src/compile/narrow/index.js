@@ -64,9 +64,7 @@ function seedParamKinds(paramReps, addressTaken) {
       // into f64 arithmetic (ledger-correctness.md 9, open).
       if (hasTag(kd, K.NULLISH)) { r.nullable = true; if (t === K.BIGINT) r.val = VAL.BIGINT; continue }
       if (hasTag(kd, K.ABSENT) && t !== K.BIGINT) { r.mayBeUndefined = true; r.presence = 'maybe-undef' }
-      // A dictionary (`{}` with computed keys) is not claimed, as for a module global
-      // (plan/scope.js moduleGlobalKinds): its reads dispatch on the receiver at runtime.
-      if (t !== K.HASH) r.val = valOf(core(kd))
+      r.val = valOf(core(kd))
       if (t === K.OBJECT && p !== UNKNOWN) r.schemaId = p
       if (t === K.TYPED) r.typedCtor = p !== UNKNOWN ? ctorFromElemAux(p) : null
       if (t === K.ARRAY) {

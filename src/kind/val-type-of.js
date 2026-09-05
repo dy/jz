@@ -371,6 +371,9 @@ VT['.'] = (args) => {
     const slotVT = ctx.schema.slotVT(args[0], args[1])
     if (slotVT) return slotVT
   }
+  // The program summary (src/summary): the slot's kind under every construction
+  // and store, with a declared-then-assigned field's `undefined` excluded.
+  if (ctx.summary) { const sv = ctx.summary.at(ctx.func.current).valOfExpr(['.', args[0], args[1]]); if (sv) return sv }
   // OBJECT `.prop` propagation: when the receiver chain roots at a binding
   // sourced from `JSON.parse(stringConst)`, walk the shape tree to recover the
   // child's val-type. Generic for any compile-time-known JSON literal.

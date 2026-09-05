@@ -536,6 +536,16 @@ test('class struct: accessors on a known receiver, an unknown receiver, a plain 
     const any = (o) => o.twice
     export const unknown = (i) => any(i ? new T(4) : { twice: 7 })`)
   is(f(), 1005); is(unknown(1), 8); is(unknown(0), 7)
+  // The instance's literal inlines into the caller; an accessor accessed as a value, in a
+  // branch, or compound-assigned is the class's function still (analyze-scans.js: a member's
+  // name is no slot), where the setter's store folded away once (`t.v` read 3 for 5).
+  const { asValue, compound, branch, maybe } = compile(`
+    class T { constructor(v) { this.v = v } get twice() { return this.v * 2 } set twice(x) { this.v = x / 2 } }
+    export const asValue = () => { const t = new T(3); const r = (t.twice = 10); return r * 100 + t.v }
+    export const compound = () => { const t = new T(3); t.twice += 4; return t.twice * 100 + t.v }
+    export const branch = (c) => { const t = new T(3); if (c) t.twice = 10; return t.twice * 100 + t.v }
+    export const maybe = (c) => { const t = c ? new T(3) : null; return t ? t.twice : -1 }`)
+  is(asValue(), 1005, 'the assignment\'s value is the value assigned'); is(compound(), 1005); is(branch(1), 1005); is(branch(0), 603); is(maybe(1), 6); is(maybe(0), -1)
 })
 
 test('class struct: a derived class shares the base fields and functions; super; instanceof', () => {

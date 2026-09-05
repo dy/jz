@@ -14,12 +14,10 @@ import { recursionUnroll } from './recurse.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 import { hoistPtrType, hoistAddrBase } from './cse-address.js'
 import {
-  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass,
-  simplifyBoolContexts, rotateLoops, fusedRewrite,
+  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { propagateSingleUse, foldSetToTee } from './locals.js'
-import { chainConditions } from './cond-chains.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
@@ -144,13 +142,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     splitLoopPrivateScratch(fn)
     hoistInvariantLoop(fn)
   }
-  // Forward-substitute single-use temps — AFTER the vectorizer, never before: it pattern-matches a
-  // STRAIGHT-LINE `s += a[i]*2`, and folding an address/index temp out scrambles it (the typed-array
-  // loop fell from a SIMD body to a scalar unroll, +231 B). For watr:false the whole pipeline is the
-  // 'pre' phase (no 'post' re-run), so vectorize already ran above; for full watr the vectorizer is
-  // deferred to 'post', so skip 'pre' here to stay after it. (propagateSingleUse itself skips any
-  // function the vectorizer already lifted to v128.)
-  // Forward-substitute single-use temps AFTER the vectorizer (which now always runs in
+  // Forward-substitute single-use temps AFTER the vectorizer (which always runs in
   // 'pre', above) — propagateSingleUse itself skips any function already lifted to v128.
   if (!cfg || cfg.propagateSingleUse !== false) propagateSingleUse(fn)
   // Then sink single-def RHS into first use as a tee — captures the simplify-locals slack
@@ -169,18 +161,8 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // the original call_indirect as the always-sound default arm.
   if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn, cfg)
   if (!cfg || cfg.devirtSchemaReads !== false) devirtSchemaReads(fn)
-  // Loop rotation — the LAST shape pass. Runs in the pre phase (the only phase now); the
-  // vectorizer above has already formed the v128 loops it skips. Speed-tier: it duplicates the
-  // loop condition for a fused conditional back-edge (1.35× on the lz/qoi scalar scans). watr's
-  // loopify is disabled when vectorizing, so nothing downstream reverts the rotation.
-  if (cfg && cfg.rotateLoops === true) rotateLoops(fn)
-  // Short-circuit diamonds in condition positions → branch chains (one conditional
-  // branch per operand, as C lowers `if (a && b)`) — after rotateLoops so a fused
-  // back-edge's `&&` test chains too.
-  if (!cfg || cfg.chainConditions !== false) chainConditions(fn)
-  // Canonicalize boolean conditions (strip redundant `!= 0` / double-`eqz`) — after
-  // rotateLoops so its fused back-edges get cleaned too. Tied to the peephole pass.
-  if (!cfg || cfg.fusedRewrite !== false) simplifyBoolContexts(fn)
+  // The fold, loop rotation, the condition chains and the boolean
+  // canonicalization follow on the tape (src/link).
   // An optimizer pass that emits a malformed local — the class that otherwise dies
   // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
   // here, pinned to the function and the bad name.

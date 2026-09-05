@@ -46,6 +46,8 @@ test('dyn-keys: ToPropertyKey for atom keys (the prec[undefined] class)', () => 
   is(run(`const d = {}; d['null'] = 8; return d[null]`), 8)
   // Dynamic booleans use ToPropertyKey just like static boolean keys.
   is(run(`const d = {}; d['true'] = 9; return d[true]`), 9)
+  is(run(`const d = {}; d['true'] = 9; return d[true] === undefined ? 1 : 0`), 0)
+  is(jz(`export let f = (b) => { const d = {}; d['true'] = 9; return d[b > 0] === undefined ? 1 : 0 }`).exports.f(1), 0)
 })
 
 // dyn-prop KEYING on a NUMERIC (non-string) key against an OBJECT receiver
@@ -1616,5 +1618,7 @@ test('control-dependent local Map BigInt unary hop preserves both domains', () =
     const { f } = jz(src, { optimize }).exports
     is(f(true), -5n, `O${optimize || 0}: present BigInt stays BigInt`)
     ok(Number.isNaN(f(false)), `O${optimize || 0}: absent value negates to NaN`)
+    is(f(1), -5n)
+    ok(Number.isNaN(f(0)))
   }
 })

@@ -50,3 +50,18 @@ test('Set/Map constructors: nullish iterable is an EMPTY collection, for-of stil
   is(Number(f(1)), 1)
   is(Number(f(0)), 0)
 })
+
+test('for-of over an iterable of unknown kind resolves it at runtime (a host typed array, a Set, a Map)', async () => {
+  // The summary knows a for-of's iterable only when the program built it: a host
+  // encoder's bytes are of no kind it names, so the loop dispatches on the value
+  // (the self-hosted compiler read its custom-section bytes as f64s once).
+  const SRC = `
+  const utf8 = new TextEncoder()
+  export const bytes = (s) => { const out = []; for (const x of utf8.encode(s)) out.push(x); return out[0] * 1000 + out[1] }
+  export const colls = () => { const out = []; for (const x of new Set([3, 4])) out.push(x); for (const [k, v] of new Map([[1, 2]])) out.push(k * 10 + v); return out[0] * 1000 + out[1] * 100 + out[2] }`
+  for (const optimize of [false, 2]) {
+    const m = await run(SRC, { optimize })
+    is(m.bytes('ab'), 97098, `optimize:${optimize} the encoder's bytes iterate as bytes`)
+    is(m.colls(), 3412, `optimize:${optimize} a Set and a Map iterate as arrays`)
+  }
+})

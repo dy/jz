@@ -56,8 +56,16 @@ export const intern = (s) => {
   return id
 }
 
-const grow = () => {
-  const cap = T.op.length * 2
+/** Column capacity for at least `n` nodes. The decode reserves the tree it read
+ *  in one step: a growth by doubling allocates twice the final size in all, and
+ *  the self-hosted compiler's arena reclaims nothing. */
+export const reserve = (n) => {
+  if (n <= T.op.length) return
+  let cap = T.op.length
+  while (cap < n) cap *= 2
+  grow(cap)
+}
+const grow = (cap = T.op.length * 2) => {
   const op = new Int32Array(cap); op.set(T.op); T.op = op
   const a = new Int32Array(cap); a.set(T.a); T.a = a
   const next = new Int32Array(cap); next.set(T.next); T.next = next
@@ -76,6 +84,8 @@ export function node(op) {
 }
 
 export const str = (s) => { const id = node(OP_STR); T.sym[id] = intern(s); return id }
+/** A string atom of an interned symbol. */
+export const sym = (id) => { const a = node(OP_STR); T.sym[a] = id; return a }
 export const num = (v) => { const id = node(OP_NUM); T.imm[id] = v; return id }
 /** A byte blob (a custom section's payload), one atom. */
 export const bytes = (b) => { const id = node(OP_BYTES); T.imm[id] = T.blobs.length; T.blobs.push(b); return id }
@@ -114,6 +124,15 @@ export function replace(parent, old, id) {
   T.next[c] = id
 }
 
+/** A deep copy of the subtree at `id` (a sibling-less root). */
+export function clone(id) {
+  const c = node(T.op[id])
+  T.ty[c] = T.ty[id]; T.imm[c] = T.imm[id]; T.sym[c] = T.sym[id]; T.sid[c] = T.sid[id]
+  let prev = NONE
+  for (let k = T.a[id]; k !== NONE; k = T.next[k]) { const kc = clone(k); if (prev === NONE) T.a[c] = kc; else T.next[prev] = kc; prev = kc }
+  return c
+}
+
 /** Insert `id` after the child `prev` of `parent`, or first when `prev` is NONE. */
 export function insertAfter(parent, prev, id) {
   if (prev === NONE) { T.next[id] = T.a[parent]; T.a[parent] = id; return }
@@ -121,8 +140,23 @@ export function insertAfter(parent, prev, id) {
   T.next[prev] = id
 }
 
-/** Decode a WAT-array tree into the tape; returns the root index. */
+/** The nodes a WAT-array tree decodes to (a byte blob is one). */
+const count = (x) => {
+  if (!Array.isArray(x) || typeof x[0] === 'number') return 1
+  let n = 1
+  for (let i = 1; i < x.length; i++) n += count(x[i])
+  return n
+}
+
+/** Decode a WAT-array tree into the tape; returns the root index. The tree is
+ *  read, not taken: an array it shares decodes into a node at each use (the tape is
+ *  a tree), and emptying arrays would reclaim nothing where it matters, in the
+ *  self-hosted compiler's arena. The columns are reserved for the whole tree first. */
 export function fromWat(x) {
+  reserve(T.n + count(x))
+  return decode(x)
+}
+function decode(x) {
   if (Array.isArray(x)) {
     const head = x[0]
     if (typeof head === 'number') return bytes(x)
@@ -131,7 +165,7 @@ export function fromWat(x) {
     if (typeof x.schemaSid === 'number') T.sid[id] = x.schemaSid
     let prev = NONE
     for (let i = 1; i < x.length; i++) {
-      const c = fromWat(x[i])
+      const c = decode(x[i])
       if (prev === NONE) T.a[id] = c; else T.next[prev] = c
       prev = c
     }
@@ -146,7 +180,10 @@ export function fromWat(x) {
   throw new Error(`tape: cannot decode a ${typeof x} node`)
 }
 
-/** Encode a tape subtree back into WAT arrays. */
+/** Encode a tape subtree back into WAT arrays: a fresh tree, every array sized to
+ *  its node (a pushed-up array carries a spare capacity that outweighs the node;
+ *  on the flagship, 30 MB for the tree against 81 MB). Nothing on the tape refers
+ *  to the tree returned: it is the caller's. */
 export function toWat(id) {
   const op = T.op[id]
   if (op === OP_STR) return T.syms[T.sym[id]]
@@ -156,8 +193,12 @@ export function toWat(id) {
   if (op === OP_UNDEF) return undefined
   if (op === OP_BOOL) return T.imm[id] !== 0
   if (op === OP_BYTES) return T.blobs[T.imm[id]]
-  const out = [op === OP_NULLHEAD ? null : T.syms[op]]
-  for (let c = T.a[id]; c !== NONE; c = T.next[c]) out.push(toWat(c))
+  let n = 1
+  for (let c = T.a[id]; c !== NONE; c = T.next[c]) n++
+  const out = new Array(n)
+  out[0] = op === OP_NULLHEAD ? null : T.syms[op]
+  n = 1
+  for (let c = T.a[id]; c !== NONE; c = T.next[c]) out[n++] = toWat(c)
   if (T.ty[id] !== 0) out.type = T.syms[T.ty[id]]
   if (T.sid[id] !== NONE) out.schemaSid = T.sid[id]
   return out

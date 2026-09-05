@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, extractParams, isBrand, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
+import { MUTATE_OPS, extractParams, isBrand, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'
@@ -57,7 +57,7 @@ import { summaryQueries } from './query.js'
 import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
-  valOf, kindOfVal, TYPED_CTOR, NUMBER_METHODS, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
+  valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
   plus, arith,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, kindOfVal, valsOf, core } from './kind.js'
@@ -78,7 +78,7 @@ const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
  *  `hostGlobals` the module globals the host reads. An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, exported, imports, hostGlobals = [] }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [] }) {
   const tops = [...inits, ast]
   const kinds = new Map()            // binding key (keyOf) → kind
   const fields = new Map()           // sid → kind[]
@@ -90,6 +90,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   // The registry's key (module/schema.js): the props, and a class's brand as the salt.
   const schemaKey = (props, brand) => props.length + '\x01' + props.join('\x01') + (brand ? '\x02' + brand : '')
   const sidByKey = new Map(schemas.map((props, sid) => [schemaKey(props, brandOf(sid)), sid]))
+  /** A static literal's slot value kinds in key order; a definite initialization's `undefined` is no value. */
+  const literalVals = (n) => {
+    const vals = [], init = definite.get(n)
+    for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p === 'string') vals.push(expr(p)); else if (!isBrand(p[1])) vals.push(init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
+    return vals
+  }
   /** A literal's static keys and its brand: `{ props, brand }`, or null when a key is computed or spread. */
   const literalShape = (n) => {
     const props = []
@@ -242,10 +248,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       if (traitVal != null && traitVal !== VAL.TYPED) return kindOfVal(traitVal)
       if (callee === 'String' || callee.startsWith('String.')) return STRING
       if (callee === 'Number' || callee.startsWith('Math.') || callee.startsWith('Number.')) return NUMBER
-      // jzify's `for…of` lowering iterates `__iter_arr(v)` by index: an array,
-      // typed array or string iterates as itself, anything else as an array
-      // of unknown elements; `__keys_ro` is `for…in`'s key list.
-      if (callee === '__iter_arr') { const t = argKinds.length ? tagOf(argKinds[0]) : K.NONE; return t === K.ARRAY || t === K.TYPED || t === K.STRING ? argKinds[0] : t === K.NONE ? K.NONE : kind(K.ARRAY) }
+      // jzify's `for…of` lowering iterates `__iter_arr(v)` by index (module/collection.js):
+      // an array, a typed array, a string or a buffer iterates as itself, a Set or a Map as
+      // an array it materializes, an iterable of unknown kind as the runtime resolves it;
+      // `__keys_ro` is `for…in`'s key list.
+      if (callee === '__iter_arr') { const t = argKinds.length ? tagOf(argKinds[0]) : K.NONE; return t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.BUFFER ? argKinds[0] : t === K.MAP || t === K.SET ? kind(K.ARRAY) : t === K.NONE ? K.NONE : ANY }
       if (callee === '__keys_ro') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
@@ -447,9 +454,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       const sid = sidByKey.get(schemaKey(names, brand))
       if (sid === undefined) {
         for (const [, v] of writes) escape(v)
-        // An empty literal is physically an OBJECT unless its binding's
-        // dictionary-use analysis explicitly selects HASH at lowering time.
-        return names.length === 0 ? kind(K.OBJECT) : kind(K.HASH)
+        // A static literal has its own shape even when the registry has not
+        // named it. A spread's representation still depends on its sources.
+        return shape ? kind(K.OBJECT) : kind(K.OBJECT) | bitOf(K.HASH)
       }
       for (const [name, value] of writes) raiseSlot(sid, schemas[sid].indexOf(name), value)
       if (sid >= UNKNOWN) { poisonSchema(sid); return kind(K.OBJECT) }
@@ -480,7 +487,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
       }
       callCandidates(recv, prop + ACCESSOR_GET, [])
       if (classes && unknownReceiver(recv) && !prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const e of classes.values()) { const fn = e.methods.get(prop); if (fn) call(fn + BIND, [recv]) }
-      if (NUMBER_METHODS.has(prop) && (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.MAP || t === K.SET || t === K.BUFFER)) return done(NUMBER)
+      if (isCount(prop, t)) return done(NUMBER)
       if (prop === 'buffer' && t === K.TYPED) return done(kind(K.BUFFER))
       if (t === K.ARRAY && paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return done(orAbsent(propOf(recv, prop)))
       return done(ANY)
@@ -571,9 +578,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   }
   // A computed-key store may reach any slot; one with a number key only a
   // slot named like an index. A key of bottom kind is not known yet: a
-  // later round decides.
+  // later round decides. A dictionary has no slots.
   const poisonAll = (recv, key = ANY) => {
-    if (tagOf(key) === K.NONE) return
+    if (tagOf(key) === K.NONE || tagOf(recv) === K.HASH) return
     const numeric = tagOf(key) === K.NUMBER
     const hit = (sid) => { if (!numeric) poisonSchema(sid); else schemas[sid].forEach((p, i) => { if (/^\d+$/.test(p)) raiseSlot(sid, i, ANY) }) }
     if (tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN) hit(paramOf(recv)); else for (let sid = 0; sid < schemas.length; sid++) hit(sid)
@@ -630,7 +637,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make).
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], expr(d[2])); else { escape(expr(d[2])); pattern(d[1]) } } } }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], literalInto(d[1], d[2])); else { escape(expr(d[2])); pattern(d[1]) } } } }
+  // A `{}` declared into a name is allocated as the runtime allocates it
+  // (module/object.js's `{}`): with the binding's schema when that holds every
+  // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
+  // into a computed-key binding with no schema as a HASH, else as its own shape.
+  const literalInto = (name, value) => {
+    const shape = Array.isArray(value) && value[0] === '{}' ? literalShape(value) : null
+    if (!shape) return expr(value)
+    const bound = boundSchema(name), props = bound == null ? null : schemas[bound]
+    if (props && shape.props.every(p => props.includes(p))) {
+      const vals = literalVals(value)
+      for (let i = 0; i < vals.length; i++) raiseSlot(bound, props.indexOf(shape.props[i]), vals[i])
+      return kind(K.OBJECT, bound)
+    }
+    return value.length === 1 && !props?.length && dictKeys.has(keyOf(name)) ? kind(K.HASH) : expr(value)
+  }
   const pattern = (p) => { if (typeof p === 'string') declare(p, ANY); else if (Array.isArray(p)) for (let i = 1; i < p.length; i++) pattern(Array.isArray(p[i]) && p[i][0] === ':' ? p[i][2] : Array.isArray(p[i]) && p[i][0] === '=' ? p[i][1] : p[i]) }
 
   // Scopes: a function (its name), a closure (its id) or the module (null).
@@ -659,8 +681,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
     }
     else if (op === 'for-of' || op === 'for-in' || op === 'for-await') { const t = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]; if (typeof t === 'string') declareIn(scope, t) }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
+    // The root of a computed-key store (`o[k] = v`, `o[i][j] = v`), Object.assign's target: a dictionary.
+    if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && !isLiteralStr(n[1][2])) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
+    if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
     for (let i = 1; i < n.length; i++) collect(n[i], scope)
   }
+  const dictUses = [], dictKeys = new Set()   // computed-write roots, then their resolved binding keys
   for (const f of funcs) { for (const p of f.sig.params) declareIn(f.name, p.name); if (f.rest) declareIn(f.name, f.rest); collect(f.body, f.name) }
   for (const top of tops) collect(top, MODULE)
   const keyIn = (scope, name) => scope === MODULE ? name : scope + '\0' + name
@@ -673,6 +699,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, classes, e
   }
 
   let current = null  // the scope (and result key) of the function being walked; null at module scope
+  for (const [scope, name] of dictUses) { current = scope === MODULE ? null : scope; const key = keyOf(name); if (key !== null) dictKeys.add(key) }
+  current = null
   const stmt = (n) => {
     if (n == null) return
     if (typeof n === 'string') { expr(n); return }

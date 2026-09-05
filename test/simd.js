@@ -3042,12 +3042,11 @@ test('per-pixel-color f64x2 - sin+sqrt+pow kernel (interference shape: bit-exact
   ok(!/call \$math\.pow2/.test(w), 'no per-lane-scalar $math.pow2 — the inlined exp·log vectorizes fully')
 })
 
-// ── Multi-caller SIMD-helper inlining (the size-for-speed `inline` pass) ──────────────────
+// ── Multi-caller SIMD-helper inlining ─────────────────────────────────────────────────────
 // A hand-vectorized hot loop's per-step helper (e.g. a raymarcher's SDF) is called every
-// iteration but never inlined by V8's wasm JIT, so the call overhead is pure tax. The speed
-// level's `inline` pass duplicates such SMALL pure-v128 helpers into every caller and drops
-// the function — removing the calls — while leaving level 2 (and SCALAR helpers, where jz's
-// codegen-shape tuning + the auto-vectorizer's own call-lifting live) untouched.
+// iteration but never inlined by V8's wasm JIT, so the call overhead is pure tax. A small
+// leaf is spliced into every caller once its own callees inline away (plan/inline.js: a
+// candidate, below speed one with a single site), at every tier, and the functions drop.
 const INLINE_SRC = `
 let len = (x, y, z) => f32x4.sqrt(f32x4.add(f32x4.add(f32x4.mul(x, x), f32x4.mul(y, y)), f32x4.mul(z, z)))
 let sdf = (x, y, z) => f32x4.sub(len(x, y, z), f32x4.splat(0.55))
@@ -3062,9 +3061,8 @@ test('SIMD inline - small v128 helpers fold into every caller at speed, bit-exac
   for (const [a, b, c] of [[1.1, 2.2, 3.3], [0.5, -7.0, 4.25], [100.0, 1e-3, 1.5]])
     is(fast.main(a, b, c), base.main(a, b, c), `inlined SIMD helper bit-exact @ (${a},${b},${c})`)
   if (onKernel()) return  // call-shape is a host-codegen assertion; bit-exactness above is the portable gate
-  // Level 2 keeps the 3 multi-caller sdf calls ($len, single-caller, inlineOnce folds even at L2);
-  // speed removes every $len/$sdf call (the multi-caller chain fully collapses).
-  is((wat(INLINE_SRC, { optimize: 2 }).match(/call \$(len|sdf)/g) || []).length, 3, 'level 2 keeps the 3 multi-caller sdf calls')
+  // The chain collapses at level 2 and at speed: no $len/$sdf call remains.
+  is((wat(INLINE_SRC, { optimize: 2 }).match(/call \$(len|sdf)/g) || []).length, 0, 'level 2 inlines the whole SIMD helper chain → 0 calls')
   is((wat(INLINE_SRC, { optimize: 'speed' }).match(/call \$(len|sdf)/g) || []).length, 0, 'speed inlines the whole SIMD helper chain → 0 calls')
 })
 

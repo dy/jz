@@ -362,3 +362,21 @@ test('summary: the result kinds are the summary\'s (narrow/results.js seedResult
   is(F.first.valResult, 'number'); ok(F.first.valResultMayBeUndefined, 'an element read past the end is absent')
   is(jz(src).exports.run(4), 0 + 5 + 1 + 7)
 })
+
+test('summary: a literal is allocated as the runtime allocates it; emission reads a local\'s kind from the summary', () => {
+  // module/object.js `{}`: a declared `{}` takes its binding's schema (`o.a = 1` merges `a` into it),
+  // an empty `{}` declared into a computed-key binding with no schema is a HASH, an argument or a
+  // spread literal is not a HASH for certain (the runtime builds an OBJECT with a dyn sidecar, or a
+  // dictionary when a spread source's key set is unknown).
+  summarize(`const rd = (o) => o.kk
+    export const f = (k, x) => {
+      let d = {}; d[k] = 1
+      let s = {}; s.a = 2; s.b = 3
+      const w = rd({ ...(x && { kk: 4 }) })
+      return d[k] + s.a + s.b + w + rd(((t) => (t[k] = 5, t))({}))
+    }`)
+  is(tagOf(kindOf('f', 'd')), K.HASH, 'an empty literal declared into a computed-key binding is a dictionary')
+  is(tagOf(kindOf('f', 's')), K.OBJECT, 'a dot-written literal is an object of its binding\'s schema')
+  ok(!isNullable(kindOf('rd', 'o')) && tagOf(kindOf('rd', 'o')) === K.ANY && hasTag(kindOf('rd', 'o'), K.OBJECT) && hasTag(kindOf('rd', 'o'), K.HASH), 'a spread literal or an argument literal is an object or a dictionary')
+  for (const optimize of [false, 2]) is(jz(`export const f = (k, x) => { let o = {}; o.a = 1; o.b = 2; const t = { [k]: 3 }; return o.a + o.b + t[k] + (new Set([1]).length === undefined ? 10 : 0) }`, { optimize }).exports.f('z', 1), 16, `O${optimize || 0}: the literal reads through the summary's kind`)
+})
