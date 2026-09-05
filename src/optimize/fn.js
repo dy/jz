@@ -126,3 +126,50 @@ export function i32Const(id) {
   const s = text(v)
   return s === null ? null : Number(s)
 }
+
+/** Whether the subtree at `id` has no effect: no store, call, transfer, local or global
+ *  write, no memory instruction, no exception scope; a load stays pure (value-pure
+ *  between stores), so a site that speculates evaluation checks for loads as well. */
+export function pure(id) {
+  const stack = [id]
+  while (stack.length) {
+    const n = stack.pop(), fx = fxOf(n)
+    if (fx !== FX.PURE && fx !== FX.GET && fx !== FX.GLOBAL_GET && fx !== FX.LOAD && fx !== FX.CONTROL) return false
+    if (fx === FX.CONTROL && T.syms[T.op[n]].startsWith('try')) return false
+    for (let c = T.a[n]; c !== NONE; c = T.next[c]) stack.push(c)
+  }
+  return true
+}
+
+/** Whether the statements from `first` (and their siblings) branch to the label symbol `label`
+ *  (a `br`, a `br_table`, a `try_table` catch clause), outside a nested block or loop of the same label. */
+export function targetsLabel(first, label) {
+  const BR = intern('br'), BR_IF = intern('br_if'), BR_TABLE = intern('br_table'), BLOCK = intern('block'), LOOP = intern('loop')
+  const CATCH = intern('catch'), CATCH_REF = intern('catch_ref'), CATCH_ALL = intern('catch_all'), CATCH_ALL_REF = intern('catch_all_ref')
+  const second = (n) => T.a[n] === NONE ? NONE : T.next[T.a[n]]
+  const named = (c) => c !== NONE && T.op[c] === OP_STR && T.sym[c] === label
+  const stack = []
+  for (let s = first; s !== NONE; s = T.next[s]) stack.push(s, 0)
+  while (stack.length) {
+    const shadowed = stack.pop(), n = stack.pop(), op = T.op[n]
+    if (op < 0) continue
+    const inner = shadowed || ((op === BLOCK || op === LOOP) && named(T.a[n])) ? 1 : 0
+    if (!shadowed) {
+      if (op === BR || op === BR_IF || op === CATCH_ALL || op === CATCH_ALL_REF) { if (named(T.a[n])) return true }
+      else if (op === CATCH || op === CATCH_REF) { if (named(second(n))) return true }
+      else if (op === BR_TABLE) { for (let c = T.a[n]; c !== NONE && T.op[c] === OP_STR; c = T.next[c]) if (T.sym[c] === label) return true }
+    }
+    for (let c = T.a[n]; c !== NONE; c = T.next[c]) stack.push(c, inner)
+  }
+  return false
+}
+
+/** Structural equality of two subtrees. */
+export function same(a, b) {
+  if (a === b) return true
+  if (T.op[a] !== T.op[b] || T.imm[a] !== T.imm[b] && !(Number.isNaN(T.imm[a]) && Number.isNaN(T.imm[b])) || T.sym[a] !== T.sym[b]) return false
+  let x = T.a[a], y = T.a[b]
+  for (; x !== NONE && y !== NONE; x = T.next[x], y = T.next[y]) if (!same(x, y)) return false
+  return x === NONE && y === NONE
+}
+

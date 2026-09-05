@@ -10,7 +10,7 @@
  *
  * @module optimize/fold
  */
-import { T, NONE, OP_NUM, OP_STR, node, num, replace } from '../ir/tape.js'
+import { T, NONE, OP_NUM, OP_STR, node, num, replace, intern } from '../ir/tape.js'
 import { FX, fxOf, nameOf, bodyOf, ops, i32Const } from './fn.js'
 
 /** Whether evaluating the subtree at `id` has no effect and cannot trap: reads of locals and globals, arithmetic. */
@@ -36,8 +36,7 @@ const f64Const = (id, F64_CONST) => {
 export function fold(f) {
   const O = ops(), body = bodyOf(f)
   if (body === NONE) return
-  const sym = (s) => T.symId.get(s) ?? -2
-  const F64_CONST = sym('f64.const'), F64_NE = sym('f64.ne'), F64_EQ = sym('f64.eq'), CONV_S = sym('f64.convert_i32_s'), CONV_U = sym('f64.convert_i32_u')
+  const F64_CONST = intern('f64.const'), F64_NE = intern('f64.ne'), F64_EQ = intern('f64.eq'), CONV_S = intern('f64.convert_i32_s'), CONV_U = intern('f64.convert_i32_u')
   const i32 = (k) => { const n = node(O.I32_CONST); T.a[n] = num(k); return n }
   const second = (n) => T.a[n] === NONE ? NONE : T.next[T.a[n]]
   const third = (n) => second(n) === NONE ? NONE : T.next[second(n)]

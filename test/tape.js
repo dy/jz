@@ -21,6 +21,8 @@ import { fold } from '../src/optimize/fold.js'
 import { rotateLoops } from '../src/optimize/rotate-loops.js'
 import { chainConditions } from '../src/optimize/cond-chains.js'
 import { simplifyBoolContexts } from '../src/optimize/bool-contexts.js'
+import { vacuum } from '../src/optimize/vacuum.js'
+import { mergeBlocks } from '../src/optimize/merge-blocks.js'
 import { funcs } from '../src/optimize/fn.js'
 import { T as MARK } from '../src/ast.js'
 
@@ -53,6 +55,16 @@ test('tape: decode then encode is the identity on a WAT module, atoms and `.type
   let n = 0
   walk(root, () => { n++ })
   is(n, T.n, 'every node reached once')
+})
+
+test('tape: a consuming decode empties the tree it reads; a shared subtree decodes once and copies after', () => {
+  resetTape()
+  const shared = ['i32.add', ['local.get', '$a'], ['i32.const', 1]]
+  const m = ['module', ['func', '$f', ['drop', shared], ['drop', shared]]]
+  const root = fromWat(m, true)
+  is(verify(root), null, 'a tree, not a graph')
+  ok(same(toWat(root), ['module', ['func', '$f', ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]], ['drop', ['i32.add', ['local.get', '$a'], ['i32.const', 1]]]]]), 'both uses of the shared subtree are on the tape')
+  is(m.length, 0, 'the source tree is consumed')
 })
 
 test('tape: the verifier catches a broken link and a cycle', () => {
@@ -224,7 +236,7 @@ test('arena rewind on the tape: save at entry, restore around every return and t
     ['local.set', `$${MARK}arena_ret0`, ['call', '$__alloc', ['i32.const', 8]]], ['global.set', '$__heap', ['local.get', save]], ['local.get', `$${MARK}arena_ret0`]]), 'comment atoms: transparent in the header, dropped after the last instruction')
 })
 
-test('locals sort on the tape: by type under 128 declarations, by use above; params stay', () => {
+test('locals sort on the tape: by type under 128 declarations, the hottest in the one-byte zone above; params stay', () => {
   const m = ['module', ['func', '$f', ['export', '"f"'], ['param', '$p', 'f64'], ['local', '$a', 'f64'], ['local', '$b', 'i32'], ['local', '$c', 'v128'], ['local', '$d', 'i32'], ['local.set', '$c', ['local.get', '$c']]]]
   const [out] = onTape(m, root => sortLocalsByUse(root))
   is(out[1].slice(3, 8).map(l => l[1]).join(' '), '$p $b $d $a $c', 'an exported function sorts too')
@@ -235,7 +247,9 @@ test('locals sort on the tape: by type under 128 declarations, by use above; par
   for (let i = 0; i < 130; i++) many.push(['local', `$l${i}`, i % 2 ? 'f64' : 'i32'])
   many.push(['drop', ['local.get', '$l129']], ['drop', ['local.get', '$l129']], ['drop', ['local.get', '$l7']], ['local.get', '$l0'])
   const [big] = onTape(['module', many], root => sortLocalsByUse(root))
-  is(big[1].slice(3, 6).map(l => l[1]).join(' '), '$l129 $l0 $l7', 'the hottest local takes the low index; equal counts tie by type')
+  const names = big[1].slice(3, 133).map(l => l[1]), types = big[1].slice(3, 133).map(l => l[2])
+  ok(names.indexOf('$l129') < 128 && names.indexOf('$l7') < 128 && names.indexOf('$l0') < 128, 'the used locals take one-byte indices')
+  ok(types.slice(0, 128).join('').match(/^(i32)+(f64)+$/) && types.slice(128).join('').match(/^(i32)+(f64)+$|^(i32)+$|^(f64)+$/), 'each side of the boundary groups by type')
 })
 
 test('low-word mask fold on the tape', () => {
@@ -297,5 +311,34 @@ test('condition chains on the tape: a diamond in a condition becomes branches, i
 test('bool contexts on the tape: `x != 0` and a double eqz strip at a condition, not at a value', () => {
   const mod = fn(['if', ['i32.ne', ['local.get', '$x'], ['i32.const', 0]], ['then', ['nop']]], ['br_if', '$b', ['i32.eqz', ['i32.eqz', ['local.get', '$x']]]], ['i32.ne', ['local.get', '$x'], ['i32.const', 0]])
   ok(same(body(mod, simplifyBoolContexts), fn(['if', ['local.get', '$x'], ['then', ['nop']]], ['br_if', '$b', ['local.get', '$x']], ['i32.ne', ['local.get', '$x'], ['i32.const', 0]])))
+})
+
+test('vacuum on the tape: nops, drops of pure values, a tee under a drop, empty if arms', () => {
+  const g = ['call', '$g']
+  const mod = fn(['nop'], ['drop', ['i32.const', 1]], ['drop', ['i32.sub', ['local.tee', '$x', g], ['i32.const', 1]]], ['drop', ['i32.add', g, g]],
+    ['if', ['local.get', '$x'], ['then'], ['else']], ['if', g, ['then'], ['else']], ['if', ['local.get', '$x'], ['then', ['nop']], ['else', g]], ['if', ['local.get', '$x'], ['then', g], ['else']],
+    ['select', ['local.get', '$x'], ['local.get', '$x'], ['local.get', '$d']], ['select', g, g, ['local.get', '$x']])
+  ok(same(body(mod, vacuum), fn(['local.set', '$x', g], ['block', ['drop', g], ['drop', g]],
+    ['drop', g], ['if', ['i32.eqz', ['local.get', '$x']], ['then', g]], ['if', ['local.get', '$x'], ['then', g]],
+    ['local.get', '$x'], ['select', g, g, ['local.get', '$x']])))
+  // an op with no effect the function can observe leaves no statement; the bare number a
+  // missing interned op once produced (a fuzz seed) is the case the `intern` calls guard
+  ok(same(body(fn(['if', ['block', ['result', 'i32'], ['local.set', '$t', ['f64.const', 0]], ['i32.const', 1]], ['then'], ['else']]), vacuum), fn(['drop', ['block', ['result', 'i32'], ['local.set', '$t', ['f64.const', 0]], ['i32.const', 1]]])), 'an if with empty arms keeps its condition\'s effect under a drop')
+})
+
+test('merge blocks on the tape: a one-statement result block, a consumed result block, an untargeted block', () => {
+  const g = ['call', '$g']
+  const mod = fn(['drop', ['block', ['result', 'i32'], ['i32.const', 1]]],
+    ['local.set', '$x', ['block', '$b', ['result', 'i32'], g, ['local.set', '$t', ['f64.const', 1]], ['i32.const', 2]]],
+    ['block', '$c', g, ['block', ['nop']]],
+    ['block', '$d', ['br_if', '$d', ['local.get', '$x']], g],
+    ['block', '$e', ['result', 'i32'], ['br', '$e', ['i32.const', 3]]])
+  ok(same(body(mod, mergeBlocks), fn(['drop', ['i32.const', 1]],
+    g, ['local.set', '$t', ['f64.const', 1]], ['local.set', '$x', ['i32.const', 2]],
+    g, ['nop'],
+    ['block', '$d', ['br_if', '$d', ['local.get', '$x']], g],
+    ['block', '$e', ['result', 'i32'], ['br', '$e', ['i32.const', 3]]])))
+  const caught = fn(['block', '$h', ['try_table', ['catch_all', '$h'], g]])
+  ok(same(body(caught, mergeBlocks), caught), 'a catch clause targets the label')
 })
 

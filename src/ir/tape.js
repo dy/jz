@@ -132,20 +132,28 @@ export function insertAfter(parent, prev, id) {
   T.next[prev] = id
 }
 
-/** Decode a WAT-array tree into the tape; returns the root index. */
-export function fromWat(x) {
+/** Decode a WAT-array tree into the tape; returns the root index. With `consume`, an
+ *  array with array children is emptied once decoded, so the tree it came from is
+ *  collectable as the tape takes it (a module the size of the compiler is held once,
+ *  not twice); an array the tree shares decodes once and copies after. A leaf's array
+ *  (`['i32.const', 0]`: atoms alone) holds no subtree and stays: watr's peephole shares
+ *  such constants across every module it optimizes. */
+export function fromWat(x, consume = false, seen = consume ? new Map() : null) {
   if (Array.isArray(x)) {
     const head = x[0]
     if (typeof head === 'number') return bytes(x)
+    if (seen) { const was = seen.get(x); if (was !== undefined) return clone(was) }
     const id = node(head == null ? OP_NULLHEAD : intern(String(head)))
     if (typeof x.type === 'string') T.ty[id] = intern(x.type)
     if (typeof x.schemaSid === 'number') T.sid[id] = x.schemaSid
-    let prev = NONE
+    let prev = NONE, leaf = true
     for (let i = 1; i < x.length; i++) {
-      const c = fromWat(x[i])
+      if (Array.isArray(x[i])) leaf = false
+      const c = fromWat(x[i], consume, seen)
       if (prev === NONE) T.a[id] = c; else T.next[prev] = c
       prev = c
     }
+    if (seen) { seen.set(x, id); if (!leaf) x.length = 0 }
     return id
   }
   if (typeof x === 'string') return str(x)

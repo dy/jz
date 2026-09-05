@@ -24,13 +24,13 @@
  *
  * @module optimize/cond-chains
  */
-import { T, NONE, OP_STR, node, str, sym, push, remove, replace, insertAfter } from '../ir/tape.js'
+import { T, NONE, OP_STR, node, str, sym, push, remove, replace, insertAfter, intern } from '../ir/tape.js'
 import { ops, bodyOf, stmtsOf, tallies, dropLocals, i32Const } from './fn.js'
 
 export function chainConditions(f) {
   const O = ops(), body = bodyOf(f)
   if (body === NONE) return
-  const I32 = T.symId.get('i32')
+  const I32 = intern('i32')
   const isGet = (n, t) => T.op[n] === O.LOCAL_GET && T.sym[T.a[n]] === t
   const only = (n) => T.a[n] !== NONE && T.next[T.a[n]] === NONE ? T.a[n] : NONE   // the sole child
   const children = (n) => { const out = []; for (let c = T.a[n]; c !== NONE; c = T.next[c]) out.push(c); return out }
