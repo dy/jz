@@ -534,12 +534,34 @@ functional corpus 12/20 byte-identical with every row's results right;
 recursive `jz × jz` now reaches the summary and exhausts the 4 GB arena.
 Record: [.work/optimizer-review/integration-2026-09-06.md](.work/optimizer-review/integration-2026-09-06.md).
 
+### Recursive self-compile — 2026-09-06
+
+`jz × jz` completes: **14,195,809 bytes in 61 s, 395 MB of headroom**
+(`kernel-gate --gate recursive` GREEN). The summary's rounds allocate
+nothing (1.35 GB → 86 MB per run: one argument stack, one refinement stack,
+structural facts read once); six engine defects every compiled program paid
+are fixed with pins (a closure body boxed every parameter and capture a
+nested closure captured, boxed cells were made before an early return, a
+dynamic method call built an argument array, `Object.fromEntries` stored
+number keys raw, a negative literal index folded on every receiver, a
+function's write to a typed global stood as its length for a read before
+it); jzify enters a node's builtin scope without a closure and copies only
+the spine above a change (front 631 → 456 MB); the kernel checkpoints the
+assembled module before link (`assemble` / `linkAssembled` / `tailFacts`:
+nothing after assembly reads `ctx`), strings interned and integers packed
+in the park. Record:
+[.work/optimizer-review/kernel-allocation-2026-09-06.md](.work/optimizer-review/kernel-allocation-2026-09-06.md).
+The headroom is the encoder's: watr's `compile` allocates 3.6 GB in the
+kernel after the second checkpoint.
+
 ### Next ownership and order
 
-1. One session owns main. Next: the recursive self-compile's memory (regions,
-   the reserve), the member-reference single-evaluation family, the `+=`
-   normalization with its loop recognizers, loose `==` and `String()` on an
-   `any` holding a boolean or a BigInt box, the two hosted byte divergences.
+1. One session owns main. Next: the encoder's churn in the kernel (the
+   recursive headroom), then emit's per-closure allocation, the
+   member-reference single-evaluation family, the `+=` normalization with
+   its loop recognizers, loose `==` and `String()` on an `any` holding a
+   boolean or a BigInt box, the two hosted byte divergences. Regions remain
+   the memory model; the allocation audit shrinks what they must reclaim.
    Keep the private fresh gate. Do not add source-spelling exceptions.
 2. watr is consumed at `5613521`; the local-pass deletion stays isolated until
    its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
