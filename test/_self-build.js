@@ -39,4 +39,35 @@ export function selfBuild(root = ROOT) {
   }
 }
 
+// A private kernel built with test-only source overlays (test/_self-overlay-build.mjs):
+// the same sticky-failure contract, its own artifact, never dist/.
+export function selfBuildWith(overlays, root = ROOT) {
+  let bytes, failure
+  return () => {
+    if (failure) throw failure
+    if (bytes) return bytes
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'jz-self-overlay-'))
+      const out = join(dir, 'jz.wasm')
+      let built
+      try {
+        const r = spawnSync(process.execPath, [join(root, 'test/_self-overlay-build.mjs'), out, JSON.stringify(overlays)], {
+          cwd: root, encoding: 'utf8', timeout: 1_200_000,
+        })
+        if (r.error || r.signal || r.status !== 0) {
+          throw new Error(`self-compile overlay build exit ${r.status}${r.signal ? ` (${r.signal})` : ''}\n${r.error?.message || ''}\n${r.stdout || ''}${r.stderr || ''}`)
+        }
+        built = readFileSync(out)
+        new WebAssembly.Module(built)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+      return bytes = built
+    } catch (e) {
+      failure = e
+      throw e
+    }
+  }
+}
+
 export const selfBytes = selfBuild()
