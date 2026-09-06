@@ -118,6 +118,12 @@ function parkValue(value) {
   if (typeof value === 'string') { __park_write_u8(PARK_STRING); __park_write_str(value); return }
   if (typeof value === 'bigint') { __park_write_u8(PARK_BIGINT); __park_write_i64(value); return }
   if (Array.isArray(value)) {
+    // A WAT string literal watr parsed (the stdlib's and the boundary wrappers'
+    // text) is a byte array whose valueOf() is its quoted source text
+    // (watr/src/util.js `str`); the bytes alone lose it. Park the text: watr's
+    // assembler converts a quoted string back to the same literal.
+    const text = value.valueOf()
+    if (typeof text === 'string') { __park_write_u8(PARK_STRING); __park_write_str(text); return }
     __park_write_u8(PARK_ARRAY)
     __park_write_u32(value.length)
     for (let i = 0; i < value.length; i++) parkValue(value[i])
