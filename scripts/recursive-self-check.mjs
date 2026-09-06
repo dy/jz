@@ -4,11 +4,15 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { instantiate } from '../interop.js'
 import { resolveSelfCompileBuild } from './build-profile.mjs'
+import { readMarks } from './kernel-marks.mjs'
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname)
 const kernel = readFileSync(resolve(ROOT, 'dist/jz.wasm'))
 const profile = resolveSelfCompileBuild()
 const self = instantiate(kernel, { memory: 65536, externref: false })
+// This script intentionally consumes dist/: reject an old diagnostics ABI before
+// compiling, rather than masking a compile failure while trying to report it.
+readMarks(self)
 const ex = self.instance.exports
 const heap = () => ex.__heap.value >>> 0
 const memoryBytes = () => ex.memory.buffer.byteLength
@@ -22,16 +26,10 @@ const build = self.memory.String(JSON.stringify({
   compactCollections: profile.compactCollections,
 }))
 
-// The kernel's stage marks (scripts/self.js): the heap pointer after the front,
-// the compile phases, link, watr and the checkpoint; the tape's node count and
-// column capacity. Read after a trap too: what the compiler had allocated
-// by the last stage it finished is the evidence the trap leaves.
-const marks = () => ({
-  heapFront: ex.heapFront.value, heapPlan: ex.heapPlan.value, heapEmitFuncs: ex.heapEmitFuncs.value, heapEmitClosures: ex.heapEmitClosures.value,
-  heapOptimizeModule: ex.heapOptimizeModule.value, heapLinkStart: ex.heapLinkStart.value, heapEmit: ex.heapEmit.value,
-  heapOptimize: ex.heapOptimize.value, heapCheckpoint: ex.heapCheckpoint.value,
-  tapeNodes: ex.tapeNodes.value, tapeCapacity: ex.tapeCapacity.value,
-})
+// The kernel's heap diagnostics (scripts/kernel-marks.mjs), read after a trap too:
+// what the compiler had allocated by the last phase it finished is the evidence
+// the trap leaves.
+const marks = () => readMarks(self)
 const started = Date.now()
 let output
 try { output = self.exports.default(source, 0, optimize, modules, 0, 0, build) }

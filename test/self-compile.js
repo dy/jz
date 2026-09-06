@@ -13,8 +13,9 @@
  * Run: node test/self-compile.js   |   CI: npm run test:self
  */
 import test from 'tst'
-import { ok, is } from 'tst/assert.js'
+import { ok, is, throws } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
+import { readMarks, phaseDeltas } from '../scripts/kernel-marks.mjs'
 import jz from '../index.js'   // native compiler — the correctness reference for the kernel's output
 import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B } from './_optimizer-kernels.js'
 import { selfBytes } from './_self-build.js'
@@ -341,4 +342,89 @@ test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-acc
       is(instantiate(bytes, { memory: 64 }).exports.go(), 1, `round ${round}: g's own field reads back true`)
     }
   }
+})
+
+// The heap diagnostics (scripts/phase-marks.js, read by scripts/kernel-marks.mjs)
+// in the kernel: every phase records itself by name as it completes, every entry
+// point starts from zero, and a failed call leaves the marks of the phases that
+// finished. test/kernel-marks.js drives the recorder on its own for the
+// allocation, overflow and rewind claims.
+test('self-compile: heap marks name their phases, reset per call, and stay readable after a failed compile', () => {
+  const s = getSelf()
+  const src = 'let inc = x => x + 1; export let main = () => inc(10)'
+  s.exports.default(s.memory.String(src), 0, s.memory.String('2'))
+  const a = readMarks(s)
+  ok(a.heapFront > 0 && a.heapEmit > a.heapFront && a.heapOptimize >= a.heapEmit && a.heapCheckpoint >= a.heapOptimize, 'the stage marks, in order')
+  const names = a.phases.map(p => p.name)
+  is(names[0], 'summary', 'a phase carries its own name')
+  ok(names.includes('plan') && names.includes('emitFuncs') && names.includes('link'), 'the compile phases are named')
+  ok(!names.includes('other'), 'every phase is in the table')
+  ok(a.phases.every((p, i) => p.heap >= (i ? a.phases[i - 1].heap : a.heapFront)) && a.phases[a.phases.length - 1].heap <= a.heapEmit, 'a bump arena: a mark never decreases')
+  is(a.phasesDropped, 0)
+  ok(a.tapeNodes > 0 && a.tapeCapacity >= a.tapeNodes, 'the tape after link')
+  // the same source again: the same phases, counted afresh
+  s.exports.default(s.memory.String(src), 0, s.memory.String('2'))
+  const b = readMarks(s)
+  is(b.phasesDone, a.phasesDone, 'a call starts from zero')
+  is(b.phases.map(p => p.name).join(' '), names.join(' '))
+  // a compile that throws in emit (a BigInt's `>>>`, rejected at emitFuncs) keeps the marks of the phases that finished; the stages after do not complete
+  throws(() => s.exports.default(s.memory.String('export let f = (n) => { let b = 1n + BigInt(n); return b >>> 2 }'), 0, s.memory.String('2')), /unsigned right shift/)
+  const c = readMarks(s)
+  ok(c.heapFront > 0 && c.heapEmit === 0 && c.heapOptimize === 0 && c.heapCheckpoint === 0, 'the front finished, emit did not')
+  ok(c.phasesDone > 0 && c.phasesDone < a.phasesDone, 'the phases before the failure are recorded')
+  is(c.phases[c.phases.length - 1].name, names[names.indexOf('emitFuncs') - 1], 'the last recorded phase is the one before the failing emit')
+  ok(phaseDeltas(c).every(d => d.bytes >= 0), 'allocation between completions reads off the marks')
+  // and the next call starts from zero again
+  s.exports.default(s.memory.String(src), 0, s.memory.String('2'))
+  is(readMarks(s).phasesDone, a.phasesDone)
+})
+
+test('self-compile: heap marks on empty work, an early failure, the other entry points and across _clear()', () => {
+  const s = getSelf()
+  const src = 'let inc = x => x + 1; export let main = () => inc(10)'
+  // empty source: the pipeline runs, the marks are of an empty program
+  s.exports.default(s.memory.String(''), 0, s.memory.String('2'))
+  const empty = readMarks(s)
+  ok(empty.phasesDone > 0 && empty.heapEmit > 0, 'an empty program still passes every phase')
+  // a parse error stops in the front: no stage and no phase completes
+  throws(() => s.exports.default(s.memory.String('export let f = ('), 0, s.memory.String('2')))
+  const early = readMarks(s)
+  is(early.phasesDone, 0); is(early.heapFront, 0); is(early.heapEmit, 0)
+  // Recovery produces executable bytes, copied before any later call or rewind.
+  const out = s.exports.default(s.memory.String(src), 0, s.memory.String('2'))
+  const bin = s.memory.read(out)
+  const retained = (bin instanceof Uint8Array ? bin : new Uint8Array(bin)).slice()
+  ok(WebAssembly.validate(retained))
+  is(instantiate(retained).exports.main(), 11)
+  const whole = readMarks(s)
+  ok(whole.heapCheckpoint > 0 && whole.phasesDone > 0)
+  // the other entry points record the same phases from zero, not on top of the last call
+  s.exports.compileWat(s.memory.String(src), 0, s.memory.String('2'))
+  const wat = readMarks(s)
+  is(wat.phases.map(p => p.name).join(' '), whole.phases.map(p => p.name).join(' '), 'compileWat records the compile phases afresh')
+  is(wat.heapEmit, 0, 'compileWat marks no stage: it prints the IR')
+  s.exports.compileWarnings(s.memory.String(src), 0, s.memory.String('2'))
+  is(readMarks(s).phasesDone, whole.phasesDone, 'compileWarnings the same')
+  s.exports.compileDiag(s.memory.String(src), 0, s.memory.String('2'))
+  is(readMarks(s).phasesDone, whole.phasesDone, 'compileDiag also starts from zero')
+  is(readMarks(s).heapEmit, 0, 'compileDiag marks no binary stage')
+  s.exports.default(s.memory.String(src), 0, s.memory.String('2'))
+  const again = readMarks(s)
+  is(again.phasesDone, whole.phasesDone)
+  // _clear() rewinds the arena and restores the compiler's globals; the records stay readable, the next compile starts from zero
+  s.exports._clear()
+  is(JSON.stringify(readMarks(s)), JSON.stringify(again), 'the records through _clear()')
+  s.exports.default(s.memory.String(src), 0, s.memory.String('2'))
+  is(readMarks(s).phasesDone, whole.phasesDone)
+  is(instantiate(retained).exports.main(), 11, 'copied output survives alternate entries and _clear()')
+})
+
+test('kernel marks: the reader reports the phases past the record capacity, not silently', () => {
+  const fake = {
+    exports: { phasesDone: () => 300, phaseCapacity: () => 256, phaseNameAt: (i) => 'p' + i, phaseHeapAt: (i) => 10 + i, stageHeap: (i) => i === 0 ? 10 : 0, tapeNodes: () => 0, tapeCapacity: () => 0 },
+    memory: { read: (v) => v },
+  }
+  const m = readMarks(fake)
+  is(m.phases.length, 256); is(m.phasesDropped, 44); is(m.phases[255].name, 'p255'); is(m.phasesDone, 300)
+  is(phaseDeltas(m).reduce((t, d) => t + d.bytes, 0), 255)
 })
