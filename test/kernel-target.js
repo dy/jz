@@ -1,23 +1,28 @@
 // Self-compiled compile target for `JZ_TEST_TARGET=jz.wasm node test/index.js`.
 //
-// Routes every jz.compile (and thus jz() / the named `compile`) through dist/jz.wasm
+// Routes every jz.compile (and thus jz() / the named `compile`) through a kernel
 // — jz's whole pipeline (parse → jzify → prepare → compile → watr-encode) compiled to
 // wasm BY jz. The wasm takes a source string and returns wasm bytes; the host only
 // marshals the string in and reads the bytes out. Running the whole suite this way is
 // the test matrix with the compiler being jz-compiled-by-jz: any divergence from the
-// native run is a self-compile bug. This tests the selected disk artifact;
-// test:self separately requires a fresh build from current source.
+// native run is a self-compile bug.
+//
+// The kernel is named, never substituted: JZ_KERNEL=<file> names explicit bytes
+// (a private review kernel); the jz.wasm leg (JZ_TEST_TARGET=jz.wasm) consumes
+// dist/jz.wasm by name and never builds it; a native run of a kernel harness
+// (kernel-parity, kernel-oracle) gets a fresh private build through the shared
+// transaction (test/_self-build.js), never dist.
 //
 // Supported options (strict, optimize, modules, host, sourceType, warnings, WAT)
 // travel through scripts/self.js's compiler ABI. Native-only inspection hooks
 // do not reach the wasm compiler.
 import { readFileSync, existsSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import v8 from 'node:v8'
 import vm from 'node:vm'
 import { instantiate } from '../interop.js'
+import { selfBytes } from './_self-build.js'
 
 // Reclaim dead kernel instances. Each compile gets a FRESH 8192-page instance
 // (512 MB committed, see getSelfModule below) whose Memory lives OUTSIDE the JS
@@ -34,7 +39,6 @@ const reclaim = () => { if (GC_EVERY && ++compileCount % GC_EVERY === 0) gc() }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SELF = join(ROOT, 'dist/jz.wasm')
-const BUILD = join(ROOT, 'scripts/build-dist.mjs')
 
 // Native's optimize default for an unspecified `optimize` — level 2 (resolveOptimize(undefined)),
 // overridable by JZ_TEST_OPTIMIZE the same way index.js's TEST_ENV_DEFAULTS applies it. The
@@ -58,16 +62,21 @@ const DEFAULT_OPT = (() => {
 // Cache failure as well: a later test must not retry or consume an artifact
 // that appeared after this run's build/read failed. Program errors are separate.
 let selfModule, selfFailure
+/** Which kernel this process consumes, by name. */
+export const kernelSource = () => process.env.JZ_KERNEL ? `JZ_KERNEL ${process.env.JZ_KERNEL}` : process.env.JZ_TEST_TARGET === 'jz.wasm' ? 'dist/jz.wasm' : 'fresh private build'
 const getSelfModule = () => {
   if (selfModule) return selfModule
   if (selfFailure) throw selfFailure
   try {
-    if (!existsSync(SELF)) {
-      console.log('dist/jz.wasm missing — building (npm run build)…')
-      const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, stdio: 'inherit', timeout: 1_200_000 })
-      if (r.error || r.signal || r.status !== 0) throw new Error(`failed to build dist/jz.wasm (exit ${r.status})\n${r.error?.message || r.signal || ''}`)
-    }
-    return selfModule = instantiate(readFileSync(SELF), { memory: 8192 }).module
+    let bytes
+    if (process.env.JZ_KERNEL) {
+      bytes = readFileSync(process.env.JZ_KERNEL)
+      if (!WebAssembly.validate(bytes)) throw new Error(`JZ_KERNEL ${process.env.JZ_KERNEL} is not valid wasm`)
+    } else if (process.env.JZ_TEST_TARGET === 'jz.wasm') {
+      if (!existsSync(SELF)) throw new Error('dist/jz.wasm missing: the jz.wasm leg consumes the built artifact by name (npm run build) and never builds or substitutes it')
+      bytes = readFileSync(SELF)
+    } else bytes = selfBytes()
+    return selfModule = instantiate(bytes, { memory: 8192 }).module
   } catch (e) {
     selfFailure = e
     throw e

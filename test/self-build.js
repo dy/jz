@@ -102,11 +102,18 @@ for (const [name, make] of LOADERS) test(`${name}: a subprocess error rejects ev
   })
 })
 
+// kernel-target.js names its kernel: a native run builds fresh through the shared
+// transaction (the subprocess failure case), the jz.wasm leg reads dist/jz.wasm by
+// name and never builds (the read and invalid-wasm cases run under JZ_TEST_TARGET).
 for (const [file, failure] of [
   ['kernel-target.js', 'exit-zero subprocess'], ['kernel-target.js', 'read'],
   ['kernel-target.js', 'invalid wasm'], ['../scripts/bench-self-compile.mjs', 'exit-zero subprocess'],
 ]) test(`self-build: ${file} retains its ${failure} failure`, () => {
   // Isolate builtin mocks and the kernel module cache from the native test process.
+  const env = { ...process.env }
+  if (file === 'kernel-target.js' && failure !== 'exit-zero subprocess') env.JZ_TEST_TARGET = 'jz.wasm'
+  else delete env.JZ_TEST_TARGET
+  delete env.JZ_KERNEL
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict'
     import fs from 'node:fs'
@@ -144,8 +151,36 @@ for (const [file, failure] of [
     assert.equal(spawns, ${failure === 'exit-zero subprocess' ? 1 : 0})
     assert.equal(reads, ${failure === 'exit-zero subprocess' ? 0 : 1})
     console.log('failed closed')
-  `], { encoding: 'utf8', timeout: 60_000 })
+  `], { encoding: 'utf8', timeout: 60_000, env })
   ok(out.endsWith('failed closed\n'), `${file}: ${failure} failure cannot turn into a later success`)
+})
+
+test('self-build: kernel-target.js never builds or substitutes dist: the jz.wasm leg without dist fails by name, JZ_KERNEL names explicit bytes', () => {
+  const probe = (env, body) => execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict'
+    import fs from 'node:fs'
+    import cp from 'node:child_process'
+    import { syncBuiltinESMExports } from 'node:module'
+    const exists = fs.existsSync
+    const artifact = path => typeof path === 'string' && path.endsWith(${JSON.stringify(join('dist', 'jz.wasm'))})
+    let spawns = 0
+    fs.existsSync = path => artifact(path) ? false : exists(path)
+    cp.spawnSync = () => { spawns++; return { status: 0, signal: null } }
+    syncBuiltinESMExports()
+    const mod = await import(${JSON.stringify(new URL('./kernel-target.js', import.meta.url).href)})
+    ${body}
+    console.log('named')
+  `], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, ...env } })
+  const missing = probe({ JZ_TEST_TARGET: 'jz.wasm' }, `assert.throws(() => mod.compileViaKernel('export let main = () => 1'), /jz.wasm missing: the jz.wasm leg consumes the built artifact by name/); assert.equal(spawns, 0, 'no build'); assert.equal(mod.kernelSource(), 'dist/jz.wasm')`)
+  ok(missing.endsWith('named\n'))
+  fixture(({ root }) => {
+    writeFileSync(join(root, 'k.wasm'), B)
+    const explicit = probe({ JZ_KERNEL: join(root, 'k.wasm') }, `assert.equal(mod.kernelSource(), 'JZ_KERNEL ' + ${JSON.stringify(join(root, 'k.wasm'))}); assert.throws(() => mod.compileViaKernel('export let main = () => 1'), /not a function|TypeError|undefined/, 'the named bytes are consumed, whatever they can do'); assert.equal(spawns, 0)`)
+    ok(explicit.endsWith('named\n'))
+    writeFileSync(join(root, 'bad.wasm'), new Uint8Array([1, 2]))
+    const invalid = probe({ JZ_KERNEL: join(root, 'bad.wasm') }, `assert.throws(() => mod.compileViaKernel(''), /is not valid wasm/)`)
+    ok(invalid.endsWith('named\n'))
+  })
 })
 
 test('self-build: kernel cache fixture preserves empty→empty→A→A→B→error→A outputs', () => {
@@ -192,7 +227,7 @@ test('self-build: kernel cache fixture preserves empty→empty→A→A→B→err
     for (const [source, bytes, expected] of retained) { assert.deepEqual([...bytes], expected); check(source, bytes) }
     assert.equal(reads, 1, 'cache the module, not a compiler instance or a program failure')
     console.log('cache fixture passed')
-  `], { encoding: 'utf8', timeout: 60_000 })
+  `], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, JZ_TEST_TARGET: 'jz.wasm', JZ_KERNEL: '' } })   // the leg that consumes the selected artifact by name
   ok(out.endsWith('cache fixture passed\n'), 'selected artifact read once; exact outputs survive later calls and errors')
 })
 
