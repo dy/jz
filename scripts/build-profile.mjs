@@ -81,7 +81,7 @@ import { fileURLToPath } from 'node:url'
 import { resolveModuleGraph } from '../src/resolve.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const SELF_ENTRY = resolve(ROOT, 'scripts/self.js')
+export const SELF_ENTRY = resolve(ROOT, 'scripts/self.js')
 
 export function resolveSelfCompileBuild({
   debugInvariants = false,
