@@ -249,8 +249,9 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   for (const func of ctx.funcs.list)
     if (!func.raw && func.body) defMapByFunc.set(func, collectDefs(func.body))
 
-  // The summary's kind of a slot or element: BigInt among a bounded set of
-  // kinds is evidence; the unbounded ANY proves nothing.
+  // The summary's kind of a schema slot: BigInt among a bounded set of kinds
+  // is evidence; the unbounded ANY proves nothing. An element read stays with
+  // the storage census: a literal array's layout is its own.
   const summaryMayBigint = (node, func) => {
     const k = ctx.summary?.at(func?.sig ?? '').kindOfExpr(node) ?? 0
     return summaryTagsOf(k) !== summaryTagsOf(summaryKind(SUMMARY_KIND.ANY)) && summaryHasTag(k, SUMMARY_KIND.BIGINT)
@@ -269,7 +270,8 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         op === '==' || op === '!=' || op === '===' || op === '!==' ||
         op === '<' || op === '>' || op === '<=' || op === '>=' || op === 'in' || op === 'instanceof') return false
     if (op === '[]' || op === '.' || op === '?.')
-      return (typeof node[1] === 'string' && (storage.has(node[1]) || (op === '[]' && bigintTyped.has(node[1])))) || summaryMayBigint(node, func)
+      return (typeof node[1] === 'string' && (storage.has(node[1]) || (op === '[]' && bigintTyped.has(node[1])))) ||
+        (op !== '[]' && typeof node[2] === 'string' && summaryMayBigint(node, func))
     if (op === '()') {
       if (typeof node[1] === 'string') {
         if (VALUE_COERCERS.has(node[1])) return false
