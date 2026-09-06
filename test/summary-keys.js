@@ -6,6 +6,8 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
+import { instantiate } from '../interop.js'
+import { execFileSync } from 'node:child_process'
 import { ctx } from '../src/ctx.js'
 import { K, tagOf, hasTag } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
@@ -73,15 +75,29 @@ test('summary keys: slot keys are their own namespace; the seeded re-fixpoint re
 test('summary keys: the caches reach neither the published facts nor ctx; retention across A → A → B → empty → error → A', () => {
   if (onKernel()) return
   const A = 'export function make(){return {buf:new Float32Array(2),gain:3}} export function main(){return make().buf.length}'
-  const a = compile(A, OPTS), saved = ctx.summary
+  const B = 'export function main(){return {other:41}.other+1}'
+  const freshB = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import {compile} from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+    console.log(Buffer.from(compile(${JSON.stringify(B)}, ${JSON.stringify(OPTS)})).toString('base64'))
+  `], {encoding:'utf8'}).trim()
+  const a = compile(A, OPTS), saved = ctx.summary, retained = [...a]
+  const instanceA = instantiate(a)
+  is(instanceA.exports.main(), 2)
   for (const name of ['bindingKeys', 'slotKeys', 'keyIn', 'slotKey']) { ok(!(name in saved), `${name} not on the summary`); ok(!(name in ctx), `${name} not on ctx`) }
   const sid = ctx.schema.list.findIndex(props => props.join() === 'buf,gain')
   const facts = () => [saved.fieldKind(sid, 'gain'), saved.fieldTypedCtor(sid, 'buf'), saved.resultOf('make'), saved.hasTypedFields]
   const first = facts()
   is([...compile(A, OPTS)], [...a])
-  compile('export function main(){return {other:41}.other+1}', OPTS)
-  compile('', OPTS)
+  const b = compile(B, OPTS), instanceB = instantiate(b)
+  is(Buffer.from(b).toString('base64'), freshB, 'immediate A→B agrees with a fresh process')
+  is(instanceB.exports.main(), 42)
+  const empty = compile('', OPTS)
+  ok(WebAssembly.validate(empty), 'empty output remains executable')
   throws(() => compile('export function broken(', OPTS))
   is(facts(), first, 'retained facts through B, empty and a failed compile')
-  is([...compile(A, OPTS)], [...a], 'A again, the same bytes')
+  is([...compile(A, OPTS)], retained, 'A again, the same bytes')
+  is([...a], retained, 'later compiles did not mutate retained bytes')
+  is(instanceA.exports.main(), 2, 'retained A still executes')
+  is(instanceB.exports.main(), 42, 'retained B still executes')
+  is(instantiate(a).exports.main(), 2, 'retained bytes can be instantiated again')
 })

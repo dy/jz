@@ -1,0 +1,12 @@
+{
+ "shadow": { "src": "let x = 'a'; const f = (x) => { let y = x + 1; const g = (x) => x * 2; return g(y) + x }; export const main = () => f(3) + x.length", "opts": { "optimize": 2 } },
+ "capture": { "src": "export const mk = (n) => { let count = n; const inc = () => { count = count + 1; return count }; const dec = () => { count -= 1; return count }; return [inc, dec] }; export const run = () => { const [i, d] = mk(1); i(); return d() }", "opts": { "optimize": 2 } },
+ "closures": { "src": "const table = [ (v) => v + 1, (v) => v * 2, (v) => v - 3 ]; export const dispatch = (i, v) => table[i % 3](v); export const acc = (a) => a.reduce((s, v) => s + v, 0)", "opts": { "optimize": 2 } },
+ "variants": { "src": "const norm = (v) => v * 2; export const a = (n) => norm(n); export const b = (s) => norm(s.length); export const c = (t) => norm(t ? 1 : 0)", "opts": { "optimize": 3 } },
+ "unusual": { "src": "const $ = 1, _ = 2, __x$ = 3, ünï = 4, 𝒳 = 5, a1 = 6; export const main = ($p, _q) => $ + _ + __x$ + ünï + 𝒳 + a1 + $p + _q", "opts": { "optimize": 2 } },
+ "slots": { "src": "class P { x = 1; y = 2; constructor(n) { this.z = n } len() { return this.x + this.y + this.z } }; const dict = {}; dict['k'] = { x: 1 }; dict.j = { y: 2 }; export const run = (n) => new P(n).len() + Object.keys(dict).length; export const o = () => ({ '0': 1, '1': 2, x: 3 })", "opts": { "optimize": 2 } },
+ "seeded": { "src": "export const f = (a, b) => a + b * 2; export const g = (s) => s.length + 1; export const h = (x) => x < 3 ? x : g('' + x)", "opts": { "optimize": 2 } },
+ "numeric": { "src": "const buf = new Float64Array(8); export const fill = (k, v) => { for (let i = 0; i < 8; i++) buf[i] = v * k; return buf[3] }; export const sum = () => { let s = 0; for (let i = 0; i < 8; i++) s += buf[i]; return s }", "opts": { "optimize": 3 } },
+ "empty": { "src": "", "opts": { "optimize": 2 } },
+ "error": { "src": "export let broken = (", "opts": { "optimize": 2 } }
+}
