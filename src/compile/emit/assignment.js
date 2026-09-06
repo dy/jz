@@ -4,9 +4,9 @@
  * @module compile/emit/assignment
  */
 
-import { ctx, err, inc } from '../../ctx.js'
+import { ctx, err } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, asI64, boxBigInt, f64rem, fromI64, isConst, isNullish, isNullishLit, readI64, readVar, temp, toI32, toNumF64, truthyIR, typed, writeVar,
+  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isNullish, isNullishLit, readI64, readVar, temp, toNumF64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -15,7 +15,7 @@ import { withFunctionFields } from '../flow-state.js'
 import {
   REP_EDGE_BOX, representationBindingWriteAction, representationCompoundAssignAction,
 } from '../representation-plan.js'
-import { I64_ARITH_OP, bigIntOperand, bigIntShiftIR, bigintMixReject } from './bigint.js'
+import { I64_ARITH_OP, bigIntOperand, bigintMixReject } from './bigint.js'
 import { emit, rejectAmbiguousBoolIdentity } from './dispatch.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
@@ -23,9 +23,8 @@ import {
 
 
 /** Compound assignment: read → op → write back (via readVar/writeVar).
- *  `arithOp` (one of '+' '-' '*' '/' '%') is the base symbol for BigInt routing;
- *  omit it for ops that only exist elsewhere for BigInt (this fn is never called
- *  for '&='/etc — those have their own i64 gate right below in the dispatch table). */
+ *  `arithOp` (one of '+' '-' '*' '/' '%') is the base symbol for BigInt routing.
+ *  Bitwise assignments use the ordinary binary/assignment lowering. */
 function compoundAssign(name, val, f64op, i32op, arithOp) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
   const void_ = ctx.func._expect === 'void'
@@ -86,8 +85,7 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
   // the common "write straight back into x's own i32 storage" case either way
   // (ir.js `writeVar` now coerces via `toI32`, which recovers the identical
   // wrapped result through narrowI32 when this gate falls to the f64 arm).
-  // `%`/bitwise compounds reach here with no arithOp or an inherently-sound
-  // op, so they stay ungated.
+  // `%` is inherently sound on this path, so it stays ungated.
   const compoundFitsI32 = arithOp === '*' ? (mulFitsI32(va, vbi) || mulBoundedFaithful(va, vbi) || mulRangeFitsI32(name, val))
     : arithOp === '+' ? (addFitsI32(va, vbi) || addBoundedFaithful(va, vbi) || addRangeFitsI32(name, val))
     : arithOp === '-' ? (addFitsI32(va, vbi) || addBoundedFaithful(va, vbi) || subRangeFitsI32(name, val))
@@ -150,7 +148,7 @@ export const assignmentOps = {
 
   // Compound assignments: read-modify-write with type coercion
   '+=': (name, val) => {
-    // Complex LHS (obj.prop, arr[i]) → desugar to side-effect-safe `name = name + val`
+    // Complex LHS shares binary/write lowering; effectful reference staging is still unresolved.
     if (typeof name !== 'string') return emit(['=', name, ['+', name, val]])
     // String concatenation: desugar to name = name + val (+ handler knows about strings).
     // Also desugar when either side has unknown type — the `+` operator picks runtime
@@ -180,44 +178,17 @@ export const assignmentOps = {
   // `**` is always f64 (and has its own const-exponent lowering) — full desugar.
   '**=': (name, val) => emit(['=', name, ['**', name, val]]),
 
-  // Bitwise compound assignments: i32 normally, i64 when either operand is BigInt
-  ...Object.fromEntries([
-    ['&=', 'and'], ['|=', 'or'], ['^=', 'xor'],
-    ['>>=', 'shr_s'], ['<<=', 'shl'], ['>>>=', 'shr_u'],
-  ].map(([op, fn]) => [op, (name, val) => {
-    const sym = op.slice(0, -1)
-    if (typeof name !== 'string') return emit(['=', name, [sym, name, val]])
-    if (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT) {
-      // `>>>=` has no BigInt arm at all (see the binary '>>>' handler above) —
-      // unlike the other bitwise compounds, which fall to i64.<op>, this one
-      // must throw unconditionally rather than take fn='shr_u' on i64 bits.
-      if (fn === 'shr_u') err('BigInt has no unsigned right shift (>>>) — TypeError in JS; convert with Number(x) first if you need an unsigned shift')
-      bigintMixReject(sym, name, val)
-      const void_ = ctx.func._expect === 'void'
-      // See compoundAssign's identical comment: `name` is always a bare identifier,
-      // so only `val` can be a maybeUndefined dict/Map read. `<<=`/`>>=` share the
-      // binary `<<`/`>>` handler's sign-aware direction flip — see bigIntShiftIR.
-      const rawBits = (sym === '<<' || sym === '>>')
-        ? bigIntShiftIR(sym, readI64(name, readVar(name)), bigIntOperand(val))
-        : [`i64.${fn}`, readI64(name, readVar(name)), bigIntOperand(val)]
-      // Shape #6 emission companion — see compoundAssign's identical comment
-      // just above (this dispatch's bigint arm has the exact same
-      // fresh-raw-i64-result / box-before-write-back gap).
-      return writeVar(name,
-        representationCompoundAssignAction(ctx, name) === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits),
-        void_)
-    }
-    return compoundAssign(name, val,
-      (a, b) => asF64(typed([`i32.${fn}`, toI32(a), toI32(b)], 'i32')),
-      (a, b) => typed([`i32.${fn}`, a, b], 'i32')
-    )
-  }])),
+  // Bare bindings normalize before planning. Remaining member assignments
+  // share the same binary operation and write path, not a second i64 gate.
+  ...Object.fromEntries(['&=', '|=', '^=', '<<=', '>>=', '>>>='].map(op =>
+    [op, (name, val) => emit(['=', name, [op.slice(0, -1), name, val]])]
+  )),
 
   // Logical compound assignments: a ||= b → a = a || b, a &&= b → a = a && b
   // Logical/nullish compound assignments: read → check → conditionally write
   // For complex LHS (obj.prop, arr[i]): emit as check(read(lhs)) ? write(lhs, val) : read(lhs)
   ...Object.fromEntries(['||=', '&&=', '??='].map(op => [op, (name, val) => {
-    // Complex LHS → desugar (side-effect-safe since obj/arr/idx are locals)
+    // Complex LHS: effectful references still need single-evaluation lowering.
     if (typeof name !== 'string') {
       const baseOp = op.slice(0, -1) // '||', '&&', '??'
       return emit([baseOp, name, ['=', name, val]])

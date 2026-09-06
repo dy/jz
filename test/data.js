@@ -15,6 +15,143 @@ function run(code, opts) {
 // ARRAYS
 // ============================================
 
+// These also fail with ordinary binary/plain writes on 03cf346d: the compound
+// normalization review exposed pre-existing open-parameter/catch contracts.
+test('result carriers: arithmetic coerces open nullish operands before storing the result', () => {
+  for (const op of ['+', '-', '*', '/', '%']) {
+    const source = `export function f(initial, operand) {
+      let value = initial, calls = 0
+      function rhs() { value = 99; calls++; return operand }
+      const result = (value = value ${op} rhs())
+      return [result, value, calls]
+    }`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = jz(source, {optimize}).exports.f
+      for (const args of [[2, 3], [null, 0], [undefined, 0], [1, null], [1, undefined], [2, 3]])
+        is(actual(...args), expected(...args), `${op} O${optimize || 0}: ${args}`)
+    }
+  }
+})
+
+test('result carriers: caught mixed BigInt arithmetic preserves local values and effects', () => {
+  const source = `export function f(big) {
+    let value = big ? new BigInt64Array([2n])[0] : 3
+    let calls = 0, caught = 0
+    function rhs() { calls++; return 4n }
+    try { value = value | rhs() } catch (e) { caught = 1 }
+    return [caught, calls, value === 3]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = jz(source, {optimize}).exports.f
+    for (const big of [true, false, true])
+      is(actual(big), expected(big), `O${optimize || 0}: ${big}`)
+  }
+})
+
+// Independent array-storage defect: direct and comma producers agree on the
+// value, but storing it beside a Number loses the primitive's kind.
+test('result carriers: heterogeneous arrays retain local BigInt and Boolean results beside Numbers', () => {
+  const actual = [], expected = []
+  for (const kind of ['bigint', 'boolean']) for (const sequence of [false, true]) {
+    const value = sequence ? '(trace++,BigInt(input))' : 'BigInt(input)'
+    const expression = kind === 'bigint' ? `${value}|1n` : `typeof ${value}==='number'`
+    const source = `export function f(input){let trace=0;const value=${expression};
+      ${sequence ? '' : 'trace++;'}return [value,trace]}`
+    const oracle = Function(source.replaceAll('export ', '')+';return f')()
+    for (const optimize of [false,1,2,3]) {
+      const f = jz(source, {optimize}).exports.f
+      for (const input of ['0','6','-1']) {
+        actual.push([kind,sequence,optimize,input,f(input)])
+        expected.push([kind,sequence,optimize,input,oracle(input)])
+      }
+    }
+  }
+  is(actual, expected, 'exact element kinds and values, not reinterpreted carrier bits')
+})
+
+// Independent constructor/ingress defect: even without typeof or a sequence,
+// accepted nullish inputs currently become 0n instead of throwing.
+test('BigInt constructor: null and undefined reject before a later successful call', () => {
+  const source = 'export const f=value=>BigInt(value)', actual = [], expected = []
+  const run = fn => { try { return fn() } catch (e) { return e.name } }
+  for (const optimize of [false, 1, 2, 3]) {
+    const f = jz(source, {optimize}).exports.f
+    for (const value of ['6', null, '6', undefined, '6']) {
+      actual.push([optimize, run(() => f(value))])
+      expected.push([optimize, run(() => BigInt(value))])
+    }
+  }
+  is(actual, expected, 'both nullish errors and recovery at every optimization level')
+})
+
+test('result carriers: a captured BigInt shift RHS preserves its result and effects', () => {
+  for (const op of ['<<', '>>']) {
+    const source = `export function f() {
+      let value=6n, calls=0
+      function rhs(){value=99n; calls++; return 1n}
+      value = value ${op} rhs()
+      return [Number(value),calls]
+    }`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = jz(source, {optimize}).exports.f
+      is(actual(), expected(), `${op} O${optimize || 0}`)
+      is(actual(), expected(), 'repeat')
+    }
+  }
+})
+
+test('result carriers: comma BigInt shift operands retain their payloads', () => {
+  const source = `export function f(){
+    let trace=0
+    const value=(trace=trace*10+1,6n) << (trace=trace*10+2,1n)
+    return [Number(value),trace]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3])
+    is(jz(source, {optimize}).exports.f(), expected(), `O${optimize || 0}`)
+})
+
+// Independent of reference staging: these result/catch contracts fail before it too.
+for (const write of ['(get()[key()]) |= 4n', '(get()[key()])++'])
+test(`result carriers: complex BigInt member ${write} returns the expression value`, () => {
+  const source = `export function f(stage){
+    const a=new BigInt64Array([2n]); let trace=0
+    function get(){trace=trace*10+1; if(stage===1) throw 1; return a}
+    function key(){trace=trace*10+2; if(stage===2) throw 2; return 0}
+    const result=(${write})
+    return [Number(result),Number(a[0]),trace]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3])
+    is(jz(source, {optimize}).exports.f(0), expected(0), `O${optimize || 0}`)
+})
+
+test('catch locals: an untouched initializer survives the normal completion path', () => {
+  const source = `export function f(stage){
+    const obj={value:5}; let trace=0,result=-1,caught=0
+    function get(){trace=trace*10+1; if(stage===1) throw 1; return obj}
+    function key(){trace=trace*10+2; if(stage===2) throw 2; return 'value'}
+    function rhs(){trace=trace*10+3; obj.value=16; if(stage===3) throw 3; return 2}
+    try { result=(get()[key()]+=rhs()) } catch(e) { caught=e }
+    return [result,obj.value,trace,caught]
+  }`
+  for (const optimize of [false, 1, 2, 3])
+    is(jz(source, {optimize}).exports.f(0)[3], 0, `O${optimize || 0}: catch did not execute`)
+})
+
+test('logical member: an absent array slot in a returned closure takes the RHS', () => {
+  const source = `function make(){
+      const holder={a:new Array(1)}
+      return i=>(holder.a[i+0] ??= 7,holder.a[i])
+    }
+    export function f(){const update=make(); return [update(0),update(0)]}`
+  for (const optimize of [false, 1, 2, 3])
+    is(jz(source, {optimize}).exports.f(), [7,7], `O${optimize || 0}`)
+})
+
 // --- BigInt return boundary ---
 
 test('bigint: a returned bigint crosses to JS as a real, lossless BigInt', () => {

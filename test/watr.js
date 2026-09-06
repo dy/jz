@@ -95,6 +95,10 @@ const bugCases = [
   ['float literals', 'memory access out of bounds', `(module
     (func (export "f32") (result i32) (i32.reinterpret_f32 (f32.const 6.28318548202514648)))
     (func (export "f64") (result i64) (i64.reinterpret_f64 (f64.const 6.28318530717958623))))`],
+  ['NaN payloads', 'BigInt box-pointer bits encoded instead of payloads', `(module
+    (func (export "undef") (result i64) (i64.reinterpret_f64 (f64.const nan:0x7ff8000200000000)))
+    (func (export "null") (result i64) (i64.reinterpret_f64 (f64.const nan:0x7ff8000100000000)))
+    (func (export "signed") (result i64) (i64.reinterpret_f64 (f64.const -nan:0x1234567812345))))`],
   ['call indirect case', 'table index out of bounds', `(module
     (type (func (param i32 i64) (result i64 i32)))
     (func $const-i32 (result i32) (i32.const 0x132))

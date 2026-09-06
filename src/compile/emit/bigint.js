@@ -453,29 +453,26 @@ export function bigIntUnary(node, mkI64, undefF64, box) {
       ['else', boxBigInt(mkI64(bits))]]], 'f64')
 }
 
-// BigInt `<<`/`>>` — ES2024 13.2.9/13.2.10 BigInt::leftShift/rightShift: a
-// NEGATIVE shift amount flips DIRECTION (`x << -3n` === `x >> 3n`, exactly —
-// not "shift by a huge wrapped count"). Found live sweeping the general
-// valTypeOfWithLocals fix (38dd0dca follow-up): WASM's `i64.shl`/`i64.shr_s`
-// both take the shift count mod 64 unconditionally (two's-complement -3 → 61),
-// with no such sign awareness — `av << -3n` computed a 61-bit wrong-direction
-// shift instead of `av >> 3n`. Pre-existing (the same raw `i64.${fn}` dispatch
-// this fixes was already there before this session), just unreachable through
-// any correctly-DECODED export until the general fix above made `<<`/`>>` on
-// proven-BigInt locals/params cross the boundary as a real BigInt at all —
-// confirmed via direct JS-oracle diff, not assumed. `bv` is captured into a
-// temp FIRST (not inlined twice) — it may be `bigIntOperand`'s own maybeUndefined
-// block form, which must evaluate exactly once. `av` is embedded once, same
-// single-evaluation discipline every other binary BigInt op here already has.
+// BigInt shifts reverse direction for negative counts. Unlike wasm shifts,
+// counts do not wrap modulo 64: a far left shift wraps the VALUE to zero;
+// a far right shift sign-extends. Compare magnitudes unsigned so negating
+// INT64_MIN still counts as a far shift. Capture both operands in source order,
+// including when the result is zero or the RHS writes the LHS binding.
 export function bigIntShiftIR(op, av, bv) {
-  const t = tempI64('bshiftN')
-  const sameOp = op === '<<' ? 'shl' : 'shr_s'
-  const flipOp = op === '<<' ? 'shr_s' : 'shl'
+  const a = tempI64('bshiftA'), b = tempI64('bshiftN')
+  const getA = ['local.get', `$${a}`], getB = ['local.get', `$${b}`]
+  const shift = (fn, count) => {
+    const far = ['i64.gt_u', count, ['i64.const', 63]]
+    return fn === 'shl'
+      ? ['if', ['result', 'i64'], far, ['then', ['i64.const', 0]], ['else', ['i64.shl', getA, count]]]
+      : ['i64.shr_s', getA, ['select', ['i64.const', 63], count, far]]
+  }
   return ['block', ['result', 'i64'],
-    ['local.set', `$${t}`, bv],
-    ['if', ['result', 'i64'], ['i64.lt_s', ['local.get', `$${t}`], ['i64.const', 0]],
-      ['then', [`i64.${flipOp}`, av, ['i64.sub', ['i64.const', 0], ['local.get', `$${t}`]]]],
-      ['else', [`i64.${sameOp}`, av, ['local.get', `$${t}`]]]]]
+    ['local.set', `$${a}`, av],
+    ['local.set', `$${b}`, bv],
+    ['if', ['result', 'i64'], ['i64.lt_s', getB, ['i64.const', 0]],
+      ['then', shift(op === '<<' ? 'shr_s' : 'shl', ['i64.sub', ['i64.const', 0], getB])],
+      ['else', shift(op === '<<' ? 'shl' : 'shr_s', getB)]]]
 }
 
 // Member `.`/`[]` increment/decrement's postfix OLD-value recovery. Prepare

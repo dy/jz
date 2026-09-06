@@ -95,32 +95,10 @@ export function prep(node) {
     // above, so it never needs the guard.
     ;(ctx.features.errorClasses ??= new Set()).add(ctorCallee)
   }
-  // Whole-program "will a nullish-receiver check ever construct a TypeError"
-  // flag (member access / calls on a genuinely undefined-or-null receiver —
-  // src/ir.js throwTypeErrorIR, called from
-  // module/core.js emitLengthAccess and src/compile/emit.js's dynamic
-  // method-call/closure-call strategies). Those emit sites construct a REAL
-  // TypeError object with no `new TypeError(...)` anywhere in the user's own
-  // source, so the errorClasses scan above never sees them —
-  // `emitErrorInstanceof`/`toStrI64` (ir.js) still need `used.has('TypeError')`
-  // true BEFORE any function emits, or an in-source `catch (e) { e instanceof
-  // TypeError }` compiled ahead of the throw site (order-independent, same
-  // reasoning as the bigint/error flags above) folds to `false` at compile
-  // time even though the caught pointer is bit-for-bit a real TypeError at
-  // runtime. (throwTypeErrorIR builds the object INLINE, not via
-  // `ctx.core.emit['TypeError']` — no module/string.js dependency, so unlike
-  // an earlier draft of this hook, there is no matching module-autoload
-  // half to this fix; see throwTypeErrorIR's own comment for the two
-  // PRE-EXISTING, unrelated bugs that draft re-exposed.) `censusShapedNode`
-  // (kind.js) is a pure AST-shape test — no ctx lookup needed at prepare
-  // time — recognizing exactly the two receiver/callee shapes (`X[k]` /
-  // `X.k` / `X.get(k)`) these checks can ever fire on: a member access or
-  // call whose base is one of those shapes MAY reach the vt-unknown dynamic-
-  // dispatch arm that throws. A sound OVER-approximation (same "absence of
-  // proof of presence" direction censusShapedNode's own callers already use
-  // for mayBeUndefined) — it can cost an un-folded (but still runtime-
-  // correct) instanceof/toString check when the flagged site turns out not
-  // to be nullish at runtime, never a missed flag.
+  // Implicit runtime errors must join the census before any function emits:
+  // catch/instanceof/stringification may precede the throwing function.
+  // Over-approximate possibility here; actual construction is demand-linked.
+  // A dynamic call or member read may throw for a nullish receiver.
   if (Array.isArray(node) && (node[0] === '.' || node[0] === '()') && censusShapedNode(node[1])) {
     setFeature('error', true)
     ;(ctx.features.errorClasses ??= new Set()).add('TypeError')
@@ -244,8 +222,9 @@ export function prep(node) {
   // carries no storage — writing through it would silently target nothing.
   // Catch every write form (`=`, compound `+=`-family, `++`/`--`) here, ahead
   // of per-op handlers, so none of them need their own copy of this check.
-  if (MUTATE_OPS.has(op) && typeof node[1] === 'string') {
-    const name = node[1]
+  const writeName = MUTATE_OPS.has(op) ? ungroup(node[1]) : null
+  if (typeof writeName === 'string') {
+    const name = writeName
     const aliasKey = builtinAliasKeyOf(name)
     if (aliasKey) err(`Cannot reassign '${name}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage. Declare a fresh local instead, or reference '${aliasKey}' directly`)
     // Assignment to a const binding is a compile error (ES: runtime TypeError).
@@ -269,6 +248,12 @@ export function prep(node) {
   return out
 }
 
+// Grouping preserves both a reference's identity and an expression's value.
+function ungroup(node) {
+  while (Array.isArray(node) && node[0] === '()' && node.length === 2) node = node[1]
+  return node
+}
+
 // A lone parenthesized comma-expression argument — `f((a, b, c))` — is ONE
 // argument whose value is the last comma operand. The parser keeps it wrapped
 // (`['()', [',', …]]`); prep would strip the grouping, leaving a bare comma
@@ -277,7 +262,6 @@ export function prep(node) {
 // case loses the distinction. Re-nest it under a 1-element arg-list comma.
 function renestSoleCommaArg(args) {
   if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === '()' && args[0].length === 2) {
-    const ungroup = n => Array.isArray(n) && n[0] === '()' && n.length === 2 ? ungroup(n[1]) : n
     const core = ungroup(args[0])
     if (Array.isArray(core) && core[0] === ',') return [[',', args[0]]]
   }
@@ -293,6 +277,18 @@ const handlers = {
   },
 
   'debugger': () => null,
+
+  // A bare binding's read/modify/write is one ordinary binary expression and
+  // assignment. Normalize before summary/representation planning so the write
+  // edge and both operand carriers have the same contracts as `x = x | y`.
+  // Member references still need their receiver/key single-evaluation lowering.
+  ...Object.fromEntries(['&=', '|=', '^=', '<<=', '>>=', '>>>='].map(op => [op, (name, value) => {
+    name = ungroup(name)
+    return typeof name === 'string'
+      ? prep(['=', name, [op.slice(0, -1), name, value]])
+      : [op, prep(name), prep(value)]
+  }])),
+
   // Static-key delete (.x, ["x"], [literal]) would change the fixed schema → reject.
   // Computed-key delete (obj[expr]) — including jessie's `delete ctx[k]` — lowers
   // to runtime __dyn_del against the per-object shadow property store.

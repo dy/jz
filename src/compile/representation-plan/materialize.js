@@ -211,14 +211,13 @@ export function representationBindingWriteAction(ctx, name, source) {
   return edgeAction(activeEmittedRep(ctx, source), activeRep(ctx, name, true))
 }
 
-/** Frozen action for one materialized COMPOUND-ASSIGNMENT write (`n >>= v`,
- *  `n += v`, `n++`, …) — shape #6's emission-side companion to layer 4's
+/** Frozen action for one materialized arithmetic compound write (`n += v`,
+ *  `n *= v`, …) — shape #6's emission-side companion to layer 4's
  *  plan-side readiness gate. Mirrors representationComputedExprAction's own
- *  reasoning for JOIN_OPS/census-unary nodes, applied to a NAME: emit.js's
- *  compound-assign families (compoundAssign's bigint arm, the bitwise
- *  '&='/'|='/'^='/'<<='/'>>='/'>>>=' dispatch, '++'/'--') all unbox the
- *  CURRENT value via readI64 (already plan-aware — isPlanTaggedBigint), run
- *  ONE i64 op, and re-wrap with fromI64 — the result is RAW_BIGINT by
+ *  reasoning for JOIN_OPS/census-unary nodes, applied to a NAME. The arithmetic
+ *  compoundAssign handler unboxes the CURRENT value via readI64 (already
+ *  plan-aware — isPlanTaggedBigint), runs ONE i64 op, and re-wraps with
+ *  fromI64 — the result is RAW_BIGINT by
  *  construction, never anything else, so (unlike representationBindingWriteAction,
  *  whose source can be any expression shape) there is no per-node fact to
  *  look up: no AST node to key nodeFacts by even exists inside these

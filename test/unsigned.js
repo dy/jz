@@ -36,6 +36,414 @@ import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { run, evaluate, compileSrc } from './util.js'
 import { scalarCase } from './_scalar-core-cases.js'
+import { instantiate } from '../interop.js'
+import { execFileSync } from 'node:child_process'
+
+// Checked BigInt reads return tagged values. A compound write must normalize
+// its result just like a plain assignment, including a reassigned parameter.
+for (const [op, rhs] of [
+  ['|=', '0x7ff0000000000000n'], ['&=', '0xffffffffffffffffn'], ['^=', '0x8000000000000n'], ['>>=', '7n'], ['<<=', '-7n'],
+  ['+=', '3n'], ['-=', '3n'], ['*=', '3n'], ['/=', '3n'], ['%=', '3n'],
+]) for (const lhs of ['value', '((value))']) {
+  test(`compound writes: checked producer → ${lhs} ${op} → typed storage`, () => {
+    const source = `
+      const buf = new ArrayBuffer(8)
+      const ints = new BigInt64Array(buf)
+      const floats = new Float64Array(buf)
+      const bytes = new Uint8Array(buf)
+      let calls = 0
+      function parse(input) { calls++; ints[0] = BigInt(input); return ints[0] }
+      function operand() { calls++; return ${rhs} }
+      function encode(big, input, value) {
+        if (big) {
+          value = input === 'canonical' ? 0x8000000000000n : parse(input);
+          ${lhs} ${op} operand()
+          ints[0] = value
+        } else { value = Number(input); floats[0] = value }
+        return bytes.slice()
+      }
+      export const f = (big, input) => encode(big, input)
+      export const count = () => calls
+    `
+    for (const optimize of [false, 1, 2, 3]) {
+      const expected = Function(source.replaceAll('export ', '') + '; return {f, count}')()
+      const actual = run(source, { optimize })
+      const retained = []
+      for (const [big, input] of [[true, '0'], [true, '0x8000200000000'], [true, '0x8000200000000'], [false, '1'], [true, '-1'], [false, '-0'], [true, 'canonical'], [true, '0x1234567812345678']]) {
+        const want = Array.from(expected.f(big, input)), got = actual.f(big, input)
+        is(Array.from(got), want, `O${optimize || 0}: ${big}/${input}`)
+        is(actual.count(), expected.count(), 'single producer and RHS evaluation')
+        retained.push([got, want])
+      }
+      for (const [got, want] of retained) is(Array.from(got), want, 'later writes cannot mutate retained output')
+    }
+  })
+}
+
+test('compound writes: preserve the old value before RHS writes and return the new value', () => {
+  for (const op of ['+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=']) {
+    const source = `
+      export function f(initial, shift) {
+        let value = initial, calls = 0
+        function operand() { value = 99; calls++; return shift }
+        const result = (value ${op} operand())
+        return [result, value, calls]
+      }`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, { optimize }).f
+      const inputs = op === '**='
+        ? [[2, 3], [-2, 3], [1.5, 2], [0, 0]]
+        : [[2147483648, 1], [-1, 0], [4294967295, 31], [NaN, 3], [5e-324, -1], [-0, 0]]
+      // Open arithmetic/nullish coercion has a separate red pin in data.js;
+      // the bitwise family's ToInt32/ToUint32 boundary already handles it.
+      if (['&=', '|=', '^=', '<<=', '>>=', '>>>='].includes(op))
+        inputs.push([null, 0], [undefined, 0], [1, null], [1, undefined])
+      for (const [initial, shift] of inputs)
+        is(actual(initial, shift), expected(initial, shift), `${op} O${optimize || 0}: ${initial}/${shift}`)
+    }
+  }
+})
+
+for (const op of ['<<=', '>>=']) test(`BigInt ${op}: signed counts and the 64-bit boundary`, () => {
+  const source = `const a = new BigInt64Array(1)
+    export function f(input, count) {
+      a[0] = BigInt(input); let value = a[0];
+      ((value)) ${op} BigInt(count)
+      a[0] = value; return a[0]
+    }`
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, {optimize}).f
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const input of ['0', '1', '-1', '-9223372036854775808', '9223372036854775807']) {
+      // The extreme count shifts right, so the JS oracle never allocates an enormous BigInt.
+      const extreme = op === '<<=' ? '-9223372036854775808' : '9223372036854775807'
+      for (const count of [0, 1, 63, 64, 65, -1, -63, -64, -65, extreme, 0])
+        is(actual(input, count), expected(input, count), `${op} O${optimize || 0}: ${input}/${count}`)
+    }
+  }
+})
+
+test('BigInt shifts: read the left value before RHS writes, for binary and compound forms', () => {
+  for (const op of ['<<', '>>']) for (const write of [`((value)) ${op}= (value=99n,1n)`, `value = value ${op} (value=99n,1n)`]) {
+    const source = `export function f(){let value=6n; ${write}; return Number(value)}`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, {optimize}).f
+      is(actual(), expected(), `${write} O${optimize || 0}`)
+      is(actual(), expected(), 'repeat')
+    }
+  }
+})
+
+test('bitwise compounds: unsigned loop write widens unsigned, including zero iterations', () => {
+  const source = `export function f(n, x) {
+    let value = x
+    for (let i = 0; i < n; i++) value >>>= i
+    return value
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, { optimize }).f
+    for (const n of [0, 1, 2, 0, 1]) for (const x of [-1, 2147483648, -7, 4294967295])
+      is(actual(n, x), expected(n, x), `O${optimize || 0}: ${n}/${x}`)
+  }
+})
+
+for (const [family, ops] of [['bitwise', ['&=', '|=', '^=', '<<=', '>>=']], ['arithmetic', ['+=', '-=', '*=', '/=', '%=']]])
+test(`${family} compounds: a Number/BigInt mismatch throws and permits a later call`, () => {
+  for (const op of ops) {
+    const source = `export function f(big) {
+      let value = big ? new BigInt64Array([2n])[0] : 3
+      value ${op} 4n
+      return value
+    }`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, { optimize }).f
+      is(actual(true), expected(true), `${op} O${optimize || 0}: BigInt`)
+      throws(() => actual(false), /Cannot mix BigInt/, 'Number is not a raw BigInt payload')
+      is(actual(true), expected(true), 'success after a failed call')
+    }
+  }
+})
+
+test('compound writes: an abrupt RHS keeps its effects but does not write the operation result', () => {
+  for (const op of ['+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=']) {
+    const source = `export function f(fail) {
+      let value = 5, calls = 0
+      function rhs() { calls++; value = 99; if (fail) throw 7; return 1 }
+      try { ((value)) ${op} rhs() } catch (e) {}
+      return [value, calls]
+    }`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, { optimize }).f
+      for (const fail of [false, false, true, false])
+        is(actual(fail), expected(fail), `${op} O${optimize || 0}: fail=${fail}`)
+    }
+  }
+})
+
+test('compound writes: grouped string += keeps concatenation and RHS ordering', () => {
+  const source = `export function f() {
+    let value = 'a', calls = 0
+    function rhs() { value = 'changed'; calls++; return 'b' }
+    const result = (((value)) += rhs());
+    ((value)) += 2n
+    return [result, value, calls]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, {optimize}).f
+    is(actual(), expected(), `O${optimize || 0}`)
+    is(actual(), expected(), 'repeat')
+  }
+})
+
+test('compound writes: unsupported BigInt power and unsigned shift still reject grouped targets', () => {
+  for (const op of ['**=', '>>>=']) for (const optimize of [false, 1, 2, 3])
+    throws(() => compileSrc(`export function f(i) {
+      let value = new BigInt64Array([2n])[i];
+      ((value)) ${op} 1n; return value
+    }`, {optimize}), /BigInt/)
+})
+
+for (const [family, ops] of [['bitwise', ['&=', '|=', '^=', '<<=', '>>=']], ['arithmetic', ['+=', '-=', '*=', '/=', '%=']]])
+test(`${family} compounds: null and absent checked operands throw after one RHS evaluation`, () => {
+  for (const op of ops) for (const count of op === '<<=' || op === '>>=' ? ['4n', '64n'] : ['4n']) {
+    const source = `let calls = 0
+      function rhs() { calls++; return ${count} }
+      export function f(n, i, present) {
+        const a = new BigInt64Array(n)
+        if (n) a[0] = 2n
+        let value = present ? a[i] : null;
+        ((value)) ${op} rhs()
+        return value
+      }
+      export const count = () => calls`
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, { optimize })
+      const expected = Function(source.replaceAll('export ', '') + '; return {f, count}')()
+      for (const args of [[1, 0, true], [0, 0, true], [1, 1, true], [1, -1, true], [1, 0, false], [1, 0, true]]) {
+        // JZ's documented i64 result wraps; wrap the JS oracle's successful
+        // result too, without masking an operator's missing TypeError.
+        if (args[0] === 1 && args[1] === 0 && args[2]) is(actual.f(...args), BigInt.asIntN(64, expected.f(...args)), `${op} ${count}: present`)
+        else {
+          throws(() => expected.f(...args), TypeError)
+          throws(() => actual.f(...args), /Cannot mix BigInt/, `${op}: ${args}`)
+        }
+        is(actual.count(), expected.count(), 'RHS runs once, even before a TypeError')
+      }
+    }
+  }
+})
+
+// Red semantic pins: the attempted member staging/default-local repair was
+// reverted after a .subarray() regression. No staging implementation is retained.
+for (const op of ['+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '||=', '&&=', '??=', 'pre++', 'post++', 'pre--', 'post--'])
+test(`member reference ${op}: single evaluation, abrupt stages and recovery`, () => {
+  for (const ref of ['get().value', 'get()[key()]', '((get()[key()]))']) {
+    const write = op.startsWith('pre') ? `${op.slice(3)}${ref}`
+      : op.startsWith('post') ? `${ref}${op.slice(4)}` : `${ref} ${op} rhs()`
+    // Possible throws keep these helpers from disappearing through inlining.
+    // State is observed outside the throwing function, without a catch-local phi.
+    const source = `let trace=0; const obj={value:5}
+      export function f(stage, initial) {
+        trace=0; obj.value=initial
+        function get(){trace=trace*10+1; if(stage===1) throw 1; return obj}
+        function key(){trace=trace*10+2; if(stage===2) throw 2; return 'value'}
+        function rhs(){trace=trace*10+3; obj.value=16; if(stage===3) throw 3; return 2}
+        return (${write})
+      }
+      export const state=()=>[obj.value,trace]`
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, {optimize})
+      const expected = Function(source.replaceAll('export ', '') + '; return {f,state}')()
+      for (const stage of [0, 0, 1, 0, 2, 0, 3, 0])
+        for (const initial of ['||=', '&&=', '??='].includes(op) ? [5, 0, null, undefined] : [5]) {
+          let want, got
+          try { want = ['return', expected.f(stage, initial)] } catch (e) { want = ['throw', e] }
+          // Only the ordinary Error wrapper transports primitive throws.
+          try { got = ['return', actual.f(stage, initial)] }
+          catch (e) { got = ['throw', e?.name === 'Error' && Object.hasOwn(e, 'thrown') ? e.thrown : e?.name ?? e] }
+          is(got, want, `${write} O${optimize || 0}: stage=${stage}, initial=${initial}`)
+          is(actual.state(), expected.state(), 'stored value and receiver→key→RHS trace')
+        }
+    }
+  }
+})
+
+test('member reference: a key may reassign the receiver binding without retargeting the write', () => {
+  const source = `let obj={value:5}; const original=obj
+    function key(){obj={value:9}; return 'value'}
+    export function f(){obj[key()]+=1; return [original.value,obj.value]}`
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, {optimize}).f
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (let i=0; i<3; i++) is(actual(), expected(), `O${optimize || 0}: call ${i}`)
+  }
+})
+
+test('member reference: simple names retain the pre-RHS receiver and key', () => {
+  for (const op of ['+=', '|=', '<<=', '||=', '&&=', '??=']) {
+    const initial = op === '||=' ? '0' : op === '??=' ? 'null' : '5'
+    const source = `export function f(){
+      const a={value:${initial},other:20},b={value:9,other:30}
+      let obj=a,key='value'
+      const result=(obj[key] ${op} (obj=b,key='other',2))
+      return [result,a.value,a.other,b.value,b.other]
+    }`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, {optimize}).f
+      is(actual(), expected(), `${op} O${optimize || 0}`)
+      is(actual(), expected(), 'repeat')
+    }
+  }
+})
+
+test('member reference: expression-bodied closures analyze generated locals', () => {
+  const source = `function make(){
+      const holder={a:[1]}
+      return i=>(holder.a[i+0]+=2,holder.a[i])
+    }
+    export function f(){const update=make(); return [update(0),update(0)]}`
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, {optimize}).f
+    is(actual(), [3,5], `O${optimize || 0}`)
+    is(actual(), [3,5], 'new closure after earlier calls')
+  }
+})
+
+for (const closure of [false, true]) test(`member reference: ${closure ? 'closure' : 'named'} default temporaries belong to the callee`, () => {
+  const source = `let calls=0; const obj={value:5}
+    function get(){calls++; return obj}
+    ${closure
+      ? 'function make(){return (x=(get().value+=1))=>[x,obj.value,calls]} const inner=make()'
+      : 'function inner(x=(get().value+=1)){return [x,obj.value,calls]}'}
+    export const f=x=>inner(x)`
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, {optimize}).f
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const arg of [100, undefined, 0, null, undefined, 100])
+      is(actual(arg), expected(arg), `O${optimize || 0}: ${arg}`)
+  }
+})
+
+test('member reference: imported initialization retains the staged reference and source order', () => {
+  const init = `let trace=0; const obj={value:5}
+    function get(){trace=trace*10+1; return obj}
+    function key(){trace=trace*10+2; return 'value'}
+    function rhs(){trace=trace*10+3; return 2}
+    export const value=(get()[key()]+=rhs())
+    export const state=()=>[obj.value,trace]`
+  const source = `import {value,state} from './init.js'; export const f=()=>[value,state()]`
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, {optimize, modules:{'./init.js':init}}).f
+    is(actual(), [7,[7,123]], `O${optimize || 0}`)
+    is(actual(), [7,[7,123]], 'initializers do not run again')
+  }
+})
+
+test('compound writes: grouped targets do not bypass readonly or invalid-target checks', () => {
+  for (const op of ['+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=']) {
+    for (const optimize of [false, 1, 2, 3]) {
+      throws(() => compileSrc(`export function f(){const value=1; ((value)) ${op} 1; return value}`, {optimize}), /const/, `${op}: grouped const`)
+      throws(() => compileSrc(`let target=Math.sin; export function f(){((target)) ${op} 1; return 0}`, {optimize}), /bound to builtin/, `${op}: grouped alias`)
+      throws(() => compileSrc(`export function f(){if(false){(1+2) ${op} 1} return 0}`, {optimize}), /invalid assignment target/, `${op}: dead invalid target`)
+      const shadow = `const value=1; export function f(){let value=4; ((value)) ${op} 1; return value}`
+      is(run(shadow, {optimize}).f(), Function(shadow.replace('export ', '') + '; return f')()(), 'a shadowing let remains writable')
+    }
+  }
+})
+
+test('grouped references: logical writes preserve short circuiting and abrupt RHS effects', () => {
+  for (const op of ['||=', '&&=', '??=']) {
+    const source = `export function f(initial, fail) {
+      let value=initial, calls=0
+      function rhs(){calls++; value=99; if(fail) throw 7; return 42}
+      try { ((value)) ${op} rhs() } catch(e) {}
+      return [value,calls]
+    }`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, {optimize}).f
+      for (const initial of [0, 5, null, undefined, 0]) for (const fail of [false, true, false])
+        is(actual(initial, fail), expected(initial, fail), `${op} O${optimize || 0}: ${initial}/${fail}`)
+      const init = op === '||=' ? '0' : op === '??=' ? 'null' : '1'
+      throws(() => compileSrc(`export function f(){const value=${init}; ((value)) ${op} 2; return value}`, {optimize}), /const/)
+      throws(() => compileSrc(`const value=${init}; ((value)) ${op} 2; export {value}`, {optimize}), /const/, 'module-level const')
+    }
+  }
+})
+
+test('grouped expressions: empty calls and nested comma arguments retain arity and order', () => {
+  const source = `export function f() {
+    let trace=0
+    function zero(){trace=trace*10+1; return 7}
+    function next(n){trace=trace*10+n; return n}
+    function pair(a,b){return [a,b,trace]}
+    return [zero(),trace,pair((((next(2),next(3))))),pair((((next(4),next(5)))),next(6))]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3]) {
+    const actual = run(source, {optimize}).f
+    is(actual(), expected(), `O${optimize || 0}: [7,1,[3,undefined,123],[5,6,123456]]`)
+    is(actual(), expected(), 'repeat')
+  }
+})
+
+test('grouped references: ordinary writes and updates also check readonly bindings', () => {
+  for (const write of ['((value)) = 2', '++((value))', '--((value))', '((value))++', '((value))--']) {
+    const source = `export function f(){let value=1; ${write}; return value}`
+    const expected = Function(source.replace('export ', '') + '; return f')()
+    for (const optimize of [false, 1, 2, 3]) {
+      throws(() => compileSrc(`export function f(){const value=1; ${write}; return value}`, {optimize}), /const/, write)
+      is(run(source, {optimize}).f(), expected(), `${write}: writable O${optimize || 0}`)
+    }
+  }
+})
+
+test('compound writes: empty→empty→A→A→B→empty→truncated A→A preserves bytes and outputs', () => {
+  const sources = [
+    'export function f(x){let value=x; ((value)) >>>= 0; return value}',
+    'export function f(x){let value=x; ((value)) *= 3; return value}',
+  ]
+  for (const optimize of [false, 1, 2, 3]) {
+    const freshB = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import {compile} from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+      console.log(Buffer.from(compile(${JSON.stringify(sources[1])}, {optimize:${optimize}})).toString('base64'))
+    `], {encoding:'utf8'}).trim()
+    const retained = [], baselines = []
+    let emptyBytes
+    // EOF immediately before the final `}` rejects; adding that final character
+    // (or an empty suffix at the completed boundary) restores the same program.
+    for (const input of ['', '', 0, 0, 1, '', sources[0].slice(0, -1), 0]) {
+      if (typeof input === 'string') {
+        if (input) throws(() => compileSrc(input, {optimize}))
+        else {
+          const bytes = compileSrc(input, {optimize})
+          is(typeof instantiate(bytes).exports.f, 'undefined', 'empty has no user entry')
+          if (emptyBytes) is([...bytes], emptyBytes, 'empty is identical before and after other work')
+          else emptyBytes = [...bytes]
+        }
+        continue
+      }
+      const bytes = compileSrc(sources[input] + '', {optimize})
+      const snapshot = [...bytes]
+      if (baselines[input]) is(snapshot, baselines[input], 'same input after other compilation work')
+      else baselines[input] = snapshot
+      if (input === 1) is(snapshot, [...Buffer.from(freshB, 'base64')], 'B after A equals fresh B')
+      retained.push([bytes, snapshot, instantiate(bytes).exports.f, input])
+    }
+    for (const [bytes, snapshot, f, input] of retained) {
+      is([...bytes], snapshot, 'later compiles cannot alter retained bytes')
+      is(f(-1), input ? -3 : 4294967295, 'retained instance executes')
+      is(instantiate(bytes).exports.f(-1), input ? -3 : 4294967295, 'retained bytes instantiate and execute')
+    }
+  }
+})
 
 // A captured Map read uses a tagged storage carrier even when the summary
 // proves Number|undefined. The carrier must not invent a BigInt runtime arm.
