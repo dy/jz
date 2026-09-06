@@ -16,7 +16,7 @@ import { emit, emitBlockBody, emitIdentitySafe, toBool } from './emit.js'
 import { emitCharDecompPrologue } from '../abi/string.js'
 import { representationReturnAction } from './representation-plan.js'
 import { recordParamClosureDefault, recordDirectReturnClosure } from './dyn-closure-tables.js'
-import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
+import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './func-entry.js'
 import { isBoundaryWrapped } from './boundary-wrap.js'
 import { hoistInvariantParamCoercions, hoistUnionCursorUnbox } from './coercion-hoist.js'
 import { isExported } from './func-exports.js'
@@ -249,8 +249,9 @@ export function emitFunc(func, functionPlan, programFacts) {
         ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
     }
   }
-  // Remaining boxed locals (non-params) get a fresh null-init cell.
-  const preboxedLocalInits = emitPreboxedLocalInits(name => paramNames.has(name))
+  // Remaining boxed locals (non-params) get a fresh null-init cell, before the
+  // first statement that mentions one (placePreboxedLocalInits) or at entry.
+  const preboxedLocalInits = placePreboxedLocalInits(emitPreboxedLocalInits(name => paramNames.has(name)), block ? body : null)
 
   // Drain `ctx.func.charDecomp` after body emit: any param `charCodeAt` use
   // registered a decomposition request that needs a function-entry prologue

@@ -19,7 +19,7 @@ import {
 } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
-import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
+import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
 import { K, tagOf, isNullable } from '../summary/index.js'
 
@@ -133,7 +133,7 @@ export function analyzeClosureBodyForEmit(cb) {
       ctx.func.flatObjects = facts.flatObjects ?? new Map()
       ctx.func.sliceViews = facts.sliceViews ?? new Set()
       inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
-      boxedCaptures(cb.body)
+      boxedCaptures(cb.body, [...cb.params, ...cb.captures])
       for (const name of ctx.func.boxed.keys())
         if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64')
           ctx.func.locals.set(name, 'i32')
@@ -232,10 +232,10 @@ export function emitClosureBody(cb, functionPlan) {
 
   // The classification is plan-time; this emission-only half materializes the
   // already-decided null-initialized local cells before the body reads them.
-  const preboxedLocalInits = emitPreboxedLocalInits(name =>
-    boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name))
-
   const block = isBlockBody(cb.body)
+  const preboxedLocalInits = placePreboxedLocalInits(emitPreboxedLocalInits(name =>
+    boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name)), block ? cb.body : null)
+
   ctx.func.repsFrozen = true
   assertCtxInvariants('pre-emit')
   const bodyIR = block

@@ -12,7 +12,7 @@ import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, boxBigInt, carrierF64, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, allocPtr, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, boxBigInt, carrierF64, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
@@ -764,8 +764,6 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
     const objTmp = temp('mobj')
     const propTmp = temp('mprop')
-    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-    const arrayIR = buildArrayWithSpreads(combined)
     // The program summary names the receiver's shape (an element of an array
     // of one shape, a field of one shape), or that shape or nullish: one
     // masked compare proves the tag and schema at runtime, then the method is
@@ -796,19 +794,42 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
     const closureOnly = slot >= 0 || usesDynProps(vt) || !ctx.transform.targetProfile.envImports
     if (slot >= 0) inc('__ptr_type'); else inc('__dyn_get_expr', '__ptr_type')
     if (!closureOnly) { inc('__ext_call'); setLinkDemand('external') }
+    // The closure leg passes its arguments inline (the closure ABI's slots);
+    // only a spread call, or the host leg's `__ext_call`, needs them as an
+    // array. With both legs the arguments are evaluated once into temps,
+    // after the receiver and the property read (JS order), and each leg
+    // reads the temps: the array is built inside the host leg alone.
+    const setup = []
+    let closureArgs, extArrayIR
+    if (parsed.hasSpread) {
+      const arrayIR = buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))
+      const arrTmp = temp('margs')
+      setup.push(['local.set', `$${arrTmp}`, asF64(arrayIR)])
+      closureArgs = [typed(['local.get', `$${arrTmp}`], 'f64')]
+      extArrayIR = ['local.get', `$${arrTmp}`]
+    } else if (closureOnly) closureArgs = parsed.normal
+    else {
+      const tmps = parsed.normal.map((a, i) => { const t = temp('marg'); setup.push(['local.set', `$${t}`, ctx.closure.argIR(a)]); return t })
+      closureArgs = tmps.map(t => typed(['local.get', `$${t}`], 'f64'))
+      const arr = allocPtr({ type: PTR.ARRAY, len: tmps.length, tag: 'margs' })
+      extArrayIR = ['block', ['result', 'f64'], arr.init,
+        ...tmps.map((t, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], ['local.get', `$${t}`]]),
+        arr.ptr]
+    }
     const extFallback = closureOnly ? undefExpr()
       : ['if', ['result', 'f64'],
           ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
           ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
             ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
             ['i64.reinterpret_f64', asF64(emit(['str', method]))],
-            ['i64.reinterpret_f64', arrayIR]]]],
+            ['i64.reinterpret_f64', extArrayIR]]]],
           ['else', undefExpr()]]
-    const nativeCall = ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)
+    const nativeCall = ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread)
     const taggedCall = tagDynamicMethodResult(propTmp, nativeCall, bigintMethodTargets(obj, method))
     return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${propTmp}`, propRead],
+      ...setup,
       ['if', ['result', 'f64'],
         ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
         ['then', taggedCall],

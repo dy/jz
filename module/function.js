@@ -336,6 +336,12 @@ export default (ctx) => {
    * @param {any[]} args - AST nodes (will be emitted) OR pre-emitted nodes (if .type is set)
    * @param {boolean} prebuiltArray - args[0] is a pre-built args array (spread path)
    */
+  /** One argument in the closure ABI's slot form: an AST node by its representation action, pre-emitted IR (has .type) as is. */
+  ctx.closure.argIR = (a) => {
+    if (a?.type) return asF64(a)
+    const action = representationClosureArgAction(ctx, a)
+    return action === REP_EDGE_REJECT ? storedValue(a) : storedValuePlanned(a, action)
+  }
   ctx.closure.call = (closureExpr, args, prebuiltArray) => {
     const t = temp('clos')
 
@@ -388,11 +394,7 @@ export default (ctx) => {
     if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
     const slots = []
-    for (let i = 0; i < n; i++) {
-      if (args[i]?.type) { slots.push(asF64(args[i])); continue }
-      const action = representationClosureArgAction(ctx, args[i])
-      slots.push(action === REP_EDGE_REJECT ? storedValue(args[i]) : storedValuePlanned(args[i], action))
-    }
+    for (let i = 0; i < n; i++) slots.push(ctx.closure.argIR(args[i]))
     for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
 
     return typed(['block', ['result', 'f64'],

@@ -29,6 +29,7 @@ const TESTS = [
   'snapshot',
   'static-storage',
   'mem',
+  'allocation',
   'buffer',
   'workers',
   'generators',

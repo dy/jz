@@ -1215,6 +1215,8 @@ export function emitBlockBody(node) {
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i]
       if (s == null || typeof s === 'number') continue
+      // The preboxed cells, allocated before the first statement that mentions one (placePreboxedLocalInits).
+      if (s === frame.preboxAt) { out.push(...frame.preboxInits); frame.preboxAt = null; frame.preboxInits = null }
       out.push(...emitVoid(s))
       // Sibling statements after an unconditional return/throw/break/continue
       // (or a nested `{}`/`;`-block whose OWN last statement is one) are
