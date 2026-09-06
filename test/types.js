@@ -952,7 +952,7 @@ test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
   `)
   const body = fnBody(w, 'f')
   ok(body, '$f present')
-  // multi-use receiver so the local survives foldSetToTee — exercises the unbox decision on the surviving slot
+  // multi-use receiver so the local survives propagateLocals — exercises the unbox decision on the surviving slot
   ok(/\(local \$b i32\)/.test(body), '$b unboxed to i32 (.map receiver)')
   ok(!/__is_str_key/.test(body), '$f has no __is_str_key after .map receiver unbox')
 })

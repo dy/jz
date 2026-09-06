@@ -206,7 +206,7 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
 
   // the RGBA store: 4 i32.store8 at `ab1 + c`, ab1 tee'd in the first. jz's raw pre-watr
   // emission of `dst[o]=(sr/win)|0` materializes the divide into its own single-use temp
-  // (`tw = sr/win; store(tw)`) — pre-watr propagateSingleUse runs AFTER the vectorizer
+  // (`tw = sr/win; store(tw)`) — the pre-watr propagateLocals runs AFTER the vectorizer
   // (ordered there so it doesn't scramble the dot-pair matcher), so this indirection is
   // never folded before this recognizer sees it, unlike the old post-watr pipeline where
   // watr's own copy-prop had already inlined it into the store operand. Resolve that one-hop

@@ -752,7 +752,7 @@ test('closure-unbox: codegen — local declared as i32', () => {
   `, { wat: true, optimize: { watr: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
-  // multi-use closure so the slot survives foldSetToTee (jz's own coalesce of single-use defs)
+  // multi-use closure so the slot survives propagateLocals (the single-use def would be forwarded)
   ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')
   ok(!/\(local \$g f64\)/.test(body), '$g not f64')
 })

@@ -103,6 +103,12 @@ const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
   }
 }
 const hasTypedBoundsTemp = wat => /\$[^\s)]*tbi\d*/.test(wat)
+// A checked typed access is marked by the `tbiN` index temp jz emits for it, or,
+// when propagation merges that temp into the index local, by the guard itself:
+// an unsigned compare against the constant length around the store.
+const CHECKED_STORE = /\(i32\.lt_u[\s\S]{0,400}?\(i32\.const \d+\)\s*\)\s*\(then\s*\((?:f32|f64|i32|i64)\.store/
+const userFuncs = wat => wat.split(/(?=\(func )/).filter(f => /^\(func \$(?!__)/.test(f)).join('\n')
+const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || CHECKED_STORE.test(userFuncs(wat))
 
 const INPUTS = [
   [1, 1], [2, 2], [-1, 1], [4, 1], [1, 4], [1.9, 1], [-0, 1],
@@ -139,7 +145,7 @@ test('interval proof: named-guard WAT is raw at O0/O2/O3; sibling controls fail 
       ['overflowing index', OVERFLOW_INDEX],
       ['wrapping affine guard', AFFINE_WRAP_GUARD],
     ]) {
-      ok(hasTypedBoundsTemp(compile(src, { optimize, wat: true })),
+      ok(hasCheckedTypedAccess(compile(src, { optimize, wat: true })),
         `O${optimize}: ${name} retains a checked typed access`)
     }
   }
@@ -210,7 +216,7 @@ test('interval proof: xor/shift cursors are proven inside their field', () => {
     is(wasm(7), native(7), `O${optimize}: permutation of another fill matches Node`)
   }
   for (const [name, src] of FIELD_ESCAPES) {
-    ok(hasTypedBoundsTemp(compile(src, { optimize: 3, wat: true })), `${name}: access stays checked`)
+    ok(hasCheckedTypedAccess(compile(src, { optimize: 3, wat: true })), `${name}: access stays checked`)
     is(jz(src).exports.f(100), jsExports(src).f(100), `${name}: matches Node`)
   }
 })

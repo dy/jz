@@ -17,7 +17,8 @@ import {
   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
-import { propagateSingleUse, foldSetToTee } from './locals.js'
+import { propagate as propagateLocals } from 'watr/optimize'
+import { containsV128 } from './ir-scan.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
@@ -55,7 +56,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       cfg.hoistAddrBase === false &&
       cfg.cseScalarLoad === false &&
       cfg.unswitchStringRepLoop === false &&
-      cfg.propagateSingleUse === false &&
+      cfg.propagateLocals === false &&
       cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
       cfg.vectorizeLaneLocal === false &&
@@ -142,12 +143,19 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     splitLoopPrivateScratch(fn)
     hoistInvariantLoop(fn)
   }
-  // Forward-substitute single-use temps AFTER the vectorizer (which always runs in
-  // 'pre', above) — propagateSingleUse itself skips any function already lifted to v128.
-  if (!cfg || cfg.propagateSingleUse !== false) propagateSingleUse(fn)
-  // Then sink single-def RHS into first use as a tee — captures the simplify-locals slack
-  // watr's use-count propagate leaves (set→tee fold, incl. effectful single-use forward).
-  if (!cfg || cfg.foldSetToTee !== false) foldSetToTee(fn)
+  // The local propagation family (watr/optimize `propagate`: forward substitution
+  // of single-use values, set→tee sinking, copy merging, dead-store elimination)
+  // is the one implementation, and it runs on this function here, AFTER the
+  // vectorizer above and BEFORE the devirt passes below (the point jz's own
+  // propagateSingleUse/foldSetToTee used to hold), only when watr's fixpoint is
+  // off (`fast`, `watr: false`): there it is the sole propagation, worth 4-5% of
+  // the bytes. With the fixpoint on, watr runs the family at its own point, after
+  // narrow/unclamp/intguard have seen the emitted guard temps; run early, the
+  // merged temps hide those gates' shapes (vm's checked reads stayed f64-boxed,
+  // 2.2x slower). A function the vectorizer lifted to v128 is left as emitted:
+  // its lane sequences are register-tight, and the masked-suffix guard
+  // recognizes the emitted loop shape after watr.
+  if ((!cfg || cfg.propagateLocals !== false) && !(cfg && cfg.watr) && !containsV128(fn)) propagateLocals(fn)
   // A second idempotent sweep catches fresh opportunities exposed by
   // propagation/fold-to-tee. The first sweep above does the important work
   // while source-level SSA names are still explicit.

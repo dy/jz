@@ -61,8 +61,7 @@ export const PASS_NAMES = [
   'cseScalarLoad',
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'unswitchStringRepLoop',    // leaf char scans: hoist invariant SSO/heap selection out of the byte loop
-  'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
-  'foldSetToTee',             // sink a single-def local's RHS into its first use as a tee (simplify-locals watr leaves)
+  'propagateLocals',          // watr's local propagation family on each function before devirt, when watr's fixpoint is off (the only propagation at `fast`)
   'promoteGlobals',          // read-only global.get → local for multi-read globals
   'sortLocalsByUse',
   'specializeMkptr',
