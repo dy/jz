@@ -143,6 +143,12 @@ export default (ctx) => {
         ;; Numeric path covers -0/+0 and any normal numeric inequality.
         (local.set $fa (f64.reinterpret_i64 (local.get $a)))
         (local.set $fb (f64.reinterpret_i64 (local.get $b)))
+        ;; A boolean beside a number converts (ToNumber: true is 1, false is 0),
+        ;; as the static BOOL arm of \`==\` does.
+        (if (i64.eq (local.get $a) (i64.const ${TRUE_NAN})) (then (local.set $fa (f64.const 1))))
+        (if (i64.eq (local.get $a) (i64.const ${FALSE_NAN})) (then (local.set $fa (f64.const 0))))
+        (if (i64.eq (local.get $b) (i64.const ${TRUE_NAN})) (then (local.set $fb (f64.const 1))))
+        (if (i64.eq (local.get $b) (i64.const ${FALSE_NAN})) (then (local.set $fb (f64.const 0))))
         (if (result i32)
           (i32.and
             (f64.eq (local.get $fa) (local.get $fa))

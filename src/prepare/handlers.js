@@ -193,8 +193,9 @@ export function prep(node) {
       // A bare #name ident outside its class body: the `#field in obj` brand check
       // (or a leaked private name). Reject with intent, not "not in scope".
       if (node[0] === '#') err(`private name '${node}' not supported — jz has no class-based private fields (no #field declarations, no #field in obj brand checks); use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
-      // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
-      if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
+      // Boolean/Number as a value (`.filter(Boolean)`, `.map(Number)`): an arrow applying the conversion.
+      if (node === 'Boolean') { includeForCallableValue(); return prep(['=>', 'x', ['!', ['!', 'x']]]) }
+      if (node === 'Number') { includeForCallableValue(); return prep(['=>', 'x', ['()', 'Number', 'x']]) }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
       if (scopes.length && isDeclared(node)) return resolveScope(node)
       // A user top-level binding (`let Math = …`) shadows a same-named builtin

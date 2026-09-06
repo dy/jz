@@ -195,3 +195,33 @@ test('bool identity: a boolean-or-null result keeps null apart from false and tr
     is(ex.fold(2), 16, `the guarded return survives (O${optimize || 0})`)
   }
 })
+
+// Loose `==` between values the program cannot type statically: a boolean
+// beside a number converts (`true == 1`, `false == 0`), null and undefined
+// are equal to each other alone, a boolean is not a string. The runtime's
+// `__eq` compared the boolean atom's bits with the number, so every such
+// pair was unequal; the static BOOL arm already converted.
+test('bool identity: dynamic loose equality converts a boolean beside a number', () => {
+  const SRC = `const box = (v) => [v][0]
+  export const probe = () => {
+    const t = box(true), f = box(false), one = box(1), zero = box(0), s = box('x'), n = box(null), u = box(undefined)
+    return [t == one, f == zero, t == zero, one == t, f == n, t == s, n == u, t == t, t != one, one != t, f != zero, u == zero].map(x => x ? 1 : 0).join('')
+  }`
+  for (const optimize of LEVELS) {
+    const { probe } = run(SRC, { memory: 256, optimize })
+    is(probe(), '110100110000', `optimize:${optimize}`)
+  }
+})
+
+// `Number` and `Boolean` as values convert (`.map(Number)` of strings and
+// booleans, `.map(Boolean)`); the identity arrow they lowered to served
+// `.filter(Boolean)` alone. (A boolean's identity through a closure result
+// into an array is the carrier family's, pinned elsewhere: truthiness here.)
+test('bool identity: Number and Boolean as values convert', () => {
+  const SRC = `const box = (v) => [v][0]
+  export const probe = () => [[true, false].map(Number).join(','), [box(true), box('2.5'), null].map(Number).join(','), [0, 1, '', 'a', null].filter(Boolean).length, [2, 0, 'a', ''].map(Boolean).map(x => x ? 'T' : 'F').join('')].join('|')`
+  for (const optimize of LEVELS) {
+    const { probe } = run(SRC, { memory: 256, optimize })
+    is(probe(), '1,0|1,2.5,0|2|TFTF', `optimize:${optimize}`)
+  }
+})
