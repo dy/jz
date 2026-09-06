@@ -7,6 +7,7 @@
  * @module compile/analyze/trackers
  */
 import { ctx, setLinkDemand } from '../../ctx.js'
+import { isGlobal } from '../../ir/vars.js'
 import { TYPED_CTOR_CONFLICT } from '../../typed-provenance.js'
 import { typedStorageFactFromName } from '../../typed-context.js'
 import { typedStaticLen } from '../../type.js'
@@ -50,7 +51,11 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
         // Same live-closure style as get/set/del (call-time ctx deref, per the
         // makeValTracker comment above — a captured Map would orphan on the
         // per-function ctx.types reset).
-        if (setLen) {
+        // A module global's length is a program-wide fact (ctx.scope.globalTypedLen,
+        // dropped when any function rewrites the binding): a write here proves
+        // nothing for a read before it, nor for another function's reads.
+        if (setLen && isGlobal(name)) delLen(name)
+        else if (setLen) {
           // A name alias (`let x = a` — the inliner's param-alias splice) carries
           // the source's static length: typed arrays never resize, and typedLen
           // facts are single-def-stable by construction (validate strips written

@@ -90,6 +90,33 @@ test('static storage: a rewritten typed global drops its declaration facts', () 
   is(kind.read(), 7)
 })
 
+// A function's writes to a typed global are no length fact for that function:
+// the read before them (`cur.length`, a cache's growth test) and the reads
+// elsewhere see the header. The reset write's length (0) stood for the
+// binding, so the growth test held every call and the cache grew each time
+// (src/optimize/fn.js's effect cache, 150 KB per function in the kernel).
+test('static storage: a typed global rewritten inside a function keeps no per-function length', () => {
+  const src = `const T = { syms: ['', 'a', 'b'] }
+    let cur = new Int8Array(0), built = null
+    let grows = 0
+    const fit = (n) => {
+      if (built !== T.syms) { cur = new Int8Array(0); built = T.syms }
+      if (n >= cur.length) { grows++; const g = new Int8Array(Math.max(n + 1, 8) * 2).fill(-1); g.set(cur); cur = g }
+      return cur[n]
+    }
+    export let get = (n) => fit(n)
+    export let len = () => cur.length
+    export let count = () => grows`
+  for (const optimize of [0, 1, 2]) {
+    const { exports } = jz(src, { optimize })
+    is(exports.len(), 0)
+    is(exports.get(3), -1); is(exports.get(3), -1); is(exports.get(5), -1)
+    is(exports.count(), 1, `one growth at O${optimize}`)
+    is(exports.len(), 16)
+    is(exports.get(20), -1); is(exports.count(), 2); is(exports.len(), 42)
+  }
+})
+
 test('static storage: an export parameter stored into or indexing a typed array stays numeric', () => {
   if (onKernel()) return
   const src = `const buf = new Int32Array(8)
