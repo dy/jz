@@ -15,12 +15,59 @@ import { withFunctionFields } from '../flow-state.js'
 import {
   REP_EDGE_BOX, representationBindingWriteAction, representationCompoundAssignAction,
 } from '../representation-plan.js'
+import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntOperand, bigintMixReject } from './bigint.js'
 import { emit, rejectAmbiguousBoolIdentity } from './dispatch.js'
+import { isSideEffectFree } from './shared.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
 } from './i32-bounds.js'
 
+
+// A member reference's receiver or key with an effect (a call, a write, an
+// accessor read) is evaluated once, into a temp, before the read and the RHS
+// (JS: the reference, then GetValue, then the RHS, then PutValue through the
+// same reference). The temp carries the expression's facts (value kind,
+// typed constructor, schema), so the read and the write lower as the
+// expression would have. A reference without effects is read twice as it
+// was: the optimizers recognize that shape.
+const readsAccessor = (n) => {
+  if (!Array.isArray(n)) return false
+  if ((n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && ctx.transform.accessorNames?.has(n[2])) return true
+  for (let i = 1; i < n.length; i++) if (readsAccessor(n[i])) return true
+  return false
+}
+const effectful = (n) => Array.isArray(n) && (!isSideEffectFree(n) || readsAccessor(n))
+function stagedReference(name) {
+  if (!Array.isArray(name) || (name[0] !== '.' && name[0] !== '[]')) return null
+  const pre = []
+  const stage = (node, tag, always = false) => {
+    if (!always && !effectful(node)) return node
+    const h = temp(tag)
+    const vt = valTypeOf(node)
+    if (vt) ctx.func.localValTypesOverlay.set(h, vt)
+    const summary = ctx.summary?.at(ctx.func.current)
+    const ctor = vt === VAL.TYPED ? plannedTypedStorageCtor(ctx, node) ?? summary?.typedCtorOfExpr(node) : null
+    if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, ctor)
+    const sid = vt === VAL.OBJECT ? summary?.objectSidOfExpr(node) : null
+    if (sid != null) ctx.func.refinements.set(h, { schemaId: sid })   // the transient channel ctx.schema.idOf reads first
+    pre.push(['local.set', `$${h}`, asF64(emit(node))])
+    return h
+  }
+  // A key with an effect may reassign the receiver's binding: the receiver is
+  // taken first, whatever it is.
+  const keyEffect = name[0] === '[]' && effectful(name[2])
+  const recv = keyEffect && typeof name[1] === 'string' ? stage(name[1], 'ref', true) : stage(name[1], 'ref')
+  const key = name[0] === '[]' ? stage(name[2], 'key') : name[2]
+  return pre.length ? { ref: [name[0], recv, key], pre } : null
+}
+const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]
+/** Lower a compound member write through its staged reference: `build` receives the reference to read and write. */
+function throughReference(name, build) {
+  const staged = stagedReference(name)
+  if (!staged) return build(name)
+  return afterStaging(staged.pre, build(staged.ref))
+}
 
 /** Compound assignment: read → op → write back (via readVar/writeVar).
  *  `arithOp` (one of '+' '-' '*' '/' '%') is the base symbol for BigInt routing.
@@ -108,6 +155,12 @@ export const assignmentOps = {
 
   '=': (name, val) => {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
+    // A member's `++`/`--` (prepare: `m = m ± 1`, `+1`/`-1` an op of its own; a
+    // plan rewrite may have copied the reference): the reference once.
+    if (Array.isArray(name) && (name[0] === '[]' || name[0] === '.') && Array.isArray(val) && (val[0] === '+1' || val[0] === '-1')) {
+      const staged = stagedReference(name)
+      if (staged) return afterStaging(staged.pre, emit(['=', staged.ref, [val[0], staged.ref]]))
+    }
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.raw')  return emitPropertyAssign(name[1], name[2], val, true)   // the accessor probe's plain-store arm
@@ -150,8 +203,8 @@ export const assignmentOps = {
 
   // Compound assignments: read-modify-write with type coercion
   '+=': (name, val) => {
-    // Complex LHS shares binary/write lowering; effectful reference staging is still unresolved.
-    if (typeof name !== 'string') return emit(['=', name, ['+', name, val]])
+    // A member: the same binary and write lowering through the reference, evaluated once.
+    if (typeof name !== 'string') return throughReference(name, ref => emit(['=', ref, ['+', ref, val]]))
     // String concatenation: desugar to name = name + val (+ handler knows about strings).
     // Also desugar when either side has unknown type — the `+` operator picks runtime
     // string/numeric dispatch (`__is_str_key`); compoundAssign would force f64.add and
@@ -171,7 +224,7 @@ export const assignmentOps = {
     ['-=', 'sub'], ['*=', 'mul'], ['/=', 'div'],
   ].map(([op, fn]) => [op, (name, val) => {
     const sym = op.slice(0, -1)
-    if (typeof name !== 'string') return emit(['=', name, [sym, name, val]])
+    if (typeof name !== 'string') return throughReference(name, ref => emit(['=', ref, [sym, ref, val]]))
     return compoundAssign(name, val,
       (a, b) => typed([`f64.${fn}`, a, b], 'f64'),
       fn === 'div' ? null : (a, b) => typed([`i32.${fn}`, a, b], 'i32'),
@@ -179,26 +232,26 @@ export const assignmentOps = {
     )
   }])),
   '%=': (name, val) => {
-    if (typeof name !== 'string') return emit(['=', name, ['%', name, val]])
+    if (typeof name !== 'string') return throughReference(name, ref => emit(['=', ref, ['%', ref, val]]))
     return compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32'), '%')
   },
   // `**` is always f64 (and has its own const-exponent lowering) — full desugar.
-  '**=': (name, val) => emit(['=', name, ['**', name, val]]),
+  '**=': (name, val) => throughReference(name, ref => emit(['=', ref, ['**', ref, val]])),
 
   // Bare bindings normalize before planning. Remaining member assignments
   // share the same binary operation and write path, not a second i64 gate.
   ...Object.fromEntries(['&=', '|=', '^=', '<<=', '>>=', '>>>='].map(op =>
-    [op, (name, val) => emit(['=', name, [op.slice(0, -1), name, val]])]
+    [op, (name, val) => throughReference(name, ref => emit(['=', ref, [op.slice(0, -1), ref, val]]))]
   )),
 
   // Logical compound assignments: a ||= b → a = a || b, a &&= b → a = a && b
   // Logical/nullish compound assignments: read → check → conditionally write
   // For complex LHS (obj.prop, arr[i]): emit as check(read(lhs)) ? write(lhs, val) : read(lhs)
   ...Object.fromEntries(['||=', '&&=', '??='].map(op => [op, (name, val) => {
-    // Complex LHS: effectful references still need single-evaluation lowering.
+    // A member: read, test, and write through the reference, evaluated once.
     if (typeof name !== 'string') {
       const baseOp = op.slice(0, -1) // '||', '&&', '??'
-      return emit([baseOp, name, ['=', name, val]])
+      return throughReference(name, ref => emit([baseOp, ref, ['=', ref, val]]))
     }
     if (isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     const void_ = ctx.func._expect === 'void'
