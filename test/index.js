@@ -56,7 +56,7 @@ const TESTS = [
   'provenance-inference',
   'speculate',
   'unsigned',
-  'sequence-values',
+  'sequence-values', 'bigint-division',
   'perf',
   'timers',
   'invariants',

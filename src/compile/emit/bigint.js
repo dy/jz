@@ -4,11 +4,12 @@
  * @module compile/emit/bigint
  */
 
+import { fold } from 'watr/optimize'
 import { ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
 import { ctx, err, PTR } from '../../ctx.js'
 import {
-  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, ptrTypeEq, readI64, temp, tempI32, tempI64, typed,
+  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, ptrTypeEq, readI64, temp, tempI32, tempI64, throwErrorIR, typed,
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -19,11 +20,8 @@ import {
 import { emit } from './dispatch.js'
 
 
-// Compound-assign arithmetic op → i64 op suffix. Mirrors the binary '+'/'-'/'*'/
-// '/'/'%' BIGINT arms' own wasm ops exactly — no shared table exists for these
-// elsewhere; the i64 suffixes differ from the f64/i32 ones only in '/' and '%'
-// needing the signed variant (div_s/rem_s).
-export const I64_ARITH_OP = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div_s', '%': 'rem_s' }
+// Non-trapping compound arithmetic. Division/remainder use bigIntDivIR.
+export const I64_ARITH_OP = { '+': 'add', '-': 'sub', '*': 'mul' }
 
 // Ring 0.3 (re-landed after the dispatch rework dropped the uncommitted original):
 // JS makes BigInt⊕Number arithmetic a TypeError. Enforce it exactly where the mix
@@ -451,6 +449,34 @@ export function bigIntUnary(node, mkI64, undefF64, box) {
     ['if', ['result', 'f64'], cond,
       ['then', undefF64],
       ['else', boxBigInt(mkI64(bits))]]], 'f64')
+}
+
+// JS division/remainder by zero throw a catchable RangeError, not a wasm trap
+// (which an optimizer may remove when unused). Capture both operands before
+// checking. Division by -1 negates in the signed-i64 lane, including INT64_MIN.
+export function bigIntDivIR(op, av, right) {
+  // Ask the shared folder before demanding runtime: even -1n lowers through
+  // subtraction. Later DCE cannot undo data/schema registration.
+  const bv = fold(right)
+  if (bv[0] === 'i64.const') {
+    const divisor = BigInt.asIntN(64, BigInt(bv[1]))
+    if (divisor !== 0n) return op === '/' && divisor === -1n
+      ? ['i64.sub', ['i64.const', 0], av]
+      : [op === '/' ? 'i64.div_s' : 'i64.rem_s', av, bv]
+  }
+  ctx.runtime.throws = true
+  const a = tempI64('bigDivA'), b = tempI64('bigDivB')
+  const getA = ['local.get', `$${a}`], getB = ['local.get', `$${b}`]
+  return ['block', ['result', 'i64'],
+    ['local.set', `$${a}`, av],
+    ['local.set', `$${b}`, bv],
+    ['if', ['i64.eqz', getB], ['then',
+      ['drop', throwErrorIR('RangeError', 'Division by zero')]]],
+    op === '/'
+      ? ['if', ['result', 'i64'], ['i64.eq', getB, ['i64.const', -1]],
+        ['then', ['i64.sub', ['i64.const', 0], getA]],
+        ['else', ['i64.div_s', getA, getB]]]
+      : ['i64.rem_s', getA, getB]]
 }
 
 // BigInt shifts reverse direction for negative counts. Unlike wasm shifts,

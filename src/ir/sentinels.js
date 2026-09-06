@@ -17,7 +17,7 @@ import { VAL, lookupValType } from '../reps.js'
 import { valTypeOf } from '../kind.js'
 import { atomNanHex, nanPrefixHex, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
-import { temp, tempI32 } from './locals.js'
+import { temp } from './locals.js'
 import { mkPtrIR } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
 import { bigintStrict, bigintEraseErr } from './bigint.js'
@@ -290,58 +290,23 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
   bits => constI32(bits === NULL_NAN),
   (e) => typed(['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', NULL_NAN]], 'i32'))
 
-/** Construct a real TypeError object and throw it through the ordinary
- *  `$__jz_err` channel. Kind-specific member-access/call nullish-
- *  receiver checks are the caller: a REAL schema-tagged Error object, not a
- *  bare numeric code, is what makes `catch (e) { e instanceof TypeError }`
- *  true in-wasm (the tag+schema arm of the Error model's truth table,
- *  .work/archive/todo.md §deletion-sweep §4 — the numeric-code range arm is unsound
- *  and must not be reintroduced) and what lets interop.js's
- *  decodeThrown resolve an UNCAUGHT throw to a real host TypeError
- *  (errorSidClassOf) — no new decode machinery on either side, both paths
- *  are exactly what a user's own `new TypeError()` already exercises.
- *
- *  Builds the object INLINE — same shape as module/core.js's buildErrorObject
- *  (alloc_hdr + one store per ERR_SCHEMA_PROPS slot + mkPtrIR) — rather than
- *  calling `ctx.core.emit['TypeError']` through it: that path interns the
- *  class name via `emit(['str', 'TypeError'])`, which needs module/string.js
- *  loaded, same as this function now needs directly (below).
- *
- *  INVARIANT: `.name`/`.message` must both be set — a caught synthetic
- *  TypeError with either left `undefined` breaks `e.name === 'TypeError'`
- *  and breaks `String(e)` producing a real "TypeError: <msg>". `ctx.module.
- *  include('string')` (module/array.js's own established pattern for forcing
- *  a cross-module dependency from inside another module) makes
- *  `ctx.core.emit['str']` safe to call here even when this is the ONLY
- *  string-shaped thing the whole program does — a program that never reaches
- *  a nullish-receiver check still pays nothing (the include only fires when
- *  this function is actually called during emission).
- *  `kind` selects the message family per real JS's own split: a property/
- *  method READ on a nullish receiver ('read', the default — every call site
- *  but the callee-nullish one below) says "Cannot read properties of
- *  undefined"; calling a nullish value AS a function ('call') says "is not a
- *  function" — V8's own two-message split, minus the specific property/
- *  callee name (would need one distinct interned string per distinct name
- *  used anywhere in the program — real size cost for a message-text nicety,
- *  out of scope; the class + a non-empty, on-topic message is the contract).
- *  `instanceof` needs none of this: class identity lives in the schema id
- *  (aux bits), not in any slot value. */
-export function throwTypeErrorIR(kind = 'read') {
+/** Throw a schema-branded Error using the ordinary constructor and transport.
+ * A numeric code cannot distinguish runtime errors from user-thrown numbers.
+ * Call the registered intrinsic directly: a source binding may shadow its name.
+ * Strings and the constructor's allocation runtime are demand-linked. */
+export function throwErrorIR(className, message) {
   ctx.runtime.throws = true
-  inc('__alloc_hdr')
   ctx.module.include('string')
-  const sid = ctx.schema.errorSid('TypeError')
-  const p = tempI32('nrerrp')
-  const t = temp('nrerr')
-  const nameIR = asF64(ctx.core.emit['str']('TypeError'))
-  const msgIR = asF64(ctx.core.emit['str'](kind === 'call' ? 'is not a function' : 'Cannot read properties of undefined'))
+  const t = temp('err')
+  const value = ctx.core.emit[className](['str', message])
   return typed(['block', ['result', 'f64'],
-    ['local.set', `$${p}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(2)]]],
-    ctx.abi.object.ops.store(['local.get', `$${p}`], 0, msgIR),
-    ctx.abi.object.ops.store(['local.get', `$${p}`], 1, nameIR),
-    ['local.set', `$${t}`, mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${p}`])],
+    ['local.set', `$${t}`, value],
     ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
     ['throw', '$__jz_err', ['local.get', `$${t}`]]], 'f64')
+}
+
+export function throwTypeErrorIR(kind = 'read') {
+  return throwErrorIR('TypeError', kind === 'call' ? 'is not a function' : 'Cannot read properties of undefined')
 }
 
 /** Mask that clears the boolean atom's truth bit, mapping TRUE_NAN→FALSE_NAN.

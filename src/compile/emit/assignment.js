@@ -15,7 +15,7 @@ import { withFunctionFields } from '../flow-state.js'
 import {
   REP_EDGE_BOX, representationBindingWriteAction, representationCompoundAssignAction,
 } from '../representation-plan.js'
-import { I64_ARITH_OP, bigIntOperand, bigintMixReject } from './bigint.js'
+import { I64_ARITH_OP, bigIntDivIR, bigIntOperand, bigintMixReject } from './bigint.js'
 import { emit, rejectAmbiguousBoolIdentity } from './dispatch.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
@@ -41,7 +41,9 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
     // true for it (that predicate only matches `.`/`[]`/`.get()` AST shapes), so
     // readVar(name) stays the plain raw path; only `val` (the RHS, which CAN be a
     // dict/Map maybeUndefined read) needs bigIntOperand's runtime guard.
-    const rawBits = [`i64.${I64_ARITH_OP[arithOp]}`, readI64(name, readVar(name)), bigIntOperand(val)]
+    const left = readI64(name, readVar(name)), right = bigIntOperand(val)
+    const rawBits = arithOp === '/' || arithOp === '%'
+      ? bigIntDivIR(arithOp, left, right) : [`i64.${I64_ARITH_OP[arithOp]}`, left, right]
     // Shape #6 emission companion: this op always computes a FRESH raw i64
     // result (readI64 unboxed the input, i64.<op> ran) — when `name` is
     // plan-materialized BOXED, that raw result must be boxed before it lands

@@ -98,6 +98,10 @@ export function prep(node) {
   // Implicit runtime errors must join the census before any function emits:
   // catch/instanceof/stringification may precede the throwing function.
   // Over-approximate possibility here; actual construction is demand-linked.
+  if (Array.isArray(node) && (node[0] === '/' || node[0] === '%' || node[0] === '/=' || node[0] === '%=')) {
+    setFeature('error', true)
+    ;(ctx.features.errorClasses ??= new Set()).add('RangeError')
+  }
   // A dynamic call or member read may throw for a nullish receiver.
   if (Array.isArray(node) && (node[0] === '.' || node[0] === '()') && censusShapedNode(node[1])) {
     setFeature('error', true)

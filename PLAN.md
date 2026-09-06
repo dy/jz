@@ -134,8 +134,9 @@ this milestone is complete; existing red checkpoints are not a new baseline.
   class devirtualization/factory inlining; read-before-store ordering;
   transport reserve/exact encode with repeated-encode ownership tests; heap
   stage diagnostics; the optimizer tail's tape passes. The consuming decode
-  was dropped. The current reserve still rounds capacity to a power of two;
-  count-first allocation avoids intermediate growth, not the final rounding.
+  was dropped. At this reconciliation checkpoint the reserve still rounded
+  capacity to a power of two. The reviewed integration below replaces that
+  final rounding; the original count-first change avoided intermediate growth.
 - The late link and its duplicate vacuum/block-merge implementations are gone.
   Their useful generic effects are in watr: numeric-local CSE (`b53c92c`), final
   local ordering (`a137283`), and `memory.size` read semantics (`5ff0037`).
@@ -231,12 +232,299 @@ this is not yet a green bootstrap or result-contract milestone.
   `refineSlotIntCensus`, with two summary runs allocating about 2.5 GB before
   emit/link/watr are reached. This review does not recertify recursive memory.
 
+### Bitwise write normalization — 2026-09-05
+
+A bounded follow-up to `03cf346d`; the six hosted failures remain open.
+
+- Prepare now rewrites bare-binding `&=`, `|=`, `^=`, `<<=`, `>>=` and `>>>=`
+  into ordinary binary expressions and assignments **before** summary and
+  representation planning. The separate bitwise compound emitter was deleted;
+  member assignments retain their existing lowering. Arithmetic compounds and
+  updates are not migrated by this slice. No numeric-readiness widening or
+  dependency/source workaround was added. Through the grouping checkpoint below,
+  production source was net **−12 lines**; the shift follow-up is recorded separately.
+- Five checked-BigInt producer/compound/typed-store regressions failed before
+  the repair and pass at O0–O3. Tests include canonical and collision-shaped
+  payloads, Number/BigInt alternation, repeated calls, negative shift counts,
+  retained outputs, and exact producer/RHS counts. Further pins cover reading
+  the old value before an RHS closure writes it, the assignment's result value,
+  mismatch TypeErrors and recovery, and zero-iteration unsigned loops.
+- The unsigned-loop pin exposed a second defect in the retired emitter:
+  `f(1, -1)` for `for (let i=0; i<n; i++) value >>>= i` returned −1 instead
+  of 4294967295. The only WAT change is signed→unsigned i32-to-f64 widening.
+- Pre-review native `unsigned imports slot-hazards`: **164 / 2,249 pass**; WASI:
+  **164 / 2,235 pass**. Opt0 plus `summary-queries objects dyn-keys pointers
+  self-compile-source minimal-output perf-ratchet determinism`: **580 / 3,624
+  pass**. Opt3 plus `objects dyn-keys pointers array-methods summary-queries
+  self-compile-source`: **623 / 3,572 pass**. These are selections, not a full
+  matrix certificate. `npm test` hit its 420-second limit during Float64Array
+  fuzzing; its owned process group was terminated and waited for.
+- `data statements inference`: **562/567 pass**, retaining the four value
+  failures and receiver-HASH expectation. `watr`: **36/38 pass**, retaining
+  memory64 and a newly pinned NaN-payload failure. Both watr failures also occur
+  with `03cf346d` production sources, loaded without changing the checkout.
+- Fresh private `npm run test:self`: still **17/23 pass**, 61 assertions;
+  performance is skipped. A fresh diagnostic compiler emits the same bare-return
+  WAT as native (`f64.const nan:0x7FF8000200000000`), but encodes BigInt box-pointer
+  bits rather than the payload. In the full watr graph, `f64`'s reassigned
+  `value` binding has an ANY summary and a Boolean-capable semantic domain:
+  its NaN-branch join materializes, but binding materialization is vetoed.
+  Normalizing compounds repairs the closed reduced kernel, not this open
+  carrier contract. Do not remove the Boolean guard without a proof covering
+  all producers and consumers; do not assume an ANY input is numeric.
+- Cost probe against `03cf346d`: **124 valid rows**. The existing 80-row numeric
+  corpus and 20 signed-bitwise loop rows are byte-identical. Four unsigned-loop
+  rows change the widening opcode with unchanged sizes (157/157/144/145 B at
+  O0/O1/O2/O3). Twenty previously incorrect checked-BigInt rows grow **121–260 B**
+  for normalization and checking; this is correctness cost, not a speed win.
+  No timing or recursive-memory claim. `dist/jz.wasm` and sibling watr remain
+  unchanged; owned diagnostic builds, probes and logs were removed.
+
+### Grouped-reference review — 2026-09-05
+
+The bounded bitwise repair stays; the wider compound/result contract is **not
+closed**. The earlier selections above predate the additional regression pins.
+
+- `((value)) |= rhs()` bypassed the prepare handler's bare-name check and kept
+  corrupting checked BigInt payloads at every level. Five grouped operator pins
+  failed before the repair. Prepare now shares one pure, iterative `ungroup`
+  helper between write validation, bitwise normalization, and the existing
+  sole-comma-argument handling; it neither clones nor mutates operand ASTs.
+- The sibling validation path also accepted `const value=1; ((value)) += 1`
+  without an error. Every mutating form now checks the ungrouped reference.
+  Tests cover grouped const writes/updates, readonly `Math.sin` aliases, writable
+  shadowing locals, and invalid assignment targets in dead source. Arithmetic
+  compounds still retain their original lowering; this is reference validation,
+  not a new representation fallback.
+- Expanded JS-oracle tests cover old-LHS capture, assignment results, abrupt RHS
+  effects without the final write, zero/empty/OOB/negative-index/null operands,
+  repeated calls and recovery, and receiver→key→RHS order for dot, computed and
+  grouped members. All five bitwise BigInt operations run both bare and grouped,
+  with canonical/collision payloads and retained bytes. Native compile reuse is
+  pinned as empty→empty→A→A→B→error→A, including fresh-process B comparison and
+  execution of both retained instances and retained bytes. This is not hosted
+  reuse certification. The former “throws before writing” test was relabeled:
+  it had observed only the exception and next call, not the local write.
+- **Twelve new arithmetic pins remain red:** ten bare/grouped checked-producer
+  cases for `+=`, `-=`, `*=`, `/=`, `%=`; one mixed Number/BigInt case; one
+  null/absent checked-operand case. They fail with `03cf346d` production too.
+  An attempted extension of early normalization to arithmetic repaired these,
+  but broke existing string accumulation (`1-2` became `1NaN2`) and the strided
+  outer-loop/cursor-versioning optimizations. `strings optimizer perf` was
+  **434/434** on baseline and **431/434** on that candidate. The extension and
+  its helper deletions were completely reverted, not hidden behind a type gate.
+  Those existing string/optimizer checks pass again in the final selections.
+- Two further red pins in `test/data.js` use **ordinary binary/plain writes**:
+  open nullish arithmetic returns null/undefined instead of Number 0/NaN, and
+  caught mixed BigInt arithmetic loses the catch flag/pre-write value. At O0,
+  the latter's Number call yields `[0,1,false]`, not `[1,1,true]`. These also
+  fail on `03cf346d`; the broader open-parameter/catch contracts need repair.
+  They are not claimed fixed by bitwise normalization.
+- Final selection, run on native/opt0/opt3/WASI:
+  `unsigned imports slot-hazards objects dyn-keys pointers array-methods strings
+  summary-queries self-compile-source minimal-output perf-ratchet determinism
+  optimizer perf`. Native **1,183/1,195**, 10,808 assertions; opt0
+  **1,183/1,195**, 10,768; opt3 **1,183/1,195**, 10,812; WASI
+  **1,182/1,194**, 10,311. Each has exactly the twelve arithmetic reds above.
+  `data statements inference watr`: **598/607**, 2,480 assertions, including
+  the two new ordinary-write failures and the seven pre-existing failures.
+  A loader-baseline run of the expanded `unsigned data` pins was **261/295**;
+  it independently reproduced the new red families as well as the repaired
+  grouping/bitwise cases. No main-tree or dependency checkout was substituted.
+- Final `npm test` reached Float64Array pure-map fuzzing, then hit the owned
+  **420-second limit**; its process group was terminated and waited for.
+  Fresh private `npm run test:self` remains **17/23**, 61 assertions, with the
+  same six hosted failures and the performance leg skipped by `&&`. Full matrix,
+  conformance, recursive memory, and timing leadership remain uncertified.
+- Updated cost probe: **168/168 binaries validate** against the same `03cf346d`
+  production baseline. **120 are byte-identical** (80 corpus rows plus 40
+  signed-bitwise loops); eight unsigned-loop rows correct the widening opcode
+  at unchanged sizes **157/157/144/145 B**. Forty checked-BigInt rows grow
+  **121–260 B**, exactly the previous per-operation costs now also covering
+  grouping. All **44 bare/grouped output pairs are byte-identical** after the
+  fix. No timing or heap-saving claim: validations ran concurrently at points.
+  Only the three original production files, tests, and this evidence changed;
+  no optimizer-agent work, sibling watr changes, or generated output is retained.
+  Owned review probes/logs and private diagnostic artifacts were removed.
+
+### Shift contract follow-up — 2026-09-05
+
+The follow-up review found two defects in the shared language-specific shift
+lowering, not in generic optimization. Arithmetic normalization remains reverted.
+
+- `bigIntShiftIR` used wasm's modulo-64 count after reversing negative counts.
+  Thus `1n << 64n` and `1n >> 64n`, observed through BigInt64Array storage,
+  both returned 1n rather than 0n. It also evaluated the RHS before reading the
+  left value: `let value=6n; ((value)) <<= (value=99n,1n)` returned 198 rather
+  than 12; the corresponding right shift returned 49 rather than 3.
+- The helper now captures both numeric operands once in source order. Far left
+  shifts produce the wrapped i64 value zero; far right shifts sign-extend using
+  count 63. Unsigned magnitude comparison handles negation of INT64_MIN without
+  mistaking its overflowing absolute value for a small count. Binary and compound
+  callers share this helper; no new representation authority or watr pass was added.
+- New O0–O3 oracle pins cover zero, ±1, signed i64 extremes, counts 0/±1/±63/±64/±65,
+  and extreme counts in the right-shifting direction (avoiding huge allocations
+  in the JS oracle). Typed storage supplies the same result truncation in JS.
+  Separate binary/compound pins cover old-left-value capture and repeated calls.
+  The existing null/absent error matrix now includes count 64, so a zero result
+  cannot bypass the TypeError/RHS-count checks. Only successful oracle results
+  there are wrapped with `BigInt.asIntN(64, ...)`, matching the documented width.
+- Grouping sibling tests now pin logical short circuits, RHS mutation/throws,
+  local and module consts, zero-argument calls, and nested sole-comma arguments.
+  Native reuse adds an empty compile after B and truncates A immediately before
+  its final `}` before compiling complete A again. Empty output bytes are compared
+  before and after other work. This tests the whole-source compile API, not a
+  streaming decoder or hosted reuse.
+- **Two additional carrier pins remain red**, before and after the shift helper:
+  a captured RHS returning 1n gives `[0,1]` instead of `[12,1]` after a left shift;
+  comma BigInt operands give `[0,12]` rather than `[12,12]`. The latter's old trace
+  was 21, now correctly 12, but its payload remains wrong. These are in `test/data.js`;
+  neither the count guard nor early compound normalization closes the general
+  producer/consumer carrier contract. The twelve arithmetic pins, two earlier
+  ordinary-write pins, and established value/encoding failures remain red too.
+- Final focused command: `node test/index.js unsigned imports slot-hazards
+  statements dyn-keys strings summary-queries self-compile-source minimal-output
+  perf-ratchet determinism optimizer perf`. Native **1,010/1,023**, 11,167 assertions;
+  opt0 **1,010/1,023**, 11,128; opt3 **1,010/1,023**, 11,171; WASI **1,009/1,022**,
+  10,704. All four retain exactly the twelve arithmetic reds and the existing
+  homogeneous BigInt update/read failure. `data watr`: **255/264**, 1,692 assertions.
+  With only `bigint.js` restored through a loader, `data` is **219/226**, 1,576
+  assertions, reproducing both new carrier failures. Before-helper `unsigned` is
+  **60/76**, 3,799 assertions: the two boundary tests, old-left capture and extended
+  count-64 presence test fail in addition to the twelve arithmetic pins. No checkout
+  was substituted.
+- Fresh private `npm run test:self`: **17/23**, 61 assertions, the same six failures;
+  performance is skipped by `&&`. Final `npm test` hit its owned **600-second**
+  limit at the strbuild sanitizer check after 4,068 test headings. It recorded
+  the 23 tracked/pinned failures plus the two stale-disk dict O2/O3 parity failures;
+  it has no completed-suite total and is not a pass. An earlier 420-second attempt
+  stopped in Float64Array fuzzing. Owned process groups were terminated and waited
+  for; no full matrix, recursive, conformance, or timing certificate is claimed.
+- Incremental shift cost comparison keeps all other dirty source fixed and loads
+  `03cf346d`'s `bigint.js` for the before side: **176 valid binaries per side**.
+  The 80 numeric corpus rows (ten categories, seeds 1/2, four levels) remain
+  byte-identical. The 96 shift rows use the typed-storage fixture with both
+  binary/compound writes, both directions, and counts `BigInt(count)`, ±7n, ±64n,
+  0n at four levels. Their size deltas are **−65 to +3 B**, net **−484 B**; 24
+  changed binaries retain their size. All **48 binary/compound pairs are identical**
+  after the fix. Six input pairs per shift row give **576/576** JS-oracle matches,
+  versus 184 mismatches before. This is output-size/correctness evidence, not a
+  speed or memory claim; validations overlapped at points.
+- This follow-up changes one additional production helper; the complete dirty
+  production delta is now **−15 lines**, not an all-in LOC recount. Optimizer-agent
+  work, watr, dependencies and generated output remain untouched. Owned review
+  scratch (27 files, 9,212,654 B) and the sanitizer test's temporary executable
+  (53,512 B) were removed; no unrelated scratch or processes were touched.
+
+### Final reference review and optimizer integration — 2026-09-05
+
+The possibly-throwing member-reference probe exposed duplicate receiver/key
+calls (`12123`, not JS's `123`). Early staging fixed that trace and needed
+expression-closure/default-parameter declaration ownership, but regressed an
+existing `.subarray()` test at O2 (7 instead of 8). **All new production staging
+and scope changes were reverted.** The tests retain 23 member-reference red
+pins and four independent result/catch/absence pins. No arithmetic migration
+or materialization-readiness widening was retained.
+
+The frozen optimizer candidate `44309407` on `03cf346d` was audited, not merged
+wholesale. Integrated B-only key construction (`c8f3589f`), counted transport and
+shared watr cleanup (`5c4b6292`), and repaired diagnostics (`01cb3e5c`). Excluded
+the Porffor/Web Audio/dependency/benchmark refresh. Full review and reproducible
+fact-graph evidence: [.work/optimizer-review/README.md](.work/optimizer-review/README.md).
+
+The review registered two tests omitted from the runner, replaced a lossy fact
+comparison with identity-preserving full graphs (27/27 equal, output hashes
+also equal), fixed fractional/NaN capacities and read indices, made capacity
+changes start a new recording, and rejected stale diagnostic APIs explicitly.
+O0–O3 first/repeated recording and reading allocate nothing in the tested
+recorder; ordinary globals still reset. The full internal checkpoint path
+remains **unproven**; `_clear()` alone is not its certificate.
+
+Combined working-tree validation: focused native **421/421**, opt0 and opt3
+**672/672**, WASI selector **671/671**. Fresh private self is **20/26**, the same
+six failures; performance is skipped. The final matrix command completes its
+native leg with **4104 pass / 52 fail / 1 skip**, 44698 assertions, then skips
+its remaining full legs because native failed. Those 52 are the 50 source pins
+(23 earlier + 27 newly exposed) and two stale-disk dict parity failures; no new
+failing test name appears relative to the pre-integration selections. Test262
+remains **9 language failures / 21 negative accepts / 4 builtin failures**, with
+one unexpected pass in each runner. This is not milestone certification.
+
+Agent memory figures labeled MB were MiB: B's frozen-lineage failure heap is
+3974317824 → 3282419688 bytes, saving **691898136 bytes (659.845 MiB)** before
+the same `emitFuncs` TypeError. ABI publication is not completed emission and
+later-stage memory is not proven. Key characters are not cache heap bytes.
+The reviewer transport/cleanup comparison has 100 valid binaries per side,
+80 identical, 20 smaller by 3–9 bytes (90 bytes net), and 160 scalar JS matches
+per side. No timing or recursive-memory claim is made from these runs.
+
+Next isolated agent task: [checkpoint evidence, then a read-only recursive
+failure reduction](.work/optimizer-review/next-agent.md). Keep the frozen
+candidate intact; a new clean worktree excludes main's eight pending files.
+
+### Sequence/result review — 2026-09-06
+
+The comma repair now forwards **kind, presence, and producer readiness**. The
+initial `valTypeOf(last)` rule also forwarded the legacy receiver-oriented
+BigInt-or-nullish claim, making nullable sequences miscompile. Settled summary
+readers now decide their value kind (without falling back from a deliberate
+unknown answer); the existing scoped reader handles the pre-summary phase.
+Body readiness and active-carrier reads follow the final producer. This does
+not widen ANY/Boolean materialization or add a return-expression reconstruction.
+
+Known BigInt/Boolean `typeof` results evaluate the operand once. Sibling
+comparisons use proven primitive kinds instead of inspecting raw payload bits;
+`typeof ... === 'object'` admits null but excludes boxed BigInts and other
+primitive atoms. No generic optimizer or numeric-demand rule changed.
+
+`test/sequence-values.js`: **43/43**, 5137 assertions; the five-module incremental
+baseline is **15/43**. Its fresh-B child inherits the baseline loader through
+`NODE_OPTIONS`, removing the earlier mixed-compiler comparison. Exact values,
+collision payloads, null/undefined, exceptions, external effects, nested
+sequences, direct/scoped consumers, and retained A/A/B/empty/error outputs are
+covered. Two independent existing defects are retained as red pins in
+`test/data.js`: nullish `BigInt()` inputs accepted as 0n, and local BigInt/Boolean
+values losing their kind beside Numbers in heterogeneous arrays.
+
+Final combined-tree native: **4148 pass / 53 fail / 1 skip**, 49840 assertions.
+Relative to the preceding sequence checkpoint, the only added failing names
+are those two pins. The full matrix still stops after its native failure;
+explicit broad selections give opt0/opt3 **1421/1472**, WASI **1421/1470**.
+Fresh private self remains **20/26**, the same six failures; performance is
+skipped. Test262 remains **9 language failures / 21 negative accepts / 4 builtin
+failures**, with the same unexpected pass in each runner. No expectations changed.
+
+The replayable byte/value probe has **156 valid binaries per side**, 84 identical
+(including all 80 numerical/general control rows), net **3248 bytes smaller**.
+Twelve rows grow: nullable-result ABI +6 bytes, object predicates +22 bytes.
+JS observations improve **308 → 396 / 468**, none regress; the remaining 72
+mismatches are the pinned mixed-array carrier family, not successful evidence.
+No timing, compile-allocation, recursive-memory, or leadership claim is made.
+Details and replay: [.work/optimizer-review/sequence-review.md](.work/optimizer-review/sequence-review.md).
+
+The frozen checkpoint candidate `5763b63f` remains unintegrated, as does the
+original `44309407` candidate's excluded work. The larger isolated agent
+assignment is [campaign-after-checkpoint.md](.work/optimizer-review/campaign-after-checkpoint.md).
+Coordinator ownership of the exported-helper numeric-demand/BigInt defect
+remains separate; no repair or recursive certification is claimed here.
+
+### BigInt division review — 2026-09-06
+
+`x / 0n` and `x % 0n` throw a catchable, branded RangeError built by the
+ordinary constructor (`throwErrorIR`; the reserved numeric code collided with
+a user's `throw 214`). Both operands are captured once, `-1n` negates, a
+constant nonzero divisor costs nothing. Native **4171 / 53 / 1**, the 53
+failing names unchanged; opt0/opt3/WASI selections within that set. Details
+and bytes: [.work/optimizer-review/division-review.md](.work/optimizer-review/division-review.md).
+The kernel's six hosted failures are repaired in the following commits.
+
 ### Next ownership and order
 
 1. Integration/result-contract session owns summary, representation, emitter,
    and combined-tree certification. Repair the remaining fresh-hosted failures
-   and the five value defects through producer/callable contracts;
-   keep the private fresh gate. Do not add source-spelling exceptions.
+   and the value defects above through producer/callable contracts, including
+   the newly pinned arithmetic, open-parameter/catch, and composite BigInt operand
+   families. Keep the private fresh gate. Do not add source-spelling exceptions.
 2. Optimizer session owns watr, transport allocation evidence, and coordinated
    dependency release. Supply committed shared changes and an explicit handoff;
    keep shared summary/representation edits serial. Agree on the effect/opcode

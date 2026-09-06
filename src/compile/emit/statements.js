@@ -13,7 +13,7 @@ import { VAL } from '../../reps.js'
 import { staticPropertyKey } from '../../static.js'
 import { isTerminator } from '../../type.js'
 import { withFinallyStack, withTryState } from '../flow-state.js'
-import { representationReturnAction } from '../representation-plan.js'
+import { representationProgramHasBigint, representationReturnAction } from '../representation-plan.js'
 import { emit, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
 import { storedValue } from './method-dispatch.js'
 
@@ -22,6 +22,9 @@ function canThrow(body, seen = new Set()) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'throw') return true
+  // BigInt division/remainder can throw even without a call in this subtree.
+  // A program proven to have no BigInts keeps its Number-only fast path.
+  if ((op === '/' || op === '%' || op === '/=' || op === '%=') && representationProgramHasBigint(ctx)) return true
   // Unresolved ordinary `.length` now performs a real property Get, including
   // the nullish TypeError. Keep a surrounding source try/catch live even when
   // there is no explicit `throw` node in the AST. Optional chaining does not

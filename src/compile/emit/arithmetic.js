@@ -13,7 +13,7 @@ import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
 import { exprType } from '../../type.js'
 import {
-  bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, computedBoxOf, hasBigintDomain,
+  bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
 import { emit, emitBoolStr, tryConcatChain } from './dispatch.js'
 import {
@@ -482,12 +482,12 @@ export const arithmeticOps = {
     if (bigIntDomainsCanMix(a, b, true)) {
       bigintMixReject('/', a, b)
       return bigIntJointDispatch(a, b,
-        (ia, ib) => ['i64.div_s', ia, ib],
+        (ia, ib) => bigIntDivIR('/', ia, ib),
         (fa, fb) => typed(['f64.div', fa, fb], 'f64'), computedBoxOf(self))
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('/', a, b)
-      return fromI64(['i64.div_s', bigIntOperand(a), bigIntOperand(b)])
+      return fromI64(bigIntDivIR('/', bigIntOperand(a), bigIntOperand(b)))
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a / b, b => b !== 0)
     if (_f) return _f
@@ -512,12 +512,12 @@ export const arithmeticOps = {
     if (bigIntDomainsCanMix(a, b, true)) {
       bigintMixReject('%', a, b)
       return bigIntJointDispatch(a, b,
-        (ia, ib) => ['i64.rem_s', ia, ib],
+        (ia, ib) => bigIntDivIR('%', ia, ib),
         (fa, fb) => f64rem(fa, fb), computedBoxOf(self))
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('%', a, b)
-      return fromI64(['i64.rem_s', bigIntOperand(a), bigIntOperand(b)])
+      return fromI64(bigIntDivIR('%', bigIntOperand(a), bigIntOperand(b)))
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
     if (_f) return _f
