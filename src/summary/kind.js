@@ -82,9 +82,11 @@ const numericModes = k => {
   if (nonBig) { modes |= 1; if (nonBig & COERCION_UNKNOWN) modes |= 2 }
   return modes
 }
-/** ToNumeric: only same-domain operands complete; unsigned shift excludes BigInt. */
-export const arith = (op, ks) => {
-  let number = true, bigint = op !== '>>>' && op !== '>>>='
-  for (const k of ks) { const modes = numericModes(k); if (!modes) return K.NONE; number = number && !!(modes & 1); bigint = bigint && !!(modes & 2) }
+/** ToNumeric of one operand (`b` undefined) or two: only same-domain operands complete; unsigned shift excludes BigInt. */
+export const arith = (op, a, b) => {
+  let modes = numericModes(a)
+  if (b !== undefined) { const mb = numericModes(b); modes = mb ? modes & mb : 0 }
+  if (!modes) return K.NONE
+  const number = (modes & 1) !== 0, bigint = (modes & 2) !== 0 && op !== '>>>' && op !== '>>>='
   return number ? (bigint ? join(NUMBER, BIGINT) : NUMBER) : bigint ? BIGINT : K.NONE
 }

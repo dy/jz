@@ -20,7 +20,9 @@ export function summaryQueries(facts) {
   const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP) && paramOf(k) !== UNKNOWN
   const canon = k => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
   const elemOf = k => celled(k) ? elems[cell(paramOf(k))] : ANY
-  const slots = sid => fields.get(sid) ?? schemas[sid].map(() => K.NONE)
+  const NO_SLOTS = []
+  const slots = sid => fields.get(sid) ?? NO_SLOTS   // a schema never stored to has every slot at NONE
+  const slotKind = (sid, i) => fields.get(sid)?.[i] ?? K.NONE
   const membersOf = id => id >= (1 << 15) ? closureSets[id - (1 << 15)] : [id]
   const closureResult = id => {
     let result = K.NONE
@@ -31,6 +33,10 @@ export function summaryQueries(facts) {
   const anyPropOf = arr => { const c = cell(paramOf(arr)); let k = cellWild.get(c) ?? K.NONE; for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
   const entryOf = (arr, ik) => { const t = tagOf(ik); return paramOf(arr) === UNKNOWN ? ANY : t === K.NUMBER ? elemOf(arr) : t === K.STRING ? anyPropOf(arr) : t === K.NONE ? K.NONE : join(elemOf(arr), anyPropOf(arr)) }
   const classMember = (recv, name) => tagOf(recv) === K.OBJECT && paramOf(recv) !== UNKNOWN ? methods.get(paramOf(recv))?.get(name) ?? null : null
+  // A property's accessor and binder names, built once per property.
+  const getterNames = new Map(), binderNames = new Map()
+  const named = (m, name, suffix) => { let s = m.get(name); if (s === undefined) m.set(name, s = name + suffix); return s }
+  const getterOf = prop => named(getterNames, prop, ACCESSOR_GET), binderOf = fn => named(binderNames, fn, CLASS_T + 'bind')
   const memberMayBeOwn = prop => dynamicProps.has(prop)
   const builtinReceiverMayHaveOwn = (t, prop) => (t === K.ARRAY || t === K.TYPED || t === K.MAP || t === K.SET || t === K.REGEX || t === K.CLOSURE) && ((builtinOwnProps.get(prop) ?? 0) & (kind(t) & ~UNKNOWN)) !== 0
   const typedElemKind = recv => paramOf(recv) === UNKNOWN ? join(NUMBER, BIGINT) : paramOf(recv) & TYPED_ELEM_BIGINT_FLAG ? BIGINT : NUMBER
@@ -49,10 +55,12 @@ export function summaryQueries(facts) {
   const literalKind = v => v == null ? NULLISH : typeof v === 'number' ? NUMBER : typeof v === 'string' ? STRING : typeof v === 'boolean' ? BOOL : typeof v === 'bigint' ? BIGINT : ANY
   const args = a => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   const builtinResult = name => {
-    const m = TYPED_CTOR.exec(name)
-    if (m) { const aux = encodeTypedElemAux(m[1], !!m[2]); return kind(K.TYPED, aux == null ? UNKNOWN : aux) }
-    if (name === 'new.RegExp') return kind(K.REGEX)
-    if (name === 'new.ArrayBuffer' || name === 'new.SharedArrayBuffer') return kind(K.BUFFER)
+    if (name.startsWith('new.')) {
+      const m = TYPED_CTOR.exec(name)
+      if (m) { const aux = encodeTypedElemAux(m[1], !!m[2]); return kind(K.TYPED, aux == null ? UNKNOWN : aux) }
+      if (name === 'new.RegExp') return kind(K.REGEX)
+      if (name === 'new.ArrayBuffer' || name === 'new.SharedArrayBuffer') return kind(K.BUFFER)
+    }
     if (name === 'Array' || name === '__keys_ro') return kind(K.ARRAY)
     if (name === '__iter_arr') return K.NONE
     const v = builtinCalleeVal(name)
@@ -65,14 +73,29 @@ export function summaryQueries(facts) {
   const view = scope => {
     let cached = views.get(scope)
     if (cached) return cached
+    // A name's key in this scope, resolved once: the demand pass and the
+    // emitters ask at every read.
+    const keys = new Map()   // name → key, or null for a name from outside the program
     const keyOf = name => {
+      let key = keys.get(name)
+      if (key !== undefined) return key
+      key = null
       for (let s = scope; ; s = parent.get(s) ?? '') {
-        if (declared.get(s)?.has(name)) return keyIn(s, name)
-        if (s === '') return null
+        if (declared.get(s)?.has(name)) { key = keyIn(s, name); break }
+        if (s === '') break
       }
+      keys.set(name, key)
+      return key
     }
     // Unscoped analysis joins a binding's source and specialized variants.
-    const keyOfAnywhere = name => { const key = keyOf(name); if (key !== null || scope !== '') return key; const ns = nameScopes.get(name); return ns ? ns.map(s => keyIn(s, name)) : null }
+    const anywhere = new Map()   // name → its keys across scopes, listed once
+    const keyOfAnywhere = name => {
+      const key = keyOf(name)
+      if (key !== null || scope !== '') return key
+      let keys = anywhere.get(name)
+      if (keys === undefined) { const ns = nameScopes.get(name); anywhere.set(name, keys = ns ? ns.map(s => keyIn(s, name)) : null) }
+      return keys
+    }
     const readKind = name => { const key = keyOfAnywhere(name); if (key === null) return K.NONE; if (typeof key === 'string') return canon(kinds.get(key) ?? K.NONE); let k = K.NONE; for (const kk of key) k = join(k, canon(kinds.get(kk) ?? K.NONE)); return k }
     const kindOfExpr = n => {
       if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE) : ANY) : readKind(n) }
@@ -104,18 +127,18 @@ export function summaryQueries(facts) {
       }
       if (op === '()' && n.length === 2) return kindOfExpr(n[1])
       if (op === '.' || op === '?.') {
-        const r = kindOfExpr(n[1]), t = tagOf(r), done = result => optionalResult(op, r, result)
+        const r = kindOfExpr(n[1]), t = tagOf(r)
         if (op === '?.' && tagOf(core(r)) === K.NONE) return NULLISH
-        if (typeof n[2] !== 'string') return done(ANY)
+        if (typeof n[2] !== 'string') return optionalResult(op, r, ANY)
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
           const i = schemas[paramOf(r)].indexOf(n[2])
-          if (i >= 0) return done(slots(paramOf(r))[i])
-          const getter = classMember(r, n[2] + ACCESSOR_GET), fn = getter ?? (classMember(r, n[2]) ? classMember(r, n[2]) + CLASS_T + 'bind' : null)
-          return done(fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH)
+          if (i >= 0) return optionalResult(op, r, slotKind(paramOf(r), i))
+          const getter = classMember(r, getterOf(n[2])), fn = getter ?? (classMember(r, n[2]) ? binderOf(classMember(r, n[2])) : null)
+          return optionalResult(op, r, fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH)
         }
-        if (isCount(n[2], t)) return done(NUMBER)
-        if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return done(orAbsent(propOf(r, n[2])))
-        return done(n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY)
+        if (isCount(n[2], t)) return optionalResult(op, r, NUMBER)
+        if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return optionalResult(op, r, orAbsent(propOf(r, n[2])))
+        return optionalResult(op, r, n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY)
       }
       if (op === '[]') {
         const r = kindOfExpr(n[1]), t = tagOf(r)
@@ -124,7 +147,7 @@ export function summaryQueries(facts) {
         return t === K.TYPED ? orAbsent(typedElemKind(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
-        if (TYPED_CTOR.test(n[1])) return builtinResult(n[1])
+        if (n[1].startsWith('new.') && TYPED_CTOR.test(n[1])) return builtinResult(n[1])
         const key = keyOf(n[1])
         if (key === null && funcNames.has(n[1])) return results.get(n[1]) ?? ANY
         const k = key === null ? undefined : kinds.get(key)
@@ -142,7 +165,7 @@ export function summaryQueries(facts) {
         if (fn) result = !memberMayBeOwn(name) ? results.get(fn) ?? ANY : ANY
         else if (builtinReceiverMayHaveOwn(t, name)) result = ANY
         else if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
-          const i = schemas[paramOf(r)].indexOf(name), fk = i < 0 ? K.NONE : slots(paramOf(r))[i]
+          const i = schemas[paramOf(r)].indexOf(name), fk = i < 0 ? K.NONE : slotKind(paramOf(r), i)
           result = tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN ? closureResult(paramOf(fk)) : tagOf(fk) === K.NONE ? K.NONE : ANY
         }
         else if (t === K.MAP && name === 'get') result = orAbsent(elemOf(r))
@@ -165,8 +188,8 @@ export function summaryQueries(facts) {
       if (op === '&&' || op === '||' || op === '??') return join(kindOfExpr(n[1]), kindOfExpr(n[2]))
       if (op === ',') return kindOfExpr(n[n.length - 1])
       if (op === '+') return plus(kindOfExpr(n[1]), kindOfExpr(n[2]))
-      if (NUMBER_OPS.has(op) || op === 'u-') { const ks = []; for (let i = 1; i < n.length; i++) ks.push(kindOfExpr(n[i])); return arith(op, ks) }
-      if (op === '+1' || op === '-1') return arith(op, [kindOfExpr(n[1])])
+      if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? kindOfExpr(n[1]) : arith(op, kindOfExpr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, kindOfExpr(n[i])); return k }
+      if (op === '+1' || op === '-1') return arith(op, kindOfExpr(n[1]))
       if (op === 'u+') return NUMBER
       if (BOOL_OPS.has(op)) return BOOL
       if (op === 'typeof') return STRING
