@@ -177,6 +177,10 @@ export function representationJoinArmAction(ctx, join, arm) {
  *  so join and arm collapse to the same node. */
 export function representationComputedExprAction(ctx, node) {
   const body = activeBody(ctx, 'representationComputedExprAction')
+  // A compound assignment desugared at emission (`n += v` as `n = n + v`)
+  // rebuilds its node; the binding it writes names the target.
+  const compound = ctx.plans.compoundOf.get(node)
+  if (compound != null) return representationCompoundAssignAction(ctx, compound)
   const target = activeRep(ctx, node, true)
   // Some emitter wrappers rebuild an equivalent arithmetic node and therefore
   // cannot share the planner's WeakSet identity. The retained nodeFacts entry

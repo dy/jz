@@ -1065,6 +1065,7 @@ export function reset(proto, globals, bridge) {
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node
     loweringLinks: new WeakMap(), // src/ir.js, keyed on the WAT loop-block node — { plan, lowering }
+    compoundOf: new WeakMap(),    // src/compile/emit/assignment.js: a compound's rebuilt binary node → the binding it writes
   }
 
   // Fact-store slices (see createFactStore's own doc above) are built here,

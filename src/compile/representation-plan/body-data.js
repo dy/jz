@@ -857,9 +857,12 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         const target = targetNames.get(name) ?? ANY_BIGINT
         if (list.every(def => {
           if (def[DEF_RHS] == null) return true
-          if (def[DEF_OWNER]?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def[DEF_OWNER]?.[0])) return false
+          // The same def shapes the first pass admits: a compound update
+          // (`v += 1n`) reads the current carrier and writes a fresh raw result.
+          const ownerOp = def[DEF_OWNER]?.[0]
+          if (ownerOp !== '=' && !CONDITIONAL_ASSIGN_OPS.has(ownerOp) && !NUMERIC_VALUE_OPS.has(ownerOp)) return false
           const source = emittedCandidate(def[DEF_RHS])
-          return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready)
+          return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready || isStorageReadProducer(def[DEF_RHS]))
         })) {
           materializedNames.add(name)
           namesChanged = true

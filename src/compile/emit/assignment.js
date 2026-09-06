@@ -155,11 +155,16 @@ export const assignmentOps = {
     // String concatenation: desugar to name = name + val (+ handler knows about strings).
     // Also desugar when either side has unknown type — the `+` operator picks runtime
     // string/numeric dispatch (`__is_str_key`); compoundAssign would force f64.add and
-    // silently corrupt string concatenations through unknown-typed values.
+    // silently corrupt string concatenations through unknown-typed values. The rebuilt
+    // node keeps the plan's compound identity (ctx.plans.compoundOf) so a tagged
+    // binding's BigInt arm is boxed on the way back.
     const vt = typeof name === 'string' ? valTypeOf(name) : null
     const vtB = valTypeOf(val)
-    if (vt === VAL.STRING || vtB === VAL.STRING) return emit(['=', name, ['+', name, val]])
-    if ((vt == null || vtB == null) && ctx.core.stdlib['__str_concat']) return emit(['=', name, ['+', name, val]])
+    if (vt === VAL.STRING || vtB === VAL.STRING || ((vt == null || vtB == null) && ctx.core.stdlib['__str_concat'])) {
+      const sum = ['+', name, val]
+      ctx.plans.compoundOf.set(sum, name)
+      return emit(['=', name, sum])
+    }
     return compoundAssign(name, val, (a, b) => typed(['f64.add', a, b], 'f64'), (a, b) => typed(['i32.add', a, b], 'i32'), '+')
   },
   ...Object.fromEntries([
