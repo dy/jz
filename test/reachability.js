@@ -53,55 +53,55 @@ export const read = () => base + seed`,
     src: T + `const even = n => { t += 'e'; return n === 0 ? true : odd(n - 1) }
 const odd = n => { t += 'o'; return n === 0 ? false : even(n - 1) }
 const fact = n => { t += 'f'; return n < 2 ? 1 : n * fact(n - 1) }
-export const run = () => (even(4) ? 100 : 0) + fact(4)`,
-    roots: ['run', 'trace'], reachable: ['even', 'odd', 'fact', 'run', 'trace'], dead: [],
-    run: ex => [ex.run()], results: [124], calls: 'eoeoeffff',
+export const go = () => (even(4) ? 100 : 0) + fact(4)`,
+    roots: ['go', 'trace'], reachable: ['even', 'odd', 'fact', 'go', 'trace'], dead: [],
+    run: ex => [ex.go()], results: [124], calls: 'eoeoeffff',
   },
   'closures returned, stored in an object and an array': {
     src: T + `const mk = k => { const c = x => { t += 'c' + k + ';'; return x + k }; return c }
 const box = { fn: mk(10) }
 const arr = [mk(1), mk(2)]
-export const run = () => box.fn(1) + arr[1](1) + arr[0](1)`,
-    roots: ['mk', 'run', 'trace'], reachable: ['mk', 'run', 'trace'], dead: [],
-    run: ex => [ex.run()], results: [16], calls: 'c10;c2;c1;',
+export const go = () => box.fn(1) + arr[1](1) + arr[0](1)`,
+    roots: ['mk', 'go', 'trace'], reachable: ['mk', 'go', 'trace'], dead: [],
+    run: ex => [ex.go()], results: [16], calls: 'c10;c2;c1;',
   },
   'higher-order callbacks, one callee reached only from a closure': {
     src: T + `const each = (xs, fn) => { let s = 0; for (let i = 0; i < xs.length; i++) s += fn(xs[i]); return s }
 const inc = x => { t += 'i'; return x + 1 }
 const dbl = x => { t += 'd'; return x * 2 }
-export const run = () => each([1, 2, 3], inc) + [1, 2].map(x => dbl(x)).length`,
-    roots: ['run', 'trace', 'inc'], reachable: ['each', 'inc', 'dbl', 'run', 'trace'], dead: [],
-    run: ex => [ex.run()], results: [11], calls: 'iiidd',
+export const go = () => each([1, 2, 3], inc) + [1, 2].map(x => dbl(x)).length`,
+    roots: ['go', 'trace', 'inc'], reachable: ['each', 'inc', 'dbl', 'go', 'trace'], dead: [],
+    run: ex => [ex.go()], results: [11], calls: 'iiidd',
   },
   'class and method dispatch': {
     src: T + `class A { constructor(v) { this.v = v } get2() { t += 'A;'; return this.v * 2 } }
 class B extends A { get2() { t += 'B;'; return super.get2() + 1 } }
 const pick = i => i ? new B(3) : new A(1)
-export const run = () => pick(1).get2() + pick(0).get2()`,
-    roots: ['run', 'trace'], reachable: ['pick', 'run', 'trace'], dead: [],
-    run: ex => [ex.run()], results: [9], calls: 'B;A;A;',
+export const go = () => pick(1).get2() + pick(0).get2()`,
+    roots: ['go', 'trace'], reachable: ['pick', 'go', 'trace'], dead: [],
+    run: ex => [ex.go()], results: [9], calls: 'B;A;A;',
   },
   'a named function expression\'s own name': {
     src: T + `const f = function g(n) { t += 'g'; return n > 0 ? g(n - 1) + 1 : 0 }
-export const run = () => f(3)`,
-    roots: ['run', 'trace'], reachable: ['run', 'trace'], dead: [],
-    run: ex => [ex.run()], results: [3], calls: 'gggg',
+export const go = () => f(3)`,
+    roots: ['go', 'trace'], reachable: ['go', 'trace'], dead: [],
+    run: ex => [ex.go()], results: [3], calls: 'gggg',
   },
   'address-taken calls through a table and a conditional': {
     src: T + `const a = x => { t += 'a'; return x }
 const b = x => { t += 'b'; return -x }
 const table = [a, b]
-export const run = i => table[i](5) + (i ? a : b)(1)`,
-    roots: ['a', 'b', 'run', 'trace'], reachable: ['a', 'b', 'run', 'trace'], dead: [],
-    run: ex => [ex.run(1), ex.run(0)], results: [-4, 4], calls: 'baab',
+export const go = i => table[i](5) + (i ? a : b)(1)`,
+    roots: ['a', 'b', 'go', 'trace'], reachable: ['a', 'b', 'go', 'trace'], dead: [],
+    run: ex => [ex.go(1), ex.go(0)], results: [-4, 4], calls: 'baab',
   },
   'a genuinely dead callable beside a live one': {
     src: T + `const dead = x => { t += 'DEAD'; return x }
 const live = x => { t += 'l'; return x + 1 }
-export const run = () => live(1)`,
-    without: T + `const live = x => { t += 'l'; return x + 1 }\nexport const run = () => live(1)`,
-    roots: ['run', 'trace'], reachable: ['live', 'run', 'trace'], dead: ['dead'],
-    run: ex => [ex.run()], results: [2], calls: 'l',
+export const go = () => live(1)`,
+    without: T + `const live = x => { t += 'l'; return x + 1 }\nexport const go = () => live(1)`,
+    roots: ['go', 'trace'], reachable: ['live', 'go', 'trace'], dead: ['dead'],
+    run: ex => [ex.go()], results: [2], calls: 'l',
   },
 }
 
@@ -163,7 +163,7 @@ test('reachability: an empty program, a reference the source cannot satisfy, and
   const empty = instantiate(compile('', { optimize: 0 }))
   is(Object.keys(empty.exports).filter(k => !k.startsWith('_') && k !== 'memory'), [], 'nothing exported')
   is(ctx.plans.programIndex.graphFunctionCount, 0, 'no graph function')
-  throws(() => compile(T + 'export const run = () => missing(1)', { optimize: 0 }), /missing/, 'a call to a name the source never defines rejects at compile')
+  throws(() => compile(T + 'export const go = () => missing(1)', { optimize: 0 }), /missing/, 'a call to a name the source never defines rejects at compile')
   const first = Object.values(PROGRAMS).map(p => [compile(p.src, { optimize: 2, modules: p.modules }), behavior(p, 2)])
   const again = Object.values(PROGRAMS).map(p => [compile(p.src, { optimize: 2, modules: p.modules }), behavior(p, 2)])
   ok(first.every(([bytes, b], i) => bytes.length === again[i][0].length && bytes.every((x, j) => x === again[i][0][j]) && JSON.stringify(b) === JSON.stringify(again[i][1])),
