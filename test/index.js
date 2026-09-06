@@ -49,6 +49,8 @@ const TESTS = [
   'summary-queries',
   'summary-keys',
   'bigint-boundary',
+  'reachability',
+  'reachability-mutants',
   'interval-proof',
   'passes',
   'dyn-closure-tables',

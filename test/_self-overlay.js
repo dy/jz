@@ -6,12 +6,14 @@
 // edit that is not a pair of strings rejects the whole overlay, so an edit can
 // never land somewhere other than where its author looked. The graph passed in
 // is not modified. test/_self-overlay-build.mjs applies this to the self
-// graph; test/self-build.js drives it on a synthetic graph.
+// graph; test/self-build.js drives it on a synthetic graph; test/_mutant.mjs
+// applies `edit` to a module as Node loads it.
 
-const matches = (path, suffix) => path === suffix || path.endsWith('/' + suffix)
+export const matches = (path, suffix) => path === suffix || path.endsWith('/' + suffix)
 const occurrences = (src, find) => src.split(find).length - 1
 
-const edit = (suffix, src, edits) => {
+/** One module's source with its edits applied, each find occurring exactly once. */
+export const edit = (suffix, src, edits) => {
   if (!Array.isArray(edits)) throw new Error(`overlay: ${suffix}: edits must be a list of [find, replace] pairs`)
   for (const pair of edits) {
     if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || typeof pair[1] !== 'string' || !pair[0])
