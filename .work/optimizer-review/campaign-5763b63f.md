@@ -11,6 +11,7 @@ watr (`$S/watr-wt`, on `5ff0037`):
 | `747d7ef` | Keep propagated values in evaluation order past a nested call |
 | `b7a4647` | Keep a trapping value before the stores, global writes and calls it was defined before |
 | `52ac0d0` | Exercise the local propagation family as a differential (`test/propagate-locals.js`) |
+| `7c391ea` | Let a sunk value cross a sibling that only writes other locals |
 
 jz (`$S/camp-wt`, on `5763b63f`):
 
@@ -24,6 +25,8 @@ jz (`$S/camp-wt`, on `5763b63f`):
 | `87925b99` | C | Replace the two local passes with watr's propagation family at the same point |
 | `49a4db0e` | D | Turn the kernel gates into one runner with a manifest |
 | `71ce1f31` | E | Pin the wrong-code families, native and hosted |
+| `db521f7c` | — | Record the campaign |
+| `6ee56ab4` | C | Revert the local-pass consolidation into its own candidate (`87925b99` stays the tip of branch `campaign-locals-jz`) |
 
 Files owned: `test/_self-build.js`, `test/_self-overlay.js`, `test/_self-overlay-build.mjs`, `test/self-build.js`, `test/self-checkpoint.js`, `test/bigint-boundary.js`, `test/reachability.js`, `test/reachability-mutants.js`, `test/_mutations.js`, `test/_mutant.mjs`, `test/_mutant-hooks.mjs`, `test/kernel-gate.js`, `test/_families.js`, `test/self-families.js`, `scripts/kernel-gate.mjs`, `scripts/kernel-gate-corpus.js`, `scripts/recursive-self-check.mjs`, `.github/workflows/kernel-gate.yml`, `src/optimize/driver.js` (the scheduling point), `src/optimize/locals.js` (deleted), `src/passes.js` (one flag), `scripts/build-profile.mjs` (one export), the registrations in `test/index.js` and `package.json`, this record. No summary, representation, emitter, ProgramIndex or runtime file was changed.
 
@@ -48,13 +51,15 @@ Ablations on `5763b63f` over the bench corpus (58 cases, `$S/scratchpad/locals-a
 
 Two watr defects, proven at `5ff0037` by WAT differentials and fixed in their own commits: a load defined before a call nested in a later statement (`(local.set $v (call_indirect …))`, or a call beside the use) was substituted after the call (`m = load 0; v = call_indirect(stores); v + m + load 0` gave 12 for 11); a pure trapping value (div/rem/trunc) was moved past a store or a global write by forwardPropagate and sinkSets (`q = 100 / d; store 0 7; q + load 0` with `d = 0` stored 7 and then trapped). `test/propagate-locals.js` runs the listed shapes before/after/through the pipeline with results, traps, host log and memory compared and no growth. watr: 349 pass / 2 skip; spec suite 268 pass / 20 skip (the main checkout's `test/official` linked for the run, link removed). `src/optimize.js` +52/−25.
 
-jz `87925b99`: `locals.js` (266 lines), `localRefTallies`, the re-export and both flags deleted; one flag `propagateLocals`; the driver invokes watr's `propagate` per function after the vectorizer and before devirt only when watr's fixpoint is off (`fast`, `watr: false`), never on a v128 function. Bytes vs base: size +62 B (+0.05%, 23/58 identical), speed −70 B (−0.04%, 25/58 identical), fast −5,082 B (−2.66%); the watr fixes' share +18/+16 B. Timing (load 13–35, alternating, `$S/scratchpad/locals-time2.mjs`): vm 1.01x, dispatch 1.00x, shapes 1.00x, synth 0.97x, json 0.99x, lz 1.00x, checksums equal. Gates: optimizer 223/223; passes, bool-identity, closures, types, simd, determinism, differential, minimal-output, watr 714/715 (`watr bug: memory64 limits` red at the base too); fresh kernel 14,528,346 B (−26,086 B); self gate 20/26 with the base's six reds. Four `promoteIntArrayLiterals` pins read the storage shape instead of a local the family forwards. Maintained lines: jz −269 net in `src`; watr +27 net in `src`, +242 test lines.
+jz `87925b99` (branch `campaign-locals-jz`, reverted on the campaign branch by `6ee56ab4`): `locals.js` (266 lines), `localRefTallies`, the re-export and both flags deleted; one flag `propagateLocals`; the driver invokes watr's `propagate` per function after the vectorizer and before devirt only when watr's fixpoint is off (`fast`, `watr: false`), never on a v128 function. Bytes vs base: size +62 B (+0.05%, 23/58 identical), speed −70 B (−0.04%, 25/58 identical), fast −5,082 B (−2.66%); the watr fixes' share +18/+16 B. Timing (load 13–35, alternating, `$S/scratchpad/locals-time2.mjs`): vm 1.01x, dispatch 1.00x, shapes 1.00x, synth 0.97x, json 0.99x, lz 1.00x, checksums equal. Optimizer 223/223; the broad selection 714/715; the fresh kernel 14,528,346 B with the self gate's six reds.
+
+**Not established, the blocker:** with watr's fixpoint on, the loop-body op ratchet (`test/perf-ratchet.js`, level 2, 40 seeds per category) grows without the pre-watr `foldSetToTee`: buf +10, nest +550, slice +1,992, ring +40, condref +994 of 14,394 / 22,202 / 68,192 / 50,120 / 84,854 (the base and the base with the fixed watr both 10/10; `propagateSingleUse` alone off costs nothing; both off costs the same as `foldSetToTee` off), and two shape pins move (`interval-proof`: the affine-step access's checked temp; `feature-gating`: the bit-eq probe), with the base watr as well. Running the whole family early with the fixpoint on does not recover them and hurts vm. The missed shapes are sinks whose landing statement has a local-write sibling before the first read, and sinks in loop-carried hash steps; watr `7c391ea` covers the first (buf recovered; nest +495, slice +1,832, ring +40, condref +876 remain). With the two passes restored and that watr consumed: ratchet 10/10, interval-proof, feature-gating, optimizer, passes 272/272, fresh self gate 20/26 with the same six reds. The consolidation stays a separate candidate until the remaining shapes are general in watr; maintained lines then: jz −269 net in `src`, watr +75 net in `src` and +260 test lines.
 
 ## D. Kernel gates
 
 `scripts/kernel-gate.mjs`: one runner, one manifest (jz head, dirty files and diff hash, self graph hash and module count, installed watr version and source hash, build profile, kernel bytes and hash, node, load), gates in their own processes under a timeout, kernel by `--kernel|--build|--dist` and never dist by default. Gates: functional (corpus by family at O1 and O2, fresh instance per case, validity, authored results, byte identity with native; compiler subgraphs), sequences, recursive, memory (judged only against a baseline manifest), speed (only under load 2, against a baseline kernel). `test/kernel-gate.js` 4/4 (corpus vs Node; fixture kernels: no diagnostics ABI, garbage output, a throw, a hang, no baseline). CI `kernel-gate.yml`: functional+sequences required, recursive+memory reporting, no speed job. `recursive-self-check.mjs` is `--dist --gate recursive`.
 
-Fresh private kernel (`7928e201…`, jz `87925b99`) results (`$S/scratchpad/gate-c.json`, `gate-c-recursive.json`): sequences GREEN 9/9; recursive RED at `compileAst after publishParameterAbi: Cannot mix BigInt` (heap cursor 3.27 GB, memory 3.41 GB, front 648 MB, 51 phases, 69 s, RSS 1.95 GB); memory INCOMPLETE (no baseline); functional RED: green numeric-loop, numeric-bits, typed-arrays at O1/O2; red closures-classes (bytes differ, results right), maps-properties O1 (119 for 231, OOB), strings-parser O1 (OOB), encoder-json O1 (OOB), the three at O2 `[watr] Cannot mix BigInt`, `src/ir/tape.js` (O1 differs, O2 BigInt after optimizeModule), `src/abi/number.js` (differs), `src/abi/array.js` (BigInt after publishParameterAbi). Timing was not judged: load 6–35 throughout.
+Fresh private kernel (`7928e201…`, built at jz `87925b99`, the consolidation in; `k-camp.wasm` from `870eabf2` shows the same functional results) results (`$S/scratchpad/gate-c.json`, `gate-c-recursive.json`): sequences GREEN 9/9; recursive RED at `compileAst after publishParameterAbi: Cannot mix BigInt` (heap cursor 3.27 GB, memory 3.41 GB, front 648 MB, 51 phases, 69 s, RSS 1.95 GB); memory INCOMPLETE (no baseline); functional RED: green numeric-loop, numeric-bits, typed-arrays at O1/O2; red closures-classes (bytes differ, results right), maps-properties O1 (119 for 231, OOB), strings-parser O1 (OOB), encoder-json O1 (OOB), the three at O2 `[watr] Cannot mix BigInt`, `src/ir/tape.js` (O1 differs, O2 BigInt after optimizeModule), `src/abi/number.js` (differs), `src/abi/array.js` (BigInt after publishParameterAbi). Timing was not judged: load 6–35 throughout.
 
 ## E. Reductions (for the coordinator; nothing repaired here)
 
@@ -84,8 +89,9 @@ Fresh private kernel (`7928e201…`, jz `87925b99`) results (`$S/scratchpad/gate
 | `node test/self-families.js` (native) | 19 pass / 4 red (reductions 1–3) |
 | `JZ_SELF_FAMILIES=1 node test/self-families.js` (hosted) | 24 pass / 24 red: the four above plus 20 hosted cases whose O1 bytes differ from native (reduction 1) or fail as recorded; `$S/scratchpad/families-hosted.log` |
 | `node test/self-compile.js` (fresh private kernel) | 20/26, the base's six reds |
-| watr `node test`, `npm run test:spec` | 349/2 skip, 268/20 skip |
-| full native `node test/index.js` | see `$S/scratchpad/full-native.log` (run at the end of the campaign) |
+| watr `node test`, `npm run test:spec` (at `7c391ea`) | 349/2 skip, 268/20 skip |
+| `node test/perf-ratchet.js`, interval-proof, feature-gating, optimizer, passes (at `6ee56ab4`) | 10/10, 272/272 |
+| full native `node test/index.js` (at `db521f7c`, the consolidation in; `$S/scratchpad/full-native.log`) | 4135 pass / 29 fail / 1 skip: the 8 red pins of `bigint-boundary` and `self-families`; 5 red at the base too (`statements` BigInt member compound-assign, `data` ×3, `inference` receiver-HASH); `watr bug: memory64 limits` (base); 7 `kernel parity`/`kernel oracle` (they read `dist/jz.wasm`, absent in this worktree; not attributed); 5 `perf-ratchet` and the 2 shape pins, the consolidation's blocker above, green after the revert |
 | opt0/opt3/WASI legs, matrix, conformance, recursive completion | not run (the recursive compile fails in emitFuncs; timing needs an unloaded machine) |
 
 ## Smallest next blockers
@@ -93,6 +99,7 @@ Fresh private kernel (`7928e201…`, jz `87925b99`) results (`$S/scratchpad/gate
 1. Reduction 1 (the boxed BigInt across an internal call boundary into a typed store / `Number()`): the representation of a BigInt callee result and the typed-store/ToNumber consumers; it gates hosted byte identity for every string-bearing program and the kernel's own encoder.
 2. The numeric-demand seeding (`i64Hex`), which gates the recursive compile at emitFuncs.
 3. The TYPEOF.object arm for `null`.
+4. For the consolidation: the sink shapes watr's family still misses at level 2 (the loop-carried hash step, the remaining nest/slice/condref shapes), to be made general in watr before `campaign-locals-jz` can replace the two passes.
 
 ## Scratch retained (`$S/scratchpad`)
 
