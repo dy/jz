@@ -174,3 +174,24 @@ test('bool identity: JSON, truthiness, arithmetic on boxed bools', async () => {
     is(probe(), '{"a":false,"b":[true]}|T|F|2|1|1|inc', `optimize:${optimize}`)
   }
 })
+
+// A boolean that may be nullish is not statically boolean. `litTruth`'s
+// shape (src/prepare/const-fold.js) returns `!!x` or null; `t === false` was
+// lowered as "t is falsy", so null took the false arm and foldConstIf dropped
+// every `if` whose condition was no literal — the kernel compiled
+// `if (idx > 1) return idx * 8; return 7` to `return 7`. The identity of the
+// nullish member is its carrier's; loose `==` converts the present boolean
+// and rejects the nullish (JS: `null == false` is false, `true == 1` true).
+test('bool identity: a boolean-or-null result keeps null apart from false and true', () => {
+  const SRC = `
+  const tri = n => n === 1 ? true : n === 0 ? false : null
+  export let f = (n) => { const t = tri(n); return (t === true ? 1 : 0) + (t === false ? 2 : 0) + (t !== false ? 4 : 0) + (t === null ? 8 : 0) + (t == null ? 16 : 0) }
+  export let g = (n) => { const t = tri(n); return (t == false ? 1 : 0) + (t == 0 ? 2 : 0) + (t == 1 ? 4 : 0) + (t != true ? 8 : 0) }
+  export let fold = (idx) => { if (idx > 1) return idx * 8; return 7 }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return {f,g,fold}')()
+  for (const optimize of [false, 1]) {
+    const ex = run(SRC, { memory: 256, optimize })
+    for (const n of [1, 0, 2]) { is(ex.f(n), oracle.f(n), `=== O${optimize || 0} tri(${n})`); is(ex.g(n), oracle.g(n), `== O${optimize || 0} tri(${n})`) }
+    is(ex.fold(2), 16, `the guarded return survives (O${optimize || 0})`)
+  }
+})

@@ -384,6 +384,12 @@ const nullableOperand = (n) => {
   return false
 }
 
+// A boolean that may be nullish is not statically boolean: its nullish member
+// equals no boolean and no number, so the exact-kind arms must not claim it.
+// Its carrier (the atom or the sentinel) keeps the identity for `===`; loose
+// `==` converts the present boolean and rejects the nullish (looseNumberEq).
+const boolOrNullish = (n) => resolveValType(n, valTypeOf, lookupValType) === VAL.BOOL && nullableOperand(n)
+
 // An emitted value whose bit pattern is an i32, paired with how it widens to f64: a
 // `f64.convert_i32_s/u(x)` peels to its i32 source `x`; a bare i32 widens signed. Used to compare
 // two integer-backed operands directly in i32 instead of widening both to f64.
@@ -479,8 +485,8 @@ function emitLooseEq(a, b, negate, strict) {
   // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
   // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
   // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
-  const rawA = resolveValType(a, valTypeOf, lookupValType)
-  const rawB = resolveValType(b, valTypeOf, lookupValType)
+  const rawA = boolOrNullish(a) ? null : resolveValType(a, valTypeOf, lookupValType)
+  const rawB = boolOrNullish(b) ? null : resolveValType(b, valTypeOf, lookupValType)
   const vta = numericVal(rawA)
   const vtb = numericVal(rawB)
   const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
@@ -511,8 +517,10 @@ function emitLooseEq(a, b, negate, strict) {
   // nullable) both wrongly reading false — JS true — pre-fix.
   const aSafe = vta === VAL.NUMBER && !nullableOperand(a)
   const bSafe = vtb === VAL.NUMBER && !nullableOperand(b)
-  if (aSafe && needsToNumberCoercion(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
-  if (bSafe && needsToNumberCoercion(a, vta)) return looseNumberEq(numB(), a, va, negate)
+  // A boolean member (JS: `true == 1`) converts; a nullish member equals no number.
+  const converts = (n, vt) => needsToNumberCoercion(n, vt) || boolOrNullish(n) || mayCarryRawBool(n)
+  if (aSafe && converts(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
+  if (bSafe && converts(a, vta)) return looseNumberEq(numB(), a, va, negate)
   if (aSafe || bSafe) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
   // Both sides proven VAL.NUMBER but NEITHER individually "safe" above (both
   // nullable — the maybeUndefined gap this function's own Slice-5 fix closed
@@ -691,8 +699,8 @@ function emitStrictEq(a, b, negate) {
   }
   // Known, differing primitive classes can never be strictly equal — but the
   // operands still evaluate, in order (effectFoldSeq).
-  const strictA = resolveValType(a, valTypeOf, lookupValType)
-  const strictB = resolveValType(b, valTypeOf, lookupValType)
+  const strictA = boolOrNullish(a) ? null : resolveValType(a, valTypeOf, lookupValType)
+  const strictB = boolOrNullish(b) ? null : resolveValType(b, valTypeOf, lookupValType)
   if (strictA && strictB && strictA !== strictB && (STRICT_PRIM.has(strictA) || STRICT_PRIM.has(strictB)))
     return effectFoldSeq([a, b], emitNum(negate ? 1 : 0))
   // Both sides statically BOOL: compare TRUTH VALUES, not raw bits — a boolean's
