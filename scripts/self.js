@@ -105,14 +105,30 @@ const PARK_ARRAY = 7
 const PARK_OBJECT = 8
 const PARK_MAP = 9
 const PARK_SET = 10
+const PARK_STRREF = 11
+const PARK_INT = 12
+
+// A string is written once, the first time; every later occurrence is its
+// index in the order of first writes (an IR's op names and local names
+// repeat per node). A 32-bit integer is written as one.
+let parkStrings = null
+function parkString(text) {
+  const ref = parkStrings.get(text)
+  if (ref !== undefined) { __park_write_u8(PARK_STRREF); __park_write_u32(ref); return }
+  parkStrings.set(text, parkStrings.size)
+  __park_write_u8(PARK_STRING); __park_write_str(text)
+}
 
 function parkValue(value) {
   if (value === null) { __park_write_u8(PARK_NULL); return }
   if (value === undefined) { __park_write_u8(PARK_UNDEFINED); return }
   if (value === false) { __park_write_u8(PARK_FALSE); return }
   if (value === true) { __park_write_u8(PARK_TRUE); return }
-  if (typeof value === 'number') { __park_write_u8(PARK_NUMBER); __park_write_f64(value); return }
-  if (typeof value === 'string') { __park_write_u8(PARK_STRING); __park_write_str(value); return }
+  if (typeof value === 'number') {
+    if ((value | 0) === value && (value !== 0 || 1 / value > 0)) { __park_write_u8(PARK_INT); __park_write_u32(value); return }
+    __park_write_u8(PARK_NUMBER); __park_write_f64(value); return
+  }
+  if (typeof value === 'string') { parkString(value); return }
   if (typeof value === 'bigint') { __park_write_u8(PARK_BIGINT); __park_write_i64(value); return }
   if (Array.isArray(value)) {
     // A WAT string literal watr parsed (the stdlib's and the boundary wrappers'
@@ -120,7 +136,7 @@ function parkValue(value) {
     // (watr/src/util.js `str`); the bytes alone lose it. Park the text: watr's
     // assembler converts a quoted string back to the same literal.
     const text = value.valueOf()
-    if (typeof text === 'string') { __park_write_u8(PARK_STRING); __park_write_str(text); return }
+    if (typeof text === 'string') { parkString(text); return }
     __park_write_u8(PARK_ARRAY)
     __park_write_u32(value.length)
     for (let i = 0; i < value.length; i++) parkValue(value[i])
@@ -151,6 +167,7 @@ function parkValue(value) {
   throw new TypeError(`Cannot checkpoint WAT IR value of type ${typeof value}`)
 }
 
+let unparkStrings = null
 function unparkValue() {
   const tag = __park_read_u8()
   if (tag === PARK_NULL) return null
@@ -158,7 +175,9 @@ function unparkValue() {
   if (tag === PARK_FALSE) return false
   if (tag === PARK_TRUE) return true
   if (tag === PARK_NUMBER) return __park_read_f64()
-  if (tag === PARK_STRING) return __park_read_str()
+  if (tag === PARK_INT) return __park_read_u32() | 0
+  if (tag === PARK_STRING) { const text = __park_read_str(); unparkStrings.push(text); return text }
+  if (tag === PARK_STRREF) return unparkStrings[__park_read_u32() >>> 0]
   if (tag === PARK_BIGINT) return __park_read_i64()
   if (tag === PARK_ARRAY) {
     const len = __park_read_u32() >>> 0
@@ -195,10 +214,15 @@ function unparkValue() {
  */
 function checkpoint(value) {
   __park_begin()
+  parkStrings = new Map()
   parkValue(value)
+  parkStrings = null
   __park_finish()
   __park_rewind()
-  return unparkValue()
+  unparkStrings = []
+  const out = unparkValue()
+  unparkStrings = null
+  return out
 }
 const checkpointIR = checkpoint
 
