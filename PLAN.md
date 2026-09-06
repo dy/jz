@@ -552,17 +552,25 @@ nothing after assembly reads `ctx`), strings interned and integers packed
 in the park. Record:
 [.work/optimizer-review/kernel-allocation-2026-09-06.md](.work/optimizer-review/kernel-allocation-2026-09-06.md).
 The headroom is the encoder's: watr's `compile` allocates 3.6 GB in the
-kernel after the second checkpoint.
+kernel after the second checkpoint. Then (`00f0c8c7`–`36d58177`): a
+compound member write evaluates its receiver and key once (the 23
+member-reference pins green), a runtime write of `undefined` to a module
+object wins over the literal's value, dynamic loose equality converts a
+boolean beside a number, `Number`/`Boolean` as values convert. Native
+**4304 pass / 18 fail / 1 skip** at `36d58177` (45 reds at `cd41cc54`); recursive GREEN at 466 MB
+of headroom.
 
 ### Next ownership and order
 
-1. One session owns main. Next: the encoder's churn in the kernel (the
-   recursive headroom), then emit's per-closure allocation, the
-   member-reference single-evaluation family, the `+=` normalization with
-   its loop recognizers, loose `==` and `String()` on an `any` holding a
-   boolean or a BigInt box, the two hosted byte divergences. Regions remain
-   the memory model; the allocation audit shrinks what they must reclaim.
-   Keep the private fresh gate. Do not add source-spelling exceptions.
+1. One session owns main. Next: the encoder's churn in the kernel (watr's
+   streaming code section, `feat/streaming-code-section`, once its ByteBuf
+   shape compiles under the self-compile), emit's per-closure allocation,
+   the result-carrier family (a boolean through a closure result into an
+   array, the six carrier pins), the `+=` normalization with its loop
+   recognizers, `String()` on an `any` holding a BigInt box, the two hosted
+   byte divergences. Regions remain the memory model; the allocation audit
+   shrinks what they must reclaim. Keep the private fresh gate. Do not add
+   source-spelling exceptions.
 2. watr is consumed at `5613521`; the local-pass deletion stays isolated until
    its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
    introducing semantic FunctionIR.

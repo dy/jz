@@ -105,11 +105,35 @@ alone otherwise), red on `cd41cc54` at 96 / 192 / 16 bytes.
 - Kernel parity, kernel oracle, self-families on the fresh kernel: 37/38
   (fromCharCode, known).
 - Native `npm test` at `c9e56b8f`: **4277 pass / 42 fail / 1 skip**, the 42
-  the integration record lists (the kernel-oracle rows are green).
+  the integration record lists (the kernel-oracle rows are green). At
+  `36d58177`: **4304 / 18 / 1**: the result-carrier and BigInt families,
+  fromCharCode, the receiver-HASH and catch-local pins, `watr bug: memory64`.
 - `kernel-gate --gate functional,sequences,recursive` on the kernel built at
   `c9e56b8f` (`$S/scratchpad/k-new7.wasm`, `gate-k7.json`, `gate-rec.json`):
   sequences GREEN 9/9, recursive GREEN, functional 12/20 (the same eight
-  byte divergences as before, every row's results right).
+  byte divergences as before, every row's results right). At `36d58177`
+  (`k-final.wasm`, `gate-final.json`): recursive GREEN, 13,806,419 bytes in
+  54 s, 466 MB of headroom; sequences GREEN.
+
+## Correctness slices after the gate (`00f0c8c7`–`36d58177`)
+
+- A compound member write evaluates its receiver and key once
+  (`src/compile/emit/assignment.js` `stagedReference`): an effectful receiver
+  or key is staged into a temp carrying the expression's facts; a key with an
+  effect takes the receiver first. The 23 member-reference pins and the
+  complex BigInt member pin are green.
+- A runtime write of `undefined` to a module object wins over the literal's
+  init-time sidecar value (`module/collection.js`, `__hash_get_local_hm`: a
+  miss reported as TOMB_NAN). Pin in `objects`.
+- Dynamic loose equality converts a boolean beside a number (`__eq`);
+  `Number`/`Boolean` as values convert (`.map(Number)` returned its strings).
+  Pins in `bool-identity`.
+- Open, found on the way: a boolean returned by a closure into an array
+  reads as a number (`[1, 0].map(x => !!x)[0]` is `typeof` number: the
+  carrier family); a string beside a number in `==` stays unequal (the
+  documented non-coercion, `emitLooseEq`'s STRING specializations depend on
+  it); the jz subset rejects an IIFE's default parameter reading the
+  enclosing function's locals (`analyze-scans.js` passes the seed instead).
 
 ## Open
 
