@@ -518,17 +518,32 @@ failing names unchanged; opt0/opt3/WASI selections within that set. Details
 and bytes: [.work/optimizer-review/division-review.md](.work/optimizer-review/division-review.md).
 The kernel's six hosted failures are repaired in the following commits.
 
+### Integration — 2026-09-06
+
+The pi session's pending sequence, bitwise and division slices are committed
+(`925baca3`, `86c888d6`, `67bed3f5`); the frozen campaign candidates and the
+sibling watr (`5613521`) are integrated. The kernel's hosted failures had six
+root causes, each with a native reduction and a pin: numeric demand beside a
+BigInt operand, a nullable boolean taken for boolean (every `if` with a
+non-literal condition dropped), a BigInt box test without the NaN test, a
+join boxed for a raw binding (every `nan:0x…` constant encoded as a heap
+address), a compound update that never materialized, and escaped array
+callbacks folding `!== null`. Fresh private self-compile **26/26**; native
+**4268 / 45 / 1**; kernel oracle and parity green on a fresh kernel;
+functional corpus 12/20 byte-identical with every row's results right;
+recursive `jz × jz` now reaches the summary and exhausts the 4 GB arena.
+Record: [.work/optimizer-review/integration-2026-09-06.md](.work/optimizer-review/integration-2026-09-06.md).
+
 ### Next ownership and order
 
-1. Integration/result-contract session owns summary, representation, emitter,
-   and combined-tree certification. Repair the remaining fresh-hosted failures
-   and the value defects above through producer/callable contracts, including
-   the newly pinned arithmetic, open-parameter/catch, and composite BigInt operand
-   families. Keep the private fresh gate. Do not add source-spelling exceptions.
-2. Optimizer session owns watr, transport allocation evidence, and coordinated
-   dependency release. Supply committed shared changes and an explicit handoff;
-   keep shared summary/representation edits serial. Agree on the effect/opcode
-   interface before introducing semantic FunctionIR.
+1. One session owns main. Next: the recursive self-compile's memory (regions,
+   the reserve), the member-reference single-evaluation family, the `+=`
+   normalization with its loop recognizers, loose `==` and `String()` on an
+   `any` holding a boolean or a BigInt box, the two hosted byte divergences.
+   Keep the private fresh gate. Do not add source-spelling exceptions.
+2. watr is consumed at `5613521`; the local-pass deletion stays isolated until
+   its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
+   introducing semantic FunctionIR.
 3. Complete callable identities and structural closure/freeze, replace covered
    result reconstruction with verified FunctionIR, add independent reachability
    mutations, and reconcile ABI/subset/region specs. Then rerun complete matrix,
