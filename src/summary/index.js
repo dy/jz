@@ -689,7 +689,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const dictUses = [], dictKeys = new Set()   // computed-write roots, then their resolved binding keys
   for (const f of funcs) { for (const p of f.sig.params) declareIn(f.name, p.name); if (f.rest) declareIn(f.name, f.rest); collect(f.body, f.name) }
   for (const top of tops) collect(top, MODULE)
-  const keyIn = (scope, name) => scope === MODULE ? name : scope + '\0' + name
+  // A binding's key, `scope\0name`, built once per (scope, name) and reused: the
+  // walk asks for a key at every read and write of a binding, and each
+  // concatenation was an allocation (the kernel's arena holds every one until the
+  // checkpoint). The string is the same; scope resolution (`keyOf`) and every
+  // fact keyed by it are untouched; the cache is this call's and reaches neither
+  // the facts nor ctx.
+  const bindingKeys = new Map()   // scope → Map(name → key)
+  const keyIn = (scope, name) => {
+    if (scope === MODULE) return name
+    let m = bindingKeys.get(scope)
+    if (!m) bindingKeys.set(scope, m = new Map())
+    let key = m.get(name)
+    if (key === undefined) m.set(name, key = scope + '\0' + name)
+    return key
+  }
   /** The key of `name` read in `current`'s scope chain, or null for a name from outside the program. */
   const keyOf = (name) => {
     for (let s = current ?? MODULE; ; s = parent.get(s) ?? MODULE) {
@@ -879,7 +893,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const queries = summaryQueries(queryFacts)
   const kindOfExpr = n => queries.at(current ?? MODULE).kindOfExpr(n)
   const isCompatible = (key) => numeric.get(key) >= COMPAT
-  const slotKey = (sid, prop) => sid + '\0' + prop
+  // A slot's key, `sid\0prop`, built once per (sid, prop) the same way; its own cache, its own namespace.
+  const slotKeys = new Map()   // sid → Map(prop → key)
+  const slotKey = (sid, prop) => {
+    let m = slotKeys.get(sid)
+    if (!m) slotKeys.set(sid, m = new Map())
+    let key = m.get(prop)
+    if (key === undefined) m.set(prop, key = sid + '\0' + prop)
+    return key
+  }
   const slotKeysOf = (recv, prop) => {
     const r = kindOfExpr(recv), t = tagOf(r)
     if (t === K.OBJECT && paramOf(r) !== UNKNOWN) return schemas[paramOf(r)].indexOf(prop) >= 0 ? [slotKey(paramOf(r), prop)] : []
