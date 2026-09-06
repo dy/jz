@@ -88,7 +88,8 @@ const arrowParams = params => Array.isArray(params) && params[0] === '()' ? para
  * @param {() => Function} opts.lowerClass
  * @param {() => Function} opts.lowerObjectLiteralThis
  * @param {(name:string) => boolean} opts.shadowsBuiltin
- * @param {(node:Array, fn:Function) => any} opts.withBuiltinScope
+ * @param {(node:Array) => any} opts.enterBuiltinScope  enter the node's builtin scope; returns the prior
+ * @param {(prior:any) => void} opts.leaveBuiltinScope
  */
 let _gen = null
 export const bindGenerators = (g) => { _gen = g }
@@ -108,7 +109,7 @@ export function createTransform(opts) {
   }
   const lowerObjectLiteralThis = (...a) => opts.lowerObjectLiteralThis()(...a)
   const shadowsBuiltin = opts.shadowsBuiltin
-  const withBuiltinScope = opts.withBuiltinScope
+  const { enterBuiltinScope, leaveBuiltinScope } = opts
 
   // transformScopeInner recurses while its parent still reads operands, so
   // retain one reusable tail array per active depth rather than allocating a
@@ -198,7 +199,8 @@ export function createTransform(opts) {
     usesArguments(body) ? lowerArguments(params, functionBodyBlock(body)) : [params, body]
 
   function transformScope(node) {
-    return withBuiltinScope(node, () => transformScopeInner(node))
+    const prior = enterBuiltinScope(node)
+    try { return transformScopeInner(node) } finally { leaveBuiltinScope(prior) }
   }
 
   function transformScopeInner(node) {
@@ -724,7 +726,8 @@ export function createTransform(opts) {
   }
 
   function transform(node) {
-    return withBuiltinScope(node, () => transformInner(node))
+    const prior = enterBuiltinScope(node)
+    try { return transformInner(node) } finally { leaveBuiltinScope(prior) }
   }
 
   function transformInner(node) {
@@ -744,9 +747,15 @@ export function createTransform(opts) {
       }
       if (result != null) return result
     }
-    const out = [op]
-    for (let i = 1; i < node.length; i++) out.push(transform(node[i]))
-    return out
+    // A node whose operands the walk leaves as they are is returned as it is:
+    // the rewrite copies the spine above a change alone, not the whole tree.
+    let out = null
+    for (let i = 1; i < node.length; i++) {
+      const child = transform(node[i])
+      if (out === null && child !== node[i]) out = node.slice(0, i)
+      if (out !== null) out.push(child)
+    }
+    return out ?? node
   }
 
   return { transform, transformScope }

@@ -56,11 +56,11 @@ const declaredAtModuleScope = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.parent == null
   return false
 }
-const withBuiltinScope = (node, fn) => {
-  const prior = activeBuiltinScope
-  activeBuiltinScope = builtinScopes.get(node) || prior
-  try { return fn() } finally { activeBuiltinScope = prior }
-}
+// A node's builtin scope is entered around its own rewrite and left after
+// it: a pair, not a wrapper taking a closure, so a walk allocates nothing
+// per node (the self-compile makes a closure record for each).
+const enterBuiltinScope = (node) => { const prior = activeBuiltinScope; activeBuiltinScope = builtinScopes.get(node) || prior; return prior }
+const leaveBuiltinScope = (prior) => { activeBuiltinScope = prior }
 
 // Build the lexical scope chain before rewriting. A program-wide name census
 // made a parameter in one function suppress unrelated builtin lowering in
@@ -183,7 +183,7 @@ let transform, transformScope
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,
-  withBuiltinScope,
+  enterBuiltinScope, leaveBuiltinScope,
 }))
 bindTransform(transform)
 
@@ -217,7 +217,8 @@ const ITER_HELPER_NAMES = new Set(['map', 'filter', 'take', 'drop', 'flatMap',
 //    use / `instanceof Iterator` for the decorated-iterator gate.
 function canonSymbols(node) {
   if (!Array.isArray(node)) return node
-  return withBuiltinScope(node, () => {
+  const prior = enterBuiltinScope(node)
+  try {
     const [op] = node
     if (op === 'function*') iterProto.on = true
     if (op === ':' && (node[1] === 'next' || node[1] === '@@iterator') &&
@@ -242,7 +243,7 @@ function canonSymbols(node) {
     }
     for (let i = 1; i < node.length; i++) canonSymbols(node[i])
     return node
-  })
+  } finally { leaveBuiltinScope(prior) }
 }
 
 // `await import('x')` at module level with a literal specifier is a static
