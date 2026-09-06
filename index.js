@@ -55,10 +55,10 @@ import { inspectView } from './src/session-views.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
 import { beginSession, registerSessionResetHook } from './src/session.js'
-import compile from './src/compile/index.js'
+import compile, { tailFacts } from './src/compile/index.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
 import { resolveOptimize } from './src/optimize/index.js'
-import { resolveWatrOpts, watrTail, programPins } from './src/optimize/watr-tail.js'
+import { resolveWatrOpts, watrTail } from './src/optimize/watr-tail.js'
 export { resolveWatrOpts }
 import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
@@ -654,14 +654,7 @@ const jzCompileInner = (code, opts = {}) => {
   // NO post-watr generic optimizer — re-running jz's leaf pipeline here
   // miscompiled (dropped a reassigned-param tee, corrupted divergent-escape
   // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
-  const optimized = watrTail(module, cfg, {
-    funcCount: ctx.funcs.list.length,
-    boundaryPins: programPins(cfg),
-    time,
-    targetProfile: ctx.transform.targetProfile,
-    lazyDataSpans: ctx.runtime.lazySpans,
-    staticDataSpan: ctx.runtime.staticPrefixSpan,
-  })
+  const optimized = watrTail(module, cfg, { ...tailFacts(cfg), time })
   // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
   // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and
   // runs exactly once. Re-running jz's leaf pipeline here dropped a reassigned-param local.tee and

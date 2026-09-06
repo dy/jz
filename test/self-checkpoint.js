@@ -1,8 +1,10 @@
-// The kernel's internal checkpoint (scripts/self.js checkpointIR: park the WAT
-// IR into the lane above the heap, finish, rewind the arena, unpark, encode) on
-// small programs, through a private kernel whose differences from the fresh
-// self build are test overlays (test/_self-overlay-build.mjs): the branch made
-// unconditional (the shipping threshold, `__heap_large`, is untouched), test-only
+// The kernel's internal checkpoints (scripts/self.js checkpoint: park the
+// assembled module with link's and the optimizer's inputs before link, and
+// the optimized IR before the encoder, into the lane above the heap; finish,
+// rewind the arena, unpark) on small programs, through a private kernel whose
+// differences from the fresh self build are test overlays
+// (test/_self-overlay-build.mjs): both branches made unconditional (the
+// shipping threshold, `__heap_large`, is untouched), test-only
 // entries beside compileSelf (WAT text through the same checkpointIR, the
 // recorder's writers, a census of the IR's literal forms) and one labeled
 // failure inside watr's encoder for a program exporting `__fail_after_unpark`.
@@ -63,8 +65,9 @@ export function __checkpointWat(text, optJSON, mode) {
 const watrSrc = file => realpathSync(new URL(`../node_modules/watr/src/${file}`, import.meta.url))
 const FORCED = selfBuildWith({
   'scripts/self.js': [
-    // the one behavioral change: checkpointIR runs on every compile instead of past 1 GB of growth
-    ['__heap_large(heapMark) ? checkpointIR(optimized) : optimized', 'checkpointIR(optimized)'],
+    // the one behavioral change: both checkpoints run on every compile instead of past 1 GB of growth
+    ['if (__heap_large(heapMark)) { const kept = checkpoint([assembled, cfg, facts]);', 'if (1) { const kept = checkpoint([assembled, cfg, facts]);'],
+    ['__heap_large(heapMark) ? checkpoint(optimized) : optimized', 'checkpoint(optimized)'],
     ["import watrPrint from '", `import watrParse from '${watrSrc('parse.js')}'\nimport { str as watrStr } from '${watrSrc('util.js')}'\nimport watrPrint from '`],
     ['export default function compileSelf(', TEST_ENTRIES + 'export default function compileSelf('],
   ],
@@ -120,7 +123,11 @@ test('checkpoint: the forced kernel parks, rewinds, unparks and encodes; its out
   ok(same(fromForced, fromNormal), `the output through park → rewind → unpark → encode is the direct output, ${fromNormal.length} bytes`)
   is(run(fromForced), A_OUT, 'and it executes')
   is(mf.phases.map(p => p.name).join(' '), mn.phases.map(p => p.name).join(' '), 'the same phases, recorded and readable after the rewind')
-  ok(mf.phases.every((p, i) => p.heap >= (i ? mf.phases[i - 1].heap : mf.heapFront)), 'the records before the checkpoint are intact')
+  // The first checkpoint falls before link: the records up to it rise, link's is below the front's mark.
+  const linkAt = mf.phases.findIndex(p => p.name === 'link')
+  ok(linkAt > 0, 'link is recorded after the rewind')
+  ok(mf.phases.slice(0, linkAt).every((p, i) => p.heap >= (i ? mf.phases[i - 1].heap : mf.heapFront)), 'the records before the checkpoint are intact')
+  ok(mf.phases[linkAt].heap < mf.heapFront, `link ran below the front's mark (${mf.phases[linkAt].heap} < ${mf.heapFront})`)
   const h0 = heap(forced)
   readMarks(forced); readMarks(forced)
   is(heap(forced), h0, 'reading the records after the checkpoint allocates nothing in the kernel')
@@ -334,10 +341,10 @@ test('checkpoint: a failure in the encoder after the unpark is attributed past t
   is(run(compileOn(normal, FAIL)), 2, 'the fresh kernel, without the injection, compiles the program')
   throws(() => compileOn(forced, FAIL), /test-only failure in the encoder, after the unpark: export "__fail_after_unpark"/)
   const m = readMarks(forced)
-  ok(m.heapFront > 0 && m.heapEmit > m.heapFront && m.heapOptimize >= m.heapEmit, 'front, emit and watr completed')
+  ok(m.heapFront > 0 && m.heapEmit > 0 && m.heapOptimize >= m.heapEmit, 'front, emit and watr completed')
   ok(m.heapCheckpoint > 0 && m.heapCheckpoint < m.heapOptimize, 'the checkpoint completed and rewound: the failure is after it, in the encoder')
   is(m.phases.map(p => p.name).join(' '), readMarks(normal).phases.map(p => p.name).join(' '), 'every phase record is intact')
-  ok(phaseDeltas(m).every(d => d.bytes >= 0))
+  ok(phaseDeltas(m).every(d => d.bytes >= 0 || d.name === 'link'), 'every delta rises but link\'s, recorded after the first rewind')
   is(run(a), A_OUT, 'the earlier output is intact')
   const again = compileOn(forced, A)
   ok(same(again, a), 'A right after the failure is the same A'); is(run(again), A_OUT)

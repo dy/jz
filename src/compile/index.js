@@ -89,6 +89,8 @@ import {
 } from '../wat/assemble.js'
 import { link } from '../link/index.js'
 import { summarize } from '../summary/index.js'
+import { programPins } from '../optimize/watr-tail.js'
+import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
@@ -130,8 +132,39 @@ const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, f
 // fork detached typed views without importing this compile driver.
 
 
-/** Compile a prepared AST into the assembled WAT IR consumed by watr. */
+/** Compile a prepared AST into the assembled WAT IR consumed by watr: assemble, then link. */
 export default function compile(ast, profiler) {
+  return linkAssembled(assemble(ast, profiler), profiler)
+}
+
+/**
+ * The whole-module passes on the tape (src/link) over an assembled module,
+ * with the inputs `assemble` handed over: nothing here reads `ctx`, so the
+ * kernel may checkpoint the assembled module and rewind its arena between
+ * the two (scripts/self.js).
+ */
+export function linkAssembled({ module, link: options }, profiler) {
+  return timePhase(profiler, 'link', () => link(module, options))
+}
+
+/**
+ * The final optimizer's inputs (src/optimize/watr-tail.js watrTail), read
+ * from the compile context once: plain data the kernel checkpoints beside
+ * the assembled module.
+ */
+export function tailFacts(cfg) {
+  return {
+    funcCount: ctx.funcs.list.length,
+    boundaryPins: programPins(cfg),
+    targetProfile: ctx.transform.targetProfile,
+    lazyDataSpans: ctx.runtime.lazySpans,
+    staticDataSpan: ctx.runtime.staticPrefixSpan,
+    stableGlobals: stablePtrGlobalNames(),
+  }
+}
+
+/** Every pass before link: the module's sections in order, and link's inputs. */
+export function assemble(ast, profiler) {
   // Contract: callers (jzCompileInner / scripts/self.js compileSelf) must set
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
@@ -841,12 +874,12 @@ export default function compile(ast, profiler) {
     const ty = f.sig.results[0]
     if (ty === 'i32' || (ty === 'f64' && f.valResult === VAL.NUMBER)) rewindable.set(`$${f.name}`, ty)
   }
-  return timePhase(profiler, 'link', () => link(module, {
+  return { module, link: {
     optimize: ctx.transform.optimize,
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
     rewindable, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
     schemas: ctx.schema.list, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries,
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false,
-  }))
+  } }
 }

@@ -15,7 +15,7 @@
 import watOptimize, { vacuum, mergeBlocks } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
-  SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames,
+  SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
 } from './index.js'
 
 /**
@@ -440,7 +440,7 @@ export function stripDeadLateData(module, lazySpans, staticSpan) {
  */
 export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
-  lazyDataSpans = [], staticDataSpan = null,
+  lazyDataSpans = [], staticDataSpan = null, stableGlobals = null,
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
@@ -450,8 +450,7 @@ export function watrTail(module, cfg, {
     : cfg.fusedRewrite !== false ? time('watCleanup', () => mergeBlocks(vacuum(legalized))) : legalized
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
-    const stableGlobals = stablePtrGlobalNames()
-    if (stableGlobals.size) {
+    if (stableGlobals?.size) {
       const reach = collectReachableGlobalWrites(funcs)
       for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
     }

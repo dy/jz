@@ -17,26 +17,21 @@ import { ctx, initWarnings, assertCtxInvariants, DBG_INVARIANTS } from '../src/c
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
 import { beginSession } from '../src/session.js'
-import compileAst from '../src/compile/index.js'
+import { assemble, linkAssembled, tailFacts } from '../src/compile/index.js'
 
 import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
 } from '../src/compile/emit.js'
-import { watrTail, programPins } from '../src/optimize/watr-tail.js'
+import { watrTail } from '../src/optimize/watr-tail.js'
 import { T } from '../src/ir/tape.js'
 import { resetMarks, recordPhase, markStage, markTape, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
 import jzify from '../jzify/index.js'
 
-// Final-optimizer tail shared with the host pipeline. Keep the live compile
-// context refinements here; watr option policy remains owned by watr-tail.js.
-function optimizeTail(module, cfg) {
-  return watrTail(module, cfg, {
-    funcCount: ctx.funcs.list.length,
-    boundaryPins: programPins(cfg),
-    targetProfile: ctx.transform.targetProfile,
-    lazyDataSpans: ctx.runtime.lazySpans,
-    staticDataSpan: ctx.runtime.staticPrefixSpan,
-  })
+// Final-optimizer tail shared with the host pipeline: its inputs are the
+// compile context's facts read once (tailFacts), so it runs after the arena
+// was rewound; watr option policy remains owned by watr-tail.js.
+function optimizeTail(module, cfg, facts = tailFacts(cfg)) {
+  return watrTail(module, cfg, facts)
 }
 
 // Shared front half of every kernel entry: reset ctx, apply the option JSON,
@@ -94,7 +89,7 @@ function front(source, strict, sourceType) {
 }
 
 function emitIR(ast) {
-  const module = compileAst(ast, stageMarks)
+  const module = linkAssembled(assemble(ast, stageMarks), stageMarks)
   if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
   return module
 }
@@ -108,6 +103,8 @@ const PARK_STRING = 5
 const PARK_BIGINT = 6
 const PARK_ARRAY = 7
 const PARK_OBJECT = 8
+const PARK_MAP = 9
+const PARK_SET = 10
 
 function parkValue(value) {
   if (value === null) { __park_write_u8(PARK_NULL); return }
@@ -127,6 +124,18 @@ function parkValue(value) {
     __park_write_u8(PARK_ARRAY)
     __park_write_u32(value.length)
     for (let i = 0; i < value.length; i++) parkValue(value[i])
+    return
+  }
+  if (value instanceof Map) {
+    __park_write_u8(PARK_MAP)
+    __park_write_u32(value.size)
+    for (const [k, v] of value) { parkValue(k); parkValue(v) }
+    return
+  }
+  if (value instanceof Set) {
+    __park_write_u8(PARK_SET)
+    __park_write_u32(value.size)
+    for (const v of value) parkValue(v)
     return
   }
   if (value != null && typeof value === 'object') {
@@ -163,16 +172,35 @@ function unparkValue() {
     for (let i = 0; i < len; i++) out[__park_read_str()] = unparkValue()
     return out
   }
+  if (tag === PARK_MAP) {
+    const len = __park_read_u32() >>> 0
+    const out = new Map()
+    for (let i = 0; i < len; i++) { const k = unparkValue(); out.set(k, unparkValue()) }
+    return out
+  }
+  if (tag === PARK_SET) {
+    const len = __park_read_u32() >>> 0
+    const out = new Set()
+    for (let i = 0; i < len; i++) out.add(unparkValue())
+    return out
+  }
   throw new TypeError(`Invalid parked WAT IR tag ${tag}`)
 }
 
-function checkpointIR(module) {
+/**
+ * Park a value (arrays, records, strings, numbers, Maps, Sets) in the binary
+ * lane, rewind the arena to its post-init mark and read the value back: what
+ * the compile allocated before is gone, the value alone remains. Every
+ * reader after a checkpoint takes its inputs from the value: `ctx` is stale.
+ */
+function checkpoint(value) {
   __park_begin()
-  parkValue(module)
+  parkValue(value)
   __park_finish()
   __park_rewind()
   return unparkValue()
 }
+const checkpointIR = checkpoint
 
 // Heap diagnostics: scripts/phase-marks.js records them, scripts/kernel-marks.mjs
 // reads them through these exports, after a trap or a thrown compile error too.
@@ -190,12 +218,20 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host, 
   setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
   const ast = front(source, strict, sourceType)
   markStage(STAGE_FRONT)
-  const module = emitIR(ast)
+  // The assembled module and the inputs of every pass after it: a large
+  // compile checkpoints them here, before the tape, so the front's and the
+  // analyses' allocations are released before link and the optimizer run.
+  let assembled = assemble(ast, stageMarks)
+  let cfg = ctx.transform.optimize
+  let facts = tailFacts(cfg)
+  if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
+  if (__heap_large(heapMark)) { const kept = checkpoint([assembled, cfg, facts]); assembled = kept[0]; cfg = kept[1]; facts = kept[2] }
+  const module = linkAssembled(assembled, stageMarks)
   markStage(STAGE_EMIT)
   markTape(T.n, T.op.length)
-  const optimized = optimizeTail(module, ctx.transform.optimize)
+  const optimized = optimizeTail(module, cfg, facts)
   markStage(STAGE_OPTIMIZE)
-  const checkpointed = __heap_large(heapMark) ? checkpointIR(optimized) : optimized
+  const checkpointed = __heap_large(heapMark) ? checkpoint(optimized) : optimized
   markStage(STAGE_CHECKPOINT)
   return watrCompile(checkpointed)
 }
