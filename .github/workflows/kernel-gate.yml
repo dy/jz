@@ -1,0 +1,42 @@
+name: kernel-gate
+# The kernel gates (scripts/kernel-gate.mjs) on a fresh private kernel, one job per
+# gate, each with its manifest as an artifact. `functional` and `sequences` are
+# required; `recursive` and `memory` report (a red recursive gate is the literal
+# state of the self-hosted compiler until its blockers close; memory has no
+# baseline to judge against in CI). Speed needs an unloaded machine and a
+# baseline kernel: not a CI job.
+on:
+  push:
+    paths-ignore: ['**/*.md', '**/*.svg', '**/*.html', '.work/**', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**/*.md', '**/*.svg', '**/*.html', '.work/**', 'LICENSE']
+jobs:
+  functional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm install
+      - name: runner failure modes and corpus expectations
+        run: node test/index.js kernel-gate
+      - name: functional and sequences on a fresh kernel
+        run: node scripts/kernel-gate.mjs --build --gate functional,sequences --corpus medium --json kernel-gate-functional.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: kernel-gate-functional, path: kernel-gate-functional.json }
+  recursive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm install
+      - name: recursive and memory on a fresh kernel
+        run: node scripts/kernel-gate.mjs --build --gate recursive,memory --json kernel-gate-recursive.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: kernel-gate-recursive, path: kernel-gate-recursive.json }

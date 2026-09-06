@@ -89,6 +89,7 @@ const TESTS = [
   'parser-bugs',
   'transform',
   'self-build',
+  'kernel-gate',
   'kernel-marks',
   'self-checkpoint',
   'self-compile-source',
