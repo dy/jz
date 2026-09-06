@@ -2203,15 +2203,16 @@ export default (ctx) => {
     BOOL_RESULT_OPS.has(n[0]) ||
     (n[0] === '()' && (n[1] === 'Boolean' || isBoolExpr(n[1]))))
 
-  // typeof: returns JS-style string. Reachable results are number/undefined/string/function/symbol/object/boolean
-  // (booleans without a static type hit the number branch; no bigints). Strings are preallocated into globals and
-  // initialized in __start (see compile.js). Comparison patterns (typeof x === 'string') are optimized
-  // in prepare.js (resolveTypeof) and emitted as direct type checks via emitTypeofCmp, bypassing this path.
+  // typeof returns a preallocated JS type-name string. Dynamic dispatch also
+  // recognizes Boolean atoms and boxed BigInts. Comparison patterns bypass
+  // this string-producing path through emitTypeofCmp.
   ctx.core.emit['typeof'] = (a) => {
-    if (!isPlanTaggedBigint(a) && valTypeOf(a) === VAL.BIGINT) return emit(['str', 'bigint'])
+    // A known typeof result does not make its operand effect-free. Sequence
+    // the operand once, including calls or throws inside comma expressions.
+    if (!isPlanTaggedBigint(a) && valTypeOf(a) === VAL.BIGINT) return emit([',', a, ['str', 'bigint']])
     // VAL.BOOL covers boolean literals, comparisons, `!` and bindings inferred
     // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
-    if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit(['str', 'boolean'])
+    if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit([',', a, ['str', 'boolean']])
     if (!ctx.runtime.typeofStrs) {
       // 'bigint': CARRIER PROGRAM Slice 3 (.work/archive/carrier-representation-design.md
       // §7, layout-kinds.js registry's 'typeof' finding) — a boxed BigInt the

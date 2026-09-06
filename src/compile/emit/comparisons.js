@@ -70,16 +70,17 @@ function emitTypeofCmp(a, b, cmpOp) {
   const foldConst = (k) => foldOperandPure(typeofExpr)
     ? typed(['i32.const', k], 'i32')
     : typed(['block', ['result', 'i32'], ['drop', va], ['i32.const', k]], 'i32')
-  const staticFold = (target) => {
-    if (ambiguous || planTaggedBigint) return null
-    const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
-    if (vt) return foldConst((vt === target) === eq ? 1 : 0)
-    return null
+  const vt = ambiguous || planTaggedBigint ? null : resolveValType(typeofExpr, valTypeOf, lookupValType)
+  // Raw Boolean/BigInt carriers can look like Numbers or any pointer tag.
+  // Their proven semantic kind decides ALL typeof comparisons, not just the
+  // matching one. Keep the already-emitted operand's effects in every fold.
+  if (vt === VAL.BOOL || vt === VAL.BIGINT) {
+    const typeCode = vt === VAL.BOOL ? TYPEOF.boolean : TYPEOF.bigint
+    return foldConst((code === typeCode) === eq ? 1 : 0)
   }
+  const staticFold = target => vt ? foldConst((vt === target) === eq ? 1 : 0) : null
 
   if (code === TYPEOF.number) {
-    // typeof "number": v===v rejects NaN-box pointers; BOOL carrier is 0/1 → still typeof "boolean".
-    if (!planTaggedBigint && resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return foldConst(eq ? 0 : 1)
     // v===v alone is WRONG for the one payload that legitimately means "the number
     // NaN": the canonical box prefix (tag=ATOM aux=0) that $__typeof (module/core.js)
     // also carves out, plus any sign-bit-set NaN (pointers are always emitted
@@ -98,14 +99,9 @@ function emitTypeofCmp(a, b, cmpOp) {
   if (code === TYPEOF.undefined) return wrap(isUndef(va))
   if (code === TYPEOF.boolean) return staticFold(VAL.BOOL) ?? wrap(isBoolAtom(['local.tee', `$${t}`, va]))
   if (code === TYPEOF.object) {
-    // object: a NaN-box whose ptr_type is a heap kind — NOT STRING (typeof "string"),
-    // NOT CLOSURE (typeof "function"), and NOT ATOM. The ATOM tag covers null AND undef
-    // AND the boolean atoms true/false: excluding it in one ptr_type check is both the
-    // null/undef guard and the (previously missing) boolean guard — without it
-    // `typeof aBool === "object"` wrongly returned true whenever the operand's static
-    // type was unknown (e.g. a value off JSON.parse), since a bool atom is a NaN-box
-    // that isn't STRING/CLOSURE/nullish. Numbers (incl. NaN) and bigint aren't NaN-box
-    // pointers, so isPtr already rejects them.
+    // typeof null is "object". Other atoms, strings, closures and boxed
+    // BigInts are not objects, even though all share the NaN-box carrier.
+    // Test null explicitly rather than admitting the whole ATOM family.
     inc('__ptr_type')
     const tt = `${T}${freshId(ctx)}`; ctx.func.locals.set(tt, 'i32')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
@@ -113,8 +109,10 @@ function emitTypeofCmp(a, b, cmpOp) {
       ['i32.and',
         ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
         ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]],
-      ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.ATOM]]]
-    return wrap(['i32.and', isPtr, heapKind])
+      ['i32.and',
+        ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.ATOM]],
+        ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.BIGINT]]]]
+    return wrap(['i32.and', isPtr, ['i32.or', isNull(['local.get', `$${t}`]), heapKind]])
   }
   if (code === TYPEOF.function) return isPtrKind(PTR.CLOSURE)
   if (code === TYPEOF.bigint) {

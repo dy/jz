@@ -110,6 +110,8 @@ export const activeRep = (ctx, node, target) => {
 
 /** Materialized representation of a stable parameter or normalized local. */
 export function representationActiveMaterializedRep(ctx, name) {
+  // A sequence forwards its final producer's carrier, not just its kind.
+  while (Array.isArray(name) && name[0] === ',') name = name[name.length - 1]
   const active = activeBody(ctx, 'representationActiveMaterializedRep')
   if (Array.isArray(name) && active?.materializedJoins?.has(name))
     return activeRep(ctx, name, true)

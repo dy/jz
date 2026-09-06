@@ -534,6 +534,15 @@ VT['+'] = (args) => {
   return VAL.NUMBER
 }
 
+// A sequence forwards its final value, including presence. The settled
+// summary declines nullable/mixed kinds; do not fall back from that answer
+// to a receiver-oriented BIGINT claim that also admits nullish values.
+VT[','] = (args) => {
+  const value = args[args.length - 1]
+  return ctx.summary ? ctx.summary.at(ctx.func.current).valOfExpr(value)
+    : valTypeOfWithLocals(value, lookupValType)
+}
+
 // Assignment & compound-assign expressions return the rhs value. Without this,
 // `(a = x*x) + (b = y*y)` falls through to null and `+` emits the polymorphic
 // string-concat dispatch on two pure-numeric subexpressions.
@@ -723,6 +732,7 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   if (!Array.isArray(expr)) return valTypeOf(expr)
   const op = expr[0]
   const rec = (e) => valTypeOfWithLocals(e, resolveLocal)
+  if (op === ',') return rec(expr[expr.length - 1])
   if (op === '?:') {
     const a = rec(expr[2]), b = rec(expr[3])
     return a && a === b ? a : null

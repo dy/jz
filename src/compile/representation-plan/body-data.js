@@ -690,6 +690,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
 
   const materializedJoins = new WeakSet()
   const emittedCandidate = node => {
+    // Match semanticOf/currentOf: discarded operands cannot erase readiness.
+    while (Array.isArray(node) && node[0] === ',') node = node[node.length - 1]
     if (typeof node === 'string') {
       if (materializedNames.has(node)) return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
       const k = params.get(node)
