@@ -98,8 +98,10 @@ const activeBody = (ctx, consumer) => {
 export const activeRep = (ctx, node, target) => {
   const body = activeBody(ctx, 'activeRep')
   if (!body) return NO_BIGINT
+  // A module binding's carrier is the program's fact, as body-data reads it.
   if (typeof node === 'string')
-    return (target ? body.targetNames : body.currentNames)?.get(node) ?? NO_BIGINT
+    return (target ? body.targetNames : body.currentNames)?.get(node)
+      ?? programPlanRecord(ctx)?.provenance?.globalReps.get(node) ?? NO_BIGINT
   if (Array.isArray(node)) {
     const packed = body.nodeFacts?.get(node)
     if (packed == null) return NO_BIGINT

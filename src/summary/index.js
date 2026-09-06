@@ -931,6 +931,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const key of keys) if (level === OTHER || level === false) deny(key); else if (level !== undefined) mark(key, level)
   }
   const isStringExpr = (e) => tagOf(kindOfExpr(e)) === K.STRING
+  const isBigintExpr = (e) => tagOf(kindOfExpr(e)) === K.BIGINT
   const isNumberExpr = (e) => typeof e === 'number' || (Array.isArray(e) && ((e[0] == null && typeof e[1] === 'number') || NUMBER_OPS.has(e[0]) || e[0] === 'u-' || e[0] === 'u+' || (e[0] === '.' && e[2] === 'length'))) || tagOf(kindOfExpr(e)) === K.NUMBER
   const demand = (n, cx = OTHER, into = null) => {
     if (n == null || typeof n === 'number') return
@@ -960,9 +961,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
     if (op === '+=') { const str = isStringExpr(n[1]) || isStringExpr(n[2]); useOf(n[1], str ? OTHER : COMPAT); useOf(n[2], str ? OTHER : COMPAT); return }
-    if (MUTATE_OPS.has(op)) { useOf(n[1], NUM); if (n[2] !== undefined) useOf(n[2], NUM); return }
-    if (NUMBER_OPS.has(op) || op === 'u-' || op === 'u+' || op === '+1' || op === '-1') { for (let i = 1; i < n.length; i++) useOf(n[i], NUM); return }
-    if (op === '+') { useOf(n[1], isStringExpr(n[2]) ? OTHER : COMPAT); useOf(n[2], isStringExpr(n[1]) ? OTHER : COMPAT); return }
+    // Beside a BigInt operand ToNumeric completes only for a BigInt (kind.js
+    // arith): a Number there throws, so the read converts nothing.
+    if (MUTATE_OPS.has(op)) { const cx = n[2] !== undefined && isBigintExpr(n[2]) ? OTHER : NUM; useOf(n[1], cx); if (n[2] !== undefined) useOf(n[2], cx); return }
+    if (NUMBER_OPS.has(op) || op === 'u-' || op === 'u+' || op === '+1' || op === '-1') { const cx = n.length === 3 && (isBigintExpr(n[1]) || isBigintExpr(n[2])) ? OTHER : NUM; for (let i = 1; i < n.length; i++) useOf(n[i], cx); return }
+    if (op === '+') { useOf(n[1], isStringExpr(n[2]) || isBigintExpr(n[2]) ? OTHER : COMPAT); useOf(n[2], isStringExpr(n[1]) || isBigintExpr(n[1]) ? OTHER : COMPAT); return }
     // A relational compare converts against a number; two strings compare as strings, so an unknown pair is compatible.
     if (op === '<' || op === '<=' || op === '>' || op === '>=') { const cxOf = (o) => isStringExpr(o) ? OTHER : isNumberExpr(o) ? NUM : COMPAT; useOf(n[1], cxOf(n[2])); useOf(n[2], cxOf(n[1])); return }
     if (op === '[]') { useOf(n[1], OTHER); demand(n[2]); return }

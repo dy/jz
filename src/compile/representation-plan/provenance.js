@@ -1,6 +1,7 @@
 import { ASSIGN_OPS, commaList, returnExprs, walkAst } from '../../ast.js'
 import { nullishArm } from '../../kind.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
+import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_READ_METHODS, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BIGINT_TYPED_CTORS, BOXED_BIGINT, DEF_RHS,
   NO_BIGINT, NUMERIC_VALUE_OPS, RAW_BIGINT, STORAGE_READ_METHODS, STORAGE_WRITE_METHODS, VALUE_COERCERS,
@@ -248,6 +249,12 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   for (const func of ctx.funcs.list)
     if (!func.raw && func.body) defMapByFunc.set(func, collectDefs(func.body))
 
+  // The summary's kind of a slot or element: BigInt among a bounded set of
+  // kinds is evidence; the unbounded ANY proves nothing.
+  const summaryMayBigint = (node, func) => {
+    const k = ctx.summary?.at(func?.sig ?? '').kindOfExpr(node) ?? 0
+    return summaryTagsOf(k) !== summaryTagsOf(summaryKind(SUMMARY_KIND.ANY)) && summaryHasTag(k, SUMMARY_KIND.BIGINT)
+  }
   const exprMay = (node, func, localNames) => {
     if (isBigintOrigin(node)) return true
     if (typeof node === 'string') return localNames?.has(node) || globals.has(node)
@@ -262,7 +269,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         op === '==' || op === '!=' || op === '===' || op === '!==' ||
         op === '<' || op === '>' || op === '<=' || op === '>=' || op === 'in' || op === 'instanceof') return false
     if (op === '[]' || op === '.' || op === '?.')
-      return typeof node[1] === 'string' && (storage.has(node[1]) || (op === '[]' && bigintTyped.has(node[1])))
+      return (typeof node[1] === 'string' && (storage.has(node[1]) || (op === '[]' && bigintTyped.has(node[1])))) || summaryMayBigint(node, func)
     if (op === '()') {
       if (typeof node[1] === 'string') {
         if (VALUE_COERCERS.has(node[1])) return false
