@@ -7,7 +7,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { T, NONE, resetTape, fromWat, toWat, verify, walk, intern, node, str, push, replace } from '../src/ir/tape.js'
+import { T, NONE, resetTape, fromWat, toWat, verify, walk, intern, node, str, push, replace, reserve } from '../src/ir/tape.js'
 import { hoistConstantPool } from '../src/optimize/const-pool.js'
 import { treeshake } from '../src/link/treeshake.js'
 import { orderFuncs } from '../src/link/order.js'
@@ -87,6 +87,19 @@ test('tape: the decode reserves the columns for the whole tree in one step', () 
   const root = fromWat(wide)
   is(verify(root), null)
   ok(T.n > before && T.op.length >= T.n, 'grown to hold every node')
+  is(T.op.length, T.n + (T.n >> 3), 'counted nodes plus one eighth, not the next power of two')
+  const columns = T.op, capacity = T.op.length, held = toWat(root)
+  reserve(0); reserve(1); reserve(T.n); reserve(capacity)
+  ok(T.op === columns, 'smaller and exact-capacity reservations keep the same columns')
+  let last = T.a[root]
+  while (T.next[last] !== NONE) last = T.next[last]
+  while (T.n <= capacity) {
+    const added = node(intern('func'))
+    T.next[last] = added; last = added
+  }
+  is(T.op.length, capacity * 2, 'append growth still works beyond the reserved slack')
+  is(verify(root), null)
+  ok(same(toWat(root).slice(0, held.length), held), 'growth preserves existing nodes and links')
   ok(T.op.length === T.a.length && T.a.length === T.next.length && T.next.length === T.ty.length && T.ty.length === T.imm.length && T.imm.length === T.sym.length && T.sym.length === T.sid.length, 'every column the same capacity')
 })
 

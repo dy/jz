@@ -56,15 +56,11 @@ export const intern = (s) => {
   return id
 }
 
-/** Column capacity for at least `n` nodes. The decode reserves the tree it read
- *  in one step: a growth by doubling allocates twice the final size in all, and
- *  the self-hosted compiler's arena reclaims nothing. */
-export const reserve = (n) => {
-  if (n <= T.op.length) return
-  let cap = T.op.length
-  while (cap < n) cap *= 2
-  grow(cap)
-}
+/** Column capacity for `n` nodes and an eighth more, the room the passes' own
+ *  nodes take. The decode reserves the tree it read in one step: a growth by
+ *  doubling allocates twice the final size in all, and the self-hosted
+ *  compiler's arena reclaims nothing. */
+export const reserve = (n) => { if (n > T.op.length) grow(n + (n >> 3)) }
 const grow = (cap = T.op.length * 2) => {
   const op = new Int32Array(cap); op.set(T.op); T.op = op
   const a = new Int32Array(cap); a.set(T.a); T.a = a

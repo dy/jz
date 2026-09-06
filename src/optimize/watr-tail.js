@@ -12,7 +12,7 @@
  *
  * @module optimize/watr-tail
  */
-import watOptimize from 'watr/optimize'
+import watOptimize, { vacuum, mergeBlocks } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset, stablePtrGlobalNames,
@@ -444,7 +444,10 @@ export function watrTail(module, cfg, {
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
-  const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts)) : legalized
+  // Without watr's fixpoint (levels 1 and `fast`), its vacuum and block merge alone: the
+  // emitter's nops, dropped pure values and untargeted blocks are the module's own to clean.
+  const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts))
+    : cfg.fusedRewrite !== false ? time('watCleanup', () => mergeBlocks(vacuum(legalized))) : legalized
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
     const stableGlobals = stablePtrGlobalNames()
