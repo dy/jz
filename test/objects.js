@@ -2211,3 +2211,19 @@ test('objects: numeric keys are property keys through fromEntries and a negative
     is(ex.g(), e.g(), `g @O${optimize}`)
   }
 })
+
+// A module object's slot written `undefined` at runtime: the bracket read sees
+// it. The write lives in the global shadow table beside the literal's
+// init-time sidecar, and a present `undefined` there was read as a miss, so
+// the sidecar's initial value came back (5 after `obj.value = undefined`).
+test('objects: a runtime write of undefined to a module object wins over the literal\'s value on a bracket read', () => {
+  const src = `const obj = { value: 5, other: 1 }
+    const key = () => 'val' + 'ue'
+    export let f = (initial) => { obj.value = initial; const k = key(); const a = obj[k]; const b = obj[k] || 2; obj[k] ||= 7; return [a, b, obj.value, obj[k], obj.other].map(String).join('|') }`
+  const e = {}
+  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
+  for (const optimize of [0, 2]) {
+    const ex = jz(src, { optimize }).exports
+    for (const v of [5, undefined, null, 0, undefined, 3]) is(ex.f(v), e.f(v), `initial ${v} @O${optimize}`)
+  }
+})

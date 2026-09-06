@@ -281,7 +281,7 @@ export default (ctx) => {
     // spliced `(call $__err_prop …)` once it's actually in the realized text —
     // this explicit edge is the same belt-and-suspenders precedent as the
     // other conditional entries in this table (e.g. __dyn_get_any_t below).
-    __dyn_get_t_h: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx', '__str_byteLen', '__ptr_aux', ...errPropDep()],
+    __dyn_get_t_h: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_byteLen', '__ptr_aux', ...errPropDep()],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h', ...errPropDep()],
@@ -1325,6 +1325,11 @@ export default (ctx) => {
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEqG, PTR.HASH)
+  // The same lookup with a miss reported as TOMB_NAN (never a stored value):
+  // a durable receiver's runtime write of `undefined` lives in the global table
+  // beside the init-time sidecar, and the newer entry wins whatever it holds
+  // (__dyn_get_t_h), so a present `undefined` must read apart from a miss.
+  ctx.core.stdlib['__hash_get_local_hm'] = genLookupStrictPrehashed('__hash_get_local_hm', MAP_ENTRY, strEqG, PTR.HASH, TOMB_NAN)
   ctx.core.stdlib['__hash_set_local_h'] = () => genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEqG, PTR.HASH)
   // Thunked (not called eagerly) so genUpsertGrow's durableFwdLogIR reads
   // heapResetWat()'s FINAL declaration state — see collection.js's heapResetWat
@@ -1639,10 +1644,12 @@ export default (ctx) => {
                   (then
                     (local.set $val (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
                       (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+                    ;; a key present in the global table was written at runtime and wins,
+                    ;; an undefined too: the init-time sidecar's value is older
                     (if (i32.eqz (call $__is_nullish (local.get $val)))
                       (then
-                        (local.set $val (call $__hash_get_local_h (local.get $val) (local.get $key) (local.get $h)))
-                        (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))))))))
+                        (local.set $val (call $__hash_get_local_hm (local.get $val) (local.get $key) (local.get $h)))
+                        (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val))))))))))
             (local.set $props (i64.and (local.get $props) (i64.const -2)))
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
@@ -1658,8 +1665,8 @@ export default (ctx) => {
                   (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
                 (if (i32.eqz (call $__is_nullish (local.get $props)))
                   (then
-                    (local.set $val (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h)))
-                    (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))))))))
+                    (local.set $val (call $__hash_get_local_hm (local.get $props) (local.get $key) (local.get $h)))
+                    (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val))))))))))
         ;; Miss on both global and sidecar: an OBJECT still needs the
         ;; schema-slot arm before giving up — a schema-poisoned variable
         ;; (one variable bound to two different object shapes) resolves its
