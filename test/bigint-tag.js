@@ -41,3 +41,33 @@ test('bigint tag: isBigIntBox asks for a NaN-box before reading the tag', () => 
   is(ir[1][0], 'f64.ne', 'a raw Number never reaches the tag test')
   is(JSON.stringify(ir[2]), JSON.stringify(['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', '$v']]], ['i32.const', 5]]))
 })
+
+// watr's f64 encoder: `value` is a reassigned parameter whose kinds include
+// a boolean, so the plan never materializes it and its reads are raw; the
+// ternary that initializes it joins a raw literal with a boxed call result.
+// The join takes the binding's raw carrier (the call arm unboxes), else the
+// `|=` and the BigInt64Array store see a box pointer: the kernel encoded
+// `f64.const nan:0x7ff8000200000000` as its own heap address.
+test('bigint tag: a join written to a raw binding unboxes its call arm', () => {
+  const SRC = `const _buf = new ArrayBuffer(8), _u8 = new Uint8Array(_buf), _i64 = new BigInt64Array(_buf)
+  const F64_NAN = 0x7ff0000000000000n, F64_QUIET = 0x8000000000000n
+  export function i64(n, out) { return [] }
+  i64.parse = (n) => { let bi = BigInt(n); _i64[0] = bi; return _i64[0] }
+  const hex = () => { let s = ''; for (let i = 7; i >= 0; i--) s += (_u8[i] < 16 ? '0' : '') + _u8[i].toString(16); return s }
+  export function f64(input, out, value, idx) {
+    if (typeof input === 'string' && (idx = input.indexOf('nan')) >= 0) {
+      if (input[idx + 3] === ':') { const tail = input.slice(idx + 4); value = (tail === 'canonical' || tail === 'arithmetic') ? F64_QUIET : i64.parse(tail) }
+      else value = F64_QUIET
+      value |= F64_NAN
+      if (input[0] === '-') value |= 0x8000000000000000n
+      _i64[0] = value
+    } else { value = typeof input === 'string' ? parseFloat(input) : input; new Float64Array(_buf)[0] = value }
+    return hex()
+  }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return {f64}')()
+  for (const optimize of levels) {
+    const { f64 } = jz(SRC, { optimize }).exports
+    for (const input of ['nan:0x7FF8000200000000', '-nan:0x1234', 'nan:canonical', 'nan', 1.5, '2.5'])
+      is(f64(input), oracle.f64(input), `${input} (O${optimize || 0})`)
+  }
+})

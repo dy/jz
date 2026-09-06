@@ -77,7 +77,7 @@ const edgeMaterializable = (source, target, node, sourceReady = false) => {
   if (action === REP_EDGE_BOX)
     return sourceReady || valTypeOf(node) === VAL.BIGINT || isBigintOrigin(node)
   if (action === REP_EDGE_UNBOX)
-    return valTypeOf(node) === VAL.BIGINT || isBigintOrigin(node)
+    return sourceReady || valTypeOf(node) === VAL.BIGINT || isBigintOrigin(node)
   if (action !== REP_EDGE_KEEP) return false
   // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
   // identity. BOXED→BOXED is ready only when the upstream producer family
@@ -673,20 +673,23 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (ready) materializedNames.add(name)
   }
 
+  // A boundary boxes a parameter's BigInt ingress once the body can read the
+  // tagged carrier: stable, or materialized through every write. Materialized
+  // names grow below, so this is a step of that fixpoint, not a prelude.
   const hostBoxParams = new Set()
-  if (exportedIdentity) for (const [name, k] of params) {
-    const sem = semanticNames.get(name) ?? semAll()
-    const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
-    if (ready && targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))
-      hostBoxParams.add(k)
-  }
   const closureAbiIdentity = options.generic || valueAbiIdentity
-  if (closureAbiIdentity) for (const [name, k] of params) {
-    const sem = semanticNames.get(name) ?? semAll()
-    const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
-    if (ready && targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))
-      closureBoxParams.add(k)
+  const boxParams = () => {
+    let grew = false
+    for (const [name, k] of params) {
+      const sem = semanticNames.get(name) ?? semAll()
+      const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
+      if (!(ready && targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))) continue
+      if (exportedIdentity && !hostBoxParams.has(k)) { hostBoxParams.add(k); grew = true }
+      if (closureAbiIdentity && !closureBoxParams.has(k)) { closureBoxParams.add(k); grew = true }
+    }
+    return grew
   }
+  boxParams()
 
   const materializedJoins = new WeakSet()
   const emittedCandidate = node => {
@@ -746,98 +749,125 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // does not gate it). Admitting resultExprs here is what lets a direct
   // `export let g = (flag) => flag ? 1n : 0` materialize the same way a
   // named-local `let value = flag ? 1n : 0; return value` already does.
-  let joinChanged = true
-  while (joinChanged) {
-    joinChanged = false
+  // Joins, census-shaped results and binding chains materialize each other:
+  // a materialized join readies the binding it initializes, a materialized
+  // parameter readies the joins it feeds. One fixpoint over all three.
+  // A join written to a binding the plan never materializes (a closed BOOL
+  // member, a parameter outside the boundary's admission) takes that
+  // binding's raw carrier: its boxed arm unboxes, its raw arm stays. Boxing
+  // it would hand the binding's raw reads a pointer.
+  const neverMaterialized = name => {
+    if (ctx.scope.globals?.has(name)) return false
+    const k = params.get(name)
+    if (k != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(k)) return true
+    return hasClosedBool(semanticNames.get(name) ?? semAll())
+  }
+  const rawJoins = new Map()
+  for (const [name, list] of defs) if (neverMaterialized(name))
+    for (const def of list) if (def[DEF_OWNER]?.[0] === '=' && Array.isArray(def[DEF_RHS]) && JOIN_OPS.has(def[DEF_RHS][0])) rawJoins.set(def[DEF_RHS], name)
+  let materializing = true
+  while (materializing) {
+    materializing = false
+    let joinChanged = true
+    while (joinChanged) {
+      joinChanged = false
+      for (const [node, planned] of nodeTarget) {
+        if (materializedJoins.has(node) || !JOIN_OPS.has(node[0]) || planned !== BOXED_BIGINT) continue
+        const sem = semanticOf(node)
+        if (hasClosedBool(sem)) continue
+        const target = rawJoins.has(node) ? RAW_BIGINT : planned
+        const [armA, armB] = joinArms(node)
+        const left = emittedCandidate(armA), right = emittedCandidate(armB)
+        if (edgeMaterializable(left.rep, target, armA, left.ready) &&
+            edgeMaterializable(right.rep, target, armB, right.ready)) {
+          nodeTarget.set(node, target)
+          materializedJoins.add(node)
+          joinChanged = true
+          materializing = true
+        }
+      }
+    }
+
+    // Census-shaped unary '-'/'~' and joint-binary result nodes. Reuses the
+    // SAME `materializedJoins` set as the JOIN_OPS
+    // fixpoint above — every consumer (emittedCandidate, materializedNames'
+    // propagation pass, materializedResult, representationResultTagRequired's
+    // exprMayBox below) already asks that one Set, so admitting a new node
+    // shape into it is the whole wiring; no new consumer-side plumbing. NOT a
+    // fixpoint (single pass, no `while`, unlike JOIN_OPS above): a JOIN_OPS
+    // node's arms can be ARBITRARY sub-expressions (a name, a call, another
+    // join) whose OWN readiness may only settle on a later round — but
+    // bigIntUnary/bigIntJointDispatch (emit.js) always compute their "real
+    // bigint" branch fresh from the operand's raw i64 bits, unconditionally,
+    // regardless of any OTHER binding's materialization state. The only
+    // precondition is the node's OWN target being BOXED_BIGINT (already
+    // computed above by plannedOf's generic branch) — no arm-by-arm proof, so
+    // no iteration is needed.
     for (const [node, target] of nodeTarget) {
-      if (materializedJoins.has(node) || !JOIN_OPS.has(node[0]) || target !== BOXED_BIGINT) continue
+      if (materializedJoins.has(node) || target !== BOXED_BIGINT) continue
+      // The summary result channel outranks a stale expression-local union: an
+      // exact BigInt return uses the raw result lane, and the static emitter does
+      // not run the dynamic computed-result boxer.
+      if (bodyResultTarget === RAW_BIGINT && definiteBigint(bodyResultSemantic) && resultExprs.includes(node)) continue
+      const op = node[0]
+      const maybeAbsentBigint = arg => {
+        const kind = summary?.kindOfExpr(arg) ?? SUMMARY_KIND.NONE
+        return ((valTypeOf(arg) ?? summary?.valOfExpr(arg)) === VAL.BIGINT ||
+            summaryTagOf(summaryCore(kind)) === SUMMARY_KIND.BIGINT) &&
+          (censusMaybeUndefinedKind(arg) === VAL.BIGINT || summary?.mayBeNullishExpr(arg) === true)
+      }
+      const sentinelUnary = (op === 'u-' || op === '~') && maybeAbsentBigint(node[1])
+      const operands = [node[1], node[2]]
+      const sentinelJoint = BIGINT_JOINT_BINARY_OPS.has(op) &&
+        operands.some(maybeAbsentBigint) && operands.every(arg =>
+          maybeAbsentBigint(arg) || definiteBigint(semanticOf(arg)) || excludesBigint(semanticOf(arg)))
+      // A covered mixed Number/BigInt parameter is normalized to a tagged
+      // carrier at entry. bigIntJointDispatch can therefore discriminate both
+      // operands exactly and box only its BigInt result arm. This is the same
+      // producer capability as the census-shaped joint case above, generalized
+      // to every operand whose carrier is ready or whose domain is definite.
+      const bothExactBigint = operands.every(arg =>
+        (valTypeOf(arg) ?? summary?.valOfExpr(arg)) === VAL.BIGINT && !maybeAbsentBigint(arg))
+      const taggedJoint = !bothExactBigint && BIGINT_JOINT_BINARY_OPS.has(op) && operands.every(arg => {
+        const candidate = emittedCandidate(arg), sem = semanticOf(arg)
+        return (candidate.ready && candidate.rep === BOXED_BIGINT) || definiteBigint(sem) || excludesBigint(sem)
+      }) && operands.some(arg => canBeBigint(semanticOf(arg)))
+      if (!sentinelUnary && !sentinelJoint && !taggedJoint) continue
       const sem = semanticOf(node)
       if (hasClosedBool(sem)) continue
-      const [armA, armB] = joinArms(node)
-      const left = emittedCandidate(armA), right = emittedCandidate(armB)
-      if (edgeMaterializable(left.rep, target, armA, left.ready) &&
-          edgeMaterializable(right.rep, target, armB, right.ready)) {
-        materializedJoins.add(node)
-        joinChanged = true
+      materializedJoins.add(node)
+      materializing = true
+    }
+
+    // Propagate every newly-materialized producer through plain-write binding
+    // chains. This is a monotone fixpoint: a checked read can materialize `x`,
+    // which can make `y = x` ready, which can in turn make a later `z = y`
+    // ready. Restricting this pass to join/call spellings left those equivalent
+    // chains with a boxed physical value in a raw-planned local.
+    let namesChanged = true
+    while (namesChanged) {
+      namesChanged = false
+      for (const [name, list] of defs) {
+        if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
+        const paramIndex = params.get(name)
+        if (paramIndex != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(paramIndex)) continue
+        if (!list.some(def => def[DEF_RHS] != null && emittedCandidate(def[DEF_RHS]).ready)) continue
+        const nameSemantic = semanticNames.get(name) ?? semAll()
+        if (hasClosedBool(nameSemantic)) continue
+        const target = targetNames.get(name) ?? ANY_BIGINT
+        if (list.every(def => {
+          if (def[DEF_RHS] == null) return true
+          if (def[DEF_OWNER]?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def[DEF_OWNER]?.[0])) return false
+          const source = emittedCandidate(def[DEF_RHS])
+          return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready)
+        })) {
+          materializedNames.add(name)
+          namesChanged = true
+          materializing = true
+        }
       }
     }
-  }
-
-  // Census-shaped unary '-'/'~' and joint-binary result nodes. Reuses the
-  // SAME `materializedJoins` set as the JOIN_OPS
-  // fixpoint above — every consumer (emittedCandidate, materializedNames'
-  // propagation pass, materializedResult, representationResultTagRequired's
-  // exprMayBox below) already asks that one Set, so admitting a new node
-  // shape into it is the whole wiring; no new consumer-side plumbing. NOT a
-  // fixpoint (single pass, no `while`, unlike JOIN_OPS above): a JOIN_OPS
-  // node's arms can be ARBITRARY sub-expressions (a name, a call, another
-  // join) whose OWN readiness may only settle on a later round — but
-  // bigIntUnary/bigIntJointDispatch (emit.js) always compute their "real
-  // bigint" branch fresh from the operand's raw i64 bits, unconditionally,
-  // regardless of any OTHER binding's materialization state. The only
-  // precondition is the node's OWN target being BOXED_BIGINT (already
-  // computed above by plannedOf's generic branch) — no arm-by-arm proof, so
-  // no iteration is needed.
-  for (const [node, target] of nodeTarget) {
-    if (materializedJoins.has(node) || target !== BOXED_BIGINT) continue
-    // The summary result channel outranks a stale expression-local union: an
-    // exact BigInt return uses the raw result lane, and the static emitter does
-    // not run the dynamic computed-result boxer.
-    if (bodyResultTarget === RAW_BIGINT && definiteBigint(bodyResultSemantic) && resultExprs.includes(node)) continue
-    const op = node[0]
-    const maybeAbsentBigint = arg => {
-      const kind = summary?.kindOfExpr(arg) ?? SUMMARY_KIND.NONE
-      return ((valTypeOf(arg) ?? summary?.valOfExpr(arg)) === VAL.BIGINT ||
-          summaryTagOf(summaryCore(kind)) === SUMMARY_KIND.BIGINT) &&
-        (censusMaybeUndefinedKind(arg) === VAL.BIGINT || summary?.mayBeNullishExpr(arg) === true)
-    }
-    const sentinelUnary = (op === 'u-' || op === '~') && maybeAbsentBigint(node[1])
-    const operands = [node[1], node[2]]
-    const sentinelJoint = BIGINT_JOINT_BINARY_OPS.has(op) &&
-      operands.some(maybeAbsentBigint) && operands.every(arg =>
-        maybeAbsentBigint(arg) || definiteBigint(semanticOf(arg)) || excludesBigint(semanticOf(arg)))
-    // A covered mixed Number/BigInt parameter is normalized to a tagged
-    // carrier at entry. bigIntJointDispatch can therefore discriminate both
-    // operands exactly and box only its BigInt result arm. This is the same
-    // producer capability as the census-shaped joint case above, generalized
-    // to every operand whose carrier is ready or whose domain is definite.
-    const bothExactBigint = operands.every(arg =>
-      (valTypeOf(arg) ?? summary?.valOfExpr(arg)) === VAL.BIGINT && !maybeAbsentBigint(arg))
-    const taggedJoint = !bothExactBigint && BIGINT_JOINT_BINARY_OPS.has(op) && operands.every(arg => {
-      const candidate = emittedCandidate(arg), sem = semanticOf(arg)
-      return (candidate.ready && candidate.rep === BOXED_BIGINT) || definiteBigint(sem) || excludesBigint(sem)
-    }) && operands.some(arg => canBeBigint(semanticOf(arg)))
-    if (!sentinelUnary && !sentinelJoint && !taggedJoint) continue
-    const sem = semanticOf(node)
-    if (hasClosedBool(sem)) continue
-    materializedJoins.add(node)
-  }
-
-  // Propagate every newly-materialized producer through plain-write binding
-  // chains. This is a monotone fixpoint: a checked read can materialize `x`,
-  // which can make `y = x` ready, which can in turn make a later `z = y`
-  // ready. Restricting this pass to join/call spellings left those equivalent
-  // chains with a boxed physical value in a raw-planned local.
-  let namesChanged = true
-  while (namesChanged) {
-    namesChanged = false
-    for (const [name, list] of defs) {
-      if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
-      if (params.has(name) && boundary.covered !== true) continue
-      if (!list.some(def => def[DEF_RHS] != null && emittedCandidate(def[DEF_RHS]).ready)) continue
-      const nameSemantic = semanticNames.get(name) ?? semAll()
-      if (hasClosedBool(nameSemantic)) continue
-      const target = targetNames.get(name) ?? ANY_BIGINT
-      if (list.every(def => {
-        if (def[DEF_RHS] == null) return true
-        if (def[DEF_OWNER]?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def[DEF_OWNER]?.[0])) return false
-        const source = emittedCandidate(def[DEF_RHS])
-        return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready)
-      })) {
-        materializedNames.add(name)
-        namesChanged = true
-      }
-    }
+    if (boxParams()) materializing = true
   }
 
   const resultHasClosedBool = hasClosedBool(bodyResultSemantic)
