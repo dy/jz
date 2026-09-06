@@ -632,11 +632,15 @@ export default (ctx) => {
   // === Index read ===
 
   ctx.core.emit['[]'] = (arr, idx) => {
-    // A literal NEGATIVE index is always out of range → undefined (JS semantics), never a
-    // raw `payload + (-1)*8` load that reads heap before the allocation. A side-effecting
-    // receiver still evaluates. Mirrors VT['[]'] returning null for the same case.
+    // A literal NEGATIVE index on an array, a typed array or a string is out of
+    // range → undefined (JS semantics), never a raw `payload + (-1)*8` load that
+    // reads heap before the allocation. A side-effecting receiver still
+    // evaluates. On any other receiver `o[-1]` reads the property "-1"
+    // (ToPropertyKey): the generic paths below stringify the key. Mirrors
+    // VT['[]'] returning null for the same case.
     { const li = intLiteralValue(idx)
-      if (li != null && li < 0)
+      const rvt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
+      if (li != null && li < 0 && (rvt === VAL.ARRAY || rvt === VAL.TYPED || rvt === VAL.STRING))
         return typeof arr === 'string'
           ? undefExpr()
           : typed(['block', ['result', 'f64'], ['drop', asF64(emit(arr))], undefExpr()], 'f64') }

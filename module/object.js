@@ -805,11 +805,11 @@ export default (ctx) => {
     }
     const nullishThrow = requireCoercible(arr)
     if (nullishThrow) return nullishThrow
-    inc('__hash_new', '__hash_set')
+    inc('__hash_new', '__hash_set', '__is_str_key', '__to_str')
     inc('__str_hash', '__str_eq')
     const va = asF64(emit(arr))
     const t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
-    const i = tempI32('fi'), pair = tempI32('fv')
+    const i = tempI32('fi'), pair = tempI32('fv'), key = tempI64('fk')
     const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
@@ -821,9 +821,13 @@ export default (ctx) => {
         // Load pair (array of 2): pair = ptr_offset(arr[i])
         ['local.set', `$${pair}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64',
           ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]],
-        // hash_set(result, pair[0], pair[1])
+        // ToPropertyKey (as `o[k] = v` does, __dyn_set): a stored key is always a string, so `o[-1]` finds the entry `[-1, v]` made.
+        ['local.set', `$${key}`, ['i64.load', ['local.get', `$${pair}`]]],
+        ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${key}`]]],
+          ['then', ['local.set', `$${key}`, ['call', '$__to_str', ['local.get', `$${key}`]]]]],
+        // hash_set(result, key, pair[1])
         ['local.set', `$${t}`, ['f64.reinterpret_i64', ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
-          ['i64.load', ['local.get', `$${pair}`]],
+          ['local.get', `$${key}`],
           ['i64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]]],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],

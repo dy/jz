@@ -2188,3 +2188,26 @@ test('in-place replace store past the length extends the array at every tier', (
   for (const optimize of [0, 2, 3, 'size'])
     for (const n of [2, 4, 6, 9]) is(jz(src, { optimize }).exports.f(n), e.f(n), `n=${n} @O${optimize}`)
 })
+
+// A property key is a string (ToPropertyKey): `Object.fromEntries` stores a
+// number key as its string, so `o[-1]`, `o[2]` and `o[1.5]` find the entries
+// `[-1, …]`, `[2, …]`, `[1.5, …]` made, through a literal key or a computed
+// one, and `Object.keys` lists them. A negative literal index is out of range
+// on an array, a typed array or a string alone; on an object it reads the
+// property "-1". Every level, against JS.
+test('objects: numeric keys are property keys through fromEntries and a negative literal index', () => {
+  const src = `const A = Object.fromEntries([[-1, 'a'], [2, 'b'], [1.5, 'c']])
+  const T = { number: -1, string: -2 }
+  const D = Object.fromEntries(Object.entries(T).map(([name, code]) => [code, name]))
+  const L = { '-1': 'm' }
+  const get = (o, k) => o[k]
+  export let f = () => [A[-1], A['-1'], get(A, -1), get(A, '-1'), get(A, 2), get(A, '2'), A[1.5], get(A, 1.5), A['1.5'], D[-1], D[-2], D[T.string], L[-1], get(L, -1), Object.keys(A).length, Object.keys(D).join(',')].join('|')
+  export let g = () => [typeof [1, 2, 3][-1], typeof 'abc'[-1], typeof new Float64Array(2)[-1]].join('|')`
+  const e = {}
+  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
+  for (const optimize of [0, 2, 3]) {
+    const ex = jz(src, { optimize }).exports
+    is(ex.f(), e.f(), `f @O${optimize}`)
+    is(ex.g(), e.g(), `g @O${optimize}`)
+  }
+})
