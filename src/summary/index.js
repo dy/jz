@@ -340,7 +340,24 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // result for every iteration that actually invokes it.
     return merge(initial, out)
   }
-  const method = (recv, name, argKinds) => {
+  // An array's callback method binds the callback to (element, index, array):
+  // `map` collects the callback's results in the call's own cell, the
+  // predicates keep the elements, `reduce` recurs through its accumulator.
+  const ARRAY_CALLBACKS = new Set(['map', 'filter', 'forEach', 'find', 'findLast', 'findIndex', 'findLastIndex', 'some', 'every', 'flatMap'])
+  const arrayCallback = (node, recv, name, argKinds) => {
+    const cb = argKinds[0]
+    if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { for (const k of argKinds) escape(k); return ANY }
+    for (let i = 1; i < argKinds.length; i++) escape(argKinds[i])
+    const elem = elemOf(recv), r = callClosure(paramOf(cb), [elem, NUMBER, recv])
+    if (name === 'map') { const out = arrayOf(node, r); raiseElem(out, r); return out }
+    if (name === 'flatMap') { const out = arrayOf(node, K.NONE); raiseElem(out, tagOf(r) === K.ARRAY ? elemOf(r) : r); return out }
+    if (name === 'filter') return recv
+    if (name === 'find' || name === 'findLast') return orAbsent(elem)
+    if (name === 'findIndex' || name === 'findLastIndex') return NUMBER
+    if (name === 'forEach') return NULLISH
+    return BOOL
+  }
+  const method = (recv, name, argKinds, node = null) => {
     const t = tagOf(recv)
     if (t === K.NONE) return K.NONE  // the receiver is not known yet; a later round sees it
     // A member access on a nullish receiver throws before the call: the
@@ -380,6 +397,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (t === K.BUFFER && name === 'slice') return kind(K.BUFFER)
     if (t === K.ARRAY) {
+      if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, argKinds)
       if (name === 'push' || name === 'unshift') { for (const k of argKinds) raiseElem(recv, k); return NUMBER }
       if (name === 'indexOf' || name === 'lastIndexOf' || name === 'findIndex') { for (const k of argKinds) escape(k); return NUMBER }
       if (name === 'pop' || name === 'shift' || name === 'at' || name === 'find') { for (const k of argKinds) escape(k); return orAbsent(elemOf(recv)) }
@@ -509,7 +527,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const callee = n[1], as = args(n[2]).map(expr)
       if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
         const recv = receiver(callee[1])
-        return optionalResult(callee[0], recv, method(recv, callee[2], as))
+        return optionalResult(callee[0], recv, method(recv, callee[2], as, n))
       }
       if (callee === 'new.Map') { for (const k of as) escape(k); return cellOf(n, K.MAP, as.length ? ANY : K.NONE) }
       if (typeof callee === 'string') return call(callee, as)
@@ -885,7 +903,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameScopes,
-    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets,
+    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells,
     schemas: schemas.map(props => props.slice()), methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped,

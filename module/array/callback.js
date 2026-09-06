@@ -21,6 +21,7 @@ import { valTypeOf } from '../../src/kind.js'
 import { extractParams, refsName, REFS_IN_EXPR } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, DBG_INVARIANTS } from '../../src/ctx.js'
+import { valOf as summaryValOf } from '../../src/summary/index.js'
 
 export function hoistArrayValue(arr) {
   const recv = temp('ar')
@@ -149,7 +150,11 @@ export function callbackArgReps(arr) {
     const vt = lookupValType(arr)
     if (vt === VAL.TYPED) itemRep = { val: VAL.NUMBER }
     else if (vt === VAL.ARRAY) {
-      const elemVt = ctx.func.localReps?.get(arr)?.arrayElemValType
+      // The summary's element cell carries presence: a nullable element
+      // (`xs.map(v => bits(v))`, bits returning null or a string) gets no
+      // exact hint, so `b !== null` in the callback stays a real test.
+      const ek = ctx.summary?.at(ctx.func.current)?.elemKindOf(arr)
+      const elemVt = ek != null ? summaryValOf(ek) : ctx.func.localReps?.get(arr)?.arrayElemValType
       if (elemVt) itemRep = { val: elemVt }
     }
   } else {

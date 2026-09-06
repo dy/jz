@@ -8,7 +8,7 @@
  *
  * @module array/early-exit
  */
-import { typed, temp, freshId, arrayLoop, truthyIR, NULL_NAN } from '../../src/ir.js'
+import { typed, temp, freshId, arrayLoop, truthyIR, UNDEF_NAN } from '../../src/ir.js'
 import { ctx } from '../../src/ctx.js'
 import { hoistArrayValue, makeCallback, callbackArgReps, idxArg } from './callback.js'
 
@@ -54,7 +54,7 @@ export const registerEarlyExit = () => {
 
   ctx.core.emit['.find'] = earlyExitMethod({
     tag: 'ff',
-    init: ['f64.reinterpret_i64', ['i64.const', NULL_NAN]],
+    init: ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]],
     test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
     onMatch: (_cb, _i, item) => item,
   })
@@ -69,7 +69,7 @@ export const registerEarlyExit = () => {
 
   ctx.core.emit['.findLast'] = earlyExitMethod({
     tag: 'fl',
-    init: ['f64.reinterpret_i64', ['i64.const', NULL_NAN]],
+    init: ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]],
     test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
     onMatch: (_cb, _i, item) => item,
     reverse: true,

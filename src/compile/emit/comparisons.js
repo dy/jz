@@ -381,7 +381,10 @@ const nullableOperand = (n) => {
     return !typedIdxProven(n[1], n[2])
   }
   if (censusMaybeUndefined(n)) return true
-  return false
+  // The summary carries presence beside the kind: an element or slot read
+  // whose producers include a nullish (`xs.map(v => bits(v))`, bits
+  // returning null or a string) is nullable whatever its present kind.
+  return ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(n) === true
 }
 
 // A boolean that may be nullish is not statically boolean: its nullish member

@@ -12,7 +12,7 @@ import {
 
 export function summaryQueries(facts) {
   const { kinds, incoming, fields, results, closures, declared, parent, nameScopes,
-    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets,
+    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells,
     schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps } = facts
   const keyIn = (scope, name) => scope === '' ? name : scope + '\0' + name
   // The solver owns union-find compression; querying a root never writes it.
@@ -38,6 +38,13 @@ export function summaryQueries(facts) {
     const v = valOf(core(recv))
     return v == null || v === VAL.OBJECT || v === VAL.HASH || v === VAL.CLOSURE ? ANY : kindOfVal(methodValType(name, null, v, null))
   }
+  const ARRAY_CALLBACK_RESULT = new Map([
+    ['map', (r, id) => id === undefined ? kind(K.ARRAY) : canon(kind(K.ARRAY, id))],
+    ['flatMap', (r, id) => id === undefined ? kind(K.ARRAY) : canon(kind(K.ARRAY, id))],
+    ['filter', r => r], ['find', r => orAbsent(elemOf(r))], ['findLast', r => orAbsent(elemOf(r))],
+    ['findIndex', () => NUMBER], ['findLastIndex', () => NUMBER], ['forEach', () => NULLISH],
+    ['some', () => BOOL], ['every', () => BOOL],
+  ])
   const optionalResult = (op, recv, result) => op !== '?.' || !hasTag(recv, K.NULLISH) && !hasTag(recv, K.ABSENT) ? result : tagOf(core(recv)) === K.NONE ? NULLISH : join(result, NULLISH)
   const literalKind = v => v == null ? NULLISH : typeof v === 'number' ? NUMBER : typeof v === 'string' ? STRING : typeof v === 'boolean' ? BOOL : typeof v === 'bigint' ? BIGINT : ANY
   const args = a => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
@@ -147,6 +154,8 @@ export function summaryQueries(facts) {
           result = tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN ? ANY
             : join(as.length > 1 ? as[1] : typedElemKind(r), closureResult(paramOf(cb)))
         }
+        // The solver bound the callback and, for `map`/`flatMap`, filled the call's own cell.
+        else if (t === K.ARRAY && paramOf(r) !== UNKNOWN && ARRAY_CALLBACK_RESULT.has(name)) result = ARRAY_CALLBACK_RESULT.get(name)(r, cells.get(n))
         else if (t === K.STRING && name === 'at') result = orAbsent(STRING)
         else if (t === K.STRING && name === 'codePointAt') result = orAbsent(NUMBER)
         else result = builtinMethodResult(r, name)
@@ -169,6 +178,8 @@ export function summaryQueries(facts) {
       // Payload queries preserve identity independently of nullish presence.
       objectSidOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? paramOf(k) : null },
       typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
+      // The element cell's own kind: presence included, no absent member for a read past the end.
+      elemKindOf: name => { const k = readKind(name); return celled(k) ? elemOf(k) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null },
       numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'string' ? isNumeric(key) : key.every(isNumeric)) },
       // Incoming arguments/defaults before any reassignment in the body.

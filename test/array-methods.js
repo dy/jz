@@ -1910,3 +1910,20 @@ test('Ctor.prototype.method.call(receiver, …) is the method on the receiver', 
   is(exports.c([3, 7]), 1)
   is(exports.d(), '1-2-3')
 })
+
+// The summary models the array callback methods: `map` collects the callback's
+// results in the call's own cell, presence included, so an element that may be
+// null keeps its `!== null` test, in a read and inside an inlined `every`. The
+// kernel compiled `slots.every(b => b !== null)` (module/object.js's static
+// object literal) as always true and laid out null slots.
+test('array callbacks: a mapped element that may be null keeps its null test; find misses with undefined', () => {
+  const src = `const bits = (node) => { if (!Array.isArray(node)) return null; if (node[0] === "f64.const") return "0x" + node[1]; return null }
+  export let f = (k) => { const emitted = [["f64.const", 1], k ? ["local.get", "$n"] : ["f64.const", 2]]; const slots = emitted.map(v => bits(v)); return (slots[1] !== null ? 1 : 0) + (slots[0] !== null ? 2 : 0) }
+  export let g = (k) => { const emitted = [["f64.const", 1], k ? ["local.get", "$n"] : ["f64.const", 2]]; const slots = emitted.map(v => bits(v)); return slots.every(b => b !== null) ? 1 : 0 }
+  export let h = (k) => { const xs = [1, 2, 3].map(x => x === k ? null : x * 2); return xs.filter(x => x !== null).length * 10 + (xs.find(x => x === null) === null ? 1 : 0) + (xs.findLast(x => x === 7) === undefined ? 100 : 0) }`
+  const oracle = Function(src.replaceAll('export ', '') + ';return {f,g,h}')()
+  for (const optimize of [false, 1, 2]) {
+    const ex = jz(src, { optimize }).exports
+    for (const k of [0, 1, 2]) for (const name of ['f', 'g', 'h']) is(ex[name](k), oracle[name](k), `${name}(${k}) O${optimize || 0}`)
+  }
+})
