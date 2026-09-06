@@ -3,40 +3,62 @@ name: kernel-gate
 # gate, each with its manifest as an artifact. `functional` and `sequences` are
 # required; `recursive` and `memory` report (a red recursive gate is the literal
 # state of the self-hosted compiler until its blockers close; memory has no
-# baseline to judge against in CI). Speed needs an unloaded machine and a
-# baseline kernel: not a CI job.
+# baseline to judge against in CI). Speed needs an unloaded machine and an
+# attested baseline kernel: not a CI job.
+#
+# Dependencies: jz consumes watr as `file:../watr`, so a clean checkout needs the
+# sibling watr checkout at the exact commit jz's gates were run against (WATR_REF
+# below), installed with its submodules. That commit must exist upstream for this
+# workflow to run remotely; a commit only in a local worktree is an availability
+# blocker, not a reason to publish or to pin a release that lacks the change.
 on:
   push:
     paths-ignore: ['**/*.md', '**/*.svg', '**/*.html', '.work/**', 'LICENSE']
   pull_request:
     paths-ignore: ['**/*.md', '**/*.svg', '**/*.html', '.work/**', 'LICENSE']
+env:
+  # the watr commit the gates are run against (scripts/kernel-gate.mjs records the
+  # installed watr's content hash in every manifest; a mismatch is not this pin)
+  WATR_REF: 5613521
 jobs:
   functional:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with: { path: jz }
+      - uses: actions/checkout@v4
+        with: { repository: dy/watr, ref: '${{ env.WATR_REF }}', path: watr, submodules: recursive }
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
-      - run: npm install
-      - name: runner failure modes and corpus expectations
-        run: node test/index.js kernel-gate
-      - name: functional and sequences on a fresh kernel
+      - name: install (watr from the sibling checkout, as package.json declares)
+        working-directory: jz
+        run: npm install
+      - name: runner failure modes, verdicts and corpus expectations
+        working-directory: jz
+        run: node test/index.js kernel-gate self-build
+      - name: functional and sequences on a fresh attested kernel
+        working-directory: jz
         run: node scripts/kernel-gate.mjs --build --gate functional,sequences --corpus medium --json kernel-gate-functional.json
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: kernel-gate-functional, path: kernel-gate-functional.json }
+        with: { name: kernel-gate-functional, path: jz/kernel-gate-functional.json }
   recursive:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with: { path: jz }
+      - uses: actions/checkout@v4
+        with: { repository: dy/watr, ref: '${{ env.WATR_REF }}', path: watr, submodules: recursive }
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
-      - run: npm install
-      - name: recursive and memory on a fresh kernel
+      - working-directory: jz
+        run: npm install
+      - name: recursive and memory on a fresh attested kernel
+        working-directory: jz
         run: node scripts/kernel-gate.mjs --build --gate recursive,memory --json kernel-gate-recursive.json
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: kernel-gate-recursive, path: kernel-gate-recursive.json }
+        with: { name: kernel-gate-recursive, path: jz/kernel-gate-recursive.json }
