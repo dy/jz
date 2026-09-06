@@ -51,6 +51,7 @@ const TESTS = [
   'bigint-boundary',
   'reachability',
   'reachability-mutants',
+  'self-families',
   'interval-proof',
   'passes',
   'dyn-closure-tables',
