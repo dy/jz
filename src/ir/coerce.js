@@ -19,7 +19,7 @@ import { typed } from './tag.js'
 import { temp, tempI32, tempI64, block64, freshId } from './locals.js'
 import { ptrOffsetIR, ptrTypeEq } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
-import { isPlanTaggedBigint, materializeDeferredBigint, readI64, unboxBigInt } from './bigint.js'
+import { isBigIntBox, isPlanTaggedBigint, materializeDeferredBigint, readI64, unboxBigInt } from './bigint.js'
 import { NULL_NAN, UNDEF_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
@@ -506,7 +506,7 @@ export function toStrI64(node, v) {
     const get = () => typed(['local.get', `$${t}`], 'f64')
     return typed(['block', ['result', 'i64'],
       ['local.set', `$${t}`, asF64(materializeDeferredBigint(v))],
-      ['if', ['result', 'i64'], ptrTypeEq(get(), PTR.BIGINT),
+      ['if', ['result', 'i64'], isBigIntBox(get(), t),
         ['then', ['i64.reinterpret_f64',
           ['call', '$__radix_str', unboxBigInt(get()), ['i32.const', 10]]]],
         ['else', ['call', '$__to_str', asI64(get())]]]], 'i64')

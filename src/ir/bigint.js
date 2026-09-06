@@ -171,15 +171,23 @@ export function applyBigintRepresentationAction(ir, node, action) {
  *  choice to invoke this, never on a proven-BIGINT or proven-not-BIGINT
  *  read. Returns i64, matching unboxBigInt's own convention. */
 export function maybeUnboxBigInt(f64expr) {
-  f64expr = materializeDeferredBigint(f64expr)
   const t = temp('mbig')
-  inc('__ptr_type')
   return typed(['if', ['result', 'i64'],
-    ['i32.eq',
-      ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.tee', `$${t}`, f64expr]]],
-      ['i32.const', PTR.BIGINT]],
+    isBigIntBox(['local.tee', `$${t}`, materializeDeferredBigint(f64expr)], t),
     ['then', unboxBigInt(['local.get', `$${t}`])],
     ['else', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], 'i64')
+}
+
+/** True iff the f64 carrier holds a PTR.BIGINT box: a NaN-box with that tag.
+ *  A raw Number's bits spell any tag (12.0 reads as BIGINT), so the NaN test
+ *  comes first. `t` names a temp the value is already teed into; else one is
+ *  minted. */
+export function isBigIntBox(f64expr, t = null) {
+  const get = ['local.get', `$${t ??= temp('bbox')}`]
+  const first = f64expr[0] === 'local.tee' ? f64expr : ['local.tee', `$${t}`, f64expr]
+  inc('__ptr_type')
+  return typed(['i32.and', ['f64.ne', first, get],
+    ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', get]], ['i32.const', PTR.BIGINT]]], 'i32')
 }
 
 /** True iff `node` is a `.prop` read (bare-name receiver only — the same

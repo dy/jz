@@ -9,7 +9,7 @@ import { ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
 import { ctx, err, PTR } from '../../ctx.js'
 import {
-  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, ptrTypeEq, readI64, temp, tempI32, tempI64, throwErrorIR, typed,
+  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, typed,
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -170,7 +170,7 @@ export function bigIntUnaryPlus(node) {
   if (domain !== 'census' && domain !== 'tagged') return null
   const t = temp('bigUPlus')
   const get = typed(['local.get', `$${t}`], 'f64')
-  const isBig = domain === 'tagged' ? ptrTypeEq(get, PTR.BIGINT) : ['i32.eqz', isUndef(get)]
+  const isBig = domain === 'tagged' ? isBigIntBox(get, t) : ['i32.eqz', isUndef(get)]
   ctx.runtime.throws = true
   const throwIR = typed(['block', ['result', 'f64'],
     ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
@@ -261,7 +261,7 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   const flagIR = (dom, get) => dom === 'bigint' ? ['i32.const', 1]
     : dom === 'number' ? ['i32.const', 0]
     : dom === 'census' ? ['i32.eqz', isUndef(get)]
-    : dom === 'tagged' ? ptrTypeEq(get, PTR.BIGINT)
+    : dom === 'tagged' ? isBigIntBox(get, get[1].slice(1))
     : isBigIntCarrierBits(get)
   const needFlag = (dom) => dom !== 'bigint' && dom !== 'number'
   const fta = needFlag(domA) ? tempI32('bigJf') : null

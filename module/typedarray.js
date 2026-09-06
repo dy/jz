@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, deferBigintBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS, isUndefinedLiteral } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -1984,12 +1984,12 @@ export default (ctx) => {
         ]
         return typed(void_ ? ['block', ...pre,
           ['local.set', `$${vt}`, asF64(valIR)],
-          ['if', ['i32.eqz', ptrTypeEq(get, PTR.BIGINT)], ['then', ...mismatch]],
+          ['if', ['i32.eqz', isBigIntBox(get, vt)], ['then', ...mismatch]],
           ['local.set', `$${bits}`, unboxBigInt(get)],
           guard(['i64.store', off, ['local.get', `$${bits}`]])]
           : ['block', ['result', 'f64'], ...pre,
           ['local.set', `$${vt}`, asF64(valIR)],
-          ['if', ['i32.eqz', ptrTypeEq(get, PTR.BIGINT)], ['then', ...mismatch]],
+          ['if', ['i32.eqz', isBigIntBox(get, vt)], ['then', ...mismatch]],
           ['local.set', `$${bits}`, unboxBigInt(get)],
           guard(['i64.store', off, ['local.get', `$${bits}`]]),
           get], void_ ? 'void' : 'f64')
