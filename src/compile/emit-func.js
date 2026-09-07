@@ -95,17 +95,9 @@ export function emitFunc(func, functionPlan, programFacts) {
   // collections never leave function-plan.js.
   const installedPlan = installFunctionPlan(ctx, functionPlan)
   const block = installedPlan.block
-  // emitDecl's closure-capture identity shadow (emit.js, ctx.func.
-  // identityShadow — name → shadow-local name) is purely an EMISSION-tier
-  // fact: minted and consumed entirely within this one emitFunc call (unlike
-  // capturedNames above, it has no analysis-time source and needs no plan
-  // publication) — but createActiveFunction's baseline record doesn't carry
-  // it either, so it must start fresh here, not inherit whatever a sibling
-  // function's emission left on a reused field.
-  ctx.func.identityShadow = new Map()
   // Derive WAT-node metadata before call-site seeding mutates the active rep
   // map. This preserves the published analysis snapshot's exact semantics.
-  const plannedCseLoadBases = installedPlan.cseLoadBases.size
+  const plannedCseLoadBases = installedPlan.cseLoadBases?.size
     ? new Set([...installedPlan.cseLoadBases].map(n => `$${n}`)) : null
   const plannedDistinctParams = installedPlan.distinctParams?.size
     ? new Set([...installedPlan.distinctParams].map(n => `$${n}`)) : null
@@ -235,13 +227,12 @@ export function emitFunc(func, functionPlan, programFacts) {
 
   // Box params that are mutably captured: allocate cell, copy param value
   const boxedParamInits = []
-  ctx.func.preboxed = new Set()
   const paramNames = new Set(sig.params.map(p => p.name))
   for (const p of sig.params) {
     if (ctx.func.boxed.has(p.name)) {
       const cell = ctx.func.boxed.get(p.name)
       ctx.func.locals.set(cell, 'i32')
-      ctx.func.preboxed.add(p.name)
+      ;(ctx.func.preboxed ??= new Set()).add(p.name)
       const lget = typed(['local.get', `$${p.name}`], p.type)
       if (p.ptrKind != null) lget.ptrKind = p.ptrKind
       boxedParamInits.push(

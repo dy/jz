@@ -17,7 +17,7 @@ export function emitPreboxedLocalInits(isSeeded) {
   for (const [name, cell] of ctx.func.boxed) {
     if (isSeeded(name)) continue
     ctx.func.locals.set(cell, 'i32')
-    ctx.func.preboxed.add(name)
+    ;(ctx.func.preboxed ??= new Set()).add(name)
     names.push(name)
     inits.push(
       ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],

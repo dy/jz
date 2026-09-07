@@ -28,6 +28,9 @@ const normalizeClosureBody = cb => {
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
 }
 
+// A closure that captures no cell: read-only, shared by every such closure.
+const EMPTY_NAMES = new Set()
+
 const closureSig = cb => {
   const params = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
   const width = ctx.closure.width ?? MAX_CLOSURE_ARITY
@@ -63,13 +66,11 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   ctx.func.typedLen = cb.typedLens
     ? makeMapOverlay(globalTL, new Map(cb.typedLens))
     : globalTL ? makeMapOverlay(globalTL) : null
-  ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
-  // Fresh per closure body too — see analyzeFuncForEmit's identical reset
-  // (above) for why these can't be left to carry over from the parent frame.
-  ctx.func.capturedNames = new Set()
-  ctx.func.identityShadow = new Map()
-  ctx.func.cellTypes = new Set(cb.cellI32 || [])
-  const parentBoxedCaptures = new Set(cb.boxed || [])
+  if (cb.boxed) for (const v of cb.boxed) ctx.func.boxed.set(v, v)
+  // The closure record's sets are read (`has`) and never written past this
+  // point: the frame keeps them as they are.
+  ctx.func.cellTypes = cb.cellI32
+  const parentBoxedCaptures = cb.boxed || EMPTY_NAMES
 
   for (const p of cb.params) ctx.func.locals.set(p, 'f64')
   // Closure bodies bypass analyzeFuncForEmit, so publish the same intrinsic
@@ -79,7 +80,7 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   // emitClosureBody reads the aliases and packs no array.
   if (cb.rest) {
     const aliases = restViewAliases(cb.body, cb.rest)
-    if (aliases) ctx.func.closureAux.set('restView', aliases)
+    if (aliases) (ctx.func.closureAux ??= new Map()).set('restView', aliases)
   }
   // All direct named-function callers emitted before closure planning begins,
   // so closure parameter lattices are complete at this boundary.
@@ -140,8 +141,8 @@ export function analyzeClosureBodyForEmit(cb) {
       const facts = reanalyzeBody(cb.body)
       for (const [k, v] of facts.locals)
         if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
-      ctx.func.flatObjects = facts.flatObjects ?? new Map()
-      ctx.func.sliceViews = facts.sliceViews ?? new Set()
+      ctx.func.flatObjects = facts.flatObjects
+      ctx.func.sliceViews = facts.sliceViews
       inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
       boxedCaptures(cb.body, [...cb.params, ...cb.captures])
       for (const name of ctx.func.boxed.keys())
@@ -172,15 +173,19 @@ export function analyzeClosureBodyForEmit(cb) {
     // preboxed while lowering the body. Reordering this after emit previously
     // made mutually-recursive arrows capture stale null cells.
     const seeded = new Set([...boxedCaptureNames, ...boxedValueCaptureNames, ...boxedParamNames])
-    ctx.func.closureAux.set('parentBoxedCaptures', parentBoxedCaptures)
-    ctx.func.closureAux.set('boxedCaptureNames', boxedCaptureNames)
-    ctx.func.closureAux.set('boxedValueCaptureNames', boxedValueCaptureNames)
-    ctx.func.closureAux.set('boxedParamNames', boxedParamNames)
-    for (const [name, cell] of ctx.func.boxed) {
-      ctx.func.preboxed.add(name)
-      if (seeded.has(name)) {
-        if (!boxedCaptureNames.has(name)) ctx.func.locals.set(cell, 'i32')
-      } else ctx.func.locals.set(cell, 'i32')
+    const aux = ctx.func.closureAux ??= new Map()
+    aux.set('parentBoxedCaptures', parentBoxedCaptures)
+    aux.set('boxedCaptureNames', boxedCaptureNames)
+    aux.set('boxedValueCaptureNames', boxedValueCaptureNames)
+    aux.set('boxedParamNames', boxedParamNames)
+    if (ctx.func.boxed.size) {
+      const preboxed = ctx.func.preboxed ??= new Set()
+      for (const [name, cell] of ctx.func.boxed) {
+        preboxed.add(name)
+        if (seeded.has(name)) {
+          if (!boxedCaptureNames.has(name)) ctx.func.locals.set(cell, 'i32')
+        } else ctx.func.locals.set(cell, 'i32')
+      }
     }
 
     // Closure bodies never pass through analyzeFuncForEmit; mint their nested

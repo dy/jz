@@ -112,7 +112,7 @@ export function makeCallback(fn, argReps) {
               if (DBG_INVARIANTS && Object.keys(argReps[i]).some(k => k !== 'val' && k !== 'tagged'))
                 throw new Error(`inline argReps hint carries non-val fields: ${Object.keys(argReps[i])}`)
               if (argReps[i].val) ctx.func.localValTypesOverlay.set(fresh, argReps[i].val)
-              if (argReps[i].tagged) ctx.func.taggedLocals?.add(fresh)
+              if (argReps[i].tagged) (ctx.func.taggedLocals ??= new Set()).add(fresh)
             }
           }
           const subst = substExpr(body, mapping)

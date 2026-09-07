@@ -351,7 +351,7 @@ export function inferSchemaBranch(body) {
 /** Apply refinements for the duration of `fn()`. Restores prior state on return/throw. */
 export function withRefinements(refs, body, fn) {
   if (!refs || refs.size === 0) return fn()
-  const cur = ctx.func.refinements
+  const cur = ctx.func.refinements ??= new Map()
   // Drop names that are reassigned in the body — refinement would be unsound.
   const saved = []
   for (const [name, val] of refs) {

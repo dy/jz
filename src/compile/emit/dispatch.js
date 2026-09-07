@@ -570,7 +570,7 @@ export function emitDecl(...inits) {
       // recognizers' body shapes. i32-narrowed locals are exempt either way:
       // the narrowing proof is assigned-before-read, and they zero-init.
       if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write')
-        ctx.func.maybeNullish?.add(i)
+        (ctx.func.maybeNullish ??= new Set()).add(i)
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
         ctx.func.locals.set(cell, 'i32')
@@ -594,7 +594,7 @@ export function emitDecl(...inits) {
     if (typeof name !== 'string' || init == null) continue
     // Flag bindings initialized to a nullish literal so arithmetic on them coerces (null→0,
     // undefined→NaN) rather than propagating the raw sentinel. See toNumF64 / maybeNullish.
-    if (isNullishLit(init)) ctx.func.maybeNullish?.add(name)
+    if (isNullishLit(init)) (ctx.func.maybeNullish ??= new Set()).add(name)
 
     // A rest slot view's `for…of` alias (`let a = __iter_arr(rest)`) reads the
     // same argument slots: nothing materializes (compile/rest-view.js).
@@ -868,7 +868,7 @@ export function emitDecl(...inits) {
     // pattern here (maybeNullish/closureAux, same file, same shape).
     if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
-      ctx.func.taggedLocals?.add(name)
+      (ctx.func.taggedLocals ??= new Set()).add(name)
     // Closure-capture identity shadow (kind.js hasAmbiguousBoolMerge; extends
     // 756ae10f's formatter box-at-consumer pattern to the closure-capture
     // consumer — test/kernel-oracle.js's PENDING-FIX 'captured-then-read'
@@ -919,7 +919,7 @@ export function emitDecl(...inits) {
         isBoolAtom(shadowRef)], 'f64')
       return typed(['block', ['result', 'f64'], setShadow, unboxed], 'f64')
     })
-    if (identityShadowName) ctx.func.identityShadow.set(name, identityShadowName)
+    if (identityShadowName) (ctx.func.identityShadow ??= new Map()).set(name, identityShadowName)
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
@@ -1285,12 +1285,13 @@ export function emitBlockBody(node) {
           for (let j = i + 1; j < stmts.length; j++)
             if (isReassigned(stmts[j], name)) { reassigned = true; break }
           if (reassigned) continue
-          const cur = ctx.func.refinements.get(name)
+          const refinements = ctx.func.refinements ??= new Map()
+          const cur = refinements.get(name)
           accumulated.push([name, cur])
           // Merge so sibling early-returns layering on the same name compose
           // (e.g. `if (typeof x === 'string') return; if (Array.isArray(x)) return;`
           // leaves both `notString: true` and would-be array exclusion stacked).
-          ctx.func.refinements.set(name, cur ? { ...cur, ...fact } : fact)
+          refinements.set(name, cur ? { ...cur, ...fact } : fact)
         }
       }
     }

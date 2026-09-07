@@ -483,7 +483,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     // emitter's readI64 unboxes it (ir/bigint.js isTaggedLocal).
     const bigintEmitter = representationProgramHasBigint(ctx) && ctx.core.emit[`.bigint:${method}`]
     if (bigintEmitter) {
-      ctx.func.taggedLocals?.add(t)
+      (ctx.func.taggedLocals ??= new Set()).add(t)
       cases.push([PTR.BIGINT, materializeBuiltinResult(VAL.BIGINT, callMethod(t, bigintEmitter))])
     }
     // Date carve-out — see dateAuxFallback's doc for the discrimination

@@ -11,7 +11,7 @@ import {
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { emitElementAssign, emitPropertyAssign } from '../emit-assign.js'
-import { withFunctionFields } from '../flow-state.js'
+import { withInitializerScope } from '../flow-state.js'
 import {
   REP_EDGE_BOX, representationBindingWriteAction, representationCompoundAssignAction,
 } from '../representation-plan.js'
@@ -52,7 +52,7 @@ function stagedReference(name, update = true) {
     const ctor = vt === VAL.TYPED ? plannedTypedStorageCtor(ctx, node) : null
     if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, ctor)
     const sid = vt === VAL.OBJECT ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(node) : null
-    if (sid != null) ctx.func.refinements.set(h, { schemaId: sid })   // the transient channel ctx.schema.idOf reads first
+    if (sid != null) (ctx.func.refinements ??= new Map()).set(h, { schemaId: sid })   // the transient channel ctx.schema.idOf reads first
     pre.push(['local.set', `$${h}`, asF64(emit(node))])
     return h
   }
@@ -197,7 +197,7 @@ export const assignmentOps = {
     // helper, same contract: rejects only when SOME use of `name` actually
     // observes its identity — a truthiness-only reassignment still compiles.
     rejectAmbiguousBoolIdentity(name, val)
-    if (isNullishLit(val)) ctx.func.maybeNullish?.add(name)   // null-flow: later arithmetic on this var coerces
+    if (isNullishLit(val)) (ctx.func.maybeNullish ??= new Set()).add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'
     // Self-accumulation `x = x + …` (incl. desugared `x += …`): the new value REPLACES x, so x's
     // old buffer is dead — the one context where a string concat may bump-EXTEND it in place. The
@@ -216,10 +216,7 @@ export const assignmentOps = {
     // (ir.js) for the established pattern this mirrors.
     const neverEscapes = Array.isArray(val) && val[0] === '[' && ctx.schema.arrayVars?.has(name)
       ? true : ctx.func._arrayLiteralNeverEscapes
-    let ev = withFunctionFields({
-      _selfAccumConcat: selfAccum ? name : null,
-      _arrayLiteralNeverEscapes: neverEscapes,
-    }, () => emit(val))
+    let ev = withInitializerScope(selfAccum ? name : null, neverEscapes, () => emit(val))
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBigintRepresentationAction(ev, val, repAction)
     return writeVar(name, ev, void_)

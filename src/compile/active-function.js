@@ -10,6 +10,13 @@
  * representation facts, not program-wide type state. A boundary therefore
  * swaps them by the same record identity as locals, reps, refinements, and
  * emission flags; no parallel ambient save/restore authority exists.
+ *
+ * A collection most bodies never write starts as null and is created by its
+ * first writer (`??=`); every reader tolerates null. Only `locals`, `boxed`,
+ * the control `stack` and the flow-value overlay, which nearly every body
+ * writes, are allocated with the record: a frame is entered once per
+ * function analysis, once per function emission and once per closure, and the
+ * self-compile enters ten thousand of them.
  */
 export function createActiveFunction({
   sig = null,
@@ -32,14 +39,16 @@ export function createActiveFunction({
     typedLen: null,
     lenBoundOf: null,
     boxed: new Map(),
-    cellTypes: new Set(),
-    flatObjects: new Map(),
-    sliceViews: new Set(),
+    capturedNames: null,
+    identityShadow: null,
+    cellTypes: null,
+    flatObjects: null,
+    sliceViews: null,
     restView: null,
-    leanHashLocals: new Set(),
-    i32HashLocals: new Set(),
-    leanHashDomains: new Map(),
-    preboxed: new Set(),
+    leanHashLocals: null,
+    i32HashLocals: null,
+    leanHashDomains: null,
+    preboxed: null,
     preboxAt: null,
     preboxInits: null,
 
@@ -48,19 +57,19 @@ export function createActiveFunction({
     inTry: false,
     finallyStack: null,
     pendingLabel: null,
-    refinements: new Map(),
+    refinements: null,
     flowValBlocked: null,
 
     repsFrozen: false,
-    p1Predicted: new Set(),
+    p1Predicted: null,
     localValTypesOverlay: new Map(),
     localTypedElemsOverlay: null,
 
-    closureAux: new Map(),
+    closureAux: null,
     directClosures,
-    zeroInitSeen: new Set(),
-    maybeNullish: new Set(),
-    taggedLocals: new Set(),
+    zeroInitSeen: null,
+    maybeNullish: null,
+    taggedLocals: null,
     boxedResult: false,
     valResult: null,
     valResultMayBeUndefined: false,
@@ -127,20 +136,23 @@ export function declareLocal(ctx, name, type) {
 export function isInactiveFunction(ctx) {
   const frame = ctx.func
   const emptyMap = value => value instanceof Map && value.size === 0
-  const emptySet = value => value instanceof Set && value.size === 0
+  // A lazily created collection is inactive while unallocated; once its
+  // first writer created it, the record is no longer the session frame.
+  const unallocated = value => value === null
   return frame.current === null && frame.body === null && frame.exported === false &&
     frame.atModuleScope === false && emptyMap(frame.locals) && frame.localReps === null &&
     frame.localProps === null && frame.typedElem === null && frame.typedLen === null &&
     frame.lenBoundOf === null &&
-    emptyMap(frame.boxed) && emptySet(frame.cellTypes) && emptyMap(frame.flatObjects) &&
-    emptySet(frame.sliceViews) && frame.restView === null && emptySet(frame.leanHashLocals) && emptySet(frame.i32HashLocals) &&
-    emptyMap(frame.leanHashDomains) && emptySet(frame.preboxed) && frame.preboxAt === null && frame.preboxInits === null &&
+    emptyMap(frame.boxed) && unallocated(frame.capturedNames) && unallocated(frame.identityShadow) &&
+    unallocated(frame.cellTypes) && unallocated(frame.flatObjects) &&
+    unallocated(frame.sliceViews) && frame.restView === null && unallocated(frame.leanHashLocals) && unallocated(frame.i32HashLocals) &&
+    unallocated(frame.leanHashDomains) && unallocated(frame.preboxed) && frame.preboxAt === null && frame.preboxInits === null &&
     Array.isArray(frame.stack) && frame.stack.length === 0 && frame.inTry === false &&
-    frame.finallyStack === null && frame.pendingLabel === null && emptyMap(frame.refinements) &&
-    frame.flowValBlocked === null && frame.repsFrozen === false && emptySet(frame.p1Predicted) &&
+    frame.finallyStack === null && frame.pendingLabel === null && unallocated(frame.refinements) &&
+    frame.flowValBlocked === null && frame.repsFrozen === false && unallocated(frame.p1Predicted) &&
     emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null &&
-    emptyMap(frame.closureAux) && frame.directClosures === null && emptySet(frame.zeroInitSeen) &&
-    emptySet(frame.maybeNullish) && emptySet(frame.taggedLocals) &&
+    unallocated(frame.closureAux) && frame.directClosures === null && unallocated(frame.zeroInitSeen) &&
+    unallocated(frame.maybeNullish) && unallocated(frame.taggedLocals) &&
     frame.boxedResult === false && frame.valResult === null && frame.mixedAtomReturn === false &&
     frame.charDecomp === null && frame.charDecompGlobals === false && frame.concatBufs === null &&
     frame.probeHoist === null && frame.lenHoist === null && frame.hoistTempDefs === null &&

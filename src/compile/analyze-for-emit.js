@@ -68,23 +68,6 @@ export function analyzeFuncForEmit(func, programFacts) {
   try {
 
   const block = isBlockBody(body)
-  ctx.func.boxed = new Map()
-  // Fresh per function — analyze-scans.js's boxedCaptures (called below, once
-  // `block` is confirmed) populates capturedNames; emitDecl consults it for
-  // the identity-safe closure-capture shadow (kind.js hasAmbiguousBoolMerge).
-  // identityShadow is emitDecl's OWN output (name → shadow local), read back
-  // by module/function.js's ctx.closure.make at the env-slot store. Both
-  // must reset here — ctx.func is a persistent, per-session object mutated
-  // in place across functions (createActiveFunction, src/ctx.js), never
-  // freshly allocated per function — so a stale Map/Set from a sibling
-  // function would otherwise leak forward.
-  ctx.func.capturedNames = new Set()
-  ctx.func.identityShadow = new Map()
-  ctx.func.localReps = null
-  ctx.func.leanHashLocals = new Set()
-  ctx.func.i32HashLocals = new Set()
-  ctx.func.leanHashDomains = new Map()
-  ctx.func.hoistTempDefs = null
   // MapOverlay (see emitClosureBody's own doc for the same fix applied to a
   // sibling site) avoids an O(programSize) full clone of `new Map(ctx.scope.
   // globalTypedElem)`/`new Map(ctx.scope.globalTypedLen)` paid PER FUNCTION
@@ -314,7 +297,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   // first. Re-walks with reps in place exactly when the cache can't be
   // trusted, not on every emit.
   const bodyFacts = block ? analyzeBody(body) : null
-  ctx.func.locals = bodyFacts ? bodyFacts.locals : new Map()
+  if (bodyFacts) ctx.func.locals = bodyFacts.locals
   if (bodyFacts?.valTypes) {
     // A PARAMETER name has no `let`/`const` declaration node inside body for
     // analyzeBody's own tracker to seed a baseline "unknown" observation from
@@ -353,10 +336,10 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (bodyFacts?.unsignedLocals) for (const n of bodyFacts.unsignedLocals) updateRep(n, { unsigned: true })
   // SRoA flat-object bindings — `let o = {...}` dissolved into `o#i` field
   // locals. Consumed by the codegen flat hooks (emitDecl, `.`/`[]` read+write).
-  ctx.func.flatObjects = bodyFacts ? bodyFacts.flatObjects : new Map()
+  ctx.func.flatObjects = bodyFacts ? bodyFacts.flatObjects : null
   // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
   // Consumed by emitDecl to lower the initializer to a SLICE_BIT view.
-  ctx.func.sliceViews = bodyFacts ? bodyFacts.sliceViews : new Set()
+  ctx.func.sliceViews = bodyFacts ? bodyFacts.sliceViews : null
   // Usage-based shape inference (STRING / ARRAY) for params not already typed
   // by paramReps. Descends into nested closures so a param used in a definite
   // shape only inside an inner arrow (e.g. parseLevel's `str` capture in watr)
@@ -426,7 +409,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   // may scalar-replace. Computed last: needs every `let`/param ptrKind in place.
   const cseLoadBases = block
     ? cseSafeLoadBases(body, ctx.func.locals, ctx.func.localReps)
-    : new Set()
+    : null
 
   // P1 predictor (slice 4): plan-time ptrKind inheritance for alias-init decls
   // (the reassigned ping-pong class unboxablePtrs rejects). AFTER cseLoadBases
@@ -451,13 +434,13 @@ export function analyzeFuncForEmit(func, programFacts) {
   // silently truncating every closure-body float write. Recompute instead with
   // `capturedNames` — collectIntDefs' arrow-descending mode — scoped to just
   // the boxed names, so their nested-arrow write sites join the SAME fixpoint.
-  const cellTypes = new Set()
-  const boxedNames = new Set(ctx.func.boxed.keys())
-  if (boxedNames.size) {
+  let cellTypes = null
+  if (ctx.func.boxed.size) {
+    const boxedNames = new Set(ctx.func.boxed.keys())
     const capturedIntCertain = intCertainMap(body, boxedNames)
     for (const name of boxedNames) {
       if (sig.params.some(p => p.name === name)) continue
-      if (capturedIntCertain.get(name) === true) cellTypes.add(name)
+      if (capturedIntCertain.get(name) === true) (cellTypes ??= new Set()).add(name)
     }
   }
 

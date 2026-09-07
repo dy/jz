@@ -9,7 +9,7 @@
  */
 import { ctx, getFactStore } from '../../ctx.js'
 import { commaList, isReassigned, collectParamNames, walkAst, some } from '../../ast.js'
-import { withFunctionField } from '../flow-state.js'
+import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { VAL, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
 import { intLiteralValue, intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
@@ -466,14 +466,14 @@ export function analyzeBody(body) {
         const exprBody = (Array.isArray(arrowBody) && arrowBody[0] === '{}' &&
           Array.isArray(arrowBody[1]) && arrowBody[1][0] === 'return') ? arrowBody[1][1] : arrowBody
         if (paramName && exprBody != null) {
-          const refs = ctx.func.refinements
+          const refs = recvVt ? (ctx.func.refinements ??= new Map()) : null
           const hadParam = refs?.has(paramName)
           const prev = hadParam ? refs.get(paramName) : undefined
-          if (refs && recvVt) refs.set(paramName, { val: recvVt })
+          if (refs) refs.set(paramName, { val: recvVt })
           let bodyVt = null
           try { bodyVt = valTypeOf(exprBody) }
           finally {
-            if (refs && recvVt) {
+            if (refs) {
               if (hadParam) refs.set(paramName, prev); else refs.delete(paramName)
             }
           }
@@ -652,8 +652,8 @@ export function analyzeBody(body) {
   // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
   // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
   let unsignedLocals, numericFill
-  withFunctionField('localValTypesOverlay', valTypes, () =>
-    withFunctionField('localTypedElemsOverlay', typedElems, () => {
+  withValueOverlay(valTypes, () =>
+    withTypedElemOverlay(typedElems, () => {
     walk(body)
     // Co-induction accumulator fact (INDUCTION-VARIABLE FACT project,
     // analyze-scans.js's own header doc): durably stamps a body-local

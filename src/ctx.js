@@ -1229,7 +1229,7 @@ export function assertCtxInvariants(phase) {
     must(ctx.funcs.map instanceof Map, 'funcs.map Map')
     must(ctx.funcs.multiProp instanceof Map, 'funcs.multiProp Map')
     must(ctx.func.locals instanceof Map, 'func.locals Map')
-    must(ctx.func.refinements instanceof Map, 'func.refinements Map')
+    must(ctx.func.refinements === null || ctx.func.refinements instanceof Map, 'func.refinements Map or unallocated')
   }
   if (phase === 'pre-emit') {
     must(ctx.func.current, 'func.current set before emit')
