@@ -121,6 +121,8 @@ function buildSchemaInit() {
     ctx.core.includes.has('__dyn_get') ||
     ctx.core.includes.has('__dyn_get_t') ||
     ctx.core.includes.has('__dyn_get_t_h') ||
+    ctx.core.includes.has('__dyn_get_t_hm') ||
+    ctx.core.includes.has('__dyn_has') ||
     ctx.core.includes.has('__dyn_get_expr_t_h') ||
     ctx.core.includes.has('__dyn_get_any') ||
     ctx.core.includes.has('__dyn_get_any_t') ||

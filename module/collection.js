@@ -282,6 +282,8 @@ export default (ctx) => {
     // this explicit edge is the same belt-and-suspenders precedent as the
     // other conditional entries in this table (e.g. __dyn_get_any_t below).
     __dyn_get_t_h: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_byteLen', '__ptr_aux', ...errPropDep()],
+    __dyn_get_t_hm: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_byteLen', '__ptr_aux', ...errPropDep()],
+    __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h', ...errPropDep()],
@@ -1435,7 +1437,10 @@ export default (ctx) => {
             (else (call $__str_eq ${storedKey} ${userKey})))`
           : `(call $__str_eq ${storedKey} ${userKey})`}))`
     : `(i64.eq ${storedKey} ${userKey})`
-  const buildObjectSchemaArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
+  // A schema slot holds undefined for a deleted field too (__dyn_del writes it:
+  // the layout has no absent marker), so a presence probe (`miss` given) reads
+  // an undefined slot as a miss, as the sidecar reads its tombstone.
+  const buildObjectSchemaArm = (miss = null) => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
         (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
@@ -1450,7 +1455,10 @@ export default (ctx) => {
             (block $kdone (loop $kloop
               (br_if $kdone (i32.ge_s (local.get $idx) (local.get $nkeys)))
               (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
-                (then (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
+                (then ${miss == null
+                  ? '(return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))'
+                  : `(local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
+                     (return (select ${miss} (local.get $val) (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))))`}))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
   const buildObjectSchemaLocals = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
@@ -1526,7 +1534,19 @@ export default (ctx) => {
       (then (local.set $key (call $__to_str (local.get $key)))))
     (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $type) (call $__str_hash (local.get $key))))`
 
-  ctx.core.stdlib['__dyn_get_t_h'] = () => `(func $__dyn_get_t_h (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
+  // The lookup chain, written once. `__dyn_get_t_h` answers a read (a miss is
+  // undefined); `__dyn_get_t_hm` answers presence for `k in o` (a miss is
+  // TOMB_NAN, never a stored value), so a present null or undefined field is
+  // present. Each miss return is `${miss}`; the durable sidecar probe takes the
+  // lookup whose own miss matches (`__hash_get_local_h` / `_hm`).
+  const dynGetBody = (name, missNan, sidecarGet) => {
+    const miss = `(i64.const ${missNan})`
+    // err_prop reads undefined for a key it does not decode: the presence probe
+    // reports that as a miss.
+    const errProp = missNan === UNDEF_NAN ? errPropArm()
+      : `(block (result i64) (local.set $val ${errPropArm()})
+          (select (i64.const ${TOMB_NAN}) (local.get $val) (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))))`
+    return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals()}
@@ -1535,7 +1555,7 @@ export default (ctx) => {
     ;; read stays undefined, not OOB. err_prop below decodes .message/.name for
     ;; a caught internal error code; every other key still reads undefined.
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then (return ${errPropArm()})))
+      (then (return ${errProp})))
     ;; STRING receiver + 'length' key → aux/byte length directly. Strings are
     ;; primitives — they can never carry dyn props, yet an SSO string's packed
     ;; chars LOOK like a tiny durable heap offset, so \`op.length\` in a parser
@@ -1559,7 +1579,7 @@ export default (ctx) => {
     ;; 1.38M reads/run, every one a guaranteed miss) made this the largest
     ;; single dyn sink after the array-index fix.
     (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-      (then (return (i64.const ${UNDEF_NAN}))))
+      (then (return ${miss})))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
     ;; global __dyn_props hash on the function table index (negative — can't collide
@@ -1596,7 +1616,7 @@ export default (ctx) => {
               (then
                 (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $off) (i32.const 8))))
                   (then (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
-                (return (i64.const ${UNDEF_NAN}))))))))
+                (return ${miss})))))))
     ;; DURABLE-RECEIVER POLICY: a receiver allocated at/below the post-init
     ;; high-water mark (__heap_reset) outlives _clear, but a sidecar CREATED
     ;; FOR IT AT RUNTIME lives in the round's arena — the receiver's header
@@ -1654,7 +1674,7 @@ export default (ctx) => {
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
-              (then (return (call $__hash_get_local_h (local.get $props) (local.get $key) (local.get $h))))))
+              (then (return (call $${sidecarGet} (local.get $props) (local.get $key) (local.get $h))))))
           (else (local.set $tries (i32.const -1))))
         (if (i32.eq (local.get $tries) (i32.const -1))
           (then
@@ -1676,8 +1696,8 @@ export default (ctx) => {
         ;; concluding UNDEF. Self-contained here (not a fallthrough into the
         ;; block below) so this arm's control flow never depends on the
         ;; ephemeral-only header arms or their shared global-fallback code.
-        ${buildObjectSchemaArm()}
-        (return (i64.const ${UNDEF_NAN}))))
+        ${buildObjectSchemaArm(missNan === UNDEF_NAN ? null : miss)}
+        (return ${miss})))
     (block $dynDone
       (block $haveProps
         ;; Ephemeral-only from here down (durable receivers already
@@ -1773,8 +1793,21 @@ export default (ctx) => {
         (if (i32.ge_u (local.get $slot) (local.get $pend)) (then (local.set $slot (local.get $poff))))
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
         (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
-        (br $hprobe))))${buildObjectSchemaArm()}
-    (i64.const ${UNDEF_NAN}))`
+        (br $hprobe))))${buildObjectSchemaArm(missNan === UNDEF_NAN ? null : miss)}
+    ${miss})`
+  }
+  ctx.core.stdlib['__dyn_get_t_h'] = () => dynGetBody('__dyn_get_t_h', UNDEF_NAN, '__hash_get_local_h')
+  ctx.core.stdlib['__dyn_get_t_hm'] = () => dynGetBody('__dyn_get_t_hm', TOMB_NAN, '__hash_get_local_hm')
+
+  // `k in o` on a receiver the emitter cannot decide statically: the key is a
+  // property key (ToPropertyKey), the lookup is the read's own chain, and a
+  // present field whose value is null or undefined is present.
+  ctx.core.stdlib['__dyn_has'] = `(func $__dyn_has (param $obj i64) (param $key i64) (result i32)
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))
+    (i64.ne
+      (call $__dyn_get_t_hm (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (call $__str_hash (local.get $key)))
+      (i64.const ${TOMB_NAN})))`
 
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj i64) (param $key i64) (param $fallback i64) (result i64)
     (local $val i64)
@@ -2450,9 +2483,9 @@ export default (ctx) => {
       // A schema MISS does not prove absence: an OBJECT can carry off-schema
       // dynamic props (`o.z = …` → __dyn_set's propsPtr), and under the self-compile
       // kernel schema.slotOf can under-resolve even an in-schema key. Don't fold to
-      // a static 0 — fall through to the runtime probe below, which reads the
-      // actual property via __dyn_get (OBJECT is in `hasDynProps`) and reports
-      // presence by non-nullish, exactly as the `.`/`[]` READ path resolves it.
+      // a static 0 — fall through to the runtime probe below, which looks the
+      // property up through the read's own chain (__dyn_has; OBJECT is in
+      // `hasDynProps`) and reports presence, a null or undefined value included.
     }
 
     const keyTmp = temp()
@@ -2496,8 +2529,9 @@ export default (ctx) => {
       ['i32.eq', typeVal, ['i32.const', PTR.OBJECT]],
       ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]
 
-    inc('__ptr_type', '__len', '__str_byteLen', '__hash_has', '__is_str_key', '__to_str', '__dyn_get', '__is_nullish')
+    inc('__ptr_type', '__len', '__str_byteLen', '__hash_has', '__is_str_key', '__to_str', '__dyn_has')
     if (ctx.linkDemand.external) inc('__ext_has')
+    const dynHas = () => ['call', '$__dyn_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]
 
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
@@ -2520,13 +2554,10 @@ export default (ctx) => {
       ['if', isStringKey,
         ['then',
           ['if', hasDynProps,
-            ['then', ['local.set', `$${outTmp}`,
-              ['i32.eqz', ['call', '$__is_nullish', ['call', '$__dyn_get', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]]]]]]]],
+            ['then', ['local.set', `$${outTmp}`, dynHas()]]]]],
 
       ['if', ['i32.and', ['i32.eqz', isStringKey], isObjectLike],
-        ['then', ['local.set', `$${outTmp}`,
-          ['i32.eqz', ['call', '$__is_nullish', ['call', '$__dyn_get', ['i64.reinterpret_f64', objVal],
-            ['call', '$__to_str', ['i64.reinterpret_f64', keyVal]]]]]]]],
+        ['then', ['local.set', `$${outTmp}`, dynHas()]]],
 
       ['if', ['i32.eq', typeVal, ['i32.const', PTR.HASH]],
         ['then', ['local.set', `$${outTmp}`,

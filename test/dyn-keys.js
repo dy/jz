@@ -141,7 +141,7 @@ test('in: a closed schema answers dynamic membership structurally, without __dyn
   }
 
   const wat = compile(src, { optimize: 3, wat: true })
-  ok(!wat.includes('(func $__dyn_get'), 'closed-schema membership does not pull the dynamic getter family')
+  ok(!wat.includes('(func $__dyn_get') && !wat.includes('$__dyn_has'), 'closed-schema membership does not pull the dynamic getter family')
   ok(!wat.includes('$__dyn_props'), 'closed-schema membership does not pull sidecar/global dynamic-property storage')
   ok(wat.includes('$__str_eq'), 'a long schema name uses content equality')
 
@@ -149,7 +149,7 @@ test('in: a closed schema answers dynamic membership structurally, without __dyn
     let o = { nil: null, undef: undefined }
     return k in o
   }`, { optimize: 3, wat: true })
-  ok(!ssoWat.includes('(func $__dyn_get'), 'SSO-only schema does not pull __dyn_get')
+  ok(!ssoWat.includes('(func $__dyn_get') && !ssoWat.includes('$__dyn_has'), 'SSO-only schema does not pull __dyn_get')
   ok(!ssoWat.includes('$__dyn_props'), 'SSO-only schema does not pull dynamic-property storage')
   ok(!ssoWat.includes('$__str_eq'), 'canonical SSO names compare by bits without __str_eq')
 })
@@ -181,8 +181,45 @@ test('in: open, aliased, deleted, and large schemas retain runtime membership di
     const src = `export let f = (k) => { ${body} }`
     for (const optimize of [0, 2, 3])
       is(jz(src, { optimize }).exports.f(key), expected, `O${optimize}: ${name}`)
-    ok(compile(src, { optimize: 3, wat: true }).includes('(func $__dyn_get'),
+    ok(compile(src, { optimize: 3, wat: true }).includes('$__dyn_has'),
       `${name} bypasses the closed-schema path`)
+  }
+})
+
+// The runtime `in` (every receiver the closed-schema path cannot decide) read
+// the property and reported "non-nullish", so a present null or undefined
+// field was absent: watr's `node[1][0] in TRUNC_OF_CONVERT[op]` (a table whose
+// values are null) never fired in the kernel, and the kernel kept
+// `(i32.trunc_sat_f64_s (f64.convert_i32_s x))` where native folded it. The
+// probe is the read's own lookup chain with a miss told apart from a stored
+// value (`__dyn_has` over `__dyn_get_t_hm`), against the JS oracle.
+test('in: runtime membership sees a present null or undefined field on every receiver', () => {
+  const SRC = `const TABLE = {
+    'i32.trunc_sat_f64_s': { 'f64.convert_i32_s': null },
+    'i64.trunc_sat_f64_s': { 'f64.convert_i32_s': 'i64.extend_i32_s', 'f64.convert_i32_u': 'i64.extend_i32_u' },
+  }
+  const FLAT = { a: null, b: undefined, c: 0, d: 'x' }
+  export const nested = (op, inner) => { const toc = TABLE[op]; return toc && inner in toc ? 1 : 0 }
+  export const durable = (k) => k in FLAT ? 1 : 0
+  export const durableWrite = (k) => { FLAT[k] = undefined; return (k in FLAT ? 1 : 0) + ('zz' in FLAT ? 2 : 0) }
+  export const ephemeral = (k, v) => { const o = { fixed: 1 }; o[k] = v; o.n = null; return (k in o ? 1 : 0) + ('n' in o ? 2 : 0) + ('fixed' in o ? 4 : 0) + ('zz' in o ? 8 : 0) }
+  export const deleted = (k) => { const o = { fixed: null }; o[k] = undefined; delete o[k]; return (k in o ? 1 : 0) + ('fixed' in o ? 2 : 0) }
+  export const numeric = (n) => { const o = {}; o[n] = null; return (n in o ? 1 : 0) + (String(n) in o ? 2 : 0) + ((n + 1) in o ? 4 : 0) }
+  export const onArray = (k) => { const a = [null, undefined]; a[k] = undefined; return (0 in a ? 1 : 0) + (1 in a ? 2 : 0) + (2 in a ? 4 : 0) + (k in a ? 8 : 0) + ('length' in a ? 16 : 0) }
+  export const hashed = (k) => { const h = Object.fromEntries([['a', null], ['b', undefined]]); return (k in h ? 1 : 0) + ('zz' in h ? 2 : 0) }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { nested, durable, durableWrite, ephemeral, deleted, numeric, onArray, hashed }')()
+  const calls = [
+    ['nested', ['i32.trunc_sat_f64_s', 'f64.convert_i32_s']], ['nested', ['i32.trunc_sat_f64_s', 'f64.convert_i32_u']], ['nested', ['i64.trunc_sat_f64_s', 'f64.convert_i32_u']], ['nested', ['zz', 'f64.convert_i32_s']],
+    ['durable', ['a']], ['durable', ['b']], ['durable', ['c']], ['durable', ['e']],
+    ['durableWrite', ['c']], ['durableWrite', ['added']],
+    ['ephemeral', ['u', undefined]], ['ephemeral', ['nil', null]], ['ephemeral', ['v', 1]],
+    ['deleted', ['gone']], ['numeric', [1]], ['numeric', [-1]],
+    ['onArray', ['prop']], ['onArray', [1]],
+    ['hashed', ['a']], ['hashed', ['b']],
+  ]
+  for (const optimize of [0, 1, 2]) {
+    const ex = jz(SRC, { optimize, memory: 64 }).exports
+    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
   }
 })
 
@@ -209,7 +246,7 @@ test('in: inferred-schema aliases cannot bypass source-side shape mutations', ()
   ]
   for (const [name, src] of cases) for (const optimize of [0, 2, 3]) {
     is(jz(src, { optimize }).exports.f('added'), true, `O${optimize}: ${name}`)
-    ok(compile(src, { optimize, wat: true }).includes('(func $__dyn_get'),
+    ok(compile(src, { optimize, wat: true }).includes('$__dyn_has'),
       `O${optimize}: ${name} retains runtime dispatch`)
   }
 })
