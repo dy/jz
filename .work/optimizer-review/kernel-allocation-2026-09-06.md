@@ -135,11 +135,60 @@ alone otherwise), red on `cd41cc54` at 96 / 192 / 16 bytes.
   it); the jz subset rejects an IIFE's default parameter reading the
   enclosing function's locals (`analyze-scans.js` passes the seed instead).
 
+## The encoder (watr `5a78a13`)
+
+watr writes the code section into packed byte buffers: one `Uint8Array`
+buffer for the section, one scratch per function body (`makeByteBuf`), the
+per-function item lengths kept for the metadata offsets. A plain object of
+methods (`push(...bytes)`, `append`, `length`), since the file is compiled
+by the kernel. jz's outputs are byte-identical (the corpus and the self
+graph). Compiled by jz, the builder miscompiled three ways, each on a
+receiver of unknown kind (the builder is a closure in a table, its `out`
+parameter untyped), each now pinned:
+
+10. **A tagged BigInt carrier beside an operand with no evidence took the
+    i64 path unconditionally** (`src/compile/emit/bigint.js`): `at` copies
+    `out.length` and the program holds a BigInt elsewhere, so the plan tags
+    `at`; `out.length - at` had the 'tagged' domain beside 'skip', which the
+    joint dispatch declined, and the fallback emitted `i64.sub` over the
+    Number's bits (the item length came out subnormal). Now a flagged
+    operand ('tagged' or 'census') beside an unresolved one takes the joint
+    dispatch: the flagged side's flag decides both arms, the partner unboxes
+    in the BigInt arm and coerces in the Number arm; `+` builds the Number
+    arm through its own handler over the temps, so a string partner still
+    concatenates. Pin: `bigint tag: a tagged carrier beside an unresolved
+    operand dispatches on the tag`.
+11. **`out.length = n` on an unknown receiver resized an array alone**
+    (`src/compile/emit-assign.js`): the runtime helper returned on a
+    non-array and the write was lost (`scratch.length = 0` kept the previous
+    body's bytes). Now the receiver's tag decides: an array resizes, anything
+    else takes `__dyn_set` with the value as written.
+12. **`out.push(...bytes)` on an unknown receiver ran the array builtin**
+    (`src/compile/emit/method-dispatch.js`): both own-property probes
+    (strategy 10 and the pointer-type fork) skipped a spread call, so the
+    bulk push wrote over the object's memory. `ownMethodCall` passes a
+    spread call's arguments as one array through every probe.
+    Pin for 11–12: `objects: an unknown receiver's length write and spread
+    push reach the object`.
+
+Recursive gate on the kernel built with the packed encoder
+(`$S/scratchpad/k-final3.wasm`, `gate-final3.json`): **GREEN, 13,858,907
+bytes in 55 s, heap 2,928 MB, 1,367 MB of headroom** (3,806 MB and 489 MB
+before); sequences GREEN; kernel families 37/38; functional 12/20 (the
+same eight). Native at this slice: **4306 pass / 18 fail / 1 skip**.
+
+The encoder still allocates 2.7 GB after the second checkpoint, 200 bytes
+per output byte. A driver compiled natively (`$S/scratchpad/edrv`,
+watr's `compile` with `__heap_mark` deltas per site, on a 417 KB module):
+`cleanup` 25 MB of 83 (it copies the tree), the first pass 42 MB
+(`normalize` flattens each body through `shift`, `unshift(...)`, `splice`
+and `slice(1)` per instruction: 32–40 bytes each in the kernel), `instr`
+9 MB, the rest under 3 MB each.
+
 ## Open
 
-- The encoder (watr's `compile`) allocates 3.6 GB in the kernel after the
-  second checkpoint: the headroom is 395 MB. Next by the same method: the
-  encoder's churn, then emitClosures (675 MB: 50 KB of analysis and 52 KB of
+- The encoder's `cleanup` and `normalize` (above): the next watr slice.
+  Then emitClosures (675 MB: 50 KB of analysis and 52 KB of
   emit per closure), emitFuncs (339), narrowSignatures (336), analyzeFuncs
   (269), the frame's forty collections per function (13 KB).
 - The SSO spill in `__str_to_buf`; the view object per scope (20 closures);

@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Local watr integration checkpoint
 
 This checkout currently requires sibling `../watr` at
-`5613521` (`Never discard a trap`, on `5ff0037`). `package.json` and the
+`5a78a13` (`The code section is written into packed byte buffers`, on `5613521`). `package.json` and the
 lockfile consume it explicitly; `.npmrc` installs a copy, keeping self-build
 module paths under `node_modules/watr`. Check the sibling revision before
 `npm install`; npm does not refresh the copy for a same-version change, so

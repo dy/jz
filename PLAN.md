@@ -558,20 +558,31 @@ member-reference pins green), a runtime write of `undefined` to a module
 object wins over the literal's value, dynamic loose equality converts a
 boolean beside a number, `Number`/`Boolean` as values convert. Native
 **4304 pass / 18 fail / 1 skip** at `36d58177` (45 reds at `cd41cc54`); recursive GREEN at 466 MB
-of headroom.
+of headroom. Then the encoder: watr writes the code section into packed byte
+buffers (watr `5a78a13`), and its ByteBuf shape exposed three engine defects
+on a receiver of unknown kind, each pinned: a tagged BigInt carrier beside an
+operand with no evidence took the i64 path unconditionally (the subtraction
+`out.length - at` read a Number's bits as a carrier), `out.length = 0`
+resized an array alone and dropped the write on an object, and
+`out.push(...bytes)` ran the array builtin over the object's memory instead
+of its own `push`. Recursive GREEN: **13,858,907 bytes in 55 s, 1,367 MB of
+headroom** (the encoder 3.6 → 2.7 GB after the second checkpoint); native
+**4306 pass / 18 fail / 1 skip**; kernel families 37/38; functional 12/20,
+the same eight byte divergences.
 
 ### Next ownership and order
 
-1. One session owns main. Next: the encoder's churn in the kernel (watr's
-   streaming code section, `feat/streaming-code-section`, once its ByteBuf
-   shape compiles under the self-compile), emit's per-closure allocation,
+1. One session owns main. Next: the encoder's remaining churn (watr's
+   `cleanup` copies the tree and `normalize` flattens a body through
+   `shift`/`unshift`/`splice`: 80% of its allocation, 200 bytes per output
+   byte), emit's per-closure allocation,
    the result-carrier family (a boolean through a closure result into an
    array, the six carrier pins), the `+=` normalization with its loop
    recognizers, `String()` on an `any` holding a BigInt box, the two hosted
    byte divergences. Regions remain the memory model; the allocation audit
    shrinks what they must reclaim. Keep the private fresh gate. Do not add
    source-spelling exceptions.
-2. watr is consumed at `5613521`; the local-pass deletion stays isolated until
+2. watr is consumed at `5a78a13`; the local-pass deletion stays isolated until
    its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
    introducing semantic FunctionIR.
 3. Complete callable identities and structural closure/freeze, replace covered
