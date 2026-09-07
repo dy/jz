@@ -3229,13 +3229,16 @@ test('receiver-HASH: does NOT fire when the name is absent from dynWriteVars (no
   // `bag` is only ever dot-written (`bag.x = 5`) — never through a computed
   // key — so it never enters dynWriteVars at all; the allocator's own
   // predicate requires dynWriteVars membership, and this pass must agree.
+  // Nor does moduleGlobalKinds claim it: a payload-less object (the summary
+  // names no schema for an empty literal) is the schema plan's to bind once
+  // the dot-write gives it one (plan/scope.js, `894764cd`).
   const src = `
     export let bag = {}
     export let touch = () => { bag.x = 5 }
   `
   jz.compile(src, { wat: true })
-  is(ctx.scope.globalValTypes?.get('bag'), 'object',
-    'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim: the summary\'s object')
+  is(ctx.scope.globalValTypes?.get('bag'), undefined,
+    'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim, and no object claim before its schema')
 })
 
 // ───────────────────────────────────────────────────────────── constIntExpr: i32 boundary clamp
