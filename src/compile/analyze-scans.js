@@ -207,6 +207,52 @@ export const BINDING_USE_COMPOUND = 4
 export const BINDING_USE_NULL_CMP = 7
 export const BINDING_USE_OP = 8
 const SIMPLE_USE = Array.from({ length: 13 }, (_, kind) => [kind])
+// The records with metadata are read-only too and hold primitives alone, so
+// equal ones are shared as well: a member read or write is one record per
+// (key, optional/compound), a call argument one per (callee, position), a
+// comparison one per nullish-partner flag, a test one per operator. A body
+// reads the same few keys many times; the self-compile made one record per
+// occurrence (6.5 KB per body).
+const MEMBER_R_BY_KEY = new Map(), MEMBER_R_OPTIONAL_BY_KEY = new Map()
+const MEMBER_R_ANY = [USE.MEMBER_R, null, false, false], MEMBER_R_ANY_OPTIONAL = [USE.MEMBER_R, null, true, false]
+const MEMBER_R_COMPUTED = [USE.MEMBER_R, null, false, true]
+const memberRead = (key, optional) => {
+  if (key == null) return optional ? MEMBER_R_ANY_OPTIONAL : MEMBER_R_ANY
+  const byKey = optional ? MEMBER_R_OPTIONAL_BY_KEY : MEMBER_R_BY_KEY
+  let r = byKey.get(key)
+  if (r === undefined) byKey.set(key, r = [USE.MEMBER_R, key, optional, false])
+  return r
+}
+const MEMBER_W_BY_KEY = new Map(), MEMBER_W_COMPOUND_BY_KEY = new Map()
+const MEMBER_W_ANY = [USE.MEMBER_W, null, undefined, false, false], MEMBER_W_ANY_COMPOUND = [USE.MEMBER_W, null, undefined, false, true]
+const MEMBER_W_COMPUTED = [USE.MEMBER_W, null, undefined, true, false], MEMBER_W_COMPUTED_COMPOUND = [USE.MEMBER_W, null, undefined, true, true]
+const memberWrite = (key, computed, compound) => {
+  if (computed) return compound ? MEMBER_W_COMPUTED_COMPOUND : MEMBER_W_COMPUTED
+  if (key == null) return compound ? MEMBER_W_ANY_COMPOUND : MEMBER_W_ANY
+  const byKey = compound ? MEMBER_W_COMPOUND_BY_KEY : MEMBER_W_BY_KEY
+  let r = byKey.get(key)
+  if (r === undefined) byKey.set(key, r = [USE.MEMBER_W, key, undefined, false, compound])
+  return r
+}
+const CALL_ARG_BY_CALLEE = new Map(), CALL_ARG_ANY = []
+const callArg = (callee, index) => {
+  let row = CALL_ARG_ANY
+  if (callee != null) {
+    row = CALL_ARG_BY_CALLEE.get(callee)
+    if (row === undefined) CALL_ARG_BY_CALLEE.set(callee, row = [])
+  }
+  let r = row[index]
+  if (r === undefined) row[index] = r = [USE.CALL_ARG, undefined, undefined, undefined, undefined, callee, index]
+  return r
+}
+const COMPARE_PLAIN = [USE.COMPARE, undefined, undefined, undefined, undefined, undefined, undefined, false]
+const COMPARE_NULLISH = [USE.COMPARE, undefined, undefined, undefined, undefined, undefined, undefined, true]
+const BOOL_TEST_BY_OP = new Map()
+const boolTest = (op) => {
+  let r = BOOL_TEST_BY_OP.get(op)
+  if (r === undefined) BOOL_TEST_BY_OP.set(op, r = [USE.BOOL_TEST, undefined, undefined, undefined, undefined, undefined, undefined, undefined, op])
+  return r
+}
 export const BINDING_USE_DECLS = 0
 export const BINDING_USE_INIT = 1
 export const BINDING_USE_USES = 2
@@ -252,10 +298,7 @@ export function scanBindingUses(body, trackNames) {
     if (!s) { s = [0, undefined, []]; summary.set(name, s) }
     return s
   }
-  const use = (name, kind, record) => {
-    if (record) record[BINDING_USE_KIND] = kind
-    slot(name)[BINDING_USE_USES].push(record || SIMPLE_USE[kind])
-  }
+  const use = (name, kind, record) => { slot(name)[BINDING_USE_USES].push(record || SIMPLE_USE[kind]) }
 
   // Static string key of a `[]` index node, else null (computed).
   const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : staticIndexKey(k)
@@ -276,12 +319,12 @@ export function scanBindingUses(body, trackNames) {
     if (!Array.isArray(t)) return
     const o = t[0]
     if ((o === '.' || o === '?.') && typeof t[1] === 'string') {
-      use(t[1], USE.MEMBER_W, [0, typeof t[2] === 'string' ? t[2] : null, undefined, false, compound])
+      use(t[1], USE.MEMBER_W, memberWrite(typeof t[2] === 'string' ? t[2] : null, false, compound))
       return
     }
     if (o === '[]' && typeof t[1] === 'string') {
       const k = litKey(t[2])
-      use(t[1], USE.MEMBER_W, [0, k, undefined, k == null, compound])
+      use(t[1], USE.MEMBER_W, memberWrite(k, k == null, compound))
       if (t[2] != null) val(t[2])
       return
     }
@@ -335,13 +378,13 @@ export function scanBindingUses(body, trackNames) {
     if (op === '.' || op === '?.') {
       const recv = node[1]
       if (typeof recv === 'string')
-        use(recv, USE.MEMBER_R, [0, typeof node[2] === 'string' ? node[2] : null, op === '?.', false])
+        use(recv, USE.MEMBER_R, memberRead(typeof node[2] === 'string' ? node[2] : null, op === '?.'))
       else walk(recv)
       return                                    // node[2] is the property name
     }
     if (op === '[]') {
       const recv = node[1], k = litKey(node[2])
-      if (typeof recv === 'string') use(recv, USE.MEMBER_R, [0, k, false, k == null])
+      if (typeof recv === 'string') use(recv, USE.MEMBER_R, k == null ? MEMBER_R_COMPUTED : memberRead(k, false))
       else walk(recv)
       if (node[2] != null) val(node[2])
       return
@@ -367,8 +410,7 @@ export function scanBindingUses(body, trackNames) {
         for (let ai = 0; ai < args.length; ai++) {
           const a = args[ai]
           if (Array.isArray(a) && a[0] === '...') { val(a[1]); continue }
-          if (typeof a === 'string') use(a, USE.CALL_ARG, [0, undefined, undefined, undefined, undefined,
-            typeof callee === 'string' ? callee : null, ai])
+          if (typeof a === 'string') use(a, USE.CALL_ARG, callArg(typeof callee === 'string' ? callee : null, ai))
           else walk(a)
         }
       }
@@ -377,8 +419,7 @@ export function scanBindingUses(body, trackNames) {
     if (_CMP_OPS.has(op) && node.length === 3) {
       for (let i = 1; i <= 2; i++) {
         const side = node[i]
-        if (typeof side === 'string') use(side, USE.COMPARE, [0, undefined, undefined, undefined, undefined, undefined, undefined,
-          _isNullishLit(node[3 - i])])
+        if (typeof side === 'string') use(side, USE.COMPARE, _isNullishLit(node[3 - i]) ? COMPARE_NULLISH : COMPARE_PLAIN)
         else walk(side)
       }
       return
@@ -393,13 +434,13 @@ export function scanBindingUses(body, trackNames) {
     }
     if (op === '!' || op === 'typeof' || op === 'void') {
       const c = node[1]
-      if (typeof c === 'string') use(c, USE.BOOL_TEST, [0, undefined, undefined, undefined, undefined, undefined, undefined, undefined, op])
+      if (typeof c === 'string') use(c, USE.BOOL_TEST, boolTest(op))
       else walk(c)
       return
     }
     if (op === 'if' || op === 'while' || op === '?:') {  // `prepare` normalizes `?` → `?:`
       const c = node[1]
-      if (typeof c === 'string') use(c, USE.BOOL_TEST, [0, undefined, undefined, undefined, undefined, undefined, undefined, undefined, op])
+      if (typeof c === 'string') use(c, USE.BOOL_TEST, boolTest(op))
       else walk(c)
       for (let i = 2; i < node.length; i++) val(node[i])
       return
