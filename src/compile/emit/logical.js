@@ -52,6 +52,13 @@ const canonNum = (node) => {
 // (isNum=false) is never touched (canon would destroy its NaN-box).
 const canonArm = (f, isNum, otherNum) => isNum && !otherNum ? canonNum(f) : f
 
+// One arm of a plan-materialized join, a tagged carrier: the plan's action
+// normalized its BigInt member; a boolean arm still carries its atom, the
+// identity a raw 0/1 beside a box would erase (`c ? 1n : true`), as the
+// unmaterialized BOOL∪other merges below already box theirs.
+const taggedArm = (arm, ir) =>
+  resolveValType(arm, valTypeOf, lookupValType) === VAL.BOOL ? boolBoxIR(ir) : asF64(ir)
+
 // One half of a two-sided range test against a compile-time constant, normalized to
 // an inclusive bound on a *local* `x`: `{ x, lo }` (x ≥ lo) or `{ x, hi }` (x ≤ hi).
 // `>`/`<` fold to the inclusive neighbor; a const on either side is accepted. Returns
@@ -209,7 +216,8 @@ export const logicalOps = {
       const v = litVal(ca), arm = (v !== 0 && v === v) ? b : c
       const action = ctx.func._arrayLiteralNeverEscapes ? REP_EDGE_REJECT
         : representationJoinArmAction(ctx, self, arm)
-      return applyBigintRepresentationAction(emit(arm), arm, action)
+      if (action === REP_EDGE_REJECT) return emit(arm)
+      return taggedArm(arm, applyBigintRepresentationAction(emit(arm), arm, action))
     }
     const cond = toBoolFromEmitted(ca)
     // Flow-sensitive refinement: each arm sees narrowing consistent with `a` being truthy / falsy.
@@ -222,8 +230,8 @@ export const logicalOps = {
     if (!ctx.func._arrayLiteralNeverEscapes && repB !== REP_EDGE_REJECT && repC !== REP_EDGE_REJECT) {
       if (bigintStrict() && (repB === REP_EDGE_BOX || repC === REP_EDGE_BOX))
         bigintEraseErr('ternary-nullish', 'this ternary\'s BigInt arm')
-      const fb = asF64(applyBigintRepresentationAction(vb, b, repB))
-      const fc = asF64(applyBigintRepresentationAction(vc, c, repC))
+      const fb = taggedArm(b, applyBigintRepresentationAction(vb, b, repB))
+      const fc = taggedArm(c, applyBigintRepresentationAction(vc, c, repC))
       return typed(['f64.reinterpret_i64',
         ['if', ['result', 'i64'], cond,
           ['then', ['i64.reinterpret_f64', fb]],
@@ -364,8 +372,8 @@ export const logicalOps = {
       const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
       const rightRefs0 = extractRefinements(a, new Map(), true)
       const vb0 = withRefinements(rightRefs0, b, () => emit(b))
-      const faBoxed = applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0)
-      const fb0 = asF64(applyBigintRepresentationAction(vb0, b, repB0))
+      const faBoxed = taggedArm(a, applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0))
+      const fb0 = taggedArm(b, applyBigintRepresentationAction(vb0, b, repB0))
       return typed(['f64.reinterpret_i64',
         ['if', ['result', 'i64'], toBoolFromEmitted(teed0),
           ['then', ['i64.reinterpret_f64', fb0]],
@@ -484,8 +492,8 @@ export const logicalOps = {
       const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
       const rightRefs0 = extractRefinements(a, new Map(), false)
       const vb0 = withRefinements(rightRefs0, b, () => emit(b))
-      const faBoxed = applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0)
-      const fb0 = asF64(applyBigintRepresentationAction(vb0, b, repB0))
+      const faBoxed = taggedArm(a, applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0))
+      const fb0 = taggedArm(b, applyBigintRepresentationAction(vb0, b, repB0))
       return typed(['f64.reinterpret_i64',
         ['if', ['result', 'i64'], toBoolFromEmitted(teed0),
           ['then', ['i64.reinterpret_f64', faBoxed]],
@@ -577,8 +585,8 @@ export const logicalOps = {
       const va0 = emit(a), vb0 = emit(b)
       const t0 = temp()
       const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
-      const faBoxed = applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0)
-      const fb0 = asF64(applyBigintRepresentationAction(vb0, b, repB0))
+      const faBoxed = taggedArm(a, applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0))
+      const fb0 = taggedArm(b, applyBigintRepresentationAction(vb0, b, repB0))
       return typed(['f64.reinterpret_i64',
         ['if', ['result', 'i64'], ['i32.eqz', isNullish(teed0)],
           ['then', ['i64.reinterpret_f64', faBoxed]],
