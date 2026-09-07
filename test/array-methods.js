@@ -322,6 +322,38 @@ test('.shift/.push: plain array unaffected by another array\'s dynamic props (fi
   }`).f(), 647)
 })
 
+test('.shift then .push: the head slack is reused, aliases and properties follow', () => {
+  // A queue of shifts and pushes slides its elements back to the storage's
+  // base when the tail fills (module/array.js __arr_grow); an alias taken
+  // before, a relocation in between, a pointer rebound by a push through the
+  // alias and dynamic properties all read the live elements. The sequence
+  // is the one a randomized run found reading a stale header.
+  const src = `let a = null, b = null
+    const step = (op, x) => {
+      if (!a) { a = []; for (let k = 0; k < 6; k++) a.push(k); b = a }
+      if (op === 0) return a.shift()
+      if (op === 1) return a.push(x)
+      if (op === 2) return a.unshift(x)
+      if (op === 3) return a.pop()
+      if (op === 4) { const r = a.splice(1, 1, x, x + 1); return r.length * 100 + (r[0] === undefined ? 1 : r[0]) }
+      if (op === 5) { a[a.length] = x; return a.length }
+      if (op === 6) { a.length = a.length > 3 ? a.length - 2 : a.length; return a.length }
+      if (op === 7) { let s = 0; for (const v of b) s += v; return s + b.length * 1000 }
+      if (op === 10) { a.push(x, x + 1, x + 2); return a.length }
+      if (op === 11) { b.push(x); return b[0] === undefined ? -1 : b[0] }
+      if (op === 12) { a.tag = x; return a.tag }
+      if (op === 13) { return b.tag === undefined ? -3 : b.tag }
+      return a.length + b.length
+    }
+    export let run = (ops, xs, n) => { let s = 0; for (let i = 0; i < n; i++) { const r = step(ops[i], xs[i]); s = (s * 31 + (r === undefined ? 7 : r)) % 1000003 } return s }`
+  const ops = [0, 0, 6, 2, 0, 4, 1, 5, 2, 0, 1, 3, 0, 11, 0, 6, 1, 0, 0, 0, 10, 0, 10, 4, 10, 0, 1, 12, 0, 0, 0, 13, 1, 1, 1, 7, 12]
+  const xs = [30, 48, 12, 2, 36, 48, 30, 28, 18, 6, 16, 22, 12, 34, 20, 30, 34, 34, 14, 6, 22, 44, 38, 44, 14, 8, 20, 14, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  for (let k = 0; k < 40; k++) { ops.push(0, 1); xs.push(k, k) }   // the queue past its capacity: the slide
+  const want = Function(src.replace('export let run', 'var run') + '; return run')()(ops, xs, ops.length)
+  for (const optimize of [0, 1, 2])
+    is(jz(src, { optimize }).exports.run(new Float64Array(ops), new Float64Array(xs), ops.length), want, `O${optimize}`)
+})
+
 // === .unshift ===
 
 test('.unshift: prepends and pulls grow helper', () => {

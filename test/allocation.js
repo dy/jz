@@ -8,13 +8,13 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import jz from '../index.js'
 
-const measure = (body, calls = 1000) => {
+const measure = (body, calls = 1000, warm = 10) => {
   const src = `${body}
 export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0; i < n; i++) s += run(i); return __heap_mark() - h0 + (s > 1e300 ? 1 : 0) }`
   const out = {}
   for (const optimize of [0, 1, 2]) {
     const ex = jz(src, { optimize, memory: 256 }).exports
-    ex.probe(10)   // warm: first-time growth of caches is not the per-call cost
+    ex.probe(warm)   // warm: first-time growth of caches is not the per-call cost
     out[optimize] = ex.probe(calls) / calls
   }
   return out
@@ -98,4 +98,13 @@ const bb = mk(64)
 const total = (...xs) => { let s = 0; for (const x of xs) s += x; return s }
 const write = (out, i) => { out.push(i & 0xff); out.push(1, 2, 3, 4); const s = out.add(1, i) + out.add(1, 2, 3); out.reset(); return s }
 const run = (i) => write(bb, i) + total(i) + total(1, 2, 3) + bb.length`), 'a rest parameter')
+})
+
+test('allocation: a queue reuses the head its shifts vacate', () => {
+  // A shift moves the header up one slot; a push that finds the tail full
+  // slides the elements back down to the storage's base (module/array.js
+  // __arr_grow) instead of extending the storage by one slot per pair. Warmed
+  // past the one doubling that settles the capacity at twice the length.
+  zero(measure(`const a = []; for (let k = 0; k < 1000; k++) a.push(k)
+const run = (i) => { const v = a.shift(); a.push(v); return v }`, 3000, 1200), 'a shift then a push')
 })

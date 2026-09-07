@@ -71,6 +71,9 @@ export function staticArrayPtr(slots) {
 const arrayLenFromPtr = ptr => ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]
 
 const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
+// Head slack exists only where a shift can make it (see arrBaseWat): a program
+// without one links a grow that never looks for it.
+const needsHeadSlack = () => ctx.core.includes.has('__arr_shift')
 // Whether durableFwdLogIR/durableArrSnapIR emit a real call (vs '' — see either's own
 // comment): only when __heap_reset exists (owned-memory builds; shared memory never
 // declares it — core.js). Gates the deps() edges below the SAME way, so a shared-memory
@@ -345,8 +348,70 @@ export default (ctx) => {
   // forwarding chase (mirrors __arr_idx_known) instead of paying __ptr_offset's
   // tag-extract + FORWARDING_MASK dispatch — ARRAY always needs the chase (it's
   // forwarding-capable) but never needs the re-check this variant would otherwise repeat.
-  const arrGrow = (name, defensive) => `(func $${name} (param $ptr i64) (param $minCap i32) (result f64)
-    ${defensive ? '(local $t i32) ' : ''}(local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
+  // A shifted array. `__arr_shift` moves the header up one slot instead of
+  // moving the elements: the vacated slot holds the new header's len/cap, and
+  // its props word (the old header's len/cap words) holds the mark [base, -1],
+  // the storage's base (for the first shift the base's own record, whose
+  // target is the header itself). The base's record [live, -1] always
+  // forwards to the live header (every shift rewrites it), a relocated block's
+  // records forward to the new block's base, and every pointer a binding
+  // holds is a base: nothing refers to the slots between the base and the
+  // live header, so a grow may reuse them. An array below the reset mark
+  // keeps its slots (the durable heal restores headers by their offset).
+  const arrBaseWat = (off, base) => `
+    (local.set ${base} (local.get ${off}))
+    (if (i32.and (i32.eq (i32.load (i32.sub (local.get ${off}) (i32.const 12))) (i32.const -1))
+                 (i32.ne (i32.load (i32.sub (local.get ${off}) (i32.const 16))) (i32.const -1)))
+      (then
+        (local.set ${base} (i32.load (i32.sub (local.get ${off}) (i32.const 16))))
+        (local.set ${base} (select (i32.sub (local.get ${off}) (i32.const 8)) (local.get ${base}) (i32.eq (local.get ${base}) (local.get ${off}))))))`
+  // Relocation: a fresh block, the old header forwarding to it.
+  const relocateWat = () => `
+    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
+    (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+    ${headerPropsCopyIR()}
+    ${maybeDynMoveIR()}
+    ${durableArrSnapIR('off')}
+    (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
+    (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+    (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
+  const arrGrow = (name, defensive) => {
+    const slack = needsHeadSlack()
+    // The array's storage ends at the heap top (nothing allocated since it)
+    // and lies above the reset mark: extend it in place. No copy, no
+    // forwarding header, and a push loop leaves one capacity in the arena,
+    // not every doubling's (the same bump-extend a string at the heap top
+    // takes). Anything else relocates.
+    const extend = `
+        (if (i32.or
+              (i32.ne (i32.add (local.get $off) (i32.shl (local.get $oldCap) (i32.const 3))) (global.get $__heap))
+              (i32.lt_u (local.get $off) (global.get $__heap_reset)))
+          (then ${relocateWat()}))
+        (local.set $newOff (i32.add (local.get $base) (i32.shl (local.get $newCap) (i32.const 3))))
+        (if (i32.lt_u (local.get $newOff) (local.get $base)) (then (unreachable)))
+        (if (i32.gt_u (local.get $newOff) (global.get $__heap_end)) (then (call $__memgrow (local.get $newOff))))
+        (global.set $__heap (local.get $newOff))`
+    // The head slack alone serves when it holds the array and fits the
+    // request (less slack would slide again within as many pushes; the
+    // doubling absorbs it instead); otherwise the storage grows first.
+    const room = slack ? `
+    (if (i32.and (i32.ge_u (local.get $off) (global.get $__heap_reset))
+          (i32.and (i32.ge_s (local.get $head) (local.get $len))
+                   (i32.ge_s (i32.add (local.get $head) (local.get $oldCap)) (local.get $minCap))))
+      (then (local.set $newCap (i32.add (local.get $head) (local.get $oldCap))))
+      (else ${extend}))` : `
+    (block ${extend})`
+    // A grow in place of a shifted array: the elements slide down to the
+    // base, which is the header again.
+    const slide = slack ? `
+    (if (local.get $head)
+      (then
+        (memory.copy (local.get $base) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+        (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $len))
+        (local.set $newOff (local.get $base))
+        ${maybeDynMoveIR()}))` : ''
+    return `(func $${name} (param $ptr i64) (param $minCap i32) (result f64)
+    ${defensive ? '(local $t i32) ' : ''}(local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32) (local $base i32) (local $head i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
     ${defensive ? `(local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -363,34 +428,17 @@ export default (ctx) => {
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
       (then (return (f64.reinterpret_i64 (local.get $ptr)))))
+    (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    ${slack ? `${arrBaseWat('$off', '$base')}
+    (local.set $head (i32.shr_u (i32.sub (local.get $off) (local.get $base)) (i32.const 3)))` : '(local.set $base (local.get $off))'}
     (local.set $newCap (select
       (local.get $minCap)
-      (i32.shl (local.get $oldCap) (i32.const 1))
-      (i32.gt_s (local.get $minCap) (i32.shl (local.get $oldCap) (i32.const 1)))))
-    ${!ctx.memory.shared && ctx.transform.alloc !== false ? `
-    ;; The array's storage ends at the heap top (nothing allocated since it) and
-    ;; lies above the reset mark: extend it in place. No copy, no forwarding
-    ;; header, and a push loop leaves one capacity in the arena, not every
-    ;; doubling's (the same bump-extend a string at the heap top takes).
-    (if (i32.and
-          (i32.eq (i32.add (local.get $off) (i32.shl (local.get $oldCap) (i32.const 3))) (global.get $__heap))
-          (i32.ge_u (local.get $off) (global.get $__heap_reset)))
-      (then
-        (local.set $newOff (i32.add (local.get $off) (i32.shl (local.get $newCap) (i32.const 3))))
-        (if (i32.lt_u (local.get $newOff) (local.get $off)) (then (unreachable)))
-        (if (i32.gt_u (local.get $newOff) (global.get $__heap_end)) (then (call $__memgrow (local.get $newOff))))
-        (global.set $__heap (local.get $newOff))
-        (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $newCap))
-        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $off)))))` : ''}
-    (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
-    (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
-    ${headerPropsCopyIR()}
-    ${maybeDynMoveIR()}
-    ${durableArrSnapIR('off')}
-    (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
-    (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
-    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
+      (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1))
+      (i32.gt_s (local.get $minCap) (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1)))))
+    ${!ctx.memory.shared && ctx.transform.alloc !== false ? `${room}${slide}
+    (i32.store (i32.sub (local.get $base) (i32.const 4)) (local.get $newCap))
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $base)))` : `${relocateWat()})`}`
+  }
 
   ctx.core.stdlib['__arr_grow'] = () => arrGrow('__arr_grow', true)
   ctx.core.stdlib['__arr_grow_known'] = () => arrGrow('__arr_grow_known', false)
@@ -1443,25 +1491,23 @@ export default (ctx) => {
   ctx.core.emit['.shift'] = (arr) => (inc('__arr_shift'),
     typed(['call', '$__arr_shift', asI64(emit(arr))], 'f64'))
 
-  // durableFwdLogIR on the off->newOff mark below: unlike grow (whose newOff is always
-  // a FRESH allocation, unconditionally ephemeral whenever off reads durable), shift's
-  // newOff is just off+8 — normally still in the SAME durability class as off, so a
-  // shift of a durable array is ordinarily legitimate persistent state that must survive
-  // `_clear`. It only crosses into ephemeral in the one-in-8-bytes edge case where off
-  // sits exactly at __heap_reset-8, which durableFwdLogIR's two-sided check (source
-  // durable AND target ephemeral) catches without misfiring on the common case.
-  // rawOff's OWN path-compression rewrite (off->newOff becomes rawOff->newOff two lines
-  // below the mark) needs no separate log call: if rawOff is durable, its header no
-  // longer holds real (len, cap) at this point — it already holds a forward — so
-  // whichever EARLIER relocation first turned rawOff from real data into a forward
-  // record (the only place a durable rawOff's true pre-relocation state could still be
-  // read) already logged it then, under its own off/newOff names. Healing restores
-  // rawOff's header wholesale from that entry, independent of how many times its
-  // forward target is rewritten afterward by path compression.
+  // .shift moves the header up one slot (see arrBaseWat above the grow):
+  // the vacated slot takes the new header's len/cap, the old header's words
+  // take the mark [base, -1], and the base's record forwards to the new
+  // header. durableFwdLogIR on the off->newOff mark below: unlike grow (whose
+  // newOff is always a FRESH allocation, unconditionally ephemeral whenever
+  // off reads durable), shift's newOff is just off+8 — normally still in the
+  // SAME durability class as off, so a shift of a durable array is ordinarily
+  // legitimate persistent state that must survive `_clear`. It only crosses
+  // into ephemeral in the one-in-8-bytes edge case where off sits exactly at
+  // __heap_reset-8, which durableFwdLogIR's two-sided check (source durable
+  // AND target ephemeral) catches without misfiring on the common case. The
+  // base's record needs no log of its own: a durable base's header already
+  // holds a forward, restored wholesale by whichever earlier relocation
+  // logged it.
   ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr i64) (result f64)
-    (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
+    (local $off i32) (local $base i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
     ${needsArrayDynMove() ? '(local $oldProps f64) (local $root f64)' : ''}
-    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $arr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $off (call $__ptr_offset (local.get $arr)))
     (if (result f64) (i32.lt_u (local.get $off) (i32.const 8))
       (then (f64.const nan:${UNDEF_NAN}))
@@ -1473,20 +1519,20 @@ export default (ctx) => {
             (local.set $val (f64.load (local.get $off)))
             (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
             (local.set $newOff (i32.add (local.get $off) (i32.const 8)))
+            ${arrBaseWat('$off', '$base')}
             ${headerPropsToGlobalIR()}
+            ;; the vacated slot: the new header's len/cap
             (i32.store (local.get $off) (i32.sub (local.get $len) (i32.const 1)))
             (i32.store (i32.add (local.get $off) (i32.const 4))
               (select (i32.sub (local.get $cap) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $cap) (i32.const 0))))
             ${maybeDynMoveIR()}
             ${durableFwdLogIR('off', 'newOff', 'len', 'cap')}
-            (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
+            ;; the old header's words: the new header's mark (see arrBaseWat)
+            (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $base))
             (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
-            ;; rawOff path-compression below needs no durableFwdLogIR call of its own —
-            ;; see the comment above this function.
-            (if (i32.and (i32.ne (local.get $rawOff) (local.get $off)) (i32.ge_u (local.get $rawOff) (i32.const 8)))
-              (then
-                (i32.store (i32.sub (local.get $rawOff) (i32.const 8)) (local.get $newOff))
-                (i32.store (i32.sub (local.get $rawOff) (i32.const 4)) (i32.const -1))))
+            ;; the base forwards to the live header
+            (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $newOff))
+            (i32.store (i32.sub (local.get $base) (i32.const 4)) (i32.const -1))
             (local.get $val))))))`
 
   // .fill(value, start?, end?) — overwrite [start, end) with value; mutate + return the
