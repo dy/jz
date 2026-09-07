@@ -757,23 +757,58 @@ admit to the joins. Recursive GREEN (13,914,799 bytes, heap 1,207 MB);
 functional 14/20, the same six; sequences GREEN; families 41/50, the same
 rows; oracle and parity 15/15.
 
+### The kernel's bytes are native's – 2026-09-07
+
+Functional **20/20 GREEN, certified** (`f0efa85b`; 14/20 since the packed
+encoder). The six functional rows and one families row were three
+predicates jz miscompiled in its own source. `b[1] === 0` in the peephole's
+`x | 0` fold, `b[1]` the runtime WAT's parsed immediate `'0'`: `emitLooseEq`
+served `===` and its number-beside-unknown arm went through
+`looseNumberEq`/`__to_num`, so `'0' === 0` was true in the kernel (five O1
+rows); under strict the certain number now compares against the carrier as
+it is, and a join carrying a raw boolean arm is emitted identity-safe.
+`node[1][0] in TRUNC_OF_CONVERT[op]` in watr, a table whose values are
+`null`: the runtime `in` read the property and answered "non-nullish", so a
+present null field was absent (strings-parser O2); the lookup chain is one
+body generated twice, the read (miss = undefined) and `__dyn_get_t_hm` (miss
+= TOMB_NAN) that `__dyn_has` asks, a schema slot holding undefined counting
+as a miss since `__dyn_del` writes undefined there. `typeof node ===
+'bigint'` in `emit()` for the kernel's own literal `5e-324`: `emitTypeofCmp`'s
+magnitude heuristic (finite, nonzero, subnormal) read a genuine subnormal
+as a raw BigInt; the tag decides, as `$__typeof` and `$__to_num` do. Each
+pinned natively against the JS oracle (bool-identity, dyn-keys,
+bigint-tag). Native **4345 / 2 / 1**; sequences GREEN; recursive GREEN
+(13,860,938 bytes in 55.5 s, heap 1,203 MB); oracle 15/15, parity 3/3;
+families 45/50: the fromCharCode rows (the `\xff` escape is the same byte
+contract) and the warm-instance leg (`sleb, _clear(), sleb` on one instance
+traps `unreachable`, on the base kernel too; visible now that the byte row
+before it is green). Seen, not fixed: a literal-initialized `undefined`
+field reached by the runtime `in` reads absent; `f[k] = v` on a local
+closure fails validation; an exported parameter used only in `=== number`
+compares takes the numeric lane (`k('0')` is 1); a BIGINT∪NUMBER join in a
+schema slot reads statically as BIGINT; the heuristic's twin in
+`bigIntJointDispatch`. From here a functional row going red is a parity
+defect, not a budget.
+
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `0f26b470`
+1. One session owns main; slices run in parallel worktrees at `f0efa85b`
    and land one by one with the gates. In flight: the two native reds (the
    plain array's update-expression result above; the fromCharCode family is
-   the string contract, below), the hosted byte divergences (six functional rows and
-   two families rows at O1: the string-equality template's `i32.or(x, 0)`
-   folds under the kernel and not natively, one predicate reads differently
-   self-hosted, a jz miscompilation of its own source to find), a rest
+   the string contract, below), the warm-instance `_clear()` trap, a rest
    parameter that never escapes reading the argument slots (the encoder's
    `push(...xs)` takes an array per byte, 322 MB; with `a.unshift(...t)`'s
    compile failure and the shift/push reallocation), emit's per-closure
    allocation (675 MB on jz × jz, the frame's forty collections per
    function; the plan's body data excluded, the milestone replaces it),
    loose `==` across BigInt/Number/Boolean and `String()` of a boxed BigInt,
-   and the inventory of every result-reconstruction site for milestone item
-   3. The fromCharCode red is the string contract: `spec/subset.md` names
+   and milestone item 3's first slice from the inventory of every
+   result-reconstruction site (`.work/result-contract-inventory.md`: 90
+   sites in eight classes, the conflicting authorities and their precedence,
+   the contract `{kind, presence, carrier, abi}` frozen at the summary's
+   freeze and read through one `resultContract` query, five slices; slice 1
+   publishes the contract and reads it where a copy is read today,
+   byte-identical by construction). The fromCharCode red is the string contract: `spec/subset.md` names
    UTF-16 code units, the runtime stores UTF-8 bytes and `charCodeAt` reads
    a byte; a code-unit `fromCharCode` alone breaks the kernel, whose
    static-data builders use strings as byte containers
