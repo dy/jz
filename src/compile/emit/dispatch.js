@@ -596,6 +596,10 @@ export function emitDecl(...inits) {
     // undefined→NaN) rather than propagating the raw sentinel. See toNumF64 / maybeNullish.
     if (isNullishLit(init)) ctx.func.maybeNullish?.add(name)
 
+    // A rest slot view's `for…of` alias (`let a = __iter_arr(rest)`) reads the
+    // same argument slots: nothing materializes (compile/rest-view.js).
+    if (ctx.func.restView?.has(name)) { setFlowVal(name, valTypeOf(init)); continue }
+
     // SRoA flat object: `let o = {a:1, b:2}` — dissolve fields into `o#i`
     // locals, no heap alloc. Each field local ← asF64(value). Reads/writes are
     // rewritten by the `.`/`[]` flat hooks. See scanFlatObjects (analyze.js).

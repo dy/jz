@@ -11,6 +11,7 @@ import { restoreActiveFunction } from './active-function.js'
 import { enterPreparedFunction, publishPreparedFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
 import { unboxablePtrs, inheritPtrAliases, boxedCaptures, reanalyzeBody } from './analyze.js'
+import { restViewAliases } from './analyze-scans.js'
 import { inferLocals } from './infer.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
@@ -74,6 +75,12 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   // Closure bodies bypass analyzeFuncForEmit, so publish the same intrinsic
   // rest-array entry fact here. A body assignment invalidates it.
   if (cb.rest && !isReassigned(cb.body, cb.rest)) updateRep(cb.rest, { val: VAL.ARRAY })
+  // A rest that never escapes is a view of the argument slots (rest-view.js):
+  // emitClosureBody reads the aliases and packs no array.
+  if (cb.rest) {
+    const aliases = restViewAliases(cb.body, cb.rest)
+    if (aliases) ctx.func.closureAux.set('restView', aliases)
+  }
   // All direct named-function callers emitted before closure planning begins,
   // so closure parameter lattices are complete at this boundary.
   const ptRow = ctx.closure.paramTypes?.get(cb.name)
@@ -240,6 +247,28 @@ export function emitClosureBody(cb, functionPlan) {
   const preboxedLocalInits = placePreboxedLocalInits(emitPreboxedLocalInits(name =>
     boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name)), block ? cb.body : null)
 
+  // Rest name (if present) is last in cb.params — handled separately below.
+  const fixedParamN = cb.params.length - (cb.rest ? 1 : 0)
+  // Rest param: the helper locals precede the body, whose slot-view reads
+  // name them. A rest that never escapes (analysis: `restView`) is a view of
+  // the argument slots (rest-view.js); any other packs them into an array.
+  let restOff, restLen, restIdx, view = null
+  if (cb.rest) {
+    restLen = `${T}restLen${freshId(ctx)}`
+    ctx.func.locals.set(restLen, 'i32')
+    const aliases = ctx.func.closureAux.get('restView')
+    if (aliases) {
+      view = { fixedN: fixedParamN, slots: W - fixedParamN, len: restLen, spill: `${T}restSpill${freshId(ctx)}`, spillUsed: false }
+      ctx.func.restView = new Map([[cb.rest, view], ...[...aliases].map(a => [a, view])])
+    } else {
+      restOff = `${T}restOff${freshId(ctx)}`
+      restIdx = `${T}restIdx${freshId(ctx)}`
+      ctx.func.locals.set(restOff, 'i32')
+      ctx.func.locals.set(restIdx, 'i32')
+      inc('__alloc_hdr', '__mkptr')
+    }
+  }
+
   ctx.func.repsFrozen = true
   assertCtxInvariants('pre-emit')
   const bodyIR = block
@@ -254,16 +283,10 @@ export function emitClosureBody(cb, functionPlan) {
   // Pre-allocate cache locals for env unpacking
   const envBase = cb.captures.length > 0 ? `${T}envBase${freshId(ctx)}` : null
   if (envBase) ctx.func.locals.set(envBase, 'i32')
-  // Rest param: allocate helper locals (len + offset + spill loop index) before emitting decls
-  let restOff, restLen, restIdx
-  if (cb.rest) {
-    restOff = `${T}restOff${freshId(ctx)}`
-    restLen = `${T}restLen${freshId(ctx)}`
-    restIdx = `${T}restIdx${freshId(ctx)}`
-    ctx.func.locals.set(restOff, 'i32')
-    ctx.func.locals.set(restLen, 'i32')
-    ctx.func.locals.set(restIdx, 'i32')
-    inc('__alloc_hdr', '__mkptr')
+  // A view has no storage: neither the rest nor its aliases is a local.
+  if (view) {
+    for (const name of ctx.func.restView.keys()) ctx.func.locals.delete(name)
+    if (view.spillUsed) ctx.func.locals.set(view.spill, 'i32')
   }
 
   // Insert locals (captures + params + declared)
@@ -306,8 +329,6 @@ export function emitClosureBody(cb, functionPlan) {
   }
 
   // Unpack fixed params directly from inline slots (caller padded missing with UNDEF_NAN).
-  // Rest name (if present) is last in cb.params — handled separately below.
-  const fixedParamN = cb.params.length - (cb.rest ? 1 : 0)
   for (let i = 0; i < fixedParamN && i < W; i++) {
     const pname = cb.params[i]
     if (boxedParamNames.has(pname)) {
@@ -319,11 +340,13 @@ export function emitClosureBody(cb, functionPlan) {
     }
   }
 
-  // Rest param: pack args a[fixedParams..argc-1] into a fresh array.
-  // len = max(argc - fixedParams, 0). The first `restSlots = width - fixedParams`
-  // come from the inline arg slots; any overflow (argc > width, only reachable via a
-  // spread call) is read straight from the caller's full args array, whose offset the
-  // spread path published in $__closure_spill. This gives unbounded variadic arity.
+  // Rest param: len = max(argc - fixedParams, 0). A view reads the argument
+  // slots in place; past the inline slots it reads the spread site's spill
+  // array, whose offset is taken here, before any call the body makes
+  // republishes it. Otherwise pack args a[fixedParams..argc-1] into a fresh
+  // array: the first `restSlots = width - fixedParams` from the inline slots,
+  // any overflow (argc > width, only reachable via a spread call) straight
+  // from the spill array. This gives unbounded variadic arity.
   if (cb.rest) {
     const fixedN = fixedParamN
     const restSlots = W - fixedN
@@ -333,37 +356,41 @@ export function emitClosureBody(cb, functionPlan) {
         ['i32.sub', ['local.get', '$__argc'], ['i32.const', fixedN]],
         ['i32.const', 0],
         ['i32.gt_s', ['local.get', '$__argc'], ['i32.const', fixedN]]]])
-    fn.push(['local.set', `$${restOff}`,
-      ['call', '$__alloc_hdr',
-        ['local.get', `$${restLen}`], ['local.get', `$${restLen}`]]])
-    for (let i = 0; i < restSlots; i++) {
-      fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', i]],
-        ['then', ['f64.store',
-          ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
-          ['local.get', `$__a${fixedN + i}`]]]])
-    }
-    // Overflow beyond the inline slots: copy args[width..argc-1] from the spill array
-    // (set by the spread-call site). rest[i] = spill[(fixedN+i)*8] for i in [restSlots, restLen).
-    const rid = freshId(ctx)
-    fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
-      ['then',
-        ['local.set', `$${restIdx}`, ['i32.const', restSlots]],
-        ['block', `$restEnd${rid}`,
-          ['loop', `$restLoop${rid}`,
-            ['br_if', `$restEnd${rid}`, ['i32.ge_s', ['local.get', `$${restIdx}`], ['local.get', `$${restLen}`]]],
-            ['f64.store',
-              ['i32.add', ['local.get', `$${restOff}`], ['i32.mul', ['local.get', `$${restIdx}`], ['i32.const', 8]]],
-              ['f64.load', ['i32.add', ['global.get', '$__closure_spill'],
-                ['i32.mul', ['i32.add', ['local.get', `$${restIdx}`], ['i32.const', fixedN]], ['i32.const', 8]]]]],
-            ['local.set', `$${restIdx}`, ['i32.add', ['local.get', `$${restIdx}`], ['i32.const', 1]]],
-            ['br', `$restLoop${rid}`]]]]])
-    const restValue = ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]
-    if (boxedParamNames.has(cb.rest)) {
-      fn.push(
-        ['local.set', `$${ctx.func.boxed.get(cb.rest)}`, ['call', '$__alloc', ['i32.const', 8]]],
-        ['f64.store', boxedAddr(cb.rest), restValue])
+    if (view) {
+      if (view.spillUsed) fn.push(['local.set', `$${view.spill}`, ['global.get', '$__closure_spill']])
     } else {
-      fn.push(['local.set', `$${cb.rest}`, restValue])
+      fn.push(['local.set', `$${restOff}`,
+        ['call', '$__alloc_hdr',
+          ['local.get', `$${restLen}`], ['local.get', `$${restLen}`]]])
+      for (let i = 0; i < restSlots; i++) {
+        fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', i]],
+          ['then', ['f64.store',
+            ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
+            ['local.get', `$__a${fixedN + i}`]]]])
+      }
+      // Overflow beyond the inline slots: copy args[width..argc-1] from the spill array
+      // (set by the spread-call site). rest[i] = spill[(fixedN+i)*8] for i in [restSlots, restLen).
+      const rid = freshId(ctx)
+      fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
+        ['then',
+          ['local.set', `$${restIdx}`, ['i32.const', restSlots]],
+          ['block', `$restEnd${rid}`,
+            ['loop', `$restLoop${rid}`,
+              ['br_if', `$restEnd${rid}`, ['i32.ge_s', ['local.get', `$${restIdx}`], ['local.get', `$${restLen}`]]],
+              ['f64.store',
+                ['i32.add', ['local.get', `$${restOff}`], ['i32.mul', ['local.get', `$${restIdx}`], ['i32.const', 8]]],
+                ['f64.load', ['i32.add', ['global.get', '$__closure_spill'],
+                  ['i32.mul', ['i32.add', ['local.get', `$${restIdx}`], ['i32.const', fixedN]], ['i32.const', 8]]]]],
+              ['local.set', `$${restIdx}`, ['i32.add', ['local.get', `$${restIdx}`], ['i32.const', 1]]],
+              ['br', `$restLoop${rid}`]]]]])
+      const restValue = ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]
+      if (boxedParamNames.has(cb.rest)) {
+        fn.push(
+          ['local.set', `$${ctx.func.boxed.get(cb.rest)}`, ['call', '$__alloc', ['i32.const', 8]]],
+          ['f64.store', boxedAddr(cb.rest), restValue])
+      } else {
+        fn.push(['local.set', `$${cb.rest}`, restValue])
+      }
     }
   }
 

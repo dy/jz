@@ -816,6 +816,8 @@ export function reset(proto, globals, bridge) {
                           // so it must NOT be typed NUMBER, else `x === undefined` mis-folds to false.
     floor: null,          // min closure-table arity (modules: fn/timer/typedarray/array; read in plan). null ⇒ 0.
     width: null,          // closure call/make signature width (plan/scope sets; emit/assemble read). null ⇒ MAX_CLOSURE_ARITY.
+    spread: null,         // the program holds a spread call, so a closure's argc may exceed the width
+                          // (plan/scope sets; a rest slot view reads the spill past the inline slots). null ⇒ true.
   }
 
   ctx.runtime = {

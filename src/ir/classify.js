@@ -20,7 +20,8 @@ import { temp } from './locals.js'
  *  Direct (non-spread) calls with more args than MAX error. Spread calls are
  *  unbounded: the spread site publishes the full args-array offset in
  *  $__closure_spill, and a rest-param callee reads args[MAX..argc-1] from it
- *  (see module/function.js spread path + compile/index.js rest collection). */
+ *  (module/function.js spread path; compile/closure-emit.js packs the rest
+ *  array, or compile/rest-view.js reads the slots in place). */
 export const MAX_CLOSURE_ARITY = 8
 
 /** Matches WASM instructions that require a memory section. */

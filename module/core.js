@@ -16,6 +16,7 @@ import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { T, ACCESSOR_GET, isBrand } from '../src/ast.js'
 import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
+import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -1931,6 +1932,9 @@ export default (ctx) => {
   ctx.core.emit['.raw'] = (obj, prop) => dotRead(obj, prop, true)
   ctx.core.emit['.'] = (obj, prop) => dotRead(obj, prop, false)
   const dotRead = (obj, prop, raw) => {
+    // A rest slot view's length is its argument count (compile/rest-view.js).
+    if (prop === 'length' && typeof obj === 'string' && ctx.func.restView?.has(obj))
+      return restViewLength(ctx.func.restView.get(obj))
     if (!raw && ctx.transform.accessorNames?.has(prop)) {
       const acc = accessorRead(obj, prop)
       if (acc) return acc

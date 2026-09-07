@@ -82,3 +82,20 @@ test('allocation: a push loop grows its array in place at the heap top', () => {
   const out = measure(`const run = (i) => { const r = []; for (let k = 0; k < 100; k++) r.push(k); return r.length }`, 200)
   for (const level in out) is(out[level] <= 16 + 2 * 100 * 8, true, `one capacity for 100 pushes (${out[level]} bytes at O${level})`)
 })
+
+test('allocation: a rest parameter that never escapes reads the argument slots', () => {
+  // watr's ByteBuf: method closures over their object, `push(...xs)` and a
+  // `for…of` reached through an unknown receiver (the slot view); a module
+  // function's `for…of` called with fixed arities (the per-arity clone).
+  zero(measure(`const mk = (cap) => {
+  const b = { buf: new Uint8Array(cap), length: 0 }
+  b.push = (...xs) => { for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+  b.add = (k, ...xs) => { let s = k; for (const x of xs) s += x; return s }
+  b.reset = () => { b.length = 0 }
+  return b
+}
+const bb = mk(64)
+const total = (...xs) => { let s = 0; for (const x of xs) s += x; return s }
+const write = (out, i) => { out.push(i & 0xff); out.push(1, 2, 3, 4); const s = out.add(1, i) + out.add(1, 2, 3); out.reset(); return s }
+const run = (i) => write(bb, i) + total(i) + total(1, 2, 3) + bb.length`), 'a rest parameter')
+})

@@ -686,6 +686,61 @@ export function safeReads(node, name) {
   return true
 }
 
+/**
+ * A rest parameter that never escapes is a view of the argument slots
+ * (closure-emit.js): no array is built at entry, `rest.length` is the
+ * argument count and `rest[i]` reads the slot. The proof is safeReads'
+ * (every mention an element read or a length read) with two additions: a
+ * mention inside a nested arrow escapes (the closure would capture a value
+ * the view does not have), and `for…of`'s lowering (`let a = __iter_arr(rest)`,
+ * prepare/handlers.js) binds an alias that reads the same slots, itself held
+ * to the same proof. Returns the alias names, or null when the rest escapes.
+ */
+export function restViewAliases(body, rest) {
+  const names = new Set([rest])
+  walkAst(body, { enter: n => {
+    if (n[0] !== 'let' && n[0] !== 'const') return
+    for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2])
+          && d[2][0] === '()' && d[2][1] === '__iter_arr' && d[2][2] === rest) names.add(d[1])
+    }
+  } })
+  const reads = (node) => {
+    if (typeof node === 'string') return !names.has(node)
+    if (!Array.isArray(node)) return true
+    const op = node[0]
+    if (op === '=>') { for (const name of names) if (refsName(node, name, REFS_IN_EXPR)) return false; return true }
+    if (op === '()') {
+      const c = node[1]
+      if (names.has(c)) return false
+      if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.' || c[0] === '[]' || c[0] === '?.[]') && names.has(c[1])) return false
+    }
+    if (grownOrEscapes(op)) {
+      const t = node[1]
+      if (names.has(t)) return false
+      if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && names.has(t[1])) return false
+    }
+    if (op === 'let' || op === 'const' || op === 'var') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (!Array.isArray(d) || d[0] !== '=') continue
+        if (names.has(d[1]) && d[1] !== rest && Array.isArray(d[2]) && d[2][0] === '()' && d[2][1] === '__iter_arr' && d[2][2] === rest) continue
+        if (!reads(d[2])) return false
+      }
+      return true
+    }
+    if ((op === '.' || op === '?.') && names.has(node[1])) return node[2] === 'length'
+    if (op === '[]' && names.has(node[1])) return reads(node[2])
+    if (op === '...' && names.has(node[1])) return false
+    for (let i = 1; i < node.length; i++) if (!reads(node[i])) return false
+    return true
+  }
+  if (!reads(body)) return null
+  names.delete(rest)
+  return names
+}
+
 // Per-binding classification shared by scanNeverGrown and scanObjectArrayFacts
 // (walk-count design A1) — factored out for the same reason as
 // flatObjectCandidate above.

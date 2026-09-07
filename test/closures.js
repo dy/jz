@@ -4,6 +4,7 @@ import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { T } from '../src/ast.js'
 
 // Raw instantiation — proves the test path needs no host imports.
 function run(code, opts) {
@@ -612,6 +613,94 @@ test('spread into closure: mixed literal + spread', () => {
     return sum(1, ...arr, 4)
   }`)
   is(f(), 10)
+})
+
+// === The rest slot view (src/compile/rest-view.js) ===
+// A rest parameter that never escapes reads the argument slots; the program's
+// results must equal JS's at every level, whichever lowering the rest takes.
+
+const agreesWithJS = (src, args = [0, 1, 7]) => {
+  for (const optimize of [0, 1, 2]) {
+    const js = Function(src.replace('export let f', 'var f') + '; return f')()
+    const { f } = jz(src, { optimize }).exports
+    for (const i of args) is(f(i), js(i), `f(${i}) at O${optimize}`)
+  }
+}
+
+test('rest view: length and slot reads of 0, 1 and many arguments', () => {
+  agreesWithJS(`const len = (...xs) => xs.length
+const pick = (...xs) => xs[0] + xs[1] * 10 + (xs[2] === undefined ? 1000 : xs[2] * 100)
+export let f = (i) => len() * 100 + len(i) * 10 + len(i, 2, 3) + pick(i, 2) + pick(1, 2, 3)`)
+})
+
+test('rest view: a dynamic index past the end or negative is undefined', () => {
+  agreesWithJS(`const at = (k, ...xs) => xs[k]
+export let f = (i) => (at(0, 5, 6) + at(1, 5, 6)) * 10 + (at(2, 5, 6) === undefined ? 1 : 0) + (at(-1, 5, 6) === undefined ? 2 : 0)`)
+})
+
+test('rest view: fixed parameters before the rest', () => {
+  agreesWithJS(`const sum = (a, b, ...xs) => { let s = a * 1000 + b * 100; for (let i = 0; i < xs.length; i++) s += xs[i]; return s }
+export let f = (i) => sum(1, 2) + sum(1, 2, i) + sum(1, 2, 3, 4, 5)`)
+})
+
+test('rest view: for…of iterates the slots', () => {
+  agreesWithJS(`const total = (...xs) => { let s = 0; for (const x of xs) s += x; return s }
+export let f = (i) => total() * 100 + total(i) * 10 + total(1, 2, 3, 4)`)
+})
+
+test('rest view: a method reached through an unknown receiver', () => {
+  agreesWithJS(`const mk = () => { const b = { n: 0 }
+  b.push = (...xs) => { for (let i = 0; i < xs.length; i++) b.n += xs[i]; return xs.length }
+  b.add = (k, ...xs) => { let s = k; for (const x of xs) s += x; b.n += s; return s }
+  return b }
+const out = mk()
+const write = (o, i) => o.push(i) + o.push(1, 2, 3) + o.add(i) * 10 + o.add(1, 2, 3) * 100
+export let f = (i) => write(out, i) * 1000 + out.n`)
+})
+
+test('rest view: a spread of an array, a typed array or a string into the callee', () => {
+  agreesWithJS(`const total = (...xs) => { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[i]; return s * 100 + xs.length }
+const codes = (...cs) => { let s = ''; for (let i = 0; i < cs.length; i++) s += cs[i]; return s }
+export let f = (i) => { const a = [i, 2, 3]; const t = new Uint8Array([i, 2, 3]); return total(...a) + total(1, ...a) + total(...t) + codes(...'ab').length }`)
+})
+
+test('rest view: a spread past the inline slots reads the spill', () => {
+  agreesWithJS(`const total = (...xs) => { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[i] * (i + 1); return s * 100 + xs.length + (xs[9] === undefined ? 0 : 1000000) + xs[8] }
+const tail = (...xs) => xs[8] * 100 + (xs[9] === undefined ? 1 : 0) + xs[0]
+export let f = (i) => { const a = [i, 2, 3, 4, 5, 6, 7, 8, 9]; return total(...a) + total(...a, 10) + tail(...a) }`)
+})
+
+test('rest view: the spill survives a spread call the body makes', () => {
+  agreesWithJS(`const other = (...ys) => ys.length
+const outer = (...xs) => { const a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; const n = other(...a); return n * 100 + xs[8] }
+export let f = (i) => { const b = [i, 2, 3, 4, 5, 6, 7, 8, 9]; return outer(...b) }`)
+})
+
+test('rest view: a rest that escapes stays an array', () => {
+  agreesWithJS(`const keep = (...xs) => xs
+const alias = (...xs) => { const y = xs; return y.length }
+const inner = (a, b, c) => a * 100 + b * 10 + (c === undefined ? 1 : c)
+const fwd = (...xs) => inner(...xs)
+const grow = (...xs) => { xs.push(9); return xs.length * 10 + xs[xs.length - 1] }
+const cap = (...xs) => { const g = () => xs.length; return g() }
+export let f = (i) => keep(i, 2).length * 10 + keep(1, 2, 3)[2] + alias(1, 2) * 100 + (Array.isArray(keep(1)) ? 1000 : 0)
+  + fwd(i, 2) + fwd(1, 2, 3) + grow(i) + grow(1, 2) + cap(i, 2) + cap()`)
+})
+
+test('rest view: an expression body and a direct call', () => {
+  agreesWithJS(`const first = (...xs) => xs.length ? xs[0] : -1
+export let f = (i) => { const g = (...xs) => xs.length * 10 + (xs.length ? xs[xs.length - 1] : 0); return first() + first(i, 2) * 10 + g() + g(i) + g(1, 2, i) }`)
+})
+
+test('rest view: no array is packed at entry', () => {
+  // A method closure over its object (watr's ByteBuf), called through an unknown receiver.
+  const w = wat(`const mk = () => { const b = { n: 0 }; b.push = (...xs) => { for (let i = 0; i < xs.length; i++) b.n += xs[i]; return xs.length }; return b }
+const out = mk()
+export let f = (o, i) => o.push(i) + o.push(1, 2, 3) + out.n`)
+  const start = w.indexOf(`(func $${T}closure0`)
+  const body = w.slice(start, w.indexOf('\n  (func ', start))
+  ok(!/\$__alloc_hdr/.test(body), 'the view allocates nothing')
+  ok(/local\.get \$__a0/.test(body), 'the view reads the argument slots')
 })
 
 // === HOF + spread combinations ===

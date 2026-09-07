@@ -787,6 +787,7 @@ export const resolveClosureWidth = (programFacts) => {
   ctx.closure.width = (hasSpread && hasRest)
     ? MAX_CLOSURE_ARITY
     : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), maxValueArity, floor))
+  ctx.closure.spread = hasSpread
 }
 
 export const canSkipWholeProgramNarrowing = (programFacts) =>

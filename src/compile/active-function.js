@@ -35,6 +35,7 @@ export function createActiveFunction({
     cellTypes: new Set(),
     flatObjects: new Map(),
     sliceViews: new Set(),
+    restView: null,
     leanHashLocals: new Set(),
     i32HashLocals: new Set(),
     leanHashDomains: new Map(),
@@ -132,7 +133,7 @@ export function isInactiveFunction(ctx) {
     frame.localProps === null && frame.typedElem === null && frame.typedLen === null &&
     frame.lenBoundOf === null &&
     emptyMap(frame.boxed) && emptySet(frame.cellTypes) && emptyMap(frame.flatObjects) &&
-    emptySet(frame.sliceViews) && emptySet(frame.leanHashLocals) && emptySet(frame.i32HashLocals) &&
+    emptySet(frame.sliceViews) && frame.restView === null && emptySet(frame.leanHashLocals) && emptySet(frame.i32HashLocals) &&
     emptyMap(frame.leanHashDomains) && emptySet(frame.preboxed) && frame.preboxAt === null && frame.preboxInits === null &&
     Array.isArray(frame.stack) && frame.stack.length === 0 && frame.inTry === false &&
     frame.finallyStack === null && frame.pendingLabel === null && emptyMap(frame.refinements) &&

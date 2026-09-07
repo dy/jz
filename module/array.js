@@ -24,6 +24,7 @@ import { ERR } from '../err-codes.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
+import { restViewRead } from '../src/compile/rest-view.js'
 import { hoistArrayValue, makeCallback, callbackArgReps, idxArg } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
@@ -658,6 +659,8 @@ export default (ctx) => {
         return typeof arr === 'string'
           ? undefExpr()
           : typed(['block', ['result', 'f64'], ['drop', asF64(emit(arr))], undefExpr()], 'f64') }
+    // A rest slot view reads the argument slot (compile/rest-view.js).
+    if (typeof arr === 'string' && ctx.func.restView?.has(arr)) return restViewRead(ctx.func.restView.get(arr), idx)
     // Hoist non-identifier arr so side-effecting sources (e.g. `foo.shift()[i]`) execute once.
     // The rest of the handler inlines `emit(arr)` into multiple IR positions, which would
     // otherwise re-execute the source expression per use at runtime.

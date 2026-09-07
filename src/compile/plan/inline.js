@@ -951,27 +951,42 @@ const restIndexExpr = (idx, restParams) => {
   return out
 }
 
-const rewriteRestBody = (node, restName, restParams) => {
-  if (typeof node === 'string') return node === restName ? { ok: false } : { ok: true, node }
-  if (!Array.isArray(node)) return { ok: true, node }
-  if (node[0] === 'str') return { ok: true, node: node.slice() }
+// The rest's `for…of` alias (`let a = __iter_arr(rest)`, prepare/handlers.js)
+// reads the same fixed arguments: its binding is dropped and its mentions
+// rewrite as the rest's own.
+const isIterAlias = (d, rest) => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string'
+  && Array.isArray(d[2]) && d[2][0] === '()' && d[2][1] === '__iter_arr' && d[2][2] === rest
 
-  if ((node[0] === '.' || node[0] === '?.') && node[1] === restName) {
-    return node[2] === 'length' ? { ok: true, node: [, restParams.length] } : { ok: false }
-  }
+const rewriteRestBody = (body, restName, restParams) => {
+  const names = new Set([restName])
+  walkAst(body, { enter: n => {
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) if (isIterAlias(n[i], restName)) names.add(n[i][1])
+  } })
+  const rewrite = (node) => {
+    if (typeof node === 'string') return names.has(node) ? { ok: false } : { ok: true, node }
+    if (!Array.isArray(node)) return { ok: true, node }
+    if (node[0] === 'str') return { ok: true, node: node.slice() }
 
-  if (node[0] === '[]' && node[1] === restName) {
-    if (!isSimpleArg(node[2])) return { ok: false }
-    return { ok: true, node: restIndexExpr(node[2], restParams) }
-  }
+    if ((node[0] === '.' || node[0] === '?.') && names.has(node[1])) {
+      return node[2] === 'length' ? { ok: true, node: [, restParams.length] } : { ok: false }
+    }
 
-  const out = [node[0]]
-  for (let i = 1; i < node.length; i++) {
-    const r = rewriteRestBody(node[i], restName, restParams)
-    if (!r.ok) return r
-    out.push(r.node)
+    if (node[0] === '[]' && names.has(node[1])) {
+      if (!isSimpleArg(node[2])) return { ok: false }
+      return { ok: true, node: restIndexExpr(node[2], restParams) }
+    }
+
+    const out = [node[0]]
+    for (let i = 1; i < node.length; i++) {
+      if ((node[0] === 'let' || node[0] === 'const') && isIterAlias(node[i], restName)) continue
+      const r = rewrite(node[i])
+      if (!r.ok) return r
+      out.push(r.node)
+    }
+    if ((node[0] === 'let' || node[0] === 'const') && out.length === 1) return { ok: false }   // the alias alone
+    return { ok: true, node: out }
   }
-  return { ok: true, node: out }
+  return rewrite(body)
 }
 
 export const specializeFixedRestCalls = (programFacts) => {
