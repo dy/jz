@@ -22,7 +22,7 @@ import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
-  ptrOffsetIR, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
+  ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, isNumericIR, undefExpr,
   freshId, boxBigInt,
 } from '../ir.js'
@@ -877,13 +877,27 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       typeof obj === 'string' && ctx.runtime.regex?.vars?.has(obj)))
     err('RegExp.lastIndex assignment is not supported; stateful exec updates lastIndex internally')
   // arr.length = N — array resize. Intercept before the schema/object paths
-  // (`length` is never a schema field). Only ARRAY (or unknown — the runtime
-  // helper guards non-arrays) receivers resize; known OBJECT/Map/etc. keep
-  // `.length =` as a plain property write below. The expression value is N.
+  // (`length` is never a schema field). An ARRAY receiver resizes; a known
+  // OBJECT/Map/etc. keeps `.length =` as a plain property write below; an
+  // unknown receiver decides at runtime: an array resizes, anything else
+  // takes the plain property write (`__dyn_set`) with the value as written.
+  // The expression value is N.
   if (prop === 'length') {
     const recvVt = valTypeOf(obj)
     if (recvVt === VAL.TYPED) err(`Typed arrays are fixed-size — cannot assign to \`${typeof obj === 'string' ? obj : '<expr>'}.length\` — allocate a new typed array of the desired length instead`)
-    if (recvVt === VAL.ARRAY || recvVt == null) {
+    if (recvVt == null) {
+      inc('__arr_set_length', '__dyn_set', '__ptr_type')
+      const recvTmp = temp('aln'), valTmp = temp('alv')
+      const recv = ['local.get', `$${recvTmp}`], value = ['local.get', `$${valTmp}`]
+      return block64(
+        ['local.set', `$${recvTmp}`, asF64(emit(obj))],
+        ['local.set', `$${valTmp}`, storedValue(val)],
+        ['if', ['i32.and', ['f64.ne', recv, recv], ptrTypeEq(recv, PTR.ARRAY)],
+          ['then', ['drop', ['call', '$__arr_set_length', ['i64.reinterpret_f64', recv], asI32(typed(value, 'f64'))]]],
+          ['else', ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', recv], asI64(emit(['str', prop])), ['i64.reinterpret_f64', value]]]]],
+        value)
+    }
+    if (recvVt === VAL.ARRAY) {
       inc('__arr_set_length')
       const arrTmp = `${T}aln${freshId(ctx)}`
       const nTmp = `${T}alv${freshId(ctx)}`
@@ -891,9 +905,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       ctx.func.locals.set(nTmp, 'i32')
       // Write the relocated pointer back to a simple var receiver so later
       // reads skip the forwarding hop; complex receivers stay correct via it.
-      const persist = recvVt === VAL.ARRAY && typeof obj === 'string'
-        ? persistBindingPtr(obj, ['local.get', `$${arrTmp}`])
-        : null
+      const persist = typeof obj === 'string' ? persistBindingPtr(obj, ['local.get', `$${arrTmp}`]) : null
       const body = [
         ['local.set', `$${arrTmp}`, asF64(emit(obj))],
         ['local.set', `$${nTmp}`, asI32(emit(val))],

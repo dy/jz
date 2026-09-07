@@ -2227,3 +2227,41 @@ test('objects: a runtime write of undefined to a module object wins over the lit
     for (const v of [5, undefined, null, 0, undefined, 3]) is(ex.f(v), e.f(v), `initial ${v} @O${optimize}`)
   }
 })
+
+// A receiver of unknown kind (a builder's parameter from a closure table):
+// `out.length = 0` resized only an array and did nothing to an object with a
+// `length` slot; `out.push(...bytes)` ran the array builtin over the object's
+// memory instead of its own `push`. An array still resizes and bulk-pushes;
+// anything else takes the property write and the own method.
+test('objects: an unknown receiver\'s length write and spread push reach the object', () => {
+  const src = `const makeBuf = (cap) => {
+    const b = { buf: new Uint8Array(cap), length: 0 }
+    b.push = (...xs) => { for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+    return b
+  }
+  const table = new Map()
+  table.set(0, (node) => [node])
+  table.set(1, (node, scratch) => {
+    scratch.length = 0
+    const size = [node, node + 1, node + 2]
+    scratch.push(...size)
+    scratch.push(...size, ...size)
+    return scratch.length
+  })
+  export let f = (i) => {
+    const buf = makeBuf(64), arr = [7, 7, 7, 7]
+    const a = table.get(0)(i)
+    const n = table.get(1)(i, buf) + table.get(1)(i, buf) * 1000
+    const m = table.get(1)(i, arr) + table.get(1)(i, arr) * 1000
+    return [n, buf.buf[1], buf.length, m, arr.length, arr[1], a.length].join('|')
+  }
+  export let g = (o, n) => { o.length = n; return o.length }`
+  const e = {}
+  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
+  for (const optimize of [0, 2]) {
+    const ex = jz(src, { optimize }).exports
+    for (const i of [0, 1, 2]) is(ex.f(i), e.f(i), `f(${i}) @O${optimize}`)
+    is(ex.g([1, 2, 3], 1), 1, `array length write @O${optimize}`)
+    is(ex.g({ length: 3 }, 2.5), 2.5, `object length write @O${optimize}`)
+  }
+})

@@ -78,14 +78,14 @@ function tryFlatObjectMethod(callee, obj, method, parsed) {
   if (typeof obj === 'string' && ctx.closure.call) {
     const flat = ctx.func.flatObjects?.get(obj)
     const fi = flat ? flat.names.indexOf(method) : -1
-    if (fi >= 0) {
-      const propRead = typed(['local.get', `$${obj}#${fi}`], 'f64')
-      if (parsed.hasSpread)
-        return ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
-      return ctx.closure.call(propRead, parsed.normal)
-    }
+    if (fi >= 0) return ownMethodCall(typed(['local.get', `$${obj}#${fi}`], 'f64'), parsed)
   }
 }
+
+/** Call the closure held in `propRead` as the method: a spread call passes its arguments as one array. */
+const ownMethodCall = (propRead, parsed) => parsed.hasSpread
+  ? ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
+  : ctx.closure.call(propRead, parsed.normal)
 
 // 2. String-buffer SRoA: `line.charCodeAt(j)` where `line` was dissolved into
 // raw (buf, len) locals by tryConcatBufferDecl (emit.js, above) — a bare byte
@@ -454,7 +454,9 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
       value = materializeDeferredBigint(value)
       return methodValType(method, null, kind, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
     }
-    const canShadowProbe = genEmitter && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
+    // A spread call probes too (ownMethodCall): an unknown `out.push(...bytes)`
+    // with an own `push` ran the array builtin over the object's memory otherwise.
+    const canShadowProbe = genEmitter && ctx.closure.call && ctx.core.emit.str
     // The core stub can only miss. When this program actually defines such an
     // own method, load the real schema/sidecar lookup before stdlib linking.
     const ownMethodPossible = ctx.summary?.memberMayBeOwn(method) ||
@@ -464,7 +466,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     const genericCall = genEmitter
       ? (canShadowProbe
           ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
-              (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
+              (p) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed),
               () => materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
           : materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
       : (tryDynamicPropCall({ obj: t, method, parsed, vt: null })
@@ -626,8 +628,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
       ctx.summary?.memberMayBeOwnOn(method, vt)
     const unknownOwnShadow = vt == null && ctx.module.demanded.has('string') &&
       ctx.module.demanded.has('fn')
-    if ((knownOwnShadow || unknownOwnShadow) && ctx.closure.call &&
-        !parsed.hasSpread && ctx.core.emit.str) {
+    if ((knownOwnShadow || unknownOwnShadow) && ctx.closure.call && ctx.core.emit.str) {
       // A known builtin receiver normally takes this generic emitter directly,
       // but an observed own-property write requires the same sidecar lookup as
       // an unknown receiver. Ensure the real lookup replaces the core miss stub.
@@ -653,7 +654,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
           ctx.func.probeHoist.set(key, ph)
         }
         return typed(['if', ['result', 'f64'], ['local.get', `$${ph.is}`],
-          ['then', ctx.closure.call(typed(['local.get', `$${ph.ovr}`], 'f64'), parsed.normal)],
+          ['then', ownMethodCall(typed(['local.get', `$${ph.ovr}`], 'f64'), parsed)],
           ['else', asF64(callFlat(obj))]], 'f64')
       }
       // Fallback arm: a bare-name receiver re-references the ORIGINAL binding
@@ -663,8 +664,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
       // parser `cur.charCodeAt(idx)` hot shape; a local temp would hide it).
       const targets = bigintMethodTargets(obj, method)
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
-        (p) => tagDynamicMethodResult(p,
-          ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal), targets),
+        (p) => tagDynamicMethodResult(p, ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed), targets),
         (o) => {
           const value = materializeDeferredBigint(callFlat(typeof obj === 'string' ? obj : o))
           return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)

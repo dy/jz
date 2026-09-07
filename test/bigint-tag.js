@@ -71,3 +71,37 @@ test('bigint tag: a join written to a raw binding unboxes its call arm', () => {
       is(f64(input), oracle.f64(input), `${input} (O${optimize || 0})`)
   }
 })
+
+// A tagged local beside an operand with no evidence: `at` copies the
+// `length` of an untyped parameter (a builder from a closure table), and the
+// program holds a BigInt elsewhere, so the plan tags `at`. The subtraction
+// took the i64 path unconditionally and read the Number's bits as a carrier
+// (the self-compiled encoder's item length came out subnormal). The tagged
+// side's flag decides both arms; the partner unboxes or coerces beside it.
+test('bigint tag: a tagged carrier beside an unresolved operand dispatches on the tag', () => {
+  const SRC = `const makeBuf = (cap) => {
+    const b = { buf: new Uint8Array(cap), length: 0 }
+    b.push = (...xs) => { for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+    return b
+  }
+  const table = new Map()
+  table.set(0, (node, ctx) => [node, ctx])
+  table.set(1, (node, ctx, out) => {
+    const at = out.length
+    out.push(node, node + 1)
+    return [out.length - at, at + out.length, at * out.length, out.length / at, at + '' + out.length]
+  })
+  export let f = (i) => {
+    const out = makeBuf(64)
+    out.push(9, 9, 9)
+    const big = BigInt(i) & 0x7Fn
+    const a = table.get(0)(i, {})
+    const r = table.get(1)(i, {}, out)
+    return r.join('|') + '|' + Number(big) + a.length
+  }`
+  const oracle = Function(SRC.replaceAll('export let ', 'var ') + ';return {f}')()
+  for (const optimize of levels) {
+    const { f } = jz(SRC, { optimize }).exports
+    for (const i of [0, 1, 2, 3]) is(f(i), oracle.f(i), `f(${i}) (O${optimize || 0})`)
+  }
+})

@@ -272,7 +272,9 @@ export const arithmeticOps = {
       bigintMixReject('+', a, b)
       return bigIntJointDispatch(a, b,
         (ia, ib) => ['i64.add', ia, ib],
-        (fa, fb) => typed(['f64.add', fa, fb], 'f64'), computedBoxOf(self))
+        (fa, fb) => typed(['f64.add', fa, fb], 'f64'), computedBoxOf(self),
+        // An unresolved partner's Number arm: this handler over the temps, its string dispatch included.
+        (na, nb) => emit(['+', na, nb]))
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('+', a, b)

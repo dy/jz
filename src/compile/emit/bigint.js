@@ -9,7 +9,7 @@ import { ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
 import { ctx, err, PTR } from '../../ctx.js'
 import {
-  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, typed,
+  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -227,9 +227,26 @@ const isBigIntCarrierBits = (get) => ['i32.and',
 // doc comment), which DOES cover all of those origins — the same comprehensive
 // flag RepresentationPlan itself already trusts for this exact class of gate
 // (mintRepresentationPlan's own three call sites, representation-plan.js).
+// A flagged operand's domain is known at runtime alone: a tagged carrier
+// (a Number raw, a BigInt boxed) or a census read (present or undefined).
+const isFlagged = dom => dom === 'census' || dom === 'tagged'
+// No evidence about the operand at all (bigIntDomain's `null` and 'skip').
+const isUnresolved = dom => dom == null || dom === 'skip'
+// The flag of a flagged operand decides both arms when its partner is
+// unresolved: JS throws when the two runtime domains differ, so a partner in
+// the other domain never reaches a result, and the partner reads as a box or
+// a raw carrier in the BigInt arm and coerces as a Number in the other.
+const mirrorsPartner = (domA, domB) =>
+  (isFlagged(domA) && isUnresolved(domB)) || (isFlagged(domB) && isUnresolved(domA))
 export function bigIntDomainsCanMix(a, b, allowUnresolved) {
   if (!representationProgramHasBigint(ctx)) return false
   const domA = bigIntDomain(a), domB = bigIntDomain(b)
+  // A flagged operand beside an unresolved one takes the joint dispatch
+  // whatever the partner: the unconditional i64 path the callers fall to
+  // otherwise would read a plain Number's bits as a carrier (`out.length -
+  // at`, `at` a tagged local, `out` an untyped parameter: the self-compiled
+  // encoder's item length came out subnormal).
+  if (mirrorsPartner(domA, domB)) return true
   // 'skip' (bigIntDomain's own doc comment): never eligible for the runtime
   // heuristic — falls through to whatever the pre-existing code path already
   // did for this operand, unaffected by this whole mechanism.
@@ -254,8 +271,14 @@ export const computedBoxOf = (self) => self != null && representationComputedExp
 // `box` is true when RepresentationPlan proved the OUTER node needs a tagged
 // mixed result. Box only the runtime BigInt arm; the Number arm must remain a
 // genuine f64 (not a BigInt box containing the Number's bit pattern).
-export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
+// `numGeneric(nameA, nameB)`, when given, builds the Number arm of an
+// unresolved partner (mirrorsPartner) through the operator's generic
+// lowering over the two temps as bare names: `+` may concatenate a partner
+// that is a string at runtime, which `numCompute`'s f64 form cannot.
+export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, numGeneric) {
   const domA = bigIntDomain(a), domB = bigIntDomain(b)
+  // An unresolved partner carries no flag of its own: it takes the flagged side's.
+  const partnerA = isFlagged(domB) && isUnresolved(domA), partnerB = isFlagged(domA) && isUnresolved(domB)
   const ta = temp('bigJ'), tb = temp('bigJ')
   const getA = ['local.get', `$${ta}`], getB = ['local.get', `$${tb}`]
   const flagIR = (dom, get) => dom === 'bigint' ? ['i32.const', 1]
@@ -264,11 +287,10 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
     : dom === 'tagged' ? isBigIntBox(get, get[1].slice(1))
     : isBigIntCarrierBits(get)
   const needFlag = (dom) => dom !== 'bigint' && dom !== 'number'
-  const fta = needFlag(domA) ? tempI32('bigJf') : null
-  const ftb = needFlag(domB) ? tempI32('bigJf') : null
-  const flagA = fta ? ['local.get', `$${fta}`] : flagIR(domA, getA)
-  const flagB = ftb ? ['local.get', `$${ftb}`] : flagIR(domB, getB)
-  ctx.runtime.throws = true
+  const fta = needFlag(domA) && !partnerA ? tempI32('bigJf') : null
+  const ftb = needFlag(domB) && !partnerB ? tempI32('bigJf') : null
+  const flagA = partnerA ? null : fta ? ['local.get', `$${fta}`] : flagIR(domA, getA)
+  const flagB = partnerB ? null : ftb ? ['local.get', `$${ftb}`] : flagIR(domB, getB)
   const throwIR = typed(['block', ['result', 'f64'],
     ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
     ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]], 'f64')
@@ -281,9 +303,10 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   // sourced — `asI64` stays correct, unchanged, for both. Reached only when
   // flagA===flagB picked the BigInt arm, so a 'census' operand here is
   // provably present (not the UNDEF_NAN sentinel) — safe to dereference.
-  const i64Operand = (dom, node, get) => dom === 'census' || dom === 'tagged'
+  // A partner in the BigInt arm is a box or a raw carrier: maybeUnboxBigInt reads either.
+  const i64Operand = (dom, node, get, partner) => partner || dom === 'census' || dom === 'tagged'
     ? maybeUnboxBigInt(get) : dom === 'bigint' ? readI64(node, typed(get, 'f64')) : asI64(typed(get, 'f64'))
-  const rawBigIR = i64Compute(i64Operand(domA, a, getA), i64Operand(domB, b, getB))
+  const rawBigIR = i64Compute(i64Operand(domA, a, getA, partnerA), i64Operand(domB, b, getB, partnerB))
   // Number-domain operand normalization: a `census` operand only ever reaches
   // numCompute when its OWN flag proved it undef (the flagA===flagB join
   // above), so its TRUE ToNumeric value is the Number NaN (ES2024 13.5.6/
@@ -297,8 +320,19 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   // own ES semantics (reused conceptually, not the function itself — this
   // already has the value in a temp and the undef flag computed, no second
   // node-level census re-check needed).
-  const numOperand = (dom, get) => dom === 'census' ? typed(['select', ['f64.const', 'nan'], get, isUndef(get)], 'f64') : typed(get, 'f64')
-  const numResult = numCompute(numOperand(domA, getA), numOperand(domB, getB))
+  const censusNum = get => typed(['select', ['f64.const', 'nan'], get, isUndef(get)], 'f64')
+  // A partner in the Number arm is any value: ToNumber, as the generic path applies.
+  const numOperand = (dom, node, get, partner) => partner ? toNumF64(node, typed(get, 'f64'))
+    : dom === 'census' ? censusNum(get) : typed(get, 'f64')
+  // The generic arm: the flagged side's temp holds its Number (a census
+  // undefined turned NaN in place), the partner's temp its raw value.
+  const numGenericArm = () => {
+    const fix = (dom, t, get) => dom === 'census' ? [['local.set', `$${t}`, censusNum(get)]] : []
+    ctx.func.localValTypesOverlay.set(partnerA ? tb : ta, VAL.NUMBER)
+    return typed(['block', ['result', 'f64'], ...fix(domA, ta, getA), ...fix(domB, tb, getB), asF64(numGeneric(ta, tb))], 'f64')
+  }
+  const numResult = numGeneric && (partnerA || partnerB) ? numGenericArm()
+    : numCompute(numOperand(domA, a, getA, partnerA), numOperand(domB, b, getB, partnerB))
   // A DEFINITE side (no runtime flag) needn't be re-checked once flagA===flagB
   // holds — the equal flag already tells us which domain BOTH sides share.
   const definite = domA === 'bigint' || domA === 'number' ? domA : domB === 'bigint' || domB === 'number' ? domB : null
@@ -308,15 +342,18 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box) {
   // no wasted-allocation hazard exists at this level.
   const bigResult = box ? boxBigInt(rawBigIR) : fromI64(rawBigIR)
   const bothBranch = definite ? (definite === 'bigint' ? bigResult : numResult)
-    : typed(['if', ['result', 'f64'], flagA, ['then', bigResult], ['else', numResult]], 'f64')
+    : typed(['if', ['result', 'f64'], flagA ?? flagB, ['then', bigResult], ['else', numResult]], 'f64')
   const emitOperand = (dom, node) => dom === 'census' || dom === 'tagged'
     ? materializeDeferredBigint(emit(node)) : emit(node)
+  // With a partner the flagged side's flag stands for both: no domain check to fail.
+  if (!partnerA && !partnerB) ctx.runtime.throws = true
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${ta}`, asF64(emitOperand(domA, a))],
     ['local.set', `$${tb}`, asF64(emitOperand(domB, b))],
     ...(fta ? [['local.set', `$${fta}`, flagIR(domA, getA)]] : []),
     ...(ftb ? [['local.set', `$${ftb}`, flagIR(domB, getB)]] : []),
-    typed(['if', ['result', 'f64'], ['i32.eq', flagA, flagB], ['then', bothBranch], ['else', throwIR]], 'f64')], 'f64')
+    partnerA || partnerB ? bothBranch
+      : typed(['if', ['result', 'f64'], ['i32.eq', flagA, flagB], ['then', bothBranch], ['else', throwIR]], 'f64')], 'f64')
 }
 
 // The runtime twin of bigintMixReject's compile-time literal proof.
