@@ -485,7 +485,10 @@ for (const expression of ['value >>> 5', '2147483648 >>> value', '~value', '~~va
   })
 }
 
-test('numeric domains: captured BigInt-capable operands still reject unsigned shift', () => {
+test('numeric domains: captured BigInt-capable operands reject unsigned shift at runtime, on the BigInt path alone', () => {
+  // `>>>` has no BigInt form (ES2020 §6.1.6.2.11): a value that is a BigInt
+  // only on some path throws when it is one; an absent or Number value
+  // shifts as JS does (`undefined >>> 5` is 0).
   for (const initializer of [
     "const values = new Map([['present', 1n]])",
     "const values = new Map([['present', 65], ['big', 1n]])",
@@ -497,8 +500,13 @@ test('numeric domains: captured BigInt-capable operands still reject unsigned sh
     }
     const reader = create()
     export const f = key => reader.get(key)`
-    for (const optimize of [false, 1, 2, 3])
-      throws(() => run(source, { optimize }), /BigInt has no unsigned right shift/)
+    const expected = Function(source.replaceAll('export ', '') + '; return f')()
+    const outcome = (fn, key) => { try { return { value: fn(key) } } catch (e) { return { throws: e.constructor.name } } }
+    for (const optimize of [false, 1, 2, 3]) {
+      const actual = run(source, { optimize })
+      for (const key of ['present', 'big', 'missing'])
+        is(outcome(actual.f, key), outcome(expected, key), `O${optimize || 0}: ${expression} on ${key}`)
+    }
   }
 })
 

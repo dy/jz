@@ -4,6 +4,7 @@
  * @module compile/emit/bitwise
  */
 
+import { ERR } from '../../../err-codes.js'
 import { ctx, err } from '../../ctx.js'
 import { asF64, asI32, emitNum, fromI64, isLit, litVal, toI32, toNumF64, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
@@ -11,7 +12,7 @@ import { VAL, repOf } from '../../reps.js'
 import { intExprRange, intLiteralValue } from '../../static.js'
 import { exprType } from '../../type.js'
 import {
-  bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, computedBoxOf, hasBigintDomain,
+  bigIntDomainsCanMix, bigIntJointDispatch, bigIntNumericOperand, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
 import { emit } from './dispatch.js'
 import { isI32Num } from './shared.js'
@@ -132,11 +133,12 @@ export const bitwiseOps = {
     // BigInt::unsignedRightShift; `>>>`'s abstract operation for a BigInt
     // operand throws TypeError unconditionally (unlike the signed bitwise
     // ops above, which fall to i64.shr_s/etc — `>>>` has no i64 arm at all
-    // to fall to). Checked before either side emits, so no side effect runs
-    // ahead of the throw.
-    if (hasBigintDomain(a) || hasBigintDomain(b))
-      err('BigInt has no unsigned right shift (>>>) — TypeError in JS; convert with Number(x) first if you need an unsigned shift')
-    const va = emit(a), vb = emit(b)
+    // to fall to). A definite BigInt operand is refused at compile time; an
+    // operand that is a BigInt only on some runtime path (a tagged
+    // Number|BigInt carrier past its `typeof` test) throws on that path.
+    const numeric = n => bigIntNumericOperand(n, ERR.BIGINT_UNSIGNED_SHIFT,
+      'BigInt has no unsigned right shift (>>>) — TypeError in JS; convert with Number(x) first if you need an unsigned shift')
+    const va = numeric(a) ?? emit(a), vb = numeric(b) ?? emit(b)
     if (isLit(va) && isLit(vb)) {
       const r = litVal(va) >>> litVal(vb) // JS uint32 result ∈ [0, 2^32)
       // ≥ 2^31 doesn't fit signed i32: materialize the wrapped bits as an i32 const

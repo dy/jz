@@ -451,6 +451,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (name === 'reduce') return reduceResult(recv, base, n)
     }
     if (t === K.STRING) {
+      // `replace`/`replaceAll` call a function argument the summary does not model.
+      escapeArgs(base, n)
       if (name === 'at') return orAbsent(STRING)
       if (name === 'codePointAt') return orAbsent(NUMBER)
       if (STRING_METHODS.has(name)) return STRING

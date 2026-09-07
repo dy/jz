@@ -389,3 +389,13 @@ test('summary: an absent tag joins a union without widening it; a callback drops
   is(tagOf(v.elemKindOf(binding('f', 'b'))), K.BIGINT, 'the receiver of map keeps its cell: the callback never sees the array it is not bound to')
   is(tagOf(v.elemKindOf(binding('f', 'm'))), K.BIGINT, 'and the mapped cell is the callback result')
 })
+
+test('summary: a one-parameter arrow answers through its parameter name; a string method escapes its arguments', () => {
+  summarize(`const up = (m) => m.toUpperCase()
+    export const f = (k) => { const p = k ? v => BigInt(String(v)) : v => +v; const r = p('300'); return String(typeof r) + 'ab'.replace(/a/, up) }`)
+  const f = ctx.funcs.list.find(f => f.name === 'f')
+  const arrows = []; const walk = n => { if (Array.isArray(n)) { if (n[0] === '=>' && typeof n[1] === 'string') arrows.push(n); n.forEach(walk) } }; walk(f.body)
+  for (const arrow of arrows) is(tagOf(ctx.summary.at(arrow[1]).kindOf(arrow[1])), K.STRING, 'the closure sees its argument through its parameter name')
+  ok(ctx.summary.escaped.has('up'), 'a function handed to replace escapes: the summary does not model the call')
+})
+

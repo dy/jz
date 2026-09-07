@@ -162,25 +162,30 @@ export const hasBigintDomain = node => {
   return domain === 'bigint' || domain === 'census' || domain === 'tagged'
 }
 
-/** Emit unary plus when a nullable/tagged operand can be BigInt at runtime. */
-export function bigIntUnaryPlus(node) {
+/** A Number-only operand (unary `+`, `>>>`) that can be a BigInt at runtime
+ *  (a nullable or tagged carrier): its number, or the TypeError `code` when
+ *  the value is a BigInt. Null when the operand cannot be a BigInt; a
+ *  compile-time error when it always is. */
+export function bigIntNumericOperand(node, code, what) {
   const domain = bigIntDomain(node)
-  if (domain === 'bigint')
-    return err('unary `+` on a BigInt is a TypeError in JS — use Number(x)')
+  if (domain === 'bigint') return err(what)
   if (domain !== 'census' && domain !== 'tagged') return null
   const t = temp('bigUPlus')
   const get = typed(['local.get', `$${t}`], 'f64')
   const isBig = domain === 'tagged' ? isBigIntBox(get, t) : ['i32.eqz', isUndef(get)]
   ctx.runtime.throws = true
   const throwIR = typed(['block', ['result', 'f64'],
-    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
-    ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]], 'f64')
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
+    ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
     ['if', ['result', 'f64'], isBig,
       ['then', throwIR],
       ['else', coerceNullishToNum(get)]]], 'f64')
 }
+/** Emit unary plus when a nullable/tagged operand can be BigInt at runtime. */
+export const bigIntUnaryPlus = node =>
+  bigIntNumericOperand(node, ERR.BIGINT_UNDEF_MIX, 'unary `+` on a BigInt is a TypeError in JS — use Number(x)')
 
 // Runtime "is this f64 bit pattern a BigInt carrier" heuristic — mirrors
 // TYPEOF.bigint's own arm verbatim (finite, nonzero, subnormal magnitude),

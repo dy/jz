@@ -638,9 +638,47 @@ call receiver: `valTypeOf` names no element kind for an expression
 receiver), the boxed-prefix BigInt boundary, receiver-HASH, fromCharCode
 above 0xff, watr memory64.
 
+### Closure results are tagged — 2026-09-07
+
+Native **4326 pass / 6 fail / 1 skip** (a sixth red recorded, below). The watr
+memory64 red (`parse = is64 ? v => BigInt(…) : parseUint; uleb(parse(node.shift()))`)
+opened four defects on one path; three are closed. A closure's BigInt result
+crossed its ABI raw unless a same-body caller had demanded a tag
+(`taggedClosureResultBodies`): every closure result now crosses tagged, and
+the plan reads every call it cannot name a function for as a box
+(`genericCallBoxed`); the provenance answers a bare-name closure call from
+the summary as it does a member read. `at()` took a one-parameter arrow's
+parameter identity (`v` of `v => …`, a string) for a function name, so
+closure-emit saw NONE for every such parameter and its usage-only numeric
+proof typed a string parameter NUMBER (`v => v * 2` returned its string: a
+NaN-box survives f64 arithmetic with its payload); the proof yields to the
+summary's kind. The boundary's result semantic consults the summary
+(`parse(n) { n = parseInt(n); return n }` is a Number whatever `n` held);
+`>>>` on a value that is a BigInt on some path throws the TypeError on that
+path instead of refusing the program; a string method escapes its arguments
+(`replace` calls one). The fourth defect is recorded, not closed: a
+parameter of every kind never materializes (the BOOL veto, `hasClosedBool`,
+an August sequencing choice for the then-pending BOOL-atom carrier), so a
+caller boxes its BigInt argument and the callee reads the box's bits
+(families: "a boxed BigInt into a parameter of every kind", `slebSize`
+answers 10 for 300n natively). Without the veto the shape and memory64 are
+right natively, but the kernel cannot compile itself (`compileAst after
+publishParameterAbi`) and functional falls to 6/20: the kernel's own code
+holds a materialization it cannot bear, still to be found. Two more
+approaches were built and withdrawn on the gates: a named function used as
+a value as a closure-set member (precise, but 1,224 of the kernel's own
+functions lost their escaped-parameter ANY and the kernel failed to compile
+itself: an unmodeled call path leaves a bound parameter NONE), and the
+sound `indirectResult` fallback for an unnamed closure result (it corrupted
+the kernel's parser). Open beside them: `300n == 300` is false (loose
+equality across BigInt and Number). Kernel oracle and parity GREEN;
+recursive GREEN (13,890,892 bytes, heap 1,264 MB); functional 13/20, the
+same seven; families 40/50, the eight rows of `e08ade69` plus the recorded
+family's two.
+
 ### Next ownership and order
 
-1. One session owns main. Next: the five reds above, emit's per-closure
+1. One session owns main. Next: the six reds above, emit's per-closure
    allocation (675 MB on jz × jz), a rest parameter that never escapes
    reading the argument slots (the encoder's `push(...xs)` takes an array per
    byte, 322 MB), the seven hosted byte divergences (the string-equality

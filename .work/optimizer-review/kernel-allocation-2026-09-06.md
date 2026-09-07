@@ -276,8 +276,27 @@ result contract replaces (PLAN.md, next milestone): not polished here.
   Native **4324 / 5 / 1**; kernel oracle GREEN; recursive GREEN (13,892,087
   bytes, +32 KB: the unbox at element reads; heap 1,264 MB).
 
+- Then (`92af8763`–): every closure result crosses its ABI tagged and the
+  plan reads every unnamed call as a box; `at()` resolves a one-parameter
+  arrow by its parameter name (closure-emit had seen NONE for every `v => …`
+  parameter and typed string parameters NUMBER by usage alone); `>>>` on a
+  sometimes-BigInt throws at runtime; the boundary's result semantic is the
+  summary's. Recursive GREEN (13,890,892 bytes, heap 1,264 MB).
+
 ## Open
 
+- The BOOL veto (`hasClosedBool`, representation-plan/body-data.js) keeps a
+  parameter of every kind from materializing: a caller boxes a BigInt into
+  it, the callee reads the box's bits (the recorded family "a boxed BigInt
+  into a parameter of every kind", watr's `slebSize`, the memory64 limits).
+  Without the veto the kernel fails to compile itself and functional falls
+  to 6/20: the kernel's own code holds a materialization the emitter cannot
+  bear. Find that one before lifting the veto.
+- A named function used as a value as a closure-set member (built,
+  withdrawn): sound only once every call path the summary does not model
+  escapes its arguments; 1,224 kernel functions changed kinds and the
+  kernel failed to compile itself.
+- `300n == 300` is false: loose equality across BigInt and Number.
 - The encoder's remaining 1.0 GB: the rest-parameter array per `push` (an
   engine gap), the per-`if` head and per-`call_indirect` reader arrays, the
   exact copy of each body. Then emitClosures (675 MB: 50 KB of analysis and

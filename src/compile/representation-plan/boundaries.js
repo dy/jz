@@ -7,6 +7,7 @@
  */
 import { isReassigned } from '../../ast.js'
 import { VAL } from '../../reps.js'
+import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_DEMAND_RAW_OK, BIGINT_DEMAND_TAG_REQUIRED, BOXED_BIGINT, EDGE_KIND, NO_BIGINT, RAW_BIGINT,
   REP_EDGE_REJECT, SEM_CLOSED_BIT, bitOfKind, canBeBigint, canBeOther, edgeAction, excludesBigint, isExported,
@@ -161,9 +162,15 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
       stable: !isReassigned(func.body, param.name),
     }
   })
-  const resultMayBigint = generic
+  // The summary's result kind outranks provenance's flow-insensitive taint:
+  // `parse(n) { n = parseInt(n); return n }` returns a Number whatever its
+  // parameter held.
+  const summaryResult = generic ? 0 : ctx.summary?.resultOf(func.name) ?? 0
+  const summaryExcludesBigint = summaryResult !== 0 && summaryTagsOf(summaryResult) !== summaryTagsOf(summaryKind(SUMMARY_KIND.ANY)) &&
+    !summaryHasTag(summaryResult, SUMMARY_KIND.BIGINT)
+  const resultMayBigint = !summaryExcludesBigint && (generic
     ? options.localProvenance?.result === true
-    : options.provenance?.results.has(func.name)
+    : options.provenance?.results.has(func.name))
   const semantic = resultMayBigint ? (generic ? semAll() : resultSemantic(func)) : noBigintSemantic()
   const current = resultMayBigint
     ? (generic ? currentResultRep(func, semantic, true) : options.provenance?.resultReps.get(func.name) ?? currentResultRep(func, semantic, false))

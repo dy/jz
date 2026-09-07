@@ -77,6 +77,7 @@ export const ERR = {
   ERROR_MESSAGE_OBJECT: 118,   // Error(message) — runtime object ToPrimitive path is unsupported
   ACCESSOR_DESCRIPTOR: 119,    // Object.defineProperty – accessor descriptor (get/set) at runtime
   BIGINT_NULLISH: 120,         // BigInt(null/undefined) — ToBigInt of a nullish value
+  BIGINT_UNSIGNED_SHIFT: 121,  // `>>>` — a BigInt operand at runtime (ES2020 §6.1.6.2.11: no BigInt::unsignedRightShift)
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -139,6 +140,7 @@ export const ERR_INFO = {
   [ERR.ATOMICS_RECEIVER64]: { name: 'TypeError', message: 'Atomics: receiver must be a BigInt64Array' },
   [ERR.BIGINT_UNDEF_MIX]: { name: 'TypeError', message: 'Cannot mix BigInt and other types, use explicit conversions' },
   [ERR.BIGINT_NULLISH]: { name: 'TypeError', message: 'Cannot convert null or undefined to a BigInt' },
+  [ERR.BIGINT_UNSIGNED_SHIFT]: { name: 'TypeError', message: 'BigInts have no unsigned right shift, use >> instead' },
   [ERR.ERROR_MESSAGE_OBJECT]: { name: 'TypeError', message: 'Error message object coercion is not supported; convert it explicitly with String(...)' },
 
   [ERR.ARRAY_WITH_INDEX]: { name: 'RangeError', message: 'Invalid index' },

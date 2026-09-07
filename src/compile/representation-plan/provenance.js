@@ -281,7 +281,12 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         }
         if (BIGINT_TYPED_CTORS.has(node[1])) return false // constructor yields a TYPED pointer, not a BigInt value
         const callee = ctx.funcs.map.get(node[1])
-        return callee ? results.has(callee.name) : false
+        if (callee) return results.has(callee.name)
+        // A closure through a name: the summary's result when it names one
+        // (as for a member read above). Treating an unnamed result as
+        // possibly BigInt through `indirectResult` corrupted the kernel's
+        // own parser: a materialization defect still to be found.
+        return summaryMayBigint(node, func)
       }
       if (Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
         const method = node[1][2]

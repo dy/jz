@@ -233,17 +233,6 @@ export function scanClosureTableLatticeCandidates(ast) {
       else if (kind !== k) uniform = false
     }
     if (uniform && kind) (ctx.scope.closureTableValResult ||= new Map()).set(name, kind)
-    // A mixed Number/BigInt indirect result needs a self-describing carrier.
-    // Mark the producer bodies now, before any closure is emitted; their
-    // RepresentationPlans box only the BigInt-returning members.
-    if (kinds.has(VAL.BIGINT) && kinds.size > 1) {
-      const tagged = (ctx.scope.taggedClosureResultBodies ||= new WeakSet())
-      const shapes = (ctx.scope.taggedClosureResultShapes ||= new Set())
-      for (const el of elems) {
-        tagged.add(el[2])
-        shapes.add(JSON.stringify(el[2]))
-      }
-    }
   }
   return candidates
 }

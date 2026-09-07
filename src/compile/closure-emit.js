@@ -103,9 +103,12 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
     if (ctor) { updateRep(p, { val: VAL.TYPED }); (ctx.func.typedElem ||= new Map()).set(p, ctor) }
     else if (tagOf(k) === K.NUMBER) updateRep(p, { val: VAL.NUMBER })
   }
-  // Usage-only numeric proof catches closure params the call lattice never saw.
+  // Usage-only numeric proof for a parameter the call lattice never saw. A
+  // parameter it did see keeps the summary's kind: no entry coercion backs
+  // the claim, and `v => v * 2` called with a string returned the string (a
+  // NaN-box survives f64 arithmetic with its payload).
   for (const p of cb.params)
-    if (!ctx.func.localReps?.get(p)?.val && !cb.defaults?.[p] &&
+    if (!ctx.func.localReps?.get(p)?.val && !cb.defaults?.[p] && (summary?.kindOf(p) ?? 0) === 0 &&
         paramAllUsesNumeric(cb.body, p, new Set(), true, false))
       updateRep(p, { val: VAL.NUMBER })
 
@@ -183,12 +186,13 @@ export function analyzeClosureBodyForEmit(cb) {
       results: ['f64'],
     }
     mintTypedStoragePlan(ctx, cb, repSig, cb.body, ctx.func.localReps)
+    // A closure's result crosses its ABI (`$ftN`, an any slot) tagged: every
+    // caller reads a possibly-BigInt result as a box (body-data.js
+    // genericCallBoxed, ir/bigint.js isTaggedCallResult).
     if (representationProgramHasBigint(ctx)) {
-      const forceTaggedResult = ctx.scope.taggedClosureResultBodies?.has(cb.body) === true ||
-        ctx.scope.taggedClosureResultShapes?.has(JSON.stringify(cb.body)) === true
       mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, {
         generic: true,
-        forceTaggedResult,
+        forceTaggedResult: true,
       })
     }
     return publishPreparedFunctionPlan(ctx, cb, ctx.func)

@@ -224,8 +224,10 @@ export function summaryQueries(facts) {
   }
   return {
     ...view(''),
-    // Named function/signature, closure id/parameter identity, or module.
-    at: x => view(typeof x === 'string' || typeof x === 'number' ? x : scopeOfSig.get(x) ?? scopeOfParams.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
+    // Named function/signature, closure id/parameter identity, or module. A
+    // one-parameter arrow's parameter identity is its name (`v => …`): the
+    // closure's scope, not a function's.
+    at: x => view(scopeOfParams.has(x) ? scopeOfParams.get(x) : typeof x === 'string' || typeof x === 'number' ? x : scopeOfSig.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
     fieldKind: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE },
     fieldVal: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? null : valOf(fields.get(sid)?.[i] ?? K.NONE) },
     fieldTypedCtor: (sid, prop) => { const i = schemas[sid]?.indexOf(prop), k = i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE; return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },

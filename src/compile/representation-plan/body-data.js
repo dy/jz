@@ -100,7 +100,11 @@ const edgeMaterializable = (source, target, node, sourceReady = false) => {
  *  identity. Repeated verbatim at 7 sites in buildBodyData's materialization
  *  fixpoints (materializedNames, hostBoxParams, closureBoxParams, the
  *  JOIN_OPS pass, the census-unary/joint pass, the materializedNames
- *  propagation pass, resultHasClosedBool) — one helper, not seven copies. */
+ *  propagation pass, resultHasClosedBool) — one helper, not seven copies.
+ *  The veto keeps a parameter of every kind raw while its callers box a
+ *  BigInt into it (the recorded family "a boxed BigInt into a parameter of
+ *  every kind"); lifting it makes the kernel unable to compile itself, a
+ *  materialization in its own code still to be found (PLAN.md). */
 const hasClosedBool = sem => semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0
 
 function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
@@ -355,17 +359,19 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     return false
   }
 
-  // A same-body local closure's possibly-BigInt result is the closure ABI's
-  // tagged carrier: the demand is registered on the closure's body here, before
-  // its own plan is minted (closures compile after their callers), so both
-  // sides agree without the callee's plan (`value | rhs()`, rhs returning 4n
-  // into a Number/BigInt local: the caller read the box's bits as raw).
-  const localClosureCallBoxed = node => {
-    if (node[0] !== '()' || typeof node[1] !== 'string') return false
-    const callee = localClosures.get(node[1])
-    if (!callee || !canBeBigint(semanticOf(node))) return false
-    ;(ctx.scope.taggedClosureResultBodies ||= new WeakSet()).add(callee.body)
-    return true
+  // A call the plan cannot name a function for (a closure, a closure table,
+  // a dynamic method) returns through an any slot: a possibly-BigInt result
+  // crosses it tagged (closure-emit.js forceTaggedResult, the dynamic
+  // dispatch's tagDynamicMethodResult), and the caller reads a box, never
+  // raw bits (`value | rhs()`, rhs a closure returning 4n; `parse(v)` with
+  // `parse` one of two closures, one returning a BigInt). A builtin's result
+  // is raw (`BigInt(s)`: isBigintOrigin decides first).
+  const genericCallBoxed = node => {
+    if (node[0] !== '()') return false
+    if (typeof node[1] === 'string' && ctx.core.emit[node[1]]) return false
+    const callee = calleeNameOf(node)
+    if (callee && directCallBoundary(ctx, callee)) return false
+    return canBeBigint(semanticOf(node))
   }
 
   const currentOf = node => {
@@ -420,13 +426,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       } else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
         out = joinRep(currentOf(node[1]), currentOf(node[2]))
       else if (closureCallNeedsBox(node)) out = BOXED_BIGINT
-      // A local closure's result crosses the closure ABI (`$ftN`, an any
-      // slot) tagged: its own plan boxes a BigInt result, and a dynamic call
-      // boxes a raw target's (tagDynamicMethodResult). The caller reads it
-      // as a box, never as raw bits (`value | rhs()`, rhs a captured
-      // closure returning 4n: the plan left `value` untagged and the OR
-      // ran on the box's bits).
-      else if (localClosureCallBoxed(node)) out = BOXED_BIGINT
+      else if (genericCallBoxed(node)) out = BOXED_BIGINT
       else if (NUMERIC_VALUE_OPS.has(node[0]) && canBeBigint(sem)) out = RAW_BIGINT
       else if (definiteBigint(sem)) out = RAW_BIGINT
       else out = ANY_BIGINT
@@ -760,7 +760,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         // property-write census never descends into any function body, so a
         // closure assigned to a property from inside one is never indexed.
         if (closureCallNeedsBox(node)) return { rep: BOXED_BIGINT, ready: true }
-        if (localClosureCallBoxed(node)) return { rep: BOXED_BIGINT, ready: true }
+        if (genericCallBoxed(node)) return { rep: BOXED_BIGINT, ready: true }
       }
     }
     return { rep: currentOf(node), ready: false }

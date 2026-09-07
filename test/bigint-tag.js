@@ -142,3 +142,26 @@ test('bigint tag: an array element is a tagged slot, whatever wrote it and whoev
     }
   }
 })
+
+test('bigint tag: a closure result crosses its ABI tagged; a caller chosen at runtime reads it as a box', () => {
+  // `parse` is one of two closures; the result is read under a typeof
+  // guard, through a mixed parameter, and past an unsigned shift on the
+  // Number path (watr's memory64 limits).
+  const HI = 4611686018427387903n
+  const SRCS = [
+    `export let f = (k) => { const p = k ? v => BigInt(v) : v => +v; const v = p('300'); return typeof v === 'bigint' ? Number(v) + 1000 : v }`,
+    `export let f = (k) => { const p = k ? v => BigInt(v) : v => +v; const v = p('300'); return typeof v }`,
+    `export let f = (k) => { const p = k ? v => +v : v => v * 2; const r = p('300'); return typeof r + r }`,
+    `const uleb = (n) => { if (typeof n === 'bigint') { let s = 0; while (true) { const byte = Number(n & 0x7Fn); n >>= 7n; s = s * 1000 + byte; if (n === 0n) return s } } let byte = n & 0x7f; n >>>= 7; return byte * 1000 + n }
+     export let f = (k) => { const p = k ? v => BigInt(v) : v => +v; return uleb(p('300')) }`,
+    `export let f = (k) => { const p = v => k ? BigInt(v) + ${HI}n : v; const v = p(1); return typeof v === 'bigint' ? v - ${HI}n : v }`,
+  ]
+  for (const src of SRCS) {
+    const oracle = Function(src.replace('export let ', 'var ') + ';return f')()
+    for (const optimize of levels) {
+      const { f } = jz(src, { optimize }).exports
+      for (const k of [0, 1]) is(f(k), oracle(k), `${src.slice(src.indexOf('export') + 18, src.indexOf('export') + 70)} f(${k}) (O${optimize || 0})`)
+    }
+  }
+})
+
