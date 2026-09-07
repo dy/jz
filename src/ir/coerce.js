@@ -13,8 +13,9 @@ import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { VAL, repOf } from '../reps.js'
-import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode } from '../kind.js'
+import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode, numericDenied } from '../kind.js'
 import { objLiteralSchemaId } from '../static.js'
+import { K, bitOf, NULL_BITS, TAGS } from '../summary/kind.js'
 import { typed } from './tag.js'
 import { temp, tempI32, tempI64, block64, freshId } from './locals.js'
 import { ptrOffsetIR, ptrTypeEq } from './pointers.js'
@@ -395,6 +396,20 @@ export function toNumF64(node, v) {
     (v[0] === 'call' && typeof v[1] === 'string' && v[1].startsWith('$math.')) ||
     ((v[0] === 'block' || v[0] === 'if') && isNumericIR(v))
   )) return v
+  // A bare name the numeric demand pass denied a number (a read of it
+  // neither converts nor is compatible) keeps JS semantics for every kind
+  // the host may pass through an `any` parameter (a string, a boolean,
+  // null): the summary's kind decides between the full ToNumber, the number
+  // module included, and an inline fold of the nullish and boolean atoms.
+  if (!ctx.core.stdlib['__to_num'] && ctx.summary && numericDenied(node)) {
+    const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
+    const nonNumeric = k & ~(bitOf(K.NUMBER) | bitOf(K.BIGINT) | bitOf(K.BOOL) | NULL_BITS) & TAGS
+    if (nonNumeric !== 0) ctx.module.include('number')
+    else if ((k & (bitOf(K.BOOL) | NULL_BITS)) !== 0) {
+      const t = temp('atom')
+      return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)], coerceAtomsToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
+    }
+  }
   if (!ctx.core.stdlib['__to_num']) {
     // No full ToNumber helper loaded — the program provably has no strings.
     // A nullish *literal* still coerces (null→+0, undefined→NaN) — fold it

@@ -1696,6 +1696,11 @@ export default (ctx) => {
     ;; ever being able to deliver a boxed BigInt here.
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (f64.reinterpret_i64 (i64.load (call $__ptr_offset (local.get $v)))))))
+    ;; ToBigInt (ES2024 7.1.13): null and undefined are a TypeError, a boolean is 0n or 1n.
+    (if (i32.or (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_NULLISH}))) (throw $__jz_err (f64.const ${ERR.BIGINT_NULLISH}))))
+    (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 1)))))
+    (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (local.set $len (call $__str_byteLen (local.get $v)))

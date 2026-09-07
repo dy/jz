@@ -76,6 +76,7 @@ export const ERR = {
   ARRAY_FROM_ITERABLE: 117,    // Array.from — iterable protocol unsupported for this source
   ERROR_MESSAGE_OBJECT: 118,   // Error(message) — runtime object ToPrimitive path is unsupported
   ACCESSOR_DESCRIPTOR: 119,    // Object.defineProperty – accessor descriptor (get/set) at runtime
+  BIGINT_NULLISH: 120,         // BigInt(null/undefined) — ToBigInt of a nullish value
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -137,6 +138,7 @@ export const ERR_INFO = {
   [ERR.ATOMICS_RECEIVER32]: { name: 'TypeError', message: 'Atomics: receiver must be an Int32Array' },
   [ERR.ATOMICS_RECEIVER64]: { name: 'TypeError', message: 'Atomics: receiver must be a BigInt64Array' },
   [ERR.BIGINT_UNDEF_MIX]: { name: 'TypeError', message: 'Cannot mix BigInt and other types, use explicit conversions' },
+  [ERR.BIGINT_NULLISH]: { name: 'TypeError', message: 'Cannot convert null or undefined to a BigInt' },
   [ERR.ERROR_MESSAGE_OBJECT]: { name: 'TypeError', message: 'Error message object coercion is not supported; convert it explicitly with String(...)' },
 
   [ERR.ARRAY_WITH_INDEX]: { name: 'RangeError', message: 'Invalid index' },

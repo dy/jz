@@ -205,6 +205,8 @@ export function summaryQueries(facts) {
       elemKindOf: name => { const k = readKind(name); return celled(k) ? elemOf(k) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null },
       numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'string' ? isNumeric(key) : key.every(isNumeric)) },
+      // The demand pass denied the binding a number: a read of it neither converts nor is compatible (a container store, a return), so its value keeps JS semantics for every kind the host may pass.
+      numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'string' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.
       paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : canon(incoming.get(key) ?? K.NONE) },
       elemKindOf: elemOf,

@@ -524,15 +524,26 @@ VT['+'] = (args) => {
   // otherwise send raw i64 sum bits down the NUMBER decode lane.
   if (censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT)
     return VAL.BIGINT
-  // OPTIMISTIC NUMBER for unknown sides — load-bearing for local numeric
-  // inference (demoting it doubled the slice/nest loop-body op counts).
-  // The one consumer where this optimism is UNSOUND across a boundary is
-  // function-RESULT stamping: narrowValResults uses its own sound `+` rule
-  // (unknown side → no claim), so a string-building helper like watr's
-  // `hex + hex` _sb no longer gets a NUMBER valResult that sends call-site
-  // compares down the raw-f64 path.
+  // An unknown side: the program summary's kind over the whole program when
+  // it proves one; else a bare name the numeric demand pass denied (a read of
+  // it neither converts nor is compatible: a container store, a return)
+  // keeps JS semantics for every kind the host may pass through an `any`
+  // parameter (`null + 3` and `'a' + 3` through such a local were added as
+  // raw f64, the box's bits coming back as the result). Any other unknown
+  // side takes the guarded ABI's numeric contract, the optimistic NUMBER:
+  // load-bearing for local numeric inference (demoting it doubled the
+  // slice/nest loop-body op counts).
+  if (ctx.summary && (ta == null || tb == null)) {
+    const view = ctx.summary.at(ctx.func.current)
+    const v = view.valOfExpr(['+', args[0], args[1]])
+    if (v != null) return v
+    if (numericDenied(args[0], view) || numericDenied(args[1], view)) return null
+  }
   return VAL.NUMBER
 }
+/** A bare name the numeric demand pass denied a number. */
+export const numericDenied = (node, view = ctx.summary?.at(ctx.func.current)) =>
+  typeof node === 'string' && view != null && view.numericDenied(node)
 
 // A sequence forwards its final value, including presence. The settled
 // summary declines nullable/mixed kinds; do not fall back from that answer

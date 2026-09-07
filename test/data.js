@@ -4811,3 +4811,19 @@ test('nested ProgramIndex targets decline conflicting and computed writes', () =
   }
 })
 
+
+// An `any` parameter (the numeric demand pass denied it a number: its copy
+// is returned in an array) keeps JS semantics for every kind the host may
+// pass: null and undefined convert in arithmetic, a string concatenates in
+// `+` and is NaN in `*`. Its copy was added as raw f64, the box's bits coming
+// back as the result; a parameter every read of which is compatible keeps
+// the guarded ABI's numeric contract (the ratchet kernels' element reads).
+test('result carriers: an any parameter keeps JS semantics through a local copy', () => {
+  const source = `export function f(initial, operand) { let value = initial; const sum = (value = value + operand); const product = initial * operand; return [sum, value, product] }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 2]) {
+    const actual = jz(source, { optimize }).exports.f
+    for (const args of [[2, 3], [null, 3], [undefined, 3], ['a', 3], ['4', 3], [true, 3]])
+      is(actual(...args), expected(...args), `O${optimize || 0}: ${args}`)
+  }
+})

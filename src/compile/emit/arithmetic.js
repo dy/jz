@@ -9,8 +9,9 @@ import {
   FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, boxBigInt, emitNum, f64rem, fromI64, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
 } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
-import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
+import { K, hasTag, tagsOf } from '../../summary/kind.js'
 import { exprType } from '../../type.js'
 import {
   bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, computedBoxOf, hasBigintDomain,
@@ -162,6 +163,14 @@ const foldConst = (va, vb, fn, guard) =>
 // producer when its frozen expression edge is tagged, just like the ordinary
 // BigInt arithmetic branches below.
 const postfixBigint = (raw, self) => computedBoxOf(self) ? boxBigInt(raw) : fromI64(raw)
+// A bare name the numeric demand pass denied a number, whose kind admits a
+// string (an unknown kind admits every kind the host may pass).
+const mayBeString = (node) => {
+  if (!numericDenied(node)) return false
+  const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
+  return hasTag(k, K.STRING) || tagsOf(k) === 0
+}
+
 export const arithmeticOps = {
   // === Arithmetic (type-preserving) ===
 
@@ -284,6 +293,9 @@ export const arithmeticOps = {
     // a known non-STRING vtype, skip its `__is_str_key` (statically false). Common in
     // chained additions `s + a*b + c.d` — left grows as `+` (=NUMBER), only the new right
     // operand needs the runtime check.
+    // A side the summary cannot prove numeric may be a string the host passed
+    // through an `any` parameter: the string module, then the runtime dispatch.
+    if ((vtA == null && mayBeString(a)) || (vtB == null && mayBeString(b))) ctx.module.include('string')
     if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
       const tA = temp('add'), tB = temp('add')
       // Fully-untyped `+`: the string arm is a runtime-guarded cold path that the engine reaches
