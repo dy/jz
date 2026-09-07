@@ -365,8 +365,9 @@ function callerArrayLen(arrName, callerFunc, callerReps, paramReps) {
  *  nameShift's own +/- shape): a shifted counter guard is real but out of
  *  this walker's minimal scope — falls through to null, sound (loses a
  *  provable case, never wrongly proves one). */
+const UPPER_BOUND_OPS = new Set(['<', '<='])
 function coInductionCounterHull(L, counterName, callerFunc, callerReps) {
-  if (!Array.isArray(L.cond) || L.cond[1] !== counterName || !['<', '<='].includes(L.cond[0])) return null
+  if (!Array.isArray(L.cond) || L.cond[1] !== counterName || !UPPER_BOUND_OPS.has(L.cond[0])) return null
   if (unitIncVar(L.step) !== counterName) return null
   const initExpr =
     Array.isArray(L.init) && (L.init[0] === 'let' || L.init[0] === 'const')

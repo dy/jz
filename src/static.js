@@ -7,6 +7,9 @@ import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
 
+// A loop guard's relational operators.
+const RELATIONAL_OPS = new Set(['<', '<=', '>', '>='])
+
 // Byte width per TYPED_ELEM_CODE index (0..7) — parallel to module/typedarray.js's
 // own private SHIFT table (log2 of this), duplicated here (layout.js-adjacent, no
 // compiler-state dependency) since that module isn't importable from this leaf file.
@@ -376,7 +379,7 @@ export function linearIndexOf(expr) {
 // name for an UNSHIFTED guard; a shifted one (`i + 3 <= n`) has an
 // expression there instead.
 export function guardCounterName(cond) {
-  if (!Array.isArray(cond) || !['<', '<=', '>', '>='].includes(cond[0])) return null
+  if (!Array.isArray(cond) || !RELATIONAL_OPS.has(cond[0])) return null
   const lhs = cond[1]
   if (typeof lhs === 'string') return lhs
   if (Array.isArray(lhs) && lhs.length === 3 && lhs[0] === '+') {
@@ -387,7 +390,7 @@ export function guardCounterName(cond) {
   return null
 }
 export function forCounterRange(init, cond, step, name) {
-  if (!Array.isArray(cond) || !['<', '<=', '>', '>='].includes(cond[0])) return null
+  if (!Array.isArray(cond) || !RELATIONAL_OPS.has(cond[0])) return null
   const shift = nameShift(cond[1], name)
   if (shift == null) return null
   const increasing = cond[0] === '<' || cond[0] === '<='

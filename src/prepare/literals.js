@@ -13,6 +13,9 @@ import { MUTATING_ARRAY_METHODS, stringValue } from './const-fold.js'
 import { isDeclared, resolveScope } from './scope.js'
 import { STATIC_ARRAYS, STATIC_CONSTS, STATIC_STRINGS, mutatedArrayNames, scopes, staticConstScopes } from './state.js'
 
+// Operators that end in `=` without assigning.
+const EQ_LIKE_OPS = new Set(['==', '===', '!=', '!==', '<=', '>='])
+
 
 
 export function staticStringArrayValues(expr) {
@@ -128,7 +131,7 @@ export function hoistIndexedConstLiterals(root) {
   walkAst(root, { enter: (node) => {
     const op = node[0]
     if (typeof op === 'string' && (op === '++' || op === '--' || op === 'delete' || op === '=' ||
-        (op.length >= 2 && op.endsWith('=') && !['==', '===', '!=', '!==', '<=', '>='].includes(op))))
+        (op.length >= 2 && op.endsWith('=') && !EQ_LIKE_OPS.has(op))))
       banIn(node[1])
   } })
   walkAst(root, { exit: node => {

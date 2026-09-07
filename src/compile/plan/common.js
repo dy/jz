@@ -20,6 +20,7 @@ export const optimizing = () => { const c = ctx.transform.optimize; return !!c &
  *  bind a fresh per-iter local on each entry, so jz lowers them differently.) */
 export const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
 
+const SIMPLE_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
 /** Inline-substitution argument check — pure, side-effect-free, captures nothing. */
 export const isSimpleArg = node => {
   if (typeof node === 'string' || typeof node === 'number') return true
@@ -27,7 +28,7 @@ export const isSimpleArg = node => {
   if (node[0] == null) return typeof node[1] === 'number'
   if (node[0] === 'str') return typeof node[1] === 'string'
   if (node[0] === 'u-' || (node[0] === '-' && node.length === 2)) return isSimpleArg(node[1])
-  if (['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'].includes(node[0]))
+  if (SIMPLE_BINARY_OPS.has(node[0]))
     return isSimpleArg(node[1]) && isSimpleArg(node[2])
   return false
 }

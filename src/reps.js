@@ -304,10 +304,15 @@ export const updateRep = (name, fields) => {
       throw new Error(`updateRep('${name}', {${Object.keys(fields)}}) during emission — FunctionPlan is frozen`)
   }
   const m = ctx.func.localReps ||= new Map()
-  const prev = m.get(name) || {}
-  const next = { ...prev, ...fields }
-  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
-  if (Object.keys(next).length === 0) m.delete(name)
+  const prev = m.get(name)
+  const next = prev ? { ...prev, ...fields } : { ...fields }
+  // A field set to undefined clears it. Only `fields` can carry one: every
+  // stored rep was cleaned here. Counted without a key array (a hot path:
+  // a fact per binding per pass).
+  let size = 0, cleared = false
+  for (const k in next) { if (next[k] === undefined) cleared = true; else size++ }
+  if (cleared) for (const k in fields) if (fields[k] === undefined) delete next[k]
+  if (size === 0) m.delete(name)
   else m.set(name, next)
 }
 

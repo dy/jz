@@ -286,11 +286,13 @@ const extractHoistableLiterals = (body) => {
  * stores the initializer into this cell rather than re-allocating (see
  * `frame.loopFresh`). Returns the alloc IR to splice at loop-body entry.
  */
+// Nested scopes whose declarations are their own: a closure or an inner loop.
+const LOOP_FRESH_BOUNDARY_OPS = new Set(['=>', 'for', 'for-of', 'for-in', 'while', 'do'])
 function emitLoopFreshBoxed(body, frame) {
   if (!ctx.func.boxed?.size) return []
   const names = new Set()
   walkAst(body, {
-    boundary: (node) => ['=>', 'for', 'for-of', 'for-in', 'while', 'do'].includes(node[0]),
+    boundary: (node) => LOOP_FRESH_BOUNDARY_OPS.has(node[0]),
     enter: (node) => {
       const op = node[0]
       if (op === 'let' || op === 'const') {

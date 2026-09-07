@@ -12,6 +12,8 @@
 import { BOOL_OPS } from '../kind-traits.js'
 import { intLiteralValue } from '../static.js'
 
+const COMPARE_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!=='])
+
 export function literalTruthiness(expr) {
   if (typeof expr === 'number') return expr !== 0 && expr === expr
   if (typeof expr === 'boolean') return expr
@@ -75,7 +77,7 @@ function literalBool(expr) {
     const truthy = literalTruthiness(left)
     return truthy == null ? null : !truthy
   }
-  if (!['<', '<=', '>', '>=', '==', '!=', '===', '!=='].includes(op)) return null
+  if (!COMPARE_OPS.has(op)) return null
   const a = literalValue(left), b = literalValue(right)
   if (a === undefined || b === undefined) return null
   switch (op) {

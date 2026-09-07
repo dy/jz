@@ -50,6 +50,7 @@ const idxVars = (e, out) => {
 const CONTROL = new Set(['for', 'while', 'do', 'if', 'loop', 'block', 'switch', 'try', '=>',
   'br', 'br_if', 'br_table', 'return', 'continue', 'break', 'throw', 'unreachable'])
 const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
+const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])
 
 function buildFacts(body) {
   const def = new Map(), declCount = new Map(), positive = new Set()
@@ -149,7 +150,7 @@ export function cseLoads(body, isTypedArray, freshName) {
         // temp forces the first checked load back outside that guard.
         const rhs = node[2]
         const i32Rmw = node[0] === '=' && lhs[0] === '[]' && isName(lhs[1]) && stableIdx(lhs[2]) && isArr(rhs) &&
-          (['&', '|', '^', '<<', '>>', '>>>'].includes(rhs[0]) ||
+          (BIT_OPS.has(rhs[0]) ||
            (rhs[0] === '()' && rhs.length > 2 && (rhs[1] === 'math.imul' ||
              (isArr(rhs[1]) && rhs[1][0] === '.' && rhs[1][1] === 'Math' && rhs[1][2] === 'imul'))))
         const ownKey = i32Rmw ? `${lhs[1]}|${idxKey(lhs[2])}` : null

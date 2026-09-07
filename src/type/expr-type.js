@@ -22,6 +22,9 @@ import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { inBoundsCharCodeAt } from './canonical-bounds.js'
 
+// The bitwise and signed-shift operators: i32 on numbers, f64 (the i64 carrier) on BigInts.
+const SIGNED_BIT_OPS = new Set(['&', '|', '^', '~', '<<', '>>'])
+
 // Resolve a name's typed-array element ctor: in-progress local overlay (analyzeBody) →
 // per-func map (post-analyze) → module-global registry. The global fallback matters during
 // analyzeBody/narrow when the per-func map is null, so a read of a *global* typed array
@@ -158,7 +161,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   // caller) — resolves a bare identifier's kind from analyzeBody's per-body
   // facts BEFORE narrow.js's global per-function reps are live; see the
   // module doc above exprType.
-  if (['&', '|', '^', '~', '<<', '>>'].includes(op)) {
+  if (SIGNED_BIT_OPS.has(op)) {
     // PRECISE census checks (§14 point 4 fallout) — an ACTUAL BIGINT-kind
     // resolution (censusMaybeUndefinedKind's own dictValueKindOf/mapValueKindOf
     // receiver-kind check filters out a plain array/typed-array receiver
