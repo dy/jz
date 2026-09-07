@@ -683,6 +683,36 @@ recursive GREEN (13,890,892 bytes, heap 1,264 MB); functional 13/20, the
 same seven; families 40/50, the eight rows of `e08ade69` plus the recorded
 family's two.
 
+### The BOOL veto is retired – 2026-09-07
+
+Native **4329 pass / 4 fail / 1 skip** (every red at HEAD
+too: the `(get()[key()])++` result at O0, the box-prefix host boundary,
+the receiver-HASH summary claim, the fromCharCode family). The fourth
+defect above is closed: the veto masked three. A plan edge applied only to
+a node whose valTypeOf is BIGINT, while the plan admits any ready producer
+(`edgeMaterializable`'s `sourceReady`): the join `typeof v === 'bigint' ? v
+: BigInt(v)` has no kind, so its materialized BOXED value entered its RAW
+binding with the UNBOX dropped and `x & 0x7fn` ran on the box's pointer
+bits, natively and in the kernel's own `slebSize` (every constant priced
+at ten bytes, the `dict` divergence). The edge now applies to a carrier
+the plan materialized as well (`isPlanTaggedBigint`/`isPlanRawBigint`,
+src/ir/bigint.js). A materialized join's boolean arm lost its atom beside a
+boxed one (`c ? 1n : true` read as the number 1); it carries the atom
+(`taggedArm`, emit/logical.js). A join materialized BOXED while the binding
+it initializes never did (a def the fixpoint cannot ready) handed the
+binding's raw reads a box; after the fixpoint, such a join takes the raw
+carrier when every arm can, else stays unmaterialized, which retires the
+a-priori `rawJoins` with the veto (body-data.js). Kernel oracle and parity
+GREEN (15/15); recursive GREEN (13,891,588 bytes, heap 1,206 MB, 60 s);
+functional 14/20 (`src/abi/number.js O2` joins the greens; the six: maps-
+properties O1, strings-parser O1/O2, encoder-json O1, src/ir/tape.js O1,
+src/abi/number.js O1); sequences GREEN; the families case is green
+natively. Open beside it: a boolean written into a mixed binding keeps no
+atom (`let x = true; if (c) x = 'str'` is a number to typeof), and `x ??
+true` / `ok && 5n` fold their kind to BIGINT statically; a self-referential
+def through a join (`x = c ? x + 1n : x`) never readies, so such a binding
+keeps its raw carrier (ledger-correctness §11).
+
 ### Next ownership and order
 
 1. One session owns main. Next: the six reds above, emit's per-closure

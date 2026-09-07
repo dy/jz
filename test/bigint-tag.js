@@ -165,3 +165,30 @@ test('bigint tag: a closure result crosses its ABI tagged; a caller chosen at ru
   }
 })
 
+test('bigint tag: a parameter of every kind materializes; the joins it feeds keep every arm\'s identity', () => {
+  // The join `typeof v === 'bigint' ? v : BigInt(v)` has no kind of its
+  // own, so the edge into its RAW binding was dropped and the reads took
+  // the box's pointer bits (watr's slebSize answered 10 for 300n). A
+  // boolean arm beside a boxed one carries its atom, whatever the join's
+  // consumer; a join whose binding never materializes keeps the raw carrier.
+  const SRCS = [
+    `const size = (v) => { let x = typeof v === 'bigint' ? v : typeof v === 'string' ? BigInt(v) : BigInt(Math.trunc(Number(v) || 0)); let n = 1; while (true) { const b = x & 0x7fn; x >>= 7n; if ((x === 0n && (b & 0x40n) === 0n) || (x === -1n && (b & 0x40n) !== 0n)) return n; n++ } }
+     const parse = (s) => { const w = s.split(' '); return [w[0], w[1].endsWith('n') ? BigInt(w[1].slice(0, -1)) : w[1].startsWith('#') ? Number(w[1].slice(1)) : w[1]] }
+     export let f = (k) => size(parse(k ? 'i64.const 300n' : 'i32.const #1000')[1]) * 10 + size(k === 1 ? '-5' : k + 100)`,
+    `export let f = (k) => { let x = k ? 3n : true; return typeof x + ':' + String(x) }`,
+    `export let f = (k) => { let x = k ? 7n : k === 0; return x === true ? 1 : x === 7n ? 2 : 0 }`,
+    `export let f = (k) => { const a = [3n, null, true]; const y = a[k] ?? (k === 1); return typeof y + ':' + String(y) }`,
+    `export let f = (k) => { const ok = k > 0; let x = ok && 5n; return typeof x }`,
+    `export let f = (k) => { const ok = k > 0; let x = ok || 5n; return typeof x === 'bigint' ? Number(x) : x ? 'T' : 'F' }`,
+    `export let f = (k) => (k ? 3n : true)`,
+    `export let f = (k) => { let x = k ? BigInt(3) : k === 0; x = k ? x + 1n : x; return k ? Number(x - 3n) : String(x) }`,
+  ]
+  for (const src of SRCS) {
+    const oracle = Function(src.replace('export let ', 'var ') + ';return f')()
+    for (const optimize of levels) {
+      const { f } = jz(src, { optimize }).exports
+      for (const k of [0, 1, 2]) is(f(k), oracle(k), `${src.slice(src.indexOf('export') + 18, src.indexOf('export') + 70)} f(${k}) (O${optimize || 0})`)
+    }
+  }
+})
+

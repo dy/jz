@@ -944,3 +944,47 @@ sidecar. The summary now allocates a literal as the runtime does
 (src/summary literalInto) and a parameter claims HASH. A module global
 still does not (plan/scope.js moduleGlobalKinds runs on the entry summary,
 before materializeAutoBoxSchemas gives a dot-written `{}` its schema).
+
+## 11. The BOOL veto: a parameter of every kind never materialized (2026-09-07, CLOSED)
+
+**Symptom**: `slebSize(v)` (watr optimize.js; `v` a string, a number or a
+BigInt from a constant node) answered 10 for 300n natively (families: "a
+boxed BigInt into a parameter of every kind"): the caller boxed its
+argument into `v`, the callee read the box's pointer bits. Without the
+veto, the kernel's own `slebSize` answered 10 for every immediate (the
+`dict` corpus program diverged from native at O2: the WAT inliner priced
+every constant at ten bytes and left `__hash_get_local_hm` un-inlined).
+
+**Root cause**: the veto (`hasClosedBool`, representation-plan/body-data.js,
+seven sites) kept every binding whose closed semantic admits BOOL out of
+materialization, so a parameter of every kind stayed raw while its callers
+boxed. It masked three defects that materializing such a binding exposes:
+- `applyBigintRepresentationAction` (src/ir/bigint.js) applied an edge
+  only to a node whose valTypeOf is BIGINT, while the plan admits an edge
+  from any ready producer (edgeMaterializable's `sourceReady`). The join
+  `typeof v === 'bigint' ? v : BigInt(v)` has no kind; its materialized
+  BOXED value was written into the RAW binding `x` with the UNBOX dropped,
+  and `x & 0x7fn`, `x >>= 7n`, `x === 0n` ran on the box's pointer bits.
+- A materialized join's arms took `asF64` (emit/logical.js): a boolean arm
+  lost its atom beside a boxed BigInt arm (`c ? 1n : true` read as
+  `number` 1), the identity the unmaterialized BOOL∪other path boxes.
+- A join materialized BOXED while the binding it initializes never
+  materialized (`let x = flag ? BigInt(3) : flag === false; x = flag ? x + 1n
+  : x`, a def the fixpoint cannot ready): the binding's raw reads took the
+  box. `rawJoins` covered only bindings vetoed a priori.
+
+**Fix**: the edge applies to a carrier the plan materialized
+(`isPlanTaggedBigint`/`isPlanRawBigint`) as well as to a BIGINT-kinded
+node; a materialized join's boolean arm carries its atom (`taggedArm`);
+after the materialization fixpoint, a join written to a binding that did
+not materialize takes the raw carrier when every arm can, else stays
+unmaterialized (the a-priori `rawJoins`/`neverMaterialized` retired with
+the veto). Gates: test/bigint-tag.js "a parameter of every kind
+materializes", the families case (green natively), test/self-families.js,
+kernel functional 14/20 (`src/abi/number.js O2` joins the greens),
+recursive GREEN.
+
+Open beside it, not this family: a boolean written into a mixed binding
+keeps no atom (`let x = true; if (c) x = 'str'; typeof x` is `number`), and
+`x ?? true` / `ok && 5n` fold their kind to BIGINT statically (`String(x)`
+prints the atom's bits); both fail identically at HEAD.

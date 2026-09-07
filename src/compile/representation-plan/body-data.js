@@ -12,7 +12,7 @@ import {
   bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures,
   definiteBigint, edgeAction, excludesBigint, isBigintOrigin, isExported, joinRep, joinSem, memberReceiver,
   noBigintSemantic, packSemantic, programPlanRecord, sameSem, semAll, semBottom, semKind, semanticClosed,
-  semanticFromRep, semanticKinds, semanticObserved, targetRepFor,
+  semanticFromRep, semanticObserved, targetRepFor,
 } from './common.js'
 import { boundaryDataOf, ensureBoundary } from './boundaries.js'
 import { deriveLocalProvenance } from './provenance.js'
@@ -92,20 +92,6 @@ const edgeMaterializable = (source, target, node, sourceReady = false) => {
     (source === RAW_BIGINT && target === RAW_BIGINT) ||
     (source === BOXED_BIGINT && target === BOXED_BIGINT && sourceReady)
 }
-
-/** The "BOOL-veto": true when a closed semantic includes the BOOL member.
- *  RepresentationPlan only ever normalizes the BigInt member of a union; a
- *  value that MIGHT be a JS boolean still needs the separate BOOL-atom
- *  producer, so materializing BigInt onto it would erase that other
- *  identity. Repeated verbatim at 7 sites in buildBodyData's materialization
- *  fixpoints (materializedNames, hostBoxParams, closureBoxParams, the
- *  JOIN_OPS pass, the census-unary/joint pass, the materializedNames
- *  propagation pass, resultHasClosedBool) — one helper, not seven copies.
- *  The veto keeps a parameter of every kind raw while its callers box a
- *  BigInt into it (the recorded family "a boxed BigInt into a parameter of
- *  every kind"); lifting it makes the kernel unable to compile itself, a
- *  materialization in its own code still to be found (PLAN.md). */
-const hasClosedBool = sem => semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0
 
 function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const defs = collectDefs(body)
@@ -220,8 +206,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     let out
     // Join structure is precise even when provenance says neither arm can
     // carry BigInt. Preserve its actual kind/nullish union instead of falling
-    // to noBigintSemantic's coarse all-kinds set (whose synthetic BOOL member
-    // vetoes an enclosing BigInt join).
+    // to noBigintSemantic's coarse all-kinds set (which widens an enclosing
+    // BigInt join).
     if (nullishArm(node)) out = packSemantic(0, true, true)
     else if (node[0] === ',') out = semanticOf(node[node.length - 1])
     else if (node[0] === '=') out = semanticOf(node[2])
@@ -643,11 +629,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // from the frozen boundary plus the two exclusions.
   const valueAbiIdentity = boundary.covered === false && !options.generic && !isExported(ctx, identity)
   const valueAbiParamCandidates = new Set()
-  if (options.generic || valueAbiIdentity) for (const [name, k] of params) {
-    const sem = semanticNames.get(name) ?? semAll()
-    if (targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))
-      valueAbiParamCandidates.add(k)
-  }
+  if (options.generic || valueAbiIdentity) for (const [name, k] of params)
+    if (targetNames.get(name) === BOXED_BIGINT) valueAbiParamCandidates.add(k)
 
   const materializedNames = new Set()
   const exportedIdentity = isExported(ctx, identity)
@@ -655,20 +638,6 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (ctx.scope.globals?.has(name)) continue
     const paramIndex = params.get(name)
     if (paramIndex != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(paramIndex)) continue
-    // RepresentationPlan only normalizes the BigInt member. A BOOL member in
-    // an ordinary dynamic scalar still needs the separate BOOL-atom producer.
-    // A storage read is different: it is already fully tagged for every kind,
-    // and a following numeric compound update throws before writing on a
-    // non-numeric member, so materializing BigInt cannot erase BOOL identity.
-    const nameSemantic = semanticNames.get(name) ?? semAll()
-    let hasStorageSeed = false, identitySafeStorageFlow = true
-    for (const def of list) {
-      if (def[DEF_RHS] == null) continue
-      if (isStorageReadProducer(def[DEF_RHS])) { hasStorageSeed = true; continue }
-      if (!NUMERIC_VALUE_OPS.has(def[DEF_OWNER] && def[DEF_OWNER][0])) { identitySafeStorageFlow = false; break }
-    }
-    identitySafeStorageFlow = identitySafeStorageFlow && hasStorageSeed
-    if (hasClosedBool(nameSemantic) && !identitySafeStorageFlow) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
     const ready = list.every(def => {
       if (def[DEF_RHS] == null) return true
@@ -703,9 +672,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const boxParams = () => {
     let grew = false
     for (const [name, k] of params) {
-      const sem = semanticNames.get(name) ?? semAll()
       const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
-      if (!(ready && targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))) continue
+      if (!(ready && targetNames.get(name) === BOXED_BIGINT)) continue
       if (exportedIdentity && !hostBoxParams.has(k)) { hostBoxParams.add(k); grew = true }
       if (closureAbiIdentity && !closureBoxParams.has(k)) { closureBoxParams.add(k); grew = true }
     }
@@ -794,19 +762,12 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // Joins, census-shaped results and binding chains materialize each other:
   // a materialized join readies the binding it initializes, a materialized
   // parameter readies the joins it feeds. One fixpoint over all three.
-  // A join written to a binding the plan never materializes (a closed BOOL
-  // member, a parameter outside the boundary's admission) takes that
-  // binding's raw carrier: its boxed arm unboxes, its raw arm stays. Boxing
-  // it would hand the binding's raw reads a pointer.
-  const neverMaterialized = name => {
-    if (ctx.scope.globals?.has(name)) return false
-    const k = params.get(name)
-    if (k != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(k)) return true
-    return hasClosedBool(semanticNames.get(name) ?? semAll())
+  const joinArmsMaterializable = (node, target) => {
+    const [armA, armB] = joinArms(node)
+    const left = emittedCandidate(armA), right = emittedCandidate(armB)
+    return edgeMaterializable(left.rep, target, armA, left.ready) &&
+      edgeMaterializable(right.rep, target, armB, right.ready)
   }
-  const rawJoins = new Map()
-  for (const [name, list] of defs) if (neverMaterialized(name))
-    for (const def of list) if (def[DEF_OWNER]?.[0] === '=' && Array.isArray(def[DEF_RHS]) && JOIN_OPS.has(def[DEF_RHS][0])) rawJoins.set(def[DEF_RHS], name)
   let materializing = true
   while (materializing) {
     materializing = false
@@ -815,14 +776,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       joinChanged = false
       for (const [node, planned] of nodeTarget) {
         if (materializedJoins.has(node) || !JOIN_OPS.has(node[0]) || planned !== BOXED_BIGINT) continue
-        const sem = semanticOf(node)
-        if (hasClosedBool(sem)) continue
-        const target = rawJoins.has(node) ? RAW_BIGINT : planned
-        const [armA, armB] = joinArms(node)
-        const left = emittedCandidate(armA), right = emittedCandidate(armB)
-        if (edgeMaterializable(left.rep, target, armA, left.ready) &&
-            edgeMaterializable(right.rep, target, armB, right.ready)) {
-          nodeTarget.set(node, target)
+        if (joinArmsMaterializable(node, planned)) {
           materializedJoins.add(node)
           joinChanged = true
           materializing = true
@@ -875,8 +829,6 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         return (candidate.ready && candidate.rep === BOXED_BIGINT) || definiteBigint(sem) || excludesBigint(sem)
       }) && operands.some(arg => canBeBigint(semanticOf(arg)))
       if (!sentinelUnary && !sentinelJoint && !taggedJoint) continue
-      const sem = semanticOf(node)
-      if (hasClosedBool(sem)) continue
       materializedJoins.add(node)
       materializing = true
     }
@@ -894,8 +846,6 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         const paramIndex = params.get(name)
         if (paramIndex != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(paramIndex)) continue
         if (!list.some(def => def[DEF_RHS] != null && emittedCandidate(def[DEF_RHS]).ready)) continue
-        const nameSemantic = semanticNames.get(name) ?? semAll()
-        if (hasClosedBool(nameSemantic)) continue
         const target = targetNames.get(name) ?? ANY_BIGINT
         if (list.every(def => {
           if (def[DEF_RHS] == null) return true
@@ -915,7 +865,22 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (boxParams()) materializing = true
   }
 
-  const resultHasClosedBool = hasClosedBool(bodyResultSemantic)
+  // A join written to a binding that did not materialize (a parameter
+  // outside the boundary's admission, a def the fixpoint could not ready)
+  // takes that binding's raw carrier: its boxed arm unboxes, its raw arm
+  // stays; when an arm cannot, the join stays unmaterialized. Boxing it
+  // would hand the binding's raw reads a pointer. Decided once the fixpoint
+  // has settled, since the binding's own readiness followed the join's.
+  for (const [name, list] of defs) {
+    if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
+    for (const def of list) {
+      const join = def[DEF_RHS]
+      if (def[DEF_OWNER]?.[0] !== '=' || !Array.isArray(join) || !JOIN_OPS.has(join[0]) || nodeTarget.get(join) !== BOXED_BIGINT) continue
+      if (joinArmsMaterializable(join, RAW_BIGINT)) { nodeTarget.set(join, RAW_BIGINT); materializedJoins.add(join) }
+      else materializedJoins.delete(join)
+    }
+  }
+
   // Closure-forwarding slice: a closure's boundary is ALWAYS uncovered
   // (options.generic forces it, independent of how enumerable its call sites
   // actually are — see the emittedCandidate param-branch comment above), so
@@ -967,7 +932,6 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const materializedResult = (boundary.covered === true || boundary.result.forceTagged === true ||
       boundary.result.demand === BIGINT_DEMAND_TAG_REQUIRED ||
       (!!closureAbiIdentity && closureBoxParams.size > 0) || resultForwardsProvenCallee) &&
-    !resultHasClosedBool &&
     sig?.results?.length === 1 && sig.results[0] === 'f64' &&
     resultExprs.every(expr => {
       if (expr == null) return true

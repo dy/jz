@@ -570,8 +570,8 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // argument (`g(arr.at(i))`): unable to narrow, it reports the maximal
   // "could be any of the 14 kinds" set, itself marked closed (a confident-
   // looking but uninformative answer). buildBodyData's materializedNames
-  // fixpoint reads that closed-ALL semantic, sees the BOOL member it
-  // necessarily carries, and vetoes materialization outright — permanently,
+  // fixpoint reads that closed-ALL semantic, the widest it can carry, and
+  // permanently,
   // since a param's semantic only WIDENS from its boundary seed (joinSem
   // is a union, never a narrowing). The reassigned param then never enters
   // its OWN callee body's materializedNames, so every caller's
@@ -643,11 +643,10 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // closed-ALL-14-kinds legacy census (the same "confident but
   // uninformative" answer layer 5 names, here for a genuinely mixed
   // receiver rather than an unnarrowable bigint-pure one), whose synthetic
-  // BOOL member vetoes materialization outright — even though the value
-  // can never actually be a JS boolean at this call site: it comes from a
-  // storage READ, which — the SAME invariant the existing identitySafeStorage
-  // Flow carve-out already relies on (buildBodyData) — is individually
-  // self-tagged per element at the wire, so any bigint-specific edge this
+  // BOOL member widens the semantic, even though the value can never
+  // actually be a JS boolean at this call site: it comes from a storage
+  // READ, which is individually self-tagged per element at the wire, so
+  // any bigint-specific edge this
   // plan wires up (a bigint-origin WRITE boxes, a definite-bigint READ
   // unboxes) is gated per-expression by valTypeOf/isBigintOrigin
   // (ir.js's applyBigintRepresentationAction) and simply never fires for
@@ -682,8 +681,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // literal/call bigint origin nor a storage read — the legacy whole-program
   // paramReps census (feeding makeBoundaryData's `rep`) then has no narrower
   // answer than "any of the 14 kinds, closed" for the CALLEE's param either,
-  // whose synthetic BOOL member vetoes materialization permanently (the
-  // callee's own body never enters materializedNames for ANY caller). Same
+  // its synthetic BOOL member widening the semantic permanently. Same
   // root class, same fix shape as storage reads: prove boolean-impossibility
   // STRUCTURALLY, not kind purity. A name's value at any point in its OWN
   // function is drawn from its entry (if a parameter) plus every explicit
@@ -712,7 +710,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     // (Shape #8) is exactly as real a same-module callee as a bare name for
     // this recursion — without this, `n = i64.parse(n)` (watr's own shape)
     // can never prove its own reaching def never-bool, so a caller passing
-    // `n` onward never clears the callee's BOOL-veto either.
+    // `n` onward never narrows the callee's semantic either.
     const callee = typeof node[1] === 'string' ? ctx.funcs.map.get(node[1]) : resolveMemberCallee(node[1])
     if (!callee || !callee.body || seen.has(callee)) return false
     const tails = Array.isArray(callee.body) && callee.body[0] === '{}' ? returnExprs(callee.body) : [callee.body]

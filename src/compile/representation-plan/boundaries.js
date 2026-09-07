@@ -90,9 +90,9 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     // legacy paramReps census (feeding `rep` above) can't narrow past "any
     // of the 14 kinds, closed" for a storage-read call argument — see
     // solveBigintProvenance's paramBigintOnly (this file). That proof is
-    // strictly more precise than `rep` for this one purpose (the BOOL-veto
-    // in buildBodyData's materializedNames fixpoint) since it is derived
-    // from literally every real caller, not a per-function kind census.
+    // strictly more precise than `rep` for this one purpose (the semantic
+    // buildBodyData's materializedNames fixpoint plans against) since it is
+    // derived from literally every real caller, not a per-function kind census.
     const bigintOnlyRow = options.provenance && options.provenance.paramBigintOnly
       ? options.provenance.paramBigintOnly.get(func.name) : null
     const provenBigintOnly = !generic && !uncovered && bigintOnlyRow != null && bigintOnlyRow.has(k)
@@ -104,12 +104,10 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     // normalized inside the callee) — provenBigintOnly correctly declines
     // (the argument truly isn't closed-bigint), but the legacy census still
     // stamps the coarse closed-ALL-kinds answer, whose synthetic BOOL member
-    // vetoes materialization even though the value can never actually be a
+    // widens the semantic even though the value can never actually be a
     // JS boolean here (it comes from a storage read — self-tagged per
-    // element at the wire, same invariant buildBodyData's own
-    // identitySafeStorageFlow carve-out already relies on for body defs).
-    // paramNeverBool proves the weaker, sufficient fact: not kind-purity,
-    // only boolean-impossibility.
+    // element at the wire). paramNeverBool proves the weaker, sufficient
+    // fact: not kind-purity, only boolean-impossibility.
     const neverBoolRow = options.provenance && options.provenance.paramNeverBool
       ? options.provenance.paramNeverBool.get(func.name) : null
     const provenNeverBool = !generic && !uncovered && neverBoolRow != null && neverBoolRow.has(k)
@@ -123,9 +121,8 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     // on such a param reinterpreted its raw i64 bits as an already-numeric
     // f64 — no int->float conversion, no unbox — silently wrong). Layer 5's
     // OWN job is narrower than "pick the optimal carrier": it exists to
-    // supply buildBodyData's BOOL-veto a precise, informative kind set
-    // (`semantic`) so a covered param the legacy census under-proves isn't
-    // permanently excluded from materializedNames. `current`/`target`
+    // supply buildBodyData a precise, informative kind set (`semantic`)
+    // for a covered param the legacy census under-proves. `current`/`target`
     // staying on the legacy derivation preserves the exact BOXED default
     // this shape already used, correctly, before shape #6 touched anything.
     const legacySemantic = mayBigint ? (generic ? observed : boundaryParamSemantic(rep, uncovered)) : noBigintSemantic()
