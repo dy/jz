@@ -723,13 +723,46 @@ true` / `ok && 5n` fold their kind to BIGINT statically; a self-referential
 def through a join (`x = c ? x + 1n : x`) never readies, so such a binding
 keeps its raw carrier (ledger-correctness §11).
 
+### Element access on an expression receiver – 2026-09-07
+
+Native **4342 pass / 2 fail / 1 skip** (`0f26b470`). The complex member
+`++` red was three defects stacked: `VT['[]']` named a typed element kind
+for a name receiver only and its `resolveName` ignored the transient overlay,
+so the staged temp of `get()[key()]` had no element kind and `+1` ran as a
+Number whose bits the i64 store kept; with the kind right the postfix value
+boxed twice (the summary's `+1` on a BIGINT|ABSENT element admits a Number,
+the plan called the update mixed and refused the postfix node into the
+joins, so `computedBoxOf` and the binding write each applied the edge); and
+an inlined effectful receiver ran twice (the hoisted shared node, then the
+typed store's address and bounds guard). Now `typedReceiverCtor` names a
+name's or an expression's constructor through the one provenance grammar
+(overlay, maps, parameter rep, call/field/index/chain sources) then the
+summary, shared by `typed-storage-plan` (`summaryTypedCtor`), kind-traits
+and the kind query; a typed element store's completion drops what ToBigInt
+or ToNumber rejects (`typedStore`, in the solver's `assign` and the query's
+`=` case; `semanticOf` lets the summary decide an `=` before its right
+side), so the postfix node is one tagged joint boxed once; the summary
+tracks a view (`subarray`, `slice`, `map`, `filter` results join open); a
+plain `=` member write stages an effectful receiver, an inlined shared node
+rewrites once. Pinned: Float64Array `++`/`+=`, BigInt64Array prefix/`+=`,
+BigUint64Array `--`, receiver-before-key with abrupt arms, inlined callees.
+The plain `[2n]` array's `(get()[key()])++` result is pinned red as its own
+family (the staged temp carries no element kind for a tagged slot; the
+update expression's own result on a named receiver, `++a[0]`, `a[0] += 1n`,
+is in it: the result-contract milestone's third slice). Seen, not fixed:
+`[a[0]]` of a BigInt64Array read stores raw bits into the literal; `f64[0] =
+1n` stores bits instead of throwing; `representationComputedExprAction`'s
+BOXED-target fallback double-boxes any retained node the plan does not
+admit to the joins. Recursive GREEN (13,914,799 bytes, heap 1,207 MB);
+functional 14/20, the same six; sequences GREEN; families 41/50, the same
+rows; oracle and parity 15/15.
+
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `2db662d3`
+1. One session owns main; slices run in parallel worktrees at `0f26b470`
    and land one by one with the gates. In flight: the two native reds (the
-   complex member `++` through a call receiver: `valTypeOf` names no element
-   kind for an expression receiver; the fromCharCode family is the string
-   contract, below), the hosted byte divergences (six functional rows and
+   plain array's update-expression result above; the fromCharCode family is
+   the string contract, below), the hosted byte divergences (six functional rows and
    two families rows at O1: the string-equality template's `i32.or(x, 0)`
    folds under the kernel and not natively, one predicate reads differently
    self-hosted, a jz miscompilation of its own source to find), a rest
