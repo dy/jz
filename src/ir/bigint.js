@@ -150,7 +150,12 @@ export function applyBigintRepresentationAction(ir, node, action) {
   if (ir && typeof ir.bigintBox === 'function' &&
       (action === REP_EDGE_KEEP || action === REP_EDGE_BOX || isPlanTaggedBigint(node)))
     return materializeDeferredBigint(ir)
-  if (valTypeOf(node) !== VAL.BIGINT) return ir
+  // The edge acts on a BigInt the kind proves, or on a carrier the plan
+  // itself materialized (edgeMaterializable's ready-producer admission): a
+  // join of `typeof v === 'bigint' ? v : BigInt(v)` has no valTypeOf kind,
+  // yet its materialized BOXED value must unbox into the RAW binding it
+  // initializes, or the binding's raw reads take the box's pointer bits.
+  if (valTypeOf(node) !== VAL.BIGINT && !isPlanTaggedBigint(node) && !isPlanRawBigint(node)) return ir
   if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
   if (action === REP_EDGE_UNBOX) return fromI64(maybeUnboxBigInt(asF64(ir)))
   return ir
