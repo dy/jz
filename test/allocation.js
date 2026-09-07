@@ -74,3 +74,11 @@ const run = (i) => f(i)`)
   // one cell for \`count\`, two closure environments (bump: count; read: base, scope, count)
   for (const level in out) is(out[level] <= 8 + 8 + 24, true, `the mutated capture's cell and the closures alone (${out[level]} bytes at O${level})`)
 })
+
+test('allocation: a push loop grows its array in place at the heap top', () => {
+  // The array's storage ends at the heap top, so each doubling extends it
+  // instead of copying: the arena holds one capacity (at most twice the
+  // length), not every doubling's.
+  const out = measure(`const run = (i) => { const r = []; for (let k = 0; k < 100; k++) r.push(k); return r.length }`, 200)
+  for (const level in out) is(out[level] <= 16 + 2 * 100 * 8, true, `one capacity for 100 pushes (${out[level]} bytes at O${level})`)
+})

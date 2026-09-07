@@ -355,6 +355,21 @@ export default (ctx) => {
       (local.get $minCap)
       (i32.shl (local.get $oldCap) (i32.const 1))
       (i32.gt_s (local.get $minCap) (i32.shl (local.get $oldCap) (i32.const 1)))))
+    ${!ctx.memory.shared && ctx.transform.alloc !== false ? `
+    ;; The array's storage ends at the heap top (nothing allocated since it) and
+    ;; lies above the reset mark: extend it in place. No copy, no forwarding
+    ;; header, and a push loop leaves one capacity in the arena, not every
+    ;; doubling's (the same bump-extend a string at the heap top takes).
+    (if (i32.and
+          (i32.eq (i32.add (local.get $off) (i32.shl (local.get $oldCap) (i32.const 3))) (global.get $__heap))
+          (i32.ge_u (local.get $off) (global.get $__heap_reset)))
+      (then
+        (local.set $newOff (i32.add (local.get $off) (i32.shl (local.get $newCap) (i32.const 3))))
+        (if (i32.lt_u (local.get $newOff) (local.get $off)) (then (unreachable)))
+        (if (i32.gt_u (local.get $newOff) (global.get $__heap_end)) (then (call $__memgrow (local.get $newOff))))
+        (global.set $__heap (local.get $newOff))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $newCap))
+        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $off)))))` : ''}
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
