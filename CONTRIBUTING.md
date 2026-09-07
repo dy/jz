@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Local watr integration checkpoint
 
 This checkout currently requires sibling `../watr` at
-`03e7b70` (`Flatten a body over a work stack`, on `5a78a13`). `package.json` and the
+`deb62e4` (`A write after a block that never falls through is conditional in coalesceLocals`, on `03e7b70`). `package.json` and the
 lockfile consume it explicitly; `.npmrc` installs a copy, keeping self-build
 module paths under `node_modules/watr`. Check the sibling revision before
 `npm install`; npm does not refresh the copy for a same-version change, so

@@ -14,7 +14,7 @@
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_UNBOX, STORAGE_READ_METHODS, representationActiveMaterializedRep } from '../compile/representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_UNBOX, STORAGE_READ_METHODS, representationActiveMaterializedRep, representationResultTagRequired } from '../compile/representation-plan.js'
 import { typed } from './tag.js'
 import { temp, tempI32, blockTyped } from './locals.js'
 import { mkPtrIR, ptrOffsetIR } from './pointers.js'
@@ -249,9 +249,21 @@ const isBoxedStorageMethodRead = node => {
   return sid != null && ctx.schema.list[sid]?.includes(method) === true
 }
 
+/** A call through a name: a known function's BigInt result is boxed when the
+ *  plan says so; a closure's crosses the closure ABI tagged
+ *  (tagDynamicMethodResult boxes a raw target's result there too); a
+ *  builtin's (`BigInt(s)`) is raw. */
+const isTaggedCallResult = node => {
+  if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string') return false
+  const func = ctx.funcs.map.get(node[1])
+  if (func) return representationResultTagRequired(ctx, func, new WeakSet(), true)
+  return !ctx.core.emit[node[1]]
+}
+
 export const readI64MayUnbox = node =>
   (typeof node === 'string' && isTernaryBoxedBigint(node)) ||
-  isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node)
+  isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node) ||
+  isTaggedCallResult(node)
 
 export function readI64(node, emitted) {
   if (emitted && typeof emitted.bigintBox === 'function')

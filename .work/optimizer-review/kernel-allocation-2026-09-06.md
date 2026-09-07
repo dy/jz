@@ -216,6 +216,44 @@ O2 now identical); native **4305 pass / 18 fail / 1 skip** with the
 allocation pin added. A 30-minute gate timeout
 at load 36 was contention, not the kernel (61 s alone).
 
+## The closures' analysis and emission, by step (overlay kernel, jz × jz)
+
+5,404 closure bodies: `analyzeClosureBodyForEmit` 267 MB (50.6 KB each),
+`emitClosureBody` 314 MB (59.5 KB each); 2,523 functions:
+`analyzeFuncForEmit` 247 MB (100 KB each). Inside the closure analysis
+(`$S/scratchpad/edrv/overlay-cl.json`, `rec-cl.mjs`): mintRepresentationPlan
+76 MB, reanalyzeBody 48, inferLocals 36, seedClosureFrame 34,
+enterClosureFrame 33.5 (the frame's collections, 6.5 KB per closure),
+boxedCaptures 17, mintTypedStoragePlan 11, the rest under 4. The
+representation plan's body data (`representation-plan/body-data.js`
+`buildBodyData`) is the largest single step and the subsystem the verified
+result contract replaces (PLAN.md, next milestone): not polished here.
+
+## The carrier family, first slices (`9f07b9c9`–)
+
+- A multi-value return's lanes and an inline callback's stored result take
+  the container store's form; a typed array's `map` coerces the closure's
+  result (`9f07b9c9`).
+- A call's BigInt result through a name is read as tagged unless the callee
+  is a known function the plan proved raw or a builtin (`readI64MayUnbox`,
+  `isTaggedCallResult`); the plan treats a same-body local closure's
+  possibly-BigInt result as boxed and registers the demand on the closure's
+  body before its own plan is minted (`localClosureCallBoxed`); a
+  self-referencing definite-BigInt def (`value = value | rhs()`) is a fresh
+  raw producer, so `value` materializes tagged (`freshBigintProducer`);
+  `collectLocalClosures` now sees zero- and multi-parameter closures (it
+  read `['()', null]` as one parameter named null). A user `try` stays live
+  around every BigInt arithmetic, bitwise and shift operator, whose joint
+  dispatch throws the mixed-domain TypeError at runtime (`canThrow`).
+- watr `deb62e4`: `coalesceLocals` treats the statements after a block that
+  never falls through as conditional; the try/catch shape's handler write
+  joined a dead pointer's slot and the normal path read the pointer
+  (`caught` after a try at O2).
+- Native **4313 pass / 13 fail / 1 skip**: the captured-shift, caught-mixed,
+  heterogeneous-array, typed-some and catch-local pins are green. Recursive
+  GREEN (`k-final6.wasm`, heap 1,261 MB); kernel families 37/38; functional
+  13/20.
+
 ## Open
 
 - The encoder's remaining 1.0 GB: the rest-parameter array per `push` (an

@@ -18,13 +18,17 @@ import { emit, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.j
 import { storedValue } from './method-dispatch.js'
 
 
+const BIGINT_THROWING_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', 'u+',
+  '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '++', '--'])
 function canThrow(body, seen = new Set()) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'throw') return true
-  // BigInt division/remainder can throw even without a call in this subtree.
-  // A program proven to have no BigInts keeps its Number-only fast path.
-  if ((op === '/' || op === '%' || op === '/=' || op === '%=') && representationProgramHasBigint(ctx)) return true
+  // BigInt arithmetic can throw without a call in this subtree: division by
+  // zero, and a Number beside a BigInt at runtime (the joint dispatch's
+  // TypeError) in every arithmetic, bitwise and shift operator and its
+  // compound. A program proven to have no BigInts keeps its Number-only fast path.
+  if (BIGINT_THROWING_OPS.has(op) && representationProgramHasBigint(ctx)) return true
   // Unresolved ordinary `.length` now performs a real property Get, including
   // the nullish TypeError. Keep a surrounding source try/catch live even when
   // there is no explicit `throw` node in the AST. Optional chaining does not

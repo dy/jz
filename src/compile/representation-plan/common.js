@@ -1,4 +1,4 @@
-import { ASSIGN_OPS, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, commaList, walkAst } from '../../ast.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
 import { isExportedIn } from '../func-exports.js'
 
@@ -153,7 +153,8 @@ export function collectLocalClosures(body) {
         Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
       const init = n[1][2]
       if (Array.isArray(init) && init[0] === '=>' && !closures.has(n[1][1])) {
-        const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]
+        // `null` or `['()', null]` for no parameter, `['()', 'x']` for one, `['()', [',', 'x', 'y']]` for more
+        const ps = init[1] == null ? [] : Array.isArray(init[1]) && init[1][0] === '()' ? commaList(init[1][1]) : [init[1]]
         if (ps.every(p => typeof p === 'string')) closures.set(n[1][1], { params: ps, body: init[2] })
       }
     }

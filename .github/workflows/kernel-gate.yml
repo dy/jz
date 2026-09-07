@@ -19,7 +19,7 @@ on:
 env:
   # the watr commit the gates are run against (scripts/kernel-gate.mjs records the
   # installed watr's content hash in every manifest; a mismatch is not this pin)
-  WATR_REF: 03e7b70
+  WATR_REF: deb62e4
 jobs:
   functional:
     runs-on: ubuntu-latest

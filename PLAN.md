@@ -587,7 +587,7 @@ encoder 1.0 GB).
    byte divergences. Regions remain the memory model; the allocation audit
    shrinks what they must reclaim. Keep the private fresh gate. Do not add
    source-spelling exceptions.
-2. watr is consumed at `03e7b70`; the local-pass deletion stays isolated until
+2. watr is consumed at `deb62e4`; the local-pass deletion stays isolated until
    its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
    introducing semantic FunctionIR.
 3. Complete callable identities and structural closure/freeze, replace covered

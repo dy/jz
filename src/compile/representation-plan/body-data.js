@@ -349,6 +349,19 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     return false
   }
 
+  // A same-body local closure's possibly-BigInt result is the closure ABI's
+  // tagged carrier: the demand is registered on the closure's body here, before
+  // its own plan is minted (closures compile after their callers), so both
+  // sides agree without the callee's plan (`value | rhs()`, rhs returning 4n
+  // into a Number/BigInt local: the caller read the box's bits as raw).
+  const localClosureCallBoxed = node => {
+    if (node[0] !== '()' || typeof node[1] !== 'string') return false
+    const callee = localClosures.get(node[1])
+    if (!callee || !canBeBigint(semanticOf(node))) return false
+    ;(ctx.scope.taggedClosureResultBodies ||= new WeakSet()).add(callee.body)
+    return true
+  }
+
   const currentOf = node => {
     const sem = semanticOf(node)
     if (excludesBigint(sem)) return NO_BIGINT
@@ -405,6 +418,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       } else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
         out = joinRep(currentOf(node[1]), currentOf(node[2]))
       else if (closureCallNeedsBox(node)) out = BOXED_BIGINT
+      // A local closure's result crosses the closure ABI (`$ftN`, an any
+      // slot) tagged: its own plan boxes a BigInt result, and a dynamic call
+      // boxes a raw target's (tagDynamicMethodResult). The caller reads it
+      // as a box, never as raw bits (`value | rhs()`, rhs a captured
+      // closure returning 4n: the plan left `value` untagged and the OR
+      // ran on the box's bits).
+      else if (localClosureCallBoxed(node)) out = BOXED_BIGINT
       else if (NUMERIC_VALUE_OPS.has(node[0]) && canBeBigint(sem)) out = RAW_BIGINT
       else if (definiteBigint(sem)) out = RAW_BIGINT
       else out = ANY_BIGINT
@@ -738,9 +758,29 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         // property-write census never descends into any function body, so a
         // closure assigned to a property from inside one is never indexed.
         if (closureCallNeedsBox(node)) return { rep: BOXED_BIGINT, ready: true }
+        if (localClosureCallBoxed(node)) return { rep: BOXED_BIGINT, ready: true }
       }
     }
     return { rep: currentOf(node), ready: false }
+  }
+  // A definite-BigInt arithmetic result is a fresh raw i64 once its operands'
+  // carriers are decided: an origin, a ready producer, a materialized name,
+  // or the name this def writes (`value = value | rhs()`: the write is the
+  // edge under decision, and a materialized `value` reads tagged through the
+  // joint dispatch, which the raw result then boxes). Without this the
+  // self-referencing def kept `value` unmaterialized, its reads untagged and
+  // the OR ran on a box's bits.
+  const freshBigintProducer = (node, name) => {
+    if (!Array.isArray(node) || !NUMERIC_VALUE_OPS.has(node[0]) || !definiteBigint(semanticOf(node))) return false
+    for (let i = 1; i < node.length; i++) {
+      const operand = node[i]
+      if (operand == null || isBigintOrigin(operand)) continue
+      if (typeof operand === 'string') { if (operand === name || materializedNames.has(operand)) continue; return false }
+      if (!Array.isArray(operand)) continue
+      if (emittedCandidate(operand).ready || freshBigintProducer(operand, name)) continue
+      return false
+    }
+    return true
   }
   // A join's own position — direct result expression, named-local RHS, or
   // any other operand — is irrelevant to whether it materializes: the plan
@@ -861,7 +901,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
           // (`v += 1n`) reads the current carrier and writes a fresh raw result.
           const ownerOp = def[DEF_OWNER]?.[0]
           if (ownerOp !== '=' && !CONDITIONAL_ASSIGN_OPS.has(ownerOp) && !NUMERIC_VALUE_OPS.has(ownerOp)) return false
-          const source = emittedCandidate(def[DEF_RHS])
+          const source = freshBigintProducer(def[DEF_RHS], name) ? { rep: RAW_BIGINT, ready: true } : emittedCandidate(def[DEF_RHS])
           return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready || isStorageReadProducer(def[DEF_RHS]))
         })) {
           materializedNames.add(name)
