@@ -380,3 +380,12 @@ test('summary: a literal is allocated as the runtime allocates it; emission read
   ok(!isNullable(kindOf('rd', 'o')) && tagOf(kindOf('rd', 'o')) === K.ANY && hasTag(kindOf('rd', 'o'), K.OBJECT) && hasTag(kindOf('rd', 'o'), K.HASH), 'a spread literal or an argument literal is an object or a dictionary')
   for (const optimize of [false, 2]) is(jz(`export const f = (k, x) => { let o = {}; o.a = 1; o.b = 2; const t = { [k]: 3 }; return o.a + o.b + t[k] + (new Set([1]).length === undefined ? 10 : 0) }`, { optimize }).exports.f('z', 1), 16, `O${optimize || 0}: the literal reads through the summary's kind`)
 })
+
+test('summary: an absent tag joins a union without widening it; a callback drops its surplus arguments', () => {
+  summarize(`export const f = (i) => { const a = [4611686018427387903n]; a[0]++; const b = [1n, 2n]; const m = b.map(x => x + 1n); return a[0] + m[i] }`)
+  const v = ctx.summary.at('f')
+  const read = v.kindOfExpr(['[]', binding('f', 'a'), 0])
+  ok(hasTag(read, K.NUMBER) && hasTag(read, K.BIGINT) && hasTag(read, K.ABSENT) && !hasTag(read, K.STRING), 'an element updated by ++ reads as Number, BigInt or absent')
+  is(tagOf(v.elemKindOf(binding('f', 'b'))), K.BIGINT, 'the receiver of map keeps its cell: the callback never sees the array it is not bound to')
+  is(tagOf(v.elemKindOf(binding('f', 'm'))), K.BIGINT, 'and the mapped cell is the callback result')
+})

@@ -59,7 +59,7 @@ export function createActiveFunction({
     directClosures,
     zeroInitSeen: new Set(),
     maybeNullish: new Set(),
-    ternaryBoxedNames: new Set(),
+    taggedLocals: new Set(),
     boxedResult: false,
     valResult: null,
     valResultMayBeUndefined: false,
@@ -139,7 +139,7 @@ export function isInactiveFunction(ctx) {
     frame.flowValBlocked === null && frame.repsFrozen === false && emptySet(frame.p1Predicted) &&
     emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null &&
     emptyMap(frame.closureAux) && frame.directClosures === null && emptySet(frame.zeroInitSeen) &&
-    emptySet(frame.maybeNullish) && emptySet(frame.ternaryBoxedNames) &&
+    emptySet(frame.maybeNullish) && emptySet(frame.taggedLocals) &&
     frame.boxedResult === false && frame.valResult === null && frame.mixedAtomReturn === false &&
     frame.charDecomp === null && frame.charDecompGlobals === false && frame.concatBufs === null &&
     frame.probeHoist === null && frame.lenHoist === null && frame.hoistTempDefs === null &&

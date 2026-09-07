@@ -38,9 +38,9 @@ test('summary queries: a hypothetical reduction cannot bind callback parameters'
 test('summary queries: an unknown callback cannot escape queried array or closure arguments', () => {
   const { summary } = program()
   const values = summary.kindOf('values')
-  is(summary.elemKindOf(values), kind(K.NUMBER))
+  is(summary.elemOfKind(values), kind(K.NUMBER))
   summary.kindOfExpr(reduce('unknownCallback', 'values'))
-  is(summary.elemKindOf(values), kind(K.NUMBER), 'a query cannot poison an array cell')
+  is(summary.elemOfKind(values), kind(K.NUMBER), 'a query cannot poison an array cell')
   const escaped = [...summary.escaped]
   summary.kindOfExpr(reduce('unknownCallback', 'callback'))
   is([...summary.escaped], escaped, 'nor mark a closure as escaped')
@@ -50,7 +50,7 @@ test('summary queries: query order does not change retained facts or later answe
   const { summary, params } = program()
   const queries = [
     () => summary.at(params).paramKindOf('acc'),
-    () => summary.elemKindOf(summary.kindOf('values')),
+    () => summary.elemOfKind(summary.kindOf('values')),
     () => summary.kindOfExpr(reduce('callback', lit('different seed'))),
     () => summary.kindOfExpr(reduce('unknownCallback', 'values')),
     () => summary.resultOf('result'),

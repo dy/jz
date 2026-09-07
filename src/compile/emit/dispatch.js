@@ -837,7 +837,7 @@ export function emitDecl(...inits) {
     const neverEscapes = !viewInit && typeof name === 'string' && Array.isArray(init) &&
       init[0] === '[' && ctx.schema.arrayVars?.has(name)
       ? true : ctx.func._arrayLiteralNeverEscapes
-    // isTernaryBoxedBigint (ir.js): a decl initialized directly from a
+    // isTaggedLocal (ir.js): a decl initialized directly from a
     // ternary-nullish BIGINT merge (`let r = cond ? BigInt(x) : null`).
     // MUST replicate the '?:' handler's own (narrower) box condition below
     // in this file — bigintArm != null, i.e. exactly ONE arm BIGINT and the
@@ -854,17 +854,17 @@ export function emitDecl(...inits) {
     // (`neg ? -BigInt(mag) : BigInt(mag)` inlined as `_i64Hex16`'s argument)
     // under JZ_CARRIER_BOX=1 at O3 — `fold()` returned 5.826595490514274e+252
     // instead of 2.000000000000001 (.work/archive/carrier-representation-design.md
-    // §13/§14). See isTernaryBoxedBigint's own doc comment (ir.js) for the
+    // §13/§14). See isTaggedLocal's own doc comment (ir.js) for the
     // full "why the local's own storage isn't raw here" reasoning and the
     // earlier live incident (`.bigint:toString` on a genuinely ternary-boxed
-    // local misread the pointer's bits raw). ctx.func.ternaryBoxedNames
+    // local misread the pointer's bits raw). ctx.func.taggedLocals
     // (compile/index.js enterFunc), NOT updateRep — this is the emission
     // tier, which passes.js's own exit grep asserts never writes durable
     // analysis state; a per-function transient Set is the established
     // pattern here (maybeNullish/closureAux, same file, same shape).
     if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
-      ctx.func.ternaryBoxedNames?.add(name)
+      ctx.func.taggedLocals?.add(name)
     // Closure-capture identity shadow (kind.js hasAmbiguousBoolMerge; extends
     // 756ae10f's formatter box-at-consumer pattern to the closure-capture
     // consumer — test/kernel-oracle.js's PENDING-FIX 'captured-then-read'

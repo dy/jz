@@ -110,3 +110,35 @@ test('bigint tag: a tagged carrier beside an unresolved operand dispatches on th
     for (const i of [0, 1, 2, 3]) is(f(i), oracle.f(i), `f(${i}) (O${optimize || 0})`)
   }
 })
+
+test('bigint tag: an array element is a tagged slot, whatever wrote it and whoever reads it', () => {
+  // A literal, an index write, push/unshift, a compound update and a mapped
+  // result all store one carrier; a bare read, an update's own value, an
+  // inline callback parameter and a host-bound mixed result read it back.
+  const HI = 4611686018427387903n
+  const SRCS = [
+    `export let f = (i) => { let a = [${HI}n]; a[0]++; return a[0] }`,
+    `export let f = (i) => { let a = [${HI}n]; ++a[0]; return a[0] }`,
+    `export let f = (i) => { let a = [${HI}n]; a[0]--; return a[0] }`,
+    `export let f = (i) => { let a = [${HI}n]; return a[0]++ }`,
+    `export let f = (i) => { let a = [${HI}n]; return a[0]++ + 0n }`,
+    `export let f = (i) => { let a = [${HI}n]; a[0] += 1n; return a[0] }`,
+    `export let f = (i) => { let a = [${HI}n]; a[0] = a[0] + 1n; return a[0] }`,
+    `export let f = (i) => { let a = [${HI}n]; a.unshift(2n); return a[0] + a[1] }`,
+    `export let f = (i) => { let a = []; a.push(${HI}n); a[0]++; return a[0] }`,
+    `export let f = (i) => { let a = [1n]; a.push(${HI}n); return a[1] }`,
+    `export let f = (i) => { let a = [${HI}n, 2n]; return a[i] }`,
+    `export let f = (i) => { let a = [${HI}n, 2n]; a[i]++; return a[i] }`,
+    `export let f = (i) => { let a = [${HI}n, 2n]; return a[i]++ }`,
+    `export let f = (i) => { let a = [${HI}n, 2n]; return a.map(x => x + 1n)[i] }`,
+    `export let f = (i) => { let a = [${HI}n, 2n]; let s = 0n; for (const x of a) s += x; return s }`,
+    `export let f = (i) => { let a = [${HI}n, 2n]; let n = a[i]; n >>= 7n; return n }`,
+  ]
+  for (const src of SRCS) {
+    const oracle = Function(src.replace('export let ', 'var ') + ';return f')()
+    for (const optimize of levels) {
+      const { f } = jz(src, { optimize }).exports
+      for (const i of [0, 1]) is(f(i), oracle(i), `${src.slice(22, 70)} f(${i}) (O${optimize || 0})`)
+    }
+  }
+})

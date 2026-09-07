@@ -265,6 +265,17 @@ result contract replaces (PLAN.md, next milestone): not polished here.
   runtime's `__to_str` formats a boxed BigInt. Native **4321 / 6 / 1**
   before the last, recursive GREEN (heap 1,263 MB).
 
+- Then (`e08ade69`–): an array element is one tagged slot (the literal's
+  and the index write's raw narrow are gone; a read, a write's value and an
+  inline callback's element parameter unbox at their i64 consumer; the
+  compound's rebuilt binary and the callback body reach the plan through
+  `compoundOf`), the summary keeps a two-tag union beside a nullish tag,
+  drops a callback's surplus arguments instead of escaping the receiver, and
+  answers `elemKindOf(name)` again (a duplicate key had hidden it since
+  `c9cee767`); the callback hint's presence-blind census fallback is gone.
+  Native **4324 / 5 / 1**; kernel oracle GREEN; recursive GREEN (13,892,087
+  bytes, +32 KB: the unbox at element reads; heap 1,264 MB).
+
 ## Open
 
 - The encoder's remaining 1.0 GB: the rest-parameter array per `push` (an

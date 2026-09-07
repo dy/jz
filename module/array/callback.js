@@ -100,15 +100,17 @@ export function makeCallback(fn, argReps) {
           // (caller knows recv elem val type) ride the overlay so emit(subst)
           // sees `inl_i.val=NUMBER` and elides __to_num/__is_str_key; durable
           // reps stay clean. Every producer (callbackArgReps, upReps) is
-          // val-only — a future non-val hint needs its own transient channel,
-          // not a durable write, so fail loud rather than drop it silently.
+          // val (and the tagged-carrier mark) only — a future hint needs its
+          // own transient channel, not a durable write, so fail loud rather
+          // than drop it silently.
           if (argReps) {
             for (let i = 0; i < raw.length && i < argReps.length; i++) {
               const fresh = freshNames[i]
               if (!fresh || !argReps[i]) continue
-              if (DBG_INVARIANTS && Object.keys(argReps[i]).some(k => k !== 'val'))
+              if (DBG_INVARIANTS && Object.keys(argReps[i]).some(k => k !== 'val' && k !== 'tagged'))
                 throw new Error(`inline argReps hint carries non-val fields: ${Object.keys(argReps[i])}`)
               if (argReps[i].val) ctx.func.localValTypesOverlay.set(fresh, argReps[i].val)
+              if (argReps[i].tagged) ctx.func.taggedLocals?.add(fresh)
             }
           }
           const subst = substExpr(body, mapping)
@@ -123,11 +125,17 @@ export function makeCallback(fn, argReps) {
           if (result.ptrKind != null) { wrapped.ptrKind = result.ptrKind; wrapped.ptrAux = result.ptrAux }
           return wrapped
       }
+      // The rebuilt body has no plan facts of its own: for a store it names
+      // the tagged slot it lands in (representationComputedExprAction).
+      const stored = node => {
+        if (Array.isArray(node)) ctx.plans.compoundOf.set(node, true)
+        return storedValue(node)
+      }
       return {
         setup: ['nop'],
         usedParams,
         call: (argExprs) => inline(argExprs, emit),
-        stored: (argExprs) => inline(argExprs, storedValue),
+        stored: (argExprs) => inline(argExprs, stored),
       }
     }
   }
@@ -149,7 +157,7 @@ export function makeCallback(fn, argReps) {
 //  - VAL.TYPED → NUMBER (BigInt typed-arrays excluded; we don't track elem prec
 //    here, but the .typed:[] path handles them, and __to_num elision is safe
 //    because BigInt's f64-cast in arithmetic still yields a Number).
-//  - VAL.ARRAY with rep.arrayElemValType set → that val.
+//  - VAL.ARRAY whose summary cell names one present kind → that val.
 //  - else → no hint (slow path, runtime dispatch as today).
 export function callbackArgReps(arr) {
   const idxRep = { val: VAL.NUMBER }
@@ -161,10 +169,14 @@ export function callbackArgReps(arr) {
     else if (vt === VAL.ARRAY) {
       // The summary's element cell carries presence: a nullable element
       // (`xs.map(v => bits(v))`, bits returning null or a string) gets no
-      // exact hint, so `b !== null` in the callback stays a real test.
+      // exact hint, so `b !== null` in the callback stays a real test. The
+      // body census (rep.arrayElemValType) names a kind without presence,
+      // so it hints nothing (`slots.every(b => b !== null)` folded to true
+      // over a null slot: module/array.js's static literal path).
       const ek = ctx.summary?.at(ctx.func.current)?.elemKindOf(arr)
-      const elemVt = ek != null ? summaryValOf(ek) : ctx.func.localReps?.get(arr)?.arrayElemValType
-      if (elemVt) itemRep = { val: elemVt }
+      const elemVt = ek != null ? summaryValOf(ek) : null
+      // An element is a tagged slot: a BigInt item arrives boxed.
+      if (elemVt) itemRep = elemVt === VAL.BIGINT ? { val: elemVt, tagged: true } : { val: elemVt }
     }
   } else {
     const vt = valTypeOf(arr)

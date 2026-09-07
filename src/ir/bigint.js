@@ -218,13 +218,15 @@ export const isSchemaSlotBigintPossible = (node) =>
   ctx.schema.slotBigintBoxedAt?.(node[1], node[2]) === true &&
   ctx.schema.slotBigintProvenAt?.(node[1], node[2]) !== true
 
-/** Emission-tier fact for a local initialized from a BigInt/nullish ternary.
- *  RepresentationPlan owns general carriers; this retained transient marks
- *  the one local shape whose initializer itself emits the boxed arm. */
-export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(name) === true
+/** Emission-tier fact for a local the emitter itself bound from a tagged
+ *  carrier: a BigInt/nullish ternary's boxed arm, an inline callback
+ *  parameter fed from an array element (module/array/callback.js).
+ *  RepresentationPlan owns general carriers; this transient marks the
+ *  locals no plan names. */
+export const isTaggedLocal = (name) => ctx.func.taggedLocals?.has(name) === true
 
-/** Extract raw i64 bits, unboxing when the plan, ternary-local fact, or
- *  schema-slot census says the emitted value is a PTR.BIGINT box. */
+/** Extract raw i64 bits, unboxing when the plan, the tagged-local fact, or
+ *  the schema-slot census says the emitted value is a PTR.BIGINT box. */
 export const isPlanTaggedBigint = node =>
   representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
 /** The plan holds the value's raw i64 bits (a reassigned raw parameter, whose valType
@@ -260,10 +262,23 @@ const isTaggedCallResult = node => {
   return !ctx.core.emit[node[1]]
 }
 
+/** An array element is a tagged slot: every element write boxes a BigInt
+ *  (the plan's storage-write edge, module/array.js taggedStoredValue), so an
+ *  indexed read of any non-typed receiver carries a box, and a write's own
+ *  value is the stored carrier. Schema slots (a static key on an object)
+ *  own their carrier: isSchemaSlotBigintPossible. */
+const isTaggedElemRead = node => {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '=') return isTaggedElemRead(node[1]) || isSchemaSlotBigintPossible(node[1])
+  if (node[0] !== '[]') return false
+  const recv = valTypeOf(node[1])
+  return recv !== VAL.TYPED && recv !== VAL.OBJECT
+}
+
 export const readI64MayUnbox = node =>
-  (typeof node === 'string' && isTernaryBoxedBigint(node)) ||
+  (typeof node === 'string' && isTaggedLocal(node)) ||
   isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node) ||
-  isTaggedCallResult(node)
+  isTaggedElemRead(node) || isTaggedCallResult(node)
 
 export function readI64(node, emitted) {
   if (emitted && typeof emitted.bigintBox === 'function')

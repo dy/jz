@@ -497,7 +497,7 @@ export default (ctx) => {
   // bits directly against the OTHER side's boxed atom (e.g. `x.has(k) === true` bit-
   // compares against TRUE_NAN). A raw 0.0/1.0 number can never equal a NaN payload, so
   // every unproven `.has()/.delete() === true` silently read false regardless of the
-  // real answer (self-compile's own `ctx.func.ternaryBoxedNames?.has(name) === true` hit
+  // real answer (self-compile's own `ctx.func.taggedLocals?.has(name) === true` hit
   // this exact gap — .work/archive/carrier-representation-design.md §33/§34). The FAST (real
   // Map/Set) branch below is the only one that produced the bare number; the call_indirect
   // branch (a genuine custom `.has` closure) already returns a properly boxed value via

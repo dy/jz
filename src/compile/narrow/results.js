@@ -251,7 +251,7 @@ export function seedResultKinds() {
     // an out-of-range read's undefined atom as an integer payload.
     if (hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) func.valResultMayBeUndefined = true
     if (v === VAL.ARRAY) {
-      const e = ctx.summary.elemKindOf(k)
+      const e = ctx.summary.elemOfKind(k)
       if (!hasTag(e, K.NULLISH)) {
         if (tagOf(e) === K.OBJECT && paramOf(e) !== UNKNOWN) func.arrayElemSchema = paramOf(e)
         const ev = valOf(core(e))

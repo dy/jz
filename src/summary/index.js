@@ -156,7 +156,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const poisonProp = (prop) => { for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) raiseSlot(sid, i, ANY) }
   const poisonSchema = (sid) => { const a = slots(sid); for (let i = 0; i < a.length; i++) raiseSlot(sid, i, ANY) }
   // A closure's parameter names, a default's among them (`(a, b = 1) =>`); a pattern is unnamed.
-  const paramNames = (params) => extractParams(params).map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' ? p[1] : null)
+  // A rest parameter (jzify desugars every pattern parameter into one) is
+  // null in the list, its position in `.rest`: it collects the arguments
+  // from there on.
+  const withRest = (names) => { const i = names.indexOf(null); if (i >= 0) names.rest = i; return names }
+  const paramNames = (params) => withRest(extractParams(params).map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' ? p[1] : null))
   const defaultsOf = (params) => { let d = null; for (const p of extractParams(params)) if (Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string') (d ??= {})[p[1]] = p[2]; return d }
   const closureDefaults = []         // closure id → { name: default expression } or null
   // A closure is keyed by its `=>` node, and by its body: emission may hand
@@ -264,12 +268,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return r
   }
   const funcParamNames = new Map()   // function record → its parameter names, a rest parameter as null
-  const paramNamesOf = (f) => { let names = funcParamNames.get(f); if (!names) funcParamNames.set(f, names = f.sig.params.map(p => p.rest ? null : p.name)); return names }
+  const paramNamesOf = (f) => { let names = funcParamNames.get(f); if (!names) funcParamNames.set(f, names = withRest(f.sig.params.map(p => p.rest ? null : p.name))); return names }
   /** Bind a callee's parameters (`scope`: its name or closure id) to the argument kinds: a
-   *  missing argument is nullish, or nothing when the parameter has a default (bound by the walk). */
+   *  missing argument is nullish, or nothing when the parameter has a default (bound by the walk).
+   *  The arguments a rest parameter collects escape; a surplus argument past
+   *  the declared parameters is one the callee never observes. */
   const bind = (scope, names, base, n, defaults) => {
     for (let i = 0; i < names.length; i++) { if (names[i] != null && (i < n || !defaults?.[names[i]])) bindParam(keyIn(scope, names[i]), i < n ? ks[base + i] : NULLISH); }
-    for (let i = names.length; i < n; i++) escape(ks[base + i])
+    if (names.rest != null) for (let i = names.rest; i < n; i++) escape(ks[base + i])
   }
   const call = (callee, base, n) => {
     if (typeof callee === 'string') {

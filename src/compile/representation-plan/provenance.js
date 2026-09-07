@@ -271,7 +271,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         op === '<' || op === '>' || op === '<=' || op === '>=' || op === 'in' || op === 'instanceof') return false
     if (op === '[]' || op === '.' || op === '?.')
       return (typeof node[1] === 'string' && (storage.has(node[1]) || (op === '[]' && bigintTyped.has(node[1])))) ||
-        (op !== '[]' && typeof node[2] === 'string' && summaryMayBigint(node, func))
+        ((op === '[]' || typeof node[2] === 'string') && summaryMayBigint(node, func))
     if (op === '()') {
       if (typeof node[1] === 'string') {
         if (VALUE_COERCERS.has(node[1])) return false

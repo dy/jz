@@ -69,7 +69,7 @@ function seedParamKinds(paramReps, addressTaken) {
       if (t === K.TYPED) r.typedCtor = p !== UNKNOWN ? ctorFromElemAux(p) : null
       if (t === K.ARRAY) {
         // The element facts likewise: an element absent on a path the program does not take keeps its kind.
-        const e = summary.elemKindOf(kd)
+        const e = summary.elemOfKind(kd)
         if (!hasTag(e, K.NULLISH)) {
           if (tagOf(e) === K.OBJECT && paramOf(e) !== UNKNOWN) r.arrayElemSchema = paramOf(e)
           const ev = valOf(core(e))

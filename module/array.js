@@ -570,19 +570,9 @@ export default (ctx) => {
   ctx.core.emit['['] = (...elems) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
 
-    // Every element statically BIGINT (a homogeneous-bigint literal, e.g.
-    // `[1n, 2n]`) — the array's own element type is uniformly proven BY THIS
-    // LITERAL'S OWN SHAPE, so every later reader (this array's own arithmetic/
-    // iteration/comparison reads, all gated on the SAME uniform-BIGINT proof)
-    // already takes the static raw-i64 path, never a registry-aware dynamic
-    // dispatch — storedValue's unconditional inline-BIGINT box has no reader
-    // that would ever unbox it (see carrierF64Narrow's own doc comment,
-    // src/ir.js, and emit-assign.js's `arrProvenBigintElems` — the parallel
-    // fix for a later `arr[i] = bigint` write into a proven-bigint-element
-    // array; this is the SAME reasoning at construction time). Skipping this
-    // narrow would box the literal at construction and corrupt on the very
-    // next bare read even with no write involved, e.g.
-    // `let a = [4611686018427387903n]; return a[0]`.
+    // An element is a tagged slot: a BigInt element is stored boxed here as
+    // by every other producer (the plan's storage-write edge), and read
+    // back through its i64 consumer's unbox (ir/bigint.js isTaggedElemRead).
     // ctx.func._arrayLiteralNeverEscapes (emit.js '=' handler / emitDecl): a
     // compiler-synthesized decl-destructure temp — narrow unconditionally
     // regardless of per-element uniformity, since NO element of THIS array is
@@ -597,9 +587,7 @@ export default (ctx) => {
     // (`let [a, b] = [1n, [2n, 3n]]`, `b` bound to the whole inner array): a
     // real, independently-escaping value that must not inherit it.
     const neverEscapes = ctx.func._arrayLiteralNeverEscapes
-    const elemStoredValue = neverEscapes ||
-      (elems.length && elems.every(e => valTypeOf(e) === VAL.BIGINT))
-      ? storedValueNarrow : taggedStoredValue
+    const elemStoredValue = neverEscapes ? storedValueNarrow : taggedStoredValue
     const emitElem = (e) => {
       if (!Array.isArray(e) || e[0] !== '[') return elemStoredValue(e)
       return withArrayLiteralEscape(false, () => elemStoredValue(e))

@@ -209,7 +209,7 @@ export function summaryQueries(facts) {
       numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'string' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.
       paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : canon(incoming.get(key) ?? K.NONE) },
-      elemKindOf: elemOf,
+      elemOfKind: elemOf,
       valOf: name => valOf(readKind(name)),
       // One non-nullish class receiver, with no possible own-member shadow.
       classCallee: (recv, name) => { const r = kindOfExpr(recv); if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null; const fn = classMember(r, name); return fn && !memberMayBeOwn(name) ? fn : null },

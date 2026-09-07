@@ -604,17 +604,50 @@ i64; the result-contract milestone's shape), the complex member `++` result,
 the boxed-prefix BigInt boundary, receiver-HASH, fromCharCode above 0xff,
 watr memory64.
 
+### The array element is a tagged slot — 2026-09-07
+
+Native **4324 pass / 5 fail / 1 skip**. An array element held two carriers:
+a literal or an index write into an array the body census proved all-BigInt
+stored the raw i64 (`arrProvenBigintElems`, the literal's own narrow), every
+other producer (`push`, `unshift`, `fill`, `map`) boxed through the plan's
+storage-write edge, and a read took whichever the census promised. One rule
+now: every element slot of a non-typed array is tagged, a BigInt lives there
+boxed, the write edge boxes it, and a read (`a[i]`, the value of `a[i] = v`,
+an inline callback's element parameter) is unboxed at its i64 consumer
+(`readI64MayUnbox`: `isTaggedElemRead`, `isTaggedLocal`). The plan names the
+slot's carrier once (`memberStorageRep`) for the read, the write's own value
+and the compound's rebuilt binary; an emitter-rebuilt node (`a[k] += v`, an
+inline callback body) reaches the plan through `ctx.plans.compoundOf`, which
+names a binding, a member reference or a tagged slot: a definite BigInt
+result stays raw for the slot's write edge, a mixed one normalizes itself.
+Three summary defects surfaced on the way: `withTag` widened any two-tag
+union to ANY when a nullish tag joined it (`a[0]++` read `a[0]` as
+anything), a callback's surplus arguments escaped the receiver
+(`a.map(x => x + 1n)` escaped `a`; jzify desugars every pattern parameter
+into a rest parameter, which alone collects the surplus), and `elemKindOf`
+was defined twice in the query view with the kind-taking variant winning, so
+the callback element hint never fired since `c9cee767` (now `elemKindOf(name)`
+and `elemOfKind(kind)`); with the hint live, its body-census fallback claimed
+a kind without presence and the kernel folded `slots.every(b => b !== null)`
+to true over a null slot (the fallback is gone: the summary is the one
+source). The provenance consults the summary for a bracket read as it did
+for a dot read. Kernel oracle GREEN; recursive GREEN (13,892,087 bytes, heap
+1,264 MB); functional 13/20, the same seven; families 40/48 with the
+warm-instance leg, the same eight rows as `e08ade69`. The five: the complex member `++` (a typed element through a
+call receiver: `valTypeOf` names no element kind for an expression
+receiver), the boxed-prefix BigInt boundary, receiver-HASH, fromCharCode
+above 0xff, watr memory64.
+
 ### Next ownership and order
 
-1. One session owns main. Next: the six reds above (the member BigInt update
-   of an array element is the verified-result milestone's own shape: one
-   result contract per producer, the summary's kind and the plan's carrier
-   agreeing on every element store), emit's per-closure allocation (675 MB
-   on jz × jz), a rest parameter that never escapes reading the argument
-   slots (the encoder's `push(...xs)` takes an array per byte, 322 MB), the
-   seven hosted byte divergences. Regions remain the memory model; the
-   allocation audit shrinks what they must reclaim. Keep the private fresh
-   gate. Do not add source-spelling exceptions.
+1. One session owns main. Next: the five reds above, emit's per-closure
+   allocation (675 MB on jz × jz), a rest parameter that never escapes
+   reading the argument slots (the encoder's `push(...xs)` takes an array per
+   byte, 322 MB), the seven hosted byte divergences (the string-equality
+   template's `i32.or(x, 0)` folds under the kernel and not natively: one
+   predicate reads differently self-hosted). Regions remain the memory
+   model; the allocation audit shrinks what they must reclaim. Keep the
+   private fresh gate. Do not add source-spelling exceptions.
 2. watr is consumed at `deb62e4`; the local-pass deletion stays isolated until
    its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
    introducing semantic FunctionIR.

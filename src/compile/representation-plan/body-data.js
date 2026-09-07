@@ -33,6 +33,12 @@ const rawSchemaRead = (ctx, node) => {
     : valTypeOf(recv) === VAL.OBJECT ? staticPropertyKey(node[2]) : null
   return prop != null && ctx.schema.slotBigintRawAt?.(recv, prop) === true
 }
+// The carrier a member slot holds: a typed element or a raw schema slot is
+// raw; every other element/property slot is tagged (module/array.js and
+// collection.js taggedStoredValue, emit-assign.js storedValue). A write's
+// own value is the stored carrier.
+export const memberStorageRep = (ctx, member) =>
+  valTypeOf(member[1]) === VAL.TYPED || rawSchemaRead(ctx, member) ? RAW_BIGINT : BOXED_BIGINT
 
 const directCallBoundary = (ctx, name) => {
   const func = ctx.funcs.map.get(name)
@@ -397,19 +403,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         : directCallBoundary(ctx, calleeName).result.current
     }
     else if (node[0] === ',') out = currentOf(node[node.length - 1])
-    else if (node[0] === '=') out = currentOf(node[2])
+    else if (node[0] === '=') out = memberReceiver(node[1]) != null ? memberStorageRep(ctx, node[1]) : currentOf(node[2])
     else {
       const recv = memberReceiver(node)
       const cm = callMember(node)
-      if (recv != null) {
-        const rv = valTypeOf(recv)
-        if (rv === VAL.TYPED) out = RAW_BIGINT
-        else if (rawSchemaRead(ctx, node)) out = RAW_BIGINT
-        else out = BOXED_BIGINT
+      if (recv != null) out = memberStorageRep(ctx, node)
       // Shape #6 layer 1: every STORAGE_READ_METHODS call (get/pop/shift/at),
       // not just 'get' — exprRep (solveBigintProvenance, above) already
       // recognizes the full set; this local carrier proof lagged behind it.
-      } else if (cm && STORAGE_READ_METHODS.has(cm[2])) out = BOXED_BIGINT
+      else if (cm && STORAGE_READ_METHODS.has(cm[2])) out = BOXED_BIGINT
       else if (node[0] === '?:') {
         const a = node[2], b = node[3]
         if ((valTypeOf(a) === VAL.BIGINT && nullishArm(b)) || (valTypeOf(b) === VAL.BIGINT && nullishArm(a)))
@@ -497,9 +499,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     } else {
       const recv = memberReceiver(node)
       const cm = callMember(node)
-      if (recv != null) {
-        target = valTypeOf(recv) === VAL.TYPED ? RAW_BIGINT :
-          (rawSchemaRead(ctx, node) ? RAW_BIGINT : BOXED_BIGINT)
+      const written = node[0] === '=' && memberReceiver(node[1]) != null ? node[1] : null
+      if (recv != null || written) {
+        target = memberStorageRep(ctx, written ?? node)
         normalizedElsewhere = true // storage's write edge owns the carrier
       // Shape #6 layer 1 (mirrors currentOf's identical fix above): the full
       // STORAGE_READ_METHODS set, not just 'get'.

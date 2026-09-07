@@ -5,6 +5,7 @@ import {
   BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_REJECT, STORAGE_READ_METHODS, bigintRepBits,
   bigintRepIsClosed, canBeBigint, definiteBigint, edgeAction, isBigintOrigin, programPlanRecord,
 } from './common.js'
+import { memberStorageRep } from './body-data.js'
 import { boundaryDataOf } from './boundaries.js'
 
 export function representationPlanOf(ctx, identity) {
@@ -177,9 +178,15 @@ export function representationJoinArmAction(ctx, join, arm) {
  *  so join and arm collapse to the same node. */
 export function representationComputedExprAction(ctx, node) {
   const body = activeBody(ctx, 'representationComputedExprAction')
-  // A compound assignment desugared at emission (`n += v` as `n = n + v`)
-  // rebuilds its node; the binding it writes names the target.
+  // An emitter-rebuilt node (`n += v` as `n = n + v`, an inline callback
+  // body) names the slot it lands in: a binding, a member, or a tagged slot.
+  // A definite BigInt result stays raw for the slot's own write edge
+  // (activeStorageSourceRep); only a mixed result normalizes itself here.
   const compound = ctx.plans.compoundOf.get(node)
+  if (compound === true || Array.isArray(compound)) {
+    if (valTypeOf(node) === VAL.BIGINT) return REP_EDGE_REJECT
+    return edgeAction(RAW_BIGINT, compound === true ? BOXED_BIGINT : memberStorageRep(ctx, compound))
+  }
   if (compound != null) return representationCompoundAssignAction(ctx, compound)
   const target = activeRep(ctx, node, true)
   // Some emitter wrappers rebuild an equivalent arithmetic node and therefore
@@ -278,7 +285,13 @@ export const activeEmittedRep = (ctx, node) => {
 // retained", not "this BigInt origin emits no BigInt".
 export const activeStorageSourceRep = (ctx, node) => {
   const rep = activeEmittedRep(ctx, node)
-  return rep === NO_BIGINT && isBigintOrigin(node) ? RAW_BIGINT : rep
+  if (rep !== NO_BIGINT) return rep
+  if (isBigintOrigin(node)) return RAW_BIGINT
+  // An emitter-rebuilt node has no retained facts (ctx.plans.compoundOf): a
+  // definite BigInt result of one is the raw i64 the arithmetic emitters
+  // compute; a mixed one normalized itself (representationComputedExprAction).
+  if (Array.isArray(node) && ctx.plans.compoundOf.has(node) && valTypeOf(node) === VAL.BIGINT) return RAW_BIGINT
+  return rep
 }
 
 /** True when every result tail is a proven raw BigInt carrier. This is the

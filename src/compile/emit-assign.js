@@ -608,27 +608,10 @@ export function emitElementAssign(arr, idx, val) {
   // NaN-boxed values (spec ToNumber for typed element writes), so a boxed
   // bool stores 0/1 there, never raw atom bits.
   //
-  // storedValueNarrow, NOT storedValue, when `arr` is a KNOWN ARRAY whose
-  // OWN element type is independently proven uniformly VAL.BIGINT
-  // (repOf(arr)?.arrayElemValType — the array-elem census analyze.js already
-  // maintains for `arr[i]`'s own read-side elision, kind.js valTypeOf):
-  // every consumer of THIS array's elements (this write's own later reads,
-  // arithmetic, iteration) already takes the STATIC bigint path BECAUSE the
-  // census proves it — module/array.js's numeric-index read is a bare
-  // f64.load, never routed through a registry-aware $__dyn_get/$__typeof
-  // dispatch, so a box written here has no reader that would ever unbox it
-  // (see carrierF64Narrow's own doc comment, ir.js, for the established
-  // pattern this mirrors — found live: `let a = [4611686018427387903n];
-  // a[0]++` boxed the literal on write, then `a[0]++`'s own bigIntOperand
-  // arithmetic read the pointer's bits raw). Only steps 3/7 below (a
-  // known-ARRAY receiver) can ever read `arrayElemValType` — every OTHER
-  // branch (schema/hash/typed/polymorphic) leaves `arr` unproven or not an
-  // ARRAY at all, so this condition is false there and behavior is
-  // unchanged: still the full storedValue box for a genuinely mixed/unproven
-  // element type, where a later dynamic reader may still need to tell a raw
-  // number from a boxed bigint apart.
-  const arrProvenBigintElems = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY &&
-    repOf(arr)?.arrayElemValType === VAL.BIGINT
+  // An array element is a tagged slot whatever the census says of the
+  // array's elements: a BigInt is stored boxed here as by push/unshift/
+  // fill/map (the plan's storage-write edge), and every read of it unboxes
+  // at its i64 consumer (ir/bigint.js readI64MayUnbox, isTaggedElemRead).
   // BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4): a
   // PROVEN TYPED receiver (BigInt64Array/BigUint64Array, `lookupValType(arr)
   // === 'typed'`, mirroring branch 5's own proven-ctor check below) is the
@@ -640,11 +623,10 @@ export function emitElementAssign(arr, idx, val) {
   // `valueExpr` at all) — so an unconditional `storedValue` here would
   // refuse to compile `arr[0] = BigInt(x)` for a freshly-constructed,
   // statically-known BigInt64Array even though nothing ambiguous is
-  // happening. `storedValueNarrow` is the same safe default
-  // arrProvenBigintElems already established: never fires for an inline
-  // expression, only for a bare name independently proven boxed elsewhere.
+  // happening. `storedValueNarrow` never fires for an inline expression,
+  // only for a bare name independently proven boxed elsewhere.
   const arrProvenTyped = valTypeOf(arr) === VAL.TYPED && plannedTypedStorageInfo(ctx, arr) != null
-  const valueExpr = (arrProvenBigintElems || arrProvenTyped) ? storedValueNarrow(val) : storedValue(val)
+  const valueExpr = arrProvenTyped ? storedValueNarrow(val) : storedValue(val)
   // A runtime-typed destination needs a self-describing value. A definite
   // BigInt source may lawfully stay raw under its ordinary RepresentationPlan
   // edge, so materialize the PTR.BIGINT tag specifically for the polymorphic

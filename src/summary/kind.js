@@ -22,7 +22,7 @@ export const tagsOf = k => k & TAGS
 export const hasTag = (k, tag) => (k & bitOf(tag)) !== 0
 export const ANY = kind(K.ANY), NUMBER = kind(K.NUMBER), STRING = kind(K.STRING), BOOL = kind(K.BOOL), BIGINT = kind(K.BIGINT), NULLISH = kind(K.NULLISH), ABSENT = kind(K.ABSENT)
 export const core = k => k & ~NULL_BITS
-const withTag = (k, tag) => tagOf(k) === K.ANY ? ANY : (k & TAGS_NOT_NULL) === 0 ? (k & TAGS) | bitOf(tag) | UNKNOWN : k | bitOf(tag)
+const withTag = (k, tag) => (k & TAGS_NOT_NULL) === 0 ? (k & TAGS) | bitOf(tag) | UNKNOWN : k | bitOf(tag)
 export const orNull = k => withTag(k, K.NULLISH)
 export const orAbsent = k => withTag(k, K.ABSENT)
 

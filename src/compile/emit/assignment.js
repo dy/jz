@@ -68,6 +68,14 @@ function throughReference(name, build) {
   if (!staged) return build(name)
   return afterStaging(staged.pre, build(staged.ref))
 }
+/** `ref op= val` as `ref = ref op val`: the rebuilt binary keeps the plan's
+ *  compound identity, so its BigInt arm is boxed for the tagged slot it
+ *  lands in (representationComputedExprAction). */
+const memberCompound = (op, name, val) => throughReference(name, ref => {
+  const bin = [op, ref, val]
+  ctx.plans.compoundOf.set(bin, ref)
+  return emit(['=', ref, bin])
+})
 
 /** Compound assignment: read → op → write back (via readVar/writeVar).
  *  `arithOp` (one of '+' '-' '*' '/' '%') is the base symbol for BigInt routing.
@@ -214,7 +222,7 @@ export const assignmentOps = {
   // Compound assignments: read-modify-write with type coercion
   '+=': (name, val) => {
     // A member: the same binary and write lowering through the reference, evaluated once.
-    if (typeof name !== 'string') return throughReference(name, ref => emit(['=', ref, ['+', ref, val]]))
+    if (typeof name !== 'string') return memberCompound('+', name, val)
     // String concatenation: desugar to name = name + val (+ handler knows about strings).
     // Also desugar when either side has unknown type — the `+` operator picks runtime
     // string/numeric dispatch (`__is_str_key`); compoundAssign would force f64.add and
@@ -234,7 +242,7 @@ export const assignmentOps = {
     ['-=', 'sub'], ['*=', 'mul'], ['/=', 'div'],
   ].map(([op, fn]) => [op, (name, val) => {
     const sym = op.slice(0, -1)
-    if (typeof name !== 'string') return throughReference(name, ref => emit(['=', ref, [sym, ref, val]]))
+    if (typeof name !== 'string') return memberCompound(sym, name, val)
     return compoundAssign(name, val,
       (a, b) => typed([`f64.${fn}`, a, b], 'f64'),
       fn === 'div' ? null : (a, b) => typed([`i32.${fn}`, a, b], 'i32'),
@@ -242,7 +250,7 @@ export const assignmentOps = {
     )
   }])),
   '%=': (name, val) => {
-    if (typeof name !== 'string') return throughReference(name, ref => emit(['=', ref, ['%', ref, val]]))
+    if (typeof name !== 'string') return memberCompound('%', name, val)
     return compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32'), '%')
   },
   // `**` is always f64 (and has its own const-exponent lowering) — full desugar.
@@ -251,7 +259,7 @@ export const assignmentOps = {
   // Bare bindings normalize before planning. Remaining member assignments
   // share the same binary operation and write path, not a second i64 gate.
   ...Object.fromEntries(['&=', '|=', '^=', '<<=', '>>=', '>>>='].map(op =>
-    [op, (name, val) => throughReference(name, ref => emit(['=', ref, [op.slice(0, -1), ref, val]]))]
+    [op, (name, val) => memberCompound(op.slice(0, -1), name, val)]
   )),
 
   // Logical compound assignments: a ||= b → a = a || b, a &&= b → a = a && b
