@@ -117,31 +117,22 @@ function emitTypeofCmp(a, b, cmpOp) {
   if (code === TYPEOF.function) return isPtrKind(PTR.CLOSURE)
   if (code === TYPEOF.bigint) {
     const fold = staticFold(VAL.BIGINT); if (fold) return fold
-    if (planTaggedBigint) return isPtrKind(PTR.BIGINT)
-    // bigint heuristic: finite, nonzero, sub-normal abs (RAW bigint carrier
-    // bits reinterpreted as f64) OR a real PTR.BIGINT box (CARRIER PROGRAM
-    // Slice 3, .work/archive/carrier-representation-design.md §7 — the registry's
-    // 'typeof' finding, layout-kinds.js). Landed ALONGSIDE, not replacing,
-    // the magnitude fallback: round-3's own "verify every R-recovery arm
-    // independently before deleting the heuristic" discipline — Slice 5
-    // retires the magnitude half once every arm here is confirmed sound.
-    const n = ['local.tee', `$${t}`, va]
-    const magCond = ['i32.and',
-      ['f64.eq', n, ['local.get', `$${t}`]],
-      ['i32.and',
-        ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]],
-        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2.2250738585072014e-308]]]]
-    // Gated on ctx.features.bigint (matches the $__is_truthy/$__to_num
-    // precedent this session's own gating fix applies): no program lacking
-    // any bigint syntax can ever construct a PTR.BIGINT box, so ptrTypeEq's
-    // $__ptr_type call is unreachable dead weight there — including it
-    // unconditionally would pull memory into a program whose ONLY typeof
-    // comparison is `typeof x === 'bigint'` (found live, same regression
-    // class as $__is_truthy's).
-    if (!ctx.features.bigint) return wrap(magCond)
-    const isPtr = ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]
-    const isBigintTag = ptrTypeEq(['local.get', `$${t}`], PTR.BIGINT)
-    return wrap(['i32.or', magCond, ['i32.and', isPtr, isBigintTag]])
+    // A BigInt that reaches an operand the plan could not resolve is a
+    // PTR.BIGINT box (the plan tags every dynamic edge; a raw i64 carrier
+    // lives on statically proven paths alone, which fold above), so the tag
+    // decides, as $__typeof and $__to_num decide. The former magnitude
+    // heuristic (finite, nonzero, subnormal) read a genuine subnormal Number
+    // as a BigInt: the kernel spelled the literal 5e-324 by its bits.
+    // A program without bigint syntax constructs no box, but this guard is
+    // itself the evidence that boxes a host BigInt into an exported
+    // parameter (jz:hostabi's tag slot), so the tag is read inline: the
+    // $__ptr_type helper would pull memory into a memoryless module.
+    if (!ctx.features.bigint) {
+      const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+      const tag = ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]
+      return both(isPtr, ['i64.eq', tag, ['i64.const', PTR.BIGINT]])
+    }
+    return isPtrKind(PTR.BIGINT)
   }
   if (code >= 0) return isPtrKind(code)
   return null

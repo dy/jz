@@ -192,3 +192,31 @@ test('bigint tag: a parameter of every kind materializes; the joins it feeds kee
   }
 })
 
+
+// `typeof x === 'bigint'` on an operand the plan could not resolve read a
+// finite, nonzero, subnormal magnitude as a raw BigInt carrier: a genuine
+// 5e-324 was both a bigint and a number, and the kernel, reading its own
+// AST's literal that way, spelled `5e-324` by its bits (`f64.reinterpret_i64
+// (i64.const 1)`) where native wrote `f64.const 5e-324`. A BigInt on such an
+// operand is a box; the tag decides, as $__typeof does. Without bigint
+// syntax the compare folds, its operand still evaluated once.
+test('bigint tag: typeof reads a subnormal Number as a number; a boxed BigInt by its tag', () => {
+  const SRC = `const box = (v) => [v][0]
+  export let sub = () => { const n = box(5e-324); return (typeof n === 'bigint' ? 1 : 0) + (typeof n === 'number' ? 2 : 0) + (typeof n !== 'bigint' ? 4 : 0) }
+  export let big = () => { const b = box(3n); return (typeof b === 'bigint' ? 1 : 0) + (typeof b === 'number' ? 2 : 0) }
+  export let join = (c) => { const j = c ? 5e-324 : 'x'; return (typeof j === 'bigint' ? 1 : 0) + (typeof j === 'number' ? 2 : 0) }
+  export let arr = (i) => { const a = [1n, 5e-324, 'x', null]; return (typeof a[i] === 'bigint' ? 1 : 0) + (typeof a[i] !== 'bigint' ? 2 : 0) }
+  export let spell = () => box(5e-324) * 2 === 1e-323 ? 1 : 0`
+  const NOBIG = `const box = (v) => [v][0]
+  export let sub = () => { const n = box(5e-324); return (typeof n === 'bigint' ? 1 : 0) + (typeof n !== 'bigint' ? 2 : 0) }
+  export let once = () => { let k = 0; const f = () => { k++; return 5e-324 }; return (typeof f() === 'bigint' ? 10 : 0) + (typeof f() !== 'bigint' ? 20 : 0) + k }`
+  const oracle = Function(SRC.replaceAll('export let ', 'var ') + ';return { sub, big, join, arr, spell }')()
+  const oracle2 = Function(NOBIG.replaceAll('export let ', 'var ') + ';return { sub, once }')()
+  for (const optimize of levels) {
+    const ex = jz(SRC, { optimize }).exports
+    for (const [fn, args] of [['sub', []], ['big', []], ['join', [1]], ['join', [0]], ['arr', [0]], ['arr', [1]], ['arr', [2]], ['arr', [3]], ['spell', []]])
+      is(ex[fn](...args), oracle[fn](...args), `${fn}(${args.join(', ')}) (O${optimize || 0})`)
+    const ex2 = jz(NOBIG, { optimize }).exports
+    for (const fn of ['sub', 'once']) is(ex2[fn](), oracle2[fn](), `no bigint syntax: ${fn}() (O${optimize || 0})`)
+  }
+})
