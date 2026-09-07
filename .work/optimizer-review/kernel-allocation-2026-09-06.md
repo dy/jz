@@ -320,3 +320,69 @@ result contract replaces (PLAN.md, next milestone): not polished here.
 - The memory model (regions) remains the architectural answer for the
   phases' churn; the allocation audit shrinks what regions would have to
   reclaim and fixes what every compiled program paid.
+
+## Hosted byte parity (2026-09-07)
+
+The six functional rows that computed the right results and differed from
+native by bytes, and one of the two hosted families rows at O1, were three
+predicates of the optimizer pipeline read differently by the kernel, each a
+native miscompilation with a pin.
+
+14. **Strict equality of a certain number against an untyped operand
+    converted the operand** (`src/compile/emit/comparisons.js`, `emitLooseEq`
+    serving `===`): `b[1] === 0` in `src/optimize/peephole.js` (the `x | 0`
+    fold) read the runtime WAT's parsed immediate `'0'` through ToNumber, so
+    the kernel folded `(i32.or … (i32.const 0))` in `__str_eq` where native
+    kept it: maps-properties O1, strings-parser O1, encoder-json O1,
+    src/ir/tape.js O1, src/abi/number.js O1. Strict compares the carrier as
+    it is (`f64.eq`), a join with a raw boolean arm emitted identity-safe.
+    Pin: `bool identity: strict equality of a number against an untyped
+    operand converts nothing`.
+15. **The runtime `in` answered "non-nullish"** (`module/collection.js`):
+    watr's `node[1][0] in TRUNC_OF_CONVERT[node[0]]`, a table whose values
+    are null, never fired in the kernel, which kept `(i32.trunc_sat_f64_s
+    (f64.convert_i32_s x))` where native folded it: strings-parser O2. The
+    lookup chain (`dynGetBody`) is generated twice, the read with an
+    undefined miss and `__dyn_get_t_hm` with a TOMB_NAN miss; `__dyn_has`
+    asks the latter; a schema slot holding undefined is a miss (`__dyn_del`
+    writes it, the layout has no absent marker). Pin: `in: runtime
+    membership sees a present null or undefined field on every receiver`.
+16. **`typeof x === 'bigint'` on an unresolved operand read a subnormal
+    magnitude as a raw BigInt** (`emitTypeofCmp`): `emit()`'s own `typeof
+    node === 'bigint'` held for the kernel's AST literal `5e-324` (bits 1),
+    spelled `f64.reinterpret_i64 (i64.const 1)` where native wrote
+    `f64.const 5e-324`: the families row `negative zero, a subnormal,
+    absence` at O1. The tag decides, as `$__typeof` and `$__to_num` decide;
+    without bigint syntax the tag is read inline (the guard is the evidence
+    that boxes a host BigInt into an exported parameter). Pin: `bigint tag:
+    typeof reads a subnormal Number as a number; a boxed BigInt by its tag`.
+
+On `0f26b470` with the three fixes (`$S/div/k4.wasm`, `gate4.json`,
+`gate-rec4.json`): functional **20/20 GREEN, certified**; sequences GREEN
+9/9; recursive GREEN, 13,860,938 bytes in 55 s, heap 1,203 MB, 2,893 MB of
+headroom; kernel oracle 15/15, parity 3/3; hosted families 45/50 (41/50 at
+the base): the fromCharCode family's three rows, and the warm-instance
+tests, which now reach a pre-existing trap. Native `node test/index.js`:
+**4345 pass / 2 fail / 1 skip** (the complex `[2n]` member `++` result at O0,
+the fromCharCode family; 4342 / 2 / 1 at the base, the three pins added).
+
+Open, found on the way:
+
+- `sleb, _clear(), sleb` on one instance traps `unreachable` (the slebSize
+  family case compiled twice with `_clear()` between; `A, _clear(), A` is
+  fine), on the base kernel too; the with-`_clear()` warm test stopped at
+  an earlier byte row before and shows it now.
+- A literal-initialized `undefined` field reached by the runtime `in` (not
+  the closed-schema path) reads absent, the price of `delete` sharing the
+  slot's undefined.
+- `f[k] = v` on a local closure fails wasm validation (`local.set` i32 of an
+  f64), at the base too.
+- An exported parameter whose only uses are `=== number` compares takes the
+  numeric boundary lane, so the host ToNumbers `'0'` before the compare
+  (`k('0')` is 1, JS 0).
+- A BIGINT∪NUMBER join stored into a schema slot reads statically as BIGINT
+  (`{ v: c ? 1n : 0 }`: `typeof o.v` is both bigint and number for 0).
+- The magnitude heuristic's twin in `bigIntJointDispatch` (an exported
+  never-reassigned parameter of null domain) still reads a subnormal as a
+  raw BigInt carrier; interop boxes every host BigInt, so that arm is
+  unreachable from the host today.
