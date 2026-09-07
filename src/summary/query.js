@@ -6,7 +6,7 @@ import { VAL } from '../reps.js'
 
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
-  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith,
+  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore,
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
 } from './kind.js'
 
@@ -183,6 +183,13 @@ export function summaryQueries(facts) {
         else if (t === K.STRING && name === 'codePointAt') result = orAbsent(NUMBER)
         else result = builtinMethodResult(r, name)
         return optionalResult(n[1][0], r, result)
+      }
+      // An assignment's value is its right side, less what a typed element's conversion rejects (the solver's assign).
+      if (op === '=') {
+        const v = kindOfExpr(n[2]), t = n[1]
+        if (!Array.isArray(t) || t[0] !== '[]' || Array.isArray(t[2]) && t[2][0] == null && typeof t[2][1] === 'string') return v
+        const r = kindOfExpr(t[1])
+        return tagOf(r) === K.TYPED ? typedStore(typedElemKind(r), v) : v
       }
       if (op === '?' || op === '?:') return join(kindOfExpr(n[2]), kindOfExpr(n[3]))
       if (op === '&&' || op === '||' || op === '??') return join(kindOfExpr(n[1]), kindOfExpr(n[2]))

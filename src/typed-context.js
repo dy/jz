@@ -16,6 +16,13 @@ import {
 const EMPTY_OPTIONS = {}
 const EMPTY_MAPS = []
 
+/** The program summary's constructor for an expression the fact channels
+ *  leave open: a binding bound through a builtin (`__iter_arr(typed)`), a
+ *  call through a closure, a receiver expression. The summary is the kind
+ *  authority `valTypeOf` answers from, so a kind site and the storage
+ *  lowering that must agree with it both end here. */
+export const summaryTypedCtor = (ctx, expr) => ctx.summary?.at(ctx.func.current).typedCtorOfExpr(expr) ?? null
+
 export function typedStorageNameCtor(ctx, name, localNames) {
   if (ctx.func?.localTypedElemsOverlay?.has?.(name)) return ctx.func.localTypedElemsOverlay.get(name) ?? null
   if (ctx.func?.typedElem?.has?.(name)) return ctx.func.typedElem.get(name) ?? null

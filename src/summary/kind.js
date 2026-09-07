@@ -82,6 +82,14 @@ const numericModes = k => {
   if (nonBig) { modes |= 1; if (nonBig & COERCION_UNKNOWN) modes |= 2 }
   return modes
 }
+/** Normal completions of a typed element store of `v` (the assignment's own
+ *  value): a BigInt element's ToBigInt throws on a Number and on a nullish
+ *  value, a Number element's ToNumber throws on a BigInt; an open element
+ *  kind rejects nothing. `elem` is the receiver's element kind. */
+export const typedStore = (elem, v) => {
+  const rejected = elem === BIGINT ? bitOf(K.NUMBER) | NULL_BITS : elem === NUMBER ? bitOf(K.BIGINT) : 0
+  return (v & TAGS & ~rejected) === 0 ? K.NONE : v & ~rejected
+}
 /** ToNumeric of one operand (`b` undefined) or two: only same-domain operands complete; unsigned shift excludes BigInt. */
 export const arith = (op, a, b) => {
   let modes = numericModes(a)

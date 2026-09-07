@@ -431,9 +431,20 @@ const hoistNestedCalls = (body, blockNames, bodies = null) => {
   }
   const effState = (seen = false) => ({ seen, mem: false, reads: new Set() })
   const note = (eff, w) => { eff.seen = eff.seen === true || w === true ? true : w === false ? eff.seen : eff.seen === false ? w : new Set([...eff.seen, ...w]) }
+  // A member reference prepare shares between a read and its write (`m++` is
+  // `m = m + 1` over ONE node) is one evaluation: it rewrites once, and both
+  // positions keep the same rewritten node, so a hoisted call in it runs once.
+  const rewritten = new Map()
   const hExpr = (n, pre, cond, eff) => {
     if (typeof n === 'string') { eff.reads.add(n); return n }
     if (!Array.isArray(n) || n[0] === '=>') return n
+    const shared = rewritten.get(n)
+    if (shared !== undefined) return shared
+    const out = hNode(n, pre, cond, eff)
+    rewritten.set(n, out)
+    return out
+  }
+  const hNode = (n, pre, cond, eff) => {
     if (!cond && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1]) && commutes(n[1], eff)) {
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, effState()))]
       const tmp = `${T}inl${freshId(ctx)}_h`

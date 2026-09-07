@@ -210,13 +210,16 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     // BigInt join).
     if (nullishArm(node)) out = packSemantic(0, true, true)
     else if (node[0] === ',') out = semanticOf(node[node.length - 1])
-    else if (node[0] === '=') out = semanticOf(node[2])
     else if (node[0] === '?:') out = joinSem(semanticJoinArm(node[2]), semanticJoinArm(node[3]))
     else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
       out = joinSem(semanticJoinArm(node[1]), semanticJoinArm(node[2]))
     else if (summaryTagOf(summaryCore(summaryKind)) === SUMMARY_KIND.BIGINT)
       out = semKind(VAL.BIGINT,
         summaryHasTag(summaryKind, SUMMARY_KIND.NULLISH) || summaryHasTag(summaryKind, SUMMARY_KIND.ABSENT))
+    // The summary names an assignment's value less what a typed element's
+    // store rejects (`a[i] = v` into a BigInt64Array completes with a BigInt);
+    // any other assignment is its right side.
+    else if (node[0] === '=') out = semanticOf(node[2])
     else if (!mayCarryBigint(node) && !NUMERIC_VALUE_OPS.has(node[0])) {
       const vt = valTypeOf(node) ?? closureCalleeKind(node)
       out = vt ? semKind(vt) : noBigintSemantic()

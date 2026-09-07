@@ -1,5 +1,6 @@
 import { ctorFromElemAux, typedElemAux } from '../../layout.js'
 import { VAL } from '../reps.js'
+import { summaryTypedCtor } from '../typed-context.js'
 import {
   TYPED_SOURCE_NAME, TYPED_SOURCE_CALL, TYPED_SOURCE_FIELD, TYPED_SOURCE_INDEX,
   typedCtorName, typedStorageCtor,
@@ -148,6 +149,9 @@ function typedStoragePlanOf(ctx, identity = ctx.func.current) {
 
 const activeData = ctx => dataOf(ctx, typedStoragePlanOf(ctx))
 
+// The frozen views first, then the summary's constructor for an expression they
+// leave open (typed-context.js summaryTypedCtor): kind and storage lowering
+// follow one fact.
 const plannedCtor = (ctx, data, expr) => {
   // Explicit transient channel for compiler-generated hoist locals. This is
   // not analysis fallback: the emitter creating the local supplies its ctor.
@@ -158,9 +162,9 @@ const plannedCtor = (ctx, data, expr) => {
     // Method chains rooted at a transient temp need that overlay at the leaf.
     const resolve = (kind, a, b, node, state) => kind === TYPED_SOURCE_NAME && overlay.has(a)
       ? overlay.get(a) ?? null : resolvePlanSource(kind, a, b, node, state)
-    return typedStorageCtor(expr, resolve, data)
+    return typedStorageCtor(expr, resolve, data) ?? summaryTypedCtor(ctx, expr)
   }
-  return typedStorageCtor(expr, resolvePlanSource, data)
+  return typedStorageCtor(expr, resolvePlanSource, data) ?? summaryTypedCtor(ctx, expr)
 }
 
 /** Constructor decision from the active frozen body plan. */

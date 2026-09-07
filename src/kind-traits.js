@@ -5,7 +5,7 @@
 
 import { VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
-import { typedStorageCtorFromContext } from './typed-context.js'
+import { summaryTypedCtor, typedStorageCtorFromContext } from './typed-context.js'
 
 // Comparison / logical-not ops — result is a 0|1 boolean carried as i32. The one
 // source of truth for "this operator yields a boolean": valTypeOf reads it as
@@ -187,7 +187,7 @@ export function methodValType(method, obj, objType, ctx) {
   // turns 7n into the denormal 3.5e-323. Use the same constructor provenance
   // analysis and emission consume, including direct/chained expressions.
   if (method === 'at' && objType === VAL.TYPED) {
-    const ctor = typedStorageCtorFromContext(ctx, obj)
+    const ctor = typedStorageCtorFromContext(ctx, obj) ?? summaryTypedCtor(ctx, obj)
     return typedCtorElemValType(ctor)
   }
   if (method === 'map' || method === 'filter') {

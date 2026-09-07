@@ -49,7 +49,7 @@
  * @module summary
  */
 import { MUTATE_OPS, extractParams, isBrand, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
+import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
@@ -58,7 +58,7 @@ import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
-  plus, arith,
+  plus, arith, typedStore,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, kindOfVal, valsOf, core } from './kind.js'
 
@@ -68,6 +68,12 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 
 const BIND = CLASS_T + 'bind'
 const TYPED_SAME = new Set(['subarray', 'slice', 'map', 'filter', 'fill', 'reverse', 'sort', 'copyWithin', 'set'])
+// A method's typed result keeps the receiver's element kind; `subarray` views
+// its buffer, a copy (`slice`, `map`, `filter`) owns a fresh one, a mutator
+// returns the receiver (typed-provenance.js's own three families).
+const TYPED_FRESH = new Set(['slice', 'map', 'filter'])
+const typedSame = (name, aux) => aux === UNKNOWN ? aux
+  : name === 'subarray' ? aux | TYPED_ELEM_VIEW_FLAG : TYPED_FRESH.has(name) ? aux & ~TYPED_ELEM_VIEW_FLAG : aux
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
@@ -445,7 +451,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
     }
     if (t === K.TYPED) {
-      if (TYPED_SAME.has(name)) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return name === 'set' ? NULLISH : kind(K.TYPED, paramOf(recv)) }
+      if (TYPED_SAME.has(name)) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return name === 'set' ? NULLISH : kind(K.TYPED, typedSame(name, paramOf(recv))) }
       if (name === 'at') return orAbsent(typedElemKind(recv))
       if (name === 'indexOf' || name === 'lastIndexOf') return NUMBER
       if (name === 'reduce') return reduceResult(recv, base, n)
@@ -722,7 +728,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return assign(op, ['.', target[1], idx[1]], value)
       const ik = expr(idx)
       if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) raiseEntry(recv, ik, v); else escape(v) }
-      else if (t !== K.NONE && t !== K.TYPED && t !== K.STRING) { poisonAll(recv, ik); escapeObject(v) }
+      else if (t === K.TYPED) return typedStore(typedElemKind(recv), v)
+      else if (t !== K.NONE && t !== K.STRING) { poisonAll(recv, ik); escapeObject(v) }
       return v
     }
     escape(v)

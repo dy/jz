@@ -129,6 +129,71 @@ test(`result carriers: complex BigInt member ${write} returns the expression val
     is(jz(source, {optimize}).exports.f(0), expected(0), `O${optimize || 0}`)
 })
 
+// The same update through a receiver expression follows the receiver the
+// summary names, as the access on a named receiver does: the element kind,
+// the raw i64 element of a BigInt64Array, the Number element of a
+// Float64Array, the store's conversion.
+// The plain array of BigInts is red: a staged reference's temp carries no
+// element kind for a tagged slot (`valTypeOf` of `ref[key]` is open, the
+// update runs as a Number), and `++a[0]` returns the slot's box where its
+// reader expects the raw payload.
+for (const [array, write] of [
+  ['new Float64Array([2])', '(get()[key()])++'],
+  ['new Float64Array([2])', '(get()[key()]) += 4'],
+  ['new BigInt64Array([2n])', '++get()[key()]'],
+  ['new BigInt64Array([2n])', '(get()[key()]) += 4n'],
+  ['new BigUint64Array([2n])', '(get()[key()])--'],
+  ['[2n]', '(get()[key()])++'],
+])
+test(`result carriers: complex ${array} member ${write} returns the expression value`, () => {
+  const source = `export function f(stage){
+    const a=${array}; let trace=0
+    function get(){trace=trace*10+1; if(stage===1) throw 1; return a}
+    function key(){trace=trace*10+2; if(stage===2) throw 2; return 0}
+    const result=(${write})
+    return [Number(result),Number(a[0]),trace]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3])
+    is(jz(source, {optimize}).exports.f(0), expected(0), `O${optimize || 0}`)
+})
+
+// The reference is taken once, receiver before key, and an abrupt receiver
+// or key leaves the element unread and unwritten: for the update and for a
+// plain store, whose typed lowering emits the receiver at the address and
+// at the bounds guard.
+for (const [array, one] of [['new BigInt64Array([2n])', '1n'], ['new Float64Array([2])', '1']])
+for (const write of ['(get()[key()])++', `get()[key()]=${one}+${one}`])
+test(`result carriers: complex ${array} member ${write} takes its reference once and in order`, () => {
+  const source = `export function f(stage){
+    const a=${array}; let trace=0, caught=0
+    function get(){trace=trace*10+1; if(stage===1) throw 1; return a}
+    function key(){trace=trace*10+2; if(stage===2) throw 2; return 0}
+    try { ${write} } catch(e) { caught=e }
+    return [caught,Number(a[0]),trace]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3]) {
+    const f = jz(source, {optimize}).exports.f
+    for (const stage of [0, 1, 2, 0]) is(f(stage), expected(stage), `O${optimize || 0}: stage ${stage}`)
+  }
+})
+
+// An inlined callee is still one evaluation of the reference: the inliner
+// hoists the call the read and the write share once.
+test('result carriers: an inlined receiver and key of a member ++ run once', () => {
+  const source = `export function f(){
+    const a=new BigInt64Array([2n]); let trace=0
+    function get(){trace=trace*10+1; return a}
+    function key(){trace=trace*10+2; return 0}
+    const result=(get()[key()])++
+    return [Number(result),Number(a[0]),trace]
+  }`
+  const expected = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3])
+    is(jz(source, {optimize}).exports.f(), expected(), `O${optimize || 0}`)
+})
+
 test('catch locals: an untouched initializer survives the normal completion path', () => {
   const source = `export function f(stage){
     const obj={value:5}; let trace=0,result=-1,caught=0

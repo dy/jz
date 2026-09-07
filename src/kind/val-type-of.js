@@ -20,12 +20,12 @@
 
 import { ctx, registerResetHook } from '../ctx.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
-import { intLiteralValue, staticIndexKey } from '../static.js'
+import { intLiteralValue, staticIndexKey, typedCtorRawOf } from '../static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
   calleeValType, methodValType, propValType, typedCtorElemValType,
 } from '../kind-traits.js'
-import { typedStorageCtorFromContext } from '../typed-context.js'
+import { summaryTypedCtor, typedStorageCtorFromContext } from '../typed-context.js'
 import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
 import { valOf as summaryVal } from '../summary/index.js'
@@ -219,6 +219,17 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   return false
 }
 
+// The concrete typed constructor of an element receiver, a name or an
+// expression, through the one provenance grammar (typed-provenance.js): a
+// name through the transient overlay (a staged reference's temp, an in-
+// progress body walk), the settled per-function and module maps, then a
+// parameter rep; a call, a field, an index or a method chain through their
+// own sources; finally the program summary's kind of the expression.
+const typedReceiverCtor = recv =>
+  typedStorageCtorFromContext(ctx, recv, {
+    resolveName: name => typedCtorRawOf(name) ?? repOf(name)?.typedCtor ?? null,
+  }) ?? summaryTypedCtor(ctx, recv)
+
 // `[]` op covers both array literals (1 arg) and index access (2 args).
 // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
 // Index access:  `arr[i]` → ['[]', arr, i].
@@ -276,22 +287,18 @@ VT['[]'] = (args) => {
       }
     }
   }
-  // Indexed read on a known typed-array receiver follows its concrete ctor.
-  // If the ctor itself is open (runtime-polymorphic Number vs BigInt storage),
-  // retain an unknown kind and let the tagged runtime reader decide.
+  // Indexed read on a known typed-array receiver, a name or an expression,
+  // follows its concrete ctor. If the ctor itself is open (runtime-polymorphic
+  // Number vs BigInt storage), retain an unknown kind and let the tagged
+  // runtime reader decide.
   // An UNPROVEN index can read past the end (= undefined per spec), but the undef
   // box is a NaN bit-pattern, so it COINCIDES with ToNumber(undefined) through
   // every numeric path — the NUMBER claim stays sound for dispatch (numeric arms,
   // the vectorizer). Only identity observations diverge; those folds consult
   // typedReadMaybeOob below and keep the runtime compare.
-  if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED) {
-    const elem = typedCtorElemValType(typedStorageCtorFromContext(ctx, args[0], {
-      // Preserve this early value-kind phase's established source order. In
-      // particular it intentionally ignores analyzeBody's transient overlay;
-      // storage narrowing applies its own OOB veto later.
-      resolveName: name => ctx.func.typedElem?.get(name) ??
-        ctx.scope.globalTypedElem?.get(name) ?? repOf(name)?.typedCtor ?? null,
-    }))
+  const recvVt = valTypeOf(args[0])
+  if (recvVt === VAL.TYPED) {
+    const elem = typedCtorElemValType(typedReceiverCtor(args[0]))
     // With no BigInt syntax in the whole program, every accepted host typed
     // ingress is numeric (interop rejects evidence-free BigInt typed arrays),
     // so an open ctor still has a closed NUMBER element domain. Preserve the
@@ -300,8 +307,7 @@ VT['[]'] = (args) => {
     return elem || (!ctx.features.bigint ? VAL.NUMBER : null)
   }
   // Indexed read on a STRING returns a 1-char string (SSO at runtime).
-  if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.STRING) return VAL.STRING
-  if (Array.isArray(args[0]) && valTypeOf(args[0]) === VAL.STRING) return VAL.STRING
+  if (recvVt === VAL.STRING) return VAL.STRING
   // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType.
   // Set by analyzeValTypes from body observations + emitFunc preseed for params.
   if (typeof args[0] === 'string') {

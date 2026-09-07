@@ -30,7 +30,10 @@ import {
 // same reference). The temp carries the expression's facts (value kind,
 // typed constructor, schema), so the read and the write lower as the
 // expression would have. A reference without effects is read twice as it
-// was: the optimizers recognize that shape.
+// was: the optimizers recognize that shape. A plain write (`update` false)
+// stages only its receiver: the store emitters evaluate the key once
+// themselves, and the store's own index shapes (`a[i++] = v`, a proven
+// length) stay theirs.
 const readsAccessor = (n) => {
   if (!Array.isArray(n)) return false
   if ((n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && ctx.transform.accessorNames?.has(n[2])) return true
@@ -38,7 +41,7 @@ const readsAccessor = (n) => {
   return false
 }
 const effectful = (n) => Array.isArray(n) && (!isSideEffectFree(n) || readsAccessor(n))
-function stagedReference(name) {
+function stagedReference(name, update = true) {
   if (!Array.isArray(name) || (name[0] !== '.' && name[0] !== '[]')) return null
   const pre = []
   const stage = (node, tag, always = false) => {
@@ -46,19 +49,18 @@ function stagedReference(name) {
     const h = temp(tag)
     const vt = valTypeOf(node)
     if (vt) ctx.func.localValTypesOverlay.set(h, vt)
-    const summary = ctx.summary?.at(ctx.func.current)
-    const ctor = vt === VAL.TYPED ? plannedTypedStorageCtor(ctx, node) ?? summary?.typedCtorOfExpr(node) : null
+    const ctor = vt === VAL.TYPED ? plannedTypedStorageCtor(ctx, node) : null
     if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, ctor)
-    const sid = vt === VAL.OBJECT ? summary?.objectSidOfExpr(node) : null
+    const sid = vt === VAL.OBJECT ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(node) : null
     if (sid != null) ctx.func.refinements.set(h, { schemaId: sid })   // the transient channel ctx.schema.idOf reads first
     pre.push(['local.set', `$${h}`, asF64(emit(node))])
     return h
   }
   // A key with an effect may reassign the receiver's binding: the receiver is
   // taken first, whatever it is.
-  const keyEffect = name[0] === '[]' && effectful(name[2])
+  const keyEffect = update && name[0] === '[]' && effectful(name[2])
   const recv = keyEffect && typeof name[1] === 'string' ? stage(name[1], 'ref', true) : stage(name[1], 'ref')
-  const key = name[0] === '[]' ? stage(name[2], 'key') : name[2]
+  const key = keyEffect ? stage(name[2], 'key') : name[2]
   return pre.length ? { ref: [name[0], recv, key], pre } : null
 }
 const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]
@@ -173,11 +175,15 @@ export const assignmentOps = {
 
   '=': (name, val) => {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
-    // A member's `++`/`--` (prepare: `m = m ± 1`, `+1`/`-1` an op of its own; a
-    // plan rewrite may have copied the reference): the reference once.
-    if (Array.isArray(name) && (name[0] === '[]' || name[0] === '.') && Array.isArray(val) && (val[0] === '+1' || val[0] === '-1')) {
-      const staged = stagedReference(name)
-      if (staged) return afterStaging(staged.pre, emit(['=', staged.ref, [val[0], staged.ref]]))
+    // A member write takes its reference once, before the RHS: the element
+    // store emits the receiver in more than one position (the address, the
+    // bounds guard), and a member's `++`/`--` (prepare: `m = m ± 1`, `+1`/`-1`
+    // an op of its own; a plan rewrite may have copied the reference) reads
+    // and writes through the same reference.
+    if (Array.isArray(name) && (name[0] === '[]' || name[0] === '.')) {
+      const update = Array.isArray(val) && (val[0] === '+1' || val[0] === '-1')
+      const staged = stagedReference(name, update)
+      if (staged) return afterStaging(staged.pre, emit(['=', staged.ref, update ? [val[0], staged.ref] : val]))
     }
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
