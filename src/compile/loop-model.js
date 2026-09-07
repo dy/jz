@@ -126,16 +126,26 @@ export function loopHazards(cm, body) {
 // place; a falsy result keeps the statement unchanged. Children are rewritten first, so
 // a nested loop is transformed before the block that encloses it.
 export function rewriteBlocks(body, tryStmt) {
+  // Copy a node only above a change: the tree keeps its identity where
+  // nothing rewrote (the summary keys closures and cells by node, and every
+  // emitted function ran four of these passes over a fresh copy of its body).
   const walk = (node) => {
     if (!Array.isArray(node)) return node
-    const n = node.map(walk)
+    let n = null
+    for (let i = 0; i < node.length; i++) {
+      const c = node[i], w = walk(c)
+      if (n) n.push(w)
+      else if (w !== c) { n = node.slice(0, i); n.push(w) }
+    }
+    n ??= node
     if (n[0] !== ';') return n
-    const out = [';']
+    let out = null
     for (let k = 1; k < n.length; k++) {
       const r = tryStmt(n[k])
-      if (r) out.push(...r); else out.push(n[k])
+      if (out) { if (r) out.push(...r); else out.push(n[k]) }
+      else if (r) { out = n.slice(0, k); out.push(...r) }
     }
-    return out
+    return out ?? n
   }
   return walk(body)
 }

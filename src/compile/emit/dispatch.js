@@ -24,6 +24,7 @@ import {
 } from '../representation-plan.js'
 import { FIRST_CLASS_BUILTIN_BODY, FIRST_CLASS_UNARY_MATH, builtinFunctionValue } from './first-class.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectCondOK } from './shared.js'
+import { K, core as summaryCore, tagOf as summaryTagOf } from '../../summary/kind.js'
 
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
@@ -1475,17 +1476,20 @@ function liftOptionalChain(node) {
   }
   if (optIdx <= 0) return null
   const opt = path[optIdx]
-  const payloadCtor = opt[0] === '?.' ? ctx.summary?.at(ctx.func.current)?.typedPayloadCtorOfExpr(opt[1]) : null
-  const boxedTypedReduce = opt[0] === '?.' && opt[2] === 'reduce' &&
-    (payloadCtor === 'new.BigInt64Array' || payloadCtor === 'new.BigUint64Array')
+  // TypedArray.reduce's result is raw in the BigInt domain when the summary
+  // proves the call BigInt (its callback's result, not the receiver's element
+  // kind: `a?.reduce(() => 42, 0)` on a BigInt64Array is a Number), and
+  // optional chaining adds an undefined arm: box inside the successful branch
+  // before the carriers join.
+  const boxedTypedReduce = opt[0] === '?.' && opt[2] === 'reduce' && optIdx >= 1 && path[optIdx - 1][0] === '()' &&
+    summaryTagOf(summaryCore(ctx.summary?.at(ctx.func.current)?.kindOfExpr(path[optIdx - 1]) ?? 0)) === K.BIGINT &&
+    ctx.summary.at(ctx.func.current).typedPayloadCtorOfExpr(opt[1]) != null
   return withNullGuard(asF64(emit(opt[1])), t => {
     let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
                 : opt[0] === '?.[]' ? ['[]', t, opt[2]]
                                     : ['()', t, ...opt.slice(2)]
     for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
     const result = emit(rebuilt)
-    // TypedArray.reduce's BigInt result is raw, but optional chaining adds an
-    // undefined arm. Box inside the successful branch before the carriers join.
     return asF64(boxedTypedReduce ? boxBigInt(asI64(result)) : result)
   }, 'oc')
 }

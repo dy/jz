@@ -159,9 +159,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const paramNames = (params) => extractParams(params).map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' ? p[1] : null)
   const defaultsOf = (params) => { let d = null; for (const p of extractParams(params)) if (Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string') (d ??= {})[p[1]] = p[2]; return d }
   const closureDefaults = []         // closure id → { name: default expression } or null
+  // A closure is keyed by its `=>` node, and by its body: emission may hand
+  // the query a rebuilt `=>` wrapper around the same body (a call rebuilt by
+  // an optional chain, a method's staged receiver).
+  const closuresByBody = new Map()   // body node → closure id
   const closureId = (node) => {
     let id = closures.get(node)
-    if (id === undefined) { id = closureParams.length; closures.set(node, id); closureParams.push(paramNames(node[1])); closureDefaults.push(defaultsOf(node[1])); closureBodies.push(node[2]) }
+    if (id === undefined) { id = closureParams.length; closures.set(node, id); closuresByBody.set(node[2], id); closureParams.push(paramNames(node[1])); closureDefaults.push(defaultsOf(node[1])); closureBodies.push(node[2]) }
     return id
   }
   // An array's element kind, and a map's value kind, lives in a cell its
@@ -1082,7 +1086,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameScopes,
-    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells,
+    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, closuresByBody,
     schemas: schemas.map(props => props.slice()), methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped,

@@ -11,7 +11,7 @@ import {
 } from './kind.js'
 
 export function summaryQueries(facts) {
-  const { kinds, incoming, fields, results, closures, declared, parent, nameScopes,
+  const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameScopes,
     scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells,
     schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps } = facts
   const keyIn = (scope, name) => scope === '' ? name : scope + '\0' + name
@@ -107,7 +107,7 @@ export function summaryQueries(facts) {
       if (op === 'bool') return BOOL
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
-      if (op === '=>') { const id = closures.get(n); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
+      if (op === '=>') { const id = closures.get(n) ?? closuresByBody.get(n[2]); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
       if (op === '{}' && n.length > 1 && n.slice(1).every(p => typeof p === 'string' || Array.isArray(p) && (p[0] === ':' || p[0] === '...'))) {
         const names = []
         let brand = null
