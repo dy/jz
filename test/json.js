@@ -478,9 +478,9 @@ test('JSON.parse: loose equality coerces numeric strings against numbers', () =>
   }`)
 
   const result = f()
-  is(result[0], 1)
-  is(result[1], 1)
-  is(result[2], 0)
+  is(result[0], true)
+  is(result[1], true)
+  is(result[2], false)
 })
 
 // === Boolean identity (regression: parser emitted numeric 1/0 instead of atoms) ===

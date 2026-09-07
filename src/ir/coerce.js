@@ -20,7 +20,7 @@ import { temp, tempI32, tempI64, block64, freshId } from './locals.js'
 import { ptrOffsetIR, ptrTypeEq } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
 import { isBigIntBox, isPlanTaggedBigint, materializeDeferredBigint, readI64, unboxBigInt } from './bigint.js'
-import { NULL_NAN, UNDEF_NAN, undefExpr, truthyIR } from './sentinels.js'
+import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
 /** ToPrimitive sidecar probe (ES2024 7.1.1): an own `valueOf`/`toString` data
@@ -168,6 +168,21 @@ export const coerceNullishToNum = (valIR) => typed(
       ['then', ['f64.const', 'nan']],
       ['else', cloneIR(valIR)]]]],
   'f64')
+
+/** ToNumber for a runtime value that is a Number or an atom (a closure's
+ *  result in a program without `__to_num`): true→1, false/null→0, any other
+ *  NaN-box→NaN, a real number itself. `valIR` is duplicated (a local read). */
+export const coerceAtomsToNum = (valIR) => {
+  const bits = () => ['i64.reinterpret_f64', cloneIR(valIR)]
+  return typed(['if', ['result', 'f64'],
+    ['f64.eq', cloneIR(valIR), cloneIR(valIR)],
+    ['then', cloneIR(valIR)],
+    ['else', ['select',
+      ['f64.const', 1],
+      ['select', ['f64.const', 0], ['f64.const', 'nan'],
+        ['i32.or', ['i64.eq', bits(), ['i64.const', FALSE_NAN]], ['i64.eq', bits(), ['i64.const', NULL_NAN]]]],
+      ['i64.eq', bits(), ['i64.const', TRUE_NAN]]]]], 'f64')
+}
 
 /** ToString for an i64 string carrier that may hold the UNDEF_NAN sentinel:
  *  undefined→"undefined", anything else → itself. The STRING-domain mirror of

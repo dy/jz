@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, coerceAtomsToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS, isUndefinedLiteral } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -2193,8 +2193,8 @@ export default (ctx) => {
     // routed to generic Array.prototype.map above, which returns PTR.ARRAY —
     // wrong species, even though the 8-byte payload itself survived unharmed).
     if (elemType != null && !r.isBigInt) {
-      const av = temp('tma'), cb = temp('tmc')
-      const va = typed(['local.get', `$${av}`], 'f64'), vf = typed(['local.get', `$${cb}`], 'f64')
+      const av = temp('tma'), cb = temp('tmc'), tmr = temp('tmr')
+      const va = typed(['local.get', `$${av}`], 'f64'), vf = typed(['local.get', `$${cb}`], 'f64'), vr = typed(['local.get', `$${tmr}`], 'f64')
       const len = tempI32('tml'), ptr = tempI32('tmp'), i = tempI32('tmi')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
       const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(elemName),
@@ -2222,8 +2222,11 @@ export default (ctx) => {
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
           // Callback receives (item, idx), matching the other non-reduce
           // typed iteration emitters. Reduce alone uses the wider four-slot ABI.
-          storeElem(asF64(ctx.closure.call(vf,
-            [loadElem(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))),
+          // The result crosses the closure ABI as any value; the typed store
+          // coerces it (ToNumber: a boolean stores 1 or 0, not its atom).
+          ['local.set', `$${tmr}`, asF64(ctx.closure.call(vf,
+            [loadElem(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))],
+          storeElem(asF64(ctx.core.stdlib['__to_num'] ? toNumF64(null, vr) : coerceAtomsToNum(vr))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
         dst.ptr], 'f64')

@@ -11,6 +11,7 @@
 // — `1 === true` is false, exactly ES; BOOL∪NUMBER merges deliberately stay raw
 // (the 0/1 IS the ToNumber image — VT['?:'] carries NUMBER there).
 import test, { is, ok } from 'tst'
+import jz from '../index.js'
 import { run } from './util.js'
 import { onKernel } from './_matrix.js'
 
@@ -223,5 +224,33 @@ test('bool identity: Number and Boolean as values convert', () => {
   for (const optimize of LEVELS) {
     const { probe } = run(SRC, { memory: 256, optimize })
     is(probe(), '1,0|1,2.5,0|2|TFTF', `optimize:${optimize}`)
+  }
+})
+
+// A boolean produced inside an array builtin's inline callback (`map`, the
+// fused filter→map and map→filter, `Array.from`'s mapper) stored raw 0/1;
+// a boolean lane of a multi-value return (`return [v, 1]`) converted to a
+// number; a typed array's `map` stored a closure's boolean atom as NaN. The
+// host decodes each result, so the check is what it reads back.
+test('bool identity: a boolean result reaches an array as itself, through a callback, a lane and a typed store', () => {
+  const SRC = `function receiver() { return new Float64Array([2, 3]) }
+  export function lanes(x) { const v = x > 1; return [v, 1] }
+  export function lanesSome() { let value = receiver().some(x => x === 3); return [value, 1] }
+  export function mapped(x) { return [3, 0].map(y => y > x) }
+  export function negated() { return [1, 0].map(y => !y) }
+  export function mixed(x) { return [3, 0].map(y => y > x ? 1 : false) }
+  export function filterMap(x) { return [3, 0, 5].filter(y => y > 1).map(y => y > x) }
+  export function mapFilter(x) { return [3, 0, 5].map(y => y > x).filter(y => y === true) }
+  export function from(x) { return Array.from([3, 0], y => y > x) }
+  export function sorted(x) { return [3, 0].map(y => y > x).sort() }
+  export function typedMap(x) { return new Float64Array([1, 0]).map(y => y > x) }
+  export function kinds(x) { return [3, 0].map(y => y > x).map(v => typeof v).join(',') }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { lanes, lanesSome, mapped, negated, mixed, filterMap, mapFilter, from, sorted, typedMap, kinds }')()
+  for (const optimize of LEVELS) {
+    const ex = jz(SRC, { memory: 256, optimize }).exports
+    for (const name of Object.keys(oracle)) {
+      const got = ex[name](2), want = oracle[name](2)
+      is(Array.isArray(want) || ArrayBuffer.isView(want) ? Array.from(got) : got, Array.isArray(want) || ArrayBuffer.isView(want) ? Array.from(want) : want, `${name} optimize:${optimize}`)
+    }
   }
 })

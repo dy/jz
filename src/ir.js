@@ -43,4 +43,4 @@ export { bigintStrict, bigintEraseErr, boxBigInt, deferBigintBox, materializeDef
 export { usesDynProps, needsDynShadow, isBoundName, isGlobal, isConst, boxedAddr, dollar, dollarMap, setDollarMap, clearDollar, readVar, writeVar } from './ir/vars.js'
 export { slotAddr, elemLoad, elemStore, arrayLoop, allocPtr } from './ir/arrays.js'
 export { NULL_NAN, UNDEF_NAN, TOMB_NAN, BOOL_ATOM_BASE, FALSE_NAN, TRUE_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, FALSE_IR, TRUE_IR, nullExpr, undefExpr, boolBoxIR, nullableBoolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, isNullish, isUndef, isNull, throwErrorIR, throwTypeErrorIR, isBoolAtom, truthyIR, toBoolFromEmitted } from './ir/sentinels.js'
-export { sidecarOverride, cloneIR, coerceNullishToNum, coerceNullishToStr, toNumF64, toStrI64 } from './ir/coerce.js'
+export { sidecarOverride, cloneIR, coerceNullishToNum, coerceAtomsToNum, coerceNullishToStr, toNumF64, toStrI64 } from './ir/coerce.js'

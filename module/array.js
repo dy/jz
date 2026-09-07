@@ -1762,7 +1762,7 @@ export default (ctx) => {
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
           ['then',
-            elemStore(out.local, count, asF64(mapCb.call([item, idxArg(mapCb, count)]))),
+            elemStore(out.local, count, asF64(mapCb.stored([item, idxArg(mapCb, count)]))),
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
       ], maxLen, base)
       inc('__ptr_offset')
@@ -1782,7 +1782,7 @@ export default (ctx) => {
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'mo' })
     // Reuse the precomputed len local in arrayLoop (skip its internal load).
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      elemStore(out.local, i, asF64(cb.call([item, idxArg(cb, i)])))
+      elemStore(out.local, i, asF64(cb.stored([item, idxArg(cb, i)])))
     ], len, base)
     inc('__ptr_offset')
     return typed(['block', ['result', 'f64'],
@@ -1805,7 +1805,7 @@ export default (ctx) => {
       const mapCb = makeCallback(up.fn, upReps), filterCb = makeCallback(fn)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'mf' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
+        ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i)]))],
         ['if', truthyIR(filterCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(filterCb, i)])),
           ['then',
             ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], ['local.get', `$${mapped}`]],
@@ -1869,7 +1869,7 @@ export default (ctx) => {
       const loop = arrayLoop(recv.value, (_p, len, i, item) => {
         inputLen = len
         return [
-          ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
+          ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i)]))],
           // No-init: seed accumulator with the first mapped element (see base path).
           init !== undefined ? fold(i)
             : ['if', ['i32.eqz', ['local.get', `$${i}`]],

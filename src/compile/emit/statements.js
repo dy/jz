@@ -239,7 +239,10 @@ export const statementOps = {
     const finalizers = emitFinalizers()
     const finalizerBlock = () => [['block', ...finalizers]]
     if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '[') {
-      const vals = expr.slice(1).map(e => asF64(emit(e)))
+      // Each lane is an element carrier: the caller stores the lanes into an
+      // array as they are and the host decodes them, so a lane takes the
+      // container store's form (a boolean its atom, a BigInt its planned box).
+      const vals = expr.slice(1).map(e => storedValue(e))
       if (finalizers.length === 0) return typed(['return', ...vals], 'void')
       const names = vals.map(() => temp('ret'))
       return [

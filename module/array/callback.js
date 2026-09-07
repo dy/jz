@@ -16,7 +16,7 @@
  * @module array/callback
  */
 import { typed, asF64, UNDEF_NAN, temp, truthyIR } from '../../src/ir.js'
-import { emit } from '../../src/bridge.js'
+import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { extractParams, refsName, REFS_IN_EXPR } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
@@ -77,10 +77,11 @@ export function makeCallback(fn, argReps) {
     const body = fn[2]
     if (raw.every(p => typeof p === 'string') && isPureExpr(body)) {
       const usedParams = raw.map(p => exprUses(body, p))
-      return {
-        setup: ['nop'],
-        usedParams,
-        call: (argExprs) => {
+      // `call` yields the body's value in its own form (an i32 boolean stays
+      // i32 for a test); `stored` yields the container store's form (a
+      // boolean its atom, a BigInt its planned box), for a result kept as a
+      // value: stored into an array, handed to another callback, folded.
+      const inline = (argExprs, produce) => {
           const stmts = []
           const mapping = new Map()
           const freshNames = []
@@ -111,7 +112,7 @@ export function makeCallback(fn, argReps) {
             }
           }
           const subst = substExpr(body, mapping)
-          const result = emit(subst)
+          const result = produce(subst)
           // Preserve i32 result type so callers (truthyIR, etc.) can skip f64↔i32 round-trips.
           const ty = result.type === 'i32' ? 'i32' : 'f64'
           const wrapped = typed(['block', ['result', ty], ...stmts, result], ty)
@@ -121,17 +122,25 @@ export function makeCallback(fn, argReps) {
           // (map stored [1104,1128] instead of the objects a named ctor fn returned).
           if (result.ptrKind != null) { wrapped.ptrKind = result.ptrKind; wrapped.ptrAux = result.ptrAux }
           return wrapped
-        },
+      }
+      return {
+        setup: ['nop'],
+        usedParams,
+        call: (argExprs) => inline(argExprs, emit),
+        stored: (argExprs) => inline(argExprs, storedValue),
       }
     }
   }
-  // Fallback: closure call — all params are potentially used.
+  // Fallback: closure call — all params are potentially used; a closure's
+  // result already crosses its ABI in the store's form.
   const cb = temp('af')
+  const call = (argExprs) => ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'), argExprs)
   return {
     setup: ['local.set', `$${cb}`, asF64(emit(fn))],
     value: typed(['local.get', `$${cb}`], 'f64'),
     dynamic: true,
-    call: (argExprs) => ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'), argExprs),
+    call,
+    stored: call,
   }
 }
 

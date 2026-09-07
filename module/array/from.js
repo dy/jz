@@ -118,7 +118,7 @@ export const arrayFromEmit = (src, mapFn) => {
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'sfr' })
     const ch = typed(['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]], 'f64')
-    const item = cb ? cb.call([ch, idxArg(cb, i)]) : ch
+    const item = cb ? cb.stored([ch, idxArg(cb, i)]) : ch
     const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, srcIR],
@@ -159,7 +159,7 @@ export const arrayFromEmit = (src, mapFn) => {
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
         ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
         ['local.set', `$${item}`, ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
-        elemStore(out.local, i, asF64(cb.call([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))),
+        elemStore(out.local, i, asF64(cb.stored([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],
       out.ptr], 'f64')
@@ -199,7 +199,7 @@ export const arrayFromEmit = (src, mapFn) => {
       ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.STRING]],
       ['then', ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
       ['else', objectIndex]]]], 'f64')
-  const item = cb ? cb.call([indexed, idxArg(cb, i)]) : indexed
+  const item = cb ? cb.stored([indexed, idxArg(cb, i)]) : indexed
   const id = freshId(ctx)
   ctx.runtime.throws = true
   return typed(['block', ['result', 'f64'],
