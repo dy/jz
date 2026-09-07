@@ -197,6 +197,35 @@ test('bool identity: a boolean-or-null result keeps null apart from false and tr
   }
 })
 
+// Strict equality of a certain number against a value the program cannot type
+// statically converts nothing. The number-beside-unknown arm shared loose
+// `==`'s ToNumber lowering, so `b[1] === 0` read a parsed WAT immediate '0'
+// as equal: the kernel's peephole folded `(i32.or x (i32.const 0))` where
+// native kept it (the string-equality template's byte divergence). Every
+// carrier kind, both operand orders, negated, and a join whose boolean arm
+// would collapse to a raw 0/1, against the JS oracle.
+test('bool identity: strict equality of a number against an untyped operand converts nothing', () => {
+  const SRC = `const box = (v) => [v][0]
+  const node = (v) => ['i32.const', v]
+  export const strict = () => {
+    const vals = [box('0'), box(''), box(' '), box('1'), box(true), box(false), box(null), box(undefined), box(0), box(1), box(0n), box([0])]
+    return vals.map(v => (v === 0 ? 1 : 0) + (0 === v ? 2 : 0) + (v !== 0 ? 4 : 0) + (v === 1 ? 8 : 0) + (1 !== v ? 16 : 0)).join(',')
+  }
+  const imm = ['0', 0, 1, '1']
+  export const member = (i) => { const b = node(imm[i]); return (b[1] === 0 ? 1 : 0) + (b[1] !== 0 ? 2 : 0) + (b[1] === 1 ? 4 : 0) }
+  export const join = (a, b) => {
+    const o = { a: box(a), b: box(b) }
+    return ((o.a > 0 || o.b) === 1 ? 1 : 0) + ((o.a > 0 || o.b) !== 1 ? 2 : 0) + ((o.a > 0 && o.b) === 0 ? 4 : 0) + ((o.a > 0 || o.b) === true ? 8 : 0)
+  }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { strict, member, join }')()
+  for (const optimize of [false, 1, 2]) {
+    const ex = run(SRC, { memory: 256, optimize })
+    is(ex.strict(), oracle.strict(), `boxed carriers O${optimize || 0}`)
+    for (const i of [0, 1, 2, 3]) is(ex.member(i), oracle.member(i), `member holding imm[${i}] O${optimize || 0}`)
+    for (const [a, b] of [[1, 1], [0, 1], [1, 0], [0, 0], [1, 'x'], [0, 'x']]) is(ex.join(a, b), oracle.join(a, b), `join(${a}, ${JSON.stringify(b)}) O${optimize || 0}`)
+  }
+})
+
 // Loose `==` between values the program cannot type statically: a boolean
 // beside a number converts (`true == 1`, `false == 0`), null and undefined
 // are equal to each other alone, a boolean is not a string. The runtime's

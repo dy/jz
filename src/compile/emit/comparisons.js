@@ -479,7 +479,11 @@ function emitLooseEq(a, b, negate, strict) {
   if (isNullishLit(b)) return nullishOf(a)
   // typeof x == 'string' → compile-time type check (prepare rewrites string to type code)
   const tc = emitTypeofCmp(a, b, eqOp); if (tc) return tc
-  const va = emit(a), vb = emit(b)
+  // Strict equality observes identity: a join whose boolean arm would collapse
+  // to a raw 0/1 (mayCarryRawBool) is emitted with that arm boxed to its atom,
+  // so `(c ? true : n) === 1` and the dynamic `__eq_strict` both see a boolean.
+  const identity = (n) => strict && mayCarryRawBool(n) ? emitIdentitySafeArms(n) : emit(n)
+  const va = identity(a), vb = identity(b)
   if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${eqOp}`, va, vb], 'i32')
   // Both operands integer-backed (e.g. an i32 local vs a `b[j]` u8 read materialized as f64):
   // compare the i32 sources directly, skipping the per-op widen to f64. Recovers `intElem ===
@@ -523,10 +527,16 @@ function emitLooseEq(a, b, negate, strict) {
   // nullable) both wrongly reading false — JS true — pre-fix.
   const aSafe = vta === VAL.NUMBER && !nullableOperand(a)
   const bSafe = vtb === VAL.NUMBER && !nullableOperand(b)
-  // A boolean member (JS: `true == 1`) converts; a nullish member equals no number.
+  // Loose `==` converts the other side (ToNumber): a boolean member (JS: `true == 1`),
+  // a string, an unknown member read; a nullish member equals no number. Strict `===`
+  // converts nothing: a certain number equals no string, boolean, BigInt or nullish,
+  // and every one of those is a NaN-box on the unknown side, so `f64.eq` against the
+  // carrier as it is answers (`b[1] === 0` with `b[1]` holding '0' is false).
   const converts = (n, vt) => needsToNumberCoercion(n, vt) || boolOrNullish(n) || mayCarryRawBool(n)
-  if (aSafe && converts(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
-  if (bSafe && converts(a, vta)) return looseNumberEq(numB(), a, va, negate)
+  if (!strict) {
+    if (aSafe && converts(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
+    if (bSafe && converts(a, vta)) return looseNumberEq(numB(), a, va, negate)
+  }
   if (aSafe || bSafe) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
   // Both sides proven VAL.NUMBER but NEITHER individually "safe" above (both
   // nullable — the maybeUndefined gap this function's own Slice-5 fix closed
