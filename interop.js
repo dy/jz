@@ -783,17 +783,22 @@ export const wrap = (memSrc, inst, state) => {
   // field is real and consulted below, just never populated by the current
   // compiler). `tag` = indices the plan proved MAY be bigint — box via
   // mem.BigInt (the one reachable evidenced state, formerly jz:bigintbox's
-  // sole content). `rest` = truthy only when the plan can prove bigint
-  // evidence for this export's rest-parameter elements (never true today —
-  // no evidence source exists for host-populated rest elements). A slot in
-  // neither `raw` nor `tag` has no evidence of any kind: i64Arg (below)
-  // rejects a plain bigint there instead of guessing from the absence.
+  // sole content). `val` = the `tag` slots whose function reads the parameter
+  // only as a scalar value (never a receiver, a callee, an argument, a stored
+  // or returned value): EVERY BigInt there is a value and is boxed, whatever
+  // its bits, so a handle cannot be passed at a `val` slot and a value whose
+  // bits carry the NaN-box prefix crosses as itself. `rest` = truthy only
+  // when the plan can prove bigint evidence for this export's rest-parameter
+  // elements (never true today — no evidence source exists for host-populated
+  // rest elements). A slot in neither `raw` nor `tag` has no evidence of any
+  // kind: i64Arg (below) rejects a plain bigint there instead of guessing
+  // from the absence.
   const hostAbiExp = new Map()
   const hostAbiBytes = customSection(mod, 'jz:hostabi')
   if (hostAbiBytes) {
     try {
       for (const e of JSON.parse(td.decode(hostAbiBytes)))
-        hostAbiExp.set(e.name, { raw: new Set(e.raw || []), tag: new Set(e.tag || []), rest: !!e.rest })
+        hostAbiExp.set(e.name, { raw: new Set(e.raw || []), tag: new Set(e.tag || []), val: new Set(e.val || []), rest: !!e.rest })
     } catch { /* ignore */ }
   }
   const mem = memory(memSrc)
@@ -991,7 +996,10 @@ export const wrap = (memSrc, inst, state) => {
   // as f64, so JSC can't canonicalize it.
   const i64Arg = (ie, ext, box, hostAbi, name, writeBack) => (x, i) => {
     if (ext?.has(i)) return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
-    const plainBigint = typeof x === 'bigint' && !isBox(x)
+    // A BigInt is a value at a `val` slot whatever its bits (the function reads
+    // the parameter only as a scalar, so no handle belongs there); elsewhere
+    // the NaN-box prefix marks a jz-minted handle passed back raw.
+    const plainBigint = typeof x === 'bigint' && (hostAbi?.val?.has(i) || !isBox(x))
     // f64 slot: proven numeric (every box-capable param takes the i64 lane, per
     // jz:i64exp), so the JS-API's own ToNumber at the call is the exact JS coercion
     // for every host value: null → 0, undefined → NaN, "8" → 8, valueOf objects.
@@ -1012,7 +1020,12 @@ export const wrap = (memSrc, inst, state) => {
     //     export boundary today (src/compile/index.js's jz:hostabi doc has
     //     the reachability proof) — reserved, not guessed-into.
     //   - tag: the plan proved the slot MAY be bigint — box via mem.BigInt,
-    //     wasm dispatches by tag (the one reachable evidenced state).
+    //     wasm dispatches by tag (the one reachable evidenced state). A
+    //     `val` slot is a tag slot where the prefix test above is off: every
+    //     BigInt is a value and takes this box, so a value whose bits carry
+    //     the prefix (0x7FF8000000000000n, the largest positive i64) crosses
+    //     as itself instead of as a handle. A tag slot not in `val` keeps
+    //     the prefix test: a host may still hand it a raw handle.
     //   - neither: no BigInt evidence of any kind — the legacy decimal-
     //     string accident only "worked" for typeof-guarded normalization
     //     params and silently garbled every numeric one (the dyn-keys

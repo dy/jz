@@ -369,6 +369,94 @@ export function paramNeverString(body, name) {
   return ok
 }
 
+// ── Host value slot (jz:hostabi `val`) ─────────────────────────────────────
+//
+// The host's i64 lane carries one BigInt type for two things: a jz-minted
+// handle (the box bits memory.String/Array/BigInt return, passed back raw) and
+// a plain BigInt value, told apart by the NaN-box prefix in the bits. A value
+// whose bits carry that prefix (0x7FF8000000000000n, the largest positive i64)
+// crosses as a handle and reaches the program as NaN, an atom or an object. A
+// `val` slot declares that its function reads the parameter only as a scalar
+// value, so interop boxes EVERY BigInt there as a value: no handle can be
+// passed, and a colliding value crosses as itself. The contract is proved from
+// the body, never guessed from the magnitude of the argument.
+const EQ_OPS = new Set(['===', '!==', '==', '!='])
+const VALUE_CTORS = new Set(['BigInt', 'Number', 'String', 'Boolean'])
+
+/** True iff every use of param `name` in `body` (and in the parameter default
+ *  initializers `defaults`, which run inside the function) reads it as a scalar
+ *  value. `let/const x = name` makes `x` carry the same value (fixpoint-
+ *  collected) and `x`'s uses are judged the same way; a non-shadowing inner
+ *  arrow that captures the name is scanned by the same rule.
+ *  Scalar reads: the operand of `typeof`, arithmetic, bitwise, comparison or
+ *  unary (`!`, `~`, `u-`, `u+`); the argument of `BigInt()`, `Number()`,
+ *  `String()` or `Boolean()`; a template piece (`strcat`); the condition of
+ *  `if`/`while`/`for`/`?:` (through `&&`/`||`, whose result is only
+ *  ToBoolean'd there); the target of an assignment or update.
+ *  Everything else rejects: a receiver of `.`/`?.`/`[]`, a callee, an argument
+ *  to any other call (a user function included), an element of an array or
+ *  object literal, an assigned value, a `return`, an `&&`/`||`/`??` value, a
+ *  `?:` arm, a sequence element: the value would leave as itself, and a host
+ *  handle passed there would still mean something. */
+export function paramValueOnly(body, name, defaults) {
+  if (body == null) return false
+  const roots = [body, ...Object.values(defaults ?? {})]
+  const declarators = (n) => (n[0] === 'let' || n[0] === 'const' || n[0] === 'var')
+    ? n.slice(1).filter(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') : []
+  const names = new Set([name])
+  for (let grew = true; grew;) {
+    grew = false
+    for (const root of roots) walkAst(root, { enter: (n) => {
+      for (const d of declarators(n))
+        if (typeof d[2] === 'string' && names.has(d[2]) && !names.has(d[1])) { names.add(d[1]); grew = true }
+    } })
+  }
+  let ok = true
+  // A slot that reads its operand as a scalar: a bare name is fine, anything else scans.
+  const read = (n) => { if (!names.has(n)) walk(n) }
+  // A condition: `&&`/`||` there only feed ToBoolean, so their operands are scalar reads too.
+  const test = (n) => {
+    if (Array.isArray(n) && (n[0] === '&&' || n[0] === '||') && n.length === 3) { test(n[1]); test(n[2]) }
+    else read(n)
+  }
+  const walk = (node) => {
+    if (!ok) return
+    if (typeof node === 'string') { if (names.has(node)) ok = false; return }   // the value leaves as itself
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op == null || op === 'str' || op === 'bigint') return
+    if (op === 'let' || op === 'const' || op === 'var') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') read(d[2])   // a copy is an alias, judged by its own uses
+        else walk(d)
+      }
+      return
+    }
+    if (op === '=>') {
+      const ps = Array.isArray(node[1]) ? node[1].slice(1) : [node[1]]
+      if (ps.some(p => names.has(p) || (Array.isArray(p) && names.has(p[1])))) return   // shadowed
+      for (const p of ps) walk(p)   // default initializers
+      walk(node[2])
+      return
+    }
+    if (op === 'typeof' && node.length === 2) { read(node[1]); return }
+    if ((NUM_BIN_OPS.has(op) || REL_OPS.has(op) || EQ_OPS.has(op) || op === '+' || op === '-') && node.length === 3) { read(node[1]); read(node[2]); return }
+    if ((op === 'u-' || op === 'u+' || op === '~' || op === '!' || op === '-' || op === '+') && node.length === 2) { read(node[1]); return }
+    if (op === '()' && VALUE_CTORS.has(node[1]) && node.length === 3) { read(node[2]); return }
+    if (op === 'strcat') { for (let i = 1; i < node.length; i++) read(node[i]); return }
+    if (op === '?:' && node.length === 4) { test(node[1]); walk(node[2]); walk(node[3]); return }
+    if (op === 'if' || op === 'while') { test(node[1]); for (let i = 2; i < node.length; i++) walk(node[i]); return }
+    if (op === 'for' && node.length === 5) { walk(node[1]); test(node[2]); walk(node[3]); walk(node[4]); return }
+    // A write to the name reads the old value as an operand at most; the assigned value scans.
+    if (MUTATE_OPS.has(op) && typeof node[1] === 'string') { for (let i = 2; i < node.length; i++) walk(node[i]); return }
+    if ((op === '.' || op === '?.') && node.length === 3) { walk(node[1]); return }   // the property name is not a use
+    for (let i = 1; i < node.length; i++) walk(node[i])   // a bare name anywhere else leaves as itself
+  }
+  for (const root of roots) walk(root)
+  return ok
+}
+
 /** Exported-param `name` used only as a numeric array-like: every use is an
  *  element read `name[i]`, an element write `name[i] = v` (or compound/update),
  *  `name.length`, or a forward into a user function whose parameter is itself

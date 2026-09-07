@@ -209,7 +209,7 @@ const ROOT = join(import.meta.dirname, '..')
 const COMPILE_FAMILY_OWNERS = [
   ['func-exports.js', ['isExported', 'exportNamesOf']],
   ['func-entry.js', ['enterFunc', 'emitPreboxedLocalInits']],
-  ['param-numeric.js', ['NUM_BIN_OPS', 'REL_OPS', 'isStrLiteral', 'paramAllUsesNumeric', 'STRING_RECV_METHODS', 'paramNeverString']],
+  ['param-numeric.js', ['NUM_BIN_OPS', 'REL_OPS', 'isStrLiteral', 'paramAllUsesNumeric', 'STRING_RECV_METHODS', 'paramNeverString', 'paramValueOnly']],
   ['throw-runtime.js', ['ensureThrowRuntime']],
   ['intern-table.js', ['buildInternTable']],
   ['func-inspect.js', ['repView', 'captureFuncInspect']],

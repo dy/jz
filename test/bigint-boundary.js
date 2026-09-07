@@ -35,11 +35,12 @@ const i64Hex = bits => '0x' + hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + hx8(Num
 // positive, a negative NaN with the quiet bit. COLLIDING are the plain BigInt
 // values whose top 13 bits are 0x7FF8: the NaN box prefix itself (the value in
 // the compiler's LAYOUT), a NaN with an atom payload, and the largest positive
-// i64. The host boundary reads them as boxes it minted (interop.js isBox:
-// `(hi32(b) & 0xFFF80000) === 0x7FF80000`), so they reach the program as
-// NaN, undefined and an object, never as their BigInt value. That ambiguity
-// belongs to the host ABI's use of one BigInt type for both box bits and
-// values; it is pinned apart from the demand defect.
+// i64. The host boundary once read them as boxes it minted (interop.js isBox:
+// `(hi32(b) & 0xFFF80000) === 0x7FF80000`), so they reached the program as
+// NaN, undefined and an object. A slot the body reads only as a scalar value
+// is declared `val` in jz:hostabi (src/compile/param-numeric.js
+// paramValueOnly), and every host BigInt at it is a value: boxed, never a
+// handle.
 const PAYLOADS = [0x8000000000000000n, 0n, 0xFFFFFFFFFFFFFFFFn, -1n, 1n, 0x7FF7FFFFFFFFFFFFn, 0xFFF8000000000000n]
 const COLLIDING = [0x7FF8000000000000n, 0x7FF8000200000000n, 0x7FFFFFFFFFFFFFFFn]
 const section = (wasm, name) => {
@@ -125,8 +126,8 @@ test('bigint boundary: a plain BigInt value with the box prefix crosses the host
   COLLIDING.forEach((p, i) => {
     const expected = BigInt.asIntN(64, p + 1n)
     is(ex[`f${i}`](), expected, `the program's call with ${p}n`)
-    is(ex.t(p), 'bigint', `the host's ${p}n is a bigint to typeof`)   // red: number, undefined, object
-    is(ex.g(p), expected, `the host's call with ${p}n`)   // red: 0n, the box read as another kind
+    is(ex.t(p), 'bigint', `the host's ${p}n is a bigint to typeof`)
+    is(ex.g(p), expected, `the host's call with ${p}n`)
   })
 })
 

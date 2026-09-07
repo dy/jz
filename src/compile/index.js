@@ -95,7 +95,7 @@ import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
-import { paramAllUsesNumeric, paramNeverString } from './param-numeric.js'
+import { paramAllUsesNumeric, paramNeverString, paramValueOnly } from './param-numeric.js'
 import { ensureThrowRuntime } from './throw-runtime.js'
 import { buildInternTable } from './intern-table.js'
 import { captureFuncInspect } from './func-inspect.js'
@@ -641,10 +641,15 @@ export function assemble(ast, profiler) {
     }
     if (isExported(f)) {
       const tag = []
-      for (let i = 0; i < f.sig.params.length; i++)
-        if (representationHostBoxesParam(ctx, f, i)) tag.push(i)
+      const val = []
+      for (let i = 0; i < f.sig.params.length; i++) {
+        if (!representationHostBoxesParam(ctx, f, i)) continue
+        tag.push(i)
+        const p = f.sig.params[i]
+        if (!p.rest && paramValueOnly(f.body, p.name, f.defaults)) val.push(i)
+      }
       if (tag.length) for (const exportName of exportNamesOf(f.name))
-        lateHostAbi.push({ name: exportName, tag })
+        lateHostAbi.push(val.length ? { name: exportName, tag, val } : { name: exportName, tag })
     }
   }
   for (const [name, val] of Object.entries(ctx.funcs.exports)) {
@@ -834,13 +839,26 @@ export function assemble(ast, profiler) {
   // redesign, only a producer for this array. `tag` lists indices the plan
   // proved MAY be bigint (representationHostBoxesParam) — the one reachable
   // evidenced state today; interop boxes a plain bigint via mem.BigInt, wasm
-  // dispatches by tag. `rest` (present+truthy only) would mark the
-  // REST-ELEMENT policy tagged when the plan can prove bigint evidence for
-  // elements past the fixed count — omitted always today: rest elements are
-  // host-populated (interop's own mem.Array, never a traceable in-program
-  // def site RepresentationPlan's provenance solver can reach), so no
-  // evidence source exists yet; interop.js rejects a plain bigint rest
-  // element exactly like an unmarked fixed slot. A slot in neither `raw` nor
+  // dispatches by tag. `val` (present only when non-empty) lists the `tag`
+  // slots whose function reads the parameter only as a scalar value
+  // (paramValueOnly: typeof, arithmetic, comparison, unary, a value
+  // constructor argument, a template piece, a condition, and let/const
+  // copies used the same way; never a receiver, a callee, another call's
+  // argument, a container element, a stored or returned value, and a
+  // capturing closure is held to the same rule). The i64 lane carries one
+  // BigInt type for a jz-minted handle and a plain value, told apart by the
+  // NaN-box prefix in the bits, so a value with that prefix
+  // (0x7FF8000000000000n, the largest positive i64) would cross as a handle;
+  // at a `val` slot interop boxes EVERY BigInt as a value, so no handle can be
+  // passed there and a colliding value crosses as itself. A `tag` slot not in
+  // `val` keeps the prefix test: a host may still hand it a raw handle. `rest`
+  // (present+truthy only) would mark the REST-ELEMENT policy tagged when the
+  // plan can prove bigint evidence for elements past the fixed count —
+  // omitted always today: rest elements are host-populated (interop's own
+  // mem.Array, never a traceable in-program def site RepresentationPlan's
+  // provenance solver can reach), so no evidence source exists yet;
+  // interop.js rejects a plain bigint rest element exactly like an unmarked
+  // fixed slot. A rest parameter is never `val`. A slot in neither `raw` nor
   // `tag` — the overwhelming common case — carries no BigInt evidence of any
   // kind: reject.
   const hostAbiExports = lateFacts.hostAbi
