@@ -568,21 +568,26 @@ resized an array alone and dropped the write on an object, and
 of its own `push`. Recursive GREEN: **13,858,907 bytes in 55 s, 1,367 MB of
 headroom** (the encoder 3.6 → 2.7 GB after the second checkpoint); native
 **4306 pass / 18 fail / 1 skip**; kernel families 37/38; functional 12/20,
-the same eight byte divergences.
+the same eight byte divergences. Then watr's flattener works over a work
+stack with no copies, an `if`'s bodies flatten in place in source order,
+and `cleanup` copies a node only above a change (watr `03e7b70`; the build
+profile's one-shot specialization of both is deleted); an array whose
+storage ends at the heap top extends in place. Recursive GREEN:
+**13,860,120 bytes in 57 s, heap 1,260 MB, 3,035 MB of headroom** (the
+encoder 1.0 GB).
 
 ### Next ownership and order
 
-1. One session owns main. Next: the encoder's remaining churn (watr's
-   `cleanup` copies the tree and `normalize` flattens a body through
-   `shift`/`unshift`/`splice`: 80% of its allocation, 200 bytes per output
-   byte), emit's per-closure allocation,
+1. One session owns main. Next: emit's per-closure allocation (675 MB on
+   jz × jz), a rest parameter that never escapes reading the argument slots
+   (the encoder's `push(...xs)` takes an array per byte, 322 MB),
    the result-carrier family (a boolean through a closure result into an
    array, the six carrier pins), the `+=` normalization with its loop
    recognizers, `String()` on an `any` holding a BigInt box, the two hosted
    byte divergences. Regions remain the memory model; the allocation audit
    shrinks what they must reclaim. Keep the private fresh gate. Do not add
    source-spelling exceptions.
-2. watr is consumed at `5a78a13`; the local-pass deletion stays isolated until
+2. watr is consumed at `03e7b70`; the local-pass deletion stays isolated until
    its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
    introducing semantic FunctionIR.
 3. Complete callable identities and structural closure/freeze, replace covered

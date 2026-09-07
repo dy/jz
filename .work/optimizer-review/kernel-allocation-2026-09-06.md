@@ -185,12 +185,50 @@ watr's `compile` with `__heap_mark` deltas per site, on a 417 KB module):
 and `slice(1)` per instruction: 32–40 bytes each in the kernel), `instr`
 9 MB, the rest under 3 MB each.
 
+## The encoder's flattener (watr `03e7b70`) and the array at the heap top
+
+watr's `normalize` reads its input as a work stack: a folded instruction
+pushes its operands, then its op and immediates, back in reverse, and the
+readers consume the stack's end, so no node is copied, shifted, spliced or
+re-queued; an `if`'s condition, head and bodies flatten straight into the
+output in source order (the temp arrays copied every then-body once per
+enclosing `if`); a body flattens into one scratch and is copied out exact
+size; `cleanup` copies a node only above a change. The self-compile build
+profile's one-shot in-place specialization of `cleanup` and `normalize`
+(`scripts/build-profile.mjs`, a source-spelling exception) is deleted: the
+published source has the properties it patched in.
+
+13. **An array at the heap top grew by copying** (`module/array.js`
+    `__arr_grow`): a push loop paid every doubling (2,112 bytes for 100
+    pushes). The array's storage that ends at the heap top, above the reset
+    mark, extends in place (1,040), as a string at the heap top does.
+
+Inside the kernel on jz × jz (an overlay kernel with `__heap_mark` deltas
+per encoder site, `$S/scratchpad/edrv/overlay-enc.json`, `rec-enc.mjs`):
+normalize 880 → 595 MB with the if bodies in place, instr 322 (the ByteBuf's
+`push(...xs)` takes a rest array per byte, 24 bytes: an engine gap, a rest
+parameter that never escapes could read the argument slots), append 84,
+meta+data 51. Recursive gate (`k-nw3.wasm`, `gate-nw3.json`): **GREEN,
+13,860,120 bytes in 57 s, heap 1,260 MB, 3,035 MB of headroom**; the
+encoder 2.7 → 1.0 GB after the second checkpoint; sequences GREEN; kernel
+families 37/38; functional 13/20 (seven byte divergences, closures-classes
+O2 now identical); native **4305 pass / 18 fail / 1 skip** with the
+allocation pin added. A 30-minute gate timeout
+at load 36 was contention, not the kernel (61 s alone).
+
 ## Open
 
-- The encoder's `cleanup` and `normalize` (above): the next watr slice.
-  Then emitClosures (675 MB: 50 KB of analysis and 52 KB of
-  emit per closure), emitFuncs (339), narrowSignatures (336), analyzeFuncs
-  (269), the frame's forty collections per function (13 KB).
+- The encoder's remaining 1.0 GB: the rest-parameter array per `push` (an
+  engine gap), the per-`if` head and per-`call_indirect` reader arrays, the
+  exact copy of each body. Then emitClosures (675 MB: 50 KB of analysis and
+  52 KB of emit per closure), emitFuncs (339), narrowSignatures (336),
+  analyzeFuncs (269), the frame's forty collections per function (13 KB).
+- `a.unshift(...t)` on an array fails to compile ("stdlib '__to_str' was
+  requested but never registered"); `a.shift()` followed by `push` on a
+  1000-element array reallocates (680 bytes per pair).
+- The self-compile build profile still rewrites watr's printer flatness
+  checks (`printRewrites`): the callback form's boolean result widens under
+  the O1 kernel, the result-carrier family.
 - The SSO spill in `__str_to_buf`; the view object per scope (20 closures);
   `for…in` over a defaults record (`Object.keys` cached once now).
 - The memory model (regions) remains the architectural answer for the

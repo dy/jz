@@ -29,8 +29,8 @@ import { realpathSync } from 'node:fs'
 // Test-only entries beside compileSelf. __checkpointWat runs WAT text through
 // the pipeline's tail and, by mode, encodes it directly (0), through the
 // checkpoint as parsed (1: quoted strings) or through the checkpoint after
-// every quoted string became watr's byte array (2: the form the kernel's
-// in-place cleanup leaves in a node it already encoded once). __irForms counts
+// every quoted string became watr's byte array (2: the form a tree holds once
+// something converted its literals in place). __irForms counts
 // a compiled program's IR literal forms: quoted strings, byte arrays, ordinary
 // arrays.
 const TEST_ENTRIES = `
@@ -272,12 +272,12 @@ export let main = () => { console.log("out ✓"); return e().length + q().length
 test('checkpoint: a program\'s own literals through the forced kernel are the fresh kernel\'s, and read back as themselves', () => {
   const { normal, forced } = kernels()
   const forms = k => k.memory.read(k.exports.__irForms(k.memory.String(L), OPT(k)))
-  // In the kernel every literal reaches the checkpoint as watr's byte array: watr's
-  // optimizer sizes the module through the encoder's cleanup, which the self build
-  // specializes to work in place (scripts/build-profile.mjs), so the quoted strings
-  // the emitter and the stdlib parser produce are converted before the tail returns.
+  // Every literal reaches the checkpoint as the quoted string the emitter and the
+  // stdlib parser produce: watr's encoder converts them in its own copies (its
+  // cleanup copies a node only above a change), never in the tail's tree. The
+  // byte-array form through the checkpoint is mode 2 above.
   const [quoted, bytes, arrays] = forms(forced).split(',').map(Number)
-  ok(bytes > 0 && arrays > 0, `the IR carries byte arrays and ordinary arrays (${quoted} quoted, ${bytes} byte arrays, ${arrays} arrays)`)
+  ok(quoted > 0 && arrays > 0, `the IR carries quoted strings and ordinary arrays (${quoted} quoted, ${bytes} byte arrays, ${arrays} arrays)`)
   const l = compileOn(forced, L)
   ok(same(l, compileOn(normal, L)), 'the fresh kernel\'s bytes')
   const logged = []
