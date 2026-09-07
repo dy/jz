@@ -8,7 +8,7 @@ import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, JZ_UNDEF, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { DBG_INVARIANTS, PTR, ctx, err, inc, setLinkDemand } from '../../ctx.js'
 import {
-  FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
@@ -101,9 +101,21 @@ export const emitIndex = (index) => {
   ctx.types.indexConsumer = (ctx.types.indexConsumer || 0) + 1
   let value
   try { value = emit(index) } finally { ctx.types.indexConsumer-- }
-  const out = asI32(value)
-  if (value?.indexValid) out.indexValid = value.indexValid
-  return out
+  if (value?.indexValid) {
+    // The checked typed read's own miss bit, materialized after the read: the
+    // same -1 for every consumer, and the bit itself for the typed read's guard.
+    const out = typed(['select', asI32(value), ['i32.const', -1], value.indexValid], 'i32')
+    out.indexValid = value.indexValid
+    return out
+  }
+  // Any other element read (an array, a dictionary) misses as the undefined
+  // atom, which JS reads as the property "undefined", never element zero:
+  // the index becomes -1, which every bounds check rejects.
+  if (value?.type === 'i32') return asI32(value)
+  const t = temp('ix')
+  return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],
+    ['select', asI32(typed(['local.get', `$${t}`], 'f64')), ['i32.const', -1],
+      ['i64.ne', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', UNDEF_NAN]]]], 'i32')
 }
 
 /**

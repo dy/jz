@@ -377,8 +377,11 @@ export function analyzeValTypes(body) {
   // element evidence at their decl, so the walk above leaves them untyped. scanNumericFill
   // proved every write Numeric and every other use a pure read — record NUMBER so `arr[i]`
   // reads skip __to_num, unless an observation already poisoned the slot to a conflict.
+  // An unwritten slot is a hole and reads undefined: a NaN through every
+  // numeric path, so the NUMBER claim holds for dispatch; an identity
+  // compare (`a[i] === undefined`) consults `arrayHoles` and stays live.
   for (const name of facts.numericFill || []) {
-    if (facts.arrElemValTypes.get(name) !== null) updateRep(name, { arrayElemValType: VAL.NUMBER })
+    if (facts.arrElemValTypes.get(name) !== null) updateRep(name, { arrayElemValType: VAL.NUMBER, arrayHoles: true })
   }
   // Propagate body-observed array-elem schemas to localReps so unboxablePtrs's
   // `let p = arr[i]` rule (which only consults rep) sees the schema and can unbox `p`

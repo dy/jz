@@ -389,7 +389,7 @@ for (const [name, src] of Object.entries(NUMERIC_FILL)) {
 test('minimal: numeric Array(n) narrowing preserves results', () => {
   if (skip) return
   is(jz(NUMERIC_FILL['arithmetic fill']).exports.f(64), 874, 'arithmetic-fill sum of squares')
-  is(jz('export let f=()=>{let a=Array(4); a[0]=5; a[1]=6; let s=0; for(let i=0;i<4;i++)s+=a[i]; return s}').exports.f(), 11, 'unwritten holes read as 0')
+  is(jz('export let f=()=>{let a=Array(4); a[0]=5; a[1]=6; let s=0; for(let i=0;i<4;i++)s+=a[i]; return s}').exports.f(), NaN, 'unwritten holes read undefined: NaN through the sum, as JS')
 })
 // SOUNDNESS (default-deny): the moment an array could hold a non-Number, narrowing must
 // NOT fire — else `+` would compile to f64.add on a string pointer. These are the cases

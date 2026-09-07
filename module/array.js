@@ -249,9 +249,20 @@ export default (ctx) => {
       ? ['select', ['i32.const', minCap], nIR, ['i32.gt_s', ['i32.const', minCap], nIR]]
       : nIR
     const out = allocPtr({ type: PTR.ARRAY, len: nIR, cap: capIR, tag: 'newarr' })
+    // The slots are holes: each reads undefined until written (the arena's
+    // bytes read as 0; `a[0] ??= 7` on `new Array(1)` kept the 0).
+    const k = tempI32('hole'), id = freshId(ctx)
+    const holes = len == null ? [] : [
+      ['local.set', `$${k}`, ['i32.const', 0]],
+      ['block', `$hbrk${id}`, ['loop', `$hloop${id}`,
+        ['br_if', `$hbrk${id}`, ['i32.ge_s', ['local.get', `$${k}`], nIR]],
+        ['i64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${k}`], ['i32.const', 3]]], ['i64.const', UNDEF_NAN]],
+        ['local.set', `$${k}`, ['i32.add', ['local.get', `$${k}`], ['i32.const', 1]]],
+        ['br', `$hloop${id}`]]]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${n}`, len == null ? ['i32.const', 0] : asI32(emit(len))],
       out.init,
+      ...holes,
       out.ptr], 'f64')
   }
 

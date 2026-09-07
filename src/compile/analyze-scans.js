@@ -786,10 +786,11 @@ export function scanObjectArrayFacts(body) {
  * Numeric-fill arrays — the construct-then-fill counterpart of an all-number array
  * literal. A fresh `Array(n)` / `new Array(n)` / `[]` binding whose EVERY element write
  * stores a provably-NUMBER value, and which never escapes, aliases, is reassigned, grows
- * by method, or takes a non-numeric / compound element write, holds only Numbers (unwritten
- * holes read as 0 in jz, also a Number). So its `a[i]` reads can skip the polymorphic
- * `__to_num` coercion — exactly the win `[1,2,3]` already gets, extended to the dominant
- * numeric-kernel shape `let a = Array(n); for (..) a[i] = expr`.
+ * by method, or takes a non-numeric / compound element write, holds only Numbers where
+ * written; an unwritten hole reads undefined, a NaN through every numeric path (the
+ * identity compares consult the rep's `arrayHoles`). So its `a[i]` reads can skip the
+ * polymorphic `__to_num` coercion — exactly the win `[1,2,3]` already gets, extended to
+ * the dominant numeric-kernel shape `let a = Array(n); for (..) a[i] = expr`.
  *
  * Default-deny and self-contained, like scanNeverGrown (the same memory-safety discipline):
  * any occurrence that isn't a pure index/length READ or a NUMBER-valued `a[i] = …` write

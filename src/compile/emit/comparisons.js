@@ -371,6 +371,9 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // live again, with no re-audit of this call site required.
 const nullableOperand = (n) => {
   if (typeof n === 'string' && (repOf(n)?.nullable || repOfGlobal(n)?.nullable)) return true
+  // A construct-then-fill numeric array (`new Array(n)`, `a[i] = expr`): an unwritten
+  // slot is a hole that reads undefined, whatever the element claim.
+  if (Array.isArray(n) && n[0] === '[]' && typeof n[1] === 'string' && repOf(n[1])?.arrayHoles) return true
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3
       && typeof n[1] === 'string' && lookupValType(n[1]) === VAL.TYPED) {
     // A statically in-range OUTER access can still miss when its direct index

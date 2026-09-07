@@ -238,6 +238,16 @@ export function toNumF64(node, v) {
     if (v[1] === `nan:${UNDEF_NAN}`) return typed(['f64.const', 'nan'], 'f64')
     if (v[1] === `nan:${NULL_NAN}`) return typed(['f64.const', 0], 'f64')
   }
+  // A construct-then-fill array's element (`arrayHoles`): the NUMBER claim
+  // covers every written slot; an unwritten one is a hole reading undefined,
+  // whose sentinel would ride f64 arithmetic out as `undefined`. One compare
+  // and select canonicalize it to NaN, no ToNumber call.
+  if (Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
+    const t = temp('hole')
+    return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)],
+      ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],
+        ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', UNDEF_NAN]]]], 'f64')
+  }
   // Checked typed-array read (`.typed:[]` tags checkedNumRead): number|undefined
   // with the undefined confined to a CONSTANT miss arm. ToNumber of that arm
   // folds statically (undefined → canonical NaN) — the hit arm is already a

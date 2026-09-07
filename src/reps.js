@@ -68,6 +68,8 @@ export const VAL = {
  *   from a set-carrying array element (`const o = rows[i]`). Enables union-agreeing
  *   slot reads and discriminant refinement without a runtime guard.
  * @property {string}  [arrayElemValType] element VAL.* kind for arrays.
+ * @property {boolean} [arrayHoles] a construct-then-fill array (`new Array(n)`): an unwritten slot is a hole
+ *   reading undefined, so an identity compare of an element stays a runtime check.
  * @property {number[]} [arrayElemRange] closed integer hull for a typed array's observable elements.
  * @property {number[]} [range] closed integer hull of THIS binding's value — stamped by analyze
  *   for never-reassigned decls whose init has a finite intExprRange (masks, ternary hulls,
@@ -278,7 +280,7 @@ export const VAL = {
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
-  'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
+  'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayHoles', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped', 'dictValueValType',
   'mapValueValType', 'mayBeUndefined', 'presentVal', 'presence', 'localMapBigintUnknown',
 ])

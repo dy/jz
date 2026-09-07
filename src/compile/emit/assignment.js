@@ -16,7 +16,7 @@ import {
   REP_EDGE_BOX, representationBindingWriteAction, representationCompoundAssignAction,
 } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
-import { I64_ARITH_OP, bigIntDivIR, bigIntOperand, bigintMixReject } from './bigint.js'
+import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
 import { emit, rejectAmbiguousBoolIdentity } from './dispatch.js'
 import { isSideEffectFree } from './shared.js'
 import {
@@ -82,6 +82,16 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
   // large n was a no-op (f64.add(n, 1) == n once n exceeds f64's integer precision).
   // bigintMixReject keeps the same TypeError-on-provable-mix contract the binary
   // op enforces (`n += 1` on a BigInt n throws in JS, not silently masks to 0).
+  // A target or operand whose BigInt domain is known at runtime alone (a
+  // tagged local beside a BigInt literal): the binary form's joint dispatch
+  // decides, throwing on a Number beside a BigInt, and the compound identity
+  // boxes the BigInt arm on the way back (`value -= 4n` on a Number|BigInt
+  // local ran i64 arithmetic on the Number's bits).
+  if (arithOp && typeof name === 'string' && bigIntDomainsCanMix(name, val, true)) {
+    const bin = [arithOp, name, val]
+    ctx.plans.compoundOf.set(bin, name)
+    return emit(['=', name, bin])
+  }
   if (arithOp && (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT)) {
     bigintMixReject(`${arithOp}=`, name, val)
     // `name` is always a bare identifier here — censusMaybeUndefined never fires

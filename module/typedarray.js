@@ -1736,8 +1736,10 @@ export default (ctx) => {
       // Eager load-IR: see the leanCheckedIdx comment above — the nested
       // `idx(i)` emit below must not run before the receiver's load op is built.
       const loadIR = loadOf(off)
+      // The index emission (emitIndex) demanded the inner read's miss bit for
+      // the nested-read shape; an absent inner index is no element here either.
       const innerIdx = idx(i)
-      const innerValid = ctx.types.indexConsumer ? innerIdx.indexValid : null
+      const innerValid = innerIdx.indexValid ?? null
       const ownValid = bundleIn || ['i32.lt_u', ['local.get', `$${ti}`], lenIR]
       const setup = [
         ['local.set', `$${ti}`, innerIdx],
