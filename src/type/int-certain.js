@@ -165,14 +165,20 @@ export function intLevelMap(body, capturedNames, slotLevelOf) {
   for (const p of ctx.func.current?.params || [])
     if (p.type !== 'i32' && levels.has(p.name)) levels.set(p.name, 0)
   const levelOf = makeIntLevelExpr(levels, slotLevelOf)
+  // The defs as two lists, read by index in every round: an entry-pair walk
+  // of the map would allocate a pair per name per round.
+  const names = [], lists = []
+  for (const name of defs.keys()) { names.push(name); lists.push(defs.get(name)) }
   let changed = true
   while (changed) {
     changed = false
-    for (const [name, rhsList] of defs) {
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i]
       const cur = levels.get(name)
       if (!cur) continue
       let next = cur
-      for (const rhs of rhsList) { const l = levelOf(rhs); if (l < next) next = l; if (!next) break }
+      const rhsList = lists[i]
+      for (let j = 0; j < rhsList.length; j++) { const l = levelOf(rhsList[j]); if (l < next) next = l; if (!next) break }
       if (next !== cur) { levels.set(name, next); changed = true }
     }
   }

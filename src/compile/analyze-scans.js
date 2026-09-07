@@ -940,10 +940,15 @@ export function scanNumericFill(body, isNumericRhs) {
  */
 const EMPTY_SCAN_SET = new Set()
 const EMPTY_SCAN_MAP = new Map()
+// narrowUint32's state table, one per module: cleared at entry (the walk is
+// not reentrant, and nothing keeps the table), so it holds the capacity the
+// largest body needed instead of growing from two entries for every body.
+const U32_STATES = new Map()
 export function narrowUint32(body, locals) {
   // One state map replaces initLit/disq/seen's three hash tables.
   // 1 = one valid u32 initializer and no unsafe write; 0 = disqualified.
-  const states = new Map()
+  const states = U32_STATES
+  states.clear()
   const isU32Lit = e => {
     const v = typeof e === 'number' ? e
       : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
@@ -988,8 +993,8 @@ export function narrowUint32(body, locals) {
   }
   walk(body, false)
   let result = null
-  for (const [nm, state] of states) {
-    if (state !== 1) continue
+  for (const nm of states.keys()) {
+    if (states.get(nm) !== 1) continue
     const t = locals.get(nm)
     if (t !== 'i32' && t !== 'f64') continue
     locals.set(nm, 'i32')
@@ -1454,27 +1459,30 @@ const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
 export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => collectBareEscapes(body, locals)) {
   if (!some(body, isDynamicIndexNode)) return EMPTY_SCAN_SET
   const safe = new Set()
-  // Collect names reachable from `node` through affine ops only, into `sink`.
-  const addAffine = (node, sink) => {
-    if (typeof node === 'string') { sink.add(node); return }
+  let changed = false
+  // Add the names reachable from `node` through affine ops only to `safe`,
+  // noting whether any was new.
+  const addAffine = (node) => {
+    if (typeof node === 'string') { if (!safe.has(node)) { safe.add(node); changed = true } return }
     if (!Array.isArray(node)) return
-    if (AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i], sink)
+    if (AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i])
   }
-  // Pass 1: record assignment edges (back-prop) + a name→definitions map (for the
-  // integer-shape test). `+= …` reconstructs to `name + …` so its shape includes
-  // the prior value.
-  const edges = []
+  // Pass 1: record assignment edges (back-prop; target and rhs as two parallel
+  // lists) + a name→definitions map (for the integer-shape test). `+= …`
+  // reconstructs to `name + …` so its shape includes the prior value.
+  const edgeTargets = [], edgeSources = []
   const defs = new Map()
+  const addEdge = (name, rhs) => { edgeTargets.push(name); edgeSources.push(rhs) }
   const addDef = (name, rhs) => { (defs.get(name) ?? defs.set(name, []).get(name)).push(rhs) }
   const collect = (node) => {
     const op = node[0]
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { edges.push([d[1], d[2]]); addDef(d[1], d[2]) }
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { addEdge(d[1], d[2]); addDef(d[1], d[2]) }
       }
-    } else if (op === '=' && typeof node[1] === 'string') { edges.push([node[1], node[2]]); addDef(node[1], node[2]) }
-    else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { edges.push([node[1], node[2]]); addDef(node[1], [op[0], node[1], node[2]]) }
+    } else if (op === '=' && typeof node[1] === 'string') { addEdge(node[1], node[2]); addDef(node[1], node[2]) }
+    else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { addEdge(node[1], node[2]); addDef(node[1], [op[0], node[1], node[2]]) }
     if (op === '=>') return false
   }
   walkAst(body, { enter: collect })
@@ -1485,7 +1493,11 @@ export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => coll
   // hoisted offset `let o = y*w` (f64-typed product, integer-valued) qualify as an
   // index leaf before narrowing. A fractional leaf, an out-of-i32-range literal, or
   // a param of unknown type disqualifies — so no truncation and no f64.const→i32.
-  const isIntShaped = (node, seen) => {
+  // `seen` holds the names on the current definition path: a name is added
+  // before its definitions are checked and removed after, so the set is what
+  // it was at entry whenever a call returns, and one set serves every call.
+  const seen = new Set()
+  const isIntShaped = (node) => {
     if (typeof node === 'number') return isI32Lit(node)
     if (typeof node === 'string') {
       if (exprType(node, locals) === 'i32') return true
@@ -1493,7 +1505,7 @@ export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => coll
       const ds = defs.get(node)
       if (!ds || !ds.length) return false  // param / unknown source — not provably integer
       seen.add(node)
-      const r = ds.every(d => isIntShaped(d, seen))
+      const r = ds.every(d => isIntShaped(d))
       seen.delete(node)
       return r
     }
@@ -1501,7 +1513,7 @@ export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => coll
     const op = node[0]
     if (op == null) return isI32Lit(node[1])  // [null, value] literal
     if (!AFFINE_INDEX_OPS.has(op)) return false
-    for (let i = 1; i < node.length; i++) if (node[i] != null && !isIntShaped(node[i], new Set(seen))) return false
+    for (let i = 1; i < node.length; i++) if (node[i] != null && !isIntShaped(node[i])) return false
     return true
   }
 
@@ -1511,21 +1523,16 @@ export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => coll
   // access and is left to widen, preserving the prior guard.
   const seed = (node) => {
     const op = node[0]
-    if (op === '[]' && !isLiteralStr(node[2]) && (exprType(node[2], locals) === 'i32' || isIntShaped(node[2], new Set()))) addAffine(node[2], safe)
+    if (op === '[]' && !isLiteralStr(node[2]) && (exprType(node[2], locals) === 'i32' || isIntShaped(node[2]))) addAffine(node[2])
     if (op === '=>') return false
   }
   walkAst(body, { enter: seed })
 
   // Back-propagate to a fixpoint: feeders of a bounded index var are bounded.
-  let changed = true
+  changed = true
   while (changed) {
     changed = false
-    for (const [target, rhs] of edges) {
-      if (!safe.has(target)) continue
-      const src = new Set()
-      addAffine(rhs, src)
-      for (const s of src) if (!safe.has(s)) { safe.add(s); changed = true }
-    }
+    for (let i = 0; i < edgeTargets.length; i++) if (safe.has(edgeTargets[i])) addAffine(edgeSources[i])
   }
   // A var promoted to PERMANENT i32 storage must have NO unproven bare escape
   // ANYWHERE in the body — the storage is a single WASM local slot, so ANY
@@ -1544,7 +1551,7 @@ export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => coll
   // `o = y*w`). The byte offset must fit i32-addressable memory, so the i32-wrap
   // residue reproduces the true in-bounds value — same contract as inline `a[y*w+x]`.
   // Skip boxed (closure-captured) cells — those live as f64 in memory.
-  for (const n of safe) if (locals.get(n) === 'f64' && !ctx.func.boxed?.has(n) && isIntShaped(n, new Set())) locals.set(n, 'i32')
+  for (const n of safe) if (locals.get(n) === 'f64' && !ctx.func.boxed?.has(n) && isIntShaped(n)) locals.set(n, 'i32')
   return safe
 }
 
