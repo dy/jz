@@ -253,6 +253,17 @@ result contract replaces (PLAN.md, next milestone): not polished here.
   heterogeneous-array, typed-some and catch-local pins are green. Recursive
   GREEN (`k-final6.wasm`, heap 1,261 MB); kernel families 37/38; functional
   13/20.
+- Then (`7b139ec3`–): an `any` parameter the demand pass denied keeps JS
+  semantics (the summary's `numericDenied`), `BigInt(null)` throws,
+  `new Array(n)` holds holes (`arrayHoles` on a numeric-fill array keeps the
+  identity compares live and canonicalizes a hole in arithmetic), an absent
+  element read as an index becomes -1, a mixed-domain compound takes the
+  binary form, every method call's kind is the summary's, the summary keys
+  a closure by its body too, `rewriteBlocks` copies only above a change
+  (the four emit-time loop passes copied every function body: the
+  emitFuncs churn, and the summary lost every closure's identity), the
+  runtime's `__to_str` formats a boxed BigInt. Native **4321 / 6 / 1**
+  before the last, recursive GREEN (heap 1,263 MB).
 
 ## Open
 

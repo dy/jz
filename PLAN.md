@@ -576,17 +576,45 @@ storage ends at the heap top extends in place. Recursive GREEN:
 **13,860,120 bytes in 57 s, heap 1,260 MB, 3,035 MB of headroom** (the
 encoder 1.0 GB).
 
+### The carrier family — 2026-09-07
+
+Native **4321 pass / 6 fail / 1 skip** (from 18 reds at `36d58177`): a
+boolean result reaches an array as itself through a callback, a multi-value
+lane and a typed store; a call's BigInt result is read as tagged unless the
+callee is a known function proved raw or a builtin; a same-body local
+closure's possibly-BigInt result is boxed on both sides (the plan registers
+the demand on the closure's body before its plan exists) and a
+self-referencing definite-BigInt def materializes tagged; a user `try` stays
+live around BigInt operators; watr's `coalesceLocals` no longer joins a catch
+handler's first write into a dead slot (`deb62e4`); an `any` parameter the
+demand pass denied a number keeps JS semantics through a local copy while
+every other unknown `+` side keeps the numeric contract; `BigInt(null)`
+throws; `new Array(n)` holds holes, a numeric-fill array keeps its element
+claim and canonicalizes a hole to NaN in arithmetic; an absent element read as
+an index reads no element; a mixed-domain compound dispatches; every method
+call's kind is the summary's; the summary keys closures by body beside the
+node and the emit-time loop rewrites copy only above a change (every emitted
+function ran four passes over a fresh copy of its body, and the summary
+answered ANY for every closure in it); the runtime's ToString formats a boxed
+BigInt. Recursive GREEN throughout (heap 1,263 MB); kernel families 37/38;
+functional 13/20. The six: a member BigInt update of an array element read
+bare (`a[0]++; return a[0]`: the summary's `+1` on an ABSENT-bearing element
+admits a Number, so the result lane is generic while the store stayed raw
+i64; the result-contract milestone's shape), the complex member `++` result,
+the boxed-prefix BigInt boundary, receiver-HASH, fromCharCode above 0xff,
+watr memory64.
+
 ### Next ownership and order
 
-1. One session owns main. Next: emit's per-closure allocation (675 MB on
-   jz × jz), a rest parameter that never escapes reading the argument slots
-   (the encoder's `push(...xs)` takes an array per byte, 322 MB),
-   the result-carrier family (a boolean through a closure result into an
-   array, the six carrier pins), the `+=` normalization with its loop
-   recognizers, `String()` on an `any` holding a BigInt box, the two hosted
-   byte divergences. Regions remain the memory model; the allocation audit
-   shrinks what they must reclaim. Keep the private fresh gate. Do not add
-   source-spelling exceptions.
+1. One session owns main. Next: the six reds above (the member BigInt update
+   of an array element is the verified-result milestone's own shape: one
+   result contract per producer, the summary's kind and the plan's carrier
+   agreeing on every element store), emit's per-closure allocation (675 MB
+   on jz × jz), a rest parameter that never escapes reading the argument
+   slots (the encoder's `push(...xs)` takes an array per byte, 322 MB), the
+   seven hosted byte divergences. Regions remain the memory model; the
+   allocation audit shrinks what they must reclaim. Keep the private fresh
+   gate. Do not add source-spelling exceptions.
 2. watr is consumed at `deb62e4`; the local-pass deletion stays isolated until
    its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
    introducing semantic FunctionIR.

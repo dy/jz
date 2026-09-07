@@ -29,6 +29,7 @@ import { ctx, inc, PTR, LAYOUT, err, declGlobal, setLinkDemand } from '../src/ct
 import { dataAlign, dataPush, dataLen, strPoolPush, strPoolLen } from '../src/static-data.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 import { ERR } from '../err-codes.js'
+import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { registerUri } from './string/uri.js'
 import { registerBase64 } from './string/base64.js'
 
@@ -1115,7 +1116,11 @@ export default (ctx) => {
 
   // Coerce value to string: numbers → __ftoa, nullish → static strings,
   // plain NaN → "NaN", arrays → join(","), other string-like pointers pass through.
-  wat('__to_str', `(func $__to_str (param $val i64) (result i64)
+  // The body is realized at link: a BigInt program's arm formats a boxed
+  // BigInt's payload through the number module's `__radix_str` (loaded for
+  // the literal or the constructor); any other program has no BigInt to print
+  // and links no formatter.
+  wat('__to_str', () => `(func $__to_str (param $val i64) (result i64)
     (local $type i32) (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $val)))
     ;; Not NaN → number, convert
@@ -1137,6 +1142,9 @@ export default (ctx) => {
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then (return (i64.reinterpret_f64 (call $__str_join (local.get $val)
         (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (i32.const 44))))))))
+    ${representationProgramHasBigint(ctx) && ctx.core.stdlib['__radix_str'] ? `;; A boxed BigInt: its payload in decimal
+    (if (i32.eq (local.get $type) (i32.const ${PTR.BIGINT}))
+      (then (return (i64.reinterpret_f64 (call $__radix_str (i64.load (call $__ptr_offset (local.get $val))) (i32.const 10))))))` : ''}
     (local.get $val))`)
 
   // Copy bytes of a string (SSO or heap) into memory at dst. Uses memory.copy for

@@ -2,9 +2,10 @@
 // tag field reads PTR.BIGINT. Every "is this carrier a BigInt box" test goes
 // through isBigIntBox (src/ir/bigint.js), which asks for a NaN-box first. The
 // kernel hit this in watr's sinkSets: a local touched twelve times in one
-// statement threw "Cannot mix BigInt and other types". Open beside it:
-// String() of a Map value the summary cannot narrow past Number|BigInt
-// reaches __to_str, which passes a BigInt box through unformatted.
+// statement threw "Cannot mix BigInt and other types". The runtime's
+// __to_str formats a boxed BigInt's payload (it passed the box through
+// unformatted: a template of a Map value the summary cannot narrow past
+// Number|BigInt printed nothing).
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import jz from '../index.js'
@@ -18,6 +19,7 @@ export let count = (k, n) => { let r = 0; for (let i = 0; i < n; i++) { m.set(k,
 export let plus = (k) => (m.get(k) || 0) + 1
 export let unary = (k) => +m.get(k)
 export let str = (k) => String(m.get(k))
+export let tpl = (k) => \`v=\${m.get(k)}\` + '|' + ('' + m.get(k))
 export let store = (k) => { const a = new BigInt64Array(1); const v = m.get(k); a[0] = v; return a[0] }`
 
 test('bigint tag: a Number whose bits spell the BigInt tag stays a Number in a tagged Map', () => {
@@ -28,6 +30,9 @@ test('bigint tag: a Number whose bits spell the BigInt tag stays a Number in a t
     is(ex.plus('c12'), 13, `12 + 1 (O${optimize || 0})`)
     is(ex.unary('c12'), 12, `+12 (O${optimize || 0})`)
     is(ex.str('c12'), '12', `String(12) (O${optimize || 0})`)
+    // The runtime's ToString formats a boxed BigInt's payload (it passed the box through unformatted).
+    is(ex.tpl('big'), 'v=5|5', `a template and a concat of a boxed BigInt (O${optimize || 0})`)
+    is(ex.tpl('c12'), 'v=12|12', `of a Number beside it (O${optimize || 0})`)
     is(ex.store('big'), 5n, `a BigInt stores its payload (O${optimize || 0})`)
     throws(() => ex.store('c12'), TypeError, `a Number in a BigInt64Array is a TypeError (O${optimize || 0})`)
     throws(() => ex.plus('big'), TypeError, `5n + 1 mixes (O${optimize || 0})`)
