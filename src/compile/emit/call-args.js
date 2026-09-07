@@ -110,6 +110,41 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT) {
 }
 
 /**
+ * Stage a spread source once, for every consumer of its elements: the value
+ * in an f64 local, normalized to an index-iterable (`__iter_arr`: a Set's
+ * keys, a Map's entries; an array, a typed array or a string passes through,
+ * only when `collection` is loaded – otherwise no Set or Map exists); its
+ * element count in an i32 local, by its kind: a string counts characters
+ * (`__str_len`; `__len` reads 0 on a string), an array, a typed array or a
+ * materialized multi-value its header, an unknown kind decides at runtime.
+ * `val` is the staged value's kind, or undefined for a multi-value.
+ */
+function stageSpreadSource(expr) {
+  const local = `${T}sp${freshId(ctx)}`
+  const lenLocal = `${T}spl${freshId(ctx)}`
+  ctx.func.locals.set(local, 'f64')
+  ctx.func.locals.set(lenLocal, 'i32')
+  const n = multiCount(expr)
+  const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', expr] : expr
+  const val = n ? undefined : valTypeOf(srcExpr)
+  const srcI64 = () => ['i64.reinterpret_f64', ['local.get', `$${local}`]]
+  const lenIR = val === VAL.STRING
+    ? (inc('__str_len'), ['call', '$__str_len', srcI64()])
+    : (val === VAL.ARRAY || val === VAL.TYPED || n)
+      ? (inc('__len'), ['call', '$__len', srcI64()])
+      : (inc('__str_len', '__len', '__ptr_type'),
+        ['if', ['result', 'i32'],
+          ['i32.eq', ['call', '$__ptr_type', srcI64()], ['i32.const', PTR.STRING]],
+          ['then', ['call', '$__str_len', srcI64()]],
+          ['else', ['call', '$__len', srcI64()]]])
+  const ir = [
+    ['local.set', `$${local}`, n ? materializeMulti(expr) : asF64(emit(srcExpr))],
+    ['local.set', `$${lenLocal}`, lenIR],
+  ]
+  return { local, lenLocal, val, ir }
+}
+
+/**
  * Build an array from items, handling ['__spread', expr] markers.
  * Split into sections (normal arrays and spreads), then copy all into result.
  *
@@ -192,38 +227,13 @@ export function buildArrayWithSpreads(items) {
         ir.push(['local.set', `$${it}`, asF64(emit(sec.items[i]))])
       }
     } else {
-      sec.local = `${T}sp${freshId(ctx)}`
-      ctx.func.locals.set(sec.local, 'f64')
-      sec.lenLocal = `${T}spl${freshId(ctx)}`
-      ctx.func.locals.set(sec.lenLocal, 'i32')
-      const n = multiCount(sec.expr)
-      // Normalize a (non-multi) spread source to an index-iterable: Set→keys /
-      // Map→[k,v] arrays, others pass through. Only when `collection` is loaded —
-      // otherwise no Set/Map can exist and the source is already index-iterable.
-      const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', sec.expr] : sec.expr
-      // A materialized multi-value is not a statically-typed pointer — let
-      // emitSpreadCopy resolve its kind at runtime via its one-time __ptr_type branch.
-      sec.val = n ? undefined : valTypeOf(srcExpr)
-      ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(srcExpr))])
-      // Cache the source length once per spread (reused for the total-len sum and the
-      // copy). `__len` is ARRAY/typed length — WRONG for a STRING (returns 0, so `[...str]`
-      // spreads an empty array). Pick the length to MATCH emitSpreadCopy's element decode:
-      // a known string counts chars (__str_len, paired with the __str_idx per-char copy); a
-      // statically-unknown source — `[...x]` / `[...fnParam]`, the compiler's own
-      // `[...key]` — dispatches once at runtime (STRING→__str_len, else→__len), mirroring
-      // emitSpreadCopy's ARRAY-vs-scalar branch. (Not __length: its `off>=8` guard returns
-      // undefined for host/static typed arrays.) Known array/typed/multi keep plain __len.
-      const srcI64 = () => ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]
-      const lenIR = sec.val === VAL.STRING
-        ? (inc('__str_len'), ['call', '$__str_len', srcI64()])
-        : (sec.val === VAL.ARRAY || sec.val === VAL.TYPED || n)
-          ? (inc('__len'), ['call', '$__len', srcI64()])
-          : (inc('__str_len', '__len', '__ptr_type'),
-            ['if', ['result', 'i32'],
-              ['i32.eq', ['call', '$__ptr_type', srcI64()], ['i32.const', PTR.STRING]],
-              ['then', ['call', '$__str_len', srcI64()]],
-              ['else', ['call', '$__len', srcI64()]]])
-      ir.push(['local.set', `$${sec.lenLocal}`, lenIR])
+      // The length is read once per spread (the total-len sum and the copy);
+      // its kind matches emitSpreadCopy's element decode.
+      const src = stageSpreadSource(sec.expr)
+      sec.local = src.local
+      sec.lenLocal = src.lenLocal
+      sec.val = src.val
+      ir.push(...src.ir)
     }
   }
 
@@ -280,30 +290,19 @@ export function parseCallArgs(args) {
  *  __arr_grow / __set_len pair, then bulk-copies the source via emitSpreadCopy.
  *  Hot path in watr's `out.push(...HANDLER[op](...))` (~24M bytes/iter on raycast). */
 function emitBulkPushSpread(objArg, parsed) {
-  const spreadExpr = parsed.spreads[0].expr
   inc('__len'); inc('__arr_grow'); inc('__set_len'); inc('__ptr_offset')
   const o = `${T}po${freshId(ctx)}`,
-        sa = `${T}psa${freshId(ctx)}`,
-        sl = `${T}psl${freshId(ctx)}`,
         ol = `${T}pol${freshId(ctx)}`,
         si = `${T}psi${freshId(ctx)}`,
         base = `${T}pb${freshId(ctx)}`
-  ctx.func.locals.set(o, 'f64'); ctx.func.locals.set(sa, 'f64')
-  ctx.func.locals.set(sl, 'i32'); ctx.func.locals.set(ol, 'i32')
+  ctx.func.locals.set(o, 'f64'); ctx.func.locals.set(ol, 'i32')
   ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
 
   const objIsArr = lookupValType(objArg) === VAL.ARRAY
-  const n = multiCount(spreadExpr)
-  // Normalize a (non-multi) spread source to an index-iterable: Set→keys /
-  // Map→[k,v] arrays, others pass through. Only when `collection` is loaded.
-  const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', spreadExpr] : spreadExpr
-  // A materialized multi-value is not a statically-typed pointer — let
-  // emitSpreadCopy resolve its kind once at runtime.
-  const srcVT = n ? undefined : valTypeOf(srcExpr)
   const ir = []
   ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
-  ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(srcExpr))])
-  ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
+  const { local: sa, lenLocal: sl, val: srcVT, ir: stage } = stageSpreadSource(parsed.spreads[0].expr)
+  ir.push(...stage)
   // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
   if (objIsArr) {
     ir.push(['local.set', `$${ol}`,
@@ -337,25 +336,23 @@ function emitBulkPushSpread(objArg, parsed) {
  *  `unshift` to preserve argument order under successive prepends). Returns the
  *  IR instruction list (caller embeds it into its own block64). */
 function emitSpreadElementLoop(spreadExpr, bodyFn, { reverse = false } = {}) {
-  const arr = `${T}sp${freshId(ctx)}`
-  const len = `${T}splen${freshId(ctx)}`
+  const { local: arr, lenLocal: len, val, ir: stage } = stageSpreadSource(spreadExpr)
   const idx = `${T}spidx${freshId(ctx)}`
-  ctx.func.locals.set(arr, 'f64'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
-  // Emission-minted temp seed → transient overlay (slice 3c-a class): the fresh
-  // spread-staging local's VT rides the overlay for the loop-body IR generation.
-  // Without it, the body's `[]` read on `arr` falls back to polymorphic dispatch —
-  // VAL.* elides the STRING gate for ARRAY/TYPED spreads. Durable reps stay clean.
-  const spreadVT = valTypeOf(spreadExpr)
-  if (spreadVT) ctx.func.localValTypesOverlay.set(arr, spreadVT)
-  inc('__len')
-  const n = multiCount(spreadExpr)
+  ctx.func.locals.set(idx, 'i32')
+  // Emission-minted temps ride the transient overlay (slice 3c-a class) for
+  // the loop body's `arr[idx]` read: the staged source's kind (a string reads
+  // a character, an array or a typed array its element; an unknown kind keeps
+  // the polymorphic read) and the counter's, a number, so the read is an
+  // element read and not ToPropertyKey's runtime key dispatch. Durable reps
+  // stay clean.
+  if (val) ctx.func.localValTypesOverlay.set(arr, val)
+  ctx.func.localValTypesOverlay.set(idx, VAL.NUMBER)
   const loopId = freshId(ctx)
   const exhausted = reverse
     ? ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]
     : ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]
   return [
-    ['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-    ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]],
+    ...stage,
     ['local.set', `$${idx}`, reverse ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]],
     ['block', `$break${loopId}`,
       ['loop', `$continue${loopId}`,

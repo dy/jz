@@ -800,6 +800,10 @@ export default (ctx) => {
     const arrayLoad = (['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
+      // ToPropertyKey of an atom key is the string module's `__to_str`: own
+      // that dependency here (a program without a string of its own has not
+      // loaded the module, and a template requested unregistered fails the pull).
+      ctx.module.include('string')
       inc('__is_str_key', '__to_str')
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
       // (.work/archive/todo.md §deletion-sweep Finding #2) — same ambiguous-merge-key

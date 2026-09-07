@@ -516,3 +516,38 @@ test('spread into a fixed-arity function fills its parameters from the array', (
   ok(Number.isNaN(exports.f()), 'missing parameters are undefined')
   is(exports.g([1, 2, 3]), 941)
 })
+
+test('spread into a method: the source is staged once, by its kind', () => {
+  // A string source counts characters and reads a character per element; a
+  // Set iterates its keys; an unknown source decides at runtime. The staging
+  // is one for `push`'s bulk path, the per-element loop and an array literal.
+  const src = `const app = (a, s) => { a.push(...s); return a.length }
+    const pre = (a, s) => { a.unshift(...s); return a.length }
+    export let f = () => {
+      const r = []
+      const a = ['q']; a.unshift(...'xy'); r.push(a.join(''))
+      const b = ['q']; b.push(...'xy'); r.push(b.join(''))
+      const c = ['q']; c.push(7, ...'xy'); r.push(c.join(''))
+      const d = ['q']; d.unshift(7, ...'xy'); r.push(d.join(''))
+      const e = ['q']; r.push(app(e, 'xy') + e.join(''))
+      const g = ['q']; r.push(pre(g, 'xy') + g.join(''))
+      const h = ['q']; const s = new Set([7, 8]); h.unshift(...s); r.push(h.join(''))
+      const k = ['q']; k.push(...new Set([7, 8])); r.push(k.join(''))
+      return r.join('|')
+    }`
+  const expected = Function(src.replace('export let f', 'var f') + '; return f')()()
+  for (const optimize of [0, 1, 2]) is(jz(src, { optimize }).exports.f(), expected, `O${optimize}`)
+})
+
+test('spread into a method: a program without a string of its own compiles', () => {
+  // `unshift(...t)` walks the source by an index the emitter minted: the read
+  // is an element read, never ToPropertyKey's runtime dispatch, which owns
+  // the string module (__to_str) when it is emitted at all.
+  const src = `const a = []; for (let i = 0; i < 1000; i++) a.push(i)
+    const t = [1, 2]
+    const run = (i) => { a.unshift(...t); a.shift(); return a.shift() }
+    export let probe = (n) => run(n)`
+  for (const optimize of [0, 1, 2]) is(jz(src, { optimize }).exports.probe(0), 2, `O${optimize}`)
+  const w = compile(src, { wat: true })
+  ok(!/__is_str_key/.test(w), 'the loop reads its elements by index')
+})
