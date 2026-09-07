@@ -1,0 +1,664 @@
+From 45314c685db54af326aede20cf27a66b42addba9 Mon Sep 17 00:00:00 2001
+From: "Dmitry Iv." <df.creative@gmail.com>
+Date: Sun, 6 Sep 2026 00:33:33 -0400
+Subject: [PATCH] Replace the two local passes with watr's propagation family
+ at the same point
+
+propagateSingleUse and foldSetToTee (src/optimize/locals.js, their
+tally/motion helpers, the re-export and the two flags) are deleted.
+watr's propagate is the one implementation: with watr's fixpoint on it
+runs there, at its own point; when the fixpoint is off (fast, watr:
+false) the driver invokes it on each function at the point the two
+passes held, after the vectorizer and before devirt, under the new flag
+propagateLocals; a v128 function is left as emitted.
+
+Measured over the bench corpus against 5763b63f (watr 5ff0037): size
++62 B (+0.05%, 23 of 58 cases byte-identical), speed -70 B (-0.04%, 25
+identical), fast -5,082 B (-2.66%): the family forwards what the two
+passes forwarded and more. Of the size/speed residue, +18/+16 B are
+propagations watr now refuses for evaluation order; the rest is the
+fixpoint reaching a different point without the pre-watr pass. Running
+the family early with the fixpoint on was measured and rejected: the
+merged guard temps hid narrow/unclamp/intguard's shapes and vm's checked
+reads stayed f64-boxed, 2.2x slower; without the early run vm, dispatch,
+shapes, synth, json and lz time within noise of the base (loaded
+machine, alternating runs). The dispatch regression the migration was
+warned about does not appear.
+
+The optimizer test pins the flag at watr:false (the temp forwarded, the
+first read a tee) and on/off bit-exactness at watr:false, level 2 and
+speed over the shapes a careless propagation miscompiles, the trapping
+division before a store among them. Four promoteIntArrayLiterals pins
+read the storage shape instead of a local the family now forwards.
+
+Rebased onto f43229d2: two more pins read a local the family forwards. The
+feature-gating probe pin accepts the slot address as the tee propagation sinks
+into the first key load; the interval-proof checked-access pin reads the guard
+when the index temp is merged into the index local.
+---
+ src/optimize/devirt.js                 |   2 +-
+ src/optimize/driver.js                 |  24 ++-
+ src/optimize/index.js                  |   4 -
+ src/optimize/locals.js                 | 266 -------------------------
+ src/optimize/vectorize/blur-channel.js |   2 +-
+ src/passes.js                          |   3 +-
+ test/closures.js                       |   2 +-
+ test/feature-gating.js                 |   3 +-
+ test/interval-proof.js                 |  10 +-
+ test/optimizer.js                      |  86 ++++----
+ test/types.js                          |   2 +-
+ 11 files changed, 71 insertions(+), 333 deletions(-)
+ delete mode 100644 src/optimize/locals.js
+
+diff --git a/src/optimize/devirt.js b/src/optimize/devirt.js
+index 167faa34..65082609 100644
+--- a/src/optimize/devirt.js
++++ b/src/optimize/devirt.js
+@@ -119,7 +119,7 @@ export function devirtSchemaReads(fn) {
+       if (slot >= 0) withProp.push([sid, slot])
+     }
+     if (!withProp.length) return
+-    // `local.tee` operands (foldSetToTee folds shared tag/CSE
++    // `local.tee` operands (propagateLocals sinks shared tag/CSE
+     // locals into the FIRST read's call, possibly nested) are hoisted to
+     // standalone sets before the dispatch, innermost first — the original call
+     // evaluated them unconditionally, so unconditional sets are observationally
+diff --git a/src/optimize/driver.js b/src/optimize/driver.js
+index dce9964c..43c07e5e 100644
+--- a/src/optimize/driver.js
++++ b/src/optimize/driver.js
+@@ -17,7 +17,8 @@ import {
+   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite,
+ } from './peephole.js'
+ import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
+-import { propagateSingleUse, foldSetToTee } from './locals.js'
++import { propagate as propagateLocals } from 'watr/optimize'
++import { containsV128 } from './ir-scan.js'
+ import { promoteGlobals } from './globals.js'
+ import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
+ import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
+@@ -55,7 +56,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
+       cfg.hoistAddrBase === false &&
+       cfg.cseScalarLoad === false &&
+       cfg.unswitchStringRepLoop === false &&
+-      cfg.propagateSingleUse === false &&
++      cfg.propagateLocals === false &&
+       cfg.promoteGlobals === false &&
+       cfg.sortLocalsByUse === false &&
+       cfg.vectorizeLaneLocal === false &&
+@@ -142,12 +143,19 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
+     splitLoopPrivateScratch(fn)
+     hoistInvariantLoop(fn)
+   }
+-  // Forward-substitute single-use temps AFTER the vectorizer (which always runs in
+-  // 'pre', above) — propagateSingleUse itself skips any function already lifted to v128.
+-  if (!cfg || cfg.propagateSingleUse !== false) propagateSingleUse(fn)
+-  // Then sink single-def RHS into first use as a tee — captures the simplify-locals slack
+-  // watr's use-count propagate leaves (set→tee fold, incl. effectful single-use forward).
+-  if (!cfg || cfg.foldSetToTee !== false) foldSetToTee(fn)
++  // The local propagation family (watr/optimize `propagate`: forward substitution
++  // of single-use values, set→tee sinking, copy merging, dead-store elimination)
++  // is the one implementation, and it runs on this function here, AFTER the
++  // vectorizer above and BEFORE the devirt passes below (the point jz's own
++  // propagateSingleUse/foldSetToTee used to hold), only when watr's fixpoint is
++  // off (`fast`, `watr: false`): there it is the sole propagation, worth 4-5% of
++  // the bytes. With the fixpoint on, watr runs the family at its own point, after
++  // narrow/unclamp/intguard have seen the emitted guard temps; run early, the
++  // merged temps hide those gates' shapes (vm's checked reads stayed f64-boxed,
++  // 2.2x slower). A function the vectorizer lifted to v128 is left as emitted:
++  // its lane sequences are register-tight, and the masked-suffix guard
++  // recognizes the emitted loop shape after watr.
++  if ((!cfg || cfg.propagateLocals !== false) && !(cfg && cfg.watr) && !containsV128(fn)) propagateLocals(fn)
+   // A second idempotent sweep catches fresh opportunities exposed by
+   // propagation/fold-to-tee. The first sweep above does the important work
+   // while source-level SSA names are still explicit.
+diff --git a/src/optimize/index.js b/src/optimize/index.js
+index 8b98b8f9..f597a0b7 100644
+--- a/src/optimize/index.js
++++ b/src/optimize/index.js
+@@ -48,10 +48,6 @@ export { hoistPtrType, hoistAddrBase } from './cse-address.js'
+ // — see src/optimize/licm.js for the full doc.
+ export { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
+ 
+-// Local def/use simplification family (propagateSingleUse, foldSetToTee) — see
+-// src/optimize/locals.js for the full doc.
+-export { propagateSingleUse, foldSetToTee } from './locals.js'
+-
+ // Global/memory hoisting family (collectVolatileGlobals,
+ // collectReachableGlobalWrites, STABLE_PTR_VALS, stablePtrGlobalNames,
+ // hoistGlobalPtrOffset, collectReachableMemoryWrites, hoistStableGlobalConstLoads,
+diff --git a/src/optimize/locals.js b/src/optimize/locals.js
+deleted file mode 100644
+index 3ce4a87b..00000000
+--- a/src/optimize/locals.js
++++ /dev/null
+@@ -1,266 +0,0 @@
+-/**
+- * Local def/use simplification family: forward-substitute single-def/single-use
+- * temps (propagateSingleUse) and sink single-def RHS into a first-use tee
+- * (foldSetToTee) — the watr "propagate"/"simplify-locals" folds jz's own
+- * optimizer applies before watr ever runs. Both share `localRefTallies`, a
+- * whole-body def/use count.
+- *
+- * @module optimize/locals
+- */
+-import { findBodyStart } from '../ir.js'
+-import { walkAst } from '../ast.js'
+-import { containsV128 } from './ir-scan.js'
+-
+-const localRefTallies = (fn, bodyStart) => {
+-  const setN = new Map(), getN = new Map(), teed = new Set()
+-  const recordRef = n => {
+-    if (!Array.isArray(n)) return
+-    const op = n[0]
+-    if (op === 'local.set' && typeof n[1] === 'string') setN.set(n[1], (setN.get(n[1]) || 0) + 1)
+-    else if (op === 'local.tee' && typeof n[1] === 'string') teed.add(n[1])
+-    else if (op === 'local.get' && typeof n[1] === 'string') getN.set(n[1], (getN.get(n[1]) || 0) + 1)
+-  }
+-  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: recordRef })
+-  return { setN, getN, teed }
+-}
+-
+-/**
+- * Forward-substitute a single-def / single-use local into its sole use, eliminating the local,
+- * its `local.set` and its `local.get`. This is watr's "propagate": jz emits short-lived address/
+- * index temps (`set $t (i32.add …); … (load $t) …`) that the WAT optimizer folds away — the
+- * dominant slice of the watr-optimizer-OFF size gap (a matmul carries ~14 such temps, ≈ the whole
+- * delta). Closing it lets jz lean on its own optimizer instead of watr's.
+- *
+- * SOUND only when moving the def's RHS `E` to the use can't change order or value:
+- *   - `E` is PURE — reads only locals (no load/store/call/global/memory): its value is a function
+- *     of its read-locals alone, and it has no side effects to reorder past intervening statements.
+- *   - the use is at the SAME loop nesting — never under a deeper `loop` than the def (which would
+- *     re-evaluate `E` per iteration and could read a clobbered input).
+- *   - no read-local of `E` is written between the def and the use (incl. the use statement itself).
+- * Anything it can't prove safe is left untouched.
+- */
+-export function propagateSingleUse(fn) {
+-  if (!Array.isArray(fn) || fn[0] !== 'func') return
+-  const bodyStart = findBodyStart(fn)
+-  if (bodyStart < 0) return
+-
+-  // Leave a vectorized function alone: it carries v128 lane sequences that are already register-tight,
+-  // and forward-substituting into them only adds pressure (mirrors hoistInvariantLoop's hasV128 gate).
+-  if (containsV128(fn)) return
+-
+-  // def/use tally over the whole body. A `local.tee` is both a read and a write — exclude any
+-  // tee'd local from candidacy rather than reason about it.
+-  const { setN, getN, teed } = localRefTallies(fn, bodyStart)
+-
+-  const cand = new Set()
+-  for (const [name, c] of setN) if (c === 1 && getN.get(name) === 1 && !teed.has(name)) cand.add(name)
+-  if (!cand.size) return
+-
+-  const movablePure = (n) => {
+-    let pure = true
+-    walkAst(n, { enter: x => {
+-      if (!pure) return false
+-      const op = x[0]
+-      if (op === 'local.get') return false
+-      if (op === 'local.set' || op === 'local.tee' || op === 'call' || op === 'call_indirect' || op === 'call_ref'
+-        || op === 'global.get' || op === 'global.set' || op === 'memory.size' || op === 'memory.grow'
+-        || op === 'memory.copy' || op === 'memory.fill') { pure = false; return false }
+-      if (typeof op === 'string' && (op.includes('.load') || op.includes('.store') || op.includes('.atomic'))) { pure = false; return false }
+-    } })
+-    return pure
+-  }
+-  const readsOf = (n, out) => { walkAst(n, { enter: x => { if (x[0] === 'local.get' && typeof x[1] === 'string') out.add(x[1]) } }) }
+-  const writesAny = (n, R) => {
+-    let found = false
+-    walkAst(n, { enter: x => {
+-      if (found) return false
+-      if ((x[0] === 'local.set' || x[0] === 'local.tee') && R.has(x[1])) { found = true; return false }
+-    } })
+-    return found
+-  }
+-  // Locate the (local.get $t) within `root`'s subtree (not root itself); flag if it sits under a
+-  // `loop` relative to root (→ would re-evaluate the moved RHS each iteration).
+-  const locateUse = (root, t) => {
+-    let found = null
+-    const rec = (node, underLoop) => {
+-      if (found || !Array.isArray(node)) return
+-      for (let i = 1; i < node.length; i++) {
+-        if (found) return
+-        const c = node[i]
+-        if (Array.isArray(c) && c[0] === 'local.get' && c[1] === t) { found = { parent: node, idx: i, underLoop }; return }
+-        rec(c, underLoop || node[0] === 'loop')
+-      }
+-    }
+-    rec(root, false)
+-    return found
+-  }
+-
+-  const removed = new Set()
+-  const optimizeList = (list, start) => {
+-    for (let i = start; i < list.length; i++) {
+-      const s = list[i]
+-      if (!Array.isArray(s)) continue
+-      // s.length === 3: an explicit-RHS `(local.set $t E)`. A bare `(local.set $t)` (length 2)
+-      // binds a value already on the stack — e.g. the try_table catch payload — and has no RHS to
+-      // move; treating its undefined RHS as movable would substitute `undefined` into the use.
+-      if (s[0] === 'local.set' && s.length === 3 && typeof s[1] === 'string' && cand.has(s[1]) && movablePure(s[2])) {
+-        const t = s[1], E = s[2], R = new Set(); readsOf(E, R)
+-        for (let j = i + 1; j < list.length; j++) {
+-          const sj = list[j]
+-          const u = Array.isArray(sj) ? locateUse(sj, t) : null
+-          if (u) {                                       // found the sole use's statement
+-            if (!u.underLoop && !writesAny(sj, R)) {     // same nesting + read-locals intact
+-              u.parent[u.idx] = E
+-              list.splice(i, 1)
+-              cand.delete(t); removed.add(t)
+-              i--                                        // re-process from the freed slot (forward chains)
+-            }
+-            break                                        // use located — stop scanning this candidate
+-          }
+-          if (writesAny(sj, R)) break                    // a read-local clobbered before the use → can't move
+-        }
+-        if (removed.has(s[1])) continue
+-      }
+-      // recurse into nested statement lists
+-      if (s[0] === 'block' || s[0] === 'loop') {
+-        let k = 1; while (k < s.length && Array.isArray(s[k]) && s[k][0] === 'result') k++
+-        optimizeList(s, k)
+-      } else if (s[0] === 'if') {
+-        for (let k = 1; k < s.length; k++) { const c = s[k]; if (Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')) optimizeList(c, 1) }
+-      }
+-    }
+-  }
+-  optimizeList(fn, bodyStart)
+-
+-  // drop the now-orphaned decls (deferred so the body walk above sees stable indices)
+-  if (removed.size) for (let i = fn.length - 1; i >= 2; i--) { const c = fn[i]; if (Array.isArray(c) && c[0] === 'local' && removed.has(c[1])) fn.splice(i, 1) }
+-}
+-
+-/**
+- * Sink a single-def local's RHS to its FIRST use as a `local.tee` (the simplify-locals
+- * transform watr's use-count propagate doesn't do, confirmed by diffing jz+watr vs Binaryen):
+- *
+- *   (local.set $t (call $f ...))           ⇒   (i64.store a (local.tee $t (call $f ...)))
+- *   (i64.store a (local.get $t))                ... later (local.get $t) ...
+- *   ... later (local.get $t) ...
+- *
+- * — removes the standalone `set` statement + the first `local.get` (~2–4 B/site). For a
+- * SINGLE-use local the RHS is forwarded outright (no tee, decl dropped) — this also catches
+- * effectful single-use temps (`call`/`load` RHS) that `propagateSingleUse` skips. Runs after
+- * `propagateSingleUse`, so it sees only the cases that one leaves: multi-use, and effectful.
+- *
+- * Correctness rests on `scanUse`, an eval-order walk that flags a conflict BEFORE the use:
+- *   - a write to any local the RHS reads (R),
+- *   - a control-flow transfer (br/return/throw/…) that could skip the use while a later use lives,
+- *   - for a memory-reading RHS, an intervening memory/global WRITE,
+- *   - for a memory-writing RHS (incl. any call), ANY intervening memory/global access.
+- * Plus: a multi-use fold (and an effectful single-use forward) requires the use to be
+- * UNCONDITIONALLY reached (not under if/loop/block) so the tee always runs before later reads;
+- * never sink under a `loop` (would re-evaluate / re-effect the RHS per iteration).
+- */
+-export function foldSetToTee(fn) {
+-  if (!Array.isArray(fn) || fn[0] !== 'func') return
+-  const bodyStart = findBodyStart(fn)
+-  if (bodyStart < 0) return
+-
+-  // v128 lane sequences are already register-tight — folding only adds pressure (mirrors propagateSingleUse).
+-  if (containsV128(fn)) return
+-
+-  const { setN, getN, teed } = localRefTallies(fn, bodyStart)
+-
+-  const cand = new Set()
+-  for (const [name, c] of setN) if (c === 1 && (getN.get(name) || 0) >= 1 && !teed.has(name)) cand.add(name)
+-  if (!cand.size) return
+-
+-  const readsOf = (n, out) => { walkAst(n, { enter: x => { if (x[0] === 'local.get' && typeof x[1] === 'string') out.add(x[1]) } }) }
+-  const noLocalWrite = (n) => {
+-    let clean = true
+-    walkAst(n, { enter: x => {
+-      if (!clean) return false
+-      if (x[0] === 'local.set' || x[0] === 'local.tee') { clean = false; return false }
+-    } })
+-    return clean
+-  }
+-  const isWriteOp = (op) => op === 'call' || op === 'call_indirect' || op === 'call_ref' || op === 'return_call'
+-    || op === 'return_call_indirect' || op === 'global.set' || op === 'memory.grow' || op === 'memory.copy'
+-    || op === 'memory.fill' || (typeof op === 'string' && (op.includes('.store') || op.includes('.atomic')))
+-  const isReadOp = (op) => op === 'global.get' || op === 'memory.size' || (typeof op === 'string' && op.includes('.load'))
+-  const isCF = (op) => op === 'if' || op === 'loop' || op === 'block' || op === 'try' || op === 'try_table'
+-  const isTransfer = (op) => op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return'
+-    || op === 'return_call' || op === 'return_call_indirect' || op === 'unreachable' || op === 'throw' || op === 'rethrow'
+-  const rhsKind = (n) => {                              // 'writes' | 'reads' | 'pure'
+-    let w = false, r = false
+-    walkAst(n, { enter: x => { if (isWriteOp(x[0])) w = true; else if (isReadOp(x[0])) r = true } })
+-    return w ? 'writes' : r ? 'reads' : 'pure'
+-  }
+-  // Walk `root` in eval order for the first `(local.get t)`; return {use, conflict}.
+-  // `conflict` reflects only what is evaluated strictly BEFORE the use (or the whole node if no use).
+-  const scanUse = (root, t, mode, R) => {
+-    let use = null, conflict = false
+-    const rec = (node, underLoop, underCond) => {
+-      if (use || conflict || !Array.isArray(node)) return
+-      const op = node[0]
+-      for (let i = 1; i < node.length; i++) {
+-        if (use || conflict) return
+-        const c = node[i]
+-        if (Array.isArray(c) && c[0] === 'local.get' && c[1] === t) { use = { parent: node, idx: i, underLoop, underCond }; return }
+-        // an `if`'s CONDITION (child 1) and all `select` operands evaluate UNCONDITIONALLY when
+-        // the construct is reached — only then/else bodies are conditional. Treating the condition
+-        // as conditional would wrongly refuse the common `if ((local.tee $t E) …)` fold.
+-        const childCond = (op === 'if' && i === 1) || op === 'select' ? underCond : underCond || isCF(op)
+-        rec(c, underLoop || op === 'loop', childCond)
+-      }
+-      if (use || conflict) return
+-      // post-order: this node's own effect, relative to the RHS we want to move past it
+-      if ((op === 'local.set' || op === 'local.tee') && R.has(node[1])) conflict = true
+-      else if (isTransfer(op)) conflict = true
+-      else if (mode === 'writes' && (isWriteOp(op) || isReadOp(op))) conflict = true
+-      else if (mode === 'reads' && isWriteOp(op)) conflict = true
+-    }
+-    rec(root, false, false)
+-    return { use, conflict }
+-  }
+-
+-  const removed = new Set()
+-  const optimizeList = (list, start) => {
+-    for (let i = start; i < list.length; i++) {
+-      const s = list[i]
+-      if (!Array.isArray(s)) continue
+-      let folded = false
+-      if (s[0] === 'local.set' && s.length === 3 && typeof s[1] === 'string' && cand.has(s[1]) && noLocalWrite(s[2])) {
+-        const t = s[1], E = s[2], R = new Set(); readsOf(E, R)
+-        if (!R.has(t)) {                                  // self-ref RHS reads the very local — leave it
+-          const single = (getN.get(t) || 0) === 1
+-          const mode = rhsKind(E)
+-          for (let j = i + 1; j < list.length; j++) {
+-            const sj = list[j]
+-            if (!Array.isArray(sj)) continue
+-            const { use, conflict } = scanUse(sj, t, mode, R)
+-            if (conflict) break                           // unsafe to move RHS this far
+-            if (use) {
+-              // effectful single-use, or any multi-use, must reach the use unconditionally;
+-              // never sink under a loop (re-eval / re-effect).
+-              const okCond = (single && mode !== 'writes') ? true : !use.underCond
+-              if (!use.underLoop && okCond) {
+-                use.parent[use.idx] = single ? E : ['local.tee', t, E]
+-                list.splice(i, 1); cand.delete(t); if (single) removed.add(t); i--; folded = true
+-              }
+-              break
+-            }
+-          }
+-        }
+-      }
+-      if (folded) continue                                // re-process from the freed slot
+-      // recurse into nested statement lists
+-      if (s[0] === 'block' || s[0] === 'loop') {
+-        let k = 1; while (k < s.length && Array.isArray(s[k]) && s[k][0] === 'result') k++
+-        optimizeList(s, k)
+-      } else if (s[0] === 'if') {
+-        for (let k = 1; k < s.length; k++) { const c = s[k]; if (Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')) optimizeList(c, 1) }
+-      }
+-    }
+-  }
+-  optimizeList(fn, bodyStart)
+-
+-  if (removed.size) for (let i = fn.length - 1; i >= 2; i--) { const c = fn[i]; if (Array.isArray(c) && c[0] === 'local' && removed.has(c[1])) fn.splice(i, 1) }
+-}
+diff --git a/src/optimize/vectorize/blur-channel.js b/src/optimize/vectorize/blur-channel.js
+index 8cdf9bf1..3de67ada 100644
+--- a/src/optimize/vectorize/blur-channel.js
++++ b/src/optimize/vectorize/blur-channel.js
+@@ -206,7 +206,7 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
+ 
+   // the RGBA store: 4 i32.store8 at `ab1 + c`, ab1 tee'd in the first. jz's raw pre-watr
+   // emission of `dst[o]=(sr/win)|0` materializes the divide into its own single-use temp
+-  // (`tw = sr/win; store(tw)`) — pre-watr propagateSingleUse runs AFTER the vectorizer
++  // (`tw = sr/win; store(tw)`) — the pre-watr propagateLocals runs AFTER the vectorizer
+   // (ordered there so it doesn't scramble the dot-pair matcher), so this indirection is
+   // never folded before this recognizer sees it, unlike the old post-watr pipeline where
+   // watr's own copy-prop had already inlined it into the store operand. Resolve that one-hop
+diff --git a/src/passes.js b/src/passes.js
+index 6ba3e136..6a54e451 100644
+--- a/src/passes.js
++++ b/src/passes.js
+@@ -61,8 +61,7 @@ export const PASS_NAMES = [
+   'cseScalarLoad',
+   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
+   'unswitchStringRepLoop',    // leaf char scans: hoist invariant SSO/heap selection out of the byte loop
+-  'propagateSingleUse',       // forward-substitute single-def/single-use pure temps (watr's "propagate")
+-  'foldSetToTee',             // sink a single-def local's RHS into its first use as a tee (simplify-locals watr leaves)
++  'propagateLocals',          // watr's local propagation family on each function before devirt, when watr's fixpoint is off (the only propagation at `fast`)
+   'promoteGlobals',          // read-only global.get → local for multi-read globals
+   'sortLocalsByUse',
+   'specializeMkptr',
+diff --git a/test/closures.js b/test/closures.js
+index 9bcd23aa..6bb82525 100644
+--- a/test/closures.js
++++ b/test/closures.js
+@@ -752,7 +752,7 @@ test('closure-unbox: codegen — local declared as i32', () => {
+   `, { wat: true, optimize: { watr: false } })
+   const body = fnBody(w, 'f')
+   ok(body, '$f present')
+-  // multi-use closure so the slot survives foldSetToTee (jz's own coalesce of single-use defs)
++  // multi-use closure so the slot survives propagateLocals (the single-use def would be forwarded)
+   ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')
+   ok(!/\(local \$g f64\)/.test(body), '$g not f64')
+ })
+diff --git a/test/feature-gating.js b/test/feature-gating.js
+index ef6ead81..11a17fbb 100644
+--- a/test/feature-gating.js
++++ b/test/feature-gating.js
+@@ -228,7 +228,8 @@ test('collection: literal keys prehash; probes bit-eq before the equality call',
+   // short-circuits the __same_value_zero / __str_eq call for the identity (interned/SSO) case —
+   // the distinctive `… (then (i32.const 1)) (else (call $__same_value_zero …` probe shape.
+   const flat = g.replace(/\s+/g, ' ')
+-  ok(flat.includes('(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))'))
++  // the slot address reaches the first key load as a get or as the tee propagation sinks there
++  ok(/\(i64\.eq \(i64\.load \(i32\.add \(local\.(get|tee) \$slot\b/.test(flat))
+   ok(flat.includes('(then (i32.const 1)) (else (call $__same_value_zero'))
+ })
+ 
+diff --git a/test/interval-proof.js b/test/interval-proof.js
+index 691d1b70..6c034c69 100644
+--- a/test/interval-proof.js
++++ b/test/interval-proof.js
+@@ -103,6 +103,12 @@ const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
+   }
+ }
+ const hasTypedBoundsTemp = wat => /\$[^\s)]*tbi\d*/.test(wat)
++// A checked typed access is marked by the `tbiN` index temp jz emits for it, or,
++// when propagation merges that temp into the index local, by the guard itself:
++// an unsigned compare against the constant length around the store.
++const CHECKED_STORE = /\(i32\.lt_u[\s\S]{0,400}?\(i32\.const \d+\)\s*\)\s*\(then\s*\((?:f32|f64|i32|i64)\.store/
++const userFuncs = wat => wat.split(/(?=\(func )/).filter(f => /^\(func \$(?!__)/.test(f)).join('\n')
++const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || CHECKED_STORE.test(userFuncs(wat))
+ 
+ const INPUTS = [
+   [1, 1], [2, 2], [-1, 1], [4, 1], [1, 4], [1.9, 1], [-0, 1],
+@@ -139,7 +145,7 @@ test('interval proof: named-guard WAT is raw at O0/O2/O3; sibling controls fail
+       ['overflowing index', OVERFLOW_INDEX],
+       ['wrapping affine guard', AFFINE_WRAP_GUARD],
+     ]) {
+-      ok(hasTypedBoundsTemp(compile(src, { optimize, wat: true })),
++      ok(hasCheckedTypedAccess(compile(src, { optimize, wat: true })),
+         `O${optimize}: ${name} retains a checked typed access`)
+     }
+   }
+@@ -210,7 +216,7 @@ test('interval proof: xor/shift cursors are proven inside their field', () => {
+     is(wasm(7), native(7), `O${optimize}: permutation of another fill matches Node`)
+   }
+   for (const [name, src] of FIELD_ESCAPES) {
+-    ok(hasTypedBoundsTemp(compile(src, { optimize: 3, wat: true })), `${name}: access stays checked`)
++    ok(hasCheckedTypedAccess(compile(src, { optimize: 3, wat: true })), `${name}: access stays checked`)
+     is(jz(src).exports.f(100), jsExports(src).f(100), `${name}: matches Node`)
+   }
+ })
+diff --git a/test/optimizer.js b/test/optimizer.js
+index 659ad3ce..1f44b4fe 100644
+--- a/test/optimizer.js
++++ b/test/optimizer.js
+@@ -13,7 +13,7 @@ import test from 'tst'
+ import { almost, is, ok } from 'tst/assert.js'
+ import jz from '../index.js'
+ import { onKernel } from './_matrix.js'
+-import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES, propagateSingleUse } from '../src/optimize/index.js'
++import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
+ import { fusedRewrite } from '../src/optimize/peephole.js'
+ import { compile } from '../index.js'
+ import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
+@@ -315,7 +315,7 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
+   ok(/select/.test(geoWat), 'sid computed branch-free (select over tag test)')
+   ok(/br_table/.test(geoWat), 'slot-conflicting prop still dispatches via br_table')
+   ok(!/br_if[^\n]*\n?[^\n]*call \$__ptr_type/.test(geoWat), 'no per-read tag-guard call in the dispatches')
+-  ok(/local\.set \$s\s*\(f64\.load/.test(geoWat), 'proven discriminant read collapses to a bare slot load')
++  ok(/local\.(?:set|tee) \$s\s*\(f64\.load/.test(geoWat), 'proven discriminant read collapses to a bare slot load')
+   const mkRowsJs = () => {
+     const rows = []
+     for (let i = 0; i < 9; i++) {
+@@ -2090,6 +2090,10 @@ const compileMain = (src) => {
+   const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+   return wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+ }
++// A literal left in ARRAY storage stores its elements as f64 and has no i32
++// carrier; the carrier local itself may be forwarded into its one use by
++// propagateLocals, so its absence says nothing.
++const unpromoted = (body) => /\(f64\.const 1\)/.test(body) && !/\(local \$xs i32\)/.test(body)
+ 
+ // === unrollRowLenPadLoops (floatbeat variable-row pad) ===
+ // `for (i < rowlen[ci])` after bindNestedRowLengths — uniform rows fully
+@@ -2172,7 +2176,7 @@ test('promoteIntArrayLiterals: .push disqualifies (length mutation)', () => {
+     }
+   `
+   const body = compileMain(src)
+-  ok(/\(local \$xs f64\)/.test(body), '.push needs growable ARRAY storage; promotion must skip')
++  ok(unpromoted(body), '.push needs growable ARRAY storage; promotion must skip')
+   const { main } = run(src)
+   is(main(), 4)
+ })
+@@ -2185,7 +2189,7 @@ test('promoteIntArrayLiterals: Array.isArray disqualifies (typed arrays return f
+     }
+   `
+   const body = compileMain(src)
+-  ok(/\(local \$xs f64\)/.test(body), 'Array.isArray would flip true→false under promotion')
++  ok(unpromoted(body), 'Array.isArray would flip true→false under promotion')
+   const { main } = run(src)
+   is(main(), 3)
+ })
+@@ -2219,7 +2223,7 @@ test('promoteIntArrayLiterals: bare-name escape disqualifies', () => {
+     }
+   `
+   const body = compileMain(src)
+-  ok(/\(local \$xs f64\)/.test(body), 'escape to callee with unknown receiver shape disqualifies')
++  ok(unpromoted(body), 'escape to callee with unknown receiver shape disqualifies')
+   const { main } = run(src)
+   is(main(), 6)
+ })
+@@ -2445,7 +2449,7 @@ test('promoteIntArrayLiterals: hole disqualifies', () => {
+     }
+   `
+   const body = compileMain(src)
+-  ok(/\(local \$xs f64\)/.test(body), 'holes break dense int contract; disqualify')
++  ok(unpromoted(body), 'holes break dense int contract; disqualify')
+   const { main } = run(src)
+   is(main(), 3)
+ })
+@@ -3711,27 +3715,41 @@ test('int narrowing: bounded typed-array element products use i32.mul (faithful)
+   }
+ })
+ 
+-test('propagateSingleUse: folds a single-def/single-use pure temp into its use (own-optimizer "propagate")', () => {
+-  // jz emits short-lived address/index temps watr's optimizer folds away; this is the jz-side pass.
+-  // A pure single-use temp must disappear (local + set + get gone), bit-exact.
+-  const localCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local /g) || []).length
+-  const src = `export let f = (a, i) => { let t = (i + 1) * 4; return a[t] }`
+-  // isolate propagateSingleUse: foldSetToTee also forwards single-use temps, so hold it off in both
+-  const on = localCount(src, { level: 2, watr: false, foldSetToTee: false })
+-  const off = localCount(src, { level: 2, watr: false, propagateSingleUse: false, foldSetToTee: false })
+-  ok(on < off, `temp folded: ${off} locals → ${on}`)
+-
+-  // bit-exact with the pass on vs off across shapes (incl. the no-RHS catch-payload edge: `local.set
+-  // $e` with the value on the stack must NOT be treated as a movable temp), and the vectorizer is
+-  // untouched (the pass runs AFTER it and skips v128 functions).
++test('propagateLocals: watr\'s local propagation runs on each function before devirt, and is the only propagation at `fast`', () => {
++  // jz emits short-lived address/index temps; the shared pass (watr/optimize
++  // `propagate`) forwards a pure single-use temp into its use and sinks a
++  // multi-use single-def into a tee at its first use. Structure at `watr: false`,
++  // where this early invocation is the only propagation.
++  const wat = (src, opt) => compile(src, { wat: true, optimize: opt })
++  const count = (w, re) => (w.match(re) || []).length
++  const temp = `export let f = (a, i) => { let t = (i + 1) * 4; return a[t] }`
++  const on = wat(temp, { level: 2, watr: false }), off = wat(temp, { level: 2, watr: false, propagateLocals: false })
++  ok(count(on, /\(local /g) < count(off, /\(local /g), `the temp is forwarded: ${count(off, /\(local /g)} locals → ${count(on, /\(local /g)}`)
++  const multi = `export let f = (a, i) => { let p = a[i] * a[i]; return p + p * 2 }`
++  const onM = wat(multi, { level: 2, watr: false }), offM = wat(multi, { level: 2, watr: false, propagateLocals: false })
++  ok(count(onM, /\(local\.get /g) < count(offM, /\(local\.get /g), `the first read becomes a tee: ${count(offM, /\(local\.get /g)} gets → ${count(onM, /\(local\.get /g)}`)
++  ok(/\(local\.tee /.test(onM), 'emits a local.tee')
++
++  // bit-exact with the pass on vs off across the shapes a careless propagation
++  // miscompiles: a call's effect stays unconditional and in order, a load does
++  // not cross a store to the same buffer, a trapping division stays before the
++  // store it precedes, an RHS is not sunk into a loop body, the catch payload's
++  // bare `local.set $e` has no RHS to move, and a v128 function is untouched.
+   for (const [s, args] of [
+     [`export let f = (a, n) => { let acc = 0; for (let i = 0; i < n; i++) { let k = i * 3 + 1; acc = (acc + k) | 0 } return acc | 0 }`, [[7]]],
+     [`export let f = () => { try { throw "err" } catch (e) { return e.length } }`, [[]]],
+     [`export let f = (buf, n) => { let s = 0; for (let i = 0; i < n; i++) s += buf[i] * 2; return s }`, [[new Float64Array([1, 2, 3, 4]), 4]]],
++    [`export let f = (n) => { let b = new Float64Array(n); return b.length }`, [[5]]],
++    [`export let f = (a, c) => { let p = a[0] + a[1]; let r = p; if (c) r = p * 2; return r }`, [[new Float64Array([3, 4]), 0], [new Float64Array([3, 4]), 1]]],
++    [`export let f = (a) => { let v = a[0]; a[0] = 99; return v + a[0] }`, [[new Float64Array([7])]]],
++    [`export let f = (a, n) => { let k = a[0] * 2; let s = 0; for (let i = 0; i < n; i++) s += k; return s }`, [[new Float64Array([5]), 3]]],
++    [`export let f = (a, d) => { let q = (100 / d) | 0; a[0] = 7; return q + a[0] }`, [[new Int32Array([0]), 0], [new Int32Array([0]), 5]]],
+   ]) {
+-    const onF = jz(s, { optimize: { level: 2, watr: false } }).exports.f
+-    const offF = jz(s, { optimize: { level: 2, watr: false, propagateSingleUse: false } }).exports.f
+-    for (const a of args) is(onF(...a), offF(...a), `propagateSingleUse on===off ${JSON.stringify(a)}`)
++    for (const level of [{ level: 2, watr: false }, { level: 2 }, { level: 'speed' }]) {
++      const onF = jz(s, { optimize: level }).exports.f
++      const offF = jz(s, { optimize: { ...level, propagateLocals: false } }).exports.f
++      for (const a of args) is(onF(...a), offF(...a), `propagateLocals on===off at ${JSON.stringify(level)} ${JSON.stringify(a)}`)
++    }
+   }
+ })
+ 
+@@ -3772,30 +3790,6 @@ test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const expone
+   is(dump({ level: 2, crPow: true }), dump({ level: 'speed', crPow: true }), 'pow_fold_v (lift) is bit-identical to pow_fold (emit)')
+ })
+ 
+-test('foldSetToTee: sinks a single-def RHS into its first use as a tee (simplify-locals watr leaves)', () => {
+-  const getCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local\.get /g) || []).length
+-  // multi-use single-def: the standalone set becomes a tee at the first use, dropping a get
+-  const src = `export let f = (a, i) => { let p = a[i] * a[i]; return p + p * 2 }`
+-  const on = getCount(src, { level: 2, watr: false })
+-  const off = getCount(src, { level: 2, watr: false, foldSetToTee: false })
+-  ok(on < off, `tee fold drops a get: ${off} → ${on}`)
+-  ok(/\(local\.tee /.test(compile(src, { wat: true, optimize: { level: 2, watr: false } })), 'emits a local.tee')
+-
+-  // correctness: bit-exact on/off across the shapes a naive sink would miscompile —
+-  // a call's side effect must stay unconditional; a load must NOT cross a store to the
+-  // same buffer; an RHS must not be sunk into a loop body (re-eval/re-effect).
+-  for (const [s, args] of [
+-    [`export let f = (n) => { let b = new Float64Array(n); return b.length }`, [[5]]],                                   // effectful single-use forward
+-    [`export let f = (a, c) => { let p = a[0] + a[1]; let r = p; if (c) r = p * 2; return r }`, [[new Float64Array([3, 4]), 0], [new Float64Array([3, 4]), 1]]], // multi-use, conditional later use
+-    [`export let f = (a) => { let v = a[0]; a[0] = 99; return v + a[0] }`, [[new Float64Array([7])]]],                   // load must not cross the store (→ 106, not 198)
+-    [`export let f = (a, n) => { let k = a[0] * 2; let s = 0; for (let i = 0; i < n; i++) s += k; return s }`, [[new Float64Array([5]), 3]]], // RHS not sunk into loop
+-  ]) {
+-    const onF = jz(s, { optimize: { level: 2, watr: false } }).exports.f
+-    const offF = jz(s, { optimize: { level: 2, watr: false, foldSetToTee: false } }).exports.f
+-    for (const a of args) is(onF(...a), offF(...a), `foldSetToTee on===off ${JSON.stringify(a)}`)
+-  }
+-})
+-
+ // Mirror index in the versioning guard: `inp[N−k]` (symmetric fill — FFT
+ // log-magnitude, reverse copies) has iv-coefficient −1; affineIdxOfIV used to
+ // reject a<0 outright, so the versioned FAST arm kept a per-iteration bounds
+diff --git a/test/types.js b/test/types.js
+index fb0f4424..1f43e226 100644
+--- a/test/types.js
++++ b/test/types.js
+@@ -952,7 +952,7 @@ test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
+   `)
+   const body = fnBody(w, 'f')
+   ok(body, '$f present')
+-  // multi-use receiver so the local survives foldSetToTee — exercises the unbox decision on the surviving slot
++  // multi-use receiver so the local survives propagateLocals — exercises the unbox decision on the surviving slot
+   ok(/\(local \$b i32\)/.test(body), '$b unboxed to i32 (.map receiver)')
+   ok(!/__is_str_key/.test(body), '$f has no __is_str_key after .map receiver unbox')
+ })
+-- 
+2.50.1 (Apple Git-155)
+

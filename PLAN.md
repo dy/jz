@@ -138,7 +138,8 @@ this milestone is complete; existing red checkpoints are not a new baseline.
   capacity to a power of two. The reviewed integration below replaces that
   final rounding; the original count-first change avoided intermediate growth.
 - `bench/webaudio`: the web-audio-api render is a bench case, the flagship's
-  speed against V8 in the table: V8 4.7 ms, jz 55 ms, 594 KB and 462 MB peak.
+  speed against V8 in the table: V8 4.7 ms, jz 55 ms, 594 KB and 462 MB peak
+  (at `0c61c6f3`; `bench/bench.svg` still shows the 52-case chart).
   jz's checksum differs from V8's: `Math.sin`, `cos` and `exp` are off by 7.5M,
   83M and 6.2M ulps (a biquad coefficient by 1.2e-6), and at O0/O1 the
   BiquadFilterNode path diverges by up to 0.39 (O2/O3 within 1.7e-6). Both are
@@ -707,7 +708,16 @@ GREEN (15/15); recursive GREEN (13,891,588 bytes, heap 1,206 MB, 60 s);
 functional 14/20 (`src/abi/number.js O2` joins the greens; the six: maps-
 properties O1, strings-parser O1/O2, encoder-json O1, src/ir/tape.js O1,
 src/abi/number.js O1); sequences GREEN; the families case is green
-natively. Open beside it: a boolean written into a mixed binding keeps no
+natively. On the merged main (`2db662d3`, with the receiver-HASH pin, the
+box-prefix host boundary as `jz:hostabi` `val` slots and the bench
+refresh): native **4331 pass / 2 fail / 1 skip** (the complex member `++`
+result through a call receiver at O0, the fromCharCode family); recursive
+GREEN (13,906,706 bytes, heap 1,207 MB); functional 14/20, the same six;
+sequences GREEN; families 41/50: the fromCharCode family natively, and at
+O1 only the kernel's bytes differ from native for two families (the
+slebSize family, the negative-zero/subnormal/absence boundaries: the
+hosted-divergence class, seven rows now) and the warm-instance leg of the
+first. Open beside it: a boolean written into a mixed binding keeps no
 atom (`let x = true; if (c) x = 'str'` is a number to typeof), and `x ??
 true` / `ok && 5n` fold their kind to BIGINT statically; a self-referential
 def through a join (`x = c ? x + 1n : x`) never readies, so such a binding
@@ -715,17 +725,43 @@ keeps its raw carrier (ledger-correctness §11).
 
 ### Next ownership and order
 
-1. One session owns main. Next: the six reds above, emit's per-closure
-   allocation (675 MB on jz × jz), a rest parameter that never escapes
-   reading the argument slots (the encoder's `push(...xs)` takes an array per
-   byte, 322 MB), the seven hosted byte divergences (the string-equality
-   template's `i32.or(x, 0)` folds under the kernel and not natively: one
-   predicate reads differently self-hosted). Regions remain the memory
+1. One session owns main; slices run in parallel worktrees at `2db662d3`
+   and land one by one with the gates. In flight: the two native reds (the
+   complex member `++` through a call receiver: `valTypeOf` names no element
+   kind for an expression receiver; the fromCharCode family is the string
+   contract, below), the hosted byte divergences (six functional rows and
+   two families rows at O1: the string-equality template's `i32.or(x, 0)`
+   folds under the kernel and not natively, one predicate reads differently
+   self-hosted, a jz miscompilation of its own source to find), a rest
+   parameter that never escapes reading the argument slots (the encoder's
+   `push(...xs)` takes an array per byte, 322 MB; with `a.unshift(...t)`'s
+   compile failure and the shift/push reallocation), emit's per-closure
+   allocation (675 MB on jz × jz, the frame's forty collections per
+   function; the plan's body data excluded, the milestone replaces it),
+   loose `==` across BigInt/Number/Boolean and `String()` of a boxed BigInt,
+   and the inventory of every result-reconstruction site for milestone item
+   3. The fromCharCode red is the string contract: `spec/subset.md` names
+   UTF-16 code units, the runtime stores UTF-8 bytes and `charCodeAt` reads
+   a byte; a code-unit `fromCharCode` alone breaks the kernel, whose
+   static-data builders use strings as byte containers
+   (`.work/patches/fromcharcode-utf8-code-unit.patch`); the representation
+   is step 7's charter item, not a local fix. Regions remain the memory
    model; the allocation audit shrinks what they must reclaim. Keep the
    private fresh gate. Do not add source-spelling exceptions.
-2. watr is consumed at `deb62e4`; the local-pass deletion stays isolated until
-   its `$f$exp` shape is recovered. Agree on the effect/opcode interface before
-   introducing semantic FunctionIR.
+2. watr is consumed at `deb62e4`; the local-pass deletion (`campaign-locals-jz`,
+   `45314c68` on `f43229d2`, 11 files −262 lines, `.work/patches/locals-0001-*`)
+   stays isolated until watr consumes the one rule it needs: the residual
+   `$__str_idx` shape is watr's (`propagate` sinks a tee into a dead `local.set`
+   whose `if` value `dropEffects` keeps whole; `commuteForSink` swaps an xor's
+   operands over a local the previous set reads). With that rule
+   (`.work/patches/watr-propagate-dead-if-drop-and-commute-guard.patch`: an
+   `if` of discardable arms reduces to its condition's effects; no commute over
+   the sinking local) the candidate is at the ratchet's baseline in every
+   category and −2.80% on the fast corpus; on stock `deb62e4` it fails the
+   level-2 ratchet in five categories (buf +5, nest +539, slice +1960, ring +40,
+   condref +952 loop-body ops). The patch is byte-identical on main at every
+   level. Agree on the effect/opcode interface before introducing semantic
+   FunctionIR.
 3. Complete callable identities and structural closure/freeze, replace covered
    result reconstruction with verified FunctionIR, add independent reachability
    mutations, and reconcile ABI/subset/region specs. Then rerun complete matrix,

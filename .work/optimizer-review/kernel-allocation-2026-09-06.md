@@ -285,18 +285,25 @@ result contract replaces (PLAN.md, next milestone): not polished here.
 
 ## Open
 
-- The BOOL veto (`hasClosedBool`, representation-plan/body-data.js) keeps a
-  parameter of every kind from materializing: a caller boxes a BigInt into
-  it, the callee reads the box's bits (the recorded family "a boxed BigInt
-  into a parameter of every kind", watr's `slebSize`, the memory64 limits).
-  Without the veto the kernel fails to compile itself and functional falls
-  to 6/20: the kernel's own code holds a materialization the emitter cannot
-  bear. Find that one before lifting the veto.
+- The BOOL veto is retired (`8b436126`, `f8799c96`, `2db662d3`; PLAN.md "The
+  BOOL veto is retired"): it masked three defects, not one materialization
+  the emitter could not bear – a plan edge skipped a materialized carrier
+  whose node had no kind, a materialized join's boolean arm lost its atom, a
+  join materialized against a binding that never did. Recursive heap 1,264
+  → 1,206 MB; functional 13 → 14/20.
 - A named function used as a value as a closure-set member (built,
   withdrawn): sound only once every call path the summary does not model
   escapes its arguments; 1,224 kernel functions changed kinds and the
   kernel failed to compile itself.
 - `300n == 300` is false: loose equality across BigInt and Number.
+- `String.fromCharCode(0x100)` and above: the runtime stores UTF-8 bytes and
+  `charCodeAt` reads a byte, while `spec/subset.md` names the corrected
+  contract (UTF-16 code units). A code-unit `fromCharCode` alone breaks the
+  kernel: the static-data builders use strings as byte containers
+  (module/string.js, module/object.js, module/number.js, src/static-data.js,
+  src/wat/assemble/static-data.js; consumers src/compile/index.js) – the
+  patch is kept at `.work/patches/fromcharcode-utf8-code-unit.patch`. The
+  string representation is a charter item (PLAN.md step 7), not a local fix.
 - The encoder's remaining 1.0 GB: the rest-parameter array per `push` (an
   engine gap), the per-`if` head and per-`call_indirect` reader arrays, the
   exact copy of each body. Then emitClosures (675 MB: 50 KB of analysis and

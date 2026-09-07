@@ -1,0 +1,178 @@
+From 0d96971f978d0d2ed2e11a89e24545e3a2b76ad6 Mon Sep 17 00:00:00 2001
+From: "Dmitry Iv." <df.creative@gmail.com>
+Date: Sun, 6 Sep 2026 03:13:23 -0400
+Subject: [PATCH] String.fromCharCode: a code unit's UTF-8 encoding, not one
+ truncated byte
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+String.fromCharCode(c) wrote ToUint16(c) & 0xFF as a single byte, so
+fromCharCode(0xff) was an invalid one-byte string unequal to the literal
+"ÿ", fromCharCode(0x100) was "\0", and the hosted parser's \xHH and
+\uHHHH escapes above 0x7f, decoded through it, differed from native. The
+unit is now encoded through __fromCodePoint's UTF-8 writer (1, 2 or 3
+bytes); ToUint16 takes NaN and ±∞ as 0, truncates, and wraps mod 2^16
+through i64 (exact below 2^63, the |0 boundary). A surrogate unit stays
+its own 3-byte sequence, as fromCodePoint writes it, and two arguments
+never combine into the 4-byte character their pair names: the byte string
+model has no lone code unit to hold, recorded as the contract gap.
+
+test/from-char-code.js: NUL, ASCII endpoints, 0x80/0xff/0x100,
+0x7ff/0x800/0xffff, modulo 65536, fractions, negatives, non-finite,
+strings, multiple arguments, conversion order and a throwing valueOf, byte
+lengths beside code units, and the surrogate gap as it stands. 7 tests,
+204 assertions at O0-O3. test/index.js registers the file. The family
+corpus case "String.fromCharCode above 0xff" stays red on the native leg:
+charCodeAt reads bytes (README, strings), so fromCharCode(0x100).charCodeAt(0)
+is 196, the leading byte of the two the unit encodes to, as it is for the
+literal; its red note now names that read instead of the truncation.
+
+NOT on the campaign branch: the compiler's own binary-string builders
+(module/array.js, object.js, typedarray.js, string.js's pool writers,
+number.js, regex.js, math/pow-transcend.js, src/static-data.js,
+compile/intern-table.js, wat/assemble/static-data.js) build data chunks
+with String.fromCharCode(byte) and count bytes as .length, an idiom that
+under self-hosting held only through the truncation this repairs; with it,
+the kernel's pool offsets and escaped data would double every byte above
+0x7f. Converting those builders to a byte-array pipeline is the change this
+repair needs, and it is not a leaf.
+---
+ module/string.js       | 25 +++++++++++++-----
+ test/_families.js      |  2 +-
+ test/from-char-code.js | 59 ++++++++++++++++++++++++++++++++++++++++++
+ test/index.js          |  1 +
+ 4 files changed, 80 insertions(+), 7 deletions(-)
+ create mode 100644 test/from-char-code.js
+
+diff --git a/module/string.js b/module/string.js
+index ba200ee0..522805b6 100644
+--- a/module/string.js
++++ b/module/string.js
+@@ -2205,14 +2205,27 @@ export default (ctx) => {
+         (local.get $sp)))))
+     (local.get $s))`)
+ 
+-  // String.fromCharCode(...codes) — variadic; each arg is ToUint16(ToNumber(code))
+-  // → a 1-byte string, concatenated left to right (mirrors String.fromCodePoint).
++  // String.fromCharCode(code) → the UTF-8 encoding of the UTF-16 code unit
++  // ToUint16(ToNumber(code)) (22.1.2.1): NaN and ±∞ are 0, a fraction truncates,
++  // the rest is taken mod 2^16 (wrapped through i64: exact below 2^63, the `|0`
++  // boundary). The unit is a code point in [0, 0xFFFF], so __fromCodePoint's
++  // writer encodes it: 1 byte below 0x80, 2 below 0x800, 3 otherwise. A surrogate
++  // unit (0xD800-0xDFFF) is written as its own 3-byte sequence, as fromCodePoint
++  // does; under the byte string model no later unit combines with it, so a pair
++  // given as two arguments is not the 4-byte character the pair names in JS.
++  wat('__fromCharCode', `(func $__fromCharCode (param $x f64) (result f64)
++    (if (i32.or (f64.ne (local.get $x) (local.get $x)) (f64.eq (f64.abs (local.get $x)) (f64.const inf)))
++      (then (return (call $__fromCodePoint (f64.const 0)))))
++    (call $__fromCodePoint (f64.convert_i32_u
++      (i32.and (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $x))) (i32.const 0xFFFF)))))`)
++
++  // String.fromCharCode(...codes) — variadic; each unit's encoding, concatenated
++  // left to right (mirrors String.fromCodePoint). `toNumF64` performs ToPrimitive
++  // on an object argument, so a throwing valueOf/toString propagates per spec.
+   bind('String.fromCharCode', (...codes) => {
+     if (codes.length === 0) return emit(['str', ''])
+-    // ToUint16(ToNumber(code)): `toNumF64` performs ToPrimitive on an object
+-    // argument, so a throwing valueOf/toString propagates per spec. A byte ≥0x80
+-    // can't be a 7-bit-ASCII SSO, so __char1byte routes it to a heap 1-byte string.
+-    const one = (node) => { inc('__char1byte'); return typed(['call', '$__char1byte', asI32(toNumF64(node, emit(node)))], 'f64') }
++    inc('__fromCharCode')
++    const one = (node) => typed(['call', '$__fromCharCode', toNumF64(node, emit(node))], 'f64')
+     let r = one(codes[0])
+     for (let i = 1; i < codes.length; i++) {
+       inc('__str_concat_raw')
+diff --git a/test/_families.js b/test/_families.js
+index 5fd9d530..13cd93b7 100644
+--- a/test/_families.js
++++ b/test/_families.js
+@@ -46,7 +46,7 @@ export const FAMILIES = [
+     { name: 'hex and unicode escapes equal their characters', src: `export let f = () => "\\xff" === "ÿ" ? 1 : 0\nexport let k = () => "\\uD83D\\uDE00" === "😀" ? 1 : 0\nexport let u = () => "\\u{1F600}" === "😀" ? 1 : 0`, calls: [['f', [], 1], ['k', [], 1], ['u', [], 1]],
+       red: { hosted: 'the kernel decodes \\xHH and \\uHHHH above 0x7f through String.fromCharCode (A receipt)' } },
+     { name: 'String.fromCharCode above 0xff', src: `export let h = () => String.fromCharCode(0x100).charCodeAt(0)\nexport let a = () => String.fromCharCode(65, 66)`, calls: [['h', [], 256], ['a', [], 'AB']],
+-      red: { native: 'every level: the runtime writes one byte (0)' } },
++      red: { native: 'every level: charCodeAt reads the leading UTF-8 byte (196) of the two the unit encodes to; the byte string model has no code unit index (README, strings)' } },
+   ] },
+   { family: 'error arms', cases: [
+     { name: 'thrown classes and primitives', src: `export let f = (x) => { try { if (x === 1) throw new TypeError('t'); if (x === 2) throw 5; if (x === 3) throw 'str'; return 0 } catch (e) { return e instanceof TypeError ? 1 : typeof e === 'number' ? e : typeof e === 'string' ? e.length : -1 } }\nexport let g = (x) => { if (x) throw new RangeError('r'); return 1 }\nexport let h = (x) => { if (x) throw 42; return 1 }`,
+diff --git a/test/from-char-code.js b/test/from-char-code.js
+new file mode 100644
+index 00000000..b29a580a
+--- /dev/null
++++ b/test/from-char-code.js
+@@ -0,0 +1,59 @@
++// String.fromCharCode under the UTF-8 string contract (README: strings are UTF-8
++// bytes; length, indexing and slicing count bytes): each argument is the UTF-16
++// code unit ToUint16(ToNumber(code)), and the result is that unit's UTF-8
++// encoding, the bytes a literal of the same character carries. Byte lengths are
++// stated beside the JS code-unit counts. Surrogates are the representation gap:
++// a unit in 0xD800-0xDFFF is written as its own 3-byte sequence (as
++// String.fromCodePoint writes it), and two such arguments never combine into the
++// 4-byte character their pair names in JS; that is recorded here as the contract
++// stands, not asserted as JS.
++import test from 'tst'
++import { is, ok, throws } from 'tst/assert.js'
++import { compile } from '../index.js'
++import { instantiate } from '../interop.js'
++
++const SRC = `export let one = (c) => String.fromCharCode(c)
++export let two = (a, b) => String.fromCharCode(a, b)
++export let three = (a, b, c) => String.fromCharCode(a, b, c)
++export let none = () => String.fromCharCode()
++export let len = (c) => String.fromCharCode(c).length
++export let same = (c, s) => String.fromCharCode(c) === s ? 1 : 0
++export let point = (c) => String.fromCodePoint(c)
++export let fromString = (s) => String.fromCharCode(s)
++export let throwing = () => String.fromCharCode({ valueOf() { throw new TypeError('bad code') } })
++export let order = () => { let t = ''; const a = { valueOf() { t += 'a'; return 65 } }, b = { valueOf() { t += 'b'; return 66 } }; return String.fromCharCode(a, b) + t }`
++const utf8 = (s) => [...new TextEncoder().encode(s)]
++const run = (level) => instantiate(compile(SRC, { optimize: level }), { memory: 64 }).exports
++
++for (const level of [0, 1, 2, 3]) test(`String.fromCharCode: code units become their UTF-8 encoding (O${level})`, () => {
++  const ex = run(level)
++  // [unit, the JS character, UTF-8 byte length]
++  for (const [c, ch, bytes] of [[0, '\0', 1], [0x41, 'A', 1], [0x7f, '\x7f', 1], [0x80, '\x80', 2], [0xff, 'ÿ', 2], [0x100, 'Ā', 2], [0x7ff, '߿', 2], [0x800, 'ࠀ', 3], [0xffff, '￿', 3], [0x20ac, '€', 3]]) {
++    is(ex.one(c), ch, `fromCharCode(0x${c.toString(16)}) is the character`)
++    is(ex.len(c), bytes, `its length is its ${bytes} UTF-8 bytes (JS: 1 code unit)`)
++    is(ex.same(c, ch), 1, 'and it equals the literal of that character')
++    is(ex.one(c), String.fromCharCode(c), 'as in JS')
++  }
++  is(ex.none(), '', 'no arguments: the empty string')
++  is(ex.two(65, 66), 'AB'); is(ex.three(0x48, 0xe9, 0x21), 'Hé!', 'arguments concatenate left to right')
++})
++
++for (const level of [0, 2]) test(`String.fromCharCode: ToUint16 of every input (O${level})`, () => {
++  const ex = run(level)
++  for (const [c, expected] of [[0x10041, 'A'], [0x1ffff, '￿'], [65.9, 'A'], [-1, '￿'], [-0.5, '\0'], [NaN, '\0'], [Infinity, '\0'], [-Infinity, '\0'], [65536, '\0'], [1e10, String.fromCharCode(1e10)]])
++    is(ex.one(c), expected, `fromCharCode(${c}) takes the unit modulo 65536, truncated, non-finite as 0`)
++  is(ex.fromString('65'), 'A', 'a numeric string converts')
++  is(ex.fromString('x'), '\0', 'a non-numeric string is NaN, so 0')
++  throws(() => ex.throwing(), TypeError, 'a throwing valueOf propagates')
++  is(ex.order(), 'ABab', 'arguments convert left to right, before the result')
++})
++
++test('String.fromCharCode: the surrogate gap, as the byte contract stands (recorded, not JS)', () => {
++  const ex = run(1)
++  // a lone surrogate unit is written as its own 3-byte sequence, the same bytes String.fromCodePoint writes for it
++  is(utf8(ex.one(0xd83d)).length, utf8(ex.point(0xd83d)).length, 'fromCharCode and fromCodePoint agree on a lone surrogate')
++  is(ex.len(0xd83d), 3, 'a lone surrogate unit is three bytes (its own sequence); JS holds one code unit the byte model cannot')
++  // a pair given as two arguments does not combine: 6 bytes, not the 4-byte character
++  is(ex.two(0xd83d, 0xde00) === '😀' ? 1 : 0, 0, 'the pair does not become the character (JS: it does); the representation change this needs is the reduction, not a repair here')
++  is(ex.point(0x1f600), '😀', 'one code point above 0xFFFF encodes as 4 bytes through fromCodePoint')
++})
+diff --git a/test/index.js b/test/index.js
+index 2218a02d..aefcc9d2 100644
+--- a/test/index.js
++++ b/test/index.js
+@@ -16,6 +16,7 @@ const TESTS = [
+   'features',
+   'feature-gating',
+   'strings',
++  'from-char-code',
+   'symbols',
+   'rest-params',
+   'spread',
+-- 
+2.50.1 (Apple Git-155)
+
