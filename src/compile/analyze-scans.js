@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -80,15 +80,17 @@ export function findMutations(node, names, mutated) {
   for (const name of all) if (names.has(name)) mutated.add(name)
 }
 
+const NO_NAMES = []
+
 /**
  * Pre-scan function body for captured variables that are mutated.
  * Marks mutably-captured vars in ctx.func.boxed for cell-based capture.
- * `inHand` names a closure body's own parameters and the names it captured
- * from its parent: values in hand at entry, so a nested closure capturing one
- * copies the value (a cell only when the body mutates it), as it does a
- * function's parameter.
+ * `params` and `captures` name a closure body's own parameters and the names
+ * it captured from its parent: values in hand at entry, so a nested closure
+ * capturing one copies the value (a cell only when the body mutates it), as
+ * it does a function's parameter.
  */
-export function boxedCaptures(body, inHand = []) {
+export function boxedCaptures(body, params = NO_NAMES, captures = NO_NAMES) {
   const outerScope = new Set()
   walkAst(body, { enter: node => {
     const op = node[0]
@@ -98,7 +100,17 @@ export function boxedCaptures(body, inHand = []) {
   if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
   if (ctx.func.locals) for (const k of ctx.func.locals.keys()) outerScope.add(k)
 
-  const markArrowCaptures = (node, assignTarget, seen) => {
+  // The names declared so far on the path from the body's entry: one set,
+  // block-scoped by an undo log (a block's declarations are forgotten at its
+  // exit), instead of a copy of the set per block.
+  const seen = new Set()
+  if (ctx.func.current?.params) for (const p of ctx.func.current.params) seen.add(p.name)
+  for (const name of params) seen.add(name)
+  for (const name of captures) seen.add(name)
+  const undo = []
+  const declare = { add: (name) => { if (!seen.has(name)) { seen.add(name); undo.push(name) } } }
+
+  const markArrowCaptures = (node, assignTarget) => {
     const pnode = node[1]
     let p = pnode
     if (Array.isArray(p) && p[0] === '()') p = p[1]
@@ -123,37 +135,38 @@ export function boxedCaptures(body, inHand = []) {
     for (const v of boxed) if (!ctx.func.boxed.has(v)) ctx.func.boxed.set(v, `${T}cell_${v}`)
   }
 
-  // The walk's `seen` starts at what is in hand at entry (passed in: an
-  // IIFE's default parameter cannot read the enclosing function's locals
-  // under the self-compile).
-  ;(function walk(node, assignTarget, seen) {
+  // `seen` starts at what is in hand at entry (passed in: an IIFE's default
+  // parameter cannot read the enclosing function's locals under the
+  // self-compile).
+  ;(function walk(node, assignTarget) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') {
-      markArrowCaptures(node, assignTarget, seen)
+      markArrowCaptures(node, assignTarget)
       return
     }
 
     if (op === ';' || op === '{}') {
-      const blockSeen = new Set(seen)
-      for (let i = 1; i < node.length; i++) walk(node[i], null, blockSeen)
+      const mark = undo.length
+      for (let i = 1; i < node.length; i++) walk(node[i], null)
+      while (undo.length > mark) seen.delete(undo.pop())
       return
     }
 
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
-        if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null, seen)
-        else walk(decl, null, seen)
-        collectParamNames([decl], seen)
+        if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null)
+        else walk(decl, null)
+        collectParamName(decl, declare)
       }
       return
     }
 
     if (op === '=' && typeof node[1] === 'string' && Array.isArray(node[2]) && node[2][0] === '=>')
-      return walk(node[2], node[1], seen)
-    for (let i = 1; i < node.length; i++) walk(node[i], null, seen)
-  })(body, null, new Set([...(ctx.func.current?.params?.map(p => p.name) || []), ...inHand]))
+      return walk(node[2], node[1])
+    for (let i = 1; i < node.length; i++) walk(node[i], null)
+  })(body, null)
 }
 
 /**

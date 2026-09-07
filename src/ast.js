@@ -542,7 +542,8 @@ export function classifyParam(r) {
   return ['plain', r]
 }
 
-const collectParamName = (r, out) => {
+/** The names one parameter or declaration pattern binds, into `out` (anything with `add`). */
+export const collectParamName = (r, out) => {
   if (typeof r === 'string') { out.add(r); return }
   if (!Array.isArray(r)) return
   if (r[0] === '=' && typeof r[1] === 'string') { out.add(r[1]); return }

@@ -144,7 +144,7 @@ export function analyzeClosureBodyForEmit(cb) {
       ctx.func.flatObjects = facts.flatObjects
       ctx.func.sliceViews = facts.sliceViews
       inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
-      boxedCaptures(cb.body, [...cb.params, ...cb.captures])
+      boxedCaptures(cb.body, cb.params, cb.captures)
       for (const name of ctx.func.boxed.keys())
         if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64')
           ctx.func.locals.set(name, 'i32')
