@@ -13,7 +13,8 @@ node bench/bench.mjs  # run benchmarks
 
 The watr safety fixes are in GitHub release `v5.10.2` (`6614120`); npm
 publication is separate. This checkout additionally requires the annotation
-transport corrections through sibling commit `25d828b`. The early local-pass
+transport corrections through sibling commit `82fda82` (explicit `loc`, `type`,
+and `schemaSid` preservation). The early local-pass
 replacement remains disabled after the kernel-oracle comparison; its unified
 option uses the proven JZ implementation.
 `package.json` and the lockfile consume sibling `../watr` explicitly;
