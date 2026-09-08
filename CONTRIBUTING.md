@@ -14,9 +14,9 @@ node bench/bench.mjs  # run benchmarks
 The watr safety fixes are in GitHub release `v5.10.2` (`6614120`); npm
 publication is separate. Sibling commit `cdc631a` removes the subsequent
 annotation transport experiment: JZ emits schema sections before watr, so
-watr's original plain clone is sufficient. The early local-pass replacement
-remains disabled after the kernel-oracle comparison; its unified option uses
-the proven JZ implementation.
+watr's original plain clone is sufficient. Generic local propagation and
+local merging run after linking through watr, including the fast tier; the
+duplicate JZ implementations and their repeated cleanup sweep are removed.
 `package.json` and the lockfile consume sibling `../watr` explicitly;
 `.npmrc` installs a copy, keeping self-build paths under `node_modules/watr`.
 Check the sibling revision before installing: npm does not refresh a copy
@@ -43,7 +43,7 @@ src/
   compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
   optimize/     WAT-array passes + vectorize.js; const-pool, arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
-  summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint at compile entry (PLAN.md step 3)
+  summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites
   ir/           tape.js, the IR tape (parallel typed arrays); the WAT-array helpers until emit builds the tape
   wat/          assemble.js, codegen.js (AST → jz source printer), optimize.js
   abi/          NaN-box ABI helpers (string, array, object, number)

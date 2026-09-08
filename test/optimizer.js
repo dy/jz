@@ -361,13 +361,14 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   // OBJECT's shape never changes, so within a straight-line region the second
   // read IS the first — tee'd i64, reused. A non-readonly call between the
   // reads could dyn-write the slot, so it clears the memo.
+  // Two schemas carry r so the reads exercise dispatch memoization.
   const mkSrc = (body) => `const mkRows = () => {
     const rows = []
     for (let i = 0; i < 9; i++) {
       const k = i % 3
       if (k === 0) rows.push({ t: k, x: i + 1, y: i + 2 })
       else if (k === 1) rows.push({ t: k, r: i + 1, x: i + 2 })
-      else rows.push({ t: k, w: i + 1, h: i + 2 })
+      else rows.push({ t: k, w: i + 1, h: i + 2, r: i + 3 })
     }
     return rows
   }
@@ -3716,7 +3717,7 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
   // jz emits short-lived address/index temps; the shared pass (watr/optimize
   // `propagate`) forwards a pure single-use temp into its use and sinks a
   // multi-use single-def into a tee at its first use. Structure at `watr: false`,
-  // where this early invocation is the only propagation.
+  // where the shared local cleanup is the only propagation.
   const wat = (src, opt) => {
     const fn = findFunc(parseWat(compile(src, { wat: true, optimize: opt })), '$f')
     ok(fn, 'inspect the user function, not runtime helper locals')

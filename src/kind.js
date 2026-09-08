@@ -8,7 +8,7 @@
  *   kind/lattice.js      — literal-lattice helpers + the nullish-arm join predicate
  *   kind/dict-census.js  — whole-program dict/Map value-kind census
  *   kind/shape.js        — JSON shape propagation + object-spread schema
- *   kind/val-type-of.js  — the VT dispatch table, valTypeOf/valTypeOfWithLocals,
+ *   kind/val-type-of.js  — the VT dispatch table, valTypeOf,
  *                           hasAmbiguousBoolMerge, shapeOfObjectLiteralAst
  *
  * @module kind
@@ -18,10 +18,9 @@ export { nullishArm } from './kind/lattice.js'
 export {
   dictValueKindOf, mapValueKindOf, censusKindsOf, censusShapedNode,
   censusMaybeUndefinedKind, BIGINT_JOINT_BINARY_OPS,
-  nameMayBeUndefinedInBody, exprMayBeUndefinedIn, exprMapGetShapedIn,
-  censusMaybeUndefined, namePresentValInBody, exprPresentValIn, localMapGetMayCarryBigint,
+  censusMaybeUndefined,
 } from './kind/dict-census.js'
 export { shapeOf, jsonConstString } from './kind/shape.js'
 export {
-  hasAmbiguousBoolMerge, valTypeOf, valTypeOfWithLocals, shapeOfObjectLiteralAst, numericDenied,
+  hasAmbiguousBoolMerge, valTypeOf, shapeOfObjectLiteralAst, numericDenied,
 } from './kind/val-type-of.js'

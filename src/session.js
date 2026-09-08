@@ -147,7 +147,7 @@ export function targetProfileFor(host) {
  *                                    in-place AST rewrite of one root (plan's
  *                                    flattenFuncNamespaces and friends).
  *   programFacts.moduleInitSlot per-module-init-node slot-observation memo
- *                                (observeProgramSlots). Same DEPS as walkCache —
+ *                                (collectSlotConstants). Same DEPS as walkCache —
  *                                shares its `gen` counter and reset call.
  *   programFacts.bodyIntCertain per-body int-certainty memo
  *                                (analyzeSchemaSlotIntCertain). Same DEPS as
@@ -216,67 +216,7 @@ export function targetProfileFor(host) {
  *                                structurally reading a fresh WeakMap key, never
  *                                a stale hit for the old shape (see the doc at
  *                                resetBindingUsesCache, analyze-scans.js).
- *   mayBeUndefinedTrace          kind.js's nameMayBeUndefinedInBody structural
- *                                trace (Slice 2 §3). Same no-surgical-
- *                                invalidation argument as bindingUses — body-
- *                                identity-keyed, setFuncBody guarantees a
- *                                rewrite is a fresh key. Wholesale reset
- *                                still matters despite that: `new WeakMap()`
- *                                folds to a strong `Map` in code jz self-
- *                                hosts (no GC → weakness unobservable, src/
- *                                prepare/index.js's `new` handler), and
- *                                kind.js is on the self-compiled compiler
- *                                surface — without the reset, a warm kernel
- *                                instance would accumulate one entry per
- *                                bodyRoot for its whole lifetime, not just
- *                                one compile's worth (see the doc at
- *                                nameMayBeUndefinedInBody, kind.js).
- *   mapGetShapedTrace            kind.js's nameMapGetShapedInBody structural
- *                                trace. Same DEPS as
- *                                mayBeUndefinedTrace — body-identity-keyed,
- *                                setFuncBody's fresh-reference guarantee
- *                                makes wholesale-only invalidation sound;
- *                                session ownership matters for the same
- *                                self-compiled-WeakMap-folds-to-strong-Map
- *                                reason (kind.js on the self-compiled compiler
- *                                surface — see the doc at
- *                                nameMapGetShapedInBody, kind.js).
- *   presentValTrace               kind.js's namePresentValInBody structural
- *                                trace. Same DEPS as
- *                                mayBeUndefinedTrace/mapGetShapedTrace —
- *                                body-identity-keyed wholesale-only reset,
- *                                same self-compiled-fold ownership argument
- *                                (see the doc at namePresentValInBody,
- *                                kind.js).
- *
- * DESIGN NOTE (deeper refactor, not attempted here):
- * mayBeUndefinedTrace/mapGetShapedTrace/presentValTrace are three near-
- * identical hand-rolled recursive body walkers (same let/const/=-write scan,
- * same seen-set cycle guard, same WeakMap-of-Map memo shape), each solving a
- * narrower version of "what does this body ever assign to this name." A
- * cleaner design would fold them into the BindingId solver proper (a
- * single indexed def-site table keyed by BindingId, with each of the three
- * predicates reading off it) rather than three parallel tree walks. That is
- * a real architectural consolidation — three call sites' worth of subtly
- * different poison/OR semantics (nameMayBeUndefinedInBody's monotonic
- * boolean-OR vs namePresentValInBody's poison-on-conflict vs
- * nameMapGetShapedInBody's boolean-OR again) to reconcile against one
- * solver's output shape — left as a follow-on, out of scope for
- * session-ownership hygiene alone.
- *
- * ASSERT (a slice reset clears its dependents): programFacts's three
- * sub-caches share ONE `gen` counter and are always recreated together —
- * resetProgramFactsCache() cannot drop walkCache without also bumping `gen`,
- * which structurally invalidates moduleInitSlot and bodyIntCertain entries on
- * their next read (the `hit.gen === pf.gen` guard at each call site) even
- * before their own WeakMaps are swapped. There is no code path that clears one
- * sub-cache while leaving a dependent's stale entries live-reachable.
- *
- * Storage + getFactStore() live in src/ctx.js, not here — see that module's
- * comment for why (a module-cycle constraint, not a design preference).
- * `ctx.facts` (Slice B) is built by `reset()` as part of the session's own
- * construction, same as every other subtree — beginSession no longer makes
- * a separate reset call for it; getFactStore() is re-exported above.
+
  */
 
 /**

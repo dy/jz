@@ -228,6 +228,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       const calleeName = calleeNameOf(node)
       out = calleeBodyOf(calleeName)?.resultSemantic ?? directCallBoundary(ctx, calleeName).result.semantic
     }
+    else if (summaryTagOf(summaryCore(summaryKind)) === SUMMARY_KIND.NUMBER)
+      out = semKind(VAL.NUMBER, summaryHasTag(summaryKind, SUMMARY_KIND.NULLISH) || summaryHasTag(summaryKind, SUMMARY_KIND.ABSENT))
     else if (NUMERIC_VALUE_OPS.has(node[0])) {
       const operands = node.slice(1).filter(x => x !== undefined).map(semanticOf)
       const anyBig = operands.some(canBeBigint)
@@ -530,7 +532,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // storage" — reusing it here closes the gap with no new analysis.
   const isStorageReadProducer = node => {
     if (!Array.isArray(node)) return false
-    const isTrackedStorage = recv => valTypeOf(recv) === VAL.TYPED || summary?.valOfExpr(recv) === VAL.TYPED ||
+    const isTrackedStorage = recv => Array.isArray(recv) && recv[0] === '[' ||
+      valTypeOf(recv) === VAL.TYPED || summary?.valOfExpr(recv) === VAL.TYPED ||
       (typeof recv === 'string' &&
        ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
         (provenance && provenance.bigintTyped.has(recv)) || summary?.valOf(recv) === VAL.TYPED))

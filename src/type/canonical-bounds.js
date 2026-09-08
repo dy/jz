@@ -151,12 +151,8 @@ export function scanBoundedLoops(node, set) {
 
 const NO_BOUNDED_CC = new Set()  // shared immutable empty result
 
-/** Set of `['.', recv, 'charCodeAt']` callee nodes in the current function whose
- *  index argument is provably within `[0, recv.length)`. Memoised per body
- *  (AdHocMemo retirement — .work/archive/ctxfunc-survey.md §2/§5: WeakMap on body identity,
- *  getFactStore().ccInBounds, same session-ownership idiom as kind.js's
- *  mayBeUndefinedTrace — persists across enterFunc by design, self-
- *  invalidating on body identity, cleared fresh every beginSession). */
+/** charCodeAt calls whose indices are proven within the receiver's length.
+ * Cached by body identity for this compilation session. */
 export function inBoundsCharCodeAt(ctx) {
   const body = ctx.func?.body
   if (!Array.isArray(body)) return NO_BOUNDED_CC

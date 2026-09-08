@@ -426,7 +426,7 @@ test('summary: the result kinds are the summary\'s (narrow/results.js seedResult
   is(F.sum.callerReps[0].typedCtor, 'new.Float64Array', 'the plan\'s field reaches the kernel typed')
   is(F.norm.valResult, 'bigint', 'the typeof guard proves the taken arm')
   is(F.caught.valResult, 'boolean', 'a try whose block and catch both return does not fall through')
-  is(F.first.valResult, 'number'); ok(F.first.valResultMayBeUndefined, 'an element read past the end is absent')
+  is(F.first.valResult, 'number'); ok(!F.first.valResultMayBeUndefined, 'the only caller supplies an immutable tuple with element zero present')
   is(jz(src).exports.run(4), 0 + 5 + 1 + 7)
 })
 
@@ -443,7 +443,7 @@ test('summary: a literal is allocated as the runtime allocates it; emission read
       return d[k] + s.a + s.b + w + rd(((t) => (t[k] = 5, t))({}))
     }`)
   is(tagOf(kindOf('f', 'd')), K.HASH, 'an empty literal declared into a computed-key binding is a dictionary')
-  is(tagOf(kindOf('f', 's')), K.OBJECT, 'a dot-written literal is an object of its binding\'s schema')
+  is(tagOf(kindOf('f', 's')), K.HASH, 'a written empty literal without a materialized schema is a dictionary')
   ok(!isNullable(kindOf('rd', 'o')) && tagOf(kindOf('rd', 'o')) === K.ANY && hasTag(kindOf('rd', 'o'), K.OBJECT) && hasTag(kindOf('rd', 'o'), K.HASH), 'a spread literal or an argument literal is an object or a dictionary')
   for (const optimize of [false, 2]) is(jz(`export const f = (k, x) => { let o = {}; o.a = 1; o.b = 2; const t = { [k]: 3 }; return o.a + o.b + t[k] + (new Set([1]).length === undefined ? 10 : 0) }`, { optimize }).exports.f('z', 1), 16, `O${optimize || 0}: the literal reads through the summary's kind`)
 })

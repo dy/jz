@@ -4,7 +4,8 @@ import { spawnSync } from 'node:child_process'
 import jz, { compile, instantiate } from '../index.js'
 import { onWasi, onKernel } from './_matrix.js'
 import { VAL } from '../src/reps.js'
-import { valTypeOf, valTypeOfWithLocals } from '../src/kind.js'
+import { summarize } from '../src/summary/index.js'
+import { valTypeOf } from '../src/kind.js'
 
 const levels = [false, 1, 2, 3]
 const oracle = source => Function(source.replaceAll('export ', '') + ';return {f,state}')()
@@ -18,17 +19,17 @@ const prefix = `let trace=0
 
 // These rules are independent of an active function and of discarded operands.
 test('sequence kinds: the last value owns the kind, including scoped names and absence', () => {
-  const locals = new Map([['value', VAL.BIGINT], ['flag', VAL.BOOL]])
-  const resolve = name => locals.get(name)
-  is(valTypeOf([',', [null, 1], ['bigint', '6']]), VAL.BIGINT)
-  is(valTypeOf([',', ['bigint', '6'], [null, 1]]), VAL.NUMBER)
-  is(valTypeOf([',', ['bigint', '6'], [null, undefined]]), null)
-  is(valTypeOfWithLocals([',', [null, 1], [',', 'flag', 'value']], resolve), VAL.BIGINT)
-  is(valTypeOfWithLocals([',', 'value', 'flag'], resolve), VAL.BOOL)
-  is(valTypeOfWithLocals([',', 'value', 'missing'], resolve), null)
+  const summary = summarize([';', ['let', ['=', 'value', ['bigint', '6']]], ['let', ['=', 'flag', ['bool', 1]]]],
+    { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+  is(summary.valOfExpr([',', [null, 1], ['bigint', '6']]), VAL.BIGINT)
+  is(summary.valOfExpr([',', ['bigint', '6'], [null, 1]]), VAL.NUMBER)
+  is(summary.valOfExpr([',', ['bigint', '6'], [null, undefined]]), null)
+  is(summary.valOfExpr([',', [null, 1], [',', 'flag', 'value']]), VAL.BIGINT)
+  is(summary.valOfExpr([',', 'value', 'flag']), VAL.BOOL)
+  is(summary.valOfExpr([',', 'value', 'missing']), null)
   const nullable = [',', [null, 1], ['?:', 'flag', ['bigint', '6'], [null, null]]]
   is(valTypeOf(nullable), null, 'a receiver-oriented BigInt claim is not a presence proof')
-  is(valTypeOfWithLocals(nullable, resolve), null, 'scoped forwarding also preserves absence')
+  is(summary.valOfExpr(nullable), null, 'scoped forwarding also preserves absence')
 })
 
 for (const op of ['&', '|', '^', '<<', '>>', '+', '-', '*', '/', '%', '~'])

@@ -13,7 +13,8 @@ import { emit, emitter, emitVoid as flat, emitBlockBody, emitBoolStr as bool, em
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
-import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined, censusShapedNode, nameMayBeUndefinedInBody, exprMayBeUndefinedIn } from '../src/kind.js'
+import { summarize, K, kind } from '../src/summary/index.js'
+import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined, censusShapedNode } from '../src/kind.js'
 import { PRESENCE, contractVal } from '../src/summary/index.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
@@ -646,7 +647,7 @@ function inspectLocals(src, fnName = 'f') {
 function localVal(locals, name) {
   const keys = Object.keys(locals)
   const key = keys.find(k => k === name) ?? keys.find(k => k.startsWith(name + T))
-  return locals[key]?.val
+  return locals[key]?.val ?? locals[key]?.presentVal
 }
 
 test('array-destructure kind: BIGINT element survives `let [a, b] = [1, BigInt(v)]`', () => {
@@ -1159,6 +1160,9 @@ function runAnalyzeMayBeUndefined(code, dynWriteVarNames) {
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.funcs.list[0]
   const body = fn.body
+  ctx.summary = summarize(null, { funcs: ctx.funcs.list, schemas: ctx.schema.list,
+    brandOf: ctx.schema.brandOf, imports: new Map(), exported: () => true })
+  ctx.func.current = fn.sig
   ctx.func.locals = analyzeBody(body).locals
   const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
   const resolveLocal = (name) => keys().find(k => k === name) ?? keys().find(k => k.startsWith(name + T)) ?? name
@@ -1209,14 +1213,9 @@ test('mayBeUndefined: ordinary decl (no census-shaped RHS) never sets the flag',
   is(r.x, false); is(r.y, false)
 })
 
-test('mayBeUndefined: a Map with no observed .set() write claims nothing to propagate', () => {
-  // No census fact recorded for `m` at all (never written) — mapValueKindOf's
-  // own `local` lookup returns undefined, so the inline-read arm can't fire.
-  const r = runAnalyzeMayBeUndefined(`let f = () => {
-    const m = new Map()
-    let x = m.get('missing')
-  }`)
-  is(r.x, false)
+test('mayBeUndefined: an empty Map read is absent', () => {
+  const r = runAnalyzeMayBeUndefined(`let f = () => { const m = new Map(); let x = m.get('missing') }`)
+  is(r.x, true)
 })
 
 test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH mayBeUndefined and presentVal are set', () => {
@@ -1261,6 +1260,9 @@ function runAnalyzePresentVal(code, dynWriteVarNames) {
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.funcs.list[0]
   const body = fn.body
+  ctx.summary = summarize(null, { funcs: ctx.funcs.list, schemas: ctx.schema.list,
+    brandOf: ctx.schema.brandOf, imports: new Map(), exported: () => true })
+  ctx.func.current = fn.sig
   ctx.func.locals = analyzeBody(body).locals
   const keys = () => [...(ctx.func.locals?.keys() ?? []), ...(fn.sig?.params?.map(p => p.name) ?? []), ...(ctx.func.localReps?.keys() ?? [])]
   const resolveLocal = (name) => keys().find(k => k === name) ?? keys().find(k => k.startsWith(name + T)) ?? name
@@ -1363,48 +1365,24 @@ test('censusShapedNode: recognizes dict [] / . reads and Map .get() calls; rejec
   is(censusShapedNode(null), false)
 })
 
-test('nameMayBeUndefinedInBody: traces a decl RHS through censusShapedNode', () => {
+test('summary presence: aliases retain missing reads and arithmetic removes absence', () => {
   const body = ['{}', [';',
-    ['let', ['=', 'x', ['()', ['.', 'm', 'get'], ['str', 'missing']]]],
-    ['let', ['=', 'y', ['+', 'x', 1]]],
+    ['let', ['=', 'm', ['()', 'new.Map', null]]],
+    ['()', ['.', 'm', 'set'], [',', [null, 'key'], [null, 1]]],
+    ['let', ['=', 'x', ['()', ['.', 'm', 'get'], [null, 'missing']]]],
+    ['let', ['=', 'alias', 'x']],
+    ['let', ['=', 'y', ['+', 'x', [null, 1]]]],
   ]]
-  is(nameMayBeUndefinedInBody(body, 'x'), true)
-  is(nameMayBeUndefinedInBody(body, 'y'), false, 'y is never itself census-shaped nor a bare-name copy')
-})
-
-test('nameMayBeUndefinedInBody: copy-through a bare-name alias', () => {
-  const body = ['{}', [';',
-    ['let', ['=', 'x', ['[]', 'd', ['str', 'k']]]],
-    ['let', ['=', 'y', 'x']],
-  ]]
-  is(nameMayBeUndefinedInBody(body, 'y'), true)
-})
-
-test('nameMayBeUndefinedInBody: unwritten name resolves false (narrower than nullable\'s blanket fail-closed)', () => {
-  const body = ['{}', [';', ['let', ['=', 'y', ['+', 'z', 1]]]]]
-  is(nameMayBeUndefinedInBody(body, 'z'), false, 'z is never written in this body — no evidence, not "assume worst"')
-})
-
-test('nameMayBeUndefinedInBody: cyclic self-reference does not stack-overflow', () => {
-  // `x = x` structurally (a degenerate alias cycle) — the `seen` guard must
-  // stop recursion, not just avoid infinite loops in production shapes.
-  const body = ['{}', [';', ['let', ['=', 'x', 'x']]]]
-  is(nameMayBeUndefinedInBody(body, 'x'), false)
-})
-
-test('nameMayBeUndefinedInBody: a non-array bodyRoot (expression-bodied arrow) resolves false, not a crash', () => {
-  // WeakMap requires an object key — `() => x` lowers to a bare-name body in
-  // some arrow shapes (regression: this threw "Invalid value used as weak
-  // map key" before the Array.isArray guard).
-  is(nameMayBeUndefinedInBody('x', 'x'), false)
-  is(exprMayBeUndefinedIn('x', 'x'), false)
-})
-
-test('exprMayBeUndefinedIn: direct census shape OR bare-name trace, nothing else', () => {
-  const body = ['{}', [';', ['let', ['=', 'x', ['[]', 'd', ['str', 'k']]]]]]
-  is(exprMayBeUndefinedIn(['[]', 'd', ['str', 'k']], body), true, 'direct shape needs no body trace')
-  is(exprMayBeUndefinedIn('x', body), true, 'bare name traces through the body')
-  is(exprMayBeUndefinedIn(['+', 1, 2], body), false)
+  const previous = ctx.summary
+  try {
+    ctx.summary = summarize(null, { funcs: [{ name: 'f', sig: { params: [] }, body }],
+      schemas: [], brandOf: () => null, imports: new Map(), exported: () => true })
+    is(ctx.summary.at(body).mayBeNullishExpr('x'), true)
+    is(ctx.summary.at(body).mayBeNullishExpr('alias'), true)
+    is(ctx.summary.at(body).mayBeNullishExpr('y'), false)
+    is(ctx.summary.at(body).kindOfExpr('unknown') === kind(K.ANY), true, 'unknown values cannot prove presence')
+    is(ctx.summary.at(body).mayBeNullishExpr(['+', [null, 1], [null, 2]]), false)
+  } finally { ctx.summary = previous }
 })
 
 // --- param propagation (narrow.js narrowSignatures, whole-program fixpoint) ---

@@ -29,7 +29,7 @@
 import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import {
-  collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown,
+  collectProgramFacts, collectSlotConstants, analyzeSchemaSlotIntCertain, collectSlotWriteHazards, analyzeParamNeverGrown,
   synthesizeComputedDispatchCallSites, synthesizeMemberDispatchCallSites, readonlyParamReps, freezeCallSites,
   assertProgramFactsShape,
 } from '../program-facts.js'
@@ -212,24 +212,16 @@ export default function plan(ast, profiler, summarize) {
   t('applyExportTypedArrayAbi', () => applyExportTypedArrayAbi(programFacts.paramReps, programFacts.callSites, programFacts.programIndex.addressTaken))
   // The program the sweeps rewrote (inlined calls, scalar-replaced literals),
   // with the export contract: narrowing reads the parameter kinds from it.
+  t('collectSlotConstants', () => collectSlotConstants(ast))
   ctx.summary = t('summary', summarize)
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
 
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
     // site passes a distinct fresh buffer for → enables alias-aware LICM in the optimizer.
     if (optimizing()) t('analyzeParamDistinctness', () => analyzeParamDistinctness(programFacts))
-    // Slot-kind census REBUILD with post-narrowing receiver resolution: the early
-    // hazard scan can't type params (`re[j] = tr` on a then-unnarrowed TYPED param
-    // read as a world-poisoning keyed write), so recompute hazards with paramReps
-    // and rebuild slotTypes/slotTypedCtors fresh BEFORE their consumers below
-    // (inplace sweep, bimorphic split, typed-param speculation) and at emit.
-    // callSites/addressTaken (union points-to, program-facts.js's own doc on
-    // collectSlotWriteHazards): the SAME stable call-site census
-    // narrowSignatures just fixpointed over, threaded through so a bare-name
-    // dyn-key receiver that's a function PARAMETER can resolve to the union of
-    // schemas its call sites actually pass instead of the whole-program 'ALL'.
-    t('refineSlotKindCensus', () => observeProgramSlots(ast, {
-      fresh: true, paramReps: programFacts.paramReps, callSites: programFacts.callSites,
+    // Range and alias proofs need hazards resolved against settled parameters.
+    t('refineSlotWriteHazards', () => collectSlotWriteHazards(ast, {
+      paramReps: programFacts.paramReps, callSites: programFacts.callSites,
       addressTaken: programFacts.programIndex.addressTaken,
     }))
     // Cross-function neverGrown for read-only array PARAMS (growth-free callee
@@ -260,13 +252,7 @@ export default function plan(ast, profiler, summarize) {
   // is scoped to plan() and restored before return.
   freezeCallSites(programFacts.callSites)
   programFacts.paramReps = readonlyParamReps(programFacts.paramReps)
-  // Late slot-int census: rebuild FRESH with body-local element-alias sids
-    // (`const p = ps[i]` through the param's arrayElemSchema — knowledge that
-    // exists only after narrowing). Consumers read at emit, after this.
-    // callSites/addressTaken: see refineSlotKindCensus's own comment above, kept
-    // in lockstep so this round's collectSlotWriteHazards rebuild (should the
-    // fact-store gen ever bump between the two rounds) doesn't silently fall
-    // back to the coarser no-callSites path.
+  // Rebuild slot ranges with the final parameter and element-alias facts.
   t('refineSlotIntCensus', () => analyzeSchemaSlotIntCertain(ast, {
     paramReps: programFacts.paramReps, callSites: programFacts.callSites,
     addressTaken: programFacts.programIndex.addressTaken,

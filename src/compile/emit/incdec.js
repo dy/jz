@@ -14,7 +14,9 @@ import { typedIdxProven } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationUnaryUpdateAction } from '../representation-plan.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
-import { numericStep } from './bigint.js'
+import { numericStep, hasBigintDomain } from './bigint.js'
+import { K, hasTag } from '../../summary/kind.js'
+import { unbounded } from '../../summary/contract.js'
 
 
 // Element ctors whose spec [[Set]] numeric conversion is a MODULAR reduction
@@ -70,6 +72,9 @@ export const incdecOps = {
       const rawBits = [`i64.${fn}`, current, ['i64.const', 1]]
       return writeVar(name, repAction === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits), void_)
     }
+    const k = ctx.summary?.at(ctx.func.current).kindOfExpr(name)
+    if (hasBigintDomain(name) || k != null && hasTag(k, K.BIGINT) && !unbounded(k))
+      return writeVar(name, numericStep(name, fn), void_)
     const one = v.type === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)
   }])),

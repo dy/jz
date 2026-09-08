@@ -108,8 +108,6 @@ const stripCanon = (v) => {
 
 /** Emit unary negation: constant-fold, or i32 sub from 0 / f64.neg. */
 const emitNeg = (a, self) => {
-  if (typeof a === 'string' && repOf(a)?.localMapBigintUnknown)
-    err('Unary - on a local Map value with control-dependent BigInt writes is not supported; branch on presence/type before negating')
   // BigInt operands (literal or otherwise) always carry VAL.BIGINT statically —
   // a bigint LITERAL is the self-describing `['bigint', decimalStr]` node
   // (kind.js VT.bigint), never a raw `[null, number]` node (audit P0-2: the

@@ -9,7 +9,7 @@
  *     and slot-int-census.js's `analyzeSchemaSlotIntCertain` (late-mode
  *     body-local element-alias sids — both must resolve receivers identically
  *     or the hazard scan poisons slots the census just proved).
- *   - `effectiveWriteValue`: slot-kind-census.js's `observeProgramSlots` and
+ *   - `effectiveWriteValue`: the slot-range and
  *     slot-int-census.js's `analyzeSchemaSlotIntCertain` (compound-assign /
  *     inc-dec's effective stored value). Also part of this module's public
  *     API surface (re-exported from the barrel).

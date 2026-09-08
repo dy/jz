@@ -57,7 +57,7 @@ import { buildResultContracts, unbounded } from './contract.js'
 export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 
 import {
-  K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag,
+  K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag, isNullable,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, isPostfixRecovery, logicalMask, selectKind,
@@ -87,7 +87,7 @@ const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [], constString = () => null }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [], constString = () => null, constStrings = () => null }) {
   const tops = [...inits, ast]
   const kinds = new Map()            // binding key (keyOf) → kind
   const fields = new Map()           // sid → kind[]
@@ -170,8 +170,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const raiseSlot = (sid, i, k) => { const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true } }
   const NO_SLOTS = []
+  const openSchemas = new Set()
+  const openSchema = sid => { if (!openSchemas.has(sid)) { openSchemas.add(sid); changed = true } }
   const poisonProp = (prop) => { for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) raiseSlot(sid, i, ANY) }
-  const poisonSchema = (sid) => { const a = slots(sid); for (let i = 0; i < a.length; i++) raiseSlot(sid, i, ANY) }
+  const poisonSchema = (sid) => { openSchema(sid); const a = slots(sid); for (let i = 0; i < a.length; i++) raiseSlot(sid, i, ANY) }
   // A closure's parameter names, a default's among them (`(a, b = 1) =>`); a pattern is unnamed.
   // A rest parameter (jzify desugars every pattern parameter into one) is
   // null in the list, its position in `.rest`: it collects the arguments
@@ -195,18 +197,47 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // union-find over ids); a kind names a cell by any id in it, `canon` by the root.
   const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH) && paramOf(k) !== UNKNOWN
   const elems = []               // cell root → element kind
+  const tuples = new Map()       // cell root → immutable literal positions; null after mutation or union
   const cellUp = []              // cell id → its parent; a root is its own
   const cells = new Map()        // construction node (an array literal, a `new Map`) → cell id
   const cell = (id) => { while (cellUp[id] !== id) id = cellUp[id] = cellUp[cellUp[id]]; return id }
   const canon = (k) => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
   const elemOf = (k) => celled(k) ? elems[cell(paramOf(k))] : ANY
   // A cell, closure or schema past the parameter's range is one the kind cannot name: it escapes.
-  const cellOf = (node, tag, elem) => { let id = cells.get(node); if (id === undefined) { id = elems.length; elems.push(elem); cellUp.push(id); cells.set(node, id) } if (id >= UNKNOWN) { escape(elem); return kind(tag) } return kind(tag, id) }
+  const cellOf = (node, tag, elem) => {
+    let id = cells.get(node)
+    if (id === undefined) { id = elems.length; elems.push(elem); cellUp.push(id); cells.set(node, id) }
+    if (id >= UNKNOWN) { escape(elem); return kind(tag) }
+    const k = kind(tag, id)
+    // Cell identities survive numeric reseeding; constructor facts must be
+    // restored each round along with the stores that feed the cell.
+    raiseElem(k, elem, true)
+    return k
+  }
   const arrayOf = (node, elem) => cellOf(node, K.ARRAY, elem)
-  const raiseElem = (arr, k) => { if (!celled(arr)) return; const id = cell(paramOf(arr)), nk = merge(elems[id], k); if (nk !== elems[id]) { elems[id] = nk; changed = true } }
+  const mapOf = (node, base, count) => {
+    let value = K.NONE
+    if (count) {
+      const source = ks[base], t = tagOf(source)
+      if (t === K.MAP) value = elemOf(source)
+      else if (t === K.ARRAY) {
+        const entry = elemOf(source)
+        const row = tagOf(entry) === K.ARRAY && paramOf(entry) !== UNKNOWN ? tuples.get(cell(paramOf(entry))) : null
+        value = row ? row[1] ?? NULLISH : tagOf(entry) === K.NONE ? K.NONE : tagOf(entry) === K.ARRAY ? elemOf(entry) : ANY
+      } else if (t !== K.NONE && t !== K.NULLISH && t !== K.ABSENT) value = ANY
+    }
+    return cellOf(node, K.MAP, value)
+  }
+  const invalidateTuple = arr => {
+    if (!celled(arr)) return
+    const id = cell(paramOf(arr))
+    if (tuples.get(id) !== null) { tuples.set(id, null); changed = true }
+  }
+  const raiseElem = (arr, k, literal = false) => { if (!celled(arr)) return; if (!literal) invalidateTuple(arr); const id = cell(paramOf(arr)), nk = merge(elems[id], k); if (nk !== elems[id]) { elems[id] = nk; changed = true } }
   const unify = (a, b) => {
     a = cell(a); b = cell(b)
     if (a === b) return a
+    invalidateTuple(kind(K.ARRAY, a)); invalidateTuple(kind(K.ARRAY, b))
     cellUp[b] = a; changed = true
     raiseElem(kind(K.ARRAY, a), elems[b])
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
@@ -221,8 +252,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const cellWild = new Map()    // cell root → kind stored under a computed string key
   const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
   const anyPropOf = (arr) => { const c = cell(paramOf(arr)); let k = cellWild.get(c) ?? K.NONE; for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
-  const raiseProp = (arr, prop, k) => { if (tagOf(arr) !== K.ARRAY || paramOf(arr) === UNKNOWN) return; const c = cell(paramOf(arr)); let m = cellProps.get(c); if (!m) cellProps.set(c, m = new Map()); const old = m.get(prop) ?? K.NONE, nk = merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true } }
-  const raiseWild = (arr, k) => { if (tagOf(arr) !== K.ARRAY || paramOf(arr) === UNKNOWN) return; const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
+  const raiseProp = (arr, prop, k) => { if (tagOf(arr) !== K.ARRAY || paramOf(arr) === UNKNOWN) return; if (/^\d+$/.test(prop)) invalidateTuple(arr); const c = cell(paramOf(arr)); let m = cellProps.get(c); if (!m) cellProps.set(c, m = new Map()); const old = m.get(prop) ?? K.NONE, nk = merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true } }
+  const raiseWild = (arr, k) => { if (tagOf(arr) !== K.ARRAY || paramOf(arr) === UNKNOWN) return; invalidateTuple(arr); const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
   /** An array's entry under a key of kind `ik`: elements by a number, dictionary entries by a string, everything by an unknown key. */
   const entryOf = (arr, ik) => { const t = tagOf(ik); if (paramOf(arr) === UNKNOWN) return ANY; return t === K.NUMBER ? elemOf(arr) : t === K.STRING ? anyPropOf(arr) : t === K.NONE ? K.NONE : join(elemOf(arr), anyPropOf(arr)) }
   const raiseEntry = (arr, ik, k) => { const t = tagOf(ik); if (t === K.NUMBER) raiseElem(arr, k); else if (t === K.STRING) raiseWild(arr, k); else if (t !== K.NONE) { raiseElem(arr, k); raiseWild(arr, k) } }
@@ -230,7 +261,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const escape = (k) => {
     if (tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) for (const id of membersOf(paramOf(k))) escapeId(id)
     // The cell goes to ANY before its elements escape: an array of itself ends there.
-    if (celled(k)) { const id = cell(paramOf(k)), e = elems[id]; if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) } }
+    if (celled(k)) { invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) } }
   }
   /** An object handed to code the summary cannot see: its fields may be stored to. */
   // An own property stored under a class member's name shadows the member
@@ -510,7 +541,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     let v = jsonParsed.get(node)
     if (v === undefined) {
       const a = node[2], s = Array.isArray(a) && a[0] === 'str' ? a[1] : typeof a === 'string' ? constString(a) : null
-      try { v = typeof s === 'string' ? JSON.parse(s) : NO_JSON } catch { v = NO_JSON }
+      const sources = typeof s === 'string' ? [s] : constStrings(a)
+      try { v = sources?.length ? sources.map(s => JSON.parse(s)) : NO_JSON } catch { v = NO_JSON }
       jsonParsed.set(node, v)
     }
     return v
@@ -530,7 +562,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const jsonKinds = new Map()    // `JSON.parse` node → its value's kind, for readers
   const jsonParse = (node, base, n) => {
     if (n !== 1) { escapeArgs(base, n); return ANY }
-    const v = jsonValueOf(node), k = v === NO_JSON ? ANY : jsonKind(v)
+    const values = jsonValueOf(node)
+    let k = values === NO_JSON ? ANY : K.NONE
+    if (values !== NO_JSON) for (const v of values) k = merge(k, jsonKind(v))
     jsonKinds.set(node, k)
     return k
   }
@@ -576,6 +610,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (t === K.BUFFER && name === 'slice') return kind(K.BUFFER)
     if (t === K.ARRAY) {
+      if (name === 'pop' || name === 'shift' || name === 'sort' || name === 'reverse' || name === 'splice' || name === 'copyWithin') invalidateTuple(recv)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
       if (name === 'push' || name === 'unshift') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return NUMBER }
       if (name === 'indexOf' || name === 'lastIndexOf' || name === 'findIndex') { escapeArgs(base, n); return NUMBER }
@@ -652,6 +687,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   /** A literal with a spread or a computed key, walked by its sources. */
   const dynamicLiteral = (n) => {
+    // The single-source lowering clones its runtime representation. A clone
+    // may share conservative content facts without sharing runtime storage.
+    if (n.length === 2 && n[1]?.[0] === '...') {
+      const source = expr(n[1][1]), t = tagOf(source)
+      if (t === K.NONE) return K.NONE
+      return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
+    }
     const writes = [], names = [], init = definite.get(n)
     let brand = null
     const add = (name, value) => { if (!names.includes(name)) names.push(name); writes.push([name, value]) }
@@ -663,7 +705,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       } else if (typeof p === 'string') add(p, expr(p))
       else if (Array.isArray(p) && p[0] === '...') {
         const source = expr(p[1]), sourceSid = tagOf(source) === K.OBJECT ? paramOf(source) : UNKNOWN
-        if (sourceSid === UNKNOWN || !schemas[sourceSid]) {
+        // Conditional insertion uses a dictionary even when every present
+        // source has one schema: an absent key differs from an undefined slot.
+        if (p[1]?.[0] === '&&' || sourceSid === UNKNOWN || openSchemas.has(sourceSid) || !schemas[sourceSid]) {
           escape(source)
           for (const [, v] of writes) escape(v)
           return cellOf(n, K.HASH, ANY)
@@ -752,10 +796,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '=>') { loopAssigns(n); const id = closureId(n); if (id >= UNKNOWN) { escapeId(id); return kind(K.CLOSURE) } return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
     if (op === '{}') { const sid = literalSid(n); return sid === DYNAMIC_LITERAL ? dynamicLiteral(n) : staticLiteral(n, sid) }
     if (op === '[') {
+      const arr = arrayOf(n, K.NONE), id = paramOf(arr)
+      if (id !== UNKNOWN && !tuples.has(cell(id))) tuples.set(cell(id), [])
       let elem = K.NONE
-      for (let i = 1; i < n.length; i++) elem = merge(elem, expr(n[i]))
-      const arr = arrayOf(n, K.NONE)
-      raiseElem(arr, elem)
+      for (let i = 1; i < n.length; i++) {
+        const k = expr(n[i]), row = id === UNKNOWN ? null : tuples.get(cell(id))
+        if (Array.isArray(n[i]) && n[i][0] === '...') invalidateTuple(arr)
+        else if (row) { const next = merge(row[i - 1] ?? K.NONE, k); if (next !== row[i - 1]) { row[i - 1] = next; changed = true } }
+        elem = merge(elem, k)
+      }
+      raiseElem(arr, elem, true)
       return arr
     }
     if (op === '.' || op === '?.') {
@@ -769,9 +819,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return member('.', recv, idx[1])
       const ik = expr(idx)
       if (t === K.NONE) return K.NONE
-      if (t === K.TYPED) return orAbsent(typedElemKind(recv))
+      if (t === K.TYPED) return typedReadPresent(current ?? MODULE, n) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
       if (t === K.HASH) return orAbsent(elemOf(recv))
-      if (t === K.ARRAY) return orAbsent(entryOf(recv, ik))
+      if (t === K.ARRAY) {
+        const row = paramOf(recv) === UNKNOWN ? null : tuples.get(cell(paramOf(recv)))
+        const i = typeof idx === 'number' ? idx : Array.isArray(idx) && idx[0] == null ? idx[1] : null
+        if (row && Number.isInteger(i) && i >= 0) return row[i] ?? ABSENT
+        return orAbsent(entryOf(recv, ik))
+      }
       if (t === K.STRING) return STRING
       // A computed key on a known shape reads one of its slots (a dispatch table's member), or misses.
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const s of slots(paramOf(recv))) k = merge(k, s); return orAbsent(k) }
@@ -785,7 +840,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const recv = receiver(callee[1])
         r = optionalResult(callee[0], recv, method(recv, callee[2], base, count, n))
       }
-      else if (callee === 'new.Map') { escapeArgs(base, count); r = cellOf(n, K.MAP, count ? ANY : K.NONE) }
+      else if (callee === 'new.Map') r = mapOf(n, base, count)
+      else if (callee === 'Object.keys' || callee === 'Object.values') {
+        const source = count ? ks[base] : ANY, t = tagOf(source)
+        let value = callee === 'Object.keys' ? STRING : ANY
+        if (callee === 'Object.values') {
+          if (t === K.NONE) value = K.NONE
+          else if (t === K.OBJECT && paramOf(source) !== UNKNOWN && !openSchemas.has(paramOf(source))) {
+            value = K.NONE
+            for (const slot of slots(paramOf(source))) value = merge(value, slot)
+          } else if (t === K.HASH) value = elemOf(source)
+          else if (t === K.ARRAY) value = merge(elemOf(source), anyPropOf(source))
+        }
+        r = arrayOf(n, value)
+      }
       else if (callee === 'new.Array' || callee === 'Array') r = arrayCtor(n, base, count)
       else if (callee === 'Array.of') r = arrayOfArgs(n, base, count)
       else if (callee === 'Array.from') r = arrayFrom(n, base, count)
@@ -893,7 +961,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // `poisonedIndexed` count them; the seeded rerun clears the slots and them).
   const indexSlots = []   // sid → the indices of its index-like props
   const indexSlotsOf = (sid) => { let l = indexSlots[sid]; if (l === undefined) { l = []; schemas[sid].forEach((p, i) => { if (/^\d+$/.test(p)) l.push(i) }); indexSlots[sid] = l } return l }
-  const poisonIndexed = (sid) => { for (const i of indexSlotsOf(sid)) raiseSlot(sid, i, ANY) }
+  const poisonIndexed = (sid) => { openSchema(sid); for (const i of indexSlotsOf(sid)) raiseSlot(sid, i, ANY) }
   let poisonedAll = 0, poisonedIndexed = 0
   const poisonAll = (recv, key = ANY) => {
     if (tagOf(key) === K.NONE || tagOf(recv) === K.HASH) return
@@ -971,13 +1039,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const shape = Array.isArray(value) && value[0] === '{}' ? literalShapeOf(value) : null
     if (!shape) return expr(value)
     const bound = boundSchema(name), props = bound == null ? null : schemas[bound]
+    if (value.length === 1 && !props?.length && dictKeys.has(keyOf(name))) return cellOf(value, K.HASH, K.NONE)
     if (props && coversShape(props, shape)) {
       // Each value into the binding's slot, in key order; a definite initialization's `undefined` is no value.
       const init = definite.get(value)
       for (let i = 1; i < value.length; i++) { const p = value[i]; if (typeof p === 'string') raiseSlot(bound, props.indexOf(p), expr(p)); else if (!isBrand(p[1])) raiseSlot(bound, props.indexOf(p[1]), init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
       return kind(K.OBJECT, bound)
     }
-    return value.length === 1 && !props?.length && dictKeys.has(keyOf(name)) ? cellOf(value, K.HASH, K.NONE) : expr(value)
+    return expr(value)
   }
   const pattern = (p) => { if (typeof p === 'string') declare(p, ANY); else if (Array.isArray(p)) for (let i = 1; i < p.length; i++) pattern(Array.isArray(p[i]) && p[i][0] === ':' ? p[i][2] : Array.isArray(p[i]) && p[i][0] === '=' ? p[i][1] : p[i]) }
 
@@ -994,11 +1063,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const scopeOfParams = new Map()    // a closure's parameter node (its stable identity through emission) → its id
   const MODULE = ''
   const nameScopes = new Map()       // name → the scopes declaring it (one, or a function and its specialized variants)
+  const writes = []                 // collected beside declarations; one initializer proves a fixed extent
   const declareIn = (scope, name) => { let d = declared.get(scope); if (!d) declared.set(scope, d = new Set()); if (!d.has(name)) { d.add(name); let ns = nameScopes.get(name); if (!ns) nameScopes.set(name, ns = []); ns.push(scope) } }
   const collect = (n, scope) => {
     if (!Array.isArray(n)) return
     const op = n[0]
-    if (op === 'let' || op === 'const' || op === 'var') for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declareIn(scope, d); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') declareIn(scope, d[1]) }
+    if (op === 'let' || op === 'const' || op === 'var') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
+        if (typeof name === 'string') { declareIn(scope, name); writes.push([scope, name, typeof d === 'string' ? null : d[2]]) }
+        if (Array.isArray(d)) collect(d[2], scope)
+      }
+      return
+    }
     else if (op === '=>') {
       const id = closureId(n)
       parent.set(id, scope); scopeOfParams.set(n[1], id)
@@ -1008,8 +1085,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     else if (op === 'for-of' || op === 'for-in' || op === 'for-await') { const t = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]; if (typeof t === 'string') declareIn(scope, t) }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
-    // The root of a computed-key store (`o[k] = v`, `o[i][j] = v`), Object.assign's target: a dictionary.
-    if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && !isLiteralStr(n[1][2])) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
+    if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push([scope, n[1], null])
+    // Writes make an empty literal a dictionary unless it has a materialized schema.
+    if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
     if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
     for (let i = 1; i < n.length; i++) collect(n[i], scope)
   }
@@ -1032,8 +1110,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return key
   }
   /** The key of `name` read in `current`'s scope chain, or null for a name from outside the program. */
-  const keyOf = (name) => {
-    for (let s = current ?? MODULE; ; s = parent.get(s) ?? MODULE) {
+  const keyOf = (name, scope = current ?? MODULE) => {
+    for (let s = scope; ; s = parent.get(s) ?? MODULE) {
       if (declared.get(s)?.has(name)) return keyIn(s, name)
       if (s === MODULE) return null
     }
@@ -1042,6 +1120,29 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   let current = null  // the scope (and result key) of the function being walked; null at module scope
   for (const [scope, name] of dictUses) { current = scope === MODULE ? null : scope; const key = keyOf(name); if (key !== null) dictKeys.add(key) }
   current = null
+  const definitions = new Map()
+  for (const [scope, name, value] of writes) {
+    const key = keyOf(name, scope)
+    if (key !== null) definitions.set(key, definitions.has(key) || value == null ? null : [scope, value])
+  }
+  const staticValue = (scope, node, seen = new Set()) => {
+    if (typeof node === 'string') {
+      const key = keyOf(node, scope), def = definitions.get(key)
+      if (!def || seen.has(key)) return null
+      seen.add(key)
+      return staticValue(def[0], def[1], seen)
+    }
+    return Array.isArray(node) && node[0] == null ? node[1] : typeof node === 'number' ? node : null
+  }
+  const typedReadPresent = (scope, node) => {
+    if (typeof node[1] !== 'string') return false
+    const def = definitions.get(keyOf(node[1], scope))
+    if (!def) return false
+    const init = def[1]
+    if (!Array.isArray(init) || init[0] !== '()' || typeof init[1] !== 'string' || !init[1].startsWith('new.') || !TYPED_CTOR.test(init[1])) return false
+    const len = staticValue(def[0], init[2]), i = staticValue(scope, node[2])
+    return Number.isInteger(len) && Number.isInteger(i) && i >= 0 && i < len
+  }
   const stmt = (n) => {
     if (n == null) return
     if (typeof n === 'string') { expr(n); return }
@@ -1087,6 +1188,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
       // is rejected downstream; a computed key may remove any slot.
       const r = expr(n[1]), k = expr(n[2])
+      if (tagOf(r) === K.ARRAY) invalidateTuple(r)
       if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k)
       return
     }
@@ -1252,10 +1354,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameScopes,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, jsonKinds, closuresByBody, unions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, cells, jsonKinds, closuresByBody, unions,
     schemas: schemas.map(props => props.slice()), methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, dynamicProps, builtinOwnProps, escaped,
+    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, openSchemas,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts)
@@ -1357,12 +1459,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       demand(t); demand(n[2]); return
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
-    if (op === '+=') { const str = isStringExpr(n[1]) || isStringExpr(n[2]); useOf(n[1], str ? OTHER : COMPAT); useOf(n[2], str ? OTHER : COMPAT); return }
+    if (op === '+=') { const str = isStringExpr(n[1]) || isStringExpr(n[2]), num = tagOf(core(kindOfExpr(n[1]))) === K.NUMBER && tagOf(core(kindOfExpr(n[2]))) === K.NUMBER; useOf(n[1], str ? OTHER : num ? NUM : COMPAT); useOf(n[2], str ? OTHER : num ? NUM : COMPAT); return }
     // Beside a BigInt operand ToNumeric completes only for a BigInt (kind.js
     // arith): a Number there throws, so the read converts nothing.
     if (MUTATE_OPS.has(op)) { const cx = n[2] !== undefined && isBigintExpr(n[2]) ? OTHER : NUM; useOf(n[1], cx); if (n[2] !== undefined) useOf(n[2], cx); return }
     if (NUMBER_OPS.has(op) || op === 'u-' || op === 'u+' || op === '+1' || op === '-1') { const cx = n.length === 3 && (isBigintExpr(n[1]) || isBigintExpr(n[2])) ? OTHER : NUM; for (let i = 1; i < n.length; i++) useOf(n[i], cx); return }
-    if (op === '+') { useOf(n[1], isStringExpr(n[2]) || isBigintExpr(n[2]) ? OTHER : COMPAT); useOf(n[2], isStringExpr(n[1]) || isBigintExpr(n[1]) ? OTHER : COMPAT); return }
+    if (op === '+') { const num = tagOf(core(kindOfExpr(n[1]))) === K.NUMBER && tagOf(core(kindOfExpr(n[2]))) === K.NUMBER; useOf(n[1], isStringExpr(n[2]) || isBigintExpr(n[2]) ? OTHER : num ? NUM : COMPAT); useOf(n[2], isStringExpr(n[1]) || isBigintExpr(n[1]) ? OTHER : num ? NUM : COMPAT); return }
     // A relational compare converts against a number; two strings compare as strings, so an unknown pair is compatible.
     if (op === '<' || op === '<=' || op === '>' || op === '>=') { useOf(n[1], relCx(n[2])); useOf(n[2], relCx(n[1])); return }
     if (op === '[]') { useOf(n[1], OTHER); demand(n[2]); return }
@@ -1415,6 +1517,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const seedable = new Set()   // exported parameters (keys) the demand may seed NUMBER
   for (const f of funcs) if (exported(f)) for (const p of f.sig.params) if (!p.rest && !f.defaults?.[p.name]) seedable.add(keyIn(f.name, p.name))
+  // An explicit numeric entry prologue is already the host boundary's coercion.
+  // Later reads observe the overwritten value and cannot revoke that contract.
+  const entryNumeric = new Set()
+  for (const f of funcs) if (exported(f)) {
+    const pending = [f.body]
+    while (pending.length) {
+      const n = pending.shift()
+      if (!Array.isArray(n)) break
+      if (n[0] === ';' || isBlock(n)) { pending.unshift(...n.slice(1)); continue }
+      if (n[0] !== '=' || typeof n[1] !== 'string' || n[2]?.[0] !== 'u+' || n[2][1] !== n[1]) break
+      const key = keyIn(f.name, n[1])
+      if (!seedable.has(key)) break
+      entryNumeric.add(key)
+    }
+  }
 
   // Each round walks the whole program; a round without a change is the
   // fixpoint. Every key rises through a lattice of finite height, so the
@@ -1458,9 +1575,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const top of tops) demand(top)
     return demandChanged
   })
-  const seeded = [...seedable].filter(p => isCompatible(p) && tagOf(kinds.get(p) ?? K.NONE) === K.ANY)
+  const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds.get(p) ?? K.NONE) === K.ANY)
   if (seeded.length) {
     kinds.clear(); incoming.clear(); fields.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    tuples.clear()
     poisonedAll = 0; poisonedIndexed = 0
     seed(seeded)
     fixpoint()

@@ -1,7 +1,7 @@
 /**
  * program-facts split — slot-write hazard census: every way a schema slot's
  * value can change OTHER than a `{}` literal or a resolvable `obj.prop =`
- * write (slot-kind-census.js and slot-int-census.js's own province), which
+ * write (the summary and slot-int-census.js's own province), which
  * those two censuses must poison or a consumer bakes a stale fact into
  * codegen. `collectSlotWriteHazards` is called by BOTH — see
  * `../program-facts.js` for the full module map and build order.
@@ -95,7 +95,7 @@ export function collectSlotWriteHazards(ast, opts) {
   // sentinel. Late-only (needs opts.callSites, mirroring opts.paramReps's own
   // late-only threading): the early pre-narrowing hazard pass stays exactly
   // as conservative as before, and only the LAST hazard computation before
-  // emit (plan/index.js's refineSlotKindCensus) ever reaches codegen, so
+  // emit (plan/index.js's refineSlotWriteHazards) ever reaches codegen, so
   // precision here is free to start late.
   //
   // Resolution per call-site argument (.work/archive/dyn-reach-slice.md's own 3-way

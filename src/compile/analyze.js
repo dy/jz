@@ -23,7 +23,7 @@
  *                                   by body-facts.js and val-types.js
  *   - `analyze/body-facts.js`     — analyzeBody + its cache seam + widening
  *   - `analyze/val-types.js`      — analyzeValTypes, analyzeIntCertain,
- *                                   mayBeNullish, dict/map-shaped helpers
+ *                                   dict/map-shaped helpers
  *   - `analyze/ptr-eligibility.js`— unboxablePtrs, inheritPtrAliases,
  *                                   cseSafeLoadBases
  *   - `analyze/struct-inline.js`  — structInlinePass
@@ -42,7 +42,7 @@ export {
   setFuncBody, invalidateBodies, invalidateAllBodyFacts,
 } from './analyze/body-facts.js'
 
-export { mayBeNullish, analyzeValTypes, analyzeIntCertain } from './analyze/val-types.js'
+export { analyzeValTypes, analyzeIntCertain } from './analyze/val-types.js'
 
 export { unboxablePtrs, inheritPtrAliases, cseSafeLoadBases } from './analyze/ptr-eligibility.js'
 

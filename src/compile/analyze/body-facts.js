@@ -11,7 +11,6 @@ import { ctx, getFactStore } from '../../ctx.js'
 import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { VAL, updateRep } from '../../reps.js'
-import { valTypeOf } from '../../kind.js'
 import { intLiteralValue, intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
 import { exprType, intCertainMap, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
@@ -20,7 +19,7 @@ import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
   scanObjectArrayFacts, isFreshArrayCtor, stampCoInductionRanges,
 } from '../analyze-scans.js'
-import { makeValTracker, makeTypedTracker } from './trackers.js'
+import { makeTypedTracker } from './trackers.js'
 
 // Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
 // compile's bodies, cleared by resetBodyFactsCache at compile start — so weak
@@ -101,12 +100,12 @@ export function analyzeBody(body) {
   }
   // The names declared in the body and the arrays whose initial contents it
   // described: two tables keyed by the body's names, dropped at exit.
-  const declared = takeScratchSet(), elemOrigin = takeScratchSet()
-  try { return computeBodyFacts(body, bodyFacts, declared, elemOrigin) }
-  finally { releaseScratchSet(elemOrigin); releaseScratchSet(declared) }
+  const elemOrigin = takeScratchSet()
+  try { return computeBodyFacts(body, bodyFacts, elemOrigin) }
+  finally { releaseScratchSet(elemOrigin) }
 }
 
-function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
+function computeBodyFacts(body, bodyFacts, elemOrigin) {
   const locals = new Map()
   const valTypes = new Map()
   const arrElemSchemas = new Map()
@@ -183,31 +182,12 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
     if (tagOf(core(e)) !== K.OBJECT) { arrElemSchemas.set(name, null); (arrElemSchemaSets ||= new Map()).set(name, null) }
   }
 
-  // Names declared (`let`/`const`) in THIS body. A reassignment to any OTHER
-  // name — a parameter or a captured outer binding — merges with an entry
-  // value of caller-/outer-determined kind, so a POINTER-kind RHS must POISON
-  // the val slice, not settle it: `if (Array.isArray(x)) …; else x = ['str', v]`
-  // on a param would otherwise stamp x ARRAY flow-insensitively and const-fold
-  // the very guard that proves it isn't (the kernel's JSON.parse-emitter
-  // head-coercion — array-typed reads on a string, memory OOB). Scalar kinds
-  // (NUMBER/BOOL/BIGINT) and coupled-tracker kinds (TYPED/BUFFER, whose trackTyped slice owns coherence) keep the settled-kind behavior: the i32-narrowing
-  // machinery's locals/val coherence depends on it (unswitch reassigned-param
-  // guard), and scalar guards don't take part in the ptr-tag fold class.
-  // Names whose INITIAL element contents this body fully described: a decl whose
-  // array-literal elems were all statically visible (including the empty `[]`).
-  // A push observation describes only the elements ADDED here — the schema
-  // census may settle on it only when the pre-existing contents are also known
-  // (elemOrigin, or an entry already recorded from a construction source). A
-  // push on a PARAM or an unknown-origin alias proves nothing about the
-  // elements the array arrived with — watr's `outline(ast)` pushes `['func',…]`
-  // nodes onto the module tree, the heterogeneous ['module', …] param. Skip,
-  // don't poison: the array simply stays untyped, and a caller-proven preseed
-  // (index.js param facts) survives unchallenged.
-  const poisonUndeclared = (name, vt) =>
-    !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
-
-  // Local-Map slices: bind the Map's get/set/delete as the tracker's three ops.
-  const trackVal = makeValTracker(n => valTypes.get(n), (n, vt) => valTypes.set(n, vt), n => valTypes.delete(n))
+  const trackVal = name => {
+    const k = summary?.kindOf(name) ?? K.NONE
+    const vt = valOf(k) ?? (!hasTag(k, K.NULLISH) && tagOf(core(k)) !== K.BIGINT ? valOf(core(k)) : null)
+    if (vt) valTypes.set(name, vt)
+    else valTypes.delete(name)
+  }
   const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n),
     n => typedLens?.get(n),
     (n, l) => { (typedLens ||= new Map()).set(n, l) },
@@ -215,7 +195,6 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
-    declared.add(name)
     // wasm type (locals slice). A `>>> 0` result is an unsigned uint32 that doesn't fit a
     // *signed* i32, so a binding initialized from one must be f64 — else reads and arithmetic
     // see the value as negative for inputs ≥ 2³¹. But `x >>> k` with a constant shift k where
@@ -264,7 +243,7 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
       updateRep(name, { range: declRange })
 
     // val type (valTypes slice)
-    trackVal(name, valTypeOf(rhs))
+    trackVal(name)
 
     // typed-array element ctor (typedElems slice)
     trackTyped(name, rhs)
@@ -412,7 +391,7 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
       markEscapeValue(rhs)
       const wt = exprType(rhs, locals)
       if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
-      trackVal(name, poisonUndeclared(name, valTypeOf(rhs)))
+      trackVal(name)
       trackTyped(name, rhs)
       if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)
       return

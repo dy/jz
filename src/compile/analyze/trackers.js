@@ -12,16 +12,6 @@ import { TYPED_CTOR_CONFLICT } from '../../typed-provenance.js'
 import { typedStorageFactFromName } from '../../typed-context.js'
 import { typedStaticLen } from '../../type.js'
 
-export const makeValTracker = (get, set, del) => {
-  let poison = null
-  return (name, vt) => {
-    if (poison?.has(name)) return
-    if (!vt) { (poison ||= new Set()).add(name); del(name); return }
-    const prev = get(name)
-    if (prev && prev !== vt) { (poison ||= new Set()).add(name); del(name); return }
-    set(name, vt)
-  }
-}
 export const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
   let poison = null
   const invalidate = (name) => { (poison ||= new Set()).add(name); del(name); if (delLen) delLen(name) }
@@ -49,7 +39,7 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
         // with an unknown or conflicting length drops the entry — typedStaticLen is
         // null for subarray/copy/ternary/computed rhs, so those invalidate for free.
         // Same live-closure style as get/set/del (call-time ctx deref, per the
-        // makeValTracker comment above — a captured Map would orphan on the
+        // captured binding lifecycle — a captured Map would orphan on the
         // per-function ctx.types reset).
         // A module global's length is a program-wide fact (ctx.scope.globalTypedLen,
         // dropped when any function rewrites the binding): a write here proves

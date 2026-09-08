@@ -1,14 +1,7 @@
-/**
- * program-facts split — whole-program schema-slot INT-CERTAIN census
- * (`analyzeSchemaSlotIntCertain`): a greatest-fixpoint sibling of
- * slot-kind-census.js's kind census, over the SAME write shapes, publishing
- * `ctx.schema.slotIntCertain`/`slotI32Certain`. Depends on
- * slot-write-hazards.js (same poison discipline) — see `../program-facts.js`
- * for the full module map and build order.
- * @module program-facts/slot-int-census
- */
+/** Whole-program integer range proofs for schema slots. */
 import { MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx, err, getFactStore, DBG_INVARIANTS } from '../../ctx.js'
+import { K, hasTag } from '../../summary/kind.js'
 import { repOf } from '../../reps.js'
 import { staticObjectProps } from '../../static.js'
 import { intLevelChecker } from '../../type.js'
@@ -199,10 +192,8 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // either census over.
   if (DBG_INVARIANTS) {
     for (const [sid, arr] of ctx.schema.slotI32Certain) {
-      const facts = ctx.schema.slotFacts.get(sid)
-      if (!facts) continue
       for (let i = 0; i < arr.length; i++) {
-        if (arr[i] === true && facts[i]?.bigintObserved === true)
+        if (arr[i] === true && hasTag(ctx.summary?.fieldKind(sid, ctx.schema.list[sid][i]) ?? 0, K.BIGINT))
           throw new Error(`P-carrier invariant: schema ${sid} slot ${i} is BOTH i32Certain and slotBigintObserved — a BIGINT write can never be strict-int32`)
       }
     }

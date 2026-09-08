@@ -354,12 +354,9 @@ function createFactStore() {
     bodyFacts: new Map(),
     bindingUses: new WeakMap(),
     mutationNames: new WeakMap(),
-    mayBeUndefinedTrace: new WeakMap(),
-    mapGetShapedTrace: new WeakMap(),
-    presentValTrace: new WeakMap(),
     // The 6 fields below are single-slot `_xBody === body ? cached :
     // recompute` caches, each keyed on the CURRENT function body's identity
-    // and — like mayBeUndefinedTrace et al. above — persisting ACROSS
+    // and persisting ACROSS
     // enterFunc by design (self-invalidating purely by body identity, not
     // reset per-function). Same WeakMap-on-identity idiom, same session-
     // ownership reasoning: kernel WeakMap→strong-Map lowering means a bare
@@ -626,75 +623,6 @@ export function reset(proto, globals, bridge) {
     // one record per (sid, idx) replacing 4 formerly-parallel Maps that shared
     // the IDENTICAL clash-poison/OR-join write discipline (FINDING-2) —
     // slotTypes, slotObjSids, slotTypedCtors, slotBigintObserved. Each
-    // SlotFact = `{ kind, objSid, typedCtor, bigintObserved }`:
-    //   .kind:      VAL.* | null | undefined — undefined: no observation,
-    //     null: ≥2 distinct kinds observed (clash-poisoned), VAL.*:
-    //     monomorphic. Was slotTypes. Populated by observeProgramSlots on
-    //     object literals; read by ctx.schema.slotVT (precise-only) so
-    //     valTypeOf returns the slot's kind for `.prop` AST nodes, letting
-    //     `+`/`===`/method dispatch elide `__is_str_key` checks on numeric
-    //     properties of known shapes.
-    //   .objSid:    childSchemaId | null | undefined — PROPERTY-KIND TRACING
-    //     (§19/§20, .work/archive/carrier-representation-design.md): the nested-sid
-    //     sibling of .kind's VAL-kind lattice, one level up. undefined: no
-    //     `r.p = {...}` write observed, null: ≥2 distinct literal shapes (or
-    //     a non-literal RHS) — poisoned, childSid: EVERY resolvable write to
-    //     this (sid, idx) slot is provably that ONE `{}`-literal shape. Was
-    //     slotObjSids. Populated ONLY by observeProgramSlots' `.prop=`/`=`-
-    //     write branch (NOT the `{}`-literal decl-site branch — a receiver's
-    //     OWN declared value is a separate, potentially-placeholder shape;
-    //     see §19's ctx.schema finding for why conflating the two would
-    //     poison the flagship case). Read by ctx.schema.idOf (via chainSid)
-    //     so a `.`-node receiver (`ctx.schema`, not a bare name) can chain-
-    //     resolve to a schema id, precise-only, fail-closed on any
-    //     unresolved/hazarded hop.
-    //   .typedCtor: ctor-string | null | undefined — undefined: no
-    //     observation, null: ≥2 distinct ctors, string: every observed value
-    //     of the slot is that typed-array kind. Was slotTypedCtors. The
-    //     elem-width sibling of .kind's VAL.TYPED — populated by
-    //     observeProgramSlots on object literals; read by
-    //     ctx.schema.slotTypedCtorAt (gated on the prop never being WRITTEN
-    //     program-wide) so `plan.twRe` keeps its concrete Float64Array kind
-    //     through field provenance (bench: provenance, fftplan).
-    //   .bigintObserved: true | undefined — CARRIER PROGRAM §15/§16 write
-    //     census: a pure OR-join (unlike .kind's first-wins-then-clash
-    //     lattice), true iff ANY write to this (sid, idx) slot anywhere in
-    //     the program — a `{}` construction literal value, an `obj.prop=`
-    //     assignment, or a hazarded write the kind census can't resolve
-    //     precisely (Object.assign/spread merges, computed-key writes — see
-    //     applySlotWriteHazards' fail-OPEN belt below, the opposite
-    //     direction from every other census's fail-closed hazard poison:
-    //     under-boxing a slot that really does carry a BigInt is unsound,
-    //     over-boxing one that never does is a rare harmless cost) — is
-    //     BIGINT-typed. A later differing-kind write never erases this bit:
-    //     a slot mixing NUMBER and BIGINT writes must still box its BIGINT
-    //     instances. Was slotBigintObserved. Populated by observeProgramSlots
-    //     alongside .kind (same clear-on-`fresh` lifecycle). Raw census
-    //     only — never read directly; the boxing DECISION also needs the
-    //     schema-wide needsDynShadow join (ctx.types.dynKeyVars/anyDynKey,
-    //     published after this census runs), composed at consume time by
-    //     ctx.schema.slotBigintBoxedAt/BySid and their narrower read-side
-    //     twins slotBigintProvenAt/BySid (module/schema.js).
-    //
-    // slotIntCertain/slotI32Certain (below) deliberately stay their OWN
-    // dedicated Maps, not folded in here: unlike the four fields above (one
-    // shared single-pass producer, observeProgramSlots, genuinely duplicated
-    // clash-poison algebra — FINDING-2's actual target), they're published
-    // together from ONE already-unduplicated source (slotIntLevels) by a
-    // materially different producer (analyzeSchemaSlotIntCertain's
-    // round-based fixpoint, its own clear/rebuild discipline keyed on
-    // opts.paramReps, not opts.fresh) and have genuine external Map-native
-    // consumers (compile/index.js's `.size` gate, slot-hazards.js's
-    // `.values()` assertion, the P-carrier invariant loop just below) —
-    // merging them onto this shared array would reconcile two independently-
-    // timed clear disciplines on the SAME storage for zero reduction in
-    // actual duplicated logic (there was never a second slotIntCertain-
-    // shaped algebra here to delete). See §6 risk item 6's own precedent for
-    // numeric's observation-timing independence — extended from the
-    // FINDING-10 pass-sharing question to the storage-representation
-    // question it structurally implies.
-    slotFacts: new Map(),
-    hasTypedSlots: false, // cheap TypedStoragePlan gate; set by the slot ctor census
     slotConstInts: new Map(), // schemaId → Array<int | null | undefined>
                               //   integer discriminants observed at every source
                               //   literal construction of a schema. null means

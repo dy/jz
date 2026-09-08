@@ -28,69 +28,34 @@ and installs reliably. Compiler architecture serves that result.
 The plugin fixture and host contract are not implemented by this plan. Choose
 an existing processor and inspect its host before changing compiler interfaces.
 
-## Known compiler gates
+## Compiler pipeline
 
-- Static-object returns are repaired: hoisting preserves the constant IR and
-  its schema. The 2026-09-08 core run finished with 4,413 pass, one existing
-  character-code failure, and one skip (61,515 assertions). Fresh functional
-  bootstrap and 15 hosted object-return cases also pass.
-- String construction and the compiler's byte-string builders need one
-  consistent contract. The saved fromCharCode patch alone breaks those builders.
-- The last dedicated self suite trapped during repeated Map/property compiles
-  without reset. Resolve or precisely bound that lifecycle before claiming
-  reusable compiler instances are reliable.
-- Recursive self-compilation already produced and probed a working compiler;
-  the pinned accepted-invalid parser ledger is empty. Neither is an unstarted
-  architecture task. Keep their regression gates.
-- After correctness fixes, run the full matrix, conformance and self gates on
-  the packaged revision. Existing speed/size promises still require measured
-  evidence; this plan does not weaken their tests or claim they are satisfied.
+Normalize and expand → settle program facts → lower → link → optimize and
+encode in watr. Recompute the summary after program rewrites; emission reads
+its settled binding, slot, parameter, result, container and presence facts.
+Range proofs and physical storage choices remain separate responsibilities.
 
-## Compiler simplification
+The slot-kind census, local value trackers, Map/dictionary alias traces and
+repeated parameter-kind joins are removed. Literal tuple positions and
+container constructor contents live in summary cells, with mutation and
+escape invalidation. Generic local propagation and merging now run in watr
+after linking; the duplicate JZ local passes and cleanup sweep are removed.
+JZ retains lowering-specific optimization and representation proofs.
 
-The target is normalize and expand → settle program facts → lower → optimize
-and encode in watr. Analysis consolidation has priority: migrate a consumer to
-the settled summary and delete its old inference in the same change. Necessary
-fixpoint iterations and refreshes after program rewrites remain explicit.
+## Release gates
 
-The typed-parameter specialization pass now reads named-call result payloads
-from the summary. Its separate recursive return census and memo table are gone,
-as is a duplicate summary lookup at each call site. Twelve sampled O2/O3 builds
-(including FFT and resampling) remain byte-identical; specialization and fresh
-functional bootstrap checks pass.
+- Run the core, matrix, conformance and self-hosting gates on the packaged
+  revision. Record baseline failures separately from regressions.
+- String construction and byte-string builders need one consistent contract;
+  changing fromCharCode alone previously broke compiler builders.
+- The dedicated self suite previously trapped during repeated Map/property
+  compiles without reset. Bound that lifecycle before promising reusable
+  compiler instances.
+- Speed and size promises require measured evidence, including the DSP fixture.
+  Architecture changes alone do not establish real-time suitability.
+- Replace the local watr dependency with a published version before distribution.
 
-Result boundaries now read the summary contract, including whether a body has
-any explicit result. Map and dictionary contents use its alias-aware cells;
-their local/global scans and duplicate state are removed. Short-circuit value
-selection is shared by the solver and its queries. Focused inference checks
-and fresh functional bootstrap pass; the full core run is still pending.
-
-Remaining analysis consolidation: schema-slot values and representation hints,
-then local value/presence inference. Finish this before the shared optimizer.
-
-## Deferred architecture
-
-These are unfinished directions, not prerequisites merely because they were
-once planned. Take a slice only for a reproduced correctness defect, measured
-DSP bottleneck, or a deletion that preserves behavior:
-
-- Consolidate remaining kind, result, representation and range analyses onto
-  settled summaries; finish the consumers, rather than adding another record.
-- Add semantic FunctionIR with explicit value definitions and effects, then
-  replace the covered WAT-array builders. The current tape is transport IR.
-- Move remaining generic JZ optimizations into watr when the replacement passes
-  JZ's gates. Retain the proven early local passes until that is demonstrated.
-- Replace selected WAT-template runtime families with JS where it simplifies
-  maintenance without worsening emitted code.
-- Replace ambient `ctx` ownership with program facts and disposable function
-  state where reentrancy or memory measurements justify it.
-
-No arbitrary line-count target, compiler-binary size target, complete runtime
-rewrite, or self-hosting speed race is a substitute for the plugin fixture.
-
-## Working rule
-
-One defect or measured bottleneck per compiler change. Keep complete test logs
-outside the conversation; report counts and failures. Do not open another
-architecture campaign while the useful next step is a small correctness fix.
-Historical plans and measurements are recoverable through [.work/README.md](.work/README.md).
+Semantic IR, more generic-pass migration, JS runtime replacements and removing
+ambient ctx are optional follow-ups. Take one only for a reproduced defect,
+a measured DSP bottleneck, or a deletion that preserves behavior. Historical
+plans remain recoverable through [.work/README.md](.work/README.md).

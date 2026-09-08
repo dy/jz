@@ -24,8 +24,6 @@ import { withTypedElemOverlay } from '../flow-state.js'
 import { I32_MIN, I32_MAX } from '../../ir.js'
 import { staticArrayElems } from '../../static.js'
 import { exprType, typedElemCtor, typedStaticLen } from '../../type.js'
-import { observeProgramSlots } from '../program-facts.js'
-import { exprMayBeUndefinedIn, exprPresentValIn, localMapGetMayCarryBigint } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { K, tagOf, paramOf, valOf, valsOf, hasTag, core, UNKNOWN } from '../../summary/index.js'
@@ -34,7 +32,7 @@ import { inferArrElemSchemaSet } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, seedResultKinds, narrowPointerResults, narrowReturnArrayElemSets } from './results.js'
-import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
+import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { isExported } from '../func-exports.js'
 
@@ -51,9 +49,14 @@ function seedParamKinds(paramReps, addressTaken) {
     for (let k = 0; k < func.sig.params.length; k++) {
       if (k === restIdx) continue
       const kd = summary.paramKindOf(func.sig.params[k].name), t = tagOf(kd), p = paramOf(kd)
-      if (t === K.NONE || t === K.ABSENT) continue
+      if (t === K.NONE) continue
       const r = ensureParamRep(paramReps, func.name, k)
       r.possibleKinds = new Set(valsOf(kd))
+      const nullable = hasTag(kd, K.NULLISH) || hasTag(kd, K.ABSENT)
+      r.presentVal = nullable ? valOf(core(kd)) ?? undefined : undefined
+      r.mayBeUndefined = nullable
+      r.presence = nullable ? 'maybe-undef' : 'present'
+
       // A kind some argument makes nullish carries no value fact (the callee's
       // reads stay dynamic and its nullish tests live), except BIGINT: its i64
       // bits carry no tag, so the kind holds and the parameter is nullable
@@ -83,7 +86,7 @@ function seedParamKinds(paramReps, addressTaken) {
 }
 
 export default function narrowSignatures(programFacts, ast) {
-  const { callSites, paramReps, hasSchemaLiterals, hasMapSet } = programFacts
+  const { callSites, paramReps } = programFacts
   const addressTaken = programFacts.programIndex.addressTaken
 
   // Callee-indexed view of `callSites` (compacted to the reachable set by the
@@ -434,14 +437,6 @@ export default function narrowSignatures(programFacts, ast) {
   // The closed element-schema union of an array result, from its return paths.
   narrowReturnArrayElemSets(paramReps, addressTaken)
   phase.clearNarrowingBodyState()
-  // Re-observe schema slot val-types now that E2 has set `valResult` on user
-  // funcs. First pass runs in collectProgramFacts before valResult is known, so
-  // a slot like `cs` in `{ ..., cs }` (where `cs = checksum(out)`) gets observed
-  // as null. observeSlot's first-wins-then-clash rule lets a later precise
-  // observation upgrade `undefined` → NUMBER without poisoning earlier
-  // monomorphic observations. A Map-only program has no `{}` to trip
-  // hasSchemaLiterals, but still needs this pass for its own census.
-  if (hasSchemaLiterals || hasMapSet) observeProgramSlots(ast)
   // The closed-union domains loop to a quiet round (each runner reports
   // change): a set settled in one enables a fact in another, and helper chains
   // of any depth converge. Guard cap is a backstop — the lattices are finite and monotone.
@@ -616,123 +611,6 @@ export default function narrowSignatures(programFacts, ast) {
   // yet). Here we need to reset f64-observed too so the refreshed exprType view propagates.
   resetParamWasmFacts(paramReps)
   runFixpointConverged()
-  // Destructured-parameter default shared by the mayBeUndefined solver below.
-  const isDestructuredParamBody = (func, pname) => {
-    const b = func?.body
-    const stmts = Array.isArray(b) && b[0] === '{}' && Array.isArray(b[1]) && b[1][0] === ';'
-      ? b[1].slice(1) : (b != null ? [b] : [])
-    for (const s of stmts) {
-      if (Array.isArray(s) && s[0] === 'let' && Array.isArray(s[1]) && s[1][0] === '=' &&
-          Array.isArray(s[1][1]) && (s[1][1][0] === '[' || s[1][1][0] === '{}') && s[1][2] === pname)
-        return true
-    }
-    return false
-  }
-  // mayBeUndefined param propagation — the inter-procedural half of the same
-  // fact analyze.js's analyzeValTypes seeds at decl time. Uses the shared
-  // fail-closed destructured-param default (no per-call-site proof mechanism
-  // exists for what a destructured element ends up holding, so assume the
-  // worst), same call-site OR-fold shape.
-  //
-  // Deliberately NOT built on mayBeNullish (kind.js): it fails closed for ANY
-  // call/property read (kind.js's "missable" bucket), which would make
-  // mayBeUndefined fire for nearly every param in the program —
-  // the wrong breadth for a fact whose whole point (reps.js doc,
-  // censusMaybeUndefinedKind arm 3) is staying tied to a dict/Map absent-key
-  // provenance, not "any unproven expression". exprMayBeUndefinedIn (kind.js)
-  // is censusShapedNode's ctx-independent shape test: at this plan-time
-  // fixpoint no CALLER's ctx.func.localReps is installed, so the real
-  // (ctx-aware) census would misread.
-  //
-  // An UNWRITTEN bare-name arg (a caller param/global/capture forwarded
-  // straight through) contributes NO evidence and resolves false:
-  // mayBeUndefined's provenance is narrow
-  // enough that "no trace to a census read" is the same honest default the
-  // decl producer already applies to every ordinary RHS.
-  // presence: 'maybe-undef' sibling stamped alongside r.mayBeUndefined at both
-  // writes below — same fail-closed (destructured-param-body) and call-site-
-  // union sources, no 'present' arm here (a param's positive-presence proof,
-  // if any, is settled at the ARGUMENT's own decl site in the caller body).
-  for (const [fname, reps] of paramReps) {
-    for (const [k, r] of reps) {
-      if (r.mayBeUndefined) continue
-      const func = ctx.funcs.map?.get(fname)
-      if (!func?.sig?.params || k >= func.sig.params.length) continue
-      const pname = func.sig.params[k].name
-      if (isDestructuredParamBody(func, pname)) { r.mayBeUndefined = true; r.presence = 'maybe-undef'; continue }
-      for (const cs of sitesByCallee.get(fname) ?? []) {
-        if (k >= cs.argList.length) continue
-        const argNode = cs.argList[k]
-        // Co-induction + interprocedural bounds proof — see
-        // arrayReadProvenInBounds's own doc: censusShapedNode (inside
-        // exprMayBeUndefinedIn below) over-approximates ANY `arr[idx]`
-        // call-argument as possibly undefined, even a read that's PROVABLY
-        // in-bounds by index arithmetic. Try the narrow, sound proof FIRST;
-        // it only ever SKIPS evidence this join would otherwise count, never
-        // adds any — so a shape it can't recognize just falls through to the
-        // existing over-approximation below, unchanged.
-        if (arrayReadProvenInBounds(argNode, cs.callerFunc, paramReps)) continue
-        if (exprMayBeUndefinedIn(argNode, cs.callerFunc?.body)) { r.mayBeUndefined = true; r.presence = 'maybe-undef'; break }
-      }
-    }
-  }
-
-  // presentVal param propagation — the inter-procedural half of the SAME fact
-  // analyze.js's `setPresentVal` already seeds at decl/reassign time. Unlike
-  // mayBeUndefined's boolean OR-fold just above, presentVal is an EXACT KIND
-  // claim (reps.js's own doc: mutually exclusive with `val`, poison-on-
-  // disagreement, same discipline as `val` itself): every live call site's
-  // argument must independently resolve the SAME presentVal kind
-  // (exprPresentValIn, kind.js — censusShapedNode's direct arms plus a poison-
-  // disciplined bare-name trace through the CALLER's own body), or the whole
-  // param declines (no claim — never a wrong one). A destructured param body
-  // is skipped (not force-poisoned to a fake kind): "no per-call-site proof
-  // mechanism" means no EVIDENCE for an exact-kind fact, and absence of a
-  // presentVal claim is always safe — every consumer (censusMaybeUndefinedKind's
-  // arm 3) only ever gets asked "what kind does the census claim", never "is
-  // this definitely a container value", so under-claiming just forwards to
-  // the plain dynamic path, never wrong.
-  //
-  // INVARIANT: this fact is what makes a param-hop BigInt unary shape
-  // (`const f = (v) => -v; f(m.get('x'))`, present-key BIGINT) correct:
-  // emitNeg's OR-arm (emit.js bigIntUnary) already asks
-  // `censusMaybeUndefinedKind(v)` unconditionally, so seeding `v`'s
-  // `presentVal` here is the ENTIRE fix; no consumer-side change needed.
-  const hardParamPresentVal = (funcName, k) => {
-    let consensus
-    const sites = sitesByCallee.get(funcName)
-    if (!sites) return null
-    for (const cs of sites) {
-      const state = siteState(cs)
-      if (!state) continue
-      if (k >= state.argList.length) return null   // missing → undefined at runtime, no claim
-      const v = exprPresentValIn(state.argList[k], state.callerFunc?.body)
-      if (v == null) return null                    // an untraced site ⇒ no claim (fail-closed to "absent", never wrong)
-      if (consensus === undefined) consensus = v
-      else if (consensus !== v) return null          // disagreement ⇒ no claim
-    }
-    return consensus ?? null
-  }
-  for (const [fname, reps] of paramReps) {
-    for (const [k, r] of reps) {
-      if (r.presentVal) continue
-      const func = ctx.funcs.map?.get(fname)
-      if (!func?.sig?.params || k >= func.sig.params.length) continue
-      const pname = func.sig.params[k].name
-      if (isDestructuredParamBody(func, pname)) continue
-      const v = hardParamPresentVal(fname, k)
-      if (v != null) r.presentVal = v
-      else {
-        const sites = sitesByCallee.get(fname)
-        if (sites?.some(cs => {
-          const state = siteState(cs)
-          return state && k < state.argList.length &&
-            localMapGetMayCarryBigint(state.argList[k], state.callerFunc?.body)
-        })) r.localMapBigintUnknown = true
-      }
-    }
-  }
-
   // Don't steal typed-array params from specializeBimorphicTyped: F phase parks
   // bimorphic typed params at type='f64' with sticky-null typedCtor (two distinct
   // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),

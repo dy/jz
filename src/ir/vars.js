@@ -9,7 +9,8 @@
 
 import { ctx } from '../ctx.js'
 import { isI32 } from '../ast.js'
-import { VAL, lookupValType, repOf, repOfGlobal } from '../reps.js'
+import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../reps.js'
+import { numberStorageValue, toNumF64 } from './coerce.js'
 import { typed } from './tag.js'
 import { temp, tempI32 } from './locals.js'
 import { asF64, asI32, toI32 } from './numeric.js'
@@ -219,7 +220,7 @@ export function readVar(name) {
 
 /** Write variable value. void_ → local.set (no result); otherwise → local.tee.
  *  valIR is raw emit result — coerced to f64 for boxed/global, to local type for locals. */
-export function writeVar(name, valIR, void_) {
+export function writeVar(name, valIR, void_, source) {
   // Loop-guard hull channel invalidation (emit.js's loopGuardHi/boundedHi,
   // sort lever): a `while(name < bound)`-derived upper-bound fact for `name`
   // is only valid until the FIRST write to `name` — writeVar is the single
@@ -292,6 +293,14 @@ export function writeVar(name, valIR, void_) {
     // under 2^53) recovery already re-narrows the resulting f64.add here,
     // right at the one assignment site that's provably safe to wrap.
     coerced = t === 'v128' ? valIR : t === 'f64' ? asF64(valIR) : toI32(valIR)
+  }
+  if (t === 'f64' && numericStorage(name)) {
+    if (!void_) {
+      const tmp = temp('assigned'), ref = typed(['local.get', `$${tmp}`], 'f64')
+      return typed(['block', ['result', 'f64'], ['local.set', `$${tmp}`, asF64(valIR)],
+        ['local.set', dollar(name), numberStorageValue(ref)], ref], 'f64')
+    }
+    coerced = source === undefined ? numberStorageValue(valIR) : toNumF64(source, valIR)
   }
   if (void_) return typed(['local.set', dollar(name), coerced], 'void')
   const teeNode = typed(['local.tee', dollar(name), coerced], t)

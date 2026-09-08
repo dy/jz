@@ -13,8 +13,8 @@ import {
 
 export function summaryQueries(facts) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameScopes,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, jsonKinds, unions,
-    schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps } = facts
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, cells, jsonKinds, unions,
+    schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, openSchemas } = facts
   const keyIn = (scope, name) => scope === '' ? name : scope + '\0' + name
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
@@ -122,6 +122,11 @@ export function summaryQueries(facts) {
       if (op === 'bool') return BOOL
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
+      if (op === '{}' && n.length === 2 && n[1]?.[0] === '...') {
+        const source = kindOfExpr(n[1][1]), t = tagOf(source)
+        if (t === K.NONE) return K.NONE
+        if (!isNullable(source) && (t === K.OBJECT || t === K.HASH)) return source
+      }
       // A construction site owns its cell (the solver's cellOf): an array literal, a `new Map`, an
       // array constructor, `JSON.parse`, and the array methods that build a fresh array.
       if (op === '[' || (op === '()' || op === '{}') && cells.has(n)) { const c = cells.get(n), t = op === '{}' ? K.HASH : n[1] === 'new.Map' ? K.MAP : K.ARRAY; return c === undefined || c >= UNKNOWN ? kind(t) : canon(kind(t, c)) }
@@ -137,7 +142,7 @@ export function summaryQueries(facts) {
           else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (isBrand(p[1])) brand = p[1]; else add(p[1]) }
           else if (Array.isArray(p) && p[0] === '...') {
             const source = kindOfExpr(p[1]), sid = tagOf(source) === K.OBJECT ? paramOf(source) : UNKNOWN
-            if (sid === UNKNOWN || !schemas[sid]) return kind(K.HASH)
+            if (p[1]?.[0] === '&&' || sid === UNKNOWN || openSchemas.has(sid) || !schemas[sid]) return kind(K.HASH)
             for (const name of schemas[sid]) add(name)
           } else return kind(K.HASH)
         }
@@ -163,8 +168,13 @@ export function summaryQueries(facts) {
       if (op === '[]') {
         const r = kindOfExpr(n[1]), t = tagOf(r)
         if (Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
+        if (t === K.ARRAY && paramOf(r) !== UNKNOWN) {
+          const row = tuples.get(cell(paramOf(r))), idx = n[2]
+          const i = typeof idx === 'number' ? idx : Array.isArray(idx) && idx[0] == null ? idx[1] : null
+          if (row && Number.isInteger(i) && i >= 0) return row[i] ?? kind(K.ABSENT)
+        }
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const s of slots(paramOf(r))) k = merge(k, s); return orAbsent(k) }
-        return t === K.TYPED ? orAbsent(typedElemKind(r)) : t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
+        return t === K.TYPED ? typedReadPresent(scope, n) ? typedElemKind(r) : orAbsent(typedElemKind(r)) : t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
         if (n[1].startsWith('new.') && TYPED_CTOR.test(n[1])) return builtinResult(n[1])
@@ -255,6 +265,7 @@ export function summaryQueries(facts) {
       // The result contract of the callable a call reaches, or null (contract.js).
       calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && paramOf(k) !== UNKNOWN ? paramOf(k) : null },
+      spreadSidOfExpr: e => { const k = kindOfExpr(e), sid = paramOf(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !openSchemas.has(sid) ? sid : null },
       // Payload queries preserve identity independently of nullish presence.
       objectSidOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? paramOf(k) : null },
       typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
@@ -262,6 +273,7 @@ export function summaryQueries(facts) {
       elemKindOf: name => { const k = readKind(name); return celled(k) ? elemOf(k) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null },
       numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'string' ? isNumeric(key) : key.every(isNumeric)) },
+      numericStorage: name => { const key = keyOf(name), k = readKind(name); return key !== null && numeric.get(key) === 2 && tagOf(core(k)) === K.NUMBER && hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) },
       // The demand pass denied the binding a number: a read of it neither converts nor is compatible (a container store, a return), so its value keeps JS semantics for every kind the host may pass.
       numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'string' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.
@@ -286,6 +298,10 @@ export function summaryQueries(facts) {
     : x == null ? null : scopeOfParams.get(x) ?? scopeOfSig.get(x) ?? (x.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? null
   // The frozen result contract of a callable (contract.js); an unknown one never completes.
   const resultContract = x => { const f = facts.contracts?.get(identityOf(x)); return f ? readContract(f) : NONE_CONTRACT }
+  const fieldKind = (sid, prop) => {
+    const i = schemas[sid]?.indexOf(prop)
+    return i == null || i < 0 ? K.NONE : slotKind(sid, i)
+  }
   return {
     ...view(''),
     // Named function/signature, closure id/parameter identity, a function's or
@@ -294,9 +310,11 @@ export function summaryQueries(facts) {
     at: x => view(scopeOfParams.has(x) ? scopeOfParams.get(x) : typeof x === 'string' || typeof x === 'number' ? x
       : scopeOfSig.get(x) ?? scopeOfBody.get(x) ?? closuresByBody.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
     resultContract,
-    fieldKind: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE },
-    fieldVal: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? null : valOf(fields.get(sid)?.[i] ?? K.NONE) },
-    fieldTypedCtor: (sid, prop) => { const i = schemas[sid]?.indexOf(prop), k = i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE; return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
+    valOfKind: valOf,
+    fieldKind,
+    fieldVal: (sid, prop) => valOf(fieldKind(sid, prop)),
+    fieldTypedCtor: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
+    fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },
     resultOf: name => results.get(name) ?? K.NONE,
     resultVal: name => valOf(results.get(name) ?? K.NONE),
     memberMayBeOwn,

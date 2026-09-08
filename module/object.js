@@ -998,7 +998,13 @@ function resolveSchema(obj) {
 // misdispatch. Treat params as unknown → dynamic runtime-key spread (always sound),
 // mirroring spreadSchema in src/kind.js so both phases agree.
 function spreadSourceSchema(obj) {
-  if (typeof obj === 'string' && ctx.func.current?.params?.some(p => p.name === obj)) return null
+  if (ctx.summary) {
+    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj)
+    return sid == null ? null : ctx.schema.list[sid]
+  }
+  if (typeof obj === 'string') {
+    if (ctx.func.current?.params?.some(p => p.name === obj)) return null
+  }
   return sourceSchema(obj)
 }
 
@@ -1083,6 +1089,10 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
   // box's runtime schemaId, so it copies static-segment sources too; the schema
   // table it reads must exist, so declare + force it (assemble.js).
   if (!allKnown && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...') {
+    const sourceKind = ctx.summary?.at(ctx.func.current).valOfExpr(props[0][1])
+    // Clone preserves primitive values; spread must instead enumerate them
+    // into a new object, including an empty object for nullish sources.
+    if (sourceKind !== VAL.OBJECT && sourceKind !== VAL.HASH) return emitDynamicSpread(props)
     inc('__obj_clone')
     if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
     return typed(['call', '$__obj_clone', asF64(emit(props[0][1]))], 'f64')

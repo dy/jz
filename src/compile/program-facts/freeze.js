@@ -75,7 +75,7 @@ export const FACT_KEYS = new Set([
   'dynVars', 'dynWriteVars', 'anyDyn', 'propMap', 'addressTakenNames', 'callSites',
   'computedCallSites', 'memberCallSites', 'memberDispatchSites', 'memberValueReads',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
-  'hasMapSet', 'hasBigint', 'hasThrow', 'writtenProps', 'literalWriteKeys', 'arrResized',
+  'hasBigint', 'hasThrow', 'writtenProps', 'literalWriteKeys', 'arrResized',
   'nameEscapes', 'typedRedefs', 'literalObjectVars', 'programIndex', 'dictKinds',
 ])
 

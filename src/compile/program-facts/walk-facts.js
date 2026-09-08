@@ -3,7 +3,7 @@
  * escapes): `observeNodeFacts` (single-node observer, also called directly
  * by prepare/index.js) and `collectProgramFacts` (the orchestrator —
  * sweeps `ast` + every function body + module inits, then conditionally
- * triggers slot-kind-census.js / slot-int-census.js). See
+ * triggers slot-constants.js / slot-int-census.js). See
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/walk-facts
  */
@@ -12,7 +12,6 @@ import { ctx, err, getFactStore } from '../../ctx.js'
 import { VAL } from '../../reps.js'
 import { nullishArm } from '../../kind.js'
 import { staticObjectProps } from '../../static.js'
-import { observeProgramSlots } from './slot-kind-census.js'
 import { analyzeSchemaSlotIntCertain } from './slot-int-census.js'
 import { ARR_RESIZE_METHODS } from './shared.js'
 
@@ -223,21 +222,13 @@ export function observeNodeFacts(node, f) {
     const cargs = commaList(args[1])
     if (cargs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
     if (cargs.length > f.maxCall) f.maxCall = cargs.length
-    // Map-value census pre-scan gate (design .work/archive/todo.md §deletion-sweep
-    // §1): cheap SYNTACTIC over-approximation — any 2-arg `.set(k,v)` call
-    // shape, no VAL.MAP proof (that's the census's own job at OBSERVE time,
-    // visit()/visitInit() below) — mirrors hasSchemaLiterals' own `{}`-on-
-    // sight trigger just above. Purely a "is it worth entering
-    // observeProgramSlots at all" gate for a Map-only program/moduleInit
-    // that carries no `{}` literal to trip hasSchemaLiterals on its own.
-    if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'set' && cargs.length === 2)
-      f.hasMapSet = true
+
   }
 }
 function emptyWalkFacts() {
   return {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
-    hasMapSet: false, hasBigint: false, hasThrow: false,
+    hasBigint: false, hasThrow: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [], memberCallSites: [],
     memberDispatchSites: [], memberValueReads: [],
@@ -252,7 +243,6 @@ function mergeWalkFacts(into, from) {
   for (const v of from.dynVars) into.dynVars.add(v)
   for (const v of from.dynWriteVars) into.dynWriteVars.add(v)
   if (from.hasSchemaLiterals) into.hasSchemaLiterals = true
-  if (from.hasMapSet) into.hasMapSet = true
   if (from.hasBigint) into.hasBigint = true
   if (from.hasThrow) into.hasThrow = true
   if (from.maxDef > into.maxDef) into.maxDef = from.maxDef
@@ -587,34 +577,12 @@ export function collectProgramFacts(ast) {
       if (initFacts.hasSpread) f.hasSpread = true
     }
     if (doSchema && initFacts.hasSchemaLiterals) f.hasSchemaLiterals = true
-    if (doSchema && initFacts.hasMapSet) f.hasMapSet = true
     if (initFacts.hasBigint) f.hasBigint = true
     if (initFacts.hasThrow) f.hasThrow = true
   }
 
-  // Slot-type observation pass: walk every `{}` literal with the right scope's
-  // valTypes installed as `ctx.func.localValTypesOverlay` so shorthand `{x}`
-  // (expanded by prepare to `[':', x, x]`) and chained typed-array reads resolve
-  // through valTypeOf → lookupValType. Skips into closures — they're observed via
-  // their own func.list entry. The overlay is the per-function analyzeBody.valTypes
-  // map (already populated with the same overlay-aware walk).
-  //
-  // Also entered on hasMapSet ALONE (no `{}` anywhere): the map-value census
-  // (design .work/archive/todo.md §deletion-sweep §1) rides the SAME
-  // observeProgramSlots walk (visit()'s `.set(...)` branch) — a Map-only
-  // program/moduleInit has no `{}` to trip hasSchemaLiterals on its own.
-  // analyzeSchemaSlotIntCertain stays gated on hasSchemaLiterals strictly —
-  // it is `{}`-slot-only work, wasted (though harmless) on a hasMapSet-only
-  // program.
-  if (doSchema && (f.hasSchemaLiterals || f.hasMapSet)) {
-    observeProgramSlots(ast)
-    // Per-slot intCertain mirror of the per-binding lattice. Runs after slot
-    // type observation (which it does not depend on) — same trigger gate so
-    // programs without schema literals skip both. Re-runnable: subsequent
-    // collectProgramFacts invocations (E2 phase) overwrite the same map; the
-    // analysis is monotone-down so re-running can only widen poisoning, never
-    // un-poison — safe.
-    if (f.hasSchemaLiterals) analyzeSchemaSlotIntCertain(ast)
+  if (doSchema && f.hasSchemaLiterals) {
+    analyzeSchemaSlotIntCertain(ast)
   }
 
   // Emit-time consumers (the static object-literal fast path) read this off
@@ -636,7 +604,7 @@ export function collectProgramFacts(ast) {
     memberDispatchSites: f.memberDispatchSites,
     memberValueReads: f.memberValueReads,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
-    paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
+    paramReps, hasSchemaLiterals: f.hasSchemaLiterals,
     hasBigint: f.hasBigint, hasThrow: f.hasThrow, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
     arrResized: f.arrResized, nameEscapes: f.nameEscapes, typedRedefs: f.typedRedefs, literalObjectVars,

@@ -12,7 +12,7 @@
  *
  * @module optimize/watr-tail
  */
-import watOptimize, { vacuum, mergeBlocks } from 'watr/optimize'
+import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, localReuse } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
@@ -123,6 +123,7 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // Internal lifted helpers remain inlineable — SIMD survives the splice,
   // while caller-level constant propagation and hot-call removal become live.
   if (boundaryPins.length) watrOpts.pin = [...watrOpts.pin, ...boundaryPins]
+  if (cfg.propagateLocals === false && watrOpts.propagate === undefined) watrOpts.propagate = false
   return watrOpts
 }
 
@@ -444,10 +445,13 @@ export function watrTail(module, cfg, {
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
-  // Without watr's fixpoint (levels 1 and `fast`), its vacuum and block merge alone: the
-  // emitter's nops, dropped pure values and untargeted blocks are the module's own to clean.
+  // Generic local rewrites run only here, after link consumed JZ annotations.
+  // Fast mode uses the same passes without the full module fixpoint.
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts))
-    : cfg.fusedRewrite !== false ? time('watCleanup', () => mergeBlocks(vacuum(legalized))) : legalized
+    : time('watCleanup', () => {
+      const locals = cfg.propagateLocals !== false ? localReuse(mergeLocals(propagate(legalized))) : legalized
+      return cfg.fusedRewrite !== false ? mergeBlocks(vacuum(locals)) : locals
+    })
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
     if (stableGlobals?.size) {

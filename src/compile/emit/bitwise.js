@@ -70,8 +70,6 @@ export const bitwiseOps = {
   // a single toI32 (whose NaN/Infinity guard runs once, unchanged). Fold it here so
   // DSP/bytebeat `~~` doesn't emit a dead double-xor watr won't remove.
   '~':   (a, self) => {
-    if (typeof a === 'string' && repOf(a)?.localMapBigintUnknown)
-      err('Unary ~ on a local Map value with control-dependent BigInt writes is not supported; branch on presence/type before applying it')
     if (Array.isArray(a) && a[0] === '~') {
       const inner = a[1]
       // ~~x === x for BigInt; the int32-truncation fold below is number-only.

@@ -61,7 +61,7 @@ export const PASS_NAMES = [
   'cseScalarLoad',
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'unswitchStringRepLoop',    // leaf char scans: hoist invariant SSO/heap selection out of the byte loop
-  'propagateLocals',          // shared propagation before devirt: non-SIMD functions, watr fixpoint off
+  'propagateLocals',          // watr local propagation after link, including the fast cleanup profile
   'promoteGlobals',          // read-only global.get → local for multi-read globals
   'sortLocalsByUse',
   'specializeMkptr',

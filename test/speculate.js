@@ -29,11 +29,7 @@ test('speculate: nullable typed results preserve fast and fallback calls', () =>
   }
 })
 
-// fftplan in miniature: plan built once, cached in a dictionary + last-plan
-// memo, tables reach the kernel as returned-object fields. No edge here is
-// provable: a dictionary's values are not a kind the summary carries (a Map's
-// are, so a Map cache proves the kernel's parameters typed outright, and the
-// guard never enters).
+// A cached plan carries its field kinds through dictionary reads and memo globals.
 const PLAN_SRC = `
 const cache = {}
 let lastN = 0, lastPlan = null
@@ -62,15 +58,14 @@ export let go = (n) => {
   return kernel(out, plan.perm, plan.tw, n)
 }`
 
-test('speculate: Map/memo plan fields produce a guarded typed clone', () => {
+test('summary: cached plan fields prove a typed kernel directly', () => {
   const w = jz.compile(PLAN_SRC, opts)
-  ok(w.includes('$kernel$spec'), 'spec clone emitted')
-  // the dispatch: masked hi-word compare on the arg box (tag TYPED + elem aux)
-  ok(/i64\.and[\s\S]{0,200}?i64\.eq/.test(w.slice(w.indexOf('func $go'))), 'guarded dispatch at the call site')
-  // the clone's loop is fully typed — no dynamic element dispatch
-  const i = w.indexOf('func $kernel$spec')
+  const i = w.indexOf('func $kernel\n')
+  ok(i >= 0, 'kernel emitted')
   const body = w.slice(i, w.indexOf('\n  (func', i + 5))
-  ok(!/__typed_idx|__dyn_get|__arr_idx/.test(body), 'clone kernel reads/writes raw')
+  for (const name of ['out', 'perm', 'tw'])
+    ok(body.includes(`(param $${name} i32)`), `${name} is a proven typed pointer`)
+  ok(!/__typed_idx|__dyn_get|__arr_idx/.test(body), 'kernel reads/writes raw')
 })
 
 test('speculate: plan-field route is value-correct (fast path)', () => {

@@ -170,28 +170,18 @@ export let main = () => {
   for (const optimize of LEVELS)
     is(run(src, { optimize }).main(), 'oops!', `O${optimize}: pointsTo==='ALL' still gates the slot-KIND read (concat dispatch, not raw NUMBER arithmetic on a string box)`)
 
-  // White-box half: confirm this program really does drive pointsTo to 'ALL'
-  // (the precondition the assertion above is meaningless without), then pin
-  // the chainHazarded GOTCHA the OQ2 verdict names — chainHazarded must stay
-  // narrower than slotHazarded and NOT consult pointsTo==='ALL' at all, or a
-  // naive copy of slotHazarded's composition here would silently re-widen
-  // chainSid's deliberately narrower predicate back into the circularity its
-  // own doc comment (module/schema.js) exists to break.
+  // Unrelated unknown writes must not invent a uniform nested-object kind.
   jz.compile(src, { optimize: 0 })
-  const hz = ctx.schema.slotWriteHazards
-  ok(hz?.pointsTo === 'ALL', 'precondition: corrupt() really did drive pointsTo to the ALL sentinel')
-  // A SEPARATE, unrelated nested-object write (`.prop=` with a `{}`-literal
-  // RHS) — slotFacts' `.objSid` field (ex-slotObjSids), fed only by this
-  // write shape (ctx.js doc), independent of `corrupt`'s receiver/key.
-  const chainSrc = src.replace('const f = new Foo()', 'const f = new Foo()\n  const r = { p: 0 }\n  r.p = { q: 1 }')
-  jz.compile(chainSrc, { optimize: 0 })
-  const hz2 = ctx.schema.slotWriteHazards
-  ok(hz2?.pointsTo === 'ALL', 'precondition (chain probe): pointsTo still ALL with the added unrelated r.p write')
-  const rSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'p')
-  const qSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'q')
-  ok(rSid >= 0 && qSid >= 0, 'r/{q} schemas registered')
-  const resolvedChild = ctx.schema.chainSid(['.', 'r', 'p'], (name) => name === 'r' ? rSid : null)
-  is(resolvedChild, qSid, 'chainHazarded stays narrower than slotHazarded: r.p chain-resolves to the nested {q} schema despite pointsTo===\'ALL\' program-wide (an unrelated cause)')
+  ok(ctx.schema.slotWriteHazards?.pointsTo === 'ALL', 'corrupt receiver is unresolved by the range analysis')
+  for (const initial of ['0', '{ q: 0 }']) {
+    const chainSrc = src.replace('const f = new Foo()', `const f = new Foo()\n  const r = { p: ${initial} }\n  r.p = { q: 1 }`)
+    jz.compile(chainSrc, { optimize: 0 })
+    const rSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'p')
+    const qSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'q')
+    ok(rSid >= 0 && qSid >= 0, 'nested schemas registered')
+    const child = ctx.schema.chainSid(['.', 'r', 'p'], name => name === 'r' ? rSid : null)
+    is(child, initial === '0' ? null : qSid, `${initial}: chain follows all values stored in the slot`)
+  }
 })
 
 test('slot-hazards: strict-i32 lattice range edges stay f64 (level 1, not 2)', () => {

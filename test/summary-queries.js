@@ -182,7 +182,7 @@ const contractProgram = () => {
     ['const', ['=', 'cb', closure]],
     ['const', ['=', 'set', ['?:', lit(true), closure, numberClosure]]],
     ['const', ['=', 'table', ['[', closure, numberClosure]]],
-    ['()', 'cb', lit(1)], ['()', 'set', lit(1)], ['()', ['[]', 'table', lit(0)], lit(1)],
+    ['()', 'cb', lit(1)], ['()', 'set', lit(1)], ['()', ['[]', 'table', 'index'], lit(1)],
     ['()', 'erased', lit('any')], ['()', 'through', lit('any')], ['()', 'unbounded', lit('any')],
   ]
   const summary = summarize(ast, { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: f => f.name === 'exported' || f.name === 'erased' || f.name === 'through' || f.name === 'unbounded' })
@@ -237,8 +237,8 @@ test('summary contract: a closure set with Number and BigInt members, a BigInt b
   is(set.kind, join(kind(K.BIGINT), kind(K.NUMBER))); is(set.carrier, CARRIER.BOXED)
   is(summary.calleeContract(['()', 'cb', lit(1)]), summary.resultContract(closureParams))
   is(summary.resultContract(numberParams).carrier, CARRIER.F64)
-  is(summary.kindOfExpr(['()', ['[]', 'table', lit(0)], lit(1)]), join(kind(K.BIGINT), kind(K.NUMBER)), 'a call through a callee expression joins the set\'s results')
-  is(summary.calleeContract(['()', ['[]', 'table', lit(0)], lit(1)]), set, 'the table holds the set the solver interned')
+  is(summary.kindOfExpr(['()', ['[]', 'table', 'index'], lit(1)]), join(kind(K.BIGINT), kind(K.NUMBER)), 'a call through a callee expression joins the set\'s results')
+  is(summary.calleeContract(['()', ['[]', 'table', 'index'], lit(1)]), set, 'the table holds the set the solver interned')
   is(summary.calleeOf(['()', ['?:', lit(true), 'cb', 'set'], lit(1)]), null, 'a pair the solver never joined is no set')
   const mixed = summary.resultContract('mixed')
   is(mixed.carrier, CARRIER.BOXED); is(contractVal(mixed), null)
@@ -264,7 +264,7 @@ test('summary contract: prepare\'s postfix recovery keeps the operand\'s kind; a
   is(summary.resultContract('name').kind, kind(K.BIGINT), 'a name decrement\'s old value too')
   is(summary.resultContract('plain').kind, K.NONE, 'a genuine BigInt - Number never completes')
   is(summary.at('member').kindOfExpr(['-', inc, one]), kind(K.BIGINT), 'the query reads the recovery as the solver does')
-  is(summary.resultContract('box').carrier, CARRIER.BOXED, 'an element of an array literal is its cell\'s kind, absent-capable')
+  is(summary.resultContract('box').carrier, CARRIER.RAW_I64, 'a literal tuple has its BigInt element zero present')
   is(summary.at('box').kindOfExpr(['[', 'v']), summary.at('box').kindOfExpr(['[', 'v']))
 })
 
@@ -319,4 +319,126 @@ test('summary contract: the plan\'s result target is the contract\'s carrier, bo
   is(representationResultRep(ctx, ctx.funcs.map.get('inner')), BIGINT_REP_RAW | BIGINT_REP_CLOSED, 'the plan\'s result target is the contract\'s carrier')
   is(representationResultRep(ctx, ctx.funcs.map.get('f')), BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
   is(representationResultRep(ctx, ctx.funcs.map.get('g')), BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
+})
+
+
+test('summary tuples: aliases, mutation and unions invalidate positional kinds', () => {
+  for (const change of ["alias[0]='changed'", "alias.reverse()", "alias.shift()", "alias.length=0", "const k=n;delete alias[k]", "a=n?[false,2]:a", "alias['0']='changed'"]) {
+    const source = `export const f=n=>{let a=[1,'x'];const alias=a;${change};return typeof a[0]}`
+    const js = Function(source.replace('export ', '') + ';return f')()
+    for (const optimize of [0, 2, 3]) {
+      const f = instantiate(compile(source, {optimize})).exports.f
+      for (const n of [0, 1]) is(f(n), js(n), `O${optimize}: ${change}, n=${n}`)
+    }
+  }
+})
+
+test('summary storage: numeric locals preserve observable missing assignment results', () => {
+  const src = `export function f(n) {
+    const a = new Float64Array(n)
+    if (n) a[0] = 3
+    let x = a[0]
+    const initial = x * 2
+    const assigned = (x = a[n])
+    return [initial, assigned === undefined, Number.isNaN(x * 2)].join(',')
+  }`
+  const js = Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 1, 2, 3]) {
+    const f = instantiate(compile(src, { optimize })).exports.f
+    for (const n of [0, 1, 4]) is(f(n), js(n), `O${optimize}, length ${n}`)
+  }
+})
+
+test('summary entry: an explicit numeric prologue retains JavaScript coercion', () => {
+  const src = 'export function f(x) { x = +x; if (x > 0) return x; return -x }'
+  const js = Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 1, 2, 3]) {
+    const f = instantiate(compile(src, { optimize })).exports.f
+    for (const x of [undefined, null, true, false, '-3', 'bad', -0, 7])
+      is(Object.is(f(x), js(x)), true, `O${optimize}, ${String(x)}`)
+  }
+})
+
+test('summary presence: a fixed typed extent proves only its constant in-bounds reads', () => {
+  const body = [';', ['const', ['=', 'n', lit(4)]],
+    ['const', ['=', 'a', ['()', 'new.Float64Array', 'n']]],
+    ['let', ['=', 'b', ['()', 'new.Float64Array', lit(4)]]],
+    ['=', 'b', ['()', 'new.Float64Array', lit(0)]]]
+  const s = summarize(body, { funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+  is(s.kindOfExpr(['[]', 'a', lit(0)]), kind(K.NUMBER))
+  is(s.kindOfExpr(['[]', 'a', lit(4)]), join(kind(K.NUMBER), kind(K.ABSENT)))
+  is(s.kindOfExpr(['[]', 'b', lit(0)]), join(kind(K.NUMBER), kind(K.ABSENT)))
+})
+
+test('summary clones: record updates preserve fields across object and hash copies', () => {
+  const src = `export function f() {
+    const records = new Map()
+    const update = fields => {
+      const prev = records.get('x')
+      const next = prev ? {...prev, ...fields} : {...fields}
+      let size = 0
+      for (const key in next) if (next[key] !== undefined) size++
+      for (const key in fields) if (fields[key] === undefined) delete next[key]
+      if (size) records.set('x', next)
+      return size
+    }
+    const a = update({value: 'number'})
+    const b = update({presence: 'present', cleared: undefined})
+    return [a, b, records.get('x').value, records.get('x').presence].join(',')
+  }`
+  const expected = Function(src.replace('export ', '') + ';return f')()()
+  for (const optimize of [0, 1, 2, 3])
+    is(instantiate(compile(src, { optimize })).exports.f(), expected, `O${optimize}`)
+})
+
+test('summary spreads: conditional keys retain dictionary representation', () => {
+  const src = `export function f(flag) {
+    const make = x => ({name: 'f', sig: {params: [1, 2]}, ...(x && {extra: 3})})
+    const records = new Map([['f', make(flag)]])
+    return [...records.values()].map(r => r.sig.params.length + (Object.keys(r).includes('extra') ? 10 : 0))[0]
+  }`
+  const js = Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 1, 2, 3]) {
+    const f = instantiate(compile(src, { optimize })).exports.f
+    for (const flag of [false, true]) is(f(flag), js(flag), `O${optimize}, ${flag}`)
+  }
+})
+
+test('summary cells: numeric reseeding retains constructor contents before later writes', () => {
+  const src = `export function f(n) {
+    const m = new Map([['first', 'text']])
+    m.set('later', {sig: 7})
+    return typeof m.get('first') + ':' + (n * 2)
+  }`
+  const js = Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 1, 2, 3]) {
+    const f = instantiate(compile(src, { optimize })).exports.f
+    is(f(3), js(3), `O${optimize}`)
+  }
+})
+
+test('summary containers: enum values and entry tuples feed numeric Map payloads', () => {
+  const src = `const tags = Object.freeze({a: 'a', b: 'b'})
+    const bits = new Map(Object.values(tags).map((name, i) => [name, 1 << i]))
+    const bit = name => bits.get(name) || 0
+    const pack = (mask, flag) => mask | (flag ? 8 : 0)
+    export const f = () => pack(7 & ~bit(tags.b), true)`
+  for (const optimize of [0, 1, 2, 3]) {
+    const binary = compile(src, { optimize })
+    is(ctx.summary.resultOf('bit'), kind(K.NUMBER), 'Map construction retains entry value kinds')
+    is(instantiate(binary).exports.f(), 13, `O${optimize}`)
+  }
+})
+
+test('summary spreads: a schema does not exclude properties added through aliases', () => {
+  const src = `const extend = (env, key) => { const next = {...env}; next[key] = 1; return next }
+    const merge = env => ({...env, done: true})
+    export function f() {
+      const a = extend({}, 'outer'), b = extend(a, 'inner'), c = merge(b)
+      b.inner = 2
+      return [Object.keys(a).sort().join(','), Object.keys(c).sort().join(','), c.inner].join(';')
+    }`
+  const js = Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 1, 2, 3])
+    is(instantiate(compile(src, { optimize })).exports.f(), js(), `O${optimize}`)
 })

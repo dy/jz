@@ -1,5 +1,5 @@
 /**
- * The VT dispatch table + `valTypeOf`/`valTypeOfWithLocals` — the kind
+ * The VT dispatch table + `valTypeOf` — the kind
  * lattice's join rules (`?:`/`&&`/`||`/`??`, `hasAmbiguousBoolMerge`) and
  * per-op value-KIND resolution, including call-node resolution for both
  * bare-name callees (`kind-traits.js`'s `calleeValType`) and same-module
@@ -176,16 +176,7 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
 // bool's bits. A statically-resolved `?:` condition (VT['?:'] line 143-144)
 // only ever evaluates its own live arm, so this mirrors that: recurse into the
 // live arm instead of returning early.
-// `vt` (optional): the valType resolver to consult — defaults to the plain
-// GLOBAL valTypeOf, same locals-blind/locals-aware split as valTypeOf vs
-// valTypeOfWithLocals above (round-6 prereq (a)'s precedent). narrow.js's
-// Phase E (narrowI32Results) runs BEFORE ctx.func.localReps is populated for
-// the function under analysis — it carries its own per-body `locals`/
-// `valTypes` overlay instead (mirrors exprType's own BigInt gate, line ~2265:
-// `valTypeOfWithLocals(expr, name => valTypes?.get(name) ?? lookupValType(name))`)
-// — so a bare `valTypeOf('x')` there would miss a LOCAL fact and silently
-// under-report the merge as unambiguous. Passing that same resolver through
-// closes it.
+// Narrowing supplies its scoped summary resolver before local representations exist.
 export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   // Direct indexing throughout — NO rest-destructure. This predicate runs at
   // 50+ emission sites on every stored/compared/returned node; the previous
@@ -270,24 +261,8 @@ VT['[]'] = (args) => {
       }
     }
   }
-  // Destructure-temp array-literal slot read: `t[k]` where `t` is a compiler-
-  // synthesized decl-destructure carrier bound directly to an array literal
-  // (prepare/index.js prepDecl registers it — ctx.schema.arrayVars). Unlike the
-  // flatObjects branch above, this covers ANY element expression, not just
-  // compile-time constants (`let [a, b] = [1, BigInt(v)]`'s `BigInt(v)` isn't
-  // SRoA-flattenable, but `t` never escapes and is never reassigned, so its
-  // literal's per-index kind IS the slot's kind — the array sibling of `.`'s
-  // ctx.schema.slotVT fact for the object-destructure temp).
-  if (typeof args[0] === 'string') {
-    const elems = ctx.schema.arrayVars?.get(args[0])
-    if (elems) {
-      const k = staticIndexKey(args[1])
-      if (k != null) {
-        const i = Number(k)
-        if (Number.isInteger(i) && i >= 0 && i < elems.length && elems[i] !== undefined) return valTypeOf(elems[i])
-      }
-    }
-  }
+  const settled = ctx.summary?.at(ctx.func.current).valOfExpr(['[]', args[0], args[1]])
+  if (settled != null) return settled
   // Indexed read on a known typed-array receiver, a name or an expression,
   // follows its concrete ctor. If the ctor itself is open (runtime-polymorphic
   // Number vs BigInt storage), retain an unknown kind and let the tagged
@@ -522,7 +497,7 @@ export const numericDenied = (node, view = ctx.summary?.at(ctx.func.current)) =>
 VT[','] = (args) => {
   const value = args[args.length - 1]
   return ctx.summary ? ctx.summary.at(ctx.func.current).valOfExpr(value)
-    : valTypeOfWithLocals(value, lookupValType)
+    : null
 }
 
 // Assignment & compound-assign expressions return the rhs value. Without this,
@@ -669,152 +644,6 @@ export function valTypeOf(expr) {
   const args = takeVtArgs(expr)
   try { return handler(args) ?? null }
   finally { releaseVtArgs(args) }
-}
-
-/**
- * Kind-generic, LOCAL-aware sibling of valTypeOf — round-6 prereq (a)/(sibling
- * of the compound-assign fix). A bare identifier inside valTypeOf's own VT[op]
- * recursion (numericBinaryVT/numericUnaryVT calling plain `valTypeOf(args[0])`)
- * always resolves through the GLOBAL lookupValType, which has nothing to say
- * about a name whose kind is only known LOCALLY at the call site — a plain
- * function-body local before narrow.js's per-function reps are live
- * (narrowValResults' analyzeBody(body).valTypes), or a closure param/capture
- * refined by an enclosing `typeof` guard (module/function.js's return-kind
- * pre-scan). `return ++n` on a proven-BIGINT local fell through exactly this
- * gap: valTypeOf(['++','n']) → numericUnaryVT → valTypeOf('n') →
- * lookupValType('n') → null, even though the caller already knows n is BIGINT.
- *
- * `resolveLocal(name)` handles bare identifiers; everything else re-derives
- * the same handful of ops valTypeOf's callers already special-case locally
- * (ternary/logical-both-arms-agree, '+'’s STRING-vs-arith fork, and — NEW —
- * the unary BigInt-preserving family u- ~ ++ --, mirroring numericUnaryVT/
- * numericBinaryVT's own "bigint operand → bigint result" rule). Every other
- * op falls through to plain valTypeOf(expr), which is locals-blind but was
- * already the accepted fallback everywhere this is used — unchanged behavior.
- * Not resolving a name (resolveLocal returns null/undefined) simply propagates
- * null upward: the fail-open boundary for a kind that isn't LOCALLY settled.
- */
-export function valTypeOfWithLocals(expr, resolveLocal) {
-  if (expr == null) return null
-  if (typeof expr === 'string') return resolveLocal(expr) ?? null
-  if (!Array.isArray(expr)) return valTypeOf(expr)
-  const op = expr[0]
-  const rec = (e) => valTypeOfWithLocals(e, resolveLocal)
-  if (isPostfixRecovery(op, expr[1], expr[2])) return rec(expr[1])
-  if (op === ',') return rec(expr[expr.length - 1])
-  if (op === '?:') {
-    const a = rec(expr[2]), b = rec(expr[3])
-    return a && a === b ? a : null
-  }
-  if (op === '&&' || op === '||') {
-    const a = rec(expr[1]), b = rec(expr[2])
-    return a && a === b ? a : null
-  }
-  // SOUND `+` — see narrowValResults' identical comment (src/compile/narrow.js):
-  // unknown side → no claim (VT['+']'s own optimistic NUMBER guess is fine for
-  // local numeric inference but unsound to hand back as a firm kind claim).
-  // Settled directly from `a`/`b` (NOT `valTypeOf(expr)`, round-7 fix — see the
-  // SOUND-arithmetic/bitwise family just below for why): `rec` already proved
-  // both operands' kind through resolveLocal, which sees LOCALLY-scoped facts
-  // (analyzeBody's per-function valTypes map, e.g. `let x = BigInt(v)`) that the
-  // GLOBAL-only plain `valTypeOf` re-derivation below cannot see at all — a bare
-  // name is invisible to `lookupValType` unless it's also a MODULE-level global.
-  // INVARIANT: falling through to `valTypeOf(expr)` after `rec` already
-  // proved BOTH sides BIGINT would silently discard that proof and
-  // re-resolve through the blind, globally-optimistic default, landing back
-  // on VAL.NUMBER — exactly the general miscompile this whole function
-  // exists to prevent, e.g. `(v,w) => { let x = BigInt(v); let y =
-  // BigInt(w); return x + y }` misdecoding at the export boundary, the
-  // identical class as the sibling arithmetic ops below (`+` is not immune
-  // to this despite the "SOUND +" framing elsewhere in this file).
-  if (op === '+') {
-    const a = rec(expr[1]), b = rec(expr[2])
-    if (a === VAL.STRING || b === VAL.STRING) return VAL.STRING
-    if (a == null || b == null) return null
-    return a === VAL.BIGINT || b === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
-  }
-  // Arithmetic/bitwise siblings (- * / % & | ^ << >>, the binary half of
-  // NUMERIC_BINARY_OPS minus its unary member `u-`, handled by the unary
-  // family just below): INVARIANT: these must NOT fall all the way through
-  // to the file-ending `return valTypeOf(expr)`, which re-derives via
-  // numericBinaryVT's OWN global-only `valTypeOf(args[0])`/`valTypeOf(args[1])`,
-  // blind to whatever `rec` (this function's own local resolver) just
-  // proved. A genuinely BigInt-valued local (`let x = BigInt(v)`) flowing
-  // through `x - y` would otherwise claim `func.valResult`
-  // = NUMBER — wrong, sending a real i64 BigInt result down the plain-f64
-  // (or generic-dynamic) export lane instead of the i64exp BigInt lane.
-  //
-  // UNLIKE `+` just above: no "unknown side → no claim" veto here. `+` needs
-  // that veto because an unproven operand could ALSO be a STRING (silently
-  // wrong to claim NUMBER when the true kind might be STRING — the narrowed-
-  // result compare-corruption class that rule was written to prevent). None
-  // of these nine ops have a STRING arm at all — `-`/`*`/etc. ALWAYS ToNumeric
-  // both operands, so the only question is NUMBER-vs-BIGINT, and
-  // numericBinaryVT's own "unknown → NUMBER" optimistic default for that
-  // question is the LONG-established, deliberately accepted imprecision this
-  // whole file already relies on everywhere else (its own doc comment: "load-
-  // bearing for local numeric inference"). Mirroring that formula exactly —
-  // just sourced from `rec` instead of the blind global `valTypeOf` — ADDS
-  // the missing local-BigInt proof without changing behavior for the "rec
-  // can't resolve either side" case at all. INVARIANT: a `null`-propagating
-  // veto here would break the closure-table call-site param lattice's own
-  // bootstrapping — a table's `(x,k)=>(x+k)|0`-shaped elements are read
-  // BEFORE `x`/`k` have any local evidence at all, relying on exactly this
-  // "unknown → NUMBER" default; vetoing it to null regresses the
-  // `f64.add`-with-no-`__str_concat` codegen pin in test/closures.js.
-  if (op === '-' || op === '*' || op === '/' || op === '%' ||
-      op === '&' || op === '|' || op === '^' || op === '<<' || op === '>>') {
-    const a = rec(expr[1]), b = rec(expr[2])
-    return a === VAL.BIGINT || b === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
-  }
-  // Unary BigInt-preserving family (u- ~ ++ --): kind follows the single
-  // operand exactly like numericUnaryVT's own rule, just sourced from
-  // resolveLocal instead of the global lookupValType. `!` and the other
-  // BOOL_OPS are UNAFFECTED on purpose — VT.bool ignores its operand's kind
-  // entirely (always VAL.BOOL), so the locals-blind valTypeOf(expr) fallback
-  // is already exact for them; no case needed here.
-  // SOUND unary (§6/§12 Slice 5, present-key BigInt export lane): same "unknown
-  // side → no claim" discipline as SOUND `+` just above — an operand whose kind
-  // the LOCAL resolver can't settle (`rec` returns null — e.g. a dict/Map
-  // `.get()` read whose census kind isn't available yet at this whole-program
-  // pass, narrow.js narrowValResults' own ordering gap) must NOT fall through
-  // to numericUnaryVT's global, unconditionally-resolving optimistic-NUMBER
-  // default: that default is what made `export let f = () => -m.get('x')`
-  // claim `func.valResult = VAL.NUMBER` even though the operand can genuinely
-  // be BIGINT, skipping the i64 boundary wrap entirely (a real, live
-  // miscompile fixed here, not just a missed optimization — the summary result contract
-  // independently describes the export carrier, so this costs no
-  // real specialization for the common case).
-  if (op === 'u-' || op === '~' || op === '++' || op === '--') {
-    const a = rec(expr[1])
-    if (a === VAL.BIGINT) return VAL.BIGINT
-    if (a == null) return null
-    return valTypeOf(expr)
-  }
-  // Method call `obj.method(...)` (parsed as `['()', ['.', obj, method], argsNode]`):
-  // plain valTypeOf's own VT['()'] already special-cases this shape (methodValType(
-  // method, obj, valTypeOf(obj), ctx)), but valTypeOf(obj) for a bare-identifier
-  // receiver resolves through the GLOBAL lookupValType only — blind to a kind this
-  // pass's own `resolveLocal` already proved body-locally (analyzeBody's valTypes,
-  // not yet installed into ctx.func.localReps at plan time). A handful of methods
-  // GATE their claim on a proven receiver kind (`.has`/`.delete` on Map/Set,
-  // `.add`/`.set`, the Set-algebra family — kind-traits.js methodValType) rather
-  // than claiming unconditionally, so an unproven-but-locally-known receiver (e.g.
-  // `let m = new Map(); return m.has(k)`) silently lost its VAL.BOOL claim here,
-  // leaving func.valResult unset and the boundary wrapper crossing a raw 0/1
-  // number instead of the canonical TRUE_NAN/FALSE_NAN atom. Resolve the receiver
-  // through `rec` (this function's own local-aware recursion) first; methodValType
-  // itself is representation-agnostic (works the same whether objType came from
-  // here or the global path), so this is purely additive — a method whose claim
-  // doesn't depend on objType (most STRING/NUMBER/ARRAY methods) was never blocked
-  // by this gap in the first place.
-  if (op === '()' && Array.isArray(expr[1]) && expr[1][0] === '.') {
-    const [, obj, method] = expr[1]
-    const objType = rec(obj)
-    const vt = methodValType(method, obj, objType, ctx)
-    if (vt != null) return vt
-  }
-  return valTypeOf(expr)
 }
 
 /** Build a structural shape from a `{}` AST node — recursive for nested

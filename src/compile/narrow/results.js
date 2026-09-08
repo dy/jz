@@ -13,8 +13,8 @@ import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, walkAst, isReas
 import { analyzeBody, reanalyzeBody, invalidateBodies } from '../analyze.js'
 import { exprType, typedStaticLen } from '../../type.js'
 import { ctorFromElemAux } from '../../../layout.js'
-import { valTypeOfWithLocals, hasAmbiguousBoolMerge } from '../../kind.js'
-import { VAL, KIND_UNIVERSE, lookupValType } from '../../reps.js'
+import { hasAmbiguousBoolMerge } from '../../kind.js'
+import { VAL, KIND_UNIVERSE } from '../../reps.js'
 import { paramFactsOf } from '../../param-reps.js'
 import { isExported } from '../func-exports.js'
 import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN, PRESENCE } from '../../summary/index.js'
@@ -155,12 +155,12 @@ export function narrowI32Results(funcs) {
     // tail, leaving the function at f64 so the return-tail boxing this
     // design's step 1 covers (emit.js 'return', ctx.func.mixedAtomReturn)
     // still gets a chance to run.
-    const resolveLocal = name => valTypes?.get(name) ?? lookupValType(name)
-    const anyAmbiguous = exprs.some(e => hasAmbiguousBoolMerge(e, ex => valTypeOfWithLocals(ex, resolveLocal)))
+    const summary = ctx.summary?.at(body)
+    const anyAmbiguous = exprs.some(e => hasAmbiguousBoolMerge(e, ex => summary?.valOfExpr(ex) ?? null))
     // `body` as `exprType`'s optional `bodyRoot` (§14 point 4 fallout, src/type.js's
     // own doc comment on the parameter): this whole-program pre-pass runs before
     // ctx.func.localReps is live, so the bitwise-ops BigInt guard's bare-name arm
-    // needs the ctx-independent structural trace (exprPresentValIn) instead.
+    // reads the scoped program summary instead.
     const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true, body) === 'i32')
     const unsignedLocals = bodyFacts?.unsignedLocals
     return {

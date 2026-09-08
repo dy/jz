@@ -1,80 +1,13 @@
-/**
- * Local value-type inference — analyzeValTypes and its dict/map-shaped
- * per-name helpers, plus the nullability predicates it shares with
- * narrow.js. Split out of analyze.js along the "value types" seam
- * (pipeline-minimality slice); see analyze.js's module header for the full
- * split rationale and `.work/archive/analyze-traversals.md` for the traversal
- * inventory.
- *
- * @module compile/analyze/val-types
- */
+/** Project settled value and presence facts; derive physical storage constraints. */
 import { OPTF, DBG_INVARIANTS, ctx } from '../../ctx.js'
-import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
-import { valTypeOf, shapeOf, censusMaybeUndefinedKind } from '../../kind.js'
+import { valTypeOf, shapeOf } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
-import { makeValTracker, makeTypedTracker } from './trackers.js'
+import { makeTypedTracker } from './trackers.js'
 import { analyzeBody } from './body-facts.js'
-
-// Can this RHS expression produce null/undefined? FAIL-CLOSED: anything not
-// STRUCTURALLY provable non-nullish counts nullable. The flag's only effect
-// is suppressing emit.js's strictSentinel constant fold (the comparison pays
-// a cheap runtime nullish check instead) plus capture propagation — while a
-// wrong non-nullable verdict FOLDS AWAY a real miss guard. The old shape
-// list (nullish literals + ternary arms only) was sound while opaque sources
-// carried no value kind (no kind ⇒ no fold); the Map/element value-kind
-// inference broke that assumption: the self-compile kernel's own
-// `autoCache.get(name) !== undefined` cache probe folded to TRUE (the get's
-// rep carried the map's value kind, non-nullable) and every autoDepsOf call
-// returned the miss sentinel unconditionally — the byte-parity root.
-const NEVER_NULLISH_OPS = new Set([
-  'str', 'bigint', '//', '{}', '[', '=>', 'new', 'bool',
-  '+', '-', '*', '/', '%', '**', '|', '&', '^', '~', '<<', '>>', '>>>',
-  '==', '!=', '===', '!==', '<', '>', '<=', '>=', '!', 'u-', 'u+',
-  'typeof', 'in', 'instanceof', '++', '--',
-])
-// `nameNullable` resolves a bare-name read; the default reads the CURRENT
-// function's rep (emit-time callers). narrow.js passes its own resolver — at
-// plan time no caller's ctx.func is installed, so it re-derives nullability
-// from the caller body's writes instead. Exported for exactly that consumer.
-export function mayBeNullish(n, nameNullable = (name) => !!repOf(name)?.nullable) {
-  if (typeof n === 'number' || typeof n === 'boolean') return false
-  // name read: inherit the source binding's settled flag (best-effort — an
-  // unsettled rep reads false, matching the old behavior for plain aliases)
-  if (typeof n === 'string') return nameNullable(n)
-  if (!Array.isArray(n)) return true
-  const op = n[0]
-  if (op == null) return n[1] == null                    // [null, v] literal value
-  if (op === '?' || op === '?:') return mayBeNullish(n[2], nameNullable) || mayBeNullish(n[3], nameNullable)
-  // `a && b` yields a (when falsy — possibly nullish) or b; `a || b` / `a ?? b`
-  // yield a only when truthy/non-nullish, so only b's nullability matters.
-  if (op === '&&') return mayBeNullish(n[1], nameNullable) || mayBeNullish(n[2], nameNullable)
-  if (op === '||' || op === '??') return mayBeNullish(n[2], nameNullable)
-  if (op === '=') return mayBeNullish(n[2], nameNullable) // assignment expression yields its rhs
-  if (op === ',') return mayBeNullish(n[n.length - 1], nameNullable)
-  if (typeof op === 'string' && (NEVER_NULLISH_OPS.has(op) || op.startsWith('new.'))) return false
-  // calls (incl. `.get()` misses), member/element reads, optional chains,
-  // and anything unrecognized: missable — fail closed.
-  return true
-}
-
-// Decl-time producer for the `mayBeUndefined` REP field
-// (.work/archive/todo.md §deletion-sweep §2/§3 Slice 1) — the
-// container-read sibling of `mayBeNullish` above, deliberately NOT folded
-// into it: `mayBeNullish` answers "could this expression itself be a nullish
-// LITERAL/merge", or with a Map/dict a `.get()`/`[]` call already fails
-// closed (returns true) whether or not the census can name an exact
-// non-nullish kind for it — `mayBeUndefined` answers the NARROWER question
-// this design needs, "does the census's SPECIFIC exact-kind claim for this
-// RHS need the mayBeUndefined carve-out", which only a direct
-// censusMaybeUndefinedKind-recognized node or an already-flagged bare-name
-// copy can answer. Two arms, no recursion through ternary/&&/||/`,` (unlike
-// mayBeNullish's full walk) — deliberately narrow, matching Slice 1's scope
-// per the design's own "smaller surface" instruction; a composed RHS
-// (`cond ? m.get(k) : 0`) is out of scope until a later slice extends this.
-const mayBeUndefinedRhs = (rhs) =>
-  censusMaybeUndefinedKind(rhs) != null || (typeof rhs === 'string' && !!repOf(rhs)?.mayBeUndefined)
+import { K, tagOf, hasTag, valOf, core, ANY } from '../../summary/kind.js'
 
 /** True iff `name` appears in `body` ONLY as the receiver of an indexed read
  *  `name[k]` (the lean-dict idiom) — a bare reference, a `.`-target, or any
@@ -214,43 +147,18 @@ function dictDomainOf(body, name) {
  * and schema resolution.
  */
 export function analyzeValTypes(body) {
-  const declared = takeScratchSet()   // the names declared in this body
-  try { return analyzeValTypesIn(body, declared) } finally { releaseScratchSet(declared) }
-}
-function analyzeValTypesIn(body, declared) {
-  // localReps slice: store reads/writes the rep's `val` field (updateRep clears it
-  // when set to undefined, matching the old explicit delete).
-  const setVal = makeValTracker(
-    (n) => ctx.func.localReps?.get(n)?.val,
-    (n, vt) => updateRep(n, { val: vt }),
-    (n) => updateRep(n, { val: undefined }),
-  )
+  const summary = ctx.summary?.at(body)
+  const setVal = name => {
+    const k = summary?.kindOf(name) || ANY
+    const nullable = hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH)
+    updateRep(name, {
+      val: valOf(k) ?? (!hasTag(k, K.NULLISH) && tagOf(core(k)) !== K.BIGINT ? valOf(core(k)) : undefined),
+      presentVal: nullable ? valOf(core(k)) ?? undefined : undefined,
+      nullable, mayBeUndefined: nullable,
+      presence: nullable ? 'maybe-undef' : 'present',
+    })
+  }
   const getVal = name => ctx.func.localReps?.get(name)?.val
-  // presentVal slice: decl-time producer (.work/archive/todo.md §deletion-sweep
-  // §14 Slice 6, reps.js `presentVal` doc comment). Own
-  // makeValTracker instance — a SEPARATE poison set from `setVal`'s (this
-  // function is called fresh per analyzeValTypes invocation, exactly like
-  // setVal above, so poison state never leaks across functions/compiles).
-  // Fed `censusMaybeUndefinedKind(rhs)` directly at both write sites below:
-  // that one predicate already composes direct census-shaped RHS, one-hop
-  // bare-name copy-through (reading this SAME field on an earlier-processed
-  // name in the same forward walk), and call-results — no separate helper
-  // needed (kind.js's own "one predicate function" discipline, §4).
-  const setPresentVal = makeValTracker(
-    (n) => ctx.func.localReps?.get(n)?.presentVal,
-    (n, vt) => updateRep(n, { presentVal: vt }),
-    (n) => updateRep(n, { presentVal: undefined }),
-  )
-  // Names declared in THIS body. A reassignment to any other name (parameter /
-  // captured outer binding) merges with an entry value of unknown kind, so a
-  // POINTER-kind RHS must POISON the val slice, not settle it — else a branch
-  // like `if (Array.isArray(x)) …; else x = ['str', v]` on a param stamps x
-  // ARRAY flow-insensitively and const-folds the very guard proving it isn't
-  // (the kernel JSON.parse-emitter head-coercion: array reads on a string →
-  // OOB). Scalar kinds (NUMBER/BOOL/BIGINT) and coupled-tracker kinds (TYPED/BUFFER, whose trackTyped slice owns coherence) keep the settled-kind behavior —
-  // see analyzeBody's poisonUndeclared for why.
-  const poisonUndeclared = (name, vt) =>
-    !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
   // The element kind, holes and typed constructor are the program summary's
@@ -381,7 +289,6 @@ function analyzeValTypesIn(body, declared) {
       for (let i = 1; i < node.length; i++) {
         const a = node[i]
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
-        declared.add(a[1])
         // A direct empty-object initializer with property writes but no
         // materialized schema is represented as HASH by object.js. Stamp the
         // same kind before emission so allocation, reads, and writes agree.
@@ -423,21 +330,7 @@ function analyzeValTypesIn(body, declared) {
           const domain = dictDomain(a[1])
           if (domain) (ctx.func.leanHashDomains ??= new Map()).set(a[1], domain)
         }
-        setVal(a[1], vt)
-        const declMayBeNullish = mayBeNullish(a[2])
-        if (declMayBeNullish) updateRep(a[1], { nullable: true })
-        // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
-        // own boolean exactly (same condition, same site). 'present' is a
-        // SEPARATE, narrower positive proof — non-nullish init (declMayBeNullish
-        // already computed above for `nullable`) AND never reassigned anywhere
-        // in the body (writeCount, the SAME never-reassigned check the range
-        // stamp below reuses) — mutually exclusive with 'maybe-undef' by
-        // construction (if/else if): a census-shaped RHS is already
-        // mayBeNullish-true (mayBeNullish fails closed on any call/bracket
-        // read), so the two arms never both fire for the same write.
-        if (mayBeUndefinedRhs(a[2])) updateRep(a[1], { mayBeUndefined: true, presence: 'maybe-undef' })
-        else if (!declMayBeNullish && writeCount(body, a[1], 0) === 0) updateRep(a[1], { presence: 'present' })
-        setPresentVal(a[1], censusMaybeUndefinedKind(a[2]))
+        setVal(a[1])
         // Closed integer hull for never-reassigned decls whose init the range
         // evaluator can bound (masks, ternary hulls, bounded products) — chains
         // through earlier ranged decls via intExprRange's repOf hook. Feeds the
@@ -513,7 +406,7 @@ function analyzeValTypesIn(body, declared) {
           if (elemSid != null) {
             updateRep(a[1], { schemaId: elemSid })
             // Also set the val so structural call dispatch + valTypeOf see VAL.OBJECT.
-            setVal(a[1], VAL.OBJECT)
+            setVal(a[1])
           } else {
             // Closed heterogeneous union: `const o = rows[i]` over a
             // set-carrying array — o is provably ONE of the union's schemas.
@@ -525,7 +418,7 @@ function analyzeValTypesIn(body, declared) {
             const elemSet = arrElemSchemaSetOf(a[2][1])
             if (elemSet != null && writeCount(body, a[1], 0) === 0) {
               updateRep(a[1], { schemaIdSet: elemSet })
-              setVal(a[1], VAL.OBJECT)
+              setVal(a[1])
             }
           }
         }
@@ -548,31 +441,7 @@ function analyzeValTypesIn(body, declared) {
         const domain = dictDomain(node[1])
         if (domain) (ctx.func.leanHashDomains ??= new Map()).set(node[1], domain)
       }
-      // A CONDITIONALLY-positioned BIGINT write to a PARAM poisons, never
-      // settles: the entry kind is call-site truth this body walk can't see,
-      // and this tracker writes DURABLE localReps, so `if (r) v = 4n` would
-      // otherwise stamp v BIGINT for Number entries with no competing
-      // observation to poison it (params have no decl node), folding
-      // `typeof v` wrong. An UNCONDITIONAL write (`n = BigInt(n)` at body
-      // top level — watr's normalization idiom) dominates every later use
-      // and still adopts. Scoped to VAL.BIGINT: the hazard is the bit-level
-      // carrier (raw i64 misread as a subnormal Number and vice versa) — the
-      // plan's tagged materialization handles the runtime, this only stops
-      // the false STATIC claim. Non-BigInt conditional adopts stay: numeric
-      // loop-write adoption is load-bearing for the typing pipeline
-      // (unswitch-typed-param's i32 guard locals validate against it).
-      const bigintParamWrite = vt === VAL.BIGINT && (ctx.func.current?.params?.some(p => p.name === node[1]) ||
-        ctx.func.current?.sig?.params?.some(p => p.name === node[1]))
-      setVal(node[1], bigintParamWrite && cond ? null : poisonUndeclared(node[1], vt))
-      if (mayBeNullish(node[2])) updateRep(node[1], { nullable: true })
-      // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
-      // boolean here too. No 'present' arm at a REASSIGN site — this write
-      // itself makes writeCount(body, node[1], 0) ≥ 1 for the whole body, so
-      // the decl site's never-reassigned precondition for 'present' is
-      // already false whenever this site can even fire (decl-site 'present'
-      // never gets set for a name that reaches a reassignment anywhere).
-      if (mayBeUndefinedRhs(node[2])) updateRep(node[1], { mayBeUndefined: true, presence: 'maybe-undef' })
-      setPresentVal(node[1], censusMaybeUndefinedKind(node[2]))
+      setVal(node[1])
       if (vt === VAL.REGEX) trackRegex(node[1], node[2])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(node[2])) trackTyped(node[1], node[2])
       if (vt === VAL.OBJECT) bindObjSchema(node[1], node[2])

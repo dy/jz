@@ -10,6 +10,7 @@
 import { typed, asF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
+import { K, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { err, inc } from '../src/ctx.js'
 import { isBrand } from '../src/ast.js'
@@ -254,12 +255,6 @@ export function initSchema(ctx) {
   // unless the entry is a null-kinds emit-belt fallback. Value-level readers
   // (intCertain, elem-ctors) always fail closed on kind-safe sids: the JSON
   // parser writes arbitrary doubles/values within the sample's kinds.
-  // Grow-free read of the unified SlotFact record at (sid, idx) — product-
-  // lattice design Slice 6a (.work/archive/lattice-design.md §5), ctx.js's
-  // `slotFacts` doc. Every projection below reads exactly ONE field off the
-  // SAME shared record instead of its own separately-grown array.
-  const factAt = (id, idx) => ctx.schema.slotFacts.get(id)?.[idx]
-
   const slotHazarded = (id, prop, kindSafeOk = false) => {
     if (ctx.schema.externSlotSids?.has(id)) return true
     const hz = ctx.schema.slotWriteHazards
@@ -269,60 +264,13 @@ export function initSchema(ctx) {
       (hz.numeric && /^(0|[1-9][0-9]*)$/.test(String(prop)))
   }
 
-  // Nested-sid hazard belt for chainSid — DELIBERATELY narrower than
-  // slotHazarded's `pointsTo==='ALL'`/`hz.numeric`/`kindSafeSids` terms, which
-  // protect a DIFFERENT invariant (a slot's sampled VALUE KIND against writes
-  // the narrow per-(sid,idx) walk couldn't attribute — computed-key writes,
-  // Object.assign merges, extern constructors). slotObjSids is populated by
-  // that SAME narrow walk (the `.prop=`/`=`-write branch, program-facts.js)
-  // and is ALREADY its own complete, self-poisoning census for bare-string-
-  // receiver dot-writes — it doesn't need `pointsTo`'s `'ALL'` blanket "some
-  // untraceable write, who knows where" caution layered on top, and
-  // empirically (self.js compile) `pointsTo==='ALL'` fires from causes (e.g.
-  // `arr[idx]=v` on an unresolvable-kind `arr`) that have NOTHING to do with
-  // THIS receiver's shape — consulting it here only reproduces the
-  // circularity chainSid exists to break (chain resolution feeds the very
-  // kind facts that would clear those causes). What DOES remain a real risk:
-  // a write through an UNRESOLVABLE ALIAS of this exact receiver/prop
-  // (`propWrite`'s own `hz.props`/`pointsTo` fallback, sid- and name-
-  // SPECIFIC, populated whenever `sidOf` can't resolve a `.`-write's
-  // receiver) or an extern-registered sid (host-side layout, never derived
-  // from program literals) — both checked below.
-  //
-  // GOTCHA (product-lattice design OQ2 verdict, .work/archive/lattice-design.md
-  // "LATTICE OQ2+OQ4 VERDICTS" — Slice 6b's own named pitfall): this check
-  // MUST stay `pointsTo !== 'ALL' && pointsTo.has(id)`, never
-  // `pointsTo === 'ALL' || pointsTo.has(id)`. The latter is slotHazarded's
-  // shape — copying it here would silently re-widen this DELIBERATELY
-  // narrower predicate back into the exact circularity the paragraph above
-  // exists to avoid. A probe pinning this (chainHazarded excludes 'ALL')
-  // lives in test/slot-hazards.js.
-  const chainHazarded = (id, prop) => {
-    if (ctx.schema.externSlotSids?.has(id)) return true
-    const hz = ctx.schema.slotWriteHazards
-    return !!hz && ((hz.pointsTo !== 'ALL' && hz.pointsTo.has(id)) || hz.props.has(prop))
-  }
-
-  /** PROPERTY-KIND TRACING (§19/§20): resolve a `.`-chain AST node — or a bare
-   *  name — to a schema id by walking `slotObjSids` one hop at a time.
-   *  `resolveBare(name)` resolves the BASE-CASE bare string (each caller
-   *  supplies its own — idOf's refinement/poison-aware lookup, or
-   *  collectSlotWriteHazards' curSids-aware one); this is the one shared place
-   *  that knows how to walk a MULTI-hop `.`-chain (`ctx.schema.slotTypes` is
-   *  `['.', ['.', 'ctx', 'schema'], 'slotTypes']`), so the walk itself isn't
-   *  duplicated per caller. depth guards against a cycle in principle (an AST
-   *  chain is a finite tree, so a real cycle can't occur — defensive, not a
-   *  reachable path). Fail-closed throughout: any unresolved parent, any
-   *  chainHazarded intermediate slot (see its own doc comment for why this is
-   *  narrower than slotHazarded), or depth overrun ⇒ null. */
+  // A chain follows the same settled slot shapes as every other reader.
   ctx.schema.chainSid = (node, resolveBare, depth = 0) => {
     if (typeof node === 'string') return resolveBare(node)
     if (depth > 32 || !Array.isArray(node) || (node[0] !== '.' && node[0] !== '?.') || typeof node[2] !== 'string') return null
     const parentSid = ctx.schema.chainSid(node[1], resolveBare, depth + 1)
     if (parentSid == null) return null
-    const idx = ctx.schema.list[parentSid]?.indexOf(node[2])
-    if (idx == null || idx < 0 || chainHazarded(parentSid, node[2])) return null
-    return factAt(parentSid, idx)?.objSid ?? null
+    return ctx.summary?.fieldSid(parentSid, node[2]) ?? null
   }
 
   /** Raw by-sid form for callers that resolve the receiver's schema themselves
@@ -330,14 +278,7 @@ export function initSchema(ctx) {
    *  reachable there, same reason slotTypedCtorBySid exists below). No
    *  refinement-union branch: a call-site fact is one resolved sid, never a
    *  branch-local refinement's multi-sid union. */
-  ctx.schema.slotVTBySid = (id, prop) => {
-    // The program summary joined every construction and store of the slot.
-    const summarized = id != null ? ctx.summary?.fieldVal(id, prop) : null
-    if (summarized) return summarized
-    if (id == null || slotHazarded(id, prop, true)) return null
-    const idx = ctx.schema.list[id]?.indexOf(prop)
-    return idx >= 0 ? (factAt(id, idx)?.kind ?? null) : null
-  }
+  ctx.schema.slotVTBySid = (id, prop) => id == null ? null : ctx.summary?.fieldVal(id, prop) ?? null
 
   ctx.schema.slotVT = (varName, prop) => {
     const ids = ctx.func.refinements?.get(varName)?.schemaIds
@@ -345,8 +286,7 @@ export function initSchema(ctx) {
       let kind = null
       for (const id of ids) {
         if (slotHazarded(id, prop, true)) return null
-        const idx = ctx.schema.list[id]?.indexOf(prop)
-        const k = idx >= 0 ? factAt(id, idx)?.kind ?? null : null
+        const k = ctx.schema.slotVTBySid(id, prop)
         if (k == null || (kind != null && kind !== k)) return null
         kind = k
       }
@@ -370,18 +310,7 @@ export function initSchema(ctx) {
 
   /** Raw by-sid form for callers that resolve the receiver's schema themselves
    *  (narrow's per-caller localSids — live reps aren't trustworthy there). */
-  ctx.schema.slotTypedCtorBySid = (id, prop) => {
-    // The program summary joined every construction and store of the slot:
-    // one typed kind under all of them is the ctor, a written prop included.
-    const summarized = id != null ? ctx.summary?.fieldTypedCtor(id, prop) : null
-    if (summarized) return summarized
-    // fail CLOSED: without the program-wide write census the ctor can't be trusted
-    if (!ctx.types.writtenProps || ctx.types.writtenProps.has(prop)) return null
-    if (id == null || slotHazarded(id, prop)) return null
-    const idx = ctx.schema.list[id]?.indexOf(prop)
-    if (idx == null || idx < 0) return null
-    return factAt(id, idx)?.typedCtor ?? null
-  }
+  ctx.schema.slotTypedCtorBySid = (id, prop) => id == null ? null : ctx.summary?.fieldTypedCtor(id, prop) ?? null
 
   /** Program-wide census ctor for a bare `.prop` read with NO receiver evidence
    *  — the SPECULATIVE sibling of slotTypedCtorBySid (guardedSlotOf's contract):
@@ -395,7 +324,7 @@ export function initSchema(ctx) {
     let ctor = null
     for (const b of bucket) {
       if (slotHazarded(b.id, prop)) return null
-      const c = factAt(b.id, b.slot)?.typedCtor ?? null
+      const c = ctx.schema.slotTypedCtorBySid(b.id, prop)
       if (!c || (ctor && c !== ctor)) return null
       ctor = c
     }
@@ -559,8 +488,7 @@ export function initSchema(ctx) {
     if (sid == null) return false
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
-    const fact = factAt(sid, idx)
-    if (!fact?.bigintObserved) return false
+    if (!hasTag(ctx.summary?.fieldKind(sid, prop) ?? 0, K.BIGINT)) return false
     // DECL-LITERAL-ONLY slot → RAW, not boxed (bigint retirement §4: the boxed
     // pairing exists only for the UNPROVEN case). A prop name never NAMED-
     // written anywhere in the program means every write to this slot is an
@@ -580,7 +508,7 @@ export function initSchema(ctx) {
     // A heterogeneous/unknown named-written slot must self-describe each
     // BigInt value even without dynamic-key reach. A raw i64 payload cannot be
     // distinguished from an ordinary Number loaded from the same fixed slot.
-    if (fact.kind !== VAL.BIGINT) return true
+    if (ctx.schema.slotVTBySid(sid, prop) !== VAL.BIGINT) return true
     return schemaShadowed(sid)
   }
   /** varName convenience form — resolves sid via idOf (precise path only,
@@ -609,7 +537,7 @@ export function initSchema(ctx) {
     if (sid == null || slotHazarded(sid, prop, true)) return false
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
-    return factAt(sid, idx)?.kind === VAL.BIGINT && ctx.schema.slotBigintBoxedBySid(sid, prop)
+    return ctx.schema.slotVTBySid(sid, prop) === VAL.BIGINT && ctx.schema.slotBigintBoxedBySid(sid, prop)
   }
   ctx.schema.slotBigintProvenAt = (varName, prop) => {
     const ids = ctx.func.refinements?.get(varName)?.schemaIds

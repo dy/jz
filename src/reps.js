@@ -84,135 +84,10 @@ export const VAL = {
  * @property {*}       [jsonShape]        inferred shape for the JSON.stringify fast path.
  * @property {string}  [typedCtor]        TypedArray ctor name (TYPED kind); null = bimorphic.
  * @property {string}  [wasm]             wasm storage type 'i32'|'f64' (narrow.js fixpoint).
- * @property {boolean} [nullable]         binding can hold null/undefined on some path
- *   (init or an assignment was a nullish literal) — suppresses the `=== null` /
- *   `=== undefined` constant-fold even when `val` is a definite non-null kind.
- * @property {boolean} [mayBeUndefined]   binding's value can be real JS `undefined`
- *   at runtime despite a definite `val` kind claim — the container-read
- *   generalization of `nullable` (.work/archive/todo.md §deletion-sweep
- *   §2). Slice 1 (decl-time producer, analyze.js analyzeValTypes' `let`/
- *   `const`/`=` sites): true when the RHS is itself a dict/Map maybeUndefined-
- *   shaped read (censusMaybeUndefinedKind(rhs) != null) or a bare name that
- *   already carries the flag (copy-through). Slice 2 (§3 remaining — narrow.js
- *   param/return join, flow-types.js closure return-kind join, module/
- *   function.js closure-capture seed): the SAME whole-program call-site
- *   fixpoint/return-tail unification for `nullable` already runs through,
- *   joined via kind.js's ctx-independent `censusShapedNode`/
- *   `exprMayBeUndefinedIn` (real, ctx-aware census lookups would misread at
- *   plan time — same caveat narrow.js's BIGINT-nullable block documents for
- *   mayBeNullish). Fail-closed on a destructured param body (no per-call-site
- *   proof mechanism for what a destructured element holds); OR-joined across
- *   every live call site otherwise; an unwritten/untraced bare-name arg
- *   contributes no evidence (false) — narrower than nullable's blanket
- *   "unwritten → fail closed", matching this fact's own provenance-only
- *   scope. Consumer (both slices): censusMaybeUndefinedKind's REP-fallback
- *   arm (kind.js) — a bare name whose rep carries BOTH `mayBeUndefined` and a
- *   `presentVal` answers exactly like the read node itself would at every
- *   existing censusMaybeUndefined chokepoint (ir.js toNumF64/toStrI64,
- *   emit.js nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-
- *   concat). INVARIANT: the arm must read `presentVal` here, not `val` —
- *   `val` never settles non-null for a census-shaped RHS at ANY hop (a
- *   census-shaped call-site ARGUMENT reads as absent in the summary,
- *   which keeps the kind beside `mayBeUndefined` rather than poisoning it), so `val` stays permanently unproven for this shape. `presentVal`
- *   (this file, its own entry below) is a SEPARATE, poison-disciplined kind
- *   claim that never touches `val`. Whether any given chokepoint above also
- *   needs its own outer `valTypeOf(node) === VAL.SOMETHING` gate widened to
- *   consult `presentVal` as a fallback (not just this REP-fallback arm
- *   reaching a non-null claim) is open — see .work/archive/todo.md §deletion-sweep
- *   for scope. func.valResultMayBeUndefined carries the result contract's
- *   presence beside func.valResult (both projections of the contract,
- *   src/summary/contract.js, seeded by narrow/results.js seedResultKinds).
- * @property {'present'|'maybe-undef'} [presence]  Tri-state sibling of
- *   `mayBeUndefined`: the boolean alone stays positive-evidence-only, so
- *   `presence` exists to distinguish "never observed maybe-undef" from
- *   "positively proven present" — a full 4-point lattice or coverage bit is
- *   future scope (.work/archive/todo.md). Absent = UNKNOWN (not-yet-analyzed — the SAME
- *   silence `mayBeUndefined`'s `false`/absent already conflates with
- *   "proven present", which is exactly the gap this field closes: `!mayBeUndefined(name)`
- *   remains NOT a definitelyPresent proof (the standing ruling — the boolean
- *   alone still can't distinguish "never observed maybe-undef" from
- *   "positively proven present"), but `presence === 'present'` IS a real
- *   proof. `'maybe-undef'` is set at every site that sets `mayBeUndefined:
- *   true` today (decl/reassign census-shaped RHS — analyze.js; param
- *   propagation and closure-capture seed — compile/index.js; the paramReps
- *   Fact-level destructured-param-body and call-site-union writes —
- *   narrow.js) — same monotone-OR-safe algebra, never un-set. `'present'`
- *   is a SEPARATE, much narrower producer (analyze.js's decl site only, one
- *   arm): a decl whose init is provably non-nullish (`!mayBeNullish(rhs)` —
- *   the SAME conservative, fail-closed-on-any-call/member-read predicate
- *   `nullable`'s own producer already uses) AND never reassigned anywhere in
- *   the body (`writeCount(body, name, 0) === 0` — the SAME never-reassigned
- *   check `range`'s own decl producer already uses, just above). Mutually
- *   exclusive with the `'maybe-undef'` arm at that site by construction (one
- *   `if`/`else if`, not two independent `if`s) — a census-shaped RHS is
- *   already `mayBeNullish`-true (a call/bracket read fails `mayBeNullish`
- *   closed), so the two arms never both fire for the same write. INVARIANT:
- *   stay conservative — few `'present'` marks are fine, a missed one just
- *   stays UNKNOWN, never wrong. `mayBeUndefined` itself is UNCHANGED (still
- *   written at every site, still the sole field every existing consumer
- *   reads) — `presence` is purely additive; a `mayBeUndefined(name)`
- *   projection could derive as `presence(name) === 'maybe-undef'` but no
- *   consumer does yet — safe to wire up later, same as `kindsCoverage`.
- * @property {string}  [presentVal]       VAL.* kind the census claims for a
- *   binding's value WHEN PRESENT — the opt-in KIND-carrying sibling of
- *   `mayBeUndefined` (.work/archive/todo.md §deletion-sweep §14's opt-in
- *   re-enablement gate, superseding an earlier global-VT-promotion path).
- *   NEVER a substitute
- *   for `val` and NEVER consulted by `valTypeOf`/`lookupValType` — `val` stays
- *   exact-only permanently, this is a SEPARATE fact only an explicit opt-in
- *   consumer may ask for (kind.js `censusMaybeUndefinedKind`'s bare-name arm,
- *   below). Producer: analyze.js `analyzeValTypes`' decl/reassign call sites
- *   (the same two `setVal` sites), via a dedicated `makeValTracker` instance
- *   (own poison set, NOT a spread-merge like `mayBeUndefined`'s boolean OR) —
- *   fed `censusMaybeUndefinedKind(rhs)` unconditionally on every write. This
- *   is deliberate and required, not incidental: unlike `mayBeUndefined`
- *   (a monotonic-safe boolean — staying true after a later non-census write
- *   only costs an unneeded defensive check), `presentVal` is an exact KIND
- *   claim — a later write that DISAGREES (a different kind, or no census
- *   claim at all) must POISON it exactly the way `val` itself poisons on
- *   disagreement (makeValTracker's existing discipline, reused verbatim),
- *   else a chokepoint could trust a stale kind for a runtime value the
- *   census claim no longer describes. Because every non-census write
- *   contributes `null` to this tracker (poisoning), and every census-shaped
- *   write contributes `null` to `val`'s own tracker (censusMaybeUndefinedKind
- *   never feeds `val`), `val` and `presentVal` are mutually exclusive by
- *   construction for a DECL/REASSIGN local — never both non-null for the
- *   same such binding. NOT true for a PARAM: `val` there is the program summary's
- *   join of the call-site arguments (narrow/index.js seedParamKinds), which
- *   proves a kind from the argument's OWN kind, independent of whether
- *   the argument expression happens to be census-shaped — so a param CAN
- *   carry both a real `val` AND `mayBeUndefined = true` (Slice 2's
- *   `censusShapedNode` deliberately over-approximates to any `[]`/`.`
- *   2-arg read, including a plain array/typed-array OOB-possible index, not
- *   just dict/Map). INVARIANT: kind.js's REP-fallback arm must check
- *   `presentVal` first, `val` second — checking `presentVal` alone regresses
- *   the param-hop shape test/dyn-keys.js pins, since both fields stay live
- *   for their own distinct binding shapes. Same flow-INsensitive whole-body-unification
- *   scope as `val`'s own documented cost ("a later write that unconditionally
- *   overwrites the initializer still poisons" — accepted, not fixed, matching
- *   `val`'s own precedent). `censusMaybeUndefinedKind(rhs)` already composes
- *   direct census-shaped nodes, one-hop bare-name copy-through (this field),
- *   and call-results in one function, so the producer call needs no separate
- *   helper — DRY, one predicate, matching §4's "not one [check] per site"
- *   discipline.
- *
- *   PARAM propagation extends the decl/reassign-only scope above to params,
- *   the same size-of-surface split `mayBeUndefined` itself went through:
- *   narrow/index.js's `hardParamPresentVal` (the SAME
- *   poison-on-disagreement fold this field's decl producer already uses, NOT
- *   `mayBeUndefined`'s monotonic OR) — every live call site's argument must
- *   independently resolve the SAME presentVal kind (kind.js
- *   `exprPresentValIn`/`namePresentValInBody`, the ctx-independent-at-plan-
- *   time KIND analogue of `exprMayBeUndefinedIn`/`nameMayBeUndefinedInBody`),
- *   or the param declines (no claim, never a wrong one). Seeded onto the
- *   param's entry-time rep in compile/index.js exactly where `r.val` is,
- *   with the SAME `!reassigned` guard (this field shares `val`'s exact-claim
- *   discipline, not `mayBeUndefined`'s unconditional-safe one). INVARIANT:
- *   a param-hop BigInt-unary site (`const f = (v) => -v; f(m.get('x'))`)
- *   needs exactly this seeded fact and nothing else — the consumer side
- *   (emitNeg's OR-arm, other `censusMaybeUndefinedKind`-consulting
- *   chokepoints) already asks unconditionally, so seeding the fact onto the
- *   param is the entire fix.
+ * @property {boolean} [nullable]         summary includes null or a missing value.
+ * @property {boolean} [mayBeUndefined]   presence projected from the summary.
+ * @property {string}  [presentVal]       payload kind when a nullable binding is present.
+ * @property {string}  [presence]         'present' or 'maybe-undef'.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof, the
  *   follow-up to the numeric-key unknown-receiver soundness fix:
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
@@ -237,7 +112,7 @@ export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayHoles', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped',
-  'mayBeUndefined', 'presentVal', 'presence', 'localMapBigintUnknown',
+  'mayBeUndefined', 'presentVal', 'presence',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
@@ -287,7 +162,7 @@ export const lookupValType = name => {
   if (r?.size) { const v = r.get(name)?.val; if (v) return v }
   const ov = ctx.func.localValTypesOverlay
   const hasOverlayValues = ov?.size || (ov?.mapOverlay === true && (ov.own?.size || ov.base?.size))
-  if (hasOverlayValues) { const v = ov.get(name); if (v) return v }
+  if (hasOverlayValues) { const v = ov.get(name); if (v) return typeof v === 'number' ? ctx.summary.valOfKind(v) : v }
   // The program summary (src/summary): the binding's kind in the current function's scope.
   const planned = ctx.func.localReps?.get(name)?.val || ctx.scope.globalValTypes?.get(name)
   if (planned) return planned
@@ -336,3 +211,9 @@ export const isDisjointFrom = (name, kindSet) => {
  * projection idiom Slice 2 established — NO computation change.
  */
 export const mayBeUndefined = name => ctx.func.localReps?.get(name)?.mayBeUndefined === true
+
+// A local read only by numeric coercions can normalize missing values on write.
+// Parameters and captured cells keep their boundary representation.
+export const numericStorage = name => typeof name === 'string' && ctx.func.locals?.has(name) &&
+  !ctx.func.boxed?.has(name) && !ctx.func.current?.params?.some(p => p.name === name) &&
+  ctx.summary?.at(ctx.func.current)?.numericStorage(name) === true

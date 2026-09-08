@@ -219,7 +219,7 @@ export const assignmentOps = {
     let ev = withInitializerScope(selfAccum ? name : null, neverEscapes, () => emit(val))
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBigintRepresentationAction(ev, val, repAction)
-    return writeVar(name, ev, void_)
+    return writeVar(name, ev, void_, val)
   },
 
   // Compound assignments: read-modify-write with type coercion

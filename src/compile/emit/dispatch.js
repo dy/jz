@@ -11,7 +11,8 @@ import {
   FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
-import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
+import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../../reps.js'
+import { toNumF64 } from '../../ir/coerce.js'
 import { nonNegIntLiteral } from '../../static.js'
 import { exprType, isTerminator } from '../../type.js'
 import {
@@ -599,7 +600,7 @@ export function emitDecl(...inits) {
 
     // A rest slot view's `for…of` alias (`let a = __iter_arr(rest)`) reads the
     // same argument slots: nothing materializes (compile/rest-view.js).
-    if (ctx.func.restView?.has(name)) { setFlowVal(name, valTypeOf(init)); continue }
+    if (ctx.func.restView?.has(name)) { setFlowVal(name, valTypeOf(init), init); continue }
 
     // SRoA flat object: `let o = {a:1, b:2}` — dissolve fields into `o#i`
     // locals, no heap alloc. Each field local ← asF64(value). Reads/writes are
@@ -933,7 +934,7 @@ export function emitDecl(...inits) {
     // (and therefore into `len`'s own init two decls later in the same `let`) — every
     // downstream `arrVar[i]`/`.length` in the loop then takes the ARRAY-known fast path
     // instead of falling to the generic __typed_idx/__length dispatch.
-    setFlowVal(name, valTypeOf(init))
+    setFlowVal(name, valTypeOf(init), init)
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
     // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
     // isReassigned is conservative across nested arrow shadows — we miss the optimization
@@ -1082,6 +1083,7 @@ export function emitDecl(...inits) {
     // unrolling flattens iteration bodies into one scope, so the 2nd+ `let x = 0` are
     // genuine RE-inits between iterations (e.g. a nested reduce's accumulator). Elide only
     // the FIRST per name; emit the rest as resets. (Names are preserved — no renaming.)
+    if (localType === 'f64' && numericStorage(name)) coerced = toNumF64(init, val)
     const zeroInit = isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length
     if (!zeroInit || ctx.func.zeroInitSeen?.has(name)) {
       result.push(['local.set', `$${name}`, coerced])
@@ -1126,7 +1128,7 @@ export function emitVoid(node) {
 // themselves at their emit site (emitDecl, right after each `emit(init)`); this helper
 // covers the remaining case emitBlockBody drives directly: a bare `name = rhs`
 // reassignment statement.
-function setFlowVal(name, vt) {
+function setFlowVal(name, vt, expr) {
   if (!ctx.func.localValTypesOverlay || !isBoundName(name)) return
   // A name reassigned somewhere inside a LOOP body (while/do/for/for-in/for-of,
   // at any nesting depth within it) carries NO overlay fact anywhere in this
@@ -1141,7 +1143,8 @@ function setFlowVal(name, vt) {
   // nestedWritesOf's doc comment for why those invalidate position-sensitively
   // instead, in emitBlockBody's own per-statement loop.
   if (ctx.func.flowValBlocked?.has(name)) return
-  if (vt) ctx.func.localValTypesOverlay.set(name, vt)
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
+  if (vt) ctx.func.localValTypesOverlay.set(name, k != null && ctx.summary.valOfKind(k) === vt ? k : vt)
   else ctx.func.localValTypesOverlay.delete(name)
 }
 
@@ -1260,7 +1263,7 @@ export function emitBlockBody(node) {
       // target name) — an edge case, but cheap to order correctly.
       for (const name of flatWrites[i]) frame.localValTypesOverlay.delete(name)
       // `let`/`const` decls self-record via emitDecl; only a bare reassignment needs it here.
-      if (Array.isArray(s) && s[0] === '=' && typeof s[1] === 'string') setFlowVal(s[1], valTypeOf(s[2]))
+      if (Array.isArray(s) && s[0] === '=' && typeof s[1] === 'string') setFlowVal(s[1], valTypeOf(s[2]), s[2])
       // After an `if (cond) terminator` — including a terminator else-if LADDER
       // (`if (c0) return … else if (c1) return …`) — narrow types from the
       // negated conditions for subsequent statements. Control reaching the next

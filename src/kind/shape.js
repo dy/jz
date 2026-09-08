@@ -29,7 +29,7 @@ export function jsonConstString(expr) {
   return null
 }
 
-function jsonShapeStrings(expr) {
+export function jsonShapeStrings(expr) {
   const single = jsonConstString(expr)
   if (single != null) return [single]
   if (Array.isArray(expr) && expr[0] === '[]' && typeof expr[1] === 'string') return ctx.scope.shapeStrArrays?.get(expr[1]) ?? null
@@ -167,6 +167,10 @@ function conditionalSpreadGroup(node) {
  *  OBJECT-vs-HASH decision emitObjectSpread makes (kept here to keep kind.js
  *  cycle-free — it must not import the object stdlib module). */
 function spreadSchema(obj) {
+  if (ctx.summary) {
+    const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj)
+    return sid == null ? null : ctx.schema.list[sid]
+  }
   // A parameter's compile-time schema is an inferred/union guess (and is unbound
   // during this body's analysis but bound by emit) — see resolveSchema in
   // module/object.js. Treat params as unknown so the spread result is HASH-typed
@@ -218,4 +222,3 @@ export function spreadMergeResolves(props) {
   }
   return true
 }
-

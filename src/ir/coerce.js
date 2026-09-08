@@ -12,7 +12,7 @@
 import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
-import { VAL, repOf } from '../reps.js'
+import { VAL, repOf, numericStorage } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode, numericDenied } from '../kind.js'
 import { objLiteralSchemaId } from '../static.js'
 import { K, bitOf, NULL_BITS, TAGS } from '../summary/kind.js'
@@ -226,6 +226,7 @@ export const coerceNullishToStr = (valIR) => {
  *  non-literal values pass through uncoerced — except bindings flagged
  *  maybeNullish, which get a runtime nullish coerce (null-flow correctness). */
 export function toNumF64(node, v) {
+  if (numericStorage(node)) return asF64(v)
   // An i32 node carrying `.ptrKind` is an *unboxed pointer* (object/array local),
   // not a number — skipping coercion would reinterpret pointer bits as an f64.
   // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.
@@ -457,6 +458,15 @@ export function toNumF64(node, v) {
         ['else', ['call', '$__to_num', ['i64.reinterpret_f64', get()]]]]], 'f64')
   }
   return typed(['call', '$__to_num', asI64(v)], 'f64')
+}
+
+/** Normalize a NUMBER|ABSENT value for a local whose reads all coerce it. */
+export function numberStorageValue(v) {
+  if (v.type === 'i32' || isNumericIR(v)) return asF64(v)
+  const t = temp('num')
+  return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)],
+    ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],
+      ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
 }
 
 /** Coerce an emitted IR value to a jz string per JS `ToString`, returning an

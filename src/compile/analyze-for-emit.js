@@ -88,26 +88,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
       const pname = sig.params[k].name
-      // r.val/r.typedCtor describe the CALLER's argument — the param's value AT
-      // ENTRY, before this function's own body runs. A param the body reassigns
-      // (`opts = normalize(opts)`) no longer necessarily holds that entry-time
-      // kind past the write, so seeding it here is only sound when the body
-      // never writes the name. Without this guard the stale entry-time kind
-      // stands unchallenged: analyzeBody's OWN valType tracker (below, `bodyFacts.
-      // valTypes`) starts with no memory of this pre-seeded value (it's a fresh
-      // Map, not the shared ctx.func.localReps store), so when the reassignment's
-      // RHS type can't be resolved (e.g. a call to a function whose own valResult
-      // never converges), makeValTracker's poison path requires a PRIOR value
-      // in ITS OWN map to fire — there isn't one — so it neither confirms nor
-      // invalidates the seed, and the merge loop below never touches the name at
-      // all. A hardcoded-wrong kind then rides every read of that binding for the
-      // rest of the function (watr's own `optimize()`: opts's param-fact kind is
-      // VAL.OBJECT from callers that pass object literals; `opts = normalize(opts)`
-      // reassigns it to normalize's actual return — a HASH in the schema-less-
-      // spread shape — but the stale OBJECT kind survives, so `emitTypeTag` bakes
-      // a hardcoded `(i32.const PTR.OBJECT)` tag into `opts.inlineOnce`'s dyn-get
-      // dispatch instead of reading the receiver's true runtime tag, and the probe
-      // walks a schema this HASH was never shaped as — a silent miss, not a trap).
+      // Incoming constructor and payload facts cannot describe a reassigned parameter.
       const reassigned = isReassigned(body, pname)
       if (r.typedCtor && !reassigned) {
         if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
@@ -150,18 +131,8 @@ export function analyzeFuncForEmit(func, programFacts) {
       // fix/selfhost-hash-read's own root cause (a HASH-representation
       // parameter compiled with an unconditionally-hardcoded PTR.OBJECT tag).
       if (r.val && !reassigned && paramValTrustworthy(r) && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
-      // presentVal (§16→§18 "presentVal param producers") — narrow.js's
-      // inter-procedural hardParamPresentVal fold (a poison-on-disagreement
-      // discipline like `val`'s own, NOT mayBeUndefined's monotonic
-      // boolean OR further below). An EXACT KIND claim, same "mutually
-      // exclusive with val, same discipline as val" contract reps.js's own
-      // presentVal doc establishes — so it gets the SAME `!reassigned` guard
-      // as `r.val` directly above, for the identical reason (a body write
-      // past entry invalidates the entry-time claim; analyzeValTypes' own
-      // `setPresentVal` tracker settles the post-write truth independently,
-      // starting fresh).
+      // Incoming payload facts hold until the parameter is reassigned.
       if (r.presentVal && !reassigned && !ctx.func.localReps?.get(pname)?.presentVal) updateRep(pname, { presentVal: r.presentVal })
-      if (r.localMapBigintUnknown) updateRep(pname, { localMapBigintUnknown: true })
       // recvArrTyped: same reassignment hazard as r.val (an entry-time class proof
       // doesn't survive a body write) — module/array.js's unproven-receiver numeric-
       // key guard reads this to skip its runtime ptrTypeEq test (reps.js doc).
@@ -299,32 +270,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   const bodyFacts = block ? analyzeBody(body) : null
   if (bodyFacts) ctx.func.locals = bodyFacts.locals
   if (bodyFacts?.valTypes) {
-    // A PARAMETER name has no `let`/`const` declaration node inside body for
-    // analyzeBody's own tracker to seed a baseline "unknown" observation from
-    // (makeValTracker's poison logic needs a PRIOR value in ITS OWN map to
-    // detect a conflict — see that function's doc). So when a parameter is
-    // reassigned only CONDITIONALLY (`if (typeof opts === 'string' && …) opts
-    // = { profile: … }` — watr's own normalize()), the tracker's first (and
-    // only) observation is that ONE branch's type, with no competing
-    // observation for the other, equally-reachable path where the param keeps
-    // its original, caller-supplied value — a path this walk never visits
-    // because there's no assignment node ON it to visit. The merge below would
-    // then adopt the conditional branch's type as if it held on EVERY path.
-    // Trust it only when the param's own call-site-proven entry type (_reps,
-    // the fixpoint-settled cross-call-site fact — unlike this per-body walk,
-    // it already answers "what can this param be at entry, always") agrees:
-    // if it does, both the reassigned and the original-value paths carry the
-    // same kind, so unconditional-adoption is sound; if it's absent or
-    // different, the conditional branch's type does NOT generalize and must
-    // not override the (correctly) unresolved entry-time kind.
-    const paramIdx = block ? new Map(sig.params.map((p, i) => [p.name, i])) : null
-    for (const [name, vt] of bodyFacts.valTypes) {
-      if (paramIdx?.has(name)) {
-        const entryVal = _reps?.get(paramIdx.get(name))?.val
-        if (entryVal !== vt) continue
-      }
-      updateRep(name, { val: vt })
-    }
+    for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
   }
   // Never-relocated array bindings — the `[]` reader skips the forwarding follow.
   if (bodyFacts?.neverGrown) for (const name of bodyFacts.neverGrown) updateRep(name, { neverGrown: true })
@@ -340,17 +286,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
   // Consumed by emitDecl to lower the initializer to a SLICE_BIT view.
   ctx.func.sliceViews = bodyFacts ? bodyFacts.sliceViews : null
-  // Usage-based shape inference (STRING / ARRAY) for params not already typed
-  // by paramReps. Descends into nested closures so a param used in a definite
-  // shape only inside an inner arrow (e.g. parseLevel's `str` capture in watr)
-  // still gets seeded — the closure capture path then propagates the VAL via
-  // captureValTypes.
-  //
-  // `inferLocals` is body-shape-agnostic — it walks any AST node, so we run it
-  // for expression-bodied arrows too (`(s) => s.charCodeAt(0) + s.length` gets
-  // `s: VAL.STRING` via methodEvidence the same way the block-bodied variant
-  // does). Only `boxedCaptures` / `unboxablePtrs` stay gated:
-  // both need `ctx.func.locals` populated, which only block bodies produce.
+  // Resolve write constraints and physical local storage from the settled kinds.
   const candidates = sig.params
     .filter(p => !ctx.func.localReps?.get(p.name)?.val)
     .map(p => p.name)

@@ -69,7 +69,9 @@ export function unboxablePtrs(body, locals, boxed) {
   const isFreshInit = (expr, kind, unionCursor = false) => {
     if (!Array.isArray(expr)) return false
     if (kind === VAL.OBJECT) {
-      if (expr[0] === '{}') return true
+      // A spread can clone an object of unknown schema. Its aux bits must
+      // survive; an offset alone would rebox it with schema zero.
+      if (expr[0] === '{}') return !expr.slice(1).some(p => Array.isArray(p) && p[0] === '...')
       // Call to a narrow-ABI'd helper: returns i32 ptr-offset of the same VAL kind.
       // Unboxing skips the f64-rebox at the callsite. Verifying via sig (not just
       // valResult) ensures the call already produces an i32 — which dual-write picks

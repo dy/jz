@@ -1094,7 +1094,7 @@ export default (ctx) => {
                     (local.set $props (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $src)))))
                     (if (i32.eqz (call $__is_nullish (local.get $props)))
                       (then (i64.store (i32.sub (local.get $dst) (i32.const 16))
-                        (i64.reinterpret_f64 (call $__obj_clone (f64.reinterpret_i64 (local.get $props)))))))))))` : ''}))
+                        (i64.reinterpret_f64 (call $__obj_clone (f64.reinterpret_i64 (local.get $props))))))))))))` : ''})
         (return (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid) (local.get $dst)))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
       (then
@@ -1409,7 +1409,7 @@ export default (ctx) => {
     // raw load is already a plain number. toNumF64 then coerces only the
     // dyn-miss arm instead of wrapping the whole read in __to_num — the
     // shapes-dispatch pattern's per-field coercion collapses on the hot path.
-    if (ctx.schema.slotFacts?.get(guard.sid)?.[guard.slot]?.kind === VAL.NUMBER
+    if (ctx.schema.slotVTBySid(guard.sid, prop) === VAL.NUMBER
         && ctx.types.writtenProps && !ctx.types.writtenProps.has(prop))
       ir.guardedNumSlot = true
     return ir
