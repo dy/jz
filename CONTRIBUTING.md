@@ -12,8 +12,10 @@ node bench/bench.mjs  # run benchmarks
 ### Local watr integration checkpoint
 
 The watr safety fixes are in GitHub release `v5.10.2` (`6614120`); npm
-publication is separate. The early local-propagation migration still needs
-schema-annotation transport verified before integration.
+publication is separate. This checkout additionally requires the annotation
+transport corrections through sibling commit `25d828b`. The early local-pass
+replacement remains disabled after the kernel-oracle comparison; its unified
+option uses the proven JZ implementation.
 `package.json` and the lockfile consume sibling `../watr` explicitly;
 `.npmrc` installs a copy, keeping self-build paths under `node_modules/watr`.
 Check the sibling revision before installing: npm does not refresh a copy

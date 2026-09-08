@@ -1034,8 +1034,12 @@ Recovered result-contract slice 2 and the array-element summary cells into
 main, including fixes for mixed Number/BigInt updates and tagged reduction
 accumulators. The entity benchmark now covers in-place field updates; freshly
 boxed fixed-layout pointers reuse their proven offset. The dynamic-property
-mirror-removal branch stays isolated: its deletion/presence semantics remain
-unfinished. Original worktrees and patches are preserved.
+branch is now merged, with runtime presence/enumeration after deletion and
+static rewrites to undefined routed through the presence-aware writer. The
+shared-local branch is reconciled with watr's annotation-transport correction
+and its unified option, but the early JZ local implementation is retained:
+replacing it fails the self-hosted closure/class oracle. All retired branch
+tips are reachable from main; their worktrees were removed.
 
 This supersedes the in-flight status of those slices below, not the remaining
 verified-result milestone. See [.work/session-recovery-2026-09-08.md](.work/session-recovery-2026-09-08.md)

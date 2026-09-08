@@ -1,6 +1,7 @@
 # Interrupted Claude work, recovered 2026-09-08
 
-Integration base: `e3deee60`. Original worktrees remain intact. Recovery
+Integration base: `e3deee60`. Worktrees were subsequently retired after their
+histories were reconciled into main (see the branch-resolution section). Recovery
 patches are in `/private/tmp/jz-session-recovery-20260908/`.
 
 | Owner | Recovered work | Original location |
@@ -80,3 +81,63 @@ counts, not wasm-byte changes. Reports are saved with the recovery patches as
 The independent shared-local optimizer work under
 `/private/tmp/jz-local-unification-Xj2Y33/` has active test processes and
 is not being edited by this recovery.
+
+## Branch resolution
+
+At the user's follow-up request, `f95b964b` merged the property-storage branch
+and integrated the newer shared-local migration. `e1018c6e` recorded the
+already integrated result/element slices and the superseded optimizer campaign
+as merge parents, keeping the corrected main implementation. Result-contract
+work that had never been committed is preserved as `44a6cab4`.
+
+Only `main` and its worktree remain. Retired tips `96f2495e`, `44a6cab4`,
+`3f036c18`, and `45314c68` are all ancestors of main. No push was performed.
+
+The property integration retains one value slot per schema field. Deletion
+invalidates static presence/enumeration and shared-literal assumptions, and
+subsequent static writes update presence even when the value is undefined.
+The complete dynamic-key suite passed: 76 tests, 600 assertions. The existing
+schema-key reinsert ordering and wide-schema sticky-mask limitations are not
+resolved by this slice.
+
+The shared module optimizer needs sibling watr `25d828b`: clones and in-place
+substitution retain client annotations, including error-schema metadata.
+Watr verification: 352 unit tests pass, 25 propagation tests pass, and 268
+spec tests pass (20 skipped). No generated dependency artifact is committed.
+
+The proposed replacement of JZ's early local passes is rejected. Its saved
+implementation skips early normalization when the module fixpoint is enabled;
+both that form and an always-enabled shared pass fail the self-hosted
+closure/class oracle. An isolated control with the original local passes
+passes the complete functional gate. Main retains those proven implementations
+behind the unified `propagateLocals` option; the rejected implementation is
+preserved in the merge history rather than on another branch.
+
+The condref instruction-count baseline was regenerated from 87,020 to 87,060.
+This is the already isolated watr trap-preservation correction: the old
+optimizer discarded a potentially trapping load in runtime cleanup. Every
+other ratchet case is unchanged; no source benchmark was altered.
+
+The combined core run completed: 4,382 pass, 6 fail, 1 skip (61,291 assertions).
+It loaded the emitter before the last deletion guard correction. Its failures
+were that deletion test, the existing fromCharCode defect, the corrected-load
+ratchet, and three kernel-oracle failures from the rejected local-pass
+replacement. After retaining the early local passes, the functional,
+sequence, and recursive gates passed; the broader O3 captured-closure oracle
+still exposed a problem in the new instruction-array replacement. Watr
+`25d828b` retains the original map/push mechanics and copies only annotations
+separately. Its full suite passes, its freshly built functional gate passes,
+and the O3 closure returns exactly `false` and `1` against the JS oracle.
+Final verification with the corrected dependency:
+
+- `JZ_KERNEL=…/metadata-kernel.wasm node test/index.js dyn-keys kernel-oracle perf-ratchet`:
+  101 tests pass, 1,348 assertions. Every integration failure from the earlier
+  full run is covered; the existing fromCharCode defect remains outside this slice.
+- Fresh functional gate: green. Sequence and recursive gates on those exact
+  attested bytes: green; recursive output 13,685,741 bytes, instantiated and probed.
+- Watr's full suite: 352 unit, 25 propagation and 268 spec tests pass.
+- The full core suite was not repeated after the final corrections; the earlier
+  full-run counts above are retained rather than presented as an all-green run.
+
+Main's final local-pass decision is in `00773687`. Separate ongoing edits in
+`test/closures.js` and `test/optimizer.js` were left untouched at closeout.
