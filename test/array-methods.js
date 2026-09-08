@@ -2028,6 +2028,39 @@ test('element kind: the summary cell joins every store, so a non-number store ke
   }
 })
 
+// A module array's element kind is its cell too (plan/scope.js moduleGlobalKinds):
+// the declaration's literal census trusted the literal wherever no function
+// index-wrote the array, so a push through a helper, an `unshift`, a `fill` or
+// a row's store folded the read; a table's rows share one cell.
+test('element kind: a module array reads its cell, joined over every function', () => {
+  const cases = {
+    'push through a helper': `const a = [1, 2]
+      const put = (v) => a.push(v)
+      export let f = (i) => { put('y'); return a[2] === 'y' ? 1 : 0 }`,
+    'unshift': `const a = [1, 2]
+      export let f = (i) => { a.unshift('y'); return a[0] === 'y' ? 1 : 0 }`,
+    'index write': `const a = [1, 2]
+      export let f = (i) => { a[i] = 'y'; return a[i] === 'y' ? 1 : 0 }`,
+    'fill': `const a = [1, 2]
+      export let f = (i) => { a.fill('y'); return a[1] === 'y' ? 1 : 0 }`,
+    'table row store': `const C = [[1, 2], [3, 4]]
+      export let f = (i) => { C[0][0] = 'y'; return C[i][0] === 'y' ? 1 : 0 }`,
+    'table row unshift': `const C = [[1, 2], [3, 4]]
+      export let f = (i) => { C[0].unshift('y'); return C[i][0] === 'y' ? 1 : 0 }`,
+    'table row through a binding': `const C = [[1, 2], [3, 4]]
+      export let f = (i) => { C[1][0] = 'y'; const r = C[i]; return r[0] === 'y' ? 1 : 0 }`,
+    'numeric stores keep the read numeric': `const a = [1, 2]
+      export let f = (i) => { a.push(3); a[0] = 4; return a[i] === 'y' ? 1 : 0 }`,
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    const oracle = Function(src.replace('export let f', 'var f') + '; return f')()
+    for (const optimize of [0, 1, 2, 3]) {
+      const { f } = jz(src, { optimize }).exports
+      for (const i of [0, 1]) is(f(i), oracle(i), `${name} (i=${i}) O${optimize}`)
+    }
+  }
+})
+
 // The negative: every store a number keeps the element read numeric, so the
 // typed loop pays no ToNumber – through a helper's push, an alias, a callback
 // and a closure alike.

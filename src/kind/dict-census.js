@@ -89,8 +89,7 @@ export function dictValueKindOf(name) {
 const dictCensusReceiverIsLive = (name) => {
   if (lookupValType(name) === VAL.TYPED || lookupValType(name) === VAL.STRING) return false
   if (ctx.func.localReps?.get(name)?.arrayElemValType) return false
-  if (!ctx.func.localReps?.has(name) && ctx.scope.globalReps?.get(name)?.arrayElemValType
-      && !ctx.types?.dynWriteVars?.has(name)) return false
+  if (!ctx.func.localReps?.has(name) && ctx.scope.globalReps?.get(name)?.arrayElemValType) return false
   return true
 }
 
