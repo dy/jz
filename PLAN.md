@@ -942,7 +942,7 @@ boundary's `current`, and lets the export/value-used rule enforce.
 
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `2ea67766`
+1. One session owns main; slices run in parallel worktrees at `0889e70d`
    and land one by one with the gates. In flight: the two native reds (the
    plain array's update-expression result above; the fromCharCode family is
    the string contract, below), the warm-instance `_clear()` trap, the
@@ -950,13 +950,18 @@ boundary's `current`, and lets the export/value-used rule enforce.
    allocation (675 MB on jz × jz, the frame's forty collections per
    function; the plan's body data excluded, the milestone replaces it),
    the attribution of the equality family's +417,549 recursive bytes,
-   and milestone item 3's first slice from the inventory of every
+   and milestone item 3's second slice from the inventory of every
    result-reconstruction site (`.work/result-contract-inventory.md`: 90
    sites in eight classes, the conflicting authorities and their precedence,
    the contract `{kind, presence, carrier, abi}` frozen at the summary's
    freeze and read through one `resultContract` query, five slices; slice 1
-   publishes the contract and reads it where a copy is read today,
-   byte-identical by construction). The fromCharCode red is the string contract: `spec/subset.md` names
+   is in, above; slice 2 is the return edge: `bodyResultTarget` reads the
+   contract's carrier and the return converts, retiring `resultReps`, the
+   boundary's `current` and the call-result guesses `genericCallBoxed`,
+   `closureCallNeedsBox`, `isTaggedCallResult`, `bigintMethodTargets`/
+   `tagDynamicMethodResult`, `representationResultTagRequired`/`RawBigint`,
+   with the export/value-used → BOXED rule enforced at the trampoline). The
+   fromCharCode red is the string contract: `spec/subset.md` names
    UTF-16 code units, the runtime stores UTF-8 bytes and `charCodeAt` reads
    a byte; a code-unit `fromCharCode` alone breaks the kernel, whose
    static-data builders use strings as byte containers
