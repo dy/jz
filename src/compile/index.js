@@ -34,7 +34,7 @@ import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunc
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo, walkAst } from '../ast.js'
-import { valTypeOf, hasAmbiguousBoolMerge, censusBigintResultShape } from '../kind.js'
+import { valTypeOf, hasAmbiguousBoolMerge } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {

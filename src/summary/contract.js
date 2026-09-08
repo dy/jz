@@ -44,14 +44,14 @@ const abiCarrier = abi => abi.ptrKind != null ? CARRIER.PTR : abi.results.length
 // The frozen half: the kind, its presence and the BigInt lane; `sig` is the
 // named callable's signature, which the narrowing writes the ABI half onto
 // after the freeze (null for a closure, whose ABI is the closure's).
-const frozen = (k, lane, sig, closure) => Object.freeze({ kind: k, presence: presenceOf(k), lane, sig, closure })
+const frozen = (k, lane, sig, closure, voidResult = false) => Object.freeze({ kind: k, presence: presenceOf(k), lane, sig, closure, voidResult })
 const NONE_FROZEN = frozen(K.NONE, null, null, false)
 
 /** The contract a frozen half reads as now: `abi` from the signature, the
  *  carrier the lane or the ABI's. */
 export const readContract = f => {
   const abi = f.closure ? CLOSURE_ABI : abiOf(f.sig)
-  return { kind: f.kind, presence: f.presence, carrier: f.lane ?? abiCarrier(abi), abi }
+  return { kind: f.kind, voidResult: f.voidResult, presence: f.presence, carrier: f.lane ?? abiCarrier(abi), abi }
 }
 export const NONE_CONTRACT = readContract(NONE_FROZEN)
 
@@ -59,14 +59,14 @@ export const NONE_CONTRACT = readContract(NONE_FROZEN)
  *  closure-set id. `certain` holds the keys with a BigInt-naming return;
  *  `direct` answers whether a function's callers are all enumerable (not
  *  exported, not escaped, not a dispatcher). */
-export function buildResultContracts({ results, funcs, closureCount, closureSets, setBase, membersOf, certain, direct }) {
+export function buildResultContracts({ results, funcs, closureCount, closureSets, setBase, membersOf, certain, returns, direct }) {
   const contracts = new Map()
-  for (const f of funcs) contracts.set(f.name, frozen(results.get(f.name) ?? K.NONE, bigintLane(results.get(f.name) ?? K.NONE, false, direct(f.name), certain.has(f.name)), f.sig, false))
+  for (const f of funcs) contracts.set(f.name, frozen(results.get(f.name) ?? K.NONE, bigintLane(results.get(f.name) ?? K.NONE, false, direct(f.name), certain.has(f.name)), f.sig, false, returns.get(f.name)?.length === 0))
   const closureKind = ids => { let k = K.NONE; for (const id of ids) k = join(k, results.get(id) ?? K.NONE); return k }
-  for (let id = 0; id < closureCount; id++) contracts.set(id, frozen(results.get(id) ?? K.NONE, bigintLane(results.get(id) ?? K.NONE, true, false, certain.has(id)), null, true))
+  for (let id = 0; id < closureCount; id++) contracts.set(id, frozen(results.get(id) ?? K.NONE, bigintLane(results.get(id) ?? K.NONE, true, false, certain.has(id)), null, true, returns.get(id)?.length === 0))
   for (let i = 0; i < closureSets.length; i++) {
     const id = setBase + i, members = membersOf(id), k = closureKind(members)
-    contracts.set(id, frozen(k, bigintLane(k, true, false, members.some(m => certain.has(m))), null, true))
+    contracts.set(id, frozen(k, bigintLane(k, true, false, members.some(m => certain.has(m))), null, true, returns.get(id)?.length === 0))
   }
   return contracts
 }

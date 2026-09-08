@@ -294,35 +294,6 @@ function dictValueTypeOf(body, name) {
   return kinds
 }
 
-// Map-value-type census, local half (design .work/archive/todo.md §deletion-sweep
-// §1) — mirrors dictValueTypeOf above but matches `recv.set(k, v)` CALL nodes
-// instead of `[]=` writes (Map has no bracket-write form). No self-read/
-// paramVts handling here, same as dictValueTypeOf's own local half (those are
-// the late whole-program {fresh:true} pass's concerns, program-facts.js).
-// Caller gates on decl vt === VAL.MAP (receiver already proven), so `name`
-// need not be re-checked here. Observes THROUGH nested `=>` bodies with the
-// SAME shadow-bail as dictValueTypeOf above — see that
-// function's doc comment for the soundness argument. Same product-lattice
-// Slice 7 union-join swap as dictValueTypeOf above — see its doc comment.
-function mapValueTypeOf(body, name) {
-  const kinds = new Set()
-  walkAst(body, { enter: node => {
-    if (kinds.size === KIND_UNIVERSE.length) return false
-    const op = node[0]
-    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return false
-    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
-        node[1][1] === name && node[1][2] === 'set') {
-      const cargs = commaList(node[2])
-      if (cargs.length === 2) {
-        const wvt = dictWriteVT(cargs[1])
-        if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return false }
-        kinds.add(wvt)
-      }
-    }
-  } })
-  return kinds
-}
-
 export function analyzeValTypes(body) {
   const declared = takeScratchSet()   // the names declared in this body
   try { return analyzeValTypesIn(body, declared) } finally { releaseScratchSet(declared) }
@@ -533,15 +504,6 @@ function analyzeValTypesIn(body, declared) {
           const dvt = dictValueTypeOf(body, a[1])
           if (dvt.size) updateRep(a[1], { dictValueValType: dvt })
         }
-        // Map-value-type census, local half (design .work/archive/todo.md
-        // §deletion-sweep §1) — sibling of the dict census above, gated on decl
-        // vt === VAL.MAP instead of the HASH-literal `dict` shape check
-        // (new Map() is a hard classification, valTypeOf(a[2]) already
-        // resolves it via CALLEE_VAL — no structural re-derivation needed).
-        if (vt === VAL.MAP) {
-          const mvt = mapValueTypeOf(body, a[1])
-          if (mvt.size) updateRep(a[1], { mapValueValType: mvt })
-        }
         const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
           (ctx.func.leanHashLocals ??= new Set()).add(a[1])
@@ -672,10 +634,6 @@ function analyzeValTypesIn(body, declared) {
       }
       // Map-value-type census, local half — reassignment site sibling of the
       // decl-site stamp above.
-      if (vt === VAL.MAP) {
-        const mvt = mapValueTypeOf(body, node[1])
-        if (mvt.size) updateRep(node[1], { mapValueValType: mvt })
-      }
       if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(node[1])) {
         (ctx.func.leanHashLocals ??= new Set()).add(node[1])
         if (i32DictUse(node[1])) (ctx.func.i32HashLocals ??= new Set()).add(node[1])

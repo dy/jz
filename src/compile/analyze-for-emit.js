@@ -1,6 +1,5 @@
 import { ctx } from '../ctx.js'
-import { T, isBlockBody, isReassigned, returnExprs, walkAst } from '../ast.js'
-import { valTypeOf, censusBigintResultShape } from '../kind.js'
+import { T, isBlockBody, isReassigned, walkAst } from '../ast.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
@@ -454,40 +453,6 @@ export function analyzeFuncForEmit(func, programFacts) {
     if (p.jsstring || p.ptrKind != null || p.type !== 'f64') { p.boundaryI64 = false; continue }
     const rv = ctx.func.localReps?.get(p.name)?.val
     p.boundaryI64 = rv !== VAL.NUMBER && rv !== VAL.BOOL
-  }
-
-  // Result-numeric proof for the boundary carrier. Block bodies get func.valResult from
-  // narrowValResults; value-bound arrows (`export let f = (a,b) => a*b`) don't, so prove via
-  // the return expression(s) with params now trusted numeric. A proven-number f64 result
-  // never carries a NaN-box → crosses as plain f64; anything else rides i64 (Safari-safe).
-  if (isExported(func)) {
-    const rex = returnExprs(body)
-    // Void body (falls off → undefined, which callers ignore) keeps the f64 carrier:
-    // undefined isn't a reference, so no i64 is needed and wrapping every void export
-    // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
-    // `censusSafe` (.work/archive/todo.md §deletion-sweep §14) guards BOTH disjuncts below,
-    // not just the `valResult == null` one, because `valTypeOf(e)`/`func.valResult`
-    // for a bare census-BIGINT node, a `-`/`~` unary wrapping one, or a BINARY
-    // arithmetic/bitwise node whose operands `valTypeOfWithLocals` can't locally
-    // resolve, falls back to each op's own "unproven → optimistic NUMBER default"
-    // (kind.js — numericUnaryVT for the unary family, the arithmetic/bitwise
-    // family's own deliberate "unknown → NUMBER" default for `-`/`*`/`/`/`%`/
-    // bitwise, load-bearing elsewhere for the closure-table call-site bootstrap,
-    // not removable) whenever the operand's exact kind isn't proven. That
-    // optimistic default can settle `func.valResult` to a DEFINITE `VAL.NUMBER`
-    // (not `null`) for a shape like `let x = m.get(a); let y = m.get(b); return
-    // x - y` (both present-key BIGINT census) — without `censusSafe`, that would
-    // short-circuit `_resultNumeric = true` on the FIRST disjunct below, never
-    // reaching `censusBigintResultShape` at all, skipping the i64 boundary wrap
-    // for a value that's genuinely a present-key BigInt at runtime (the raw i64
-    // sum's bits misread as a subnormal float, `1e-323` instead of `2n`).
-    // `censusBigintResultShape` sources its answer from the census helpers
-    // DIRECTLY (dictValueKindOf/mapValueKindOf via censusMaybeUndefinedKind),
-    // never through VT/valTypeOf/valResult, so this check stays correct
-    // regardless of which optimistic default fired.
-    const censusSafe = rex.length === 0 || rex.every(e => censusBigintResultShape(e) === 0)
-    func._resultNumeric = censusSafe && (func.valResult === VAL.NUMBER ||
-      (func.valResult == null && sig.results[0] === 'f64' && rex.every(e => valTypeOf(e) === VAL.NUMBER)))
   }
 
   // LoopPlan pre-emission mint (.work/evidence.md §BodyModel /

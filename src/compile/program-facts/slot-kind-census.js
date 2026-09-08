@@ -207,7 +207,6 @@ export function observeProgramSlots(ast, opts) {
   const slotFacts = ctx.schema.slotFacts
   const slotConstInts = ctx.schema.slotConstInts
   const dictValueTypes = ctx.schema.dictValueTypes
-  const mapValueTypes = ctx.schema.mapValueTypes
   // Grow-and-return the SlotFact object at (sid, idx) — the ONE shared
   // storage primitive every writer below mutates (product-lattice design
   // Slice 6a, ctx.js's slotFacts doc). Replaces the 4 separately-grown
@@ -281,24 +280,6 @@ export function observeProgramSlots(ast, opts) {
     const s = dictValueKindSet(name)
     for (const k of KIND_UNIVERSE) s.add(k)
   }
-  // Map-value-type census (Tier 1, product-lattice Slice 7): observeDictValue's
-  // own union lattice, applied to `recv.set(k, v)` RHS values instead of
-  // `[]=` writes — Map has no bracket-write form. Same whole-program
-  // name-keyed convention.
-  const mapValueKindSet = (name) => {
-    let s = mapValueTypes.get(name)
-    if (!s) { s = new Set(); mapValueTypes.set(name, s) }
-    return s
-  }
-  const observeMapValue = (name, vt) => {
-    if (!vt) return
-    const s = mapValueKindSet(name)
-    if (s.size < KIND_UNIVERSE.length) s.add(vt)
-  }
-  const poisonMapValue = (name) => {
-    const s = mapValueKindSet(name)
-    for (const k of KIND_UNIVERSE) s.add(k)
-  }
   const paramReps = opts?.paramReps ?? null
   // Poison every hazarded slot's kind AND elem-ctor up front (unresolvable
   // receivers, computed-key writes, extern constructors — see
@@ -310,7 +291,7 @@ export function observeProgramSlots(ast, opts) {
   // hazard recompute resolves receivers the early pass poisoned wholesale
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
-  if (opts?.fresh) { slotFacts.clear(); dictValueTypes.clear(); mapValueTypes.clear() }
+  if (opts?.fresh) { slotFacts.clear(); dictValueTypes.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh
     ? { paramReps: opts.paramReps, callSites: opts.callSites, addressTaken: opts.addressTaken } : undefined)
   // Hazard fail-OPEN belt (slotBigintObserved's own doc, ctx.js): a slot the
@@ -437,7 +418,7 @@ export function observeProgramSlots(ast, opts) {
   // (ast.js) is position-insensitive: ANY name it returns for this arrow's
   // whole subtree is treated as shadowed everywhere in it, which only ever
   // forfeits a fact, never misattributes a local write to an outer receiver.
-  const observeNestedDictMapWrites = (arrowNode, paramVts) => {
+  const observeNestedDictWrites = (arrowNode, paramVts) => {
     const bound = collectAllBoundNames(arrowNode, new Set())
     const walk = (node) => walkAst(node, { enter: node => {
       const op = node[0]
@@ -451,16 +432,6 @@ export function observeProgramSlots(ast, opts) {
             if (vt) observeDictValue(root, vt); else poisonDictValue(root)
           }
         }
-      } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
-          typeof node[1][1] === 'string' && node[1][2] === 'set') {
-        const recvName = node[1][1]
-        if (!bound.has(recvName) && valTypeOf(recvName) === VAL.MAP) {
-          const cargs = commaList(node[2])
-          if (cargs.length === 2) {
-            const vt = writeVT(cargs[1], { paramVts })
-            if (vt) observeMapValue(recvName, vt); else poisonMapValue(recvName)
-          }
-        }
       }
     } })
     walk(arrowNode[2])
@@ -468,7 +439,7 @@ export function observeProgramSlots(ast, opts) {
   const visit = (node, intRefs = null, paramVts = null) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') { observeNestedDictMapWrites(node, paramVts); return }
+    if (op === '=>') { observeNestedDictWrites(node, paramVts); return }
     // Preserve exact branch-local constants while censusing literals such as
     // `if (kind === 3) rows.push({kind, ...})`. Else arms accumulate the
     // excluded values; with a known mask range the trailing else resolves to
@@ -538,24 +509,6 @@ export function observeProgramSlots(ast, opts) {
           if (vt) observeDictValue(root, vt); else poisonDictValue(root)
         }
       }
-    } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
-        typeof node[1][1] === 'string' && node[1][2] === 'set') {
-      // Map-value-type census (Tier 1, global half, design .work/archive/todo.md
-      // §deletion-sweep §1): `recv.set(k, v)` — Map's only write form (no
-      // `[]=` shape exists), so this branch is a CALL-shape sibling of the
-      // dict `[]=` branch above, not a MUTATE_OPS variant. Receiver gate is a
-      // HARD classification (new Map() → CALLEE_VAL + recordGlobalRep) —
-      // checked HERE at observe time (unlike the dict branch's fail-open
-      // unconditional census whose HASH-ness is settled at CONSUME time),
-      // since valTypeOf is already a cheap proven fact for a Map receiver.
-      const recvName = node[1][1]
-      if (valTypeOf(recvName) === VAL.MAP) {
-        const cargs = commaList(node[2])
-        if (cargs.length === 2) {
-          const vt = writeVT(cargs[1], { paramVts })
-          if (vt) observeMapValue(recvName, vt); else poisonMapValue(recvName)
-        }
-      }
     }
     for (let i = 1; i < node.length; i++) visit(node[i], intRefs, paramVts)
   }
@@ -593,9 +546,6 @@ export function observeProgramSlots(ast, opts) {
         for (const [name, vt] of hit.dictObs) {
           if (vt) observeDictValue(name, vt); else poisonDictValue(name)
         }
-        for (const [name, vt] of hit.mapObs) {
-          if (vt) observeMapValue(name, vt); else poisonMapValue(name)
-        }
         continue
       }
       const obs = []
@@ -609,11 +559,6 @@ export function observeProgramSlots(ast, opts) {
       const recordDict = (name, vt) => {
         dictObs.push([name, vt])
         if (vt) observeDictValue(name, vt); else poisonDictValue(name)
-      }
-      const mapObs = []
-      const recordMap = (name, vt) => {
-        mapObs.push([name, vt])
-        if (vt) observeMapValue(name, vt); else poisonMapValue(name)
       }
       const visitInit = (node, intRefs = null) => {
         if (!Array.isArray(node)) return
@@ -647,22 +592,12 @@ export function observeProgramSlots(ast, opts) {
               recordDict(root, vt)
             }
           }
-        } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
-            typeof node[1][1] === 'string' && node[1][2] === 'set') {
-          // Map-value-type census, moduleInit half — mirrors visit()'s branch
-          // above. Module inits carry no params, so wctx is root-only (no
-          // paramVts, same as the dict branch just above).
-          const recvName = node[1][1]
-          if (valTypeOf(recvName) === VAL.MAP) {
-            const cargs = commaList(node[2])
-            if (cargs.length === 2) recordMap(recvName, writeVT(cargs[1], {}))
-          }
         }
         for (let i = 1; i < node.length; i++) visitInit(node[i], intRefs)
       }
       teOverlay = null
       visitInit(mi)
-      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs, dictObs, mapObs })
+      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs, dictObs })
     }
   }
   })
@@ -677,12 +612,7 @@ export function observeProgramSlots(ast, opts) {
   // in the SAME pass (before the next {fresh:true} clear) can't silently
   // mutate an already-published rep field by aliasing.
   for (const [name, s] of dictValueTypes) if (s.size) updateGlobalRep(name, { dictValueValType: new Set(s) })
-  // Map-value-type census (Tier 1) — same publish discipline as the
-  // dict-value census just above. Both dictValueKindOf and mapValueKindOf
-  // are live consumers (product-lattice Slice 1's censusMaybeUndefinedKind
-  // dispatch; Slice 7's keyedWrite consumer reads the raw Set via
-  // censusKindsOf).
-  for (const [name, s] of mapValueTypes) if (s.size) updateGlobalRep(name, { mapValueValType: new Set(s) })
+
 }
 // Self-referential compound `.prop=` writes (`o.n = o.n + 1n`, `o.n += 1n`,
 // prepare's `o.n++`/`--` desugar) can only ever PRESERVE the slot's existing

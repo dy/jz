@@ -1466,7 +1466,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // calls to such callables, is a BigInt member the join to ANY erased
   // (`if (c) return 5n; return x`, x of every kind): those keys are `certain`.
   const certain = new Set()
-  const tailsOf = body => isBlock(body) ? returnExprs(body) : [body]
+  const returns = new Map()
+  for (const f of funcs) returns.set(f.name, returnExprs(f.body))
+  for (let id = 0; id < closureBodies.length; id++) returns.set(id, returnExprs(closureBodies[id]))
   const calleeKeys = c => typeof c === 'string' ? [c] : membersOf(c)
   const certainBigint = (scope, node) => {
     const q = queries.at(scope), k = q.kindOfExpr(node)
@@ -1484,15 +1486,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   rounds(() => {
     let marked = false
-    const mark = (key, body) => { if (!certain.has(key) && tailsOf(body).some(e => e != null && certainBigint(key, e))) { certain.add(key); marked = true } }
-    for (const f of funcs) mark(f.name, f.body)
-    for (let id = 0; id < closureBodies.length; id++) mark(id, closureBodies[id])
+    for (const [key, tails] of returns)
+      if (!certain.has(key) && tails.some(e => e != null && certainBigint(key, e))) { certain.add(key); marked = true }
     return marked
   })
   const dispatcher = new Set(funcs.filter(f => f.sig?.dispatcher === true).map(f => f.name))
   const exportedNames = new Set(funcs.filter(exported).map(f => f.name))
   queryFacts.contracts = buildResultContracts({
-    results, funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain,
+    results, funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain, returns,
     direct: name => !exportedNames.has(name) && !escaped.has(name) && !dispatcher.has(name),
   })
   return summaryQueries(queryFacts)

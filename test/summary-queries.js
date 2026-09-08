@@ -189,6 +189,14 @@ const contractProgram = () => {
   return { summary, closureParams, numberParams, funcs }
 }
 
+test('summary contract: void bodies differ from explicit nullish results', () => {
+  const bodies = { empty: ['{}'], effect: ['{}', [';', ['()', 'Number', lit(1)]]], nil: lit(null), undef: ['{}', ['return', lit(undefined)]] }
+  const funcs = Object.entries(bodies).map(([name, body]) => ({ name, body, sig: {params: [], results: ['f64']} }))
+  const summary = summarize([';'], {funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => true})
+  for (const name of ['empty', 'effect']) is(summary.resultContract(name).voidResult, true, name)
+  for (const name of ['nil', 'undef']) is(summary.resultContract(name).voidResult, false, name)
+})
+
 test('summary contract: a direct-only BigInt result crosses raw; an export, a value, a dispatcher and a closure cross boxed', () => {
   const { summary, closureParams } = contractProgram()
   const direct = summary.resultContract('direct')

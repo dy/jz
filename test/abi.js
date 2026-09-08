@@ -88,5 +88,6 @@ test('abi: a raw host builds an array pointer and passes it as an i64 param', ()
   dv.setInt32(p + 12, 3, true)       // [+12] cap
   const data = p + 16
   ;[10, 20, 30].forEach((v, i) => dv.setFloat64(data + i * 8, v, true))
-  is(e.sum(mkbox(PTR.ARRAY, 0, data)), 60)   // i64 param: pass the box bits as u64 directly
+  ok(i64Map(mod).some(x => x.name === 'sum' && x.r), 'unknown array elements keep the dynamic result carrier')
+  is(e.sum(mkbox(PTR.ARRAY, 0, data)), numI64(60))   // i64 param: pass the box bits as u64 directly
 })

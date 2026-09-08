@@ -478,30 +478,8 @@ const numericUnaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT) ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_UNARY_OPS) VT[op] = numericUnaryVT
 // …while `>>>` and unary-plus throw on bigint operands so they always yield Number.
-// `u-`/`~` census-BIGINT hardening (.work/archive/todo.md §deletion-sweep §14):
-// numericBinaryVT/numericUnaryVT's shared "unknown operand → optimistic
-// NUMBER default" (same class as VT['+']'s own accepted imprecision, see
-// valTypeOfWithLocals's SOUND-`+`/SOUND-unary doc comments) is wrong for a
-// census-BIGINT dict/Map operand: with VT['[]']/['.']/['()'] NOT proving
-// BIGINT directly (see the dict-mode fold invariant above), `-m.get(k)`/
-// `~d[k]` on a BIGINT-census container would otherwise silently fall back
-// to the optimistic NUMBER default — regressing `_resultNumeric`'s
-// boundary-wrap decision (compile/index.js) AND emitStrictEq's
-// REF_EQ_KINDS raw-i64-compare dispatch (`vta === vtb === VAL.BIGINT`,
-// emit.js), which needs THIS static claim to route `-m.get(k) === -5n`
-// correctly. INVARIANT: override applies for EXACTLY the two ops
-// censusBigintResultShape recognizes (`u-`, `~`) — not the general
-// numericBinaryVT/numericUnaryVT default, and not `++`/`--`/`**`/`>>>`/`u+`
-// (no export-lane sentinel exists for those shapes) — mirroring emitNeg/`~`'s
-// own OR-arm activation-gate hardening so the STATIC kind claim and the
-// RUNTIME dispatch it feeds stay in lockstep. Sound for
-// the SAME reason emitNeg's OR-arm is sound: this claim is per-CONTAINER (the census
-// proves every value ever written through this receiver is BIGINT), not per-key — an
-// absent-key read still resolves through bigIntUnary's own runtime select/isUndef
-// branch and the sentinel export lane, both of which decide the ACTUAL present-vs-
-// absent value independent of this static claim (an absent-key strict-eq
-// against a BigInt literal stays correctly `false`, REF_EQ_KINDS' i64 bit-compare
-// naturally differs).
+// Nullable container reads retain their BigInt payload for unary dispatch
+// and strict comparisons; the runtime handles the absent-key arm.
 const censusBigintUnaryVT = (base) => (args) =>
   args[1] == null && censusMaybeUndefinedKind(args[0]) === VAL.BIGINT ? VAL.BIGINT : base(args)
 VT['u-'] = censusBigintUnaryVT(numericBinaryVT)
@@ -513,19 +491,8 @@ VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
   if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-  // Honest boundary (.work/archive/todo.md §deletion-sweep §14/§15): BOTH operands'
-  // census independently claiming BIGINT upgrades
-  // this static claim too — the binary sibling of censusBigintUnaryVT above,
-  // same AND (never OR) requirement as emit.js's bigIntDomainsCanMix (a
-  // single census-BigInt operand paired with an unproven/proven-NUMBER other
-  // side must NOT upgrade: that combination resolves via `bigIntJointDispatch`'s
-  // own runtime branch, not a static claim here). INVARIANT: this branch is
-  // load-bearing, not decorative — without it, `let x = m.get(a);
-  // let y = m.get(b); return x + y` (both present-key BIGINT census, emit.js's
-  // own widened gate computes the CORRECT i64 sum) decodes wrong at
-  // the export boundary — compile/index.js's `_resultNumeric` veto reads
-  // the same census shape, and the optimistic-NUMBER default below would
-  // otherwise send raw i64 sum bits down the NUMBER decode lane.
+  // A BigInt payload on both operands selects the joint runtime dispatch.
+  // One unknown operand alone does not prove that both domains agree.
   if (censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT)
     return VAL.BIGINT
   // An unknown side: the program summary's kind over the whole program when
@@ -773,7 +740,7 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // numericBinaryVT's OWN global-only `valTypeOf(args[0])`/`valTypeOf(args[1])`,
   // blind to whatever `rec` (this function's own local resolver) just
   // proved. A genuinely BigInt-valued local (`let x = BigInt(v)`) flowing
-  // through `x - y` would otherwise claim `func.valResult`/`_resultNumeric`
+  // through `x - y` would otherwise claim `func.valResult`
   // = NUMBER — wrong, sending a real i64 BigInt result down the plain-f64
   // (or generic-dynamic) export lane instead of the i64exp BigInt lane.
   //
@@ -815,9 +782,8 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // default: that default is what made `export let f = () => -m.get('x')`
   // claim `func.valResult = VAL.NUMBER` even though the operand can genuinely
   // be BIGINT, skipping the i64 boundary wrap entirely (a real, live
-  // miscompile fixed here, not just a missed optimization — `_resultNumeric`,
-  // computed later while per-function reps ARE live, correctly re-derives an
-  // ordinary numeric unary's NUMBER result independently, so this costs no
+  // miscompile fixed here, not just a missed optimization — the summary result contract
+  // independently describes the export carrier, so this costs no
   // real specialization for the common case).
   if (op === 'u-' || op === '~' || op === '++' || op === '--') {
     const a = rec(expr[1])

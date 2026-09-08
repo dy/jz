@@ -10,6 +10,19 @@ import { onKernel, withBigintStrict } from './_matrix.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('Map value analysis follows aliases and calls without leaking between compiles', () => {
+  for (const value of ['7', '"seven"', '7n']) {
+    const src = `const m = new Map(); const alias = m;
+      const put = (target, value) => target.set('x', value);
+      export const f = n => { if (n) put(alias, ${value}); else m.delete('x'); return m.get('x') }`
+    const js = Function(src.replace('export ', '') + ';return f')()
+    for (const optimize of [0, 2, 3]) {
+      const f = jz(src, {optimize}).exports.f
+      for (const n of [0, 1, 1, 0, 1]) is(f(n), js(n), `${value}: O${optimize}, n=${n}`)
+    }
+  }
+})
+
 test('static global initializers retain schemas at the host boundary', () => {
   for (const value of ['{a:7,b:undefined,c:null}', '{inner:{value:7}}', '[{value:7}]']) {
     const expected = Function(`return ${value}`)()

@@ -242,20 +242,6 @@ export const VAL = {
  *   field this needs and full re-enablement criteria for the VT-side
  *   consumer. Do not wire dictValueKindOf back into VT['[]']/VT['.'] without
  *   first meeting §5.
- * @property {Set<string>} [mapValueValType] Set<VAL.*> — every kind ever
- *   observed for a value written through a proven-VAL.MAP receiver's
- *   `recv.set(k, v)` (any key) — dictValueValType's Map-census Tier 1
- *   sibling (.work/archive/todo.md §deletion-sweep), same union lattice (product-
- *   lattice Slice 7), additive-only, NEVER a substitute for `val`. Two producers remain live — analyze.js's same-body
- *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
- *   census (global half, updateGlobalRep). Same two-consumer split as
- *   dictValueValType above: `mapValueKindOf` (kind.js) — VT['()']'s `.get`
- *   short-circuit — stays DORMANT (re-enabling it is Slice 4,
- *   .work/archive/todo.md §deletion-sweep §5); `censusMaybeUndefinedKind`'s
- *   Map arm (kind.js), calling the SAME helper directly, is RE-ENABLED
- *   (Slice 1) alongside a bare-name REP fallback consulting the new
- *   `mayBeUndefined` field (this file). Do not wire mapValueKindOf back into
- *   VT['()'] without first meeting §5.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof, the
  *   follow-up to the numeric-key unknown-receiver soundness fix:
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
@@ -280,7 +266,7 @@ export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayHoles', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped', 'dictValueValType',
-  'mapValueValType', 'mayBeUndefined', 'presentVal', 'presence', 'localMapBigintUnknown',
+  'mayBeUndefined', 'presentVal', 'presence', 'localMapBigintUnknown',
 ])
 
 const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'

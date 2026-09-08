@@ -746,20 +746,6 @@ export function reset(proto, globals, bridge) {
                                 //   kind.js's dictValueKindOf) by
                                 //   observeProgramSlots itself; the raw Set is
                                 //   also the union censusKindsOf exposes.
-    mapValueTypes: new Map(),  // name → Set<VAL.*> — Map-value-census Tier 1
-                                //   global half, dictValueTypes' union-lattice
-                                //   sibling (product-lattice Slice 7): every
-                                //   VAL.* kind ever written through a proven-
-                                //   VAL.MAP receiver's `recv.set(k, v)` (any
-                                //   key) across the whole program — same
-                                //   union/TOP-on-unresolved algebra and whole-
-                                //   program name-keyed convention as
-                                //   dictValueTypes just above (Map has no `[]=`
-                                //   write form, so the census matches the CALL
-                                //   shape instead). Populated/cleared by
-                                //   observeProgramSlots alongside dictValueTypes;
-                                //   published into ctx.scope.globalReps as
-                                //   mapValueValType.
     externSlotSids: new Set(),  // schemaId set — sids whose slot VALUES can be
                                 //   written by machinery the write censuses never
                                 //   see: the JSON const emitter / shaped runtime

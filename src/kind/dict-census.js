@@ -16,10 +16,10 @@
  */
 
 import { ctx, getFactStore } from '../ctx.js'
-import { VAL, lookupValType, repOf, mayBeUndefined } from '../reps.js'
-import { commaList, isBlockBody, returnExprs, alwaysReturns, walkAst } from '../ast.js'
+import { VAL, KIND_UNIVERSE, lookupValType, repOf, mayBeUndefined } from '../reps.js'
+import { commaList, walkAst } from '../ast.js'
 import { PRESENCE } from '../summary/contract.js'
-import { valOf, core } from '../summary/kind.js'
+import { K, tagOf, hasTag, valsOf, valOf, core } from '../summary/kind.js'
 
 // Dict-value-type census consumer — an INTERNAL HELPER ONLY
 // (.work/archive/todo.md §deletion-sweep Slice 1).
@@ -93,42 +93,19 @@ const dictCensusReceiverIsLive = (name) => {
   return true
 }
 
-// Map-value-type census Tier 1 consumer — an INTERNAL HELPER ONLY, same
-// status as dictValueKindOf above. INVARIANT: this stays OUT of
-// VT['()']'s `.get` short-circuit — see dictValueKindOf's own doc comment
-// above for the soundness argument; re-enablement path is §14's opt-in
-// presentVal model, not this global promotion. Called ONLY from censusMaybeUndefinedKind below.
-// `mapValueValType` is "every value ever WRITTEN through recv.set(anyKey,
-// v)", unsound to promote to an EXACT VAL.* kind at a `.get()` read site the
-// same two ways dictValueKindOf is: an ABSENT key reads real JS `undefined`
-// regardless of the observed kind (closed by censusMaybeUndefined's Map arm
-// routing through the mayBeUndefined join), and a write through an ALIAS is
-// invisible to a census keyed on the original receiver name (closed by the
-// SAME nameEscapes gate, carried from its first line here). Receiver gate is
-// a HARD classification (`new Map()` → CALLEE_VAL + recordGlobalRep,
-// kind-traits.js) — `lookupValType(name) === VAL.MAP` alone proves the
-// receiver, no dynWriteVars-analog proxy needed on the global side. (Split
-// commit note: this reads `lookupValType` directly rather than the general
-// `valTypeOf` — provably identical for a value already proven a string by
-// the guard just below, since `valTypeOf`'s own string branch is exactly
-// `return lookupValType(expr)` with no other logic in between. The
-// substitution breaks what would otherwise be a real kind.js ↔
-// kind/val-type-of.js import cycle — jz's own self-host module graph
-// rejects cycles outright, see .work/archive/kind-split.md §4 — without touching
-// the census/promotion soundness logic this file's other comments guard.)
-// mapValueKindSet(name) — mapValueKindOf's raw-Set sibling, same shape as
-// dictValueKindSet above (product-lattice Slice 7).
+// Map cells already join every write and alias in the program summary.
+function mapValueKind(name) {
+  if (typeof name !== 'string') return null
+  const view = ctx.summary?.at(ctx.func.current)
+  return view && tagOf(view.kindOf(name)) === K.MAP ? view.elemKindOf(name) : null
+}
 function mapValueKindSet(name) {
-  if (typeof name !== 'string' || lookupValType(name) !== VAL.MAP) return undefined
-  if (ctx.types?.nameEscapes?.has(name)) return undefined
-  const local = ctx.func.localReps?.get(name)?.mapValueValType
-  if (local) return local
-  if (!ctx.func.localReps?.has(name)) return ctx.scope.globalReps?.get(name)?.mapValueValType
-  return undefined
+  const k = mapValueKind(name)
+  return k == null ? undefined : new Set(hasTag(k, K.NULLISH) ? KIND_UNIVERSE : valsOf(k))
 }
 export function mapValueKindOf(name) {
-  const s = mapValueKindSet(name)
-  return s && s.size === 1 ? [...s][0] : null
+  const k = mapValueKind(name)
+  return k == null || hasTag(k, K.NULLISH) ? null : valOf(core(k))
 }
 
 // censusKindsOf(name) — OPT-IN, set-valued sibling of dictValueKindOf/
@@ -273,80 +250,7 @@ export function censusMaybeUndefinedKind(node) {
   return callResultMayBeUndefinedKind(node)
 }
 
-// Present-key BigInt through the census — export-boundary sentinel kind
-// (.work/archive/todo.md §deletion-sweep §6/§12 Slice 5, the `presentKindUnboxed`
-// family). A bare census-BIGINT node (dict/Map read, mayBeUndefined bare name, or
-// call-result — censusMaybeUndefinedKind's own three arms) crosses the JS boundary
-// as either its raw i64 bits (present key) or the UNDEF_NAN atom (absent key,
-// decodes to `undefined`) — sentinel kind 1. `-`/`~` unary-wrapping such a node
-// (emit.js emitNeg / the '~' table entry, both via bigIntUnary) computes a
-// DIFFERENT absent-case value internally — ToNumeric(undefined) applied to the
-// specific operator, a genuine NUMBER, never `undefined` itself (ES2024 13.5.6/
-// 13.5.9): NaN for unary '-' (sentinel kind 2), NUMBER -1 for unary '~' (sentinel
-// kind 3). Both still cross as the SAME raw i64-reinterpret-f64 carrier as the
-// bare case (bigIntUnary's own doc comment) — only the absent-case BIT PATTERN
-// interop must recognize differs per operator, hence the distinct kind. Returns 0
-// when `node` isn't any of these shapes (not this export lane at all).
-// Binary sibling of kinds 1-3 (.work/archive/todo.md §deletion-sweep §14/§15):
-// emit.js's `bigIntJointDispatch` reaches its i64 arithmetic — for ANY of
-// the 9 binary arithmetic/bitwise ops, not just `+` — when BOTH operands'
-// census independently claim BIGINT (the SAME AND,
-// never OR — see `bigIntDomainsCanMix`'s own comment for why an OR would be
-// unsound). Unlike kinds 1-3, this shape has NO absent-case bit pattern to
-// special-case: `bigIntJointDispatch`'s own runtime domain check throws
-// BIGINT_UNDEF_MIX before a genuinely-mismatched operand pair could ever
-// reach a return here, so every value this export lane ever sees IS a
-// genuine i64 arithmetic result — category 4, for every op in
-// BIGINT_JOINT_BINARY_OPS.
-const BIGINT_RESULT_SHAPE = { BARE: 1, UNARY_NEG: 2, UNARY_NOT: 3, JOINT_BINARY: 4 }
 export const BIGINT_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
-export function censusBigintResultShape(node) {
-  if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return BIGINT_RESULT_SHAPE.BARE
-  if (Array.isArray(node) && node.length === 2 && (node[0] === 'u-' || node[0] === '~')
-      && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT)
-    return node[0] === 'u-' ? BIGINT_RESULT_SHAPE.UNARY_NEG : BIGINT_RESULT_SHAPE.UNARY_NOT
-  if (Array.isArray(node) && node.length === 3 && BIGINT_JOINT_BINARY_OPS.has(node[0])
-      && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
-    return BIGINT_RESULT_SHAPE.JOINT_BINARY
-  // Kind 5 ("presentVal param producers"): a call whose CALLEE is a
-  // plain single-param function/const-arrow (ctx.funcs.map) entirely made of
-  // `-`/`~` applied to its OWN param (`const g = (v) => -v`, or an equivalent
-  // single-return block `{ return -v }`) — the call-boundary sibling of kinds
-  // 2/3 above, covering the param-hop shape `const f = (v) => -v; return
-  // f(m.get('x'))` (present-key BIGINT). Deliberately NOT built on
-  // `func.valResult`/`valResultMayBeUndefined` (narrowValResults' own
-  // return-kind join, .work/archive/todo.md §deletion-sweep §3 "Return kinds"):
-  // INVARIANT: that fixpoint runs BEFORE narrow.js's presentVal param
-  // propagation (hardParamPresentVal) ever populates paramReps, so it can
-  // never observe a param-sourced BIGINT claim through a unary wrapper —
-  // the same ordering gap makes narrowValResults' own join empirically
-  // unreachable for mayBeUndefined's return-kind join too. Reading the callee's raw AST directly
-  // (ctx.funcs.map, populated by prepare — before any narrowing runs) and the
-  // ARGUMENT's own presentVal-fed census claim (censusMaybeUndefinedKind,
-  // computed HERE, at whatever time THIS caller is itself analyzed — after
-  // narrowing has settled) sidesteps that ordering entirely, at the cost of
-  // only recognizing this ONE explicit shape (not any callee whose return
-  // proves the sentinel kind through a longer, indirect chain — a narrower,
-  // honest boundary, not a general fix for every possible callee shape).
-  // `alwaysReturns` (ast.js) guards a block body: a callee that can fall off
-  // the end without an explicit return can genuinely yield `undefined` on
-  // some path even when every EXPLICIT return matches the sentinel shape, so
-  // that case must NOT claim kind 5.
-  if (Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && node.length === 3) {
-    const callee = ctx.funcs.map?.get(node[1])
-    const params = callee?.sig?.params
-    if (params?.length === 1 && (!isBlockBody(callee.body) || alwaysReturns(callee.body))) {
-      const pname = params[0].name
-      const sites = returnExprs(callee.body)
-      const kindOf = (e) => Array.isArray(e) && e.length === 2 && (e[0] === 'u-' || e[0] === '~') && e[1] === pname
-        ? (e[0] === 'u-' ? BIGINT_RESULT_SHAPE.UNARY_NEG : BIGINT_RESULT_SHAPE.UNARY_NOT) : 0
-      const k0 = sites.length ? kindOf(sites[0]) : 0
-      if (k0 > 0 && sites.every(e => kindOf(e) === k0) && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
-        return k0
-    }
-  }
-  return 0
-}
 
 // mayBeUndefined structural TRACE (Slice 2, §3 "Param lattice"/"Return
 // kinds"): does `name`, written somewhere in `bodyRoot` via a plain

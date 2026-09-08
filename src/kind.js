@@ -17,7 +17,7 @@
 export { nullishArm } from './kind/lattice.js'
 export {
   dictValueKindOf, mapValueKindOf, censusKindsOf, censusShapedNode,
-  censusMaybeUndefinedKind, BIGINT_JOINT_BINARY_OPS, censusBigintResultShape,
+  censusMaybeUndefinedKind, BIGINT_JOINT_BINARY_OPS,
   nameMayBeUndefinedInBody, exprMayBeUndefinedIn, exprMapGetShapedIn,
   censusMaybeUndefined, namePresentValInBody, exprPresentValIn, localMapGetMayCarryBigint,
 } from './kind/dict-census.js'

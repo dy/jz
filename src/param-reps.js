@@ -182,8 +182,7 @@ export const joinKinds = (fact, key, observedSet) => {
 /**
  * Every Set-valued field across BOTH storages `cloneRep` serves: the
  * Fact-shaped `paramReps` records (`possibleKinds`, populated Slice 4a) and
- * the plain `ValueRep` `localReps`/`globalReps` records (`dictValueValType`/
- * `mapValueValType`, `reps.js` REP_FIELDS, product-lattice Slice 7's
+ * the plain `ValueRep` `localReps`/`globalReps` records (`dictValueValType`, `reps.js` REP_FIELDS, product-lattice Slice 7's
  * producer-union storage). `arrayElemSchemaSet`/`schemaIdSet`/`range`/
  * `arrayElemRange` are `number[]`, not `Set` — `updateRep` always replaces
  * them wholesale (never mutates an existing array in place), so a shallow
@@ -192,7 +191,7 @@ export const joinKinds = (fact, key, observedSet) => {
  * re-audit item 9(c): a Set field added anywhere else without a line here is
  * a clone-aliasing leak waiting to happen, caught by the drift assert below.
  */
-const REP_SET_FIELDS =Object.freeze(['possibleKinds', 'dictValueValType', 'mapValueValType'])
+const REP_SET_FIELDS =Object.freeze(['possibleKinds', 'dictValueValType'])
 const REP_SET_FIELDS_SET = new Set(REP_SET_FIELDS)
 
 const DBG_CLONE = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
@@ -204,7 +203,7 @@ const DBG_CLONE = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARI
  * origin's possibleKinds). Every rep-copy path MUST use this instead of a
  * bare spread — both `narrow.js`'s paramReps clone sites (`possibleKinds`)
  * AND `compile/index.js`'s `cloneRepMap` (`ctx.func.localReps`, where
- * `dictValueValType`/`mapValueValType` live) route through here. Deep-copies
+ * `dictValueValType` lives) route through here. Deep-copies
  * every field in `REP_SET_FIELDS`; under `JZ_DEBUG_INVARIANTS`, also asserts
  * no OTHER field on `r` is a `Set` — a drift gate so a future Set-valued
  * field can't silently reintroduce this same aliasing leak by landing

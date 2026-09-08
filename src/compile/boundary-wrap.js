@@ -3,6 +3,7 @@ import { VAL } from '../reps.js'
 import { typed, mkPtrIR, valKindToPtr, boolBoxIR } from '../ir.js'
 import { representationHostBoxesParam } from './representation-plan.js'
 import { CARRIER } from '../summary/contract.js'
+import { valOf, core } from '../summary/kind.js'
 import { isExported } from './func-exports.js'
 
 /**
@@ -20,6 +21,11 @@ import { isExported } from './func-exports.js'
 // callable identity's, published from the plan's summary).
 const resultCarrier = func => ctx.plans.programIndex.resultContract(func)?.carrier ?? CARRIER.ANY
 
+const resultNumeric = func => {
+  const contract = ctx.plans.programIndex.resultContract(func)
+  return contract?.voidResult || contract != null && valOf(core(contract.kind)) === VAL.NUMBER
+}
+
 export const isBoundaryWrapped = (func) => {
   if (!isExported(func) || func.raw) return false
   // Multi-value return: every lane is an f64 NaN-box carrier (the `return [a,b,…]` emit forces
@@ -27,12 +33,9 @@ export const isBoundaryWrapped = (func) => {
   // box whose NaN payload JSC/V8 erases at the boundary — wrap to i64-carry every lane.
   if (func.sig.results.length !== 1) return true
   if (func.sig.results[0] !== 'f64' || func.sig.ptrKind != null) return true
-  // Any result that isn't a proven plain number can be a NaN-box — a heap pointer,
-  // a null/undef/bool atom, a bigint carrier, or a dynamic value — so it crosses as
-  // i64 and JSC (Safari) can't canonicalize the payload away. A proven-number result
-  // stays f64: free, and a number is never a NaN-box. `_resultNumeric` is set in
-  // analyzeFuncForEmit (covers value-bound arrows narrowValResults skips).
-  if (!func._resultNumeric) return true
+  // The settled result kind owns the host carrier. Void exports need no
+  // payload transport; a numeric payload retains the raw numeric ABI.
+  if (!resultNumeric(func)) return true
   // Number result, but a param may still carry a box — a pointer-ABI param, or a
   // dynamic f64 param flagged `boundaryI64` during analyze — so wrap for i64 params.
   return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null || p.boundaryI64)
@@ -92,7 +95,7 @@ export function synthesizeBoundaryWrappers() {
     // number. It may be a NaN box (a boxed BigInt among them), so cross i64
     // and let interop's generic decoder own it.
     const resultDynamic = !resultPtr && !resultBool && !resultRawBigint &&
-      sig.results[0] === 'f64' && !func._resultNumeric
+      sig.results[0] === 'f64' && !resultNumeric(func)
     const resultI64 = resultPtr || resultBool || resultRawBigint || resultDynamic
     // jz:i64exp `r` marks results interop must reinterpret then `mem.read`.
     const resultReinterpret = resultPtr || resultBool || resultDynamic
