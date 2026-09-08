@@ -812,8 +812,8 @@ test('Regression: deeply nested anonymous literals', () => {
 })
 
 test('Regression: anonymous fixed-shape object literals do not allocate dynamic shadows', () => {
-  // Optimizer-output claim: at the reference tier (O0/O1, representations off)
-  // the conservative anyDynKey shadow-write legitimately emits __dyn_set.
+  // A literal stores its slots and nothing else at every tier; the O2 gate
+  // is the claim's historical scope, kept as it was recorded.
   if (belowOpt(2)) return
   const wat = compile(`export let f = (items) => {
     let output = []
@@ -827,17 +827,13 @@ test('Regression: anonymous fixed-shape object literals do not allocate dynamic 
   ok(!/call \$__dyn_set/.test(wat), 'anonymous fixed-shape literals should not allocate sidecar hashes')
 })
 
-// When the program does any `obj[k]` with computed key elsewhere, anyDynKey
-// becomes true → every anonymous-escaping object literal shadow-writes its
-// schema keys to the per-object propsPtr (so future `o[k]` lookups can hit
-// the mirror). The schema slots and the propsPtr are then twin representations
-// of the same keys. Object.keys / values / entries / JSON.stringify must NOT
-// enumerate schema-mirrored keys twice — propsPtr-for-schema-keys is a
-// runtime mirror for dyn-key reads, not an enumeration entity. Without dedup,
-// the kernel (which uses dyn access internally → anyDynKey=true) emits
-// duplicated keys in its own JSON output, breaking metacircular byte-identity.
-// (Heap-path literals only: literals whose values are all constants take the
-// static-segment path and store no propsPtr — they hit no dedup gate.)
+// A schema field lives in its slot only; the sidecar holds the keys outside
+// the schema (module/collection.js buildObjectSchemaSetArm). Object.keys /
+// values / entries / JSON.stringify enumerate the schema then the sidecar,
+// each key once: these pins held the dedup of the former construction-time
+// mirror (every literal of a dyn-reached schema copied its fields into the
+// sidecar) and now hold the enumeration's two sources. (Heap-path literals:
+// literals whose values are all constants take the static-segment path.)
 test('Regression: shadow-mirrored schema keys not duplicated by JSON.stringify', () => {
   const { f } = run(`export let f = (t, k, v) => {
     let probe = t[k]              // forces anyDynKey
@@ -848,10 +844,8 @@ test('Regression: shadow-mirrored schema keys not duplicated by JSON.stringify',
 })
 
 test('Regression: shadow-mirrored schema keys not duplicated by Object.keys (bound var with dyn write)', () => {
-  // Bound-var with `o[k] = v` → dynKeyVars.has('o') → needsDynShadow('o') = true.
-  // Object literal shadow-writes its schema keys to propsPtr; off-schema 'c'
-  // is added later. Schema-only enumeration would drop 'c'; un-deduped union
-  // would emit a, b, a, b, c. Correct: a, b, c.
+  // Bound-var with `o[k] = v`: the off-schema 'c' lands in the sidecar.
+  // Schema-only enumeration would drop 'c'; the union is a, b, c.
   const { f } = run(`export let f = (t, k, v) => {
     let probe = t[k]
     let x = v + 1, y = v + 2
