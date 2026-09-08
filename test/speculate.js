@@ -16,6 +16,19 @@ import jz from '../index.js'
 
 const opts = { wat: true, optimize: { level: 'speed', watr: false } }
 
+test('speculate: nullable typed results preserve fast and fallback calls', () => {
+  const src = `
+    const make = n => { if (!n) return null; const a = new Float64Array(n); for (let i=0; i<n; i++) a[i]=i+1; return a }
+    const forward = n => make(n)
+    const sum = (a,n) => { let s=0; for (let i=0; i<n; i++) s+=a[i]; return s }
+    export const f = n => sum(forward(n),n)`
+  const js = Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 2, 3]) {
+    const f = jz(src, {optimize}).exports.f
+    for (const n of [0, 1, 8, 0, 8]) is(f(n), js(n), `O${optimize}: n=${n}`)
+  }
+})
+
 // fftplan in miniature: plan built once, cached in a dictionary + last-plan
 // memo, tables reach the kernel as returned-object fields. No edge here is
 // provable: a dictionary's values are not a kind the summary carries (a Map's

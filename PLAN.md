@@ -46,6 +46,25 @@ an existing processor and inspect its host before changing compiler interfaces.
   the packaged revision. Existing speed/size promises still require measured
   evidence; this plan does not weaken their tests or claim they are satisfied.
 
+## Compiler simplification
+
+The target is normalize and expand → settle program facts → lower → optimize
+and encode in watr. Analysis consolidation has priority: migrate a consumer to
+the settled summary and delete its old inference in the same change. Necessary
+fixpoint iterations and refreshes after program rewrites remain explicit.
+
+The typed-parameter specialization pass now reads named-call result payloads
+from the summary. Its separate recursive return census and memo table are gone,
+as is a duplicate summary lookup at each call site. Twelve sampled O2/O3 builds
+(including FFT and resampling) remain byte-identical; specialization and fresh
+functional bootstrap checks pass.
+
+The next result consumer is the export boundary's numeric proof. Its replacement
+must first preserve the precision needed by the existing ABI and output-size
+tests: directly substituting the current summary adds wrappers to void/nullable
+results and conservatively boxes some numeric results. That migration is not
+ready to land. Keep the existing boundary proof until its replacement is proven.
+
 ## Deferred architecture
 
 These are unfinished directions, not prerequisites merely because they were

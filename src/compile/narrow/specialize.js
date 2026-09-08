@@ -10,9 +10,8 @@
 
 import { ctx, DBG_INVARIANTS } from '../../ctx.js'
 import {
-  returnExprs, ASSIGN_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, some,
+  ASSIGN_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, some,
 } from '../../ast.js'
-import { analyzeBody } from '../analyze.js'
 import { typedElemCtor } from '../../type.js'
 import { typedElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
@@ -415,10 +414,8 @@ export function specializeUnionCursorParams(programFacts) {
  *   - a name that is an ENCLOSING ARROW's param → meet over the arrow's own
  *     call sites at that position (the `edge(wre, wim)` harness shape: the
  *     kernel call sits inside a local arrow whose args carry the evidence)
- *   - `f(...)` → f's return census: every return a `new K`, a local bound to
- *     one, a censused field read, or another censused call; nullish returns
- *     are SKIPPED (they fail the guard at runtime, by design — this is what
- *     lets Map-cache/memo getters like getPlan(n) census through)
+ *   - `f(...)` → the summary's typed result payload; nullish returns fail
+ *     the runtime guard, so they do not erase the constructor evidence.
  */
 export function speculateTypedParams(programFacts, ast) {
   const { callSites, paramReps } = programFacts
@@ -434,33 +431,8 @@ export function speculateTypedParams(programFacts, ast) {
 
   // ---- weak evidence engine (see doc above) ----
   const DBG2 = typeof process !== 'undefined' && !!process.env?.JZ_DBG_SPEC
-  const isNullish = (r) => r == null || r === 'null' || r === 'undefined'
-    || (Array.isArray(r) && (r[0] === 'null' || r[0] === 'undefined'))
-  const retMemo = new Map()
   const MAX_DEPTH = 6
   const bodyOf = (callerFunc) => callerFunc ? callerFunc.body : ast
-
-  // Return census of a named function: the single ctor every non-nullish
-  // return resolves to, or null.
-  function retCensus(fname, depth) {
-    if (retMemo.has(fname)) return retMemo.get(fname)
-    retMemo.set(fname, null)                       // cycle guard
-    const func = ctx.funcs.map.get(fname)
-    if (!func?.body || func.raw || depth > MAX_DEPTH) return null
-    const te = analyzeBody(func.body).typedElems
-    let ctor = null
-    for (const r of returnExprs(func.body)) {
-      if (isNullish(r)) continue
-      const c = typedElemCtor(r)
-        || (typeof r === 'string' ? te?.get(r) : null)
-        || (Array.isArray(r) && r[0] === '.' && typeof r[2] === 'string' ? ctx.schema.slotTypedCtorByProp(r[2]) : null)
-        || (Array.isArray(r) && r[0] === '()' && typeof r[1] === 'string' ? retCensus(r[1], depth + 1) : null)
-      if (!c || (ctor && c !== ctor)) return null
-      ctor = c
-    }
-    retMemo.set(fname, ctor)
-    return ctor
-  }
 
   // Chain of arrow nodes enclosing `target` inside `root` (outermost first).
   function arrowPathTo(root, target) {
@@ -488,7 +460,8 @@ export function speculateTypedParams(programFacts, ast) {
     if (proven) return proven
     if (Array.isArray(arg)) {
       if (arg[0] === '.' && typeof arg[2] === 'string') return ctx.schema.slotTypedCtorByProp(arg[2])
-      if (arg[0] === '()' && typeof arg[1] === 'string' && ctx.funcs.map.has(arg[1])) return retCensus(arg[1], depth)
+      if (arg[0] === '()' && typeof arg[1] === 'string' && ctx.funcs.map.has(arg[1]))
+        return ctx.summary.at(callerFunc?.sig).typedPayloadCtorOfExpr(arg)
       return typedElemCtor(arg)
     }
     if (typeof arg !== 'string') return null
@@ -588,9 +561,8 @@ export function speculateTypedParams(programFacts, ast) {
       for (const site of sites) {
         const arg = site.argList[k]
         if (arg == null) continue
-        const proven = siteTypedCtor(site, k)
-        const c = proven ?? evidenceOfArg(arg, site.callerFunc, site.node, 0, new Set())
-        if (DBG) console.error('[spec]', func.name, 'k=' + k, JSON.stringify(arg)?.slice(0, 60), 'proven=' + proven, 'c=' + c)
+        const c = evidenceOfArg(arg, site.callerFunc, site.node, 0, new Set())
+        if (DBG) console.error('[spec]', func.name, 'k=' + k, JSON.stringify(arg)?.slice(0, 60), 'c=' + c)
         if (c == null) continue
         if (ctor && c !== ctor) { dead = true; break }
         ctor = c
@@ -628,4 +600,3 @@ export function speculateTypedParams(programFacts, ast) {
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }
-
