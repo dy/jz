@@ -226,6 +226,51 @@ test('bool identity: strict equality of a number against an untyped operand conv
   }
 })
 
+// A boolean the analysis marks nullable (a builtin's result, `la.has(a)`,
+// fails closed) keeps its raw 0/1 carrier; strictly compared with a value the
+// program cannot kind (`lb.has(b)`, lb a slot value: its result is an atom)
+// it enters the dynamic compare as its atom, as it would enter any untyped
+// carrier. The raw 1 beside the TRUE atom read unequal: the compiler's own
+// closure-body dedup (src/wat/assemble/closure-table.js, `al !== bl`) found no
+// equal bodies in the kernel and kept 1,249 duplicates.
+test('bool identity: a nullable boolean beside an unkinded boolean compares strictly as its atom', () => {
+  const SRC = `const namesOf = (fn) => { const names = new Set(); for (const n of fn) if (typeof n === 'string') names.add(n); return names }
+  const equalBodies = (fa, la, fb, lb) => {
+    const eq = (a, b) => {
+      const as = typeof a === 'string', bs = typeof b === 'string'
+      if (as || bs) {
+        if (!as || !bs) return false
+        const al = la.has(a), bl = lb.has(b)
+        if (al !== bl) return false
+        if (al === bl) { if (!al) return a === b; return true }
+        return false
+      }
+      return a === b
+    }
+    for (let i = 0; i < fa.length; i++) if (!eq(fa[i], fb[i])) return false
+    return true
+  }
+  export const dedup = () => {
+    const fns = [['$a', '$b'], ['$c', '$d'], ['x', 'y'], ['x', 'z']]
+    const buckets = []
+    let dup = 0
+    for (const fn of fns) {
+      const locals = namesOf(fn)
+      let hit = false
+      for (const cand of buckets) if (equalBodies(fn, locals, cand.fn, cand.locals)) { hit = true; break }
+      if (hit) dup++; else buckets.push({ fn, locals })
+    }
+    return dup
+  }
+  export const pair = (k) => { const s = new Set([1]); const o = { t: new Set([1]) }; const al = s.has(k), bl = o.t.has(1); return (al === bl ? 1 : 0) + (al !== bl ? 2 : 0) + (bl === al ? 4 : 0) + (al == bl ? 8 : 0) }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { dedup, pair }')()
+  for (const optimize of [false, 1, 2]) {
+    const ex = run(SRC, { memory: 256, optimize })
+    is(ex.dedup(), oracle.dedup(), `dedup O${optimize || 0}`)
+    for (const k of [1, 2]) is(ex.pair(k), oracle.pair(k), `pair(${k}) O${optimize || 0}`)
+  }
+})
+
 // Loose `==` between values the program cannot type statically: a boolean
 // beside a number converts (`true == 1`, `false == 0`), null and undefined
 // are equal to each other alone, a boolean is not a string. The runtime's

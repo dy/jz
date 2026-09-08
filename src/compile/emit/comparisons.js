@@ -8,7 +8,7 @@ import { i64Hex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
-  asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
+  asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
@@ -532,8 +532,12 @@ function emitLooseEq(a, b, negate, strict) {
   const tc = emitTypeofCmp(a, b, eqOp); if (tc) return tc
   // Strict equality observes identity: a join whose boolean arm would collapse
   // to a raw 0/1 (mayCarryRawBool) is emitted with that arm boxed to its atom,
-  // so `(c ? true : n) === 1` and the dynamic `__eq_strict` both see a boolean.
-  const identity = (n) => strict && mayCarryRawBool(n) ? emitIdentitySafeArms(n) : emit(n)
+  // so `(c ? true : n) === 1` and the dynamic `__eq_strict` both see a boolean;
+  // a boolean that may be nullish (its raw 0/1 beside a sentinel) enters the
+  // dynamic compare as its atom too (nullableBoolBoxIR), as it would enter any
+  // untyped carrier: `la.has(a) !== lb.has(b)` with one receiver unkinded
+  // compared a raw 1 with the TRUE atom.
+  const identity = (n) => !strict ? emit(n) : mayCarryRawBool(n) ? emitIdentitySafeArms(n) : boolOrNullish(n) ? nullableBoolBoxIR(emit(n)) : emit(n)
   const va = identity(a), vb = identity(b)
   if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${eqOp}`, va, vb], 'i32')
   // Both operands integer-backed (e.g. an i32 local vs a `b[j]` u8 read materialized as f64):
@@ -803,11 +807,12 @@ function emitStrictEq(a, b, negate) {
     // with `x` unresolved (e.g. dead short-circuit branch on an undeclared
     // name) resolves neither BOOL nor NUMBER, but the arm actually reached at
     // runtime (`true`) is still a raw BOOL that needs its atom — see
-    // mayCarryRawBool's own doc comment (audit-#12 BOOL_CARRIER family).
-    const va = strictA === VAL.BOOL ? carrierF64(a, emit(a))
-      : strictA == null && mayCarryRawBool(a) ? emitIdentitySafeArms(a) : asF64(emit(a))
-    const vb = strictB === VAL.BOOL ? carrierF64(b, emit(b))
-      : strictB == null && mayCarryRawBool(b) ? emitIdentitySafeArms(b) : asF64(emit(b))
+    // mayCarryRawBool's own doc comment (audit-#12 BOOL_CARRIER family); a
+    // boolean that may be nullish carries its raw 0/1 beside a sentinel and
+    // needs its atom the same way (nullableBoolBoxIR).
+    const identityOf = (n, vt) => vt === VAL.BOOL ? carrierF64(n, emit(n))
+      : mayCarryRawBool(n) ? emitIdentitySafeArms(n) : boolOrNullish(n) ? nullableBoolBoxIR(emit(n)) : asF64(emit(n))
+    const va = identityOf(a, strictA), vb = identityOf(b, strictB)
     const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
     return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
   }
