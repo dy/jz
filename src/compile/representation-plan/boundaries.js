@@ -7,7 +7,7 @@
  */
 import { isReassigned } from '../../ast.js'
 import { VAL } from '../../reps.js'
-import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf } from '../../summary/index.js'
+import { K as SUMMARY_KIND, hasTag as summaryHasTag, tagOf as summaryTagOf, isNullable as summaryNullable, CARRIER } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_DEMAND_RAW_OK, BIGINT_DEMAND_TAG_REQUIRED, BOXED_BIGINT, EDGE_KIND, NO_BIGINT, RAW_BIGINT,
   REP_EDGE_REJECT, SEM_CLOSED_BIT, bitOfKind, canBeBigint, canBeOther, edgeAction, excludesBigint, isExported,
@@ -31,26 +31,22 @@ const currentParamRep = (rep, sem, uncovered, rawOnly) => {
   return ANY_BIGINT
 }
 
-const resultSemantic = func => {
-  if (!func?.sig?.results?.length) return semKind(VAL.NUMBER)
-  if (func.valResult === VAL.BIGINT && !func.valResultMayBeUndefined) return semKind(VAL.BIGINT)
-  // i32 and pointer-result ABIs cannot carry a raw BigInt member.
-  if (func.sig.ptrKind != null || func.sig.results[0] === 'i32')
-    return semKind(func.valResult || VAL.NUMBER)
-  // A non-number exact result kind is a reliable exclusion. NUMBER is kept
-  // open: numeric operator defaults are deliberately optimistic elsewhere in
-  // the compiler and cannot prove a BigInt member absent here.
-  if (func.valResult && func.valResult !== VAL.NUMBER)
-    return semKind(func.valResult, !!func.valResultMayBeUndefined)
-  return semAll()
-}
-
-const currentResultRep = (func, sem, generic) => {
-  if (excludesBigint(sem)) return NO_BIGINT
-  if (generic) return ANY_BIGINT
-  if (onlyBigintKind(sem)) return RAW_BIGINT
-  return ANY_BIGINT
-}
+// The result contract's claim in the plan's own lattice. A contract whose
+// carrier is the raw or the boxed BigInt one claims a BigInt member: every
+// completion a BigInt (RAW_I64, or BOXED beside a nullish one) is the closed
+// BigInt semantic; a BigInt beside other kinds stays the open one, as before
+// the contract (the plan's lattice takes the summary's bound in a later
+// slice). An unbounded result that names no BigInt return claims nothing.
+const contractClaimsBigint = c => c.carrier === CARRIER.RAW_I64 || c.carrier === CARRIER.BOXED
+const contractSemantic = c => summaryTagOf(c.kind) === SUMMARY_KIND.BIGINT
+  ? semKind(VAL.BIGINT, summaryNullable(c.kind))
+  : semAll()
+// The carrier the tails produce, before any edge: the body's own joined
+// fact (provenance's resultReps, per return tail) when the tails carry one,
+// else the contract's carrier (raw when every completion crosses raw, open
+// for a boxed one the tails have not named). The return edge converts to
+// the contract's carrier in a later slice; until then the body's fact stands.
+const contractCurrent = (c, rep) => rep ?? (c.carrier === CARRIER.RAW_I64 ? RAW_BIGINT : ANY_BIGINT)
 
 const makeNoBigintBoundary = (func, sig = func?.sig) => ({
   kind: 'boundary',
@@ -159,18 +155,14 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
       stable: !isReassigned(func.body, param.name),
     }
   })
-  // The summary's result kind outranks provenance's flow-insensitive taint:
-  // `parse(n) { n = parseInt(n); return n }` returns a Number whatever its
-  // parameter held.
-  const summaryResult = generic ? 0 : ctx.summary?.resultOf(func.name) ?? 0
-  const summaryExcludesBigint = summaryResult !== 0 && summaryTagsOf(summaryResult) !== summaryTagsOf(summaryKind(SUMMARY_KIND.ANY)) &&
-    !summaryHasTag(summaryResult, SUMMARY_KIND.BIGINT)
-  const resultMayBigint = !summaryExcludesBigint && (generic
-    ? options.localProvenance?.result === true
-    : options.provenance?.results.has(func.name))
-  const semantic = resultMayBigint ? (generic ? semAll() : resultSemantic(func)) : noBigintSemantic()
+  // A named callable's result is its contract (ProgramIndex holds the one the
+  // plan's summary published): `parse(n) { n = parseInt(n); return n }` is a
+  // Number whatever its parameter held. A closure's is its local provenance.
+  const contract = generic ? null : ctx.plans.programIndex?.resultContract(func) ?? ctx.summary?.resultContract(func.name)
+  const resultMayBigint = generic ? options.localProvenance?.result === true : contract != null && contractClaimsBigint(contract)
+  const semantic = resultMayBigint ? (generic ? semAll() : contractSemantic(contract)) : noBigintSemantic()
   const current = resultMayBigint
-    ? (generic ? currentResultRep(func, semantic, true) : options.provenance?.resultReps.get(func.name) ?? currentResultRep(func, semantic, false))
+    ? (generic ? ANY_BIGINT : contractCurrent(contract, options.provenance?.resultReps.get(func.name)))
     : NO_BIGINT
   // A mixed-result closure table explicitly marks its member bodies: raw i64
   // BigInt bits cannot share the uniform closure result lane with Number.

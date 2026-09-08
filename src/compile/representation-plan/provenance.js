@@ -1,7 +1,7 @@
 import { ASSIGN_OPS, commaList, returnExprs, walkAst } from '../../ast.js'
 import { nullishArm } from '../../kind.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
-import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf } from '../../summary/index.js'
+import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf as summaryTagsOf, CARRIER } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_READ_METHODS, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BIGINT_TYPED_CTORS, BOXED_BIGINT, DEF_RHS,
   NO_BIGINT, NUMERIC_VALUE_OPS, RAW_BIGINT, STORAGE_READ_METHODS, STORAGE_WRITE_METHODS, VALUE_COERCERS,
@@ -181,7 +181,9 @@ const paramEntryExcludesBool = (programFacts, func, idx) => {
 export function solveBigintProvenance(ctx, programFacts, ast) {
   const namesByFunc = new Map()
   const paramsByFunc = new Map()
-  const results = new Set()
+  // The carrier a function's return tails produce, joined (exprRep): the
+  // body's own pre-plan fact, beside the callable's contract. It stays until
+  // the return edge converts to the contract's carrier.
   const resultReps = new Map()
   const storage = new Set()
   const bigintTyped = new Set()
@@ -204,6 +206,11 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // dispatchTables above; an unresolved receiver/property stays exactly as
   // unresolved as it always was).
   const programIndex = programFacts.programIndex
+  // A callable's result contract (summary/contract.js) claims a BigInt member
+  // when its carrier is the raw or the boxed BigInt one; an unbounded result
+  // with no BigInt-naming return claims nothing.
+  const claimsBigint = c => c != null && (c.carrier === CARRIER.RAW_I64 || c.carrier === CARRIER.BOXED)
+  const calleeClaimsBigint = (node, func) => claimsBigint(ctx.summary?.at(func?.sig ?? '').calleeContract(node))
   const resolveMemberCallee = calleeNode => {
     if (!Array.isArray(calleeNode) || calleeNode[0] !== '.' || typeof calleeNode[2] !== 'string') return null
     const sourceId = programIndex?.resolveMemberSourceId(calleeNode[1], calleeNode[2]) ?? -1
@@ -242,7 +249,6 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         pset.add(k)
     }
     for (const k of pset) namesFor(func).add(func.sig.params[k].name)
-    if (func.valResult === VAL.BIGINT) results.add(func.name)
   }
 
   const defMapByFunc = new Map()
@@ -281,12 +287,14 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         }
         if (BIGINT_TYPED_CTORS.has(node[1])) return false // constructor yields a TYPED pointer, not a BigInt value
         const callee = ctx.funcs.map.get(node[1])
-        if (callee) return results.has(callee.name)
-        // A closure through a name: the summary's result when it names one
-        // (as for a member read above). Treating an unnamed result as
-        // possibly BigInt through `indirectResult` corrupted the kernel's
-        // own parser: a materialization defect still to be found.
-        return summaryMayBigint(node, func)
+        if (callee) return claimsBigint(programIndex.resultContract(callee))
+        // A closure through a name: its contract when the summary names one
+        // (as for a member read above), else the summary's kind of the call
+        // (a builtin's). Treating an unnamed result as possibly BigInt
+        // through `indirectResult` corrupted the kernel's own parser: a
+        // materialization defect still to be found.
+        const contract = ctx.summary?.at(func?.sig ?? '').calleeContract(node)
+        return contract ? claimsBigint(contract) : summaryMayBigint(node, func)
       }
       if (Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
         const method = node[1][2]
@@ -294,22 +302,16 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         if (STORAGE_READ_METHODS.has(method) && typeof node[1][1] === 'string')
           return storage.has(node[1][1]) || bigintTyped.has(node[1][1])
         // Shape #8: a same-module named function reached via `.`-member call
-        // (`ns.parse(...)`), proven or declined by ProgramIndex.
+        // (`ns.parse(...)`), proven or declined by ProgramIndex; else the
+        // callable the summary names (a class method, a closure in a slot).
         const resolved = resolveMemberCallee(node[1])
-        return resolved ? results.has(resolved.name) : false
+        return resolved ? claimsBigint(programIndex.resultContract(resolved)) : calleeClaimsBigint(node, func)
       }
-      // Shape #7: a computed-key dispatch call (`HANDLER[imm](nodes)`) can't
-      // name its callee statically, but when the base is a KNOWN dispatch
-      // table (collectDispatchTableClosures), every closure that could
-      // possibly BE that callee is enumerable — if ANY candidate's own
-      // result may carry bigint, so may this call's. Additive only: an
-      // unknown/untracked base (not in dispatchTables) falls through to the
-      // existing indirectResult default, unchanged.
-      if (Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string') {
-        const candidates = dispatchTables.get(node[1][1])
-        if (candidates && candidates.some(dispatchClosureMayBigint)) return true
-      }
-      return indirectResult
+      // A computed-key dispatch call (`HANDLER[imm](nodes)`): the contract of
+      // the closure set the summary names for the table's slot, the join of
+      // its members' results. An unnamed callee keeps the indirectResult default.
+      const contract = ctx.summary?.at(func?.sig ?? '').calleeContract(node)
+      return contract ? claimsBigint(contract) : indirectResult
     }
     // Arithmetic preserves a BigInt member from a BigInt operand. Object/
     // array/string construction returns a pointer and is not a BigInt value.
@@ -351,33 +353,14 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     return ANY_BIGINT
   }
 
-  // Shape #7: does ANY return tail of this dispatch-table closure candidate
-  // itself carry bigint? A closure's OWN param-local names are unknown at
-  // this vantage point (deriveLocalProvenance, a separate per-closure pass,
-  // owns that later, once the closure actually mints its own plan) — so
-  // this asks only what exprMay can prove without them: a bare BigInt
-  // origin, a proven storage read, or (this pin's own shape) a call to an
-  // already-provably-bigint NAMED function. Cycle-guarded (false while in
-  // progress, mirroring representationResultTagRequired's seen-set idiom)
-  // for a dispatch table whose own candidates call back into another one.
-  const dispatchResultCache = new Map()
-  const dispatchClosureMayBigint = c => {
-    if (dispatchResultCache.has(c)) return dispatchResultCache.get(c)
-    dispatchResultCache.set(c, false)
-    const tails = Array.isArray(c.body) && c.body[0] === '{}' ? returnExprs(c.body) : [c.body]
-    const result = tails.some(t => t != null && exprMay(t, null, EMPTY_SEEN))
-    dispatchResultCache.set(c, result)
-    return result
-  }
-
-  const noteResult = (func, expr) => {
+  const noteResultRep = (func, expr) => {
     if (!func || !exprMay(expr, func, namesFor(func))) return false
-    let changed = mark(results, func.name)
     const rep = exprRep(expr, func, namesFor(func))
     const prev = resultReps.get(func.name)
     const next = prev == null ? rep : joinRep(prev, rep)
-    if (prev !== next) { resultReps.set(func.name, next); changed = true }
-    return changed
+    if (prev === next) return false
+    resultReps.set(func.name, next)
+    return true
   }
 
   const scan = (node, func, localNames) => {
@@ -498,7 +481,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
       const recv = node[1][1]
       if (exprMay(node[2], func, localNames) && typeof recv === 'string' && mark(storage, recv)) changed = true
     }
-    if (op === 'return' && noteResult(func, node[1])) changed = true
+    if (op === 'return' && noteResultRep(func, node[1])) changed = true
     for (let i = 1; i < node.length; i++) if (scan(node[i], func, localNames)) changed = true
     return changed
   }
@@ -514,7 +497,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // seeded (the write itself marks it, same scan() call) but `bigintTyped`
   // still unset — exprRep's [] branch checks bigintTyped FIRST, falls
   // through to storage, and answers BOXED_BIGINT for one round. resultReps'
-  // own accumulation (noteResult) is a MONOTONE JOIN across every round,
+  // own accumulation (noteResultRep) is a MONOTONE JOIN across every round,
   // never a fresh recompute — that one transient wrong-for-a-round BOXED
   // answer joins permanently against the later, correct RAW_BIGINT answer
   // once bigintTyped catches up, producing a permanently AMBIGUOUS
@@ -548,14 +531,14 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         }
       }
       if (!Array.isArray(func.body) || func.body[0] !== '{}')
-        if (noteResult(func, func.body)) graphChanged = true
+        if (noteResultRep(func, func.body)) graphChanged = true
       if (scan(func.body, func, names)) graphChanged = true
     }
     if (!indirectResult) {
       const dynamicRoots = programFacts.programIndex.getCallGraph().dynamicRootIds
       for (let i = 0; i < dynamicRoots.length; i++) {
         const name = programFacts.programIndex.graphFunctionById(dynamicRoots[i])?.name
-        if (name && results.has(name)) { indirectResult = true; graphChanged = true; break }
+        if (name && claimsBigint(programIndex.resultContract(name))) { indirectResult = true; graphChanged = true; break }
       }
     }
     if (scan(ast, null, globals)) graphChanged = true
@@ -774,7 +757,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   visitCallSites(ast, null, globals)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) visitCallSites(init, null, globals)
 
-  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramRawOnly, paramNeverBool, resolveMemberCallee }
+  return { namesByFunc, paramsByFunc, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramRawOnly, paramNeverBool, resolveMemberCallee }
 }
 
 export function deriveLocalProvenance(sig, body, localReps, program) {
