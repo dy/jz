@@ -71,7 +71,8 @@ test('inplace-store: field updates reuse a proven object pointer', () => {
     for (const n of [0, 1, 9, 1]) is(f(n), expected(n), `O${optimize}: ${n} objects`)
     if (optimize) {
       const wat = jz.compile(src, {optimize, wat:true})
-      const body = wat.split(/\(func /).find(s => /^\$step\s/.test(s))
+      // The small step function may inline into the exported driver.
+      const body = wat.split(/\(func /).find(s => /^\$(?:step|f)\s/.test(s))
       ok(body && !/call \$__ptr_offset\b/.test(body), 'field stores do not decode freshly boxed pointers')
     }
   }

@@ -1028,6 +1028,19 @@ JS appends it; `[null, undefined].join()` renders the words; a
 host-marshalled `{a: undefined}` reads `'a' in o` false (interop's
 marshal).
 
+### Interrupted-session recovery — 2026-09-08
+
+Recovered result-contract slice 2 and the array-element summary cells into
+main, including fixes for mixed Number/BigInt updates and tagged reduction
+accumulators. The entity benchmark now covers in-place field updates; freshly
+boxed fixed-layout pointers reuse their proven offset. The dynamic-property
+mirror-removal branch stays isolated: its deletion/presence semantics remain
+unfinished. Original worktrees and patches are preserved.
+
+This supersedes the in-flight status of those slices below, not the remaining
+verified-result milestone. See [.work/session-recovery-2026-09-08.md](.work/session-recovery-2026-09-08.md)
+for session identities, measured evidence, and remaining failures.
+
 ### Next ownership and order
 
 1. One session owns main; slices run in parallel worktrees at `a4a4f1e9`
