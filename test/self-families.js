@@ -5,8 +5,11 @@
 // kernel, minutes): every case compiled through the kernel at O1 and O2, its
 // bytes against the native compile and its results against the same authored
 // values, then the corpus again on one warm instance A, A, B… with and without
-// `_clear()`. A red case is a defect, recorded or new; the recorded ones name
-// their leg in the corpus, and none is blessed by the expectation.
+// `_clear()`, every compile against a fresh instance's outcome: what one
+// instance leaves behind (an arena pointer kept in module state, a retained
+// table) is the warm leg's subject, the kernel's parity the per-case rows'. A
+// red case is a defect, recorded or new; the recorded ones name their leg in
+// the corpus, and none is blessed by the expectation.
 //
 // Run: node test/self-families.js               native leg
 //      JZ_SELF_FAMILIES=1 node test/self-families.js   both legs
@@ -68,20 +71,24 @@ if (HOSTED) {
       check(instantiate(bytes, { memory: 64 }).exports, c.calls, `hosted O${level}`)
     }
   })
+  // One compile's outcome on a kernel instance: its bytes, or the error it raised.
+  const compiled = (k, src) => { try { return { bytes: compileOn(k, src, 1) } } catch (e) { return { error: e.message.split('\n')[0] } } }
+  const describeCompile = r => r.bytes ? `${r.bytes.length} bytes` : `throws ${r.error}`
+  const sameCompile = (a, b) => a.bytes && b.bytes ? same(a.bytes, b.bytes) : a.error === b.error
+  const fresh = new Map()
+  const freshCompile = c => { if (!fresh.has(c)) fresh.set(c, compiled(instantiate(selfBytes(), { memory: 8192 }), c.src)); return fresh.get(c) }
   for (const clear of [true, false]) test(`hosted families on one warm instance, A, A, B… ${clear ? 'with' : 'without'} _clear()`, () => {
     const k = instantiate(selfBytes(), { memory: 8192 })
     const all = FAMILIES.flatMap(f => f.cases)
+    const check = (c, label) => {
+      const got = compiled(k, c.src), expected = freshCompile(c)
+      ok(sameCompile(got, expected), `${label}: ${describeCompile(got)}, a fresh instance gives ${describeCompile(expected)}`)
+      if (clear) k.exports._clear()
+    }
     let previous = null
     for (const c of all) {
-      for (const pass of [1, 2]) {
-        let bytes, error = null
-        try { bytes = compileOn(k, c.src, 1) } catch (e) { error = e }
-        ok(!error, `${c.name} (pass ${pass}): ${error?.message.split('\n')[0]}`)
-        if (bytes) ok(same(bytes, compile(c.src, { optimize: 1 })), `${c.name} (pass ${pass}): native bytes`)
-        if (clear) k.exports._clear()
-      }
-      if (previous) ok(same(compileOn(k, previous.src, 1), compile(previous.src, { optimize: 1 })), `${previous.name} again after ${c.name}`)
-      if (clear) k.exports._clear()
+      for (const pass of [1, 2]) check(c, `${c.name} (pass ${pass})`)
+      if (previous) check(previous, `${previous.name} again after ${c.name}`)
       previous = c
     }
   })

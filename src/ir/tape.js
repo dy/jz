@@ -26,24 +26,40 @@ export const NONE = -1
 
 const INIT = 1 << 12
 
-/** The one tape. Scratch: reset per compile, grown by doubling. */
+/** The one tape. Scratch: the columns are allocated per compile (`resetTape`),
+ *  reserved for the decoded tree in one step, then grown by doubling; nothing
+ *  is kept between compiles. `T` itself is module state, allocated at init: in
+ *  the self-hosted compiler a column kept in it is a pointer into the arena
+ *  that `_clear()` and a checkpoint rewind, dangling for the next compile,
+ *  which no heal restores (the same class as `clearDollar`, src/ir/vars.js). */
 export const T = {
   n: 0,
-  op: new Int32Array(INIT),
-  a: new Int32Array(INIT),
-  next: new Int32Array(INIT),
-  ty: new Int32Array(INIT),
-  imm: new Float64Array(INIT),
-  sym: new Int32Array(INIT),
-  sid: new Int32Array(INIT),
+  op: new Int32Array(0),
+  a: new Int32Array(0),
+  next: new Int32Array(0),
+  ty: new Int32Array(0),
+  imm: new Float64Array(0),
+  sym: new Int32Array(0),
+  sid: new Int32Array(0),
   syms: [''],
   symId: new Map([['', 0]]),
   bigs: [],
   blobs: [],
 }
 
+const columns = (cap) => {
+  T.op = new Int32Array(cap)
+  T.a = new Int32Array(cap)
+  T.next = new Int32Array(cap)
+  T.ty = new Int32Array(cap)
+  T.imm = new Float64Array(cap)
+  T.sym = new Int32Array(cap)
+  T.sid = new Int32Array(cap)
+}
+
 export function resetTape() {
   T.n = 0
+  columns(0)
   T.syms = ['']
   T.symId = new Map([['', 0]])
   T.bigs = []
@@ -61,14 +77,10 @@ export const intern = (s) => {
  *  doubling allocates twice the final size in all, and the self-hosted
  *  compiler's arena reclaims nothing. */
 export const reserve = (n) => { if (n > T.op.length) grow(n + (n >> 3)) }
-const grow = (cap = T.op.length * 2) => {
-  const op = new Int32Array(cap); op.set(T.op); T.op = op
-  const a = new Int32Array(cap); a.set(T.a); T.a = a
-  const next = new Int32Array(cap); next.set(T.next); T.next = next
-  const ty = new Int32Array(cap); ty.set(T.ty); T.ty = ty
-  const imm = new Float64Array(cap); imm.set(T.imm); T.imm = imm
-  const sym = new Int32Array(cap); sym.set(T.sym); T.sym = sym
-  const sid = new Int32Array(cap); sid.set(T.sid); T.sid = sid
+const grow = (cap = T.op.length * 2 || INIT) => {
+  const { op, a, next, ty, imm, sym, sid } = T
+  columns(cap)
+  T.op.set(op); T.a.set(a); T.next.set(next); T.ty.set(ty); T.imm.set(imm); T.sym.set(sym); T.sid.set(sid)
 }
 
 /** Allocate a node with no children. */

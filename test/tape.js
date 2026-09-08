@@ -80,9 +80,20 @@ test('tape: a shared subtree decodes into a node at each use; the tree read stay
   is(T.op.length >= T.n, true)
 })
 
+test('tape: the columns are fresh per compile, nothing held between them', () => {
+  resetTape()
+  fromWat(['module', ['func', '$f', ['nop']]])
+  const held = T.op
+  ok(T.op.length > 0 && T.op.length === T.a.length, 'a compile allocates its columns')
+  resetTape()
+  ok(T.op !== held && T.op.length === 0, 'the reset drops them: a retained column is a dangling arena pointer in the self-hosted compiler')
+  ok(T.a.length === 0 && T.next.length === 0 && T.ty.length === 0 && T.imm.length === 0 && T.sym.length === 0 && T.sid.length === 0, 'every column')
+  is(T.n, 0)
+})
+
 test('tape: the decode reserves the columns for the whole tree in one step', () => {
   resetTape()
-  const before = T.op.length
+  const before = 5000
   const wide = ['module', ['func', '$f', ...Array.from({ length: before }, (_, i) => ['drop', ['i32.const', i]])]]
   const root = fromWat(wide)
   is(verify(root), null)
