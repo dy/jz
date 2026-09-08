@@ -158,7 +158,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const lose = (k) => { if (paramOf(k) !== UNKNOWN) escape(k) }
   const slots = (sid) => { let a = fields.get(sid); if (!a) fields.set(sid, a = new Array(schemas[sid].length).fill(K.NONE)); return a }
-  const raise = (map, key, k) => { const old = map.get(key) ?? K.NONE; const nk = merge(old, k); if (nk !== old) { map.set(key, nk); changed = true } }
+  // A binding some definition of which names BigInt among a bounded set: the
+  // member the join to ANY erases (`n = BigInt(n)` on one path of a parameter
+  // of every kind), kept for the result contract's certain-return walk.
+  const certainKeys = new Set()
+  const raise = (map, key, k) => {
+    const old = map.get(key) ?? K.NONE; const nk = merge(old, k)
+    if (nk !== old) { map.set(key, nk); changed = true }
+    if (map === kinds && hasTag(k, K.BIGINT) && !unbounded(k)) certainKeys.add(key)
+  }
   const raiseSlot = (sid, i, k) => { const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true } }
   const NO_SLOTS = []
   const poisonProp = (prop) => { for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) raiseSlot(sid, i, ANY) }
@@ -1234,28 +1242,30 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if ((callee.startsWith('Math.') || callee.startsWith('math.')) && !callee.endsWith('.sumPrecise')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), NUM); return }
         const f = funcByName.get(callee)
         if (f && !escaped.has(callee)) { for (let i = 0; i < count; i++) { const p = f.sig.params[i]; if (p && !p.rest) useOf(argAt(as, i), FLOW, keyIn(callee, p.name)); else demand(argAt(as, i)) } return }
-        const ckey = keyOf(callee), ck = ckey === null ? undefined : kinds.get(ckey)
-        if (ck !== undefined && tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN) {
-          // Each member's parameter is a flow target; a member that escaped, or a position it lacks, is a plain read.
-          const members = membersOf(paramOf(ck))
-          if (members.length === 1) {
-            const id = members[0], names = closureParams[id]
-            for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
-            return
-          }
-          const ids = members.filter(id => !escaped.has(id))
-          for (let i = 0; i < count; i++) {
-            const keys = ids.map(id => closureParams[id][i] != null ? keyIn(id, closureParams[id][i]) : null)
-            if (ids.length && keys.every(k => k !== null)) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
-          }
+      }
+      // A closure binding by name, or the closure set a callee expression
+      // reads (`TABLE[k](…)`): each member's parameter is a flow target; a
+      // member that escaped, or a position it lacks, is a plain read.
+      const ck = typeof callee === 'string' ? (keyOf(callee) === null ? undefined : kinds.get(keyOf(callee))) : (demand(callee), kindOfExpr(callee))
+      if (ck !== undefined && tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN) {
+        const members = membersOf(paramOf(ck))
+        if (members.length === 1) {
+          const id = members[0], names = closureParams[id]
+          for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
           return
         }
-        // `new Float64Array(x)` sizes by a number and copies an array: the
-        // argument is no evidence either way (a parameter read only there
-        // stays ANY, the host's array copies); a view's offset and length are
-        // numbers.
-        if (callee.startsWith('new.') && (TYPED_CTOR.test(callee) || callee === 'new.ArrayBuffer')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), i === 0 ? NEUTRAL : NUM); return }
-      } else demand(callee)
+        const ids = members.filter(id => !escaped.has(id))
+        for (let i = 0; i < count; i++) {
+          const keys = ids.map(id => closureParams[id][i] != null ? keyIn(id, closureParams[id][i]) : null)
+          if (ids.length && keys.every(k => k !== null)) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
+        }
+        return
+      }
+      // `new Float64Array(x)` sizes by a number and copies an array: the
+      // argument is no evidence either way (a parameter read only there
+      // stays ANY, the host's array copies); a view's offset and length are
+      // numbers.
+      if (typeof callee === 'string' && callee.startsWith('new.') && (TYPED_CTOR.test(callee) || callee === 'new.ArrayBuffer')) { for (let i = 0; i < count; i++) useOf(argAt(as, i), i === 0 ? NEUTRAL : NUM); return }
       for (let i = 0; i < count; i++) demand(argAt(as, i))
       return
     }
@@ -1308,7 +1318,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => isCompatible(p) && tagOf(kinds.get(p) ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.clear(); incoming.clear(); fields.clear(); results.clear(); escaped.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.clear(); incoming.clear(); fields.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     poisonedAll = 0; poisonedIndexed = 0
     seed(seeded)
     fixpoint()
@@ -1328,6 +1338,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const q = queries.at(scope), k = q.kindOfExpr(node)
     if (!hasTag(k, K.BIGINT)) return false
     if (!unbounded(k)) return true
+    if (typeof node === 'string') { const key = q.keyOfName(node); return key !== null && certainKeys.has(key) }
     if (!Array.isArray(node)) return false
     const op = node[0]
     if (op === '?:') return certainBigint(scope, node[2]) || certainBigint(scope, node[3])

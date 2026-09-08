@@ -244,7 +244,7 @@ export function summaryQueries(facts) {
       return tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN ? paramOf(ck) : null
     }
     cached = {
-      kindOf: readKind, kindOfExpr, calleeOf,
+      kindOf: readKind, kindOfExpr, calleeOf, keyOfName: keyOf,
       // The result contract of the callable a call reaches, or null (contract.js).
       calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && paramOf(k) !== UNKNOWN ? paramOf(k) : null },
