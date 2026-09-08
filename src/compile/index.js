@@ -712,7 +712,7 @@ export function assemble(ast, profiler) {
     return ['global', `$${n}`,
       ...(g.export ? [['export', `"${g.export}"`]] : []),
       g.mut ? ['mut', ty] : ty,
-      [`${ty}.const`, g.init]]
+      Array.isArray(g.init) ? g.init : [`${ty}.const`, g.init]]
   }))
 
   // Drop the lazy conversion tables (EL decimal→f64, Ryū float→decimal) whose owner

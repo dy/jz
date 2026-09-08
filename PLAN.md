@@ -11,19 +11,16 @@ and installs reliably. Compiler architecture serves that result.
 
 ## Next work
 
-1. **Correct static-object returns.** Preserve schema-bearing constant
-   initializers when moving them from startup code into globals. Test ordinary
-   objects, nested objects, and arrays of objects across optimization levels.
-2. **Establish one end-to-end plugin fixture.** Select a real audiojs processor
+1. **Establish one end-to-end plugin fixture.** Select a real audiojs processor
    and pin its sample buffers, parameters, persistent state, channel layout,
    and supported block sizes. Exercise JS → Wasm → VST, including parameter
    changes, reset, silence, and repeated processing. This fixture should define
    the compiler-independent DSP interface; do not invent another general ABI.
-3. **Bound processing cost.** Measure worst observed block time and memory
+2. **Bound processing cost.** Measure worst observed block time and memory
    growth over a sustained run. Keep allocation and compilation outside the
    audio callback. Compare output against the JS processor with an explicit
    numeric tolerance. An average benchmark win alone does not establish this.
-4. **Make distribution reproducible.** Replace the sibling `file:../watr`
+3. **Make distribution reproducible.** Replace the sibling `file:../watr`
    dependency with a published version. Verify a clean package installation,
    CLI, declarations, and the plugin fixture. Porffor support requires passing
    the same fixture, not merely providing a compiler-selection flag.
@@ -33,9 +30,10 @@ an existing processor and inspect its host before changing compiler interfaces.
 
 ## Known compiler gates
 
-- The last core run had four static-object-return failures (one defect family)
-  and the existing string code-unit failure. The initializer repair above
-  targets the object family; its verification is recorded with the fix.
+- Static-object returns are repaired: hoisting preserves the constant IR and
+  its schema. The 2026-09-08 core run finished with 4,413 pass, one existing
+  character-code failure, and one skip (61,515 assertions). Fresh functional
+  bootstrap and 15 hosted object-return cases also pass.
 - String construction and the compiler's byte-string builders need one
   consistent contract. The saved fromCharCode patch alone breaks those builders.
 - The last dedicated self suite trapped during repeated Map/property compiles

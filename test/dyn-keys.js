@@ -10,6 +10,17 @@ import { onKernel, withBigintStrict } from './_matrix.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('static global initializers retain schemas at the host boundary', () => {
+  for (const value of ['{a:7,b:undefined,c:null}', '{inner:{value:7}}', '[{value:7}]']) {
+    const expected = Function(`return ${value}`)()
+    for (const optimize of [0, 1, 'fast', {level:2,watr:false}, 2, 3]) {
+      const f = jz(`const o = ${value}; export const f = () => o`, {optimize}).exports.f
+      is(f(), expected, `${JSON.stringify(optimize)}: ${value}`)
+      is(f(), expected, 'the hoisted value remains decodable on repeated calls')
+    }
+  }
+})
+
 test('dyn-keys: deletion invalidates static presence and enumeration through aliases', () => {
   for (const rewrite of ['', 'alias.a = undefined;', 'alias.a = 9;']) {
     const src = `const o = {a:1,b:2}; const alias = o; let k = 'a';

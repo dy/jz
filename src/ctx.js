@@ -128,7 +128,9 @@ export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
  *    { type: 'i32'|'i64'|'f64', mut: bool, init: number|string, export: string|null }
  *  `init` is a number or a watr const literal (`-1`, `nan:0x…`, hex). Replaces
  *  the old WAT-text strings: type queries are field reads, emission builds IR
- *  directly (no parse-back), and `globalTypes` is set in the same move. */
+ *  directly (no parse-back), and `globalTypes` is set in the same move.
+ *  Final assembly may replace `init` with its constant IR when hoisting from
+ *  __start, retaining schema liveness until the global is linked. */
 export const declGlobal = (name, type, init = 0, opts) => {
   ctx.scope.globals.set(name, { type, mut: opts?.mut !== false, init, export: opts?.export ?? null })
   ctx.scope.globalTypes.set(name, type)
