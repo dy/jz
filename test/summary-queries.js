@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import { summarize, K, kind } from '../src/summary/index.js'
+import { summarize, K, kind, join, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
+import { VAL } from '../src/reps.js'
 import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { instantiate } from '../interop.js'
@@ -152,4 +153,109 @@ test('summary queries: A→A→B→A preserves bytes, retained facts, and earlie
   const execute = bytes => instantiate(bytes).exports.main()
   is(execute(a), 2, 'retained A still executes')
   is(execute(b), 42, 'retained B still executes')
+})
+
+// The result contract (src/summary/contract.js): kind, presence and the
+// carrier the kind and the callable's ABI class decide, per function name,
+// closure id and closure set.
+const contractProgram = () => {
+  const bigint = lit(7n), block = (...stmts) => ['{}', ...stmts]
+  const funcs = [
+    { name: 'direct', sig: { params: [], results: ['f64'] }, body: bigint },
+    { name: 'exported', sig: { params: [], results: ['f64'] }, body: bigint },
+    { name: 'valued', sig: { params: [], results: ['f64'] }, body: bigint },
+    { name: 'dispatcher', sig: { params: [], results: ['f64'], dispatcher: true }, body: bigint },
+    { name: 'number', sig: { params: [], results: ['f64'] }, body: lit(1) },
+    { name: 'narrowed', sig: { params: [], results: ['i32'] }, body: lit(1) },
+    { name: 'boolOrNumber', sig: { params: [{ name: 'c' }], results: ['f64'] }, body: ['?:', 'c', lit(1), ['<', lit(1), lit(2)]] },
+    { name: 'bare', sig: { params: [{ name: 'c' }], results: ['f64'] }, body: block(['if', 'c', ['return', lit(1)]], ['return']) },
+    { name: 'fallthrough', sig: { params: [{ name: 'c' }], results: ['f64'] }, body: block(['if', 'c', ['return', bigint]]) },
+    { name: 'mixed', sig: { params: [{ name: 'c' }], results: ['f64'] }, body: ['?:', 'c', bigint, lit(1)] },
+    { name: 'erased', sig: { params: [{ name: 'x' }], results: ['f64'] }, body: block(['if', 'x', ['return', bigint]], ['return', 'x']) },
+    { name: 'through', sig: { params: [{ name: 'x' }], results: ['f64'] }, body: ['()', 'erased', 'x'] },
+    { name: 'unbounded', sig: { params: [{ name: 'x' }], results: ['f64'] }, body: 'x' },
+  ]
+  const closureParams = [',', 'v'], numberParams = [',', 'w']
+  const closure = ['=>', closureParams, bigint], numberClosure = ['=>', numberParams, lit(2)]
+  const ast = [';',
+    ['const', ['=', 'value', 'valued']],                 // `valued` read as a value: its callers are unknown
+    ['const', ['=', 'cb', closure]],
+    ['const', ['=', 'set', ['?:', lit(true), closure, numberClosure]]],
+    ['const', ['=', 'table', ['[', closure, numberClosure]]],
+    ['()', 'cb', lit(1)], ['()', 'set', lit(1)], ['()', ['[]', 'table', lit(0)], lit(1)],
+    ['()', 'erased', lit('any')], ['()', 'through', lit('any')], ['()', 'unbounded', lit('any')],
+  ]
+  const summary = summarize(ast, { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: f => f.name === 'exported' || f.name === 'erased' || f.name === 'through' || f.name === 'unbounded' })
+  return { summary, closureParams, numberParams, funcs }
+}
+
+test('summary contract: a direct-only BigInt result crosses raw; an export, a value, a dispatcher and a closure cross boxed', () => {
+  const { summary, closureParams } = contractProgram()
+  const direct = summary.resultContract('direct')
+  is(direct.kind, kind(K.BIGINT)); is(direct.presence, PRESENCE.PRESENT); is(direct.carrier, CARRIER.RAW_I64)
+  is(direct.abi.results, ['f64'], 'the ABI half stays the signature\'s')
+  for (const name of ['exported', 'valued', 'dispatcher']) {
+    const c = summary.resultContract(name)
+    is(c.kind, kind(K.BIGINT), name); is(c.carrier, CARRIER.BOXED, `${name}: callers unknown, the BigInt crosses boxed`)
+  }
+  const closure = summary.resultContract(closureParams)
+  is(closure.kind, kind(K.BIGINT)); is(closure.carrier, CARRIER.BOXED, 'a closure result crosses its any slot boxed')
+  is(closure.abi.results, ['f64'])
+  is(summary.resultContract(summary.at(closureParams).calleeOf(['()', 'cb', lit(1)])), closure, 'a scope resolves a bare-name call to its closure')
+  is(summary.resultContract('missing').kind, K.NONE); is(summary.resultContract('missing').carrier, CARRIER.ANY)
+})
+
+test('summary contract: Number, narrowed i32, Boolean-or-Number, bare return and fallthrough', () => {
+  const { summary, funcs } = contractProgram()
+  const number = summary.resultContract('number')
+  is(number.kind, kind(K.NUMBER)); is(number.carrier, CARRIER.F64); is(contractVal(number), VAL.NUMBER)
+  const narrowed = summary.resultContract('narrowed')
+  is(narrowed.carrier, CARRIER.I32, 'the range half\'s i32 is the contract\'s carrier')
+  funcs.find(f => f.name === 'narrowed').sig.results = ['f64']
+  is(summary.resultContract('narrowed').carrier, CARRIER.F64, 'the ABI half follows the signature the narrowing writes')
+  is(narrowed.carrier, CARRIER.I32, 'a contract read is a value, not a view')
+  const boolOrNumber = summary.resultContract('boolOrNumber')
+  is(boolOrNumber.kind, join(kind(K.BOOL), kind(K.NUMBER))); is(boolOrNumber.carrier, CARRIER.F64)
+  is(contractVal(boolOrNumber), null, 'two value kinds name no single one')
+  const bare = summary.resultContract('bare')
+  is(bare.presence, PRESENCE.MAYBE_NULL, 'a bare return completes with undefined'); is(contractVal(bare), VAL.NUMBER)
+  const fallthrough = summary.resultContract('fallthrough')
+  is(fallthrough.presence, PRESENCE.MAYBE_NULL); is(fallthrough.carrier, CARRIER.BOXED, 'a BigInt beside undefined is boxed')
+})
+
+test('summary contract: a closure set with Number and BigInt members, a BigInt beside a Number, an unbounded result', () => {
+  const { summary, closureParams, numberParams } = contractProgram()
+  const set = summary.calleeContract(['()', 'set', lit(1)])
+  is(set.kind, join(kind(K.BIGINT), kind(K.NUMBER))); is(set.carrier, CARRIER.BOXED)
+  is(summary.calleeContract(['()', 'cb', lit(1)]), summary.resultContract(closureParams))
+  is(summary.resultContract(numberParams).carrier, CARRIER.F64)
+  is(summary.kindOfExpr(['()', ['[]', 'table', lit(0)], lit(1)]), join(kind(K.BIGINT), kind(K.NUMBER)), 'a call through a callee expression joins the set\'s results')
+  is(summary.calleeContract(['()', ['[]', 'table', lit(0)], lit(1)]), set, 'the table holds the set the solver interned')
+  is(summary.calleeOf(['()', ['?:', lit(true), 'cb', 'set'], lit(1)]), null, 'a pair the solver never joined is no set')
+  const mixed = summary.resultContract('mixed')
+  is(mixed.carrier, CARRIER.BOXED); is(contractVal(mixed), null)
+  is(summary.resultContract('unbounded').carrier, CARRIER.ANY, 'an unbounded result names no carrier')
+  is(summary.resultContract('erased').carrier, CARRIER.BOXED, 'a BigInt return the join to ANY erased is still boxed')
+  is(summary.resultContract('through').carrier, CARRIER.BOXED, 'through a call to such a callable')
+})
+
+test('summary contract: prepare\'s postfix recovery keeps the operand\'s kind; an array literal reads its own cell', () => {
+  const big = lit(9n), one = lit(1)
+  const inc = ['=', ['.', 'o', 'n'], ['+1', ['.', 'o', 'n']]]
+  const elem = ['=', ['[]', 'a', lit(0)], ['+1', ['[]', 'a', lit(0)]]]
+  const funcs = [
+    { name: 'member', sig: { params: [], results: ['f64'] }, body: ['{}', ['const', ['=', 'o', ['{}', [':', 'n', big]]]], ['return', ['-', inc, one]]] },
+    { name: 'element', sig: { params: [], results: ['f64'] }, body: ['{}', ['const', ['=', 'a', ['[', big]]], ['return', ['-', elem, one]]] },
+    { name: 'name', sig: { params: [], results: ['f64'] }, body: ['{}', ['let', ['=', 'n', big]], ['return', ['+', ['--', 'n'], one]]] },
+    { name: 'plain', sig: { params: [], results: ['f64'] }, body: ['{}', ['let', ['=', 'n', big]], ['return', ['-', 'n', one]]] },
+    { name: 'box', sig: { params: [{ name: 'v' }], results: ['f64'] }, body: ['[]', ['[', 'v'], lit(0)] },
+  ]
+  const summary = summarize(['()', 'box', big], { funcs, schemas: [['n']], brandOf: () => null, imports: new Map(), exported: () => false })
+  is(summary.resultContract('member').kind, kind(K.BIGINT), 'a member increment\'s old value is its own kind')
+  is(summary.resultContract('element').kind, join(kind(K.BIGINT), kind(K.NUMBER)), 'an absent-capable element reads undefined too, whose ToNumeric is NaN')
+  is(summary.resultContract('name').kind, kind(K.BIGINT), 'a name decrement\'s old value too')
+  is(summary.resultContract('plain').kind, K.NONE, 'a genuine BigInt - Number never completes')
+  is(summary.at('member').kindOfExpr(['-', inc, one]), kind(K.BIGINT), 'the query reads the recovery as the solver does')
+  is(summary.resultContract('box').carrier, CARRIER.BOXED, 'an element of an array literal is its cell\'s kind, absent-capable')
+  is(summary.at('box').kindOfExpr(['[', 'v']), summary.at('box').kindOfExpr(['[', 'v']))
 })

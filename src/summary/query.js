@@ -3,16 +3,17 @@ import { ACCESSOR_GET, CLASS_T, isBrand } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
+import { NONE_CONTRACT, readContract } from './contract.js'
 
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
-  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore,
+  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, isPostfixRecovery,
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
 } from './kind.js'
 
 export function summaryQueries(facts) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameScopes,
-    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells,
+    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, unions,
     schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps } = facts
   const keyIn = (scope, name) => scope === '' ? name : scope + '\0' + name
   // The solver owns union-find compression; querying a root never writes it.
@@ -24,6 +25,17 @@ export function summaryQueries(facts) {
   const slots = sid => fields.get(sid) ?? NO_SLOTS   // a schema never stored to has every slot at NONE
   const slotKind = (sid, i) => fields.get(sid)?.[i] ?? K.NONE
   const membersOf = id => id >= (1 << 15) ? closureSets[id - (1 << 15)] : [id]
+  // Two closures joined are the closure set the solver interned for the pair
+  // (index.js unionClosures): a query joins the same pair through that
+  // record, never minting one. A pair the solver never joined is unknown.
+  const merge = (a, b) => {
+    a = canon(a); b = canon(b)
+    if (tagOf(a) === K.CLOSURE && tagOf(b) === K.CLOSURE && paramOf(a) !== UNKNOWN && paramOf(b) !== UNKNOWN && paramOf(a) !== paramOf(b)) {
+      const id = unions.get(paramOf(a) * 65536 + paramOf(b))
+      if (id !== undefined && id !== UNKNOWN) { a = (a & ~UNKNOWN) | id; b = (b & ~UNKNOWN) | id }
+    }
+    return join(a, b)
+  }
   const closureResult = id => {
     let result = K.NONE
     for (const member of membersOf(id)) result = join(result, canon(results.get(member) ?? K.NONE))
@@ -107,6 +119,8 @@ export function summaryQueries(facts) {
       if (op === 'bool') return BOOL
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
+      // A construction site owns its cell (the solver's cellOf): an array literal or a `new Map`.
+      if (op === '[' || op === '()' && n[1] === 'new.Map') { const c = cells.get(n); return c === undefined || c >= UNKNOWN ? kind(op === '[' ? K.ARRAY : K.MAP) : canon(kind(op === '[' ? K.ARRAY : K.MAP, c)) }
       if (op === '=>') { const id = closures.get(n) ?? closuresByBody.get(n[2]); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
       if (op === '{}' && n.length > 1 && n.slice(1).every(p => typeof p === 'string' || Array.isArray(p) && (p[0] === ':' || p[0] === '...'))) {
         const names = []
@@ -143,7 +157,7 @@ export function summaryQueries(facts) {
       if (op === '[]') {
         const r = kindOfExpr(n[1]), t = tagOf(r)
         if (Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
-        if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const s of slots(paramOf(r))) k = join(k, s); return orAbsent(k) }
+        if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const s of slots(paramOf(r))) k = merge(k, s); return orAbsent(k) }
         return t === K.TYPED ? orAbsent(typedElemKind(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
@@ -184,6 +198,12 @@ export function summaryQueries(facts) {
         else result = builtinMethodResult(r, name)
         return optionalResult(n[1][0], r, result)
       }
+      // A call through any other callee expression (`TABLE[k](…)`, a call's
+      // result called): the join of the closure set's results (the solver's call).
+      if (op === '()' && n.length === 3) {
+        const ck = kindOfExpr(n[1])
+        return tagOf(ck) === K.NONE ? K.NONE : tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN ? closureResult(paramOf(ck)) : ANY
+      }
       // An assignment's value is its right side, less what a typed element's conversion rejects (the solver's assign).
       if (op === '=') {
         const v = kindOfExpr(n[2]), t = n[1]
@@ -191,9 +211,10 @@ export function summaryQueries(facts) {
         const r = kindOfExpr(t[1])
         return tagOf(r) === K.TYPED ? typedStore(typedElemKind(r), v) : v
       }
-      if (op === '?' || op === '?:') return join(kindOfExpr(n[2]), kindOfExpr(n[3]))
-      if (op === '&&' || op === '||' || op === '??') return join(kindOfExpr(n[1]), kindOfExpr(n[2]))
+      if (op === '?' || op === '?:') return merge(kindOfExpr(n[2]), kindOfExpr(n[3]))
+      if (op === '&&' || op === '||' || op === '??') return merge(kindOfExpr(n[1]), kindOfExpr(n[2]))
       if (op === ',') return kindOfExpr(n[n.length - 1])
+      if (isPostfixRecovery(op, n[1], n[2])) return kindOfExpr(n[1])
       if (op === '+') return plus(kindOfExpr(n[1]), kindOfExpr(n[2]))
       if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? kindOfExpr(n[1]) : arith(op, kindOfExpr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, kindOfExpr(n[i])); return k }
       if (op === '+1' || op === '-1') return arith(op, kindOfExpr(n[1]))
@@ -202,8 +223,30 @@ export function summaryQueries(facts) {
       if (op === 'typeof') return STRING
       return ANY
     }
+    /** The callable a call reaches: a function name, a closure or closure-set
+     *  id, or null for a builtin, an import, an own-member shadow or a callee
+     *  the summary cannot name. The same resolution `kindOfExpr` reads a call by. */
+    const calleeOf = n => {
+      if (!Array.isArray(n) || n[0] !== '()' || n.length !== 3) return null
+      const callee = n[1]
+      let ck
+      if (typeof callee === 'string') {
+        const key = keyOf(callee)
+        if (key === null) return funcNames.has(callee) ? callee : null
+        ck = kinds.get(key) ?? K.NONE
+      } else if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
+        const r = kindOfExpr(callee[1]), name = callee[2], fn = classMember(r, name)
+        if (fn) return memberMayBeOwn(name) ? null : fn
+        if (builtinReceiverMayHaveOwn(tagOf(r), name) || tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN) return null
+        const i = schemas[paramOf(r)].indexOf(name)
+        ck = i < 0 ? K.NONE : slotKind(paramOf(r), i)
+      } else ck = kindOfExpr(callee)
+      return tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN ? paramOf(ck) : null
+    }
     cached = {
-      kindOf: readKind, kindOfExpr,
+      kindOf: readKind, kindOfExpr, calleeOf,
+      // The result contract of the callable a call reaches, or null (contract.js).
+      calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && paramOf(k) !== UNKNOWN ? paramOf(k) : null },
       // Payload queries preserve identity independently of nullish presence.
       objectSidOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? paramOf(k) : null },
@@ -229,12 +272,20 @@ export function summaryQueries(facts) {
     views.set(scope, cached)
     return cached
   }
+  // A callable identity: a function name or signature, a closure id or its
+  // parameter node (its stable identity through emission), a frame carrying
+  // the parameter node as `scope`; null for none.
+  const identityOf = x => typeof x === 'string' || typeof x === 'number' ? x
+    : x == null ? null : scopeOfParams.get(x) ?? scopeOfSig.get(x) ?? (x.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? null
+  // The frozen result contract of a callable (contract.js); an unknown one never completes.
+  const resultContract = x => { const f = facts.contracts?.get(identityOf(x)); return f ? readContract(f) : NONE_CONTRACT }
   return {
     ...view(''),
     // Named function/signature, closure id/parameter identity, or module. A
     // one-parameter arrow's parameter identity is its name (`v => …`): the
     // closure's scope, not a function's.
     at: x => view(scopeOfParams.has(x) ? scopeOfParams.get(x) : typeof x === 'string' || typeof x === 'number' ? x : scopeOfSig.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
+    resultContract,
     fieldKind: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE },
     fieldVal: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? null : valOf(fields.get(sid)?.[i] ?? K.NONE) },
     fieldTypedCtor: (sid, prop) => { const i = schemas[sid]?.indexOf(prop), k = i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE; return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },

@@ -49,6 +49,13 @@ export const isCount = (prop, t) => COUNT_PROPS.get(prop)?.includes(t) === true
 // Other literal names on an array are dictionary entries, not prototype members.
 export const ARRAY_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'indexOf', 'lastIndexOf', 'includes', 'join', 'concat', 'sort', 'reverse', 'find', 'findIndex', 'findLast', 'findLastIndex', 'some', 'every', 'fill', 'flat', 'flatMap', 'at', 'entries', 'keys', 'values', 'copyWithin', 'toString', 'toSorted', 'toReversed', 'with'])
 export const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '++', '--'])
+/** Prepare's postfix recovery (handlers.js `++`/`--`): `x++` is `(++x) - 1`,
+ *  `o.p++` is `(o.p = +1 o.p) - 1`, and the decrements add. The literal is the
+ *  compiler's correction, not JS arithmetic: the value is the old one, in the
+ *  operand's own numeric kind (emission subtracts `1n` from a BigInt). */
+export const isPostfixRecovery = (op, a, b) => Array.isArray(b) && b[0] == null && b[1] === 1 && Array.isArray(a) &&
+  (op === '-' ? a[0] === '++' || (a[0] === '=' && Array.isArray(a[2]) && a[2][0] === '+1')
+    : op === '+' && (a[0] === '--' || (a[0] === '=' && Array.isArray(a[2]) && a[2][0] === '-1')))
 export const BOOL_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', 'in', 'instanceof'])
 
 const COERCION_UNKNOWN = bitOf(K.TYPED) | bitOf(K.ARRAY) | bitOf(K.OBJECT) |

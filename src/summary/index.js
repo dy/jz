@@ -48,17 +48,19 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, extractParams, isBrand, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
+import { MUTATE_OPS, extractParams, isBrand, isLiteralStr, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
+import { buildResultContracts, unbounded } from './contract.js'
+export { CARRIER, PRESENCE, contractVal } from './contract.js'
 
 import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
-  plus, arith, typedStore,
+  plus, arith, typedStore, isPostfixRecovery,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, kindOfVal, valsOf, core } from './kind.js'
 
@@ -657,6 +659,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return r
     }
     if (MUTATE_OPS.has(op)) return assign(op, n[1], n[2])
+    if (isPostfixRecovery(op, n[1], n[2])) return expr(n[1])
     if (op === '+') return plus(expr(n[1]), expr(n[2]))
     if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? expr(n[1]) : arith(op, expr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, expr(n[i])); return k }
     if (op === '+1' || op === '-1') return arith(op, expr(n[1]))  // a member's ++/-- (prepare)
@@ -1101,10 +1104,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameScopes,
-    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, closuresByBody,
+    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, closuresByBody, unions,
     schemas: schemas.map(props => props.slice()), methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped,
+    contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts)
   const kindOfExpr = n => queries.at(current ?? MODULE).kindOfExpr(n)
@@ -1313,5 +1317,38 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Resolve union-find roots once before publishing. Readers never compress
   // paths or borrow the solver's mutable current scope.
   for (let id = 0; id < cellUp.length; id++) cellUp[id] = cell(id)
+  // The result contracts (contract.js), from the settled results. A return
+  // whose own kind names BigInt among a bounded set, through its joins and its
+  // calls to such callables, is a BigInt member the join to ANY erased
+  // (`if (c) return 5n; return x`, x of every kind): those keys are `certain`.
+  const certain = new Set()
+  const tailsOf = body => isBlock(body) ? returnExprs(body) : [body]
+  const calleeKeys = c => typeof c === 'string' ? [c] : membersOf(c)
+  const certainBigint = (scope, node) => {
+    const q = queries.at(scope), k = q.kindOfExpr(node)
+    if (!hasTag(k, K.BIGINT)) return false
+    if (!unbounded(k)) return true
+    if (!Array.isArray(node)) return false
+    const op = node[0]
+    if (op === '?:') return certainBigint(scope, node[2]) || certainBigint(scope, node[3])
+    if (op === '&&' || op === '||' || op === '??') return certainBigint(scope, node[1]) || certainBigint(scope, node[2])
+    if (op === ',') return certainBigint(scope, node[node.length - 1])
+    if (op === '=' && typeof node[1] === 'string') return certainBigint(scope, node[2])
+    if (op === '()') { const c = q.calleeOf(node); return c !== null && calleeKeys(c).some(key => certain.has(key)) }
+    return false
+  }
+  rounds(() => {
+    let marked = false
+    const mark = (key, body) => { if (!certain.has(key) && tailsOf(body).some(e => e != null && certainBigint(key, e))) { certain.add(key); marked = true } }
+    for (const f of funcs) mark(f.name, f.body)
+    for (let id = 0; id < closureBodies.length; id++) mark(id, closureBodies[id])
+    return marked
+  })
+  const dispatcher = new Set(funcs.filter(f => f.sig?.dispatcher === true).map(f => f.name))
+  const exportedNames = new Set(funcs.filter(exported).map(f => f.name))
+  queryFacts.contracts = buildResultContracts({
+    results, funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain,
+    direct: name => !exportedNames.has(name) && !escaped.has(name) && !dispatcher.has(name),
+  })
   return summaryQueries(queryFacts)
 }
