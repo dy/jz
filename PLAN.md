@@ -790,9 +790,52 @@ schema slot reads statically as BIGINT; the heuristic's twin in
 `bigIntJointDispatch`. From here a functional row going red is a parity
 defect, not a budget.
 
+### Loose equality and ToString across domains – 2026-09-07
+
+Native **4348 pass / 2 fail / 1 skip** (`d8ad7958`). `x == 1` with `x`
+unkinded compared raw f64 bits (`box(true) == 1` false); `looseNumberEq`
+compares a genuine number inline and hands the NaN-boxed remainder to
+`$__eq_num` (a boolean as 0/1, a string through `__to_num` when the program
+parses strings, nullish and heap unequal), each operand once in source
+order; `$__eq_strict` had delegated to `$__eq` and inherited its boolean
+conversion (`box(true) === box(1)` true at every level), it is IsStrictlyEqual
+alone. `300n == 300` follows IsLooselyEqual through every carrier: the
+runtime gains `$__str_to_bigint` (StringToBigInt, status-returning),
+`$__bigint_eq_num` (exact past 2^53, NaN and ∞ unequal), `$__bigint_eq_str`
+and the dispatching `$__bigint_eq`; `$__eq` takes the one-box-beside-another-
+tag arm and `$__eq_strict` a one-box guard (a Number whose bits alias tag 5
+is never dereferenced); both link only when the program can hold a box.
+Static `emitBigintEq`: two carriers compare payloads through `readI64` (so
+`[2n, 3n][1] === 3n` and `m.get(k) === 2n` are right), a carrier against a
+literal takes the helper, against an unknown `$__bigint_eq`; strict on a
+box reads the payload, on a plan-tagged carrier folds, else keeps the raw
+bit contract. Found beside: array-literal elements were not storage-write
+edges in the plan (`[-5n, 'x']`, `[b - 6n]`, `[o.v]` stored raw), and a
+BigInt64Array's inline-callback item was hinted NUMBER. `coerceRest`
+pre-unboxed a tagged carrier before `$__to_str`, so an element, a closure
+result or a tagged local printed as a subnormal; the carrier passes through
+and `$__to_str`'s BIGINT arm is the one path (`toStrI64`'s inline dispatch
+folded into it); `.toString(radix)` on an unkinded receiver reaches
+`.bigint:toString` through the ptr-type fork. Differential tables against
+the host: 10 carriers × 5 values × 37 partners × (`==`, reversed, `!=`,
+`===`) × 3 levels; ToString 10 carriers × 7 forms × 4 values. Functional
+20/20; sequences GREEN; recursive GREEN (14,278,487 bytes, heap 1,235 MiB:
++417,549 bytes over `f0efa85b`, attribution pending: the linked helpers,
+`emitBigintEq` at call sites, the array-literal write edge, `coerceRest`);
+oracle 15/15, parity 3/3; families 45/50, the same rows. Open: strict
+`===` between a BigInt carrier and an unkinded partner keeps the bit
+contract (`0n === box(0)` true; typed-array method loops hand raw element
+bits to non-inlined closures, `Array.from(BigInt64Array)` keeps raw bits,
+pinned as the carrier doctrine in test/array-methods.js); two unkinded
+operands keep `$__eq`'s non-coercion (`box(5) == box('5')` false); a
+SRoA'd flat slot with a STRING∪BIGINT union keeps a raw BigInt
+(`carrierF64Narrow`); `[1,2].join()` in a program with no string literal
+throws `Unknown op: str`; `sameValueZeroIdentityChain`'s BIGINT arm lacks
+the STRING arm's NaN re-guard.
+
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `f0efa85b`
+1. One session owns main; slices run in parallel worktrees at `d8ad7958`
    and land one by one with the gates. In flight: the two native reds (the
    plain array's update-expression result above; the fromCharCode family is
    the string contract, below), the warm-instance `_clear()` trap, a rest
@@ -801,7 +844,7 @@ defect, not a budget.
    compile failure and the shift/push reallocation), emit's per-closure
    allocation (675 MB on jz × jz, the frame's forty collections per
    function; the plan's body data excluded, the milestone replaces it),
-   loose `==` across BigInt/Number/Boolean and `String()` of a boxed BigInt,
+   the attribution of the equality family's +417,549 recursive bytes,
    and milestone item 3's first slice from the inventory of every
    result-reconstruction site (`.work/result-contract-inventory.md`: 90
    sites in eight classes, the conflicting authorities and their precedence,
