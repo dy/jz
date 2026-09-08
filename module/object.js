@@ -18,6 +18,7 @@ import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/c
 import { isReassigned, MUTATE_OPS, some, JZ_UNDEF, isBrand } from '../src/ast.js'
 import { staticObjectProps } from '../src/static.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
+import { deletedMaskIR, deletedSlotIR } from '../layout.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -463,22 +464,24 @@ export default (ctx) => {
   // Compile-time fold for literal keys against object literals or variables
   // with known schemas; runtime path delegates to the `in` operator (same
   // ptr-type dispatch + __hash_has for HASH, dyn_props probe for OBJECT).
+  // A boolean, as `in` is (kind-traits BOOL_METHODS; the i32 carrier boxes to
+  // true/false where identity is observed).
   ctx.core.emit['.hasOwnProperty'] = (obj, key) => {
     const litKey = Array.isArray(key) && key[0] === 'str' ? String(key[1]) : null
     if (litKey != null) {
       if (Array.isArray(obj) && obj[0] === '{}') {
         const has = obj.slice(1).some(p => Array.isArray(p) && p[0] === ':' && String(p[1]) === litKey)
-        return typed(['block', ['result', 'f64'],
+        return typed(['block', ['result', 'i32'],
           ['drop', asF64(emit(obj))],
-          ['f64.const', has ? 1 : 0]], 'f64')
+          ['i32.const', has ? 1 : 0]], 'i32')
       }
       if (typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
-        return typed(['f64.const', 1], 'f64')
+        return typed(['i32.const', 1], 'i32')
     }
     // This fallback is emitted as an `in` AST node; own the operator module
     // even when no source-level `in` triggered prepare-time autoload.
     ctx.module.include('collection')
-    return typed(['f64.convert_i32_s', emit(['in', key, obj])], 'f64')
+    return emit(['in', key, obj])
   }
   ctx.core.emit[`.${VAL.HASH}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.OBJECT}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
@@ -1584,6 +1587,9 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
   const total = tempI32('oetot')
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
   const slot = tempI32('oesl')
+  // The deleted-slot mask (layout.js): a deleted schema field keeps undefined in
+  // its slot, so its absence is read from the header, not the slot.
+  const mask = tempI32('oedm')
   const j = tempI32('oej2'), skip = tempI32('oesk'), pair = tempI32('oep')
   const id = freshId(ctx)
   const env = { out, o, src, base, i, slot, pair }
@@ -1666,6 +1672,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     // objects (base < __heap_start) have no header at all and predate any
     // warm-reuse machinery, so they contribute no dyn keys either way.
     ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${mask}`, deletedMaskIR(base)],
     ['local.set', `$${dnG}`, ['i32.const', 0]],
     ['local.set', `$${poffG}`, ['i32.const', 0]],
     ['local.set', `$${dnS}`, ['i32.const', 0]],
@@ -1725,7 +1732,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     // enumerable properties) qualifies uniformly.
     ...(ro ? [['if', ['i32.and',
         ['i32.and', ['i32.eqz', ['local.get', `$${dnG}`]], ['i32.eqz', ['local.get', `$${dnS}`]]],
-        ['i32.ne', ['local.get', `$${src}`], ['i32.const', 0]]],
+        ['i32.and', ['i32.ne', ['local.get', `$${src}`], ['i32.const', 0]], ['i32.eqz', ['local.get', `$${mask}`]]]],
       ['then', ['br', `$oed${id}`, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${src}`])]]]] : []),
     // Over-allocate sn+dnG+dnS; patch length to actual `o` post-dedup so
     // removed shadow-mirror/cross-source-duplicate slots never expose
@@ -1733,11 +1740,13 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['i32.add', ['local.get', `$${dnG}`], ['local.get', `$${dnS}`]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${total}`], ['local.get', `$${total}`]]],
     ['local.set', `$${o}`, ['i32.const', 0]],
-    // Static schema slots — every key is unique by construction, unconditionally.
+    // Static schema slots — every key is unique by construction; a deleted one
+    // (the header mask) is not a key.
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$sbrk${id}`, ['loop', `$sloop${id}`,
       ['br_if', `$sbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${sn}`]]],
-      ...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]],
+      ['if', ['i32.eqz', deletedSlotIR(mask, i, ['i64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]])],
+        ['then', ...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$sloop${id}`]]],
     // Dyn-prop slots in insertion order (__coll_order sorts the live 24-byte

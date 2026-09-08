@@ -41,7 +41,7 @@ const BIGINT_METHODS = new Set(['getBigInt64', 'getBigUint64'])
 // arithmetic positions still ride the cheap 0/1 carrier. (`has`/`delete` are
 // guarded on a proven Map/Set receiver below, like `add`/`set`.)
 const BOOL_METHODS = new Set([
-  'includes', 'some', 'every', 'startsWith', 'endsWith', 'test',
+  'includes', 'some', 'every', 'startsWith', 'endsWith', 'test', 'hasOwnProperty',
 ])
 
 const CALLEE_VAL = {

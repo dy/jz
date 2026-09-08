@@ -22,7 +22,7 @@ import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { dataLen } from '../src/static-data.js'
-import { ptrOffsetFwdWat } from '../layout.js'
+import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes } from './collection.js'
@@ -1051,6 +1051,9 @@ export default (ctx) => {
         (local.set $cap (i32.add (local.get $n) (i32.eqz (local.get $n))))
         (local.set $dst (call $__alloc_hdr (i32.const 0) (local.get $cap)))
         (memory.copy (local.get $dst) (local.get $src) (i32.shl (local.get $n) (i32.const 3)))
+        ;; the deleted-slot mask (layout.js) travels with the slots: a field deleted
+        ;; from the source is absent from the clone
+        (i32.store (i32.sub (local.get $dst) (i32.const 8)) ${deletedMaskWat('$src')})
         ;; Dyn-props (off-schema keys added by o[k]=v): heap-allocated sources
         ;; (src >= __heap_start) carry them at src-16 as a HASH sidecar
         ;; (populated by an init-time write, or by any write at all on an

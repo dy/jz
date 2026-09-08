@@ -223,6 +223,53 @@ test('in: runtime membership sees a present null or undefined field on every rec
   }
 })
 
+// A deleted schema field keeps undefined in its slot (a static read is JS's
+// `o.a` after the delete) and its absence in the object's header, the
+// deleted-slot mask (layout.js): presence and enumeration tell a deleted field
+// from a present undefined, `'a' in {a: undefined}`. Every receiver here is
+// unkinded (`pick` returns several shapes), so `in`, hasOwnProperty, Object.keys
+// and for-in take the runtime chain; the wide schema exercises the sticky bit
+// past slot 31. Against the JS oracle at O0, O1 and O2.
+test('in: a deleted field is absent, a present undefined field is present, through the runtime chain', () => {
+  const SRC = `const has = (o, k) => k in o
+  const own = (o, k) => o.hasOwnProperty(k)
+  const keys = (o) => Object.keys(o).join(',')
+  const count = (o) => { let n = 0; for (const k in o) n++; return n }
+  const wide = () => ({ ${Array.from({ length: 34 }, (_, i) => `s${i}: ${i}`).join(', ')} })
+  const pick = (n) => n === 0 ? { a: undefined, b: 1 } : n === 1 ? { c: 2 } : n === 2 ? [1, 2] : n === 3 ? wide() : new Map([['a', 1]])
+  export const present = (n, k) => has(pick(n), k)
+  export const presentOwn = (n, k) => own(pick(n), k)
+  export const presentKeys = (n) => keys(pick(n))
+  export const deleted = (n, k, q) => { const o = pick(n); delete o[k]; return has(o, q) }
+  export const deletedOwn = (n, k, q) => { const o = pick(n); delete o[k]; return own(o, q) }
+  export const deletedKeys = (n, k) => { const o = pick(n); delete o[k]; return keys(o) }
+  export const deletedCount = (n, k) => { const o = pick(n); delete o[k]; return count(o) }
+  export const deletedRead = (k) => { const o = { a: 5, b: 1 }; delete o[k]; return o.a === undefined }
+  export const deletedJson = (n, k) => { const o = pick(n); delete o[k]; return JSON.stringify(o) }
+  export const deletedClone = (n, k, q) => { const o = pick(n); delete o[k]; const c = { ...o }; return has(c, q) }
+  export const rewritten = (n, k, v, q) => { const o = pick(n); delete o[k]; o[k] = v; return has(o, q) }
+  export const rewrittenCount = (n, k, v) => { const o = pick(n); delete o[k]; o[k] = v; return count(o) }
+  export const writtenUndefined = (n, k, q) => { const o = pick(n); o[k] = undefined; return has(o, q) }
+  export const writtenUndefinedKeys = (n, k) => { const o = pick(n); o[k] = undefined; return keys(o) }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { present, presentOwn, presentKeys, deleted, deletedOwn, deletedKeys, deletedCount, deletedRead, deletedJson, deletedClone, rewritten, rewrittenCount, writtenUndefined, writtenUndefinedKeys }')()
+  const calls = [
+    ['present', [0, 'a']], ['present', [0, 'b']], ['present', [0, 'z']], ['present', [1, 'a']], ['present', [3, 's33']],
+    ['presentOwn', [0, 'a']], ['presentOwn', [0, 'z']], ['presentKeys', [0]],
+    ['deleted', [0, 'a', 'a']], ['deleted', [0, 'a', 'b']], ['deleted', [0, 'b', 'b']], ['deleted', [3, 's33', 's33']], ['deleted', [3, 's33', 's32']], ['deleted', [3, 's5', 's5']],
+    ['deletedOwn', [0, 'a', 'a']], ['deletedOwn', [0, 'a', 'b']],
+    ['deletedKeys', [0, 'a']], ['deletedKeys', [0, 'b']], ['deletedKeys', [3, 's33']], ['deletedKeys', [3, 's0']],
+    ['deletedCount', [0, 'a']], ['deletedCount', [3, 's32']], ['deletedRead', ['a']],
+    ['deletedJson', [0, 'a']], ['deletedJson', [0, 'b']], ['deletedClone', [0, 'a', 'a']], ['deletedClone', [0, 'a', 'b']],
+    ['rewritten', [0, 'a', 1, 'a']], ['rewritten', [0, 'a', undefined, 'a']], ['rewritten', [3, 's33', 7, 's33']], ['rewrittenCount', [0, 'a', 1]],
+    ['writtenUndefined', [0, 'b', 'b']], ['writtenUndefined', [1, 'c', 'c']], ['writtenUndefined', [1, 'z', 'z']],
+    ['writtenUndefinedKeys', [0, 'b']], ['writtenUndefinedKeys', [1, 'z']],
+  ]
+  for (const optimize of [0, 1, 2]) {
+    const ex = jz(SRC, { optimize, memory: 64 }).exports
+    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+  }
+})
+
 // A schema id proves layout, not receiver identity. In each case below the
 // queried name receives an already-aliased object through an inferred edge;
 // writes happen through the source name. Per-name write facts on the queried

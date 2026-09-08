@@ -20,7 +20,7 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { dataLen } from '../src/static-data.js'
-import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
+import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { ERR, ERR_INFO } from '../err-codes.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
@@ -1437,9 +1437,13 @@ export default (ctx) => {
             (else (call $__str_eq ${storedKey} ${userKey})))`
           : `(call $__str_eq ${storedKey} ${userKey})`}))`
     : `(i64.eq ${storedKey} ${userKey})`
-  // A schema slot holds undefined for a deleted field too (__dyn_del writes it:
-  // the layout has no absent marker), so a presence probe (`miss` given) reads
-  // an undefined slot as a miss, as the sidecar reads its tombstone.
+  // A deleted schema field keeps undefined in its slot (every static read of
+  // the slot is JS's `o.a` after `delete`) and its presence in the object's
+  // header: the OBJECT `len` word, unused otherwise (`__alloc_hdr(0, cap)`,
+  // `__len` answers 0 for an OBJECT without reading it), is a deleted-slot mask
+  // (deletedSlotWat). A presence probe (`miss` given) reads a marked slot as a
+  // miss, as the sidecar reads its tombstone; an unmarked undefined slot is a
+  // present field, `'a' in {a: undefined}`.
   const buildObjectSchemaArm = (miss = null) => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
@@ -1458,11 +1462,12 @@ export default (ctx) => {
                 (then ${miss == null
                   ? '(return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))'
                   : `(local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
-                     (return (select ${miss} (local.get $val) (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))))`}))
+                     (local.set $dmask ${deletedMaskWat('$off')})
+                     (return (select ${miss} (local.get $val) ${deletedSlotWat('$dmask', '$idx', '$val')}))`}))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
-  const buildObjectSchemaLocals = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
-    ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)'
+  const buildObjectSchemaLocals = (presence = false) => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
+    ? `(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)${presence ? ' (local $dmask i32)' : ''}`
     : ''
   // Same lazy-gating story as buildObjectSchemaArm above — observed at
   // template-expansion time so schemas registered later in the compile
@@ -1489,6 +1494,8 @@ export default (ctx) => {
           (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
             (then
               (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
+              ;; a deleted field written again is present (its deleted bit, layout.js)
+              ${markDeletedSlotWat('$off', '$idx', false)}
               (br $schemaSetDone)))
           (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
           (br $schemaSetLoop)))))` : ''
@@ -1549,7 +1556,7 @@ export default (ctx) => {
     return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    ${buildObjectSchemaLocals()}
+    ${buildObjectSchemaLocals(missNan !== UNDEF_NAN)}
     ;; Real-number receiver, f===f since pointers are NaN-boxed, has no props: bail
     ;; before treating its bits as a heap offset -- a number's own dot/bracket
     ;; read stays undefined, not OOB. err_prop below decodes .message/.name for
@@ -2223,9 +2230,11 @@ export default (ctx) => {
   // __dyn_props hash keyed by offset.
   // Schema-aware delete arm: when the receiver is an OBJECT with a known schema and
   // the key matches a static slot, overwrite that slot with UNDEF_NAN so subsequent
-  // reads see "absent" (matches `delete obj.a; obj.a → undefined`). Without this,
-  // the shadow-store delete alone would leave the structural slot intact and a later
-  // ctx[k] read would re-surface the original value.
+  // reads see `delete obj.a; obj.a → undefined`, and mark the slot deleted in the
+  // header mask (layout.js's deleted-slot mask) so presence and enumeration tell
+  // it from a present undefined. Without the slot write, the shadow-store delete
+  // alone would leave the structural slot intact and a later ctx[k] read would
+  // re-surface the original value.
   const buildObjectSchemaDelArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                  (i32.ne (global.get $__schema_tbl) (i32.const 0)))
@@ -2242,6 +2251,7 @@ export default (ctx) => {
           (if (call $__str_eq (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3)))) (local.get $key))
             (then
               (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+              ${markDeletedSlotWat('$off', '$idx', true)}
               (local.set $hit (i32.const 1))
               (br $schemaDelDone)))
           (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
