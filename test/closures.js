@@ -833,17 +833,21 @@ test('closure-unbox: codegen — local declared as i32', () => {
   // Inspect jz's pre-watr structure: `(local $g i32)` is the closure-unbox
   // decision recorded by jz; watr's coalesceLocals/inlineOnce would dissolve
   // the standalone `$g` slot into the surrounding frame.
-  const w = jz.compile(`
+  const src = `
     export let f = (n) => {
       let g = (x) => x + n
       return g(1) + g(2)
     }
-  `, { wat: true, optimize: { watr: false } })
+  `
+  const w = jz.compile(src, { wat: true, optimize: { watr: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   // multi-use closure so the slot survives propagateLocals (the single-use def would be forwarded)
   ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')
   ok(!/\(local \$g f64\)/.test(body), '$g not f64')
+  const { f } = jz(src, { optimize: { watr: false } }).exports
+  const js = Function(src.replace('export ', '') + ';return f')()
+  for (const n of [0, 0, 10, -1]) is(f(n), js(n), `multi-use captured closure: n=${n}`)
 })
 
 test('closure-unbox: o.fn(g) — object-property closure dispatch', () => {

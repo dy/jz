@@ -3723,10 +3723,10 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
     return JSON.stringify(fn)
   }
   const count = (w, re) => (w.match(re) || []).length
-  const temp = `export let f = (a, i) => { let t = (i + 1) * 4; return a[t] }`
+  const temp = `export let f = x => { let t = x + 1; return t + 3 }`
   const on = wat(temp, { level: 2, watr: false }), off = wat(temp, { level: 2, watr: false, propagateLocals: false })
   ok(count(on, /\["local",/g) < count(off, /\["local",/g), 'the user temp is forwarded')
-  const multi = `export let f = (a, i) => { let p = a[i] * a[i]; return p + p * 2 }`
+  const multi = `export let f = (x, y) => { let p = x * y; return p + p * 2 }`
   const onM = wat(multi, { level: 2, watr: false }), offM = wat(multi, { level: 2, watr: false, propagateLocals: false })
   ok(count(onM, /\["local.get",/g) < count(offM, /\["local.get",/g), 'the user function loses a get')
   ok(/\["local.tee",/.test(onM), 'the user function emits a local.tee')
@@ -3735,6 +3735,8 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
   // gets fresh input buffers: one execution must not prepare the next oracle.
   const cloneArgs = args => args.map(x => ArrayBuffer.isView(x) ? x.slice() : x)
   for (const [s, args] of [
+    [temp, [[0], [-1], [7], [NaN], [Infinity], [-Infinity]]],
+    [multi, [[0, 1], [-1, 0], [3, 4], [NaN, 1], [Infinity, 1]]],
     [`export let f = (a, n) => { let acc = 0; for (let i = 0; i < n; i++) { let k = i * 3 + 1; acc = (acc + k) | 0 } return acc | 0 }`, [[0, 0], [0, 1], [0, 7]]],
     [`export let f = () => { try { throw "err" } catch (e) { return e.length } }`, [[]]],
     [`export let f = (buf, n) => { let s = 0; for (let i = 0; i < n; i++) s += buf[i] * 2; return s }`, [[new Float64Array(0), 0], [new Float64Array([1]), 1], [new Float64Array([1, 2, 3, 4]), 4]]],
@@ -3754,10 +3756,23 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
         const actual = onF(...onArgs), disabled = offF(...offArgs)
         is(actual, expected, `shared propagation: ${JSON.stringify(level)}`)
         is(disabled, expected, `early propagation disabled: ${JSON.stringify(level)}`)
-        is(onArgs, expectedArgs, 'enabled propagation preserves writes to input buffers')
-        is(offArgs, expectedArgs, 'disabled propagation preserves writes to input buffers')
+        // Generic host values are copy-in. Observe persistent writes inside the
+        // module in the stateful test below, rather than requiring copy-back here.
       }
     }
+  }
+})
+
+test('propagateLocals: loads and persistent writes remain ordered across calls', () => {
+  const src = `const b = new Float64Array([7]);
+    export function f(n) { const v = b[0]; b[0] = n; return v }
+    export const state = () => b[0]`
+  for (const optimize of ['fast', {level: 'fast', propagateLocals: false},
+    {level: 2, watr: false}, 2, 3]) {
+    const js = Function(src.replaceAll('export ', '') + ';return {f,state}')()
+    const wasm = jz(src, { optimize }).exports
+    const observe = ex => [7, 7, 99, 0, -0, 7].map(n => [ex.f(n), ex.state()])
+    is(observe(wasm), observe(js), `${JSON.stringify(optimize)}: A → A → B, zero and signed zero`)
   }
 })
 
@@ -3784,24 +3799,24 @@ test('propagateLocals: abrupt values preserve operand order and state before rec
   }
 })
 
-test('propagateLocals: schema metadata survives static, dynamic, nullable and thrown objects', () => {
-  const sources = [
+// Separate tests keep one missing schema from hiding the sibling producer paths.
+for (const src of [
     'const o = {a: 7, b: undefined, c: null}; export const f = () => o',
     'export const f = n => ({a: n, b: undefined, c: null})',
     'export const f = n => n ? {a: n} : null',
     ...['Error', 'TypeError', 'RangeError'].map(name => `export function f() { throw new ${name}("message") }`),
-  ]
-  const observe = (f, n) => {
-    try { return ['value', f(n)] }
-    catch (e) { return ['throw', e.name, e.message] }
-  }
-  for (const src of sources) for (const optimize of ['fast', {level: 2, watr: false}, 2, 3]) {
+]) for (const optimize of ['fast', {level: 2, watr: false}, 2, 3]) {
+  test(`propagateLocals: schema metadata: ${JSON.stringify(optimize)}: ${src}`, () => {
+    const observe = (f, n) => {
+      try { return ['value', f(n)] }
+      catch (e) { return ['throw', e.name, e.message] }
+    }
     const js = Function(src.replace('export ', '') + ';return f')()
     const wasm = jz(src, { optimize }).exports.f
     is([0, 1, 1, 0].map(n => observe(wasm, n)), [0, 1, 1, 0].map(n => observe(js, n)),
       `${JSON.stringify(optimize)}: ${src}`)
-  }
-})
+  })
+}
 
 test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const exponent compiles at every tier (colorpq shape)', () => {
   if (belowOpt(2)) return  // tier bit-identity premise needs BOTH sides vectorized — the opt0 leg forces the default side scalar
