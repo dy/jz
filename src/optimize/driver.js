@@ -17,8 +17,7 @@ import {
   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
-import { propagate as propagateLocals } from 'watr/optimize'
-import { containsV128 } from './ir-scan.js'
+import { propagateSingleUse, foldSetToTee } from './locals.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
@@ -143,11 +142,12 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     splitLoopPrivateScratch(fn)
     hoistInvariantLoop(fn)
   }
-  // With no watr fixpoint, run shared local propagation after vectorization and
-  // before devirtualization. Otherwise leave it to watr: earlier propagation
-  // hides the guard temps that narrow/unclamp/intguard consume. Vectorized
-  // functions retain their lane and masked-suffix shapes.
-  if ((!cfg || cfg.propagateLocals !== false) && !(cfg && cfg.watr) && !containsV128(fn)) propagateLocals(fn)
+  // The module optimizer remains shared with watr. Retain this early
+  // normalization until its replacement passes the closure/class kernel gate.
+  if (!cfg || cfg.propagateLocals !== false) {
+    propagateSingleUse(fn)
+    foldSetToTee(fn)
+  }
   // A second idempotent sweep catches fresh opportunities exposed by
   // propagation/fold-to-tee. The first sweep above does the important work
   // while source-level SSA names are still explicit.
