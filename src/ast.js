@@ -117,6 +117,32 @@ export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNa
  *  source of truth for "is this trivially duplicatable" across ir/abi/optimize. */
 export const isLeaf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'global.get' || n[0].endsWith('.const'))
 
+// === Scratch tables for a walk ===
+
+// A walk that keys a table by the body's names and drops it at exit takes a
+// scratch table instead of allocating one: the self-compiled kernel's
+// collections start at two entries, so a fresh table pays every doubling
+// for every body (a 30-name map allocates 3.6 KB, 1.5 of it abandoned
+// tables), while a kept one holds the capacity the largest body needed.
+// Taken cleared and released last-in first-out (a `finally` at the walk's
+// exit); a nested taker past the pool gets a fresh table, so a reentrant
+// walk stays correct. The release is by depth, not by the table's identity:
+// in the kernel a grown collection is reached through a forwarding header,
+// and the pool's slot keeps the pointer from before the growth.
+const SCRATCH_MAPS = [new Map(), new Map(), new Map()]
+let scratchDepth = 0
+export const takeScratchMap = () => {
+  const i = scratchDepth++
+  if (i >= SCRATCH_MAPS.length) return new Map()
+  const m = SCRATCH_MAPS[i]
+  m.clear()
+  return m
+}
+export const releaseScratchMap = (m) => {
+  scratchDepth--
+  if (scratchDepth < SCRATCH_MAPS.length) SCRATCH_MAPS[scratchDepth] = m   // the pointer as the walk last saw it
+}
+
 // === Shared traversal ===
 
 /** Walk over an array AST/IR tree.

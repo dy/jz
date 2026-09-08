@@ -8,7 +8,7 @@
  *
  * @module type/int-certain
  */
-import { walkAst } from '../ast.js'
+import { walkAst, takeScratchMap, releaseScratchMap } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { VAL, lookupValType } from '../reps.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
@@ -34,8 +34,7 @@ const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'
 // accepts for the boxing decision itself: at worst this forgoes the i32 cell
 // fast path (falls back to the always-safe f64 cell), it can never mis-widen
 // an actually-non-integer write to i32.
-function collectIntDefs(body, capturedNames) {
-  const defs = new Map()
+function collectIntDefs(body, capturedNames, defs) {
   const pushDef = (name, rhs, inArrow) => {
     if (inArrow && !capturedNames.has(name)) return
     let list = defs.get(name)
@@ -148,7 +147,11 @@ const _slotLevelAdapter = (slotIntOf) => slotIntOf
  *  Map name → 0|1|2 (see the lattice above `makeIntLevelExpr`).
  *  `slotLevelOf(obj, prop)` → 0|1|2|null resolves `.prop` reads. */
 export function intLevelMap(body, capturedNames, slotLevelOf) {
-  const defs = collectIntDefs(body, capturedNames)
+  const defs = takeScratchMap()
+  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs) } finally { releaseScratchMap(defs) }
+}
+function intLevelMapIn(body, capturedNames, slotLevelOf, defs) {
+  collectIntDefs(body, capturedNames, defs)
   if (defs.size === 0) return new Map()
   const levels = new Map()
   for (const name of defs.keys()) levels.set(name, 2)

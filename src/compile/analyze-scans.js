@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -981,15 +981,13 @@ export function scanNumericFill(body, isNumericRhs) {
  */
 const EMPTY_SCAN_SET = new Set()
 const EMPTY_SCAN_MAP = new Map()
-// narrowUint32's state table, one per module: cleared at entry (the walk is
-// not reentrant, and nothing keeps the table), so it holds the capacity the
-// largest body needed instead of growing from two entries for every body.
-const U32_STATES = new Map()
 export function narrowUint32(body, locals) {
+  const states = takeScratchMap()
+  try { return narrowUint32In(body, locals, states) } finally { releaseScratchMap(states) }
+}
+function narrowUint32In(body, locals, states) {
   // One state map replaces initLit/disq/seen's three hash tables.
   // 1 = one valid u32 initializer and no unsafe write; 0 = disqualified.
-  const states = U32_STATES
-  states.clear()
   const isU32Lit = e => {
     const v = typeof e === 'number' ? e
       : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
@@ -1499,6 +1497,10 @@ const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
 // exactly for any other caller.
 export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => collectBareEscapes(body, locals)) {
   if (!some(body, isDynamicIndexNode)) return EMPTY_SCAN_SET
+  const defs = takeScratchMap()
+  try { return collectI32SafeIndexVarsIn(body, locals, bareEscapesOf, defs) } finally { releaseScratchMap(defs) }
+}
+function collectI32SafeIndexVarsIn(body, locals, bareEscapesOf, defs) {
   const safe = new Set()
   let changed = false
   // Add the names reachable from `node` through affine ops only to `safe`,
@@ -1512,7 +1514,6 @@ export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => coll
   // lists) + a name→definitions map (for the integer-shape test). `+= …`
   // reconstructs to `name + …` so its shape includes the prior value.
   const edgeTargets = [], edgeSources = []
-  const defs = new Map()
   const addEdge = (name, rhs) => { edgeTargets.push(name); edgeSources.push(rhs) }
   const addDef = (name, rhs) => { (defs.get(name) ?? defs.set(name, []).get(name)).push(rhs) }
   const collect = (node) => {
