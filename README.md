@@ -4,6 +4,8 @@
 
 **JZ** (_javascript zero_) is a distilled JS subset that compiles to fast, minimal WASM.
 
+**[site](https://jz.js.org/)**  /  **[try it](https://jz.js.org/repl/)**  /  **[examples](https://jz.js.org/examples/)**  /  **[benchmarks](https://jz.js.org/bench/)** 
+
 | Good for | Not for |
 |---|---|
 | DSP, audio, synthesis | UI, DOM, frontend state |
@@ -13,8 +15,6 @@
 | Scientific, numeric, edge ML | Security-sensitive cryptography and arbitrary-precision integers |
 | Hashing, checksums, RNG | Tiny calls where the JS/WASM boundary dominates |
 
-
-**[site](https://jz.js.org/)**  /  **[try it](https://jz.js.org/repl/)**  /  **[examples](https://jz.js.org/examples/)**  /  **[benchmarks](https://jz.js.org/bench/)**  /  **[stability contract](STABILITY.md)**
 
 <sup>Used by: [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/audiojs/)</sup>
 
