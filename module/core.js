@@ -31,6 +31,7 @@ import { registerF16 } from './core/f16.js'
 import { registerErrorClasses } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { isExported } from '../src/compile/func-exports.js'
+import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -48,9 +49,9 @@ const arrayBaseIR = (obj) => typeof obj === 'string' && liveArrayBinding(obj)
 export default (ctx) => {
   const lane = collectionLaneBytes()
   deps({
-    __eq: ['__str_eq', '__ptr_type', '__is_nullish'],
+    __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : [])],
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
-    __eq_num: () => ['__ptr_type', ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : [])],
+    __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
@@ -120,7 +121,27 @@ export default (ctx) => {
       (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
       (i64.eq (local.get $v) (i64.const ${UNDEF_NAN}))))`
 
-  ctx.core.stdlib['__eq'] = `(func $__eq (param $a i64) (param $b i64) (result i32)
+  // "$x holds a PTR.BIGINT box": a NaN-box with the BIGINT tag. The NaN test
+  // comes first, as everywhere (a Number's bits spell any tag: 12.0 reads
+  // BIGINT), so the content arm below never dereferences a Number. $fa/$fb
+  // are read after __eq's boolean conversion, and an atom is not a box.
+  const isBox = (f, t) => `(i32.and (f64.ne (local.get $${f}) (local.get $${f})) (i32.eq (local.get $${t}) (i32.const ${PTR.BIGINT})))`
+  // Exactly one operand is a box. Only a program that can hold a box links
+  // the arm; the plan boxes every BigInt that reaches a dynamic edge, so the
+  // partner's raw f64 is a genuine Number.
+  const oneBox = () => `(i32.ne ${isBox('fa', 'ta')} ${isBox('fb', 'tb')})`
+  // Loose `==` with a BigInt on one side (IsLooselyEqual steps 8-14: a Number
+  // mathematically, a boolean as 0 or 1, a string through StringToBigInt).
+  // The partner's own bits go to __bigint_eq ($a/$b, not the converted
+  // $fa/$fb): it reads the boolean atoms itself.
+  const bigintMixedArm = () => representationProgramHasBigint(ctx) ? `
+            (if ${oneBox()}
+              (then (return
+                (if (result i32) ${isBox('fa', 'ta')}
+                  (then (call $__bigint_eq (i64.load (call $__ptr_offset (local.get $a))) (local.get $b)))
+                  (else (call $__bigint_eq (i64.load (call $__ptr_offset (local.get $b))) (local.get $a)))))))` : ''
+
+  ctx.core.stdlib['__eq'] = () => `(func $__eq (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     ;; Fast path: bit equality covers identical pointers AND interned/SSO strings (same content
     ;; → same bits). Failing universal-NaN test catches NaN===NaN→false. Saves the NaN-check
@@ -162,7 +183,7 @@ export default (ctx) => {
             ;; STRING tag (e.g. ASCII content read as f64) must NOT route to __str_eq
             ;; — that would deref garbage. number-vs-string is simply false.
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))${bigintMixedArm()}
             ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
             ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
             ;; two independently-boxed BigInts compare by PAYLOAD content, not
@@ -174,11 +195,9 @@ export default (ctx) => {
   // IsStrictlyEqual for the fully-dynamic case emitStrictEq delegates to:
   // identical bits (unless the number NaN), two Numbers by value (-0 is +0),
   // two BigInts or two strings by content. No conversion of any kind: a
-  // boolean atom beside a number and null beside undefined are the loose
-  // exceptions __eq alone implements (it once delegated to __eq and
-  // inherited the boolean conversion: `true === 1` read true through any
-  // operands).
-  ctx.core.stdlib['__eq_strict'] = `(func $__eq_strict (param $a i64) (param $b i64) (result i32)
+  // boolean atom beside a number, a BigInt beside a number or a string, and
+  // null beside undefined are the loose exceptions __eq alone implements.
+  ctx.core.stdlib['__eq_strict'] = () => `(func $__eq_strict (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     (if (result i32) (i64.eq (local.get $a) (local.get $b))
       (then (i64.ne (local.get $a) (i64.const ${NAN_BITS})))
@@ -192,12 +211,14 @@ export default (ctx) => {
           (then (f64.eq (local.get $fa) (local.get $fb)))
           (else
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))${representationProgramHasBigint(ctx) ? `
+            (if ${oneBox()} (then (return (i32.const 0))))` : ''}
             ${eqIdentityChain()})))))`
 
   // Loose `==` of a Number $n against a carrier the lowering could not kind:
-  // a Number by value, a boolean as its ToNumber, a string through ToNumber
-  // when the program parses strings at all; null, undefined and every heap kind are unequal. The
+  // a Number by value, a boolean as its ToNumber, a boxed BigInt
+  // mathematically, a string through ToNumber when the program parses
+  // strings at all; null, undefined and every heap kind are unequal. The
   // static lowering compares a genuine number inline and calls this for the
   // NaN-boxed remainder.
   ctx.core.stdlib['__eq_num'] = () => `(func $__eq_num (param $n f64) (param $v i64) (result i32)
@@ -206,7 +227,9 @@ export default (ctx) => {
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (f64.eq (local.get $n) (local.get $f)))))
     (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.eq (local.get $n) (f64.const 1)))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.eq (local.get $n) (f64.const 0)))))
-    (local.set $t (call $__ptr_type (local.get $v)))${ctx.core.stdlib['__to_num'] ? `
+    (local.set $t (call $__ptr_type (local.get $v)))${representationProgramHasBigint(ctx) ? `
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+      (then (return (call $__bigint_eq_num (i64.load (call $__ptr_offset (local.get $v))) (local.get $n)))))` : ''}${ctx.core.stdlib['__to_num'] ? `
     (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.eq (local.get $n) (call $__to_num (local.get $v))))))` : ''}
     (i32.const 0))`

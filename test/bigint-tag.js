@@ -220,3 +220,48 @@ test('bigint tag: typeof reads a subnormal Number as a number; a boxed BigInt by
     for (const fn of ['sub', 'once']) is(ex2[fn](), oracle2[fn](), `no bigint syntax: ${fn}() (O${optimize || 0})`)
   }
 })
+
+// IsLooselyEqual (ES2024 7.2.14) with a BigInt on one side, through every
+// carrier a BigInt takes: a Number compares mathematically (NaN and the
+// infinities equal nothing, a payload past 2^53 is exact), a string through
+// StringToBigInt (whitespace, a sign, a radix prefix; no parse is no
+// equality), a boolean as 0 or 1, null and undefined equal nothing; `!=`
+// negates and `===` stays identity. The partner is a literal, or a value
+// the program cannot kind (the last shape): there `===` keeps the raw-
+// carrier contract (identical bits are equal, so a Number 0 beside 0n) and
+// only the loose rows are pinned. The host is the oracle.
+const EQ_PARTNERS = ['300', '301', '300.5', '0', '-0', '1', '-5', 'NaN', 'Infinity', '-Infinity', '9007199254740992', '9007199254740993', '1e300',
+  "'300'", "' 300 '", "'+300'", "'0x12c'", "'0b1'", "'300.0'", "'3e2'", "'abc'", "''", "' '", "'-5'", "'-0x5'", "'1n'", "'9007199254740993'",
+  'true', 'false', 'null', 'undefined', '300n', '301n', '1n', '0n', '-5n', '9007199254740993n']
+const EQ_VALUES = ['300n', '1n', '0n', '-5n', '9007199254740993n']
+const EQ_OPS = [(X, P) => `${X} == ${P}`, (X, P) => `${P} == ${X}`, (X, P) => `${X} != ${P}`, (X, P) => `${X} === ${P}`]
+const eqTable = (X, wrap = p => p, ops = EQ_OPS) =>
+  `[${EQ_PARTNERS.flatMap(p => ops.map(op => op(X, wrap(p)))).join(', ')}].map(v => v ? 1 : 0).join('')`
+const EQ_SHAPES = {
+  literal: (V) => `export let f = (k) => ${eqTable(V)}`,
+  local: (V) => `export let f = (k) => { const b = ${V}; return ${eqTable('b')} }`,
+  param: (V) => `const h = (v, k) => ${eqTable('v')}; export let f = (k) => h(${V}, k)`,
+  mixedParam: (V) => `const h = (v, k) => ${eqTable('v')}; export let f = (k) => h(k ? ${V} : 'z', k)`,
+  element: (V) => `export let f = (k) => { const a = [${V}, 'x', 7]; return ${eqTable('a[k - 1]')} }`,
+  bigintElement: (V) => `export let f = (k) => { const a = [${V}, 1n]; return ${eqTable('a[k - 1]')} }`,
+  mapValue: (V) => `const m = new Map(); export let f = (k) => { m.set('k', ${V}); return ${eqTable("m.get('k')")} }`,
+  closureResult: (V) => `const mk = (k) => () => k ? ${V} : 'z'; export let f = (k) => { const g = mk(k); return ${eqTable('g()')} }`,
+  hostValue: (V) => `export let f = (x, k) => { const y = typeof x === 'bigint' ? x : 0n; return ${eqTable('x')} }`,
+  anyPartner: (V) => `const box = (v) => [v][0]; export let f = (k) => { const b = ${V}; return ${eqTable('b', p => `box(${p})`, EQ_OPS.slice(0, 3))} }`,
+}
+test('bigint tag: loose equality across domains, through every carrier', () => {
+  for (const [shape, src] of Object.entries(EQ_SHAPES)) for (const V of EQ_VALUES) {
+    const source = src(V)
+    const oracle = Function(source.replace('export let ', 'var ') + ';return f')()
+    const args = shape === 'hostValue' ? [Function(`return ${V}`)(), 1] : [1]
+    const want = oracle(...args)
+    for (const optimize of levels) {
+      const { f } = jz(source, { optimize }).exports
+      const got = f(...args)
+      const at = got === want ? -1 : [...got].findIndex((c, i) => c !== want[i])
+      const ops = shape === 'anyPartner' ? 3 : 4
+      const where = at < 0 ? '' : ` ${['==', '== (reversed)', '!=', '==='][at % ops]} ${EQ_PARTNERS[Math.floor(at / ops)]}`
+      is(got, want, `${shape} ${V}${where} (O${optimize || 0})`)
+    }
+  }
+})

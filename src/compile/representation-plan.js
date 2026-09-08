@@ -29,6 +29,8 @@ export {
   REP_EDGE_REJECT,
   JOIN_OPS,
   STORAGE_READ_METHODS,
+  bigintRepBits,
+  bigintRepIsClosed,
 } from './representation-plan/common.js'
 
 export { solveRepresentationBoundaries } from './representation-plan/boundaries.js'

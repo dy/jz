@@ -246,17 +246,18 @@ test('bool identity: dynamic loose equality converts a boolean beside a number',
 // Loose `==` of a value the program cannot kind against a number or a
 // boolean it can (a literal, a proven local, a comparison result): the
 // boolean atom converts on either side (`true == 1`, `x == true` with x
-// holding true), null and undefined equal no number; `!=` negates. Strict `===` through the same dynamic path
+// holding true), a boxed BigInt compares mathematically, null and undefined
+// equal no number; `!=` negates. Strict `===` through the same dynamic path
 // stays identity: `true === 1` is false whatever carries the operands.
 // The static side once compared raw bits (a NaN-boxed atom equals no f64),
 // and the runtime's strict form inherited the loose boolean conversion.
 test('bool identity: loose equality of a number or boolean against any converts; strict stays identity', () => {
   const PARTNERS = ['1', '0', '2', '-0', 'NaN', 'true', 'false', 'k > 0', 'k === 0', 'null', 'undefined']
   const table = (X) => `[${PARTNERS.flatMap(p => [`${X} == ${p}`, `${p} == ${X}`, `${X} != ${p}`, `${X} === ${p}`, `${p} === ${X}`]).join(', ')}].map(v => v ? 1 : 0).join('')`
-  const VALUES = ['true', 'false', '1', '0', '2', 'null', 'undefined', "'1'"]
+  const VALUES = ['true', 'false', '1', '0', '2', 'null', 'undefined', "'1'", '1n', '0n']
   const SRC = (V) => `const box = (v) => [v][0]
   export const f = (k) => { const x = box(${V}); return ${table('x')} }
-  export const g = (k) => { const x = box(${V}), y = box(${V}); return [x == y, x === y, x != y, x !== y, box(true) === box(1), box(1) === box(true), box(false) === box(0), box(true) == box(1)].map(v => v ? 1 : 0).join('') }`
+  export const g = (k) => { const x = box(${V}), y = box(${V}); return [x == y, x === y, x != y, x !== y, box(true) === box(1), box(1) === box(true), box(false) === box(0), box(true) == box(1), box(0n) === box(0), box(0n) == box(0), box(0n) == box(false), box(0n) === box(false)].map(v => v ? 1 : 0).join('') }`
   for (const V of VALUES) {
     const src = SRC(V)
     const oracle = Function(src.replaceAll('export ', '') + ';return {f, g}')()

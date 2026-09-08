@@ -8,13 +8,14 @@ import { i64Hex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
-  asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanTaggedBigint, isUndef, litVal, ptrOffsetIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed,
+  asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { nonNegIntLiteral } from '../../static.js'
+import { K, hasTag } from '../../summary/index.js'
 import { typedIdxProven } from '../../type.js'
-import { representationResultTagRequired } from '../representation-plan.js'
+import { BIGINT_REP_RAW, bigintRepBits, bigintRepIsClosed, representationActiveMaterializedRep, representationProgramHasBigint } from '../representation-plan.js'
 import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { emitInstanceof } from './instanceof.js'
@@ -387,6 +388,65 @@ const nullableOperand = (n) => {
 // `==` converts the present boolean and rejects the nullish (looseNumberEq).
 const boolOrNullish = (n) => resolveValType(n, valTypeOf, lookupValType) === VAL.BOOL && nullableOperand(n)
 
+// A BigInt carrier: its kind, or the plan's closed raw carrier of a binding
+// the body cannot kind; readI64 reads either (a box, a raw i64) as its
+// payload. A nullable one (a Map read that may miss) reads its sentinel's
+// bits, which equal no payload.
+const bigintCarrier = (n, vt) => vt === VAL.BIGINT || isPlanRawBigint(n)
+
+// The plan left this carrier open, so a raw BigInt's bits may sit in it:
+// only $__eq's bit contract applies (the raw-carrier contract its open
+// operands keep).
+const openRawBigint = (n) => {
+  const r = representationActiveMaterializedRep(ctx, n)
+  return !bigintRepIsClosed(r) && (bigintRepBits(r) & BIGINT_REP_RAW) !== 0
+}
+
+// The carrier may hold a boxed BigInt: the program can box one, and the
+// summary does not exclude the kind.
+const mayBeBigint = (n) => {
+  if (!representationProgramHasBigint(ctx)) return false
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(n)
+  return k == null || k === K.NONE || hasTag(k, K.BIGINT)
+}
+
+// `$t` (an f64 local) holds a PTR.BIGINT box: a NaN-box with the tag. The
+// NaN test comes first; a Number's bits spell any tag.
+const boxTest = (get) => typed(['i32.and', ['f64.ne', get, get], ptrTypeEq(get, PTR.BIGINT)], 'i32')
+
+// Equality with a BigInt carrier on at least one side. Two carriers compare
+// their payloads. One beside a partner of another kind (IsLooselyEqual
+// steps 8-14): a Number or a boolean mathematically, a string through
+// StringToBigInt, an unkinded carrier through __bigint_eq's own dispatch.
+// Strictly, a box of the same payload; a partner that is no box keeps the
+// bit contract (an unkinded carrier may hold a raw BigInt, whose bits are
+// the value) unless the plan tagged it, so its raw f64 is a Number and no
+// BigInt. Both operands evaluate once, in source order. Null when neither
+// side is a BigInt carrier, or the partner is an open carrier.
+function emitBigintEq(a, b, va, vb, vta, vtb, negate, strict) {
+  const bigA = bigintCarrier(a, vta), bigB = bigintCarrier(b, vtb)
+  if (!bigA && !bigB) return null
+  const fin = r => negate ? typed(['i32.eqz', r], 'i32') : r
+  if (bigA && bigB) return fin(typed(['i64.eq', readI64(a, va), readI64(b, vb)], 'i32'))
+  const big = bigA ? a : b, bigV = bigA ? va : vb
+  const other = bigA ? b : a, otherV = bigA ? vb : va, otherVt = bigA ? vtb : vta
+  if (openRawBigint(other)) return null
+  const payload = tempI64('beq'), partner = temp('beq')
+  const setPayload = ['local.set', `$${payload}`, readI64(big, bigV)]
+  const setPartner = ['local.set', `$${partner}`, asF64(otherV)]
+  const p = ['local.get', `$${payload}`], o = typed(['local.get', `$${partner}`], 'f64')
+  const known = otherVt != null && !nullableOperand(other)
+  let cmp
+  if (strict) cmp = ['if', ['result', 'i32'], boxTest(o),
+    ['then', ['i64.eq', p, unboxBigInt(o)]],
+    ['else', isPlanTaggedBigint(other) ? ['i32.const', 0] : ['i64.eq', p, ['i64.reinterpret_f64', o]]]]
+  else if (known && (otherVt === VAL.NUMBER || otherVt === VAL.BOOL)) { inc('__bigint_eq_num'); cmp = ['call', '$__bigint_eq_num', p, toNumF64(other, o)] }
+  else if (known && otherVt === VAL.STRING) { inc('__bigint_eq_str'); cmp = ['call', '$__bigint_eq_str', p, ['i64.reinterpret_f64', o]] }
+  else if (known) cmp = ['i32.const', 0]
+  else { inc('__bigint_eq'); cmp = ['call', '$__bigint_eq', p, ['i64.reinterpret_f64', o]] }
+  return fin(typed(['block', ['result', 'i32'], ...(bigA ? [setPayload, setPartner] : [setPartner, setPayload]), cmp], 'i32'))
+}
+
 // An emitted value whose bit pattern is an i32, paired with how it widens to f64: a
 // `f64.convert_i32_s/u(x)` peels to its i32 source `x`; a bare i32 widens signed. Used to compare
 // two integer-backed operands directly in i32 instead of widening both to f64.
@@ -516,6 +576,8 @@ function emitLooseEq(a, b, negate, strict) {
   // appropriate. Found live via `d[rk] === u` (u a genuinely-undefined local)
   // and `d[rk] == otherDict[missingKey]` (both operands independently
   // nullable) both wrongly reading false — JS true — pre-fix.
+  const bigCmp = emitBigintEq(a, b, va, vb, rawA, rawB, negate, strict)
+  if (bigCmp) return bigCmp
   const aSafe = vta === VAL.NUMBER && !nullableOperand(a)
   const bSafe = vtb === VAL.NUMBER && !nullableOperand(b)
   // Loose `==` of a certain number against a partner of no static kind (a
@@ -599,7 +661,11 @@ function emitLooseEq(a, b, negate, strict) {
   // (bit-aliasing NaNs behave identically to the pre-existing bit-eq fast path).
   // So the whole compare collapses to ONE i64.eq/ne — no call, no fallback.
   const ssoLit = (n) => ctx.features.sso && isLiteralStr(n) && n[1].length <= 6 && /^[\x00-\x7f]*$/.test(n[1])
-  if ((aStr || bStr) && (rawA == null || aStr) && (rawB == null || bStr) && (ssoLit(a) || ssoLit(b))) {
+  // Loose `==` admits one non-string partner: a boxed BigInt equals the string
+  // StringToBigInt reads as its value (IsLooselyEqual step 8). An unknown
+  // side that may carry one keeps a tag test on the bit-mismatch path.
+  const bigU = !strict && ((bStr && rawA == null && mayBeBigint(a)) || (aStr && rawB == null && mayBeBigint(b)))
+  if ((aStr || bStr) && (rawA == null || aStr) && (rawB == null || bStr) && (ssoLit(a) || ssoLit(b)) && !bigU) {
     return typed([`i64.${negate ? 'ne' : 'eq'}`, asI64(va), asI64(vb)], 'i32')
   }
   if (aStr && bStr) {
@@ -614,7 +680,7 @@ function emitLooseEq(a, b, negate, strict) {
     // above) — one inline bit test skips the __is_str_key/__str_eq tail. Sound
     // for a non-string u too: the test only ever short-circuits to "not equal",
     // and a non-string never equals a string.
-    const tail = ctx.features.sso
+    let tail = ctx.features.sso
       ? ['if', ['result', 'i32'],
           ['i64.ne', ['i64.and', ['i64.or', uG, lG], ['i64.const', ssoBitI64Hex()]], ['i64.const', 0]],
           ['then', ['i32.const', 0]],
@@ -624,9 +690,18 @@ function emitLooseEq(a, b, negate, strict) {
       : ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
           ['then', ['call', '$__str_eq', uG, lG]],
           ['else', ['i32.const', 0]]]
-    return strEqResult(typed(['block', ['result', 'i32'],
-      ['local.set', `$${u}`, asI64(uVal)],
-      ['local.set', `$${l}`, asI64(lVal)],
+    if (bigU) {
+      inc('__bigint_eq_str')
+      const uF = typed(['f64.reinterpret_i64', uG], 'f64')
+      tail = ['if', ['result', 'i32'], boxTest(uF),
+        ['then', ['call', '$__bigint_eq_str', unboxBigInt(uF), lG]],
+        ['else', tail]]
+    }
+    // Source order: the unknown side is stored first only when it is the left operand.
+    const sets = bStr
+      ? [['local.set', `$${u}`, asI64(uVal)], ['local.set', `$${l}`, asI64(lVal)]]
+      : [['local.set', `$${l}`, asI64(lVal)], ['local.set', `$${u}`, asI64(uVal)]]
+    return strEqResult(typed(['block', ['result', 'i32'], ...sets,
       ['if', ['result', 'i32'], ['i64.eq', uG, lG],
         ['then', ['i32.const', 1]],
         ['else', tail]]], 'i32'))
@@ -736,62 +811,13 @@ function emitStrictEq(a, b, negate) {
     const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
     return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
   }
-  // Phase-c C3: a plan-TAGGED BigInt union strictly compared against a
-  // statically-RAW BigInt operand. The tagged side may hold a PTR.BIGINT box
-  // (compare its PAYLOAD) or a non-BigInt member — which can never strictly
-  // equal a BigInt, and must NOT be bit-reinterpreted (a subnormal number
-  // colliding with the literal's raw i64 pattern would read equal; a box
-  // POINTER's bits never match either way, which is how this compare read
-  // false pre-fix). Tag-dispatch with a short-circuit: only a real box is
-  // ever dereferenced. Both-tagged and every other shape keep the dynamic
-  // $__eq_strict fallthrough below.
-  {
-    // PROVEN-tagged only (three-state discipline, re-audit P0): the plan
-    // materialized the operand — every BigInt member of its runtime domain
-    // is a real PTR.BIGINT box — or it is a direct call whose callee's
-    // return is PROVEN tagged (strict recursion, no open-current fallback).
-    // For such an operand a non-box member can NEVER strictly equal a
-    // BigInt, so the else-arm is FALSE — comparing its bits against the raw
-    // payload equated tagged Number 0 with 0n and MIN_VALUE with 1n (the
-    // carrier-collision the tag exists to prevent). OPEN operands (raw
-    // BigInt possible, bits ARE the payload) must never take this arm —
-    // they keep the dynamic $__eq_strict fallthrough below, whose bits
-    // semantics are the documented raw-carrier contract.
-    const provenTagged = (n) => isPlanTaggedBigint(n) ||
-      (Array.isArray(n) && n[0] === '()' && typeof n[1] === 'string' &&
-       ctx.funcs.map?.get(n[1]) != null && representationResultTagRequired(ctx, ctx.funcs.map.get(n[1]), new WeakSet(), true))
-    const planA = provenTagged(a), planB = provenTagged(b)
-    if (planA !== planB) {
-      const rawSide = planA ? b : a
-      const rawVt = resolveValType(rawSide, valTypeOf, lookupValType)
-      if (rawVt === VAL.BIGINT) {
-        // BOTH operands evaluate exactly once, in SOURCE order, before the
-        // tag dispatch (re-audit P0: the else-arm must not skip the raw
-        // side's effects, and a right-hand tagged operand must not reverse
-        // evaluation order).
-        const ta = temp('teqa'), tb = temp('teqb')
-        inc('__ptr_type')
-        const tagT = planA ? ta : tb, rawT = planA ? tb : ta
-        const tagGet = typed(['local.get', `$${tagT}`], 'f64')
-        const rawGet = typed(['local.get', `$${rawT}`], 'f64')
-        const eq = typed(['block', ['result', 'i32'],
-          ['local.set', `$${ta}`, asF64(emit(a))],
-          ['local.set', `$${tb}`, asF64(emit(b))],
-          ['if', ['result', 'i32'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', tagGet]], ['i32.const', PTR.BIGINT]],
-            ['then', ['i64.eq', ['i64.load', ptrOffsetIR(tagGet, VAL.BIGINT)], ['i64.reinterpret_f64', rawGet]]],
-            ['else', ['i32.const', 0]]]], 'i32')
-        return negate ? typed(['i32.eqz', eq], 'i32') : eq
-      }
-    }
-  }
-  // Same type (or dynamic-unknown): identical to loose `==`/`!=` EXCEPT the one
-  // case loose treats specially (null == undefined) — strict must still tell
-  // apart which nullish atom each side is, so this does NOT reuse the `==`/`!=`
-  // operator-table entry (that would inherit the loose exception); it calls
-  // emitLooseEq directly with strict=true, which routes the fully-dynamic
-  // fallback through $__eq_strict instead of $__eq (every other fast path
-  // inside emitLooseEq already agrees bit-for-bit with strict semantics).
+  // Same type (or dynamic-unknown): identical to loose `==`/`!=` EXCEPT the
+  // conversions loose alone performs (null == undefined, a boolean beside a
+  // number, a BigInt beside a number or string): emitLooseEq's `strict` flag
+  // keeps a proven BigInt beside an unkinded partner on the box-identity
+  // form (emitBigintEq) and routes the fully-dynamic fallback through
+  // $__eq_strict instead of $__eq; every other fast path inside it already
+  // agrees bit-for-bit with strict semantics.
   return emitLooseEq(a, b, negate, true)
 }
 

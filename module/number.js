@@ -422,7 +422,11 @@ export default (ctx) => {
     __num_radix: ['__ftoa', '__mkstr'],
     __to_num: ['__char_at', '__str_byteLen', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
-    __to_bigint: ['__char_at', '__str_byteLen', '__num_to_bigint'],
+    __str_to_bigint: ['__char_at', '__str_byteLen'],
+    __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset'],
+    __bigint_eq_num: [],
+    __bigint_eq_str: ['__str_to_bigint'],
+    __bigint_eq: ['__bigint_eq_num', '__bigint_eq_str', '__ptr_type', '__ptr_offset'],
     __parseInt: ['__char_at', '__str_byteLen', '__skipws', '__to_str'],
     __parseFloat: ['__char_at', '__str_byteLen', '__pow10', '__dec_to_f64', '__to_str', '__skipws'],
   })
@@ -1670,39 +1674,19 @@ export default (ctx) => {
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.NUMBER_TO_BIGINT_RANGE}))) (throw $__jz_err (f64.const ${ERR.NUMBER_TO_BIGINT_RANGE}))))
     (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $n))))`
 
-  // StringToBigInt: strict — the whole trimmed string must be a single integer
-  // literal, else a SyntaxError ($__jz_err). Unlike parseInt this does NOT stop
-  // at the first bad char: `BigInt("10n")` and `BigInt("000 12")` throw. Empty
-  // or all-whitespace strings parse to 0n. Radix prefixes 0b/0o/0x (case-
-  // insensitive) are recognised only when no sign precedes them, so `-0x1`
-  // surfaces its `x` as an invalid decimal digit and throws, as the spec wants.
-  // (jz's BigInt is i64-backed, so values past 2^63 wrap — out of these tests'
-  // range.)
-  ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v i64) (result f64)
-    (local $t i32) (local $len i32) (local $i i32) (local $end i32) (local $c i32)
+  // StringToBigInt (ES2024 7.1.14): the whole trimmed string must be a single
+  // integer literal. Returns the payload and a status: 0 for a parse, else the
+  // error code the caller reports (BigInt(s) throws it as a SyntaxError; loose
+  // `==` treats the undefined result as unequal). Unlike parseInt this does
+  // NOT stop at the first bad char: "10n" and "000 12" fail. Empty or all-
+  // whitespace strings parse to 0n. Radix prefixes 0b/0o/0x (case-insensitive)
+  // are recognised only when no sign precedes them, so `-0x1` surfaces its `x`
+  // as an invalid decimal digit, as the spec wants. (jz's BigInt is i64-
+  // backed, so values past 2^63 wrap.)
+  ctx.core.stdlib['__str_to_bigint'] = `(func $__str_to_bigint (param $v i64) (result i64 i32)
+    (local $len i32) (local $i i32) (local $end i32) (local $c i32)
     (local $neg i32) (local $sign i32) (local $radix i32) (local $digit i32)
-    (local $seen i32) (local $result i64) (local $f f64)
-    (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (if (f64.eq (local.get $f) (local.get $f))
-      (then (return (call $__num_to_bigint (local.get $f)))))
-    (local.set $t (call $__ptr_type (local.get $v)))
-    ;; ToBigInt(bigint) is the identity (ES2024 21.2.1.1 step 2b via BigInt()'s
-    ;; own ToPrimitive+dispatch) — mirrors __to_num's identical PTR.BIGINT arm
-    ;; a few lines above it in this same file: a genuine boxed BigInt crossing
-    ;; here (phase-c C4b: an exported param feeding BigInt(x) now gets
-    ;; host-tag ingress evidence, so a plain host bigint arrives boxed)
-    ;; dereferences its own payload cell directly instead of falling through
-    ;; to the "not a string" zero fallback below, which pre-dates any caller
-    ;; ever being able to deliver a boxed BigInt here.
-    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
-      (then (return (f64.reinterpret_i64 (i64.load (call $__ptr_offset (local.get $v)))))))
-    ;; ToBigInt (ES2024 7.1.13): null and undefined are a TypeError, a boolean is 0n or 1n.
-    (if (i32.or (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_NULLISH}))) (throw $__jz_err (f64.const ${ERR.BIGINT_NULLISH}))))
-    (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 1)))))
-    (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 0)))))
-    (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
-      (then (return (f64.reinterpret_i64 (i64.const 0)))))
+    (local $seen i32) (local $result i64)
     (local.set $len (call $__str_byteLen (local.get $v)))
     (local.set $end (local.get $len))
     ;; Trim leading whitespace (any byte <= 32).
@@ -1719,7 +1703,7 @@ export default (ctx) => {
       (br $tel)))
     ;; Empty / all-whitespace string → 0n.
     (if (i32.ge_s (local.get $i) (local.get $end))
-      (then (return (f64.reinterpret_i64 (i64.const 0)))))
+      (then (return (i64.const 0) (i32.const 0))))
     ;; Optional single leading sign — decimal literals only.
     (local.set $c (call $__char_at (local.get $v) (local.get $i)))
     (if (i32.eq (local.get $c) (i32.const 45))
@@ -1750,7 +1734,7 @@ export default (ctx) => {
       (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 90)))
         (then (local.set $digit (i32.sub (local.get $c) (i32.const 55)))))
       (if (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix)))
-        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_PARSE_DIGIT}))) (throw $__jz_err (f64.const ${ERR.BIGINT_PARSE_DIGIT}))))
+        (then (return (i64.const 0) (i32.const ${ERR.BIGINT_PARSE_DIGIT}))))
       (local.set $seen (i32.const 1))
       (local.set $result
         (i64.add
@@ -1759,11 +1743,90 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lp)))
     ;; A sign or radix prefix with no digits ("-", "0x", "0b") is a SyntaxError.
-    (if (i32.eqz (local.get $seen)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_PARSE_EMPTY}))) (throw $__jz_err (f64.const ${ERR.BIGINT_PARSE_EMPTY}))))
-    (f64.reinterpret_i64
-      (if (result i64) (local.get $neg)
-        (then (i64.sub (i64.const 0) (local.get $result)))
-        (else (local.get $result)))))`
+    (if (i32.eqz (local.get $seen)) (then (return (i64.const 0) (i32.const ${ERR.BIGINT_PARSE_EMPTY}))))
+    (if (result i64) (local.get $neg)
+      (then (i64.sub (i64.const 0) (local.get $result)))
+      (else (local.get $result)))
+    (i32.const 0))`
+
+  // ToBigInt (ES2024 7.1.13) for `BigInt(x)`: a Number must be integral, a
+  // boxed BigInt is the identity, a boolean is 0n or 1n, a string parses
+  // through StringToBigInt (a failed parse is a SyntaxError, $__jz_err), null
+  // and undefined are a TypeError.
+  ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v i64) (result f64)
+    (local $t i32) (local $status i32) (local $result i64) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (call $__num_to_bigint (local.get $f)))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    ;; ToBigInt(bigint) is the identity (ES2024 21.2.1.1 step 2b via BigInt()'s
+    ;; own ToPrimitive+dispatch) — mirrors __to_num's identical PTR.BIGINT arm
+    ;; a few lines above it in this same file: a genuine boxed BigInt crossing
+    ;; here (phase-c C4b: an exported param feeding BigInt(x) now gets
+    ;; host-tag ingress evidence, so a plain host bigint arrives boxed)
+    ;; dereferences its own payload cell directly instead of falling through
+    ;; to the "not a string" zero fallback below, which pre-dates any caller
+    ;; ever being able to deliver a boxed BigInt here.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+      (then (return (f64.reinterpret_i64 (i64.load (call $__ptr_offset (local.get $v)))))))
+    (if (i32.or (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_NULLISH}))) (throw $__jz_err (f64.const ${ERR.BIGINT_NULLISH}))))
+    (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 1)))))
+    (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 0)))))
+    (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
+      (then (return (f64.reinterpret_i64 (i64.const 0)))))
+    (call $__str_to_bigint (local.get $v))
+    (local.set $status)
+    (local.set $result)
+    (if (local.get $status)
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.convert_i32_s (local.get $status))))
+        (throw $__jz_err (f64.convert_i32_s (local.get $status)))))
+    (f64.reinterpret_i64 (local.get $result)))`
+
+  // IsLooselyEqual (ES2024 7.2.14) with a BigInt on one side, its payload
+  // `b`: a Number compares mathematically (step 14; NaN and the infinities
+  // are equal to nothing), a boolean as its ToNumber (steps 10-11), a string
+  // through StringToBigInt (step 8; no parse, no equality), a boxed BigInt by
+  // content, everything else (null, undefined, a heap kind) is unequal.
+  // __bigint_eq is the dynamic form the static lowering reaches for a
+  // partner it cannot kind; $__eq (module/core.js) takes it for a box it
+  // meets beside another tag.
+  ctx.core.stdlib['__bigint_eq_num'] = `(func $__bigint_eq_num (param $b i64) (param $n f64) (result i32)
+    ;; Integral and inside the i64 range: its truncation is exact, and the
+    ;; payload converted back must give the same f64 (a payload past 2^53 that
+    ;; only rounds to n is unequal). The range test rejects NaN and ±Infinity.
+    (i32.and
+      (i32.and
+        (f64.ge (local.get $n) (f64.const -9223372036854775808))
+        (f64.lt (local.get $n) (f64.const 9223372036854775808)))
+      (i32.and
+        (i64.eq (local.get $b) (i64.trunc_sat_f64_s (local.get $n)))
+        (f64.eq (f64.convert_i64_s (local.get $b)) (local.get $n)))))`
+
+  ctx.core.stdlib['__bigint_eq_str'] = `(func $__bigint_eq_str (param $b i64) (param $s i64) (result i32)
+    (local $status i32) (local $result i64)
+    (call $__str_to_bigint (local.get $s))
+    (local.set $status)
+    (local.set $result)
+    (i32.and (i32.eqz (local.get $status)) (i64.eq (local.get $b) (local.get $result))))`
+
+  ctx.core.stdlib['__bigint_eq'] = `(func $__bigint_eq (param $b i64) (param $v i64) (result i32)
+    (local $f f64) (local $t i32)
+    ;; Identical bits are equal, as in $__eq: a carrier the lowering could not
+    ;; kind may hold a raw BigInt (an Array.from of a BigInt64Array keeps the
+    ;; element bits), whose payload is the value itself.
+    (if (i64.eq (local.get $b) (local.get $v)) (then (return (i32.const 1))))
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (call $__bigint_eq_num (local.get $b) (local.get $f)))))
+    (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (i64.eq (local.get $b) (i64.const 1)))))
+    (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (i64.eqz (local.get $b)))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+      (then (return (i64.eq (local.get $b) (i64.load (call $__ptr_offset (local.get $v)))))))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+      (then (return (call $__bigint_eq_str (local.get $b) (local.get $v)))))
+    (i32.const 0))`
 
   ctx.core.stdlib['__parseFloat'] = `(func $__parseFloat (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)

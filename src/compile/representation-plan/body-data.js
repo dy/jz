@@ -571,6 +571,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         const start = cm[2] === 'set' ? 1 : 0
         for (let i = start; i < args.length; i++) addEdge('storage-write', plannedOf(args[i]), BOXED_BIGINT, node)
       }
+    } else if (op === '[') {
+      // An array literal's elements are tagged slots as much as a push: a
+      // computed BigInt element (`-5n`, `b - 6n`, a slot read) boxes on the
+      // same storage-write edge, not only the bare literal and `BigInt(x)`
+      // origins activeStorageSourceRep recognizes by syntax.
+      for (let i = 1; i < node.length; i++)
+        if (node[i] != null && !(Array.isArray(node[i]) && node[i][0] === '...')) addEdge('storage-write', plannedOf(node[i]), BOXED_BIGINT, node)
     }
     for (let i = 1; i < node.length; i++) walkEdges(node[i])
   }

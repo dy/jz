@@ -18,6 +18,8 @@
 import { typed, asF64, UNDEF_NAN, temp, truthyIR } from '../../src/ir.js'
 import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
+import { typedCtorElemValType } from '../../src/kind-traits.js'
+import { plannedTypedStorageCtor } from '../../src/compile/typed-storage-plan.js'
 import { extractParams, refsName, REFS_IN_EXPR } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, DBG_INVARIANTS } from '../../src/ctx.js'
@@ -163,9 +165,11 @@ export function callbackArgReps(arr) {
   const idxRep = { val: VAL.NUMBER }
   const arrRep = { val: VAL.ARRAY }
   let itemRep = null
+  // A typed element is a Number, or a BigInt64Array's raw i64 payload.
+  const typedItem = () => ({ val: typedCtorElemValType(plannedTypedStorageCtor(ctx, arr)) ?? VAL.NUMBER })
   if (typeof arr === 'string') {
     const vt = lookupValType(arr)
-    if (vt === VAL.TYPED) itemRep = { val: VAL.NUMBER }
+    if (vt === VAL.TYPED) itemRep = typedItem()
     else if (vt === VAL.ARRAY) {
       // The summary's element cell carries presence: a nullable element
       // (`xs.map(v => bits(v))`, bits returning null or a string) gets no
@@ -180,7 +184,7 @@ export function callbackArgReps(arr) {
     }
   } else {
     const vt = valTypeOf(arr)
-    if (vt === VAL.TYPED) itemRep = { val: VAL.NUMBER }
+    if (vt === VAL.TYPED) itemRep = typedItem()
   }
   return [itemRep, idxRep, arrRep]
 }
