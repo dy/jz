@@ -820,9 +820,23 @@ folded into it); `.toString(radix)` on an unkinded receiver reaches
 the host: 10 carriers × 5 values × 37 partners × (`==`, reversed, `!=`,
 `===`) × 3 levels; ToString 10 carriers × 7 forms × 4 values. Functional
 20/20; sequences GREEN; recursive GREEN (14,278,487 bytes, heap 1,235 MiB:
-+417,549 bytes over `f0efa85b`, attribution pending: the linked helpers,
-`emitBigintEq` at call sites, the array-literal write edge, `coerceRest`);
-oracle 15/15, parity 3/3; families 45/50, the same rows. Open: strict
++417,549 bytes over `f0efa85b`); oracle 15/15, parity 3/3; families 45/50,
+the same rows. The bytes were not the correct edges' price but a hosted
+parity defect the exact `$__eq_strict` exposed
+(`.work/optimizer-review/equality-bytes-2026-09-07.md`): the host kernel
+grew 17,678 bytes (the linked helpers +524, `emitBigintEq` at the kernel's
+own compare sites +163, the array-literal write edge +606 with nothing
+boxed where the summary excludes BigInt, `coerceRest` −13,304, the rest the
+compiler's own new source), the hosted one held 1,249 functions the host's
+did not: the kernel's closure-body dedup (`equalBodies`,
+src/wat/assemble/closure-table.js) compared a proven Set's `has` (raw 0/1)
+against an unkinded slot's `has` (an atom) through a dynamic strict compare
+the old `$__eq_strict` had coerced, so no duplicate matched. A BOOL-or-
+nullish operand enters a dynamic strict compare as its atom
+(`nullableBoolBoxIR`, beside `mayCarryRawBool`; `f7af2b18`): recursive
+13,894,137 bytes and heap 942.4 MiB on its base; on main over every slice
+of the day, recursive GREEN 13,875,120 bytes, heap 940.9 MiB, functional
+20/20 certified, oracle 15/15, parity 3/3, families 45/50. Open: strict
 `===` between a BigInt carrier and an unkinded partner keeps the bit
 contract (`0n === box(0)` true; typed-array method loops hand raw element
 bits to non-inlined closures, `Array.from(BigInt64Array)` keeps raw bits,
@@ -978,14 +992,13 @@ allocates a pair per entry; then emit's body IR 277 + 289, buildBodyData 100
 
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `d273b039`
+1. One session owns main; slices run in parallel worktrees at `f7af2b18`
    and land one by one with the gates. In flight: the two native reds (the
    plain array's update-expression result above; the fromCharCode family is
    the string contract, below), the warm-instance `_clear()` trap, the
    element-kind census widening on `push` alone (above), the dynamic-props
    mirror on the compiler's own graph (`dynPointsTo` `'ALL'`: the reach
-   analysis's precision, ~250 MB of the pre-checkpoint peak), the attribution of the equality family's +417,549 recursive bytes,
-   and milestone item 3's second slice from the inventory of every
+   analysis's precision, ~250 MB of the pre-checkpoint peak), and milestone item 3's second slice from the inventory of every
    result-reconstruction site (`.work/result-contract-inventory.md`: 90
    sites in eight classes, the conflicting authorities and their precedence,
    the contract `{kind, presence, carrier, abi}` frozen at the summary's
