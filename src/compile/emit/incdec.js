@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  asF64, asI32, boxBigInt, fromI64, isConst, maybeUnboxBigInt, readI64, readVar, typed, writeVar,
+  asF64, asI32, boxBigInt, fromI64, rawBigInt, isConst, maybeUnboxBigInt, readI64, readVar, typed, writeVar,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -85,7 +85,7 @@ export const incdecOps = {
   // codegen on the BIGINT-gated path.
   ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n => {
     if (valTypeOf(n) === VAL.BIGINT)
-      return fromI64([`i64.${fn}`, readI64(n, emit(n)), ['i64.const', 1]])
+      return rawBigInt(fromI64([`i64.${fn}`, readI64(n, emit(n)), ['i64.const', 1]]))
     // Self-referential typed-int-element increment (`count[d]++` — the
     // histogram/bucket-fill idiom): `n` is ALWAYS the exact same '[]' member
     // node this op's result is written straight back into (prepare's own

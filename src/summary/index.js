@@ -54,7 +54,7 @@ import { VAL } from '../reps.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
-export { CARRIER, PRESENCE, contractVal } from './contract.js'
+export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 
 import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag,

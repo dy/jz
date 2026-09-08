@@ -14,7 +14,7 @@ import { VAL, repOf } from '../../reps.js'
 import { K, hasTag, tagsOf } from '../../summary/kind.js'
 import { exprType } from '../../type.js'
 import {
-  bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, computedBoxOf, hasBigintDomain,
+  bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
 import { emit, emitBoolStr, tryConcatChain } from './dispatch.js'
 import {
@@ -159,10 +159,10 @@ const foldConst = (va, vb, fn, guard) =>
   isLit(va) && isLit(vb) && !va.unsigned && !vb.unsigned && (!guard || guard(litVal(vb)))
     ? emitNum(fn(litVal(va), litVal(vb))) : null
 
-// Postfix recovery computes a fresh raw i64 after the update. Materialize that
-// producer when its frozen expression edge is tagged, just like the ordinary
-// BigInt arithmetic branches below.
-const postfixBigint = (raw, self) => computedBoxOf(self) ? boxBigInt(raw) : fromI64(raw)
+// Postfix recovery computes a fresh raw i64 after the update: the one
+// BigInt-domain result rule (bigintResult) materializes it as the ordinary
+// BigInt arithmetic branches below do.
+const postfixBigint = bigintResult
 // A bare name the numeric demand pass denied a number, whose kind admits a
 // string (an unknown kind admits every kind the host may pass).
 const mayBeString = (node) => {
@@ -287,7 +287,7 @@ export const arithmeticOps = {
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('+', a, b)
-      return fromI64(['i64.add', bigIntOperand(a), bigIntOperand(b)])
+      return bigintResult(['i64.add', bigIntOperand(a), bigIntOperand(b)], self)
     }
     // Runtime string dispatch when at least one side could be a string. When one side has
     // a known non-STRING vtype, skip its `__is_str_key` (statically false). Common in
@@ -408,8 +408,8 @@ export const arithmeticOps = {
       // JS, never a TypeError (see bigIntOperand's doc comment). Leave its asI64
       // untouched; only the genuinely two-operand form below gets the runtime guard.
       return b === undefined
-        ? fromI64(['i64.sub', ['i64.const', 0], readI64(a, emit(a))])
-        : fromI64(['i64.sub', bigIntOperand(a), bigIntOperand(b)])
+        ? bigintResult(['i64.sub', ['i64.const', 0], readI64(a, emit(a))], self)
+        : bigintResult(['i64.sub', bigIntOperand(a), bigIntOperand(b)], self)
     }
     if (b === undefined) return emitNeg(a, self)
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
@@ -457,7 +457,7 @@ export const arithmeticOps = {
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('*', a, b)
-      return fromI64(['i64.mul', bigIntOperand(a), bigIntOperand(b)])
+      return bigintResult(['i64.mul', bigIntOperand(a), bigIntOperand(b)], self)
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a * b)
     if (_f) return _f
@@ -501,7 +501,7 @@ export const arithmeticOps = {
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('/', a, b)
-      return fromI64(bigIntDivIR('/', bigIntOperand(a), bigIntOperand(b)))
+      return bigintResult(bigIntDivIR('/', bigIntOperand(a), bigIntOperand(b)), self)
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a / b, b => b !== 0)
     if (_f) return _f
@@ -531,7 +531,7 @@ export const arithmeticOps = {
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('%', a, b)
-      return fromI64(bigIntDivIR('%', bigIntOperand(a), bigIntOperand(b)))
+      return bigintResult(bigIntDivIR('%', bigIntOperand(a), bigIntOperand(b)), self)
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
     if (_f) return _f

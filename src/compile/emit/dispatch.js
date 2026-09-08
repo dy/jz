@@ -22,6 +22,7 @@ import { extractRefinements, withRefinements } from '../flow-types.js'
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
 } from '../representation-plan.js'
+import { CARRIER } from '../../summary/contract.js'
 import { FIRST_CLASS_BUILTIN_BODY, FIRST_CLASS_UNARY_MATH, builtinFunctionValue } from './first-class.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectCondOK } from './shared.js'
 import { K, core as summaryCore, tagOf as summaryTagOf } from '../../summary/kind.js'
@@ -1605,17 +1606,25 @@ export function emit(node, expect) {
           // mirror of the boundary wrapper (index.js resultBool). Without it a
           // field-held function's `=== true` / typeof observed a plain number.
           const boolResult = !ptrResult && func?.valResult === VAL.BOOL && !func?.valResultMayBeUndefined
+          // A raw-i64 result (a direct-only BigInt function's contract) is
+          // boxed here, once, at the producer: the closure ABI's slot is an
+          // any slot, where a BigInt is a PTR.BIGINT cell (a boxed contract's
+          // result is already one, its return edges convert every tail).
+          const rawBigintResult = !ptrResult && !boolResult && resType === 'f64' &&
+            (ctx.plans.programIndex?.resultContract(func) ?? ctx.summary?.resultContract(node))?.carrier === CARRIER.RAW_I64
           const wrapped = ptrResult
             ? `(call $__mkptr (i32.const ${valKindToPtr(func.sig.ptrKind)}) (i32.const ${func.sig.ptrAux ?? 0}) ${callExpr})`
             : boolResult
               ? `(select (f64.const nan:${TRUE_NAN}) (f64.const nan:${FALSE_NAN}) ${resType === 'i32' ? `(i32.ne ${callExpr} (i32.const 0))` : `(f64.ne ${callExpr} (f64.const 0))`})`
+              : rawBigintResult
+                ? `(call $__box_bigint ${callExpr})`
               : resType === 'i32'
                 ? (func.sig.unsignedResult ? `(f64.convert_i32_u ${callExpr})` : `(f64.convert_i32_s ${callExpr})`)
                 : resType === 'i64'
                   ? `(f64.reinterpret_i64 ${callExpr})`
                   : callExpr
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) ${restLocals}${restPrelude}${wrapped})`
-          inc(trampolineName, ...(ptrResult ? ['__mkptr'] : []), ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
+          inc(trampolineName, ...(ptrResult ? ['__mkptr'] : []), ...(rawBigintResult ? ['__box_bigint'] : []), ...(restIdx >= 0 ? ['__alloc_hdr', '__mkptr'] : []))
         }
       }
       // ctx.closure.mint (not a bare table.push) — same funcIdx-alignment

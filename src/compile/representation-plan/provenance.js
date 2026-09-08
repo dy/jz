@@ -5,7 +5,7 @@ import { K as SUMMARY_KIND, hasTag as summaryHasTag, kind as summaryKind, tagsOf
 import {
   ANY_BIGINT, BIGINT_READ_METHODS, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BIGINT_TYPED_CTORS, BOXED_BIGINT, DEF_RHS,
   NO_BIGINT, NUMERIC_VALUE_OPS, RAW_BIGINT, STORAGE_READ_METHODS, STORAGE_WRITE_METHODS, VALUE_COERCERS,
-  bigintRepBits, bigintRepIsClosed, callMember, collectDefs, collectLocalClosures, isBigintOrigin, isExported,
+  bigintRepBits, bigintRepIsClosed, callMember, collectDefs, collectLocalClosures, contractRep, isBigintOrigin, isExported,
   joinRep, memberReceiver,
 } from './common.js'
 
@@ -181,10 +181,6 @@ const paramEntryExcludesBool = (programFacts, func, idx) => {
 export function solveBigintProvenance(ctx, programFacts, ast) {
   const namesByFunc = new Map()
   const paramsByFunc = new Map()
-  // The carrier a function's return tails produce, joined (exprRep): the
-  // body's own pre-plan fact, beside the callable's contract. It stays until
-  // the return edge converts to the contract's carrier.
-  const resultReps = new Map()
   const storage = new Set()
   const bigintTyped = new Set()
   const globals = new Set()
@@ -211,6 +207,9 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // with no BigInt-naming return claims nothing.
   const claimsBigint = c => c != null && (c.carrier === CARRIER.RAW_I64 || c.carrier === CARRIER.BOXED)
   const calleeClaimsBigint = (node, func) => claimsBigint(ctx.summary?.at(func?.sig ?? '').calleeContract(node))
+  // The carrier a call's result crosses in: the callee's contract's, which
+  // its return edges convert every tail to (open for one naming none).
+  const calleeRep = callee => contractRep(programIndex.resultContract(callee)) ?? ANY_BIGINT
   const resolveMemberCallee = calleeNode => {
     if (!Array.isArray(calleeNode) || calleeNode[0] !== '.' || typeof calleeNode[2] !== 'string') return null
     const sourceId = programIndex?.resolveMemberSourceId(calleeNode[1], calleeNode[2]) ?? -1
@@ -338,29 +337,23 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     if (node[0] === '()') {
       if (typeof node[1] === 'string') {
         const callee = ctx.funcs.map.get(node[1])
-        return callee ? resultReps.get(callee.name) ?? ANY_BIGINT : RAW_BIGINT
+        if (callee?.body) return calleeRep(callee)
+        // A closure or a closure set the summary names crosses its any slot
+        // boxed (its contract); a builtin's result (`BigInt(s)`: an origin,
+        // decided above) is raw.
+        const contract = ctx.summary?.at(func?.sig ?? '').calleeContract(node)
+        return contract ? contractRep(contract) ?? ANY_BIGINT : RAW_BIGINT
       }
       if (Array.isArray(node[1]) && BIGINT_READ_METHODS.has(node[1][2])) return RAW_BIGINT
       if (Array.isArray(node[1]) && STORAGE_READ_METHODS.has(node[1][2])) return BOXED_BIGINT
       // Shape #8: mirrors exprMay's own resolution above — exprRep is only
       // ever asked once exprMay has already proven `true`, so a resolved
-      // member-call callee reads the SAME resultReps entry a bare-name call
-      // to it would.
+      // member-call callee reads the same contract a bare-name call to it would.
       const resolved = resolveMemberCallee(node[1])
-      if (resolved) return resultReps.get(resolved.name) ?? ANY_BIGINT
+      if (resolved) return calleeRep(resolved)
     }
     if (NUMERIC_VALUE_OPS.has(node[0])) return RAW_BIGINT
     return ANY_BIGINT
-  }
-
-  const noteResultRep = (func, expr) => {
-    if (!func || !exprMay(expr, func, namesFor(func))) return false
-    const rep = exprRep(expr, func, namesFor(func))
-    const prev = resultReps.get(func.name)
-    const next = prev == null ? rep : joinRep(prev, rep)
-    if (prev === next) return false
-    resultReps.set(func.name, next)
-    return true
   }
 
   const scan = (node, func, localNames) => {
@@ -481,30 +474,15 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
       const recv = node[1][1]
       if (exprMay(node[2], func, localNames) && typeof recv === 'string' && mark(storage, recv)) changed = true
     }
-    if (op === 'return' && noteResultRep(func, node[1])) changed = true
     for (let i = 1; i < node.length; i++) if (scan(node[i], func, localNames)) changed = true
     return changed
   }
 
-  // Shape #7 (i64.parse's own real watr shape, sibling gap): bigintTyped's
-  // `const _i64 = new BigInt64Array(_buf)`-shaped match is a PURE SYNTACTIC
-  // fact — it depends on nothing else in this fixpoint — but scan()'s own
-  // discovery of it is still fixpoint-ROUND-timed: a function's OWN body is
-  // walked (ctx.funcs.list order) before module-level declarations are
-  // (scan(ast,…)/moduleInits run after every function, same round). A
-  // typed-array element READ inside that SAME function, textually AFTER a
-  // WRITE to it (`_i64[0] = bi; return _i64[0]`), sees `storage` already
-  // seeded (the write itself marks it, same scan() call) but `bigintTyped`
-  // still unset — exprRep's [] branch checks bigintTyped FIRST, falls
-  // through to storage, and answers BOXED_BIGINT for one round. resultReps'
-  // own accumulation (noteResultRep) is a MONOTONE JOIN across every round,
-  // never a fresh recompute — that one transient wrong-for-a-round BOXED
-  // answer joins permanently against the later, correct RAW_BIGINT answer
-  // once bigintTyped catches up, producing a permanently AMBIGUOUS
-  // (raw-or-boxed, closed) result the plan can never resolve to one
-  // carrier. Fix at the root: seed bigintTyped from every BIGINT_TYPED_CTORS
-  // declaration, program-wide, in ONE pass BEFORE the fixpoint's first round
-  // — a purely syntactic fact needs no round-by-round discovery at all.
+  // bigintTyped's `const _i64 = new BigInt64Array(_buf)`-shaped match is a
+  // pure syntactic fact: seed it from every BIGINT_TYPED_CTORS declaration,
+  // program-wide, before the fixpoint's first round, so no round-timed
+  // discovery (a read textually after a write in the same body) answers a
+  // typed element read as storage for one round.
   for (const func of ctx.funcs.list) if (!func.raw && func.body) seedBigintTyped(func.body, bigintTyped)
   seedBigintTyped(ast, bigintTyped)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) seedBigintTyped(init, bigintTyped)
@@ -530,8 +508,6 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
           }
         }
       }
-      if (!Array.isArray(func.body) || func.body[0] !== '{}')
-        if (noteResultRep(func, func.body)) graphChanged = true
       if (scan(func.body, func, names)) graphChanged = true
     }
     if (!indirectResult) {
@@ -576,8 +552,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // param needs, defaulting to `undefined`) or any non-closed-bigint
   // argument marks it impure, permanently (a genuine union stays a union;
   // this proof fires only when NOTHING else can ever reach the param).
-  // Mirrors resultReps' own exprRep-based precision for RESULTS, now giving
-  // PARAMS the equivalent it never had. A bare-name argument (`h(n)`, not a
+  // A bare-name argument (`h(n)`, not a
   // direct storage-read/literal/call expression) resolves through exprRep
   // as ANY_BIGINT — open, not closed — so this proof conservatively misses
   // (never wrongly admits) the chained-forwarding case; that is a missed
@@ -757,10 +732,17 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   visitCallSites(ast, null, globals)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) visitCallSites(init, null, globals)
 
-  return { namesByFunc, paramsByFunc, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramRawOnly, paramNeverBool, resolveMemberCallee }
+  return { namesByFunc, paramsByFunc, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramRawOnly, paramNeverBool, resolveMemberCallee }
 }
 
-export function deriveLocalProvenance(sig, body, localReps, program) {
+/** A closure's own provenance: the names that may carry a BigInt (its
+ *  parameters by their reps, by the arguments its direct callers recorded,
+ *  and by the summary's kind in the closure's scope: a callback the summary
+ *  binds to a BigInt element or accumulator receives one through its any
+ *  slot, boxed, and its reads test the tag; a parameter the summary cannot
+ *  bound is closure-emit.js's tagged local instead), its storage receivers
+ *  and whether a tail may be a BigInt. */
+export function deriveLocalProvenance(sig, body, localReps, program, summary = null) {
   const names = new Set(), params = new Set(), storage = new Set()
   const scanStorage = node => walkAst(node, { enter: (n, parent) => {
     if (parent !== null && n[0] === '=>') return false
@@ -778,9 +760,10 @@ export function deriveLocalProvenance(sig, body, localReps, program) {
     return program.exprMay(expr, null, names)
   }
   const observedParams = program?.closureParams.get(sig?.name)
+  const summaryBigint = name => { const k = summary?.kindOf(name) ?? 0; return summaryHasTag(k, SUMMARY_KIND.BIGINT) && summaryTagsOf(k) !== summaryTagsOf(summaryKind(SUMMARY_KIND.ANY)) }
   for (let k = 0; k < (sig?.params?.length || 0); k++) {
     const name = sig.params[k].name, rep = localReps?.get(name)
-    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || observedParams?.has(k)) {
+    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || observedParams?.has(k) || summaryBigint(name)) {
       params.add(k)
       names.add(name)
     }

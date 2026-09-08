@@ -12,7 +12,7 @@ import { VAL, repOf } from '../../reps.js'
 import { intExprRange, intLiteralValue } from '../../static.js'
 import { exprType } from '../../type.js'
 import {
-  bigIntDomainsCanMix, bigIntJointDispatch, bigIntNumericOperand, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, computedBoxOf, hasBigintDomain,
+  bigIntDomainsCanMix, bigIntJointDispatch, bigIntNumericOperand, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain,
 } from './bigint.js'
 import { emit } from './dispatch.js'
 import { isI32Num } from './shared.js'
@@ -110,8 +110,8 @@ export const bitwiseOps = {
       // `<<`/`>>` need the sign-aware direction flip (bigIntShiftIR) — see its
       // own doc comment. `&`/`|`/`^` have no such hazard (bitwise ops are
       // direction-symmetric; only a shift COUNT's sign is meaningful).
-      if (op === '<<' || op === '>>') return fromI64(bigIntShiftIR(op, bigIntOperand(a), bigIntOperand(b)))
-      return fromI64([`i64.${fn}`, bigIntOperand(a), bigIntOperand(b)])
+      if (op === '<<' || op === '>>') return bigintResult(bigIntShiftIR(op, bigIntOperand(a), bigIntOperand(b)), self)
+      return bigintResult([`i64.${fn}`, bigIntOperand(a), bigIntOperand(b)], self)
     }
     if (op === '|') {  // `(x / y) | 0` integer-division idiom → i32.div_s
       const divN = intLiteralValue(b) === 0 ? a : intLiteralValue(a) === 0 ? b : null

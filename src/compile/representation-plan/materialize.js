@@ -1,9 +1,8 @@
-import { returnExprs } from '../../ast.js'
-import { BIGINT_JOINT_BINARY_OPS, valTypeOf } from '../../kind.js'
+import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import {
-  BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_REJECT, STORAGE_READ_METHODS, bigintRepBits,
-  bigintRepIsClosed, canBeBigint, definiteBigint, edgeAction, isBigintOrigin, programPlanRecord,
+  BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, callContractOf, canBeBigint, contractRep,
+  definiteBigint, edgeAction, isBigintOrigin, programPlanRecord, returnEdgeAction,
 } from './common.js'
 import { memberStorageRep } from './body-data.js'
 import { boundaryDataOf } from './boundaries.js'
@@ -51,11 +50,14 @@ export function representationParamRep(ctx, identity, index, target = true) {
     : param?.current ?? NO_BIGINT
 }
 
-export function representationResultRep(ctx, identity, target = true) {
+/** The carrier a callable's result crosses in: the target its return edges
+ *  convert every tail to (its contract's, or the body's own walk for a
+ *  contract naming none). */
+export function representationResultRep(ctx, identity) {
   const record = ctx.plans.representationData.get(representationBoundaryOf(ctx, identity))
   if (record.programEmpty) return NO_BIGINT
   const data = boundaryDataOf(ctx, typeof identity === 'string' ? ctx.funcs.map.get(identity) : identity)
-  return target ? data.result.target : data.result.current
+  return record.body?.resultTarget ?? data.result.target
 }
 
 export function representationBindingRep(ctx, plan, name, target = true) {
@@ -111,30 +113,32 @@ export const activeRep = (ctx, node, target) => {
   return NO_BIGINT
 }
 
+/** True when the plan's own semantic for a retained node is exactly BigInt
+ *  (no other kind, no nullish member): an edge on it acts without a kind
+ *  gate, as on a name the plan materialized. */
+export function representationProvesBigint(ctx, node) {
+  const body = activeBody(ctx, 'representationProvesBigint')
+  const packed = body?.nodeFacts?.get(node)
+  return packed != null && definiteBigint(packed >> 6)
+}
+
 /** Materialized representation of a stable parameter or normalized local. */
 export function representationActiveMaterializedRep(ctx, name) {
   // A sequence forwards its final producer's carrier, not just its kind.
   while (Array.isArray(name) && name[0] === ',') name = name[name.length - 1]
   const active = activeBody(ctx, 'representationActiveMaterializedRep')
-  if (Array.isArray(name) && active?.materializedJoins?.has(name))
+  if (!active) return NO_BIGINT
+  if (Array.isArray(name) && active.materializedJoins?.has(name))
     return activeRep(ctx, name, true)
   if (Array.isArray(name) && JOIN_OPS.has(name[0])) return NO_BIGINT
+  // A direct call's result crosses in its callee's contract carrier (the
+  // callee's return edges convert every tail to it). A closure's is the
+  // call node's own retained fact (body-data.js callRep).
   if (Array.isArray(name) && name[0] === '()') {
-    // Shape #9 sibling: same one-authority widening as buildBodyData's own
-    // calleeNameOf (this function runs at emission time, outside that
-    // closure, so it reaches the identical frozen resolver via the program
-    // plan record's own `provenance` instead of re-deriving it).
-    const calleeName = typeof name[1] === 'string'
-      ? name[1]
+    const calleeName = typeof name[1] === 'string' ? name[1]
       : programPlanRecord(ctx)?.provenance?.resolveMemberCallee(name[1])?.name ?? null
-    const callee = calleeName ? ctx.funcs.map.get(calleeName) : null
-    const calleeHandle = callee && ctx.plans.representations.get(callee)
-    const calleeRecord = calleeHandle && ctx.plans.representationData.get(calleeHandle)
-    return calleeRecord?.body?.materializedResult === true
-      ? calleeRecord.body.resultTarget ?? NO_BIGINT : NO_BIGINT
+    return calleeName != null && ctx.funcs.map.get(calleeName)?.body ? contractRep(callContractOf(ctx, name)) ?? NO_BIGINT : NO_BIGINT
   }
-  const body = active
-  if (!body) return NO_BIGINT
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   const boundary = record?.body?.boundary
@@ -200,21 +204,20 @@ export function representationComputedExprAction(ctx, node) {
   return edgeAction(RAW_BIGINT, target)
 }
 
-/** Frozen action for one materialized return edge. */
+/** Frozen action for one return edge: the tail converts to the result's
+ *  carrier (the contract's). A tail the plan retained no carrier for (a
+ *  checked read's deferred box, a producer outside the retained facts)
+ *  converts to a boxed result by tag, the deferred materializer boxing its
+ *  present arm. */
 export function representationReturnAction(ctx, source) {
-  activeBody(ctx, 'representationReturnAction')
-  const handle = ctx.plans.representations.get(ctx.func.current)
-  const record = handle && ctx.plans.representationData.get(handle)
-  if (record?.body?.materializedResult !== true) return REP_EDGE_REJECT
-  const target = record.body.resultTarget ?? record.body.boundary.result.target
+  const body = activeBody(ctx, 'representationReturnAction')
+  if (!body) return REP_EDGE_REJECT
+  const target = body.resultTarget
+  if (target !== RAW_BIGINT && target !== BOXED_BIGINT) return REP_EDGE_REJECT
   const current = activeEmittedRep(ctx, source)
-  const action = edgeAction(current, target)
-  // The summary may prove a nullable BigInt result one expression-level
-  // provenance census still calls NO_BIGINT (notably a checked typed read).
-  // Preserve the normal KEEP for its nullish arm, but request BOX so the
-  // producer's branch-aware deferred materializer can box the present arm.
-  return current !== BOXED_BIGINT && target === BOXED_BIGINT &&
-    canBeBigint(record.body.resultSemantic) ? REP_EDGE_BOX : action
+  if (current === NO_BIGINT)
+    return target === BOXED_BIGINT && canBeBigint(body.resultSemantic) ? REP_EDGE_TAG_BOX : edgeAction(current, target)
+  return returnEdgeAction(current, target)
 }
 
 /** Frozen action for one plain declaration/assignment write. */
@@ -292,172 +295,6 @@ export const activeStorageSourceRep = (ctx, node) => {
   // compute; a mixed one normalized itself (representationComputedExprAction).
   if (Array.isArray(node) && ctx.plans.compoundOf.has(node) && valTypeOf(node) === VAL.BIGINT) return RAW_BIGINT
   return rep
-}
-
-/** True when every result tail is a proven raw BigInt carrier. This is the
- *  boundary twin of representationResultTagRequired: transformed callers can
- *  retain a direct call whose callee body has specialized to RAW even when
- *  the caller's coarse valResult/boundary semantic is still open. */
-export function representationResultRawBigint(ctx, func, seen = new WeakSet()) {
-  if (programPlanRecord(ctx)?.bigint === false || func == null || seen.has(func)) return false
-  seen.add(func)
-  const handle = ctx.plans.representations.get(func)
-  const record = handle && ctx.plans.representationData.get(handle)
-  const body = record?.body
-  if (!body) { seen.delete(func); return false }
-  const fb = func.body
-  const tails = Array.isArray(fb) && fb[0] === '{}' ? returnExprs(fb) : [fb]
-  const exprRaw = e => {
-    if (isBigintOrigin(e)) return true
-    if (typeof e === 'string')
-      return body.materializedNames?.has(e) === true && body.targetNames?.get(e) === RAW_BIGINT
-    if (!Array.isArray(e)) return false
-    if (e[0] === ',') return exprRaw(e[e.length - 1])
-    if (e[0] === '=') return exprRaw(e[2])
-    if (e[0] === '()' && typeof e[1] === 'string') {
-      const callee = ctx.funcs.map?.get(e[1])
-      if (!callee) return false
-      const calleeHandle = ctx.plans.representations.get(callee)
-      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
-      if (calleeBody?.materializedResult === true) return calleeBody.resultTarget === RAW_BIGINT
-      return representationResultRawBigint(ctx, callee, seen)
-    }
-    return false
-  }
-  const result = tails.length > 0 && tails.every(exprRaw)
-  seen.delete(func)
-  return result
-}
-
-/** True when the plan's RESULT verdict for `func` is a tagged BigInt UNION —
- *  the value can be BigInt AND another kind (demandFor: canBeBigint &&
- *  canBeOther). Such a result is carried as the NaN-box tag discipline
- *  (BigInt member BOXED, number raw, pointers self-tagged), so the export
- *  boundary must take the generic tag decode (resultDynamic's `r` lane,
- *  interop's t===PTR.BIGINT arm derefs the box) — never the raw-bigint
- *  passthrough lane, which reinterprets the union's bits as one BigInt
- *  (a box POINTER's own bits, or a raw number's, both observed live:
- *  phase-c doc §gap 2a). */
-/** `strict` (three-state discipline, re-audit P0): when true, answer TRUE
- *  only for PROVEN-tagged results — materialized names with BOXED targets,
- *  proven-boxed slots, and callee recursion thereof. The trailing
- *  open-current fallback is DISABLED: an open operand may carry a raw
- *  BigInt whose bits the tag test cannot distinguish, so consumers that
- *  short-circuit non-box members to false (strict equality's tagged arm)
- *  must never fire on it. The boundary LANE keeps the non-strict form —
- *  its generic decode is total over every tag, so over-routing is safe
- *  there and under-routing is not. */
-export function representationResultTagRequired(ctx, func, seen = new WeakSet(), strict = false) {
-  if (programPlanRecord(ctx)?.bigint === false) return false
-  if (func == null || seen.has(func)) return false
-  seen.add(func)
-  const handle = ctx.plans.representations.get(func)
-  const record = handle && ctx.plans.representationData.get(handle)
-  const r = boundaryDataOf(ctx, func)?.result
-  if (r == null) return false
-  // The boundary record's CURRENT is too coarse here: BOTH a raw member-slot
-  // read (o.n on a decl-literal raw slot — statements' ++/-- pins) AND a
-  // genuinely box-producing union (gnorm) sit at open-ANY, while keying on
-  // demand or target both over-fire on nullish-raw LAYOUT shapes (pointers'
-  // raw-exact pins). The precise verdict is PER RETURN EXPRESSION, through
-  // the same arms the body solver plans with: a direct call may box iff its
-  // callee's own body resultTarget carries the BOXED bit; a '.'-member read
-  // is RAW when the slot is proven raw (slotBigintProvenAt) and otherwise
-  // follows the storage discipline (BOXED for census-boxed storage); a bare
-  // name may box iff this body materialized it to a BOXED target. Anything
-  // unresolved falls back to the boundary current's BOXED bit.
-  const body = record.body
-  // The body's result edge is the authoritative proof once materialized.
-  // Check it before re-deriving from explicit tails: returnExprs deliberately
-  // omits implicit fallthrough, so a BigInt|undefined result otherwise looks
-  // like a lone raw-BigInt tail and the export wrapper chooses the raw lane.
-  if (body?.materializedResult === true &&
-      (bigintRepBits(body.resultTarget ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0) return true
-  const fb = func.body
-  const tails = Array.isArray(fb) && fb[0] === '{}' ? returnExprs(fb) : [fb]
-  const exprMayBox = (e) => {
-    if (typeof e === 'string')
-      return body?.materializedNames?.has(e) === true &&
-        (bigintRepBits(body.targetNames?.get(e) ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0
-    if (Array.isArray(e)) {
-      const op = e[0]
-      if (op === '()' && typeof e[1] === 'string') {
-        // The callee's return may box exactly when ITS result would demand
-        // the tag at a boundary — the same question, one call deeper
-        // (C3's compare arm asks it of the callee directly, which is why
-        // the two stayed consistent only once this recursed).
-        const callee = ctx.funcs.map?.get(e[1])
-        if (!callee) return null
-        const calleeHandle = ctx.plans.representations.get(callee)
-        const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
-        if (calleeBody?.materializedResult === true)
-          return (bigintRepBits(calleeBody.resultTarget ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0
-        return representationResultTagRequired(ctx, callee, seen, strict)
-      }
-      // A closure's result crosses its uniform f64 ABI boxed, as do the known
-      // absent-capable storage methods (`get`/`pop`/`shift`/`at`). The one
-      // proved raw family here is a TypedArray method such as `reduce`; its
-      // element-domain result must not be mistaken for a generic closure box.
-      if (op === '()' && Array.isArray(e[1]) && (e[1][0] === '.' || e[1][0] === '?.')) {
-        // `recv?.method()` lowers through the optional member value and the
-        // generic closure trampoline, whose result carrier is always boxed.
-        if (e[1][0] === '?.') return true
-        const receiver = e[1][1], method = e[1][2]
-        const view = ctx.summary?.at(func.sig)
-        const sid = view?.objectSidOfExpr(receiver)
-        const className = sid == null ? null : ctx.schema.brandOf?.(sid)
-        const classFn = className == null ? null : ctx.transform.classes?.get(className)?.methods.get(method)
-        if (classFn) {
-          const callee = ctx.funcs.map?.get(classFn)
-          return callee ? representationResultTagRequired(ctx, callee, seen, strict) : false
-        }
-        const receiverVal = valTypeOf(receiver) ?? view?.valOfExpr(receiver)
-        // TypedArray.reduce is a raw element-domain producer. Other member
-        // calls cross either boxed storage or the uniform closure ABI; a
-        // method name alone is never used to classify an unknown receiver.
-        return receiverVal === VAL.TYPED ? STORAGE_READ_METHODS.has(method) : true
-      }
-      if (op === '()' && typeof e[1] !== 'string') return true
-      if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
-        return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
-          : ctx.schema.slotBigintBoxedAt?.(e[1], e[2]) === true
-      // A join the body fixpoint already proved materialized IS boxed —
-      // ground truth, more precise than guessing from its arms (an arm can
-      // be an unresolved literal, like a bare bigint origin, that recursion
-      // alone would never resolve — see C5b: `flag ? 1n : 0`'s arms are both
-      // leaves with no name/call to recurse into).
-      if (JOIN_OPS.has(op) && body?.materializedJoins?.has(e) === true) return true
-      // Census-shaped unary '-'/'~'/joint-binary result: same ground truth
-      // as the JOIN_OPS line above — the body fixpoint's computed-expression pass (buildBodyData, beside the
-      // JOIN_OPS materialization loop) already proved this exact node boxed.
-      if (op === 'u-' || op === '~' || BIGINT_JOINT_BINARY_OPS.has(op))
-        return body?.materializedJoins?.has(e) === true
-      // Symmetric tri-state join (re-audit: bare `||` collapsed null||false
-      // to false but false||null to null — arm ORDER changed the verdict):
-      // TRUE dominates, else UNKNOWN (null) dominates, else FALSE.
-      const j3 = (x, y) => x === true || y === true ? true : x == null || y == null ? null : false
-      if (op === '?:') return j3(exprMayBox(e[2]), exprMayBox(e[3]))
-      if (op === '&&' || op === '||' || op === '??') return j3(exprMayBox(e[1]), exprMayBox(e[2]))
-    }
-    return null  // unresolved — defer to the boundary fallback
-  }
-  // strict (the compare arm's question) demands a UNIVERSAL proof: EVERY
-  // result-producing tail must be proven tagged — one tagged tail beside a
-  // raw or unresolved sibling means a raw BigInt can still flow, and the
-  // else-FALSE short-circuit would erase it. Non-strict (the boundary lane)
-  // is existential: any may-box tail routes the generic decode, which is
-  // total over every tag.
-  let sawUnresolved = false, sawTagged = false, sawUntagged = false
-  for (const e of tails) {
-    const v = exprMayBox(e)
-    if (v === true) sawTagged = true
-    else if (v === false) sawUntagged = true
-    else sawUnresolved = true
-  }
-  if (strict) return sawTagged && !sawUntagged && !sawUnresolved
-  if (sawTagged) return true
-  if (!sawUnresolved) return false
-  return (bigintRepBits(r.current) & BIGINT_REP_BOXED) !== 0 && !bigintRepIsClosed(r.current)
 }
 
 export const representationProgramHasBigint = ctx => programPlanRecord(ctx)?.bigint === true

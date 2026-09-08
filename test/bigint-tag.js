@@ -291,3 +291,39 @@ test('bigint tag: loose equality across domains, through every carrier', () => {
     }
   }
 })
+
+// The result contract's carrier edges (src/summary/contract.js, slice 2): a
+// direct-only BigInt function's raw i64 result enters every boxed consumer
+// through one conversion at the consumer's edge, and a boxed producer's
+// result enters a raw direct result through one tag unbox at the return
+// edge. Each shape is a JS oracle differential over payloads shaped like the
+// runtime's own carriers (a small value, the sign bit, all ones, a NaN-box
+// prefix collision, the largest positive i64).
+test('bigint tag: a raw direct result into every boxed consumer, and a boxed producer into a raw direct result', () => {
+  const PAYLOADS = ['7n', '0n', '-1n', '0x8000000000000000n', '0x7FF8000200000000n', '0x7FFFFFFFFFFFFFFFn']
+  const SHAPES = {
+    // raw → boxed
+    name: v => `function raw() { return ${v} }\nexport let f = (k) => { let x = k ? raw() : 'no'; return typeof x === 'bigint' ? x : 0n }`,
+    arraySlot: v => `function raw() { return ${v} }\nexport let f = (k) => { const a = [raw(), 'x']; return a[k] }`,
+    mapValue: v => `function raw() { return ${v} }\nexport let f = (k) => { const m = new Map(); m.set('a', raw()); return k ? m.get('a') : 0n }`,
+    closure: v => `function raw() { return ${v} }\nexport let f = (k) => { const g = k ? () => raw() : () => 'no'; const r = g(); return typeof r === 'bigint' ? r : 0n }`,
+    dispatcher: v => `function raw() { return ${v} }\nconst T = { a: () => raw(), b: () => 'no' }\nexport let f = (k) => { const r = T[k ? 'a' : 'b'](); return typeof r === 'bigint' ? r : 0n }`,
+    exportResult: v => `function raw() { return ${v} }\nexport let f = (k) => raw()`,
+    valueUsed: v => `function raw() { return ${v} }\nexport let f = (k) => { const g = k ? raw : () => 'no'; const r = g(); return typeof r === 'bigint' ? r : 0n }`,
+    // boxed → raw
+    fromName: v => `function direct(k) { let x = k ? ${v} : 'no'; if (typeof x !== 'bigint') return 0n; return x }\nexport let f = (k) => direct(k) + 1n`,
+    fromArraySlot: v => `function direct(k) { const a = [${v}, 2n]; return a[k] }\nexport let f = (k) => direct(k) + 1n`,
+    fromMapValue: v => `function direct(k) { const m = new Map(); m.set(k, ${v}); return m.get(k) ?? 0n }\nexport let f = (k) => direct(k) + 1n`,
+    fromClosure: v => `function direct(k) { const g = () => ${v}; return g() }\nexport let f = (k) => direct(k) + 1n`,
+    fromDispatcher: v => `const T = { a: () => ${v}, b: () => 2n }\nfunction direct(k) { return T[k ? 'a' : 'b']() }\nexport let f = (k) => direct(k) + 1n`,
+    fromValueUsed: v => `function big() { return ${v} }\nfunction direct(k) { const g = k ? big : big; return g() }\nexport let f = (k) => direct(k) + 1n`,
+  }
+  for (const [shape, src] of Object.entries(SHAPES)) for (const v of PAYLOADS) {
+    const source = src(v)
+    const oracle = Function(source.replaceAll('export let ', 'var ') + ';return f')()
+    for (const optimize of levels) {
+      const { f } = jz(source, { optimize }).exports
+      for (const k of [0, 1]) { const want = oracle(k); is(f(k), typeof want === 'bigint' ? BigInt.asIntN(64, want) : want, `${shape} ${v} f(${k}) (O${optimize || 0})`) }
+    }
+  }
+})

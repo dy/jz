@@ -118,10 +118,13 @@ for (const op of ['/', '%']) test(`BigInt ${op}: implicit error census precedes 
 })
 
 test('BigInt division and remainder: constant nonzero divisors demand no error runtime', () => {
+  // The export's BigInt result crosses boxed (its result contract), so the
+  // module owns memory for the cell; the error runtime (the exception tag)
+  // stays out.
   for (const optimize of levels) for (const op of ['/', '%']) for (const divisor of ['2n','-1n']) {
     const bytes=compile(`export function f(){return -9223372036854775808n ${op} ${divisor}}`,{optimize})
     const mod=new WebAssembly.Module(bytes)
-    is(WebAssembly.Module.exports(mod).some(e=>e.kind==='memory' || e.kind==='tag'),false,`${op} ${divisor} O${optimize || 0}`)
+    is(WebAssembly.Module.exports(mod).some(e=>e.kind==='tag'),false,`${op} ${divisor} O${optimize || 0}`)
   }
 })
 
