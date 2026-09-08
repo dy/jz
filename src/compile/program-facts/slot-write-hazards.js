@@ -67,16 +67,10 @@ const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.
  *  precision, so this channel exists to give READS the same precision,
  *  through the identical sidOf/addPointsTo-shape/markPointsToAll-shape/
  *  KEYED_EXEMPT_VALS machinery). Consumed by module/schema.js's
- *  schemaDynReach, in turn by src/ir.js's needsDynShadow: a schema's
- *  construction-time props-sidecar mirror is only needed for sids this set
- *  names (or when the set is 'ALL') — the mirror exists SPECIFICALLY so a
- *  dyn-key READ elsewhere finds the field, so a schema no READ can ever
- *  reach needs no mirror. `for-in` is a REAL (not merely conservative) READ
- *  dependency here, not just a stand-in for "some read exists": its own
- *  codegen (module/collection.js `for-in`) walks ONLY the off-16 props
- *  sidecar — a zero/absent sidecar iterates ZERO times, no schema-table
- *  fallback — so under-marking a for-in receiver's sid silently drops every
- *  field of every instance from enumeration, not merely slower dispatch. */
+ *  schemaDynReach, in turn by src/ir.js's needsDynShadow: a schema this set
+ *  names (or every schema when the set is 'ALL') may be reached by a
+ *  computed-key access, which keeps its constant literals off the shared
+ *  static instance and its slot carriers wide. */
 export function collectSlotWriteHazards(ast, opts) {
   const pf = getFactStore().programFacts
   const late = !!opts?.paramReps

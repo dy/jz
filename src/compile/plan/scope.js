@@ -744,6 +744,12 @@ export const devirtGlobalCalls = (ast) => {
 export const materializeAutoBoxSchemas = (programFacts) => {
   if (!ctx.schema.register) return
   for (const [name, props] of programFacts.propMap) {
+    // A name whose objects are minted elsewhere (`const alias = ns.inner`, a
+    // parameter) or whose sources disagree keeps no merged or boxed layout:
+    // the declaration's value replaces a box, and a slot store by a layout
+    // the object does not carry lands past its fields. Its dot writes take
+    // the dynamic path (ctx.schema.unknownInit's doc, ctx.js).
+    if (ctx.schema.unknownInit?.has(name) || ctx.schema.poisoned?.has(name)) continue
     if (ctx.schema.vars.has(name)) {
       const existing = ctx.schema.resolve(name)
       const newProps = [...props].filter(prop => !existing.includes(prop))

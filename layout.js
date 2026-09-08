@@ -264,10 +264,14 @@ export const ptrOffsetFwdWat = () =>
  *  OBJECT does not use otherwise (`__alloc_hdr(0, cap)`; `__len` answers 0 for
  *  one without reading it). `delete o[k]` keeps undefined in the schema slot,
  *  so every static read of the slot is JS's `o.a` after the delete, and sets
- *  bit i for slot i; bit 31 is sticky for the slots from 31 on, which read
- *  deleted while they hold undefined. A write to the slot clears its bit.
- *  A static-segment object (off < __heap_start) has no header and, being
- *  immutable, no deletes: its mask is 0. Read by the presence probe
+ *  bit i for slot i; bit 31 is sticky for the slots from 31 on. A marked slot
+ *  is deleted while it holds undefined: the slot is the field's only home
+ *  (module/collection.js buildObjectSchemaSetArm), so a plain slot store,
+ *  static or dynamic, makes the field present again without touching the
+ *  mask (`__dyn_set` clears the bit as well, so a dynamic write of undefined
+ *  is present too; a static write of undefined into a deleted slot leaves it
+ *  absent). A static-segment object (off < __heap_start) has no header and,
+ *  being immutable, no deletes: its mask is 0. Read by the presence probe
  *  (`__dyn_get_t_hm`), enumeration (Object.keys, for-in) and `__obj_clone`;
  *  written by `__dyn_del` and `__dyn_set`. Both dialects of the runtime read
  *  it through the builders below. */
@@ -279,13 +283,13 @@ export const deletedMaskWat = (off = '$off') =>
     (then (i32.load (i32.sub (local.get ${off}) (i32.const 8))))
     (else (i32.const 0)))`
 
-/** WAT: 1 when slot `idx` of an object with mask `mask` is deleted; `val` is
- *  the slot's i64 (the sticky bit's slots read deleted while undefined). */
+/** WAT: 1 when slot `idx` of an object with mask `mask` is deleted: its bit
+ *  (the sticky one from slot 31 on) is set and `val`, the slot's i64, is
+ *  undefined. */
 export const deletedSlotWat = (mask, idx, val) =>
-  `(if (result i32) (i32.lt_u (local.get ${idx}) (i32.const ${DELETED_STICKY_BIT}))
-    (then (i32.and (i32.shr_u (local.get ${mask}) (local.get ${idx})) (i32.const 1)))
-    (else (i32.and (i32.shr_u (local.get ${mask}) (i32.const ${DELETED_STICKY_BIT}))
-      (i64.eq (local.get ${val}) (i64.const ${atomNanHex(ATOM.UNDEF)})))))`
+  `(i32.and
+    (i32.and (i32.shr_u (local.get ${mask}) (select (local.get ${idx}) (i32.const ${DELETED_STICKY_BIT}) (i32.lt_u (local.get ${idx}) (i32.const ${DELETED_STICKY_BIT})))) (i32.const 1))
+    (i64.eq (local.get ${val}) (i64.const ${atomNanHex(ATOM.UNDEF)})))`
 
 /** WAT: mark slot `idx` of the heap OBJECT at `off` deleted (`on`), or present. */
 export const markDeletedSlotWat = (off, idx, on) => {
@@ -308,7 +312,8 @@ export const deletedMaskIR = (base) =>
 
 /** IR: deletedSlotWat over i32 locals `mask`, `idx` and an i64 slot expression. */
 export const deletedSlotIR = (mask, idx, val) =>
-  ['if', ['result', 'i32'], ['i32.lt_u', ['local.get', `$${idx}`], ['i32.const', DELETED_STICKY_BIT]],
-    ['then', ['i32.and', ['i32.shr_u', ['local.get', `$${mask}`], ['local.get', `$${idx}`]], ['i32.const', 1]]],
-    ['else', ['i32.and', ['i32.shr_u', ['local.get', `$${mask}`], ['i32.const', DELETED_STICKY_BIT]],
-      ['i64.eq', val, ['i64.const', atomNanHex(ATOM.UNDEF)]]]]]
+  ['i32.and',
+    ['i32.and', ['i32.shr_u', ['local.get', `$${mask}`],
+      ['select', ['local.get', `$${idx}`], ['i32.const', DELETED_STICKY_BIT], ['i32.lt_u', ['local.get', `$${idx}`], ['i32.const', DELETED_STICKY_BIT]]]],
+      ['i32.const', 1]],
+    ['i64.eq', val, ['i64.const', atomNanHex(ATOM.UNDEF)]]]

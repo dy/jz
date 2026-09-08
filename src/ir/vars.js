@@ -19,7 +19,12 @@ export function usesDynProps(vt) {
     || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
 }
 
-/** Does this object literal / property write need a `__dyn_props` shadow update?
+/** May a computed-key access (`obj[expr]`, a dynamic write) reach this object?
+ *  A schema field lives in its slot only (module/collection.js
+ *  buildObjectSchemaSetArm's invariant), so nothing is mirrored for it: the
+ *  answer governs the shared static instance of a constant literal (a
+ *  reachable one allocates per evaluation, module/object.js) and the carrier
+ *  width of a slot store a dynamic reader may observe (emit-assign.js).
  *  `target` is the var name receiving the literal (or null when escaping).
  *  `sid` (dyn-reach slice) is the call site's OWN resolved schema id, when it
  *  has one locally — passed explicitly rather than re-derived here because
@@ -28,8 +33,8 @@ export function usesDynProps(vt) {
  *  SAME resolution the write-hazard scan used to build dynPointsTo must be
  *  reused, not approximated afresh, or the two sides can silently diverge on
  *  schema-merge/poisoned-binding edges (CARRIER PROGRAM §15/§16's granularity-
- *  mismatch lesson, module/schema.js:441-453 — construction-time shadow and
- *  every read-side dyn-props probe must agree at IDENTICAL schema granularity). */
+ *  mismatch lesson, module/schema.js:441-453 — the write side and every
+ *  read-side dyn-props probe must agree at IDENTICAL schema granularity). */
 export function needsDynShadow(target, sid) {
   if (!ctx.module.modules.collection) return false
   // Functions/CLOSURE always need dynamic props so cross-module property
@@ -37,17 +42,14 @@ export function needsDynShadow(target, sid) {
   const vt = typeof target === 'string' ? (ctx.func.localReps?.get(target)?.val || ctx.scope.globalValTypes?.get(target)) : null
   if (vt === 'closure' || usesDynProps(vt)) return true
   // A module-wide dynamic-key access (`obj[expr]`) means SOME object may later
-  // be read through the dyn-props hash (__dyn_get_any) or enumerated by
-  // `for-in` — but only objects of a schema a dyn-key read/for-in receiver can
-  // actually resolve to (schemaDynReach, module/schema.js, fed by
-  // collectSlotWriteHazards' hz.dynPointsTo — program-facts.js) need the
-  // shadow mirror those paths consult; a schema no such read can ever name
-  // needs none. Fail closed exactly like today's whole-program behavior on
-  // BOTH remaining uncertainties: this call site's own sid unresolvable (it
-  // can't ask schemaDynReach a specific question), and schemaDynReach's own
-  // 'ALL' sentinel (some dyn-key read/for-in receiver in the program was
-  // itself unresolvable) — either one shadows, matching what anyDynKey alone
-  // used to do unconditionally.
+  // be read through __dyn_get_any or enumerated — but only objects of a schema
+  // a dyn-key receiver can actually resolve to (schemaDynReach,
+  // module/schema.js, fed by collectSlotWriteHazards' hz.dynPointsTo —
+  // program-facts.js); a schema no such access can ever name is unreachable.
+  // Fail closed on BOTH remaining uncertainties: this call site's own sid
+  // unresolvable (it can't ask schemaDynReach a specific question), and
+  // schemaDynReach's own 'ALL' sentinel (some dyn-key receiver in the program
+  // was itself unresolvable).
   if (ctx.types?.anyDynKey) return sid == null || !ctx.schema.schemaDynReach || ctx.schema.schemaDynReach(sid)
   const dyn = ctx.types?.dynKeyVars
   return target != null && dyn ? dyn.has(target) : false

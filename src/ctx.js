@@ -592,6 +592,13 @@ export function reset(proto, globals, bridge) {
                            //   sources' objects. Populated by prepare's `=` handler;
                            //   end-of-prepare state is what compile reads, so the
                            //   conflict is order-insensitive.
+    unknownInit: new Set(), // names whose objects are minted elsewhere (a parameter,
+                           //   a non-literal initializer, a catch or destructure
+                           //   binding — prepare's censusUnknownInitDecl). No plan
+                           //   step may give such a name a merged or auto-boxed
+                           //   layout: its objects carry their own sid, and a slot
+                           //   store by a layout they do not have lands past their
+                           //   fields (materializeAutoBoxSchemas, inferAssignSchema).
     // (varsBarred deleted — BindingId totality makes cross-function bare-name
     //  collisions unrepresentable; same name ⇒ same binding, so the bar census
     //  and its belt had nothing left to guard.)

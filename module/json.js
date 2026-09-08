@@ -667,13 +667,9 @@ export default (ctx) => {
                 (local.set $pcapG (i32.load (i32.sub (local.get $poffG) (i32.const 4))))
                 (local.set $dnG (i32.load (i32.sub (local.get $poffG) (i32.const 8))))))))))` : ''}
     ;; Walk in insertion order via __coll_order — schema-only enumeration
-    ;; would drop computed props (e.g. {} then o.a=1). Skip entries whose key
-    ;; already appears in the schema: object literals with
-    ;; needsDynShadow(target)=true shadow-write each schema key into propsPtr
-    ;; so dyn-key reads can resolve via hash lookup. That mirror is a runtime
-    ;; acceleration, not an enumeration entity — without dedup, JSON output
-    ;; emits each schema key twice. Schema-key interns equal the keys we
-    ;; shadow-write (same compile-time string literal), so i64.eq matches.
+    ;; would drop computed props (e.g. {} then o.a=1). A key already in the
+    ;; schema is skipped: __dyn_set keeps a schema key in its slot
+    ;; (collection.js buildObjectSchemaSetArm's invariant), so this is a belt.
     ;; G walks first (schema-dedup only); S walks second (schema-dedup AND
     ;; G-dedup, so a key present in both — reassigned at runtime after being
     ;; set at init — emits once, from the authoritative G copy).

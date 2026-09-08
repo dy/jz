@@ -657,25 +657,15 @@ export function emitElementAssign(arr, idx, val) {
   // 1. SRoA flat object/array — moved above (before keyExpr/valueExpr) so
   // `val` emits once through storedValueNarrow instead of the shared
   // storedValue; see that early check's own comment.
-  // 2. Schema field literal key → direct payload-slot write.
-  // SHADOW CONTRACT (same as the dot-path arms): when the module may read this
-  // object dynamically, the mint seeded a props sidecar that __dyn_get probes
-  // BEFORE the schema slots — a slot-only write here is masked by the stale
-  // seed (this dropped `it['@@iterator'] = fn` for prehashed dot reads).
+  // 2. Schema field literal key → direct payload-slot write. The slot is the
+  // field's only home (module/collection.js buildObjectSchemaSetArm): a
+  // dynamic read finds it through the schema arm.
   if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
     const slot = ctx.schema.slotOf(arr, litKey)
-    if (slot >= 0) {
-      // sid (dyn-reach slice): resolved fresh here (slotOf's own structural
-      // fallback can succeed with no precise idOf — needsDynShadow then fails
-      // closed on the null sid, matching the pre-slice behavior exactly).
-      const sid = ctx.schema.idOf(arr)
-      const shadow = needsDynShadow(arr, sid)
-      if (shadow) inc('__dyn_set')
+    if (slot >= 0)
       return withTemp(valueExpr, t => [
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
-        ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(arr))], asI64(emit(['str', litKey])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
         ['local.get', `$${t}`]])
-    }
   }
   // 3. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
@@ -921,24 +911,15 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   // struct cell narrowed to an unboxed OBJECT ptr keeps its schema as `ptrAux`, not
   // in ctx.schema.vars under the name — so schema.slotOf(name) misses and the write
   // would fall to __dyn_set (propsPtr) while the READ resolves the slot via ptrAux,
-  // targeting different memory (write lost). Match the read.
-  // SHADOW CONTRACT: when the module may read this object dynamically
-  // (needsDynShadow), the literal mint seeded a props sidecar with each schema
-  // key's INITIAL value, and __dyn_get probes that sidecar BEFORE the schema
-  // slots — so a slot-only write here is invisible to dyn reads (the stale
-  // sidecar copy masks it; this silently dropped `p.then = closure` in the
-  // async runtime whenever any `x[expr]` appeared in the module). Mirror into
-  // __dyn_set exactly like the named-receiver schema arm below.
+  // targeting different memory (write lost). Match the read. The slot is the
+  // field's only home (module/collection.js buildObjectSchemaSetArm): a
+  // dynamic read finds the stored value through the schema arm.
   {
     const vaProbe = emit(obj)
     if (vaProbe?.ptrKind === VAL.OBJECT && vaProbe.ptrAux != null) {
       const sch = ctx.schema.list[vaProbe.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
       if (si >= 0) {
-        // vaProbe.ptrAux (dyn-reach slice) IS this receiver's sid directly —
-        // it is indexed into ctx.schema.list just above.
-        const shadow = needsDynShadow(typeof obj === 'string' ? obj : null, vaProbe.ptrAux)
-        if (shadow) inc('__dyn_set')
         // Packed i32 cells (structInline cursor, `.cellI32` node tag): the
         // field is a raw i32 at +si*4 — i32.store, no f64 boxing. The store
         // value is int32-exact by the slotI32Certain census (packing
@@ -948,25 +929,16 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
           return block64(
             ['local.set', `$${t}`, asI32(emit(val))],
             packedI32.ops.store(ptrOffsetIR(vaProbe, VAL.OBJECT), si, ['local.get', `$${t}`]),
-            ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${t}`]]]]]] : []),
             ['f64.convert_i32_s', ['local.get', `$${t}`]])
         }
-        // storedValueNarrow when NOT shadowed: no __dyn_set mirror means no
-        // registry-aware reader ever observes this slot — see
-        // carrierF64Narrow's own doc comment (ir.js). Shadowed keeps the full
-        // storedValue box: $__dyn_get DOES read this value dynamically then.
-        //
-        // CARRIER PROGRAM §15/§16: the BIGINT-boxing half of that choice
-        // derives from the per-schema slotBigintBoxedBySid fact instead of
-        // this write's own raw `shadow` (module/object.js's construction
-        // comment has the full granularity rationale) — `shadow` itself is
-        // untouched, still governs the __dyn_set mirror install below.
-        // No-op under CARRIER_BOX=off (storedValue/storedValueNarrow are
+        // CARRIER PROGRAM §15/§16: the BIGINT-boxing choice derives from the
+        // per-schema slotBigintBoxedBySid fact (module/object.js's
+        // construction comment has the full granularity rationale). No-op
+        // under CARRIER_BOX=off (storedValue/storedValueNarrow are
         // byte-identical then).
         const boxed = ctx.schema.slotBigintBoxedBySid?.(vaProbe.ptrAux, prop)
         return withTemp(boxed ? storedValue(val) : storedValueNarrow(val), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
-          ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
           ['local.get', `$${t}`]])
       }
     }
@@ -975,44 +947,29 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   if (typeof obj === 'string' && ctx.schema.slotOf) {
     const idx = ctx.schema.slotOf(obj, prop)
     if (idx >= 0) {
-      // sid (dyn-reach slice + CARRIER PROGRAM §15/§16): hoisted ABOVE shadow —
-      // both the shadow decision and the BIGINT-boxing decision below need the
-      // SAME sid, and both must fail closed together when `ctx.schema.slotOf`
-      // resolves `idx` via its structural fallback with no precise idOf (a
-      // poisoned/ambiguous binding): needsDynShadow(obj, null) itself then
-      // falls back to the raw anyDynKey/dynKeyVars answer exactly as before
-      // (the pre-slice behavior), and the boxed decision below falls back to
-      // that same `shadow` value in that case too — one sid, one fallback.
+      // The slot is the field's only home (module/collection.js
+      // buildObjectSchemaSetArm): a dynamic read finds the stored value
+      // through the schema arm, so the carrier stays wide whenever such a
+      // reader may exist — this receiver's dyn reach, or any dynamic write in
+      // the build (an alias does not inherit the root binding's reach fact).
+      // sid (CARRIER PROGRAM §15/§16): the BIGINT-boxing decision derives from
+      // the per-schema slotBigintBoxedBySid fact (module/object.js's
+      // construction comment has the granularity rationale); when
+      // `ctx.schema.slotOf` resolved `idx` through its structural fallback
+      // with no precise idOf (a poisoned/ambiguous binding), needsDynShadow
+      // (obj, null) falls back to the raw anyDynKey/dynKeyVars answer and the
+      // carrier follows it — one sid, one fallback. storedValueNarrow
+      // otherwise: `let o = {n: 4611686018427387903n}; o.n += 1n` boxed the
+      // RHS unconditionally once, then the next `f64.load` at this fixed
+      // offset read the pointer's bits raw.
       const sid = ctx.schema.idOf(obj)
-      const shadow = needsDynShadow(obj, sid)
-      // Once any dynamic property write is present, keep fixed slots and the
-      // per-object sidecar synchronized for aliases too. Alias names do not
-      // necessarily inherit the root binding's dyn-reach fact, but they share
-      // the same object header; mirroring is the one source of truth.
-      const mirror = shadow || ctx.core.includes.has('__dyn_set')
-      // storedValueNarrow when NOT shadowed — see the identical reasoning at
-      // this function's flat-object/unboxed-ptrAux branches above and
-      // carrierF64Narrow's own doc comment (ir.js): no __dyn_set mirror means
-      // no registry-aware reader ever observes this slot. Found live:
-      // `let o = {n: 4611686018427387903n}; o.n += 1n` boxed the RHS
-      // unconditionally, then the very next `f64.load` at this fixed offset
-      // (this receiver has no shadow) read the pointer's bits raw.
-      //
-      // CARRIER PROGRAM §15/§16: derive the BIGINT-boxing half from the
-      // per-schema slotBigintBoxedBySid fact (module/object.js's construction
-      // comment has the granularity rationale) — `shadow` itself stays the
-      // real needsDynShadow(obj, sid), still governing the __dyn_set mirror below.
-      const boxed = sid != null ? ctx.schema.slotBigintBoxedBySid?.(sid, prop) : mirror
-      const va = emit(obj), vv = boxed || mirror ? storedValue(val) : storedValueNarrow(val), t = temp()
-      if (mirror) inc('__dyn_set')
-      const stmts = [
+      const wide = needsDynShadow(obj, sid) || ctx.core.includes.has('__dyn_set')
+      const boxed = wide || (sid != null && ctx.schema.slotBigintBoxedBySid?.(sid, prop))
+      const va = emit(obj), vv = boxed ? storedValue(val) : storedValueNarrow(val), t = temp()
+      return block64(
         ['local.set', `$${t}`, vv],
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`]),
-      ]
-      if (mirror)
-        stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
-      stmts.push(['local.get', `$${t}`])
-      return block64(...stmts)
+        ['local.get', `$${t}`])
     }
   }
   // Chained receiver (`a.b.c = v`): resolve the holder's static shape so the
@@ -1025,24 +982,12 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
     const sh = shapeOf(obj)
     if (sh?.val === VAL.OBJECT && sh.names) {
       const i = sh.names.indexOf(prop)
-      if (i >= 0) {
-        // Same SHADOW CONTRACT as the ptrAux arm above: a slot-only write on a
-        // shadowed object is masked by the mint-seeded sidecar for dyn reads.
-        // sid (dyn-reach slice): `obj` is itself the chain expression (e.g.
-        // `ctx.func` in `ctx.func.finallyStack = …`) — resolve it the SAME way
-        // the write-hazard scan resolves a non-string receiver (sidOf's own
-        // `ctx.schema.chainSid(obj, sidOf)`), using the public idOf as the
-        // bare-name base case (mirrors kind.js's `chainSid(name, ctx.schema.idOf)`).
-        // Fails closed to null (→ shadow=true under anyDynKey) on any
-        // unresolved hop, exactly chainSid's own documented fail-closed shape.
-        const chainedSid = ctx.schema.chainSid?.(obj, ctx.schema.idOf)
-        const shadow = needsDynShadow(null, chainedSid)
-        if (shadow) inc('__dyn_set')
+      // The slot is the field's only home (module/collection.js
+      // buildObjectSchemaSetArm): a dynamic read finds it through the schema arm.
+      if (i >= 0)
         return withTemp(storedValue(val), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), i, ['local.get', `$${t}`]),
-          ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
           ['local.get', `$${t}`]])
-      }
     }
   }
   if (typeof obj === 'string') {

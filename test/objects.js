@@ -327,6 +327,31 @@ test('schema writes through aliases keep an existing dynamic sidecar coherent', 
   is(f(), 2)
 })
 
+// A name whose objects are minted elsewhere takes no merged or auto-boxed
+// layout (ctx.schema.unknownInit: materializeAutoBoxSchemas, prepare's
+// inferAssignSchema): `const alias = ns.inner` replaced its box with the
+// inner object's pointer and `alias.f = b` then stored at the box's slot
+// offset into a 1-slot object; `Object.assign(o, {b, c})` on a parameter
+// slot-copied by the merged {b, c} into the caller's {a} object (`p.a` read
+// 2, slot 1 past the allocation). Both writes now take the dynamic path; the
+// neighbours stay intact and the caller's own field keeps its value.
+test('a foreign-minted name gets no merged layout: writes through it stay in bounds', () => {
+  const { f, g } = run(`
+    function a() { return 1 }
+    function b() { return 2 }
+    const ns = { inner: {} }
+    const next = { z: 9 }
+    ns.inner.f = a
+    const alias = ns.inner
+    alias.f = b
+    export let f = () => ns.inner.f() * 10 + next.z
+    const assign = (o) => { Object.assign(o, { b: 2, c: 3 }); return o }
+    export let g = () => { const p = { a: 1 }; const q = { z: 9 }; assign(p); return p.a * 10 + q.z }
+  `)
+  is(f(), 29)
+  is(g(), 19)
+})
+
 test('Regression: property read does not call method emitter with same name', () => {
   const { f } = run(`export let f = () => {
     let item = {}
