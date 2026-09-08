@@ -662,6 +662,35 @@ test('_clear() heals ephemeral values written into DURABLE collection slots', ()
   is(exports.main(), 7, 'round 2: healed entry reads undefined → memo rebuilds, no stale read')
 })
 
+test('durable slot log reuses repeated writes and cancelled entries before _clear', () => {
+  const source = `
+    const cache = new Map([['seed', [7]]])
+    export function write(n, remove) {
+      for (let i = 0; i < n; i++) {
+        cache.set('key', [i])
+        if (remove) cache.delete('key')
+      }
+      return cache.size
+    }
+    export let seed = () => cache.get('seed')[0]
+    export let last = () => cache.get('key')[0]
+    export let size = () => cache.size
+  `
+  for (const optimize of [false, 2, 3]) {
+    const { exports: e } = jz(source, { optimize })
+    for (let round = 0; round < 2; round++) {
+      is(e.write(4096, false), 2, 'repeated overwrites use one pending heal per slot')
+      is(e.last(), 4095, 'the last write remains visible before reset')
+      is(e.write(4096, true), 1, 'deleted entries leave reusable log slots')
+      is(e.seed(), 7, 'unrelated durable entry survives')
+      is(e.write(4096, false), 2, 'a cancelled slot can be logged again')
+      e._clear()
+      is(e.size(), 1, 'reset removes the runtime entry exactly once')
+      is(e.seed(), 7, 'reset preserves the initial entry')
+    }
+  }
+})
+
 test('_clear() heals a durable array header past IN-PLACE growth, not just relocation', () => {
   // Root-caused from .work/evidence.md's banked lead 2 ("warm _clear() corruption
   // non-repro… new durable-array heal length defect banked"): `site.length` read

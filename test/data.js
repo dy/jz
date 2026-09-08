@@ -11,6 +11,30 @@ function run(code, opts) {
   return adaptI64(module, instance.exports)
 }
 
+test('if conversion preserves conditional BigInt updates in a Number/BigInt binding', () => {
+  const source = `
+    const sign = 0x8000000000000000n
+    const buffer = new ArrayBuffer(8)
+    const ints = new BigInt64Array(buffer), floats = new Float64Array(buffer)
+    const bytes = new Uint8Array(buffer)
+    export function f(input, value) {
+      if (input.indexOf('nan') >= 0) {
+        value = 0x8000000000000n
+        value |= 0x7ff0000000000000n
+        if (input[0] === '-') value |= sign
+        ints[0] = value
+      } else { value = Number(input); floats[0] = value }
+      return bytes[7]
+    }
+  `
+  const oracle = Function(source.replace('export ', '') + '; return f')()
+  for (const optimize of [false, 1, 2, 3]) {
+    const f = jz(source, { optimize }).exports.f
+    for (const input of ['nan', '-nan', '2', '-nan', 'nan'])
+      is(f(input), oracle(input), `${input} O${optimize || 0}`)
+  }
+})
+
 // ============================================
 // ARRAYS
 // ============================================

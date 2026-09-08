@@ -159,6 +159,7 @@ export function analyzeClosureBodyForEmit(cb) {
       for (const [name, kind] of unbox) {
         if (cb.params.includes(name) || cb.captures.includes(name)) continue
         const fields = { ptrKind: kind }
+        if (kind === VAL.DATE) fields.ptrAux = ctx.schema.ensureDateSid()
         if (kind === VAL.TYPED) {
           let ctor = ctx.func.typedElem?.get(name)
           if (ctor == null && (ctor = ctx.summary?.at(cb.scope).typedCtorOf(name))) (ctx.func.typedElem ||= new Map()).set(name, ctor)

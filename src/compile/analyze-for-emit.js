@@ -313,6 +313,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     if (unbox.size > 0) {
       for (const [n, kind] of unbox) {
         const fields = { ptrKind: kind }
+        if (kind === VAL.DATE) fields.ptrAux = ctx.schema.ensureDateSid()
         if (kind === VAL.TYPED) {
           // The body's own ctor, else the program summary's (a typed field
           // read through a parameter): recorded so the emitter's raw loads see it.

@@ -159,8 +159,8 @@ export const registerDurableLog = () => {
   // \`__durable_slot_heal\` (wired into \`__clear\` post-hoc, like the fwd heal)
   // overwrites every logged slot with \`undefined\` — the pointed-at data dies
   // with the arena, so entry-death is the only sound semantics. Same lazy-buffer
-  // + trap-ceiling design as the fwd log; slots are 4 bytes each so one page
-  // covers 1024 writes (durable-receiver writes are rare by construction).
+  // + trap-ceiling design as the fwd log; the buffer holds 1024 distinct
+  // pending heals. Overwrites are idempotent and cancelled records are reused.
   declGlobal('__durable_slot_buf', 'i32')
   declGlobal('__durable_slot_n', 'i32')
   ctx.core.stdlib['__is_eph_bits'] = `(func $__is_eph_bits (param $b i64) (result i32)
@@ -177,15 +177,27 @@ export const registerDurableLog = () => {
       (then (return (i32.const 0))))
     (i32.ge_u (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF))) (global.get $__heap_reset)))`
   ctx.core.stdlib['__durable_slot_log'] = `(func $__durable_slot_log (param $addr i32) (param $tbl i32)
-    (local $n i32) (local $base i32)
+    (local $n i32) (local $base i32) (local $i i32) (local $slot i32) (local $a i32)
     (if (i32.eqz (global.get $__durable_slot_buf))
       (then (global.set $__durable_slot_buf (call $__alloc (i32.const 8192)))))
     (local.set $n (global.get $__durable_slot_n))
-    (if (i32.ge_s (local.get $n) (i32.const 1024)) (then (unreachable)))
-    (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $n) (i32.const 3))))
+    ;; One pending heal per slot. Repeated writes need no second record;
+    ;; deleted entries leave reusable holes, not a lifetime write counter.
+    (local.set $slot (local.get $n))
+    (local.set $i (local.get $n))
+    (block $done (loop $scan
+      (br_if $done (i32.eqz (local.get $i)))
+      (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+      (local.set $a (i32.load (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3)))))
+      (if (i32.eq (local.get $a) (local.get $addr)) (then (return)))
+      (if (i32.eqz (local.get $a)) (then (local.set $slot (local.get $i))))
+      (br $scan)))
+    (if (i32.ge_s (local.get $slot) (i32.const 1024)) (then (unreachable)))
+    (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $slot) (i32.const 3))))
     (i32.store (local.get $base) (local.get $addr))
     (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $tbl))
-    (global.set $__durable_slot_n (i32.add (local.get $n) (i32.const 1))))`
+    (if (i32.eq (local.get $slot) (local.get $n))
+      (then (global.set $__durable_slot_n (i32.add (local.get $n) (i32.const 1))))))`
   // A durable-slot log entry names a PHYSICAL address (the entry slot, or a value
   // word inside it) captured at LOG time. That address goes stale if the SAME
   // table's genDelete backward-shifts a LATER key across it before this round's

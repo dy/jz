@@ -24,6 +24,11 @@ import { CATEGORIES, genProgram } from '../scripts/perf-corpus.mjs'
 const SEEDS = 40
 const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 
+// Reset-log reuse adds 26 loop nodes to __durable_slot_log in each of the
+// 40 condref modules (+1040). Comparing with only that helper reverted proved
+// all other 1657 function bodies unchanged. The baseline includes this required
+// bookkeeping; it counts runtime loops as well as the program's hot loops.
+
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
 const loopBodyOps = (wat) => {
   let count = 0

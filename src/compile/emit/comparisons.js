@@ -485,7 +485,14 @@ const isCheapPureVal = (n) => {
   if (!Array.isArray(n)) return false
   if (n[0] == null) return true                              // boxed literal [, v]
   if (n[0] === 'local.get') return true
-  if (CHEAP_PURE_OPS.has(n[0])) { for (let i = 1; i < n.length; i++) if (!isCheapPureVal(n[i])) return false; return true }
+  if (CHEAP_PURE_OPS.has(n[0])) {
+    // A reference read is cheap; arithmetic on it may coerce or throw.
+    for (let i = 1; i < n.length; i++) {
+      const kind = valTypeOf(n[i])
+      if ((kind !== VAL.NUMBER && kind !== VAL.BOOL) || !isCheapPureVal(n[i])) return false
+    }
+    return true
+  }
   return false
 }
 
@@ -496,7 +503,13 @@ const isCheapPureVal = (n) => {
 // net effect is the increment). Returns `{ lhs, val }` or null.
 export function matchVoidLocalStore(s) {
   if (!Array.isArray(s)) return null
-  if (s[0] === '=' && typeof s[1] === 'string' && isCheapPureVal(s[2])) return { lhs: s[1], val: s[2] }
+  const lhs = typeof s[1] === 'string' ? s[1] : Array.isArray(s[1]) ? s[1][1] : null
+  const kind = typeof lhs === 'string' && valTypeOf(lhs)
+  // Synthetic joins have no representation plan: retain a proven carrier,
+  // including pointer copies, but never synthesize BigInt materialization.
+  if (!kind || kind === VAL.BIGINT || hasAmbiguousBoolMerge(lhs)) return null
+  if (s[0] === '=' && typeof s[1] === 'string' && valTypeOf(s[2]) === kind && isCheapPureVal(s[2])) return { lhs: s[1], val: s[2] }
+  if (kind !== VAL.NUMBER) return null
   if ((s[0] === '++' || s[0] === '--') && typeof s[1] === 'string')
     return { lhs: s[1], val: [s[0] === '++' ? '+' : '-', s[1], [, 1]] }
   // postfix: `x++` → `(++x) - 1`, `x--` → `(--x) + 1`

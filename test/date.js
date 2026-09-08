@@ -113,7 +113,8 @@ test('Date object: unresolved-vt receiver .valueOf() via a shared dispatch funct
       return unresolvedValueOf(d) === 1234567890000 && unresolvedValueOf(o) === o
     }
   `
-  is(jz(src).exports.f(), true)
+  for (const optimize of [false, 1, 2, 3])
+    is(jz(src, { optimize }).exports.f(), true, `Date brand survives a shared helper at O${optimize || 0}`)
 })
 
 test('Date object: unresolved .getTime() discriminates Date and rejects non-Date receivers', () => {
