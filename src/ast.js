@@ -51,13 +51,12 @@ export const TYPEOF = Object.freeze(Object.assign(Object.create(null), {
  *  `!==`). Returns null when the node isn't a typeof predicate.
  *
  *  Two consumers — src/compile/infer.js's notStringEvidence (body-walk
- *  evidence) and src/compile/flow-types.js's extractRefinements/
- *  closureBodyReturnKind (flow-sensitive refinement) — used to re-implement
- *  this independently with diverging tolerances for the literal form (raw
- *  `'string'` vs prepare-normalized typeof-code `-2`). Lives here (not in
- *  infer.js, its original home) because it's a pure AST-shape predicate with
- *  no ctx/reps dependency, and module/function.js's closure return-kind
- *  pre-pass needs it through flow-types.js without pulling in infer.js's own
+ *  evidence) and src/compile/flow-types.js's extractRefinements
+ *  (flow-sensitive refinement) — used to re-implement this independently
+ *  with diverging tolerances for the literal form (raw `'string'` vs
+ *  prepare-normalized typeof-code `-2`). Lives here (not in infer.js, its
+ *  original home) because it's a pure AST-shape predicate with no ctx/reps
+ *  dependency, and flow-types.js needs it without pulling in infer.js's own
  *  autoload.js import — that edge closed a real cycle (module/function.js →
  *  flow-types.js → infer.js → autoload.js → module/index.js →
  *  module/function.js). ast.js is the shared cycle-free leaf both sides

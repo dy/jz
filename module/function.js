@@ -15,15 +15,6 @@ import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
 import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/representation-plan.js'
-// Round-6 prereq (a), closure return-kind pre-pass: closureBodyReturnKind is
-// the shared AST-only derivation (src/compile/flow-types.js — see its doc).
-// This module is its EMISSION-time caller: ctx.closure.make runs when the
-// closure literal itself is created, always before any later direct call
-// site in program order, so the fact is ready exactly when calleeValType
-// (kind-traits.js) needs it. narrow.js's narrowValResults is the OTHER
-// caller — the PLANNING-time one, for a function that directly returns a
-// call to its OWN freshly-declared local closure (watr's uleb/limits shape).
-import { closureBodyReturnKind, closureBodyReturnMayBeUndefined } from '../src/compile/flow-types.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, DBG_INVARIANTS } from '../src/ctx.js'
@@ -270,15 +261,6 @@ export default (ctx) => {
       directClosures: captureDirectClosures.size ? captureDirectClosures : null,
     }
     ctx.closure.bodies.push(bodyFn)
-    const returnKind = closureBodyReturnKind(body, captureValTypes)
-    if (returnKind) (ctx.closure.valResult ||= new Map()).set(fnName, returnKind)
-    // mayBeUndefined return-kind join (Slice 2, §3 "Return kinds") — the
-    // closureBodyReturnKind sibling, same return-tail sites, OR-folded instead
-    // of unified. Stored alongside ctx.closure.valResult in its own Map:
-    // closureBodyReturnKind's return shape (a bare VAL.* string) has a live
-    // consumer (kind-traits.js calleeValType) this slice must not disturb.
-    if (closureBodyReturnMayBeUndefined(body, captureValTypes))
-      (ctx.closure.valResultMayBeUndefined ||= new Map()).set(fnName, true)
 
     const tableIdx = ctx.closure.mint(fnName)
 

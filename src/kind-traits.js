@@ -6,6 +6,8 @@
 import { VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
 import { summaryTypedCtor, typedStorageCtorFromContext } from './typed-context.js'
+import { contractVal } from './summary/contract.js'
+import { valOf } from './summary/kind.js'
 
 // Comparison / logical-not ops — result is a 0|1 boolean carried as i32. The one
 // source of truth for "this operator yields a boolean": valTypeOf reads it as
@@ -150,25 +152,24 @@ export function calleeValType(callee, _args, ctx) {
   if (builtin != null) return builtin
   const hostVT = ctx.module.hostImportValTypes?.get(callee)
   if (hostVT) return hostVT
-  // A direct-dispatched local closure whose return-tail kind is statically
-  // provable: round-6 prereq (a), ctx.closure.valResult — populated by
-  // ctx.closure.make's return-kind pre-scan (module/function.js) from the raw
-  // AST at closure-CREATION time, always before any later call site in
-  // program order (closure BODIES only compile at module end, after their
-  // callers — this is why calleeValType couldn't otherwise see it). A NUMBER
-  // claim here lets toNumF64 skip the `__to_num` wrapper at the call site,
-  // same as any other kind unlocks its own call-site fast path (STRING skips
-  // the polymorphic concat dispatch, BIGINT keeps i64 arithmetic unboxed…).
-  const closBody = ctx.func.directClosures?.get(callee)
-  if (closBody) {
-    const vt = ctx.closure?.valResult?.get(closBody)
+  // A closure the frame dispatches directly: the summary's contract of the
+  // callable the name reaches in this scope (a NUMBER claim lets toNumF64
+  // skip the `__to_num` wrapper at the call site, as any kind unlocks its
+  // own call-site fast path).
+  if (ctx.func.directClosures?.has(callee)) {
+    const c = ctx.summary?.at(ctx.func.current).calleeContract(['()', callee, _args?.[1]])
+    const vt = c && contractVal(c)
     if (vt) return vt
   }
   const f = ctx.funcs.map?.get(callee)
-  if (f?.valResult) return f.valResult
-  // The program summary: the join of the function's returns is one kind.
-  if (f && ctx.summary) return ctx.summary.resultVal(callee)
-  return null
+  if (!f) return null
+  // The contract published for the callable identity (ProgramIndex, from the
+  // summary the plan read), then the live summary's own where the published
+  // one names no single kind (a variant's own summary is the later one).
+  const c = ctx.plans.programIndex?.resultContract(f) ?? ctx.summary?.resultContract(callee)
+  const vt = c && contractVal(c)
+  if (vt) return vt
+  return ctx.summary ? valOf(ctx.summary.resultContract(callee).kind) : null
 }
 
 export function methodValType(method, obj, objType, ctx) {

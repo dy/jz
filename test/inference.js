@@ -2376,15 +2376,11 @@ test('convergence caps: 150-deep self-referential schema domino compiles (domain
 })
 
 // ============================================================================
-// Round-6 prereq (a): closure return-kind pre-pass.
+// A direct-dispatched closure's return kind at its call sites.
 //
-// Closures compile at module end, after their callers, so calleeValType
-// (kind-traits.js) couldn't see a direct-dispatched closure's return kind —
-// closureBodyReturnKind (src/compile/flow-types.js) closes that gap: a pure
-// AST-in/VAL-out derivation run from module/function.js's ctx.closure.make
-// (the closure literal must be bound to something before it can be called, so
-// this always finishes before any later call site in program order),
-// populating ctx.closure.valResult for calleeValType to read.
+// Closures compile at module end, after their callers; calleeValType
+// (kind-traits.js) reads the summary's contract of the closure the name
+// reaches (src/summary/contract.js), which is settled before any body emits.
 //
 // NOT shipped this round (deliberately, not an oversight): a same-body
 // extension — narrowValResults (Phase E2, "planning" — runs even before any
@@ -2405,8 +2401,8 @@ test('closure return-kind: direct-dispatched closure call skips __to_num at the 
   // `typeof x === 'number'` (x's own static kind is unprovable — it's a bare
   // param) with an unconditional fallthrough of the same kind. Consumed at an
   // ARITHMETIC call site (not the enclosing function's own return tail — see
-  // the module note above) — the case ctx.closure.valResult actually covers,
-  // verified both native and self-compiled (JZ_TEST_TARGET=jz.wasm) before landing.
+  // the module note above), verified both native and self-compiled
+  // (JZ_TEST_TARGET=jz.wasm) before landing.
   const src = `
     export let f = (v) => {
       let parse = (x) => {

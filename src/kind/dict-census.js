@@ -18,6 +18,8 @@
 import { ctx, getFactStore } from '../ctx.js'
 import { VAL, lookupValType, repOf, mayBeUndefined } from '../reps.js'
 import { commaList, isBlockBody, returnExprs, alwaysReturns, walkAst } from '../ast.js'
+import { PRESENCE } from '../summary/contract.js'
+import { valOf, core } from '../summary/kind.js'
 
 // Dict-value-type census consumer — an INTERNAL HELPER ONLY
 // (.work/archive/todo.md §deletion-sweep Slice 1).
@@ -220,37 +222,22 @@ export const censusShapedNode = (node) =>
   (Array.isArray(node) && node[0] === '()' && node.length === 3 &&
     Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get' && typeof node[1][1] === 'string')
 
-// Call-RESULT mayBeUndefined arm: a call to a user function/direct closure
-// whose whole-program return-kind fixpoint (narrow.js narrowValResults,
-// flow-types.js closureBodyReturnMayBeUndefined — §3 "Return kinds") settled
-// BOTH a definite `valResult` kind AND `valResultMayBeUndefined` is itself a
-// census fact one call-hop removed: `const g = (k) => { ...; return
-// m.get(k) }; g(k) === undefined` must not const-fold identically to a
-// direct `m.get(k) === undefined`. INVARIANT: without this arm,
-// kind-traits.js's `calleeValType` returns `f.valResult` unconditionally
-// with no accompanying signal, so a two-statement (non-inlined) callee's
-// `g(k) === undefined` const-folds to the SAME wrong boolean for both a
-// present and an absent key. This arm's own precondition
-// (`f.valResultMayBeUndefined` true AND `f.valResult` non-null) requires
-// narrowValResults' return-kind unify to have already settled a non-null
-// `valResult` for a census-shaped return tail — which itself requires
-// `valTypeOf` on that tail to be non-null, i.e. requires the
-// VT['[]']/['.']/['()'] promotion that stays dormant (see the dict-value-
-// census consumer's doc comment above). So with VT dormant this arm is
-// reachable but returns null on every real input — sound-but-inert, same
-// status as arms 1-3 above, not a separate risk. Left in place (not
-// stubbed) so a future VT re-enablement does not have to re-derive this
-// wiring. Mirrors calleeValType's own two lookup paths (direct closure via
-// `ctx.func.directClosures` + `ctx.closure.valResult`, plain named function
-// via `ctx.funcs.map`) so a call-result claim and its mayBeUndefined
-// companion always travel together.
+// Call-RESULT mayBeUndefined arm: a call whose callable's result contract
+// names one value kind beside an absent or nullish completion is a census
+// fact one call-hop removed: `const g = (k) => { ...; return m.get(k) };
+// g(k) === undefined` must not const-fold identically to a direct
+// `m.get(k) === undefined`. Reads the contract calleeValType (kind-traits.js)
+// answers the call's kind by, so a call-result claim and its mayBeUndefined
+// companion always travel together: a directly dispatched closure through
+// the summary's callee resolution, a named function through the contract
+// ProgramIndex holds for it.
 function callResultMayBeUndefinedKind(node) {
   if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string') return null
   const callee = node[1]
-  const closBody = ctx.func.directClosures?.get(callee)
-  if (closBody) return ctx.closure?.valResultMayBeUndefined?.get(closBody) ? (ctx.closure?.valResult?.get(closBody) ?? null) : null
-  const f = ctx.funcs.map?.get(callee)
-  return f?.valResultMayBeUndefined ? (f.valResult ?? null) : null
+  let contract = null
+  if (ctx.func.directClosures?.has(callee)) contract = ctx.summary?.at(ctx.func.current).calleeContract(node)
+  else { const f = ctx.funcs.map?.get(callee); if (f) contract = ctx.plans.programIndex?.resultContract(f) ?? ctx.summary?.resultContract(callee) }
+  return contract && contract.presence !== PRESENCE.PRESENT ? valOf(core(contract.kind)) : null
 }
 
 export function censusMaybeUndefinedKind(node) {
@@ -369,8 +356,7 @@ export function censusBigintResultShape(node) {
 // above), so it's safe to run against a CALLER's or CALLEE's raw body at
 // plan/pre-compile time, before that function's own reps exist. Shared by
 // every whole-program-fixpoint consumer that needs this fact early:
-// narrow.js's inter-procedural param join and return-kind join, flow-types.js's
-// closureBodyReturnKind sibling.
+// narrow.js's inter-procedural param join and return-kind join.
 //
 // Ownership: session-owned, stored at getFactStore().mayBeUndefinedTrace,
 // NOT a private module-level WeakMap — see the DEPS table in session.js,

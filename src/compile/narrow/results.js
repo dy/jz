@@ -17,7 +17,7 @@ import { valTypeOfWithLocals, hasAmbiguousBoolMerge } from '../../kind.js'
 import { VAL, KIND_UNIVERSE, lookupValType } from '../../reps.js'
 import { paramFactsOf } from '../../param-reps.js'
 import { isExported } from '../func-exports.js'
-import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN, PRESENCE } from '../../summary/index.js'
 
 /**
  * Phase E: numeric result narrowing.
@@ -231,25 +231,29 @@ export function narrowI32Results(funcs) {
   }
 }
 
-/** The summary's result kinds onto every function: `valResult` (the join of the
- *  returns, one value kind), its presence (an ABSENT return), and an array
- *  result's element facts. A deliberate nullish result makes no value-kind
- *  claim; an absent container read keeps its present kind and records presence.
- *  Runs on the narrowing path and the skip path alike (a boolean crosses the
- *  host boundary as its atom and a BigInt through its tagged carrier). */
+/** The summary's result contract (summary/contract.js) onto every function:
+ *  published into ProgramIndex, where the callable identity owns it and every
+ *  later reader finds the plan's summary; and its projection `valResult` (one
+ *  value kind), the presence (an ABSENT return) and an array result's element
+ *  facts, which the emitters still read by field. A deliberate nullish result
+ *  makes no value-kind claim; an absent container read keeps its present kind
+ *  and records presence. Runs on the narrowing path and the skip path alike (a
+ *  boolean crosses the host boundary as its atom and a BigInt through its
+ *  tagged carrier). */
 export function seedResultKinds() {
+  const index = ctx.plans.programIndex
   for (const func of ctx.funcs.list) {
     // A multi-value result (a scalarized array return) is no one value.
-    if (func.raw || !func.body || func.valResult || func.sig.results.length !== 1) continue
-    const k = ctx.summary.resultOf(func.name), t = tagOf(k)
-    if (t === K.NONE || t === K.ABSENT || t === K.NULLISH) continue
+    if (func.raw || !func.body || func.sig.results.length !== 1) continue
+    const contract = ctx.summary.resultContract(func.name), k = contract.kind
+    index.publishResultContract(func, contract)
     const v = valOf(core(k))
     if (v == null) continue
     func.valResult = v
     // Presence beside the kind, as for a parameter (narrow/index.js seedParamKinds).
     // BigInt needs this especially: without it the raw i64 result would reinterpret
     // an out-of-range read's undefined atom as an integer payload.
-    if (hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) func.valResultMayBeUndefined = true
+    if (contract.presence !== PRESENCE.PRESENT) func.valResultMayBeUndefined = true
     if (v === VAL.ARRAY) {
       const e = ctx.summary.elemOfKind(k)
       if (!hasTag(e, K.NULLISH)) {

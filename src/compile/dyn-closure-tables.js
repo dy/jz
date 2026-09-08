@@ -49,7 +49,6 @@ import {
   BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES,
   BINDING_USE_KIND, BINDING_USE_COMPOUND, BINDING_USE_COMPUTED, scanBindingUses, USE,
 } from './analyze-scans.js'
-import { closureBodyReturnKind } from './flow-types.js'
 import { VAL } from '../reps.js'
 import { isExported } from './func-exports.js'
 
@@ -164,12 +163,6 @@ function everyUseIsIndexedCall(node, name) {
   return true
 }
 
-// closureBodyReturnKind's capturedKinds seed for a capture-free element — a
-// shared empty Map is safe to reuse across calls (copy-on-write: it's only
-// ever read, or cloned before a guard-derived fact is added — see its own
-// doc in flow-types.js).
-const NO_CAPTURES = new Map()
-
 /** Program-wide safety scan for the closure-TABLE call-site PARAM lattice: a
  *  candidate is a GLOBAL `const NAME = [...]` whose every element is a plain
  *  `=>` arrow literal (no holes/spreads/non-closure elements), and whose only
@@ -183,35 +176,15 @@ const NO_CAPTURES = new Map()
  *  name out of the returned set, and emit.js/emitClosureBody's existing
  *  consumer path is unchanged — an unproven param just stays boxed/dynamic,
  *  exactly as before this pass existed. Called once, post-plan (mirrors
- *  scanDynClosureTableCandidates's timing), from compile/index.js.
- *
- *  Side effect: for each surviving candidate, also derives the table's own
- *  CALL-EXPRESSION result kind (ctx.scope.closureTableValResult) when every
- *  element's return-tail unifies to one VAL.* kind (closureBodyReturnKind —
- *  AST-only, no compiled form needed, so this runs before any element's
- *  closure.make/emission — the same derivation module/function.js runs at
- *  closure-CREATION time for a single directly-bound closure, here forced
- *  early because a table's elements aren't created until the array LITERAL
- *  itself emits, which is AFTER every function body — including a caller
- *  like `x = ops[code[i]](x, k)` — has already emitted). Consumed by
- *  kind.js's VT['()'] so a loop-carried var fed by table dispatch (dispatch
- *  bench's `x`) is itself provably NUMBER, letting arg evidence at the NEXT
- *  iteration's call site prove numeric too. Gated on the SAME safety-filtered
- *  set as the param lattice — the return-kind claim doesn't strictly need
- *  alias-safety (any caller reaching the same body gets the same kind), but
- *  reusing one proven-const, proven-unaliased set avoids a second soundness
- *  argument (a `let`-reassignable or mutated-elsewhere binding) for zero
- *  benefit — every real table (dispatch.js's `ops`) already satisfies both. */
+ *  scanDynClosureTableCandidates's timing), from compile/index.js. A
+ *  candidate's own call-expression result kind is the summary's contract of
+ *  the closure set the table holds (kind/val-type-of.js VT['()']). */
 export function scanClosureTableLatticeCandidates(ast) {
   const topRoots = [ast, ...(ctx.module.moduleInits || [])]
   const candidates = new Set()
-  const initRhsOf = new Map()
   for (const root of topRoots)
     for (const [name, s] of scanBindingUses(root))
-      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && ctx.scope.consts?.has(name) && isArrowArrayLit(s[BINDING_USE_INIT])) {
-        candidates.add(name)
-        initRhsOf.set(name, s[BINDING_USE_INIT])
-      }
+      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && ctx.scope.consts?.has(name) && isArrowArrayLit(s[BINDING_USE_INIT])) candidates.add(name)
   if (!candidates.size) return candidates
 
   const bodies = [...topRoots]
@@ -221,19 +194,6 @@ export function scanClosureTableLatticeCandidates(ast) {
   }
   for (const name of candidates)
     if (!bodies.every(b => everyUseIsIndexedCall(b, name))) candidates.delete(name)
-
-  for (const name of candidates) {
-    let kind = null, uniform = true
-    const kinds = new Set(), elems = initRhsOf.get(name).slice(1)
-    for (const el of elems) {
-      const k = closureBodyReturnKind(el[2], NO_CAPTURES)
-      if (k) kinds.add(k)
-      if (!k) uniform = false
-      else if (kind == null) kind = k
-      else if (kind !== k) uniform = false
-    }
-    if (uniform && kind) (ctx.scope.closureTableValResult ||= new Map()).set(name, kind)
-  }
   return candidates
 }
 
@@ -300,10 +260,8 @@ function mentionsName(node, name) {
 // (returns false immediately) rather than trusting per-iteration closure
 // identity — jz's closure-in-loop capture handling is a documented kernel-
 // bug-adjacent class (ledger: closure-in-loop capture class); this lattice
-// doesn't build another proof on top of unsettled ground. `sink.arrows`
-// collects every tolerated write's RHS arrow node (closureBodyReturnKind
-// material) as a side effect of the same walk.
-function everyUseIsIndexedCallOrLiteralWrite(node, name, sink, inLoop) {
+// doesn't build another proof on top of unsettled ground.
+function everyUseIsIndexedCallOrLiteralWrite(node, name, inLoop) {
   if (!Array.isArray(node)) return true
   const op = node[0]
   if (op === 'for' || op === 'while' || op === 'do') inLoop = true
@@ -312,18 +270,18 @@ function everyUseIsIndexedCallOrLiteralWrite(node, name, sink, inLoop) {
       const d = node[i]
       if (typeof d === 'string') continue                          // uninitialized decl
       if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
-        if (!everyUseIsIndexedCallOrLiteralWrite(d[2], name, sink, inLoop)) return false
-      } else if (!everyUseIsIndexedCallOrLiteralWrite(d, name, sink, inLoop)) return false
+        if (!everyUseIsIndexedCallOrLiteralWrite(d[2], name, inLoop)) return false
+      } else if (!everyUseIsIndexedCallOrLiteralWrite(d, name, inLoop)) return false
     }
     return true
   }
   if (op === '()') {
     const callee = node[1]
     if (Array.isArray(callee) && callee[0] === '[]' && callee.length === 3 && callee[1] === name) {
-      if (!everyUseIsIndexedCallOrLiteralWrite(callee[2], name, sink, inLoop)) return false
+      if (!everyUseIsIndexedCallOrLiteralWrite(callee[2], name, inLoop)) return false
       const a = node[2]
       if (a === name) return false
-      if (!everyUseIsIndexedCallOrLiteralWrite(a, name, sink, inLoop)) return false
+      if (!everyUseIsIndexedCallOrLiteralWrite(a, name, inLoop)) return false
       return true
     }
   }
@@ -332,17 +290,16 @@ function everyUseIsIndexedCallOrLiteralWrite(node, name, sink, inLoop) {
     if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 3 && lhs[1] === name) {
       const rhs = node[2]
       if (!(Array.isArray(rhs) && rhs[0] === '=>')) return false    // only a literal arrow RHS is tolerated
-      if (!everyUseIsIndexedCallOrLiteralWrite(lhs[2], name, sink, inLoop)) return false   // index expression
-      if (!everyUseIsIndexedCallOrLiteralWrite(rhs, name, sink, inLoop)) return false       // arrow body — catches nested self-mentions too
+      if (!everyUseIsIndexedCallOrLiteralWrite(lhs[2], name, inLoop)) return false   // index expression
+      if (!everyUseIsIndexedCallOrLiteralWrite(rhs, name, inLoop)) return false       // arrow body — catches nested self-mentions too
       if (inLoop) return false                                     // closure-in-loop class — fail open, whole candidate
-      sink.arrows.push(rhs)
       return true
     }
   }
   for (let i = 1; i < node.length; i++) {
     const c = node[i]
     if (c === name) return false
-    if (!everyUseIsIndexedCallOrLiteralWrite(c, name, sink, inLoop)) return false
+    if (!everyUseIsIndexedCallOrLiteralWrite(c, name, inLoop)) return false
   }
   return true
 }
@@ -363,14 +320,10 @@ function everyUseIsIndexedCallOrLiteralWrite(node, name, sink, inLoop) {
  *  scan's stricter definition and disqualifies here, honestly, same as any
  *  other untracked read).
  *
- *  Two facts land per surviving candidate:
- *   1. RESULT kind (ctx.scope.closureTableValResult — the SAME map the
- *      const-literal scan above populates; kind.js's VT['()'] doesn't care
- *      which scan proved it) — every collected write's RHS arrow AST run
- *      through closureBodyReturnKind (AST-only, pre-emit, same timing the
- *      const-literal scan uses) with NO_CAPTURES; every write must agree.
- *   2. PARAM-lattice early-mergeability (ctx.scope.
- *      imperativeClosureTableEarlyMergeable) — compile/index.js's per-body
+ *  A surviving candidate's call-expression result kind is the summary's
+ *  contract of the closure set the table holds (kind/val-type-of.js
+ *  VT['()']). One more fact lands per candidate: PARAM-lattice
+ *  early-mergeability (ctx.scope.imperativeClosureTableEarlyMergeable) — compile/index.js's per-body
  *      bodyName only exists once THAT function has emitted, and closure
  *      bodies queued during function emission COMPILE as soon as every
  *      function in ctx.funcs.list has emitted (compilePendingClosures' first
@@ -383,9 +336,7 @@ function everyUseIsIndexedCallOrLiteralWrite(node, name, sink, inLoop) {
  *      module-scope call site's evidence wouldn't be gathered until
  *      buildStartFn, well after the first flush already compiled the body) —
  *      FAIL OPEN for the param lattice specifically in that case (module-
- *      init-order reasoning); it keeps its result-kind fact regardless, since
- *      that fact is pipeline-order-independent (pure whole-program AST
- *      enumeration, not tied to when anything compiles).
+ *      init-order reasoning).
  *
  *  Called once, post-plan (mirrors scanClosureTableLatticeCandidates's own
  *  timing), from compile/index.js. Consumed by emit.js (call-site evidence
@@ -406,26 +357,9 @@ export function scanImperativeClosureTableLatticeCandidates(ast) {
     if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
   }
 
-  const arrowsByName = new Map()
-  for (const name of candidates) {
-    const sink = { arrows: [] }
-    const ok = bodies.every(b => everyUseIsIndexedCallOrLiteralWrite(b, name, sink, false))
-    if (!ok) { candidates.delete(name); continue }
-    arrowsByName.set(name, sink.arrows)
-  }
+  for (const name of candidates)
+    if (!bodies.every(b => everyUseIsIndexedCallOrLiteralWrite(b, name, false))) candidates.delete(name)
   if (!candidates.size) return candidates
-
-  for (const name of candidates) {
-    const arrows = arrowsByName.get(name)
-    if (!arrows.length) continue
-    let kind = null
-    for (const arrow of arrows) {
-      const k = closureBodyReturnKind(arrow[2], NO_CAPTURES)
-      if (!k || (kind != null && kind !== k)) { kind = null; break }
-      kind = k
-    }
-    if (kind) (ctx.scope.closureTableValResult ||= new Map()).set(name, kind)
-  }
 
   const earlyMergeable = new Set()
   for (const name of candidates)

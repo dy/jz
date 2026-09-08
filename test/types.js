@@ -14,7 +14,7 @@ import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
 import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined, censusShapedNode, nameMayBeUndefinedInBody, exprMayBeUndefinedIn } from '../src/kind.js'
-import { closureBodyReturnKind, closureBodyReturnMayBeUndefined } from '../src/compile/flow-types.js'
+import { PRESENCE, contractVal } from '../src/summary/index.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -1448,57 +1448,36 @@ test('mayBeUndefined param: a directly census-shaped call-site arg (no intermedi
   is(insp.functions.useIt.params[0].mayBeUndefined, true)
 })
 
-// --- return-kind propagation (flow-types.js closureBodyReturnKind sibling) ---
+// --- a closure's result contract (src/summary/contract.js) ---
 
-// Direct unit harness: closureBodyReturnKind/closureBodyReturnMayBeUndefined
-// are pure `(body, capturedKinds)` functions (module/function.js's ctx.closure.
-// make calls them at closure-CREATION time) — testable without a full compile,
-// mirroring runAnalyzeMayBeUndefined's prepare(parse(code)) precedent above.
-function getFirstBody(code) {
-  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
-  ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
-  prepare(parse(code))
-  const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body)) || ctx.funcs.list[0]
-  return fn.body
+// The summary's contract of the closure `f` inside the exported `g`, read by
+// its parameter node (the closure's identity through emission): the value
+// kind and the presence are one record, where the return-kind pre-pass kept two.
+function closureContract(body) {
+  compile(`export let g = () => { let f = () => {${body}}; return f() }`, { optimize: 0 })
+  const arrow = n => Array.isArray(n) ? n[0] === '=>' ? n : n.map(arrow).find(Boolean) : null
+  return ctx.summary.resultContract(arrow(ctx.funcs.list.find(fn => fn.name === 'g').body)[1])
 }
 
-test('closureBodyReturnMayBeUndefined: a return whose local decl traces to a census read', () => {
-  const body = getFirstBody(`let f = () => {
+test('closure contract: a return whose local decl traces to a Map read may be undefined', () => {
+  if (onKernel()) return   // kernel: this process's ctx never sees the kernel's own compile
+  const c = closureContract(`
     const m = new Map(); m.set('a', 1)
     let x = m.get('missing')
     return x
-  }`)
-  is(closureBodyReturnMayBeUndefined(body, new Map()), true)
+  `)
+  is(c.presence, PRESENCE.MAYBE_UNDEF)
+  is(contractVal(c), VAL.NUMBER, 'the value kind beside the absence')
 })
 
-test('closureBodyReturnMayBeUndefined: ordinary body never flags it (negative control)', () => {
-  const body = getFirstBody(`let f = () => {
+test('closure contract: an ordinary body is present (negative control)', () => {
+  if (onKernel()) return
+  const c = closureContract(`
     let x = 5
     return x
-  }`)
-  is(closureBodyReturnMayBeUndefined(body, new Map()), false)
-})
-
-test('closureBodyReturnMayBeUndefined: independent of closureBodyReturnKind\'s own kind resolution', () => {
-  // The two facts are DELIBERATELY separate functions (closureBodyReturnKind's
-  // return shape has a live consumer, kind-traits.js calleeValType, this
-  // design must not disturb) — prove they can disagree: capturedKinds lets
-  // valTypeOfWithLocals resolve `x` to a definite kind from OUTSIDE the body
-  // (as a real capture would), while the body's OWN local decl still traces
-  // to a census read, independently of that external kind proof.
-  const body = getFirstBody(`let f = () => {
-    const m = new Map(); m.set('a', 1)
-    let x = m.get('missing')
-    return x
-  }`)
-  // BindingId totality renames locals (mirrors resolveLocal above) — walk the
-  // body's own strings for the resolved spelling instead of assuming `x`.
-  const names = new Set()
-  const collect = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(collect) }
-  collect(body)
-  const xName = [...names].find(n => n === 'x') ?? [...names].find(n => n.startsWith('x' + T))
-  is(closureBodyReturnKind(body, new Map([[xName, VAL.NUMBER]])), VAL.NUMBER)
-  is(closureBodyReturnMayBeUndefined(body, new Map([[xName, VAL.NUMBER]])), true)
+  `)
+  is(c.presence, PRESENCE.PRESENT)
+  is(contractVal(c), VAL.NUMBER)
 })
 
 // --- closure captures (module/function.js ctx.closure.make) ---

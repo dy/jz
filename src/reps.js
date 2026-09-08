@@ -119,11 +119,9 @@ export const VAL = {
  *   needs its own outer `valTypeOf(node) === VAL.SOMETHING` gate widened to
  *   consult `presentVal` as a fallback (not just this REP-fallback arm
  *   reaching a non-null claim) is open — see .work/archive/todo.md §deletion-sweep
- *   for scope. func.valResultMayBeUndefined / ctx.closure.
- *   valResultMayBeUndefined (Map<closureBodyName, true>) carry the return-
- *   kind join's result alongside func.valResult / ctx.closure.valResult —
- *   parallel facts, not merged into those (their return shapes have live
- *   consumers, kind-traits.js calleeValType, this design must not disturb).
+ *   for scope. func.valResultMayBeUndefined carries the result contract's
+ *   presence beside func.valResult (both projections of the contract,
+ *   src/summary/contract.js, seeded by narrow/results.js seedResultKinds).
  * @property {'present'|'maybe-undef'} [presence]  Tri-state sibling of
  *   `mayBeUndefined`: the boolean alone stays positive-evidence-only, so
  *   `presence` exists to distinguish "never observed maybe-undef" from

@@ -28,7 +28,7 @@ import {
 import { summaryTypedCtor, typedStorageCtorFromContext } from '../typed-context.js'
 import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
-import { valOf as summaryVal } from '../summary/index.js'
+import { valOf as summaryVal, contractVal } from '../summary/index.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 
 /**
@@ -596,15 +596,13 @@ VT['()'] = (args) => {
     const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
     return ta && ta === tb ? ta : null
   }
-  // Closure-TABLE dispatch `NAME[idx](args)`: the table-dispatch analog of the
-  // named-closure valResult lookup below — dyn-closure-tables.js's
-  // scanClosureTableLatticeCandidates derives this from every element's raw
-  // AST (closureBodyReturnKind) BEFORE the elements are created, so it's
-  // available here even though the elements' own closure.make hasn't run yet
-  // (a table's array literal, and therefore its elements, only emit at module
-  // end — after every caller, including a loop-carried `x = ops[code[i]](x,k)`).
-  if (Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string') {
-    const vt = ctx.scope?.closureTableValResult?.get(callee[1])
+  // Closure-table dispatch `NAME[idx](args)` on a table the lattice scans
+  // proved indexed-call-only (dyn-closure-tables.js): the summary's contract of
+  // the closure set the table holds, the join of its members' results.
+  if (Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string' && ctx.summary &&
+      (ctx.scope.closureTableLatticeCandidates?.has(callee[1]) || ctx.scope.imperativeClosureTableLatticeCandidates?.has(callee[1]))) {
+    const c = ctx.summary.at(ctx.func.current).calleeContract(['()', ...args])
+    const vt = c && contractVal(c)
     if (vt) return vt
   }
   // Constructor results + user function return-type inference
@@ -631,36 +629,21 @@ VT['()'] = (args) => {
     const [, obj, method] = callee
     // Same-module `.`-member callee, proven (or not) by the frozen
     // ProgramIndex member-target IDs (program-index.js, built once in plan/index.js
-    // before any consumer — including this one, since valTypeOf is never
-    // queried on a call node until prepare's early-plan passes run, and the
-    // index is built before narrowSignatures/solveRepresentationBoundaries;
-    // an earlier query simply sees `programIndex` still undefined and falls
-    // through below, exactly like today). This is the SAME question
-    // calleeValType's bare-name tail (`ctx.funcs.map.get(callee).valResult`,
-    // kind-traits.js) already answers for `f(x)` — `obj.method(x)` deserves
-    // the identical Tier-1 answer once the index proves `obj.method` names
-    // the very same-module function a bare call to it would reach. Checked
-    // BEFORE methodValType's builtin-method-name dispatch below: a resolved
-    // same-module function is a strictly stronger, structural proof than a
-    // name-only builtin-method guess (methodValType's `push` arm, e.g.,
-    // matches on the property name alone, unconditionally). resolveMemberSourceId
-    // itself refuses anything shadowed, reassigned, dynamically written, or
-    // escaping the module (its own header) — an ordinary Array/Map/String/
-    // TypedArray `.method()` call can never spuriously resolve here.
-    //
-    // Deliberately reuses valResult (a per-function SEMANTIC kind fact,
-    // narrow.js's whole-program census) and nothing representation-plan-
-    // specific (carrier/boxed-vs-raw choice, per-param boundary targets) —
-    // those live one layer down in representation-plan.js's own
-    // directCallBoundary/resolveMemberCallee machinery, which needs a
-    // resolved NAME (not just a kind) to look up a richer record valTypeOf
-    // has no vocabulary for. This is the narrower, general-purpose half of
-    // that same proof: "what VAL kind does this call produce," asked and
-    // answered exactly once, here, for every consumer of valTypeOf.
+    // before any consumer; an earlier query sees `programIndex` still
+    // undefined and falls through below): the contract published for that
+    // function, the answer calleeValType's bare-name tail gives `f(x)`.
+    // Checked BEFORE methodValType's builtin-method-name dispatch below: a
+    // resolved same-module function is a structural proof, a method name a
+    // guess (`push` matches on the name alone). resolveMemberSourceId itself
+    // refuses anything shadowed, reassigned, dynamically written, or escaping
+    // the module, so an ordinary Array/Map/String/TypedArray `.method()` call
+    // never resolves here.
     const programIndex = ctx.plans.programIndex
     const sourceId = programIndex?.resolveMemberSourceId(obj, method) ?? -1
     const resolved = programIndex?.sourceFunctionById(sourceId)
-    if (resolved?.valResult) return resolved.valResult
+    const contract = resolved && programIndex.resultContract(resolved)
+    const resolvedVt = contract && contractVal(contract)
+    if (resolvedVt) return resolvedVt
     // The program summary's kind of the call: a class method resolved on the
     // receiver's class (src/compile/emit/class-dispatch.js), a builtin whose
     // result follows its arguments (`reduce`: its callback's result, not the
@@ -808,12 +791,10 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // the missing local-BigInt proof without changing behavior for the "rec
   // can't resolve either side" case at all. INVARIANT: a `null`-propagating
   // veto here would break the closure-table call-site param lattice's own
-  // bootstrapping — dyn-closure-tables.js's `closureBodyReturnKind` unifies
-  // over `(x,k)=>(x+k)|0`-shaped elements BEFORE `x`/`k` have any local
-  // evidence at all, relying on exactly this "unknown → NUMBER" default to
-  // settle the table's call-expression result kind; vetoing it to null
-  // breaks that fixpoint and regresses the `f64.add`-with-no-`__str_concat`
-  // codegen pin in test/closures.js.
+  // bootstrapping — a table's `(x,k)=>(x+k)|0`-shaped elements are read
+  // BEFORE `x`/`k` have any local evidence at all, relying on exactly this
+  // "unknown → NUMBER" default; vetoing it to null regresses the
+  // `f64.add`-with-no-`__str_concat` codegen pin in test/closures.js.
   if (op === '-' || op === '*' || op === '/' || op === '%' ||
       op === '&' || op === '|' || op === '^' || op === '<<' || op === '>>') {
     const a = rec(expr[1]), b = rec(expr[2])

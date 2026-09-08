@@ -3,8 +3,7 @@ import { staticPropertyKey } from '../../static.js'
 import { DBG_INVARIANTS } from '../../ctx.js'
 import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
-import { K as SUMMARY_KIND, core as summaryCore, hasTag as summaryHasTag, tagOf as summaryTagOf } from '../../summary/index.js'
-import { closureBodyReturnKind } from '../flow-types.js'
+import { K as SUMMARY_KIND, core as summaryCore, hasTag as summaryHasTag, tagOf as summaryTagOf, contractVal } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_DEMAND_TAG_REQUIRED, BIGINT_KIND_BIT, BIGINT_REP_BOXED, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BOXED_BIGINT,
   CONDITIONAL_ASSIGN_OPS, DEF_OWNER, DEF_RHS, EDGE_KIND, EDGE_KIND_NAME, JOIN_OPS, NO_BIGINT, NUMERIC_VALUE_OPS,
@@ -17,7 +16,6 @@ import {
 import { boundaryDataOf, ensureBoundary } from './boundaries.js'
 import { deriveLocalProvenance } from './provenance.js'
 
-const EMPTY_KIND_MAP = new Map()
 
 const NON_BIGINT_OPS = new Set([
   'typeof', '!', '>', '<', '>=', '<=', '==', '!=', '===', '!==', 'u+', '>>>',
@@ -156,26 +154,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     else currentNames.set(name, ANY_BIGINT)
   }
 
-  // Closure-forwarding slice: valTypeOf's own closure lookup (calleeValType,
-  // kind-traits.js) reads ctx.closure.valResult — populated at ctx.closure
-  // .make time, i.e. when THIS body's emission first processes the closure
-  // literal's own decl statement. buildBodyData runs at analysis time,
-  // strictly before this body ever emits (mintRepresentationPlan's own call
-  // site, compile/index.js, precedes emitFunc's body walk) — so for a
-  // same-body local closure, ctx.closure.valResult is always empty here,
-  // and valTypeOf(callNode) always answers null, regardless of how
-  // provably-uniform the closure's own return kind is. closureBodyReturnKind
-  // (flow-types.js) is the identical proof through a channel with no such
-  // dependency — its own doc comment: "derives a closure's kind directly
-  // from its raw AST... so it can run BEFORE the closure itself compiles" —
-  // reused here (not re-derived) for exactly the case it names. An empty
-  // capturedKinds map is correct: the one shape this slice targets narrows
-  // its own param via a same-tail typeof guard (crkBranchRefine), which
-  // needs no external seeding.
-  const closureCalleeKind = node =>
-    Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && localClosures.has(node[1])
-      ? closureBodyReturnKind(localClosures.get(node[1]).body, EMPTY_KIND_MAP)
-      : null
+  // A same-body local closure's call: valTypeOf's own closure lookup
+  // (calleeValType, kind-traits.js) answers only a closure the frame already
+  // dispatches directly, a fact emission records; this body is analyzed
+  // before it emits, so the summary's contract of the callee is read here.
+  const closureCalleeKind = node => {
+    if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string' || !localClosures.has(node[1])) return null
+    const contract = summary?.calleeContract(node)
+    return contract ? contractVal(contract) : null
+  }
 
   const semanticJoinArm = node => {
     if (boundary.covered === true && typeof node === 'string') {

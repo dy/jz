@@ -622,6 +622,29 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     const anonymousId = anonymousBoundaryIds.get(func)
     return anonymousId !== undefined ? anonymousBoundaryKinds[anonymousId] : null
   }
+  // The result contract (summary/contract.js) of every named callable, published
+  // once from the summary the plan reads (narrow/results.js seedResultKinds). A
+  // specialization variant minted after that publication keeps its source's
+  // contract, as it keeps its source's other result facts.
+  const sourceResultContracts = new Array(sourceFunctions.length).fill(null)
+  const variantResultContracts = []
+  const publishResultContract = (func, contract) => {
+    const sourceId = sourceIdOf(func)
+    if (sourceId >= 0) {
+      if (sourceResultContracts[sourceId]) throw new Error(`ProgramIndex result contract already published for source '${func?.name || '<anonymous>'}'`)
+      return sourceResultContracts[sourceId] = contract
+    }
+    const variantId = variantIdOf(func)
+    if (variantId < 0) return null
+    if (variantResultContracts[variantId]) throw new Error(`ProgramIndex result contract already published for variant '${func?.name || '<anonymous>'}'`)
+    return variantResultContracts[variantId] = contract
+  }
+  const resultContract = funcOrName => {
+    const sourceId = sourceIdOf(funcOrName)
+    if (sourceId >= 0) return sourceResultContracts[sourceId]
+    const variantId = variantIdOf(funcOrName)
+    return variantId >= 0 ? variantResultContracts[variantId] ?? sourceResultContracts[variantSourceIds[variantId]] ?? null : null
+  }
   const sourceIdForOrigin = func => {
     const sourceId = sourceObjectIds.get(func)
     if (sourceId !== undefined) return sourceId
@@ -1107,6 +1130,8 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     publishFunctionBoundaryData,
     functionBoundaryData,
     anonymousBoundaryKindOf,
+    publishResultContract,
+    resultContract,
     registerVariantIdentity,
     finalizeVariantIdentities,
     getVariantIndex,

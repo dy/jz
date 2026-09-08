@@ -19,24 +19,18 @@
 
 import { ctx, getFactStore } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { isReassigned, isBlockBody, alwaysReturns, TYPEOF, typeofPredicate, walkAst } from '../ast.js'
+import { isReassigned, TYPEOF, typeofPredicate, walkAst } from '../ast.js'
 import { constIntExpr } from '../static.js'
-import { valTypeOfWithLocals, exprMayBeUndefinedIn } from '../kind.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
-// Exported: the closure return-kind pre-pass (module/function.js, round-6
-// prereq (a)) reuses this SAME table for its own typeof-guard walk instead of
-// duplicating the typeof-code→VAL mapping. `bigint` was missing — BigInt is
-// the one VAL kind with no runtime NaN-box tag (see kind.js VT['?:']'s own
-// comment on this), but `typeof x === 'bigint'` still has a real (heuristic:
-// finite, nonzero, sub-normal-magnitude f64) runtime check — emitTypeofCmp
-// (src/compile/emit.js TYPEOF.bigint arm) — the SAME heuristic every other
-// BigInt-carrier consumer in the compiler already trusts. Without this entry,
-// a `typeof v === 'bigint'` guard proved nothing about `v` in either branch —
-// not for real emission (this table's normal use, ctx.func.refinements) NOR
-// for the closure pre-scan — even though the guard is the idiomatic way a
-// closure param disambiguates BigInt-vs-Number (watr's uleb/limits `v => {
-// if (typeof v === 'bigint') return v; … return BigInt(str) }`).
+// `bigint`: BigInt is the one VAL kind with no runtime NaN-box tag (see
+// kind.js VT['?:']'s own comment on this), but `typeof x === 'bigint'` still
+// has a real (heuristic: finite, nonzero, sub-normal-magnitude f64) runtime
+// check — emitTypeofCmp (src/compile/emit.js TYPEOF.bigint arm) — the SAME
+// heuristic every other BigInt-carrier consumer in the compiler already
+// trusts, and the guard is the idiomatic way a parameter disambiguates
+// BigInt-vs-Number (watr's uleb/limits `v => { if (typeof v === 'bigint')
+// return v; … return BigInt(str) }`).
 const TYPEOF_CODE_TO_VAL = { [TYPEOF.number]: VAL.NUMBER, [TYPEOF.string]: VAL.STRING, [TYPEOF.function]: VAL.CLOSURE, [TYPEOF.bigint]: VAL.BIGINT }
 
 /** Walk a boolean condition gathering refinements implied for the `sense` branch
@@ -371,156 +365,4 @@ export function withRefinements(refs, body, fn) {
       if (prev === undefined) cur.delete(name); else cur.set(name, prev)
     }
   }
-}
-
-/**
- * Round-6 prereq (a): closure return-kind pre-pass.
- *
- * Derives a closure body's unified return-tail VAL kind directly from its raw
- * AST — no compiled form required — so it can run BEFORE the closure itself
- * compiles. Called from module/function.js's ctx.closure.make: derives a
- * closure's kind at CREATION time (the closure literal must be bound to
- * something before it can be called, so this always finishes before any
- * later direct call site in program order), stored in ctx.closure.valResult
- * for calleeValType (kind-traits.js) to read.
- *
- * NOT (yet) called from narrow.js's narrowValResults (Phase E2, "planning" —
- * runs even before any closure is compiled OR created): a function that
- * directly returns a call to its OWN freshly-declared local closure (`let
- * parse = (v) => …; return parse(v)`, watr's own uleb/limits shape) would
- * need this even EARLIER, to let the ENCLOSING function's own valResult see
- * through the call. That extension is pure AST-in/VAL-out exactly like this
- * function, and was prototyped, but a same-body call through a typeof-guarded
- * closure round-tripped correctly native while diverging under self-compiled
- * compilation (JZ_TEST_TARGET=jz.wasm) — reproduced identically across two
- * independent implementations of this same function, so the divergence isn't
- * this algorithm's own shape. Left OUT rather than shipped uncertain; see
- * narrowValResults' own doc comment (src/compile/narrow.js) for the full
- * trail. A same-body `return parse(v)` tail simply stays unproven for now —
- * fails open, same as any other not-yet-provable callee.
- *
- * Kind-generic mirror of narrowValResults' return-tail unification — "every
- * return resolves to the same VAL.* kind" — via the shared resolver
- * (valTypeOfWithLocals, kind.js) — plus two things a plain function's return
- * sites don't need:
- *
- *  - LEAF collection unwraps both `if`/`return` control flow AND top-level
- *    ternaries into flat (expr, refined-kind-map) sites — `return c ? A : B`
- *    is the same fact as `if (c) return A; else return B` for this purpose,
- *    so both idioms feed one unification. A function that can fall off the
- *    end without returning (alwaysReturns fails) is skipped entirely: the
- *    implicit `undefined` tail has no kind to unify against.
- *  - branch-local `typeof` narrowing (extractRefinements, this module's own
- *    table just above — not a re-implementation) lets a guarded early return
- *    see its own proof: the watr uleb/limits shape `v => { if (typeof v ===
- *    'bigint') return v; …; return BigInt(str) }` only resolves BIGINT once
- *    the guarded `return v` knows v is bigint FROM the guard — v's own static
- *    kind is unproven standalone.
- *
- * `capturedKinds` (Map<name, VAL>) seeds identifier lookups. A name absent
- * from it (an unsettled capture, or a bare param) resolves null and any
- * return depending on it fails unification — fail-open by construction: this
- * never guesses past what capturedKinds already proves.
- */
-// Copy-on-write: only allocates a new Map when a guard actually adds a fact,
-// so a body with no typeof guards touches `refined` (== capturedKinds) zero
-// times. Reuses extractRefinements/TYPEOF_CODE_TO_VAL (this module's own
-// table, just above) — the ONE typeof-guard mechanism, not a re-implementation.
-// && narrows both operands under positive sense; || narrows both under
-// negative sense (De Morgan) — extractRefinements already does this itself
-// for a compound cond, so a single top-level call covers a chain.
-function crkBranchRefine(cond, refined, sense) {
-  const facts = extractRefinements(cond, new Map(), sense)
-  let out = refined
-  for (const [name, fact] of facts) {
-    if (!fact.val) continue
-    if (out === refined) out = new Map(refined)
-    out.set(name, fact.val)
-  }
-  return out
-}
-
-// Returns the flat list of { expr, refined } leaf sites for `expr` (unwrapping
-// a top-level ternary into its two branches, each under its own refinement),
-// or null if `expr` isn't reachable (never actually used — leaves always
-// resolve; kept symmetric with crkWalkSites' null-on-bare-return contract).
-function crkLeafSites(expr, refined) {
-  if (Array.isArray(expr) && expr[0] === '?:') {
-    const [, cond, a, b] = expr
-    return crkLeafSites(a, crkBranchRefine(cond, refined, true))
-      .concat(crkLeafSites(b, crkBranchRefine(cond, refined, false)))
-  }
-  return [{ expr, refined }]
-}
-
-// Returns the flat list of { expr, refined } return-tail sites reachable from
-// statement node `n`, or null the instant a bare `return;` (undefined — kills
-// unification) is found. Pure/functional on purpose (returns its result
-// instead of pushing into a shared outer array) — no mutable state shared
-// across the recursive calls.
-function crkWalkSites(n, refined) {
-  if (!Array.isArray(n)) return []
-  const op = n[0]
-  if (op === '=>') return []                              // nested closure — its own pass
-  if (op === 'return') {
-    if (n.length < 2) return null                          // bare return → undefined kills unification
-    return crkLeafSites(n[1], refined)
-  }
-  if (op === 'if') {
-    const t = crkWalkSites(n[2], crkBranchRefine(n[1], refined, true))
-    if (t === null) return null
-    if (n[3] == null) return t
-    const e = crkWalkSites(n[3], crkBranchRefine(n[1], refined, false))
-    return e === null ? null : t.concat(e)
-  }
-  let out = []
-  for (let i = 1; i < n.length; i++) {
-    const r = crkWalkSites(n[i], refined)
-    if (r === null) return null
-    out = out.concat(r)
-  }
-  return out
-}
-
-// Shared site-collection: both closureBodyReturnKind and its mayBeUndefined
-// sibling below unify/OR-fold over the SAME return-tail sites (design's own
-// "extend the join" instruction — a different site set would be a different,
-// unjustified fact). Returns null iff there's no closed set of sites to fold
-// (bare return / unreachable end), matching closureBodyReturnKind's own
-// pre-extraction null contract.
-function closureReturnSites(body, capturedKinds) {
-  if (isBlockBody(body) && !alwaysReturns(body)) return null
-  const sites = isBlockBody(body) ? crkWalkSites(body, capturedKinds) : crkLeafSites(body, capturedKinds)
-  return sites === null || !sites.length ? null : sites
-}
-
-export function closureBodyReturnKind(body, capturedKinds) {
-  const sites = closureReturnSites(body, capturedKinds)
-  if (!sites) return null
-  const kindOf = (site) => valTypeOfWithLocals(site.expr, name => site.refined.get(name))
-  const kind0 = kindOf(sites[0])
-  if (!kind0) return null
-  for (let i = 1; i < sites.length; i++) if (kindOf(sites[i]) !== kind0) return null
-  return kind0
-}
-
-/**
- * mayBeUndefined return-kind join (Slice 2, .work/archive/todo.md
- * §deletion-sweep §3 "Return kinds") — the closureBodyReturnKind sibling:
- * same return-tail sites (closureReturnSites), OR-folded instead of unified —
- * any site whose expr is itself census-shaped, or a bare name tracing
- * (through the body's own writes) to one, makes the WHOLE closure's result
- * maybeUndefined. `exprMayBeUndefinedIn` (kind.js) is ctx-independent by
- * construction — sound to call here, at closure-CREATION time, before this
- * closure body has compiled and installed its own ctx.func.localReps (the
- * same reasoning narrow.js's param/return joins document for why they can't
- * trust the real, ctx-aware census either at their own plan-time fixpoint).
- * A separate function (not folded into closureBodyReturnKind's own return)
- * because that function's return shape — a bare VAL.* string — has a live
- * consumer (kind-traits.js calleeValType) this slice must not disturb.
- */
-export function closureBodyReturnMayBeUndefined(body, capturedKinds) {
-  const sites = closureReturnSites(body, capturedKinds)
-  if (!sites) return false
-  return sites.some(site => exprMayBeUndefinedIn(site.expr, body))
 }
