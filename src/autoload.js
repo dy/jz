@@ -41,7 +41,9 @@ const PROP_MODULES = Object.assign(Object.create(null), {
   forEach: ['core', 'array', 'typedarray'], find: ['core', 'array', 'typedarray'], findIndex: ['core', 'array', 'typedarray'],
   findLast: ['core', 'array', 'typedarray'], findLastIndex: ['core', 'array', 'typedarray'],
   every: ['core', 'array', 'typedarray'], some: ['core', 'array', 'typedarray'], flat: ['core', 'array'], flatMap: ['core', 'array'],
-  join: ['core', 'array'], copyWithin: ['core', 'array', 'typedarray'], at: ['core', 'string', 'array', 'typedarray'],
+  // join renders through the string module's __str_join and a `,` literal: the
+  // string module is the emitter's, whatever the program's own strings.
+  join: ['core', 'array', 'string'], copyWithin: ['core', 'array', 'typedarray'], at: ['core', 'string', 'array', 'typedarray'],
   toSorted: ['core', 'array', 'typedarray'], toReversed: ['core', 'array', 'typedarray'], with: ['core', 'array', 'typedarray'],
   charAt: ['core', 'string'], charCodeAt: ['core', 'string'], codePointAt: ['core', 'string'],
   toUpperCase: ['core', 'string'], toLowerCase: ['core', 'string'], toLocaleLowerCase: ['core', 'string'], trim: ['core', 'string'],

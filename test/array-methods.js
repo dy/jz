@@ -11,7 +11,7 @@ function run(code) {
 }
 
 // jz()-based helper for regression tests that need full host wiring.
-const runHost = (code) => jz(code).exports
+const runHost = (code, opts) => jz(code, opts).exports
 
 // === .map ===
 
@@ -160,6 +160,24 @@ test('.includes: string via variable still matches', () => {
 
 test('.join: default separator', () => {
   is(runHost(`export let f = () => ["A", "B", "C"].join()`).f(), 'A,B,C')
+})
+
+// join renders through the string module (__str_join, the `,` default) whether
+// or not the program has a string of its own: the emitter's dependency is the
+// property table's (src/autoload.js PROP_MODULES), not the source's literals.
+// Each form on a program with no other string, against JS.
+test('.join: a program with no string of its own', () => {
+  for (const [src, args] of [
+    [`export let f = () => [1, 2].join()`, []],
+    [`export let f = () => [1, 2].join('-')`, []],
+    [`export let f = () => [].join()`, []],
+    [`export let f = () => new Float64Array([1.5, 2]).join()`, []],
+    [`export let f = (s) => [1, 2].join(s)`, ['x']],
+    [`export let f = () => [1, 2].join(1)`, []],
+  ]) {
+    const expected = new Function(src.replace('export let f =', 'return'))()(...args)
+    for (const optimize of [0, 1, 2]) is(runHost(src, { optimize }).f(...args), expected, `${src} O${optimize}`)
+  }
 })
 
 // === .sort ===
