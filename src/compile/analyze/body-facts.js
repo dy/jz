@@ -14,10 +14,11 @@ import { VAL, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
 import { intLiteralValue, intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
 import { exprType, intCertainMap, intLevelMap } from '../../type.js'
-import { typedStorageCtorFromContext } from '../../typed-context.js'
+import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
+import { ctorFromElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
-  scanObjectArrayFacts, scanNumericFill, isFreshArrayCtor, stampCoInductionRanges,
+  scanObjectArrayFacts, isFreshArrayCtor, stampCoInductionRanges,
 } from '../analyze-scans.js'
 import { makeValTracker, makeTypedTracker } from './trackers.js'
 
@@ -78,7 +79,7 @@ export function analyzeBody(body) {
   // for any slice and can't be WeakMap-keyed. Return empty maps without caching.
   if (body === null || typeof body !== 'object') return {
     locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(), arrElemSchemaSets: new Map(),
-    arrElemValTypes: new Map(), arrElemTypedCtors: new Map(), typedElems: new Map(), typedLens: new Map(),
+    arrElemValTypes: new Map(), arrayHoles: new Set(), arrElemTypedCtors: new Map(), typedElems: new Map(), typedLens: new Map(),
     escapes: new Map(), flatObjects: new Map(),
   }
   const bodyFacts = getFactStore().bodyFacts
@@ -110,16 +111,16 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
   const valTypes = new Map()
   const arrElemSchemas = new Map()
   let arrElemSchemaSets = null  // name → Set<sid> | null — closed heterogeneous union
+  // The element kind (arrElemValTypes), holes (arrayHoles: an unwritten slot
+  // of `Array(n)` reads undefined) and typed element constructor
+  // (arrElemTypedCtors: `Array.from(nCh, () => new Float32Array(n))`, so
+  // `arr[i][j]` inlines) of each array declared here are the program
+  // summary's cell (src/summary): one cell per array, joining every store
+  // through every alias, callback and callee. Read at the declaration, never
+  // observed: a mutation this body cannot see (`unshift` in a helper, a
+  // callback's index store) is in the cell already.
   const arrElemValTypes = new Map()
-  // Nested element kind: `name`'s elements are themselves arrays whose elements
-  // share this VAL.*. Lets `chord = padChord[i]; chord[j]` (floatbeat pad voicings,
-  // `padChord = [[0,2,4],…]`) bind `chord`'s arrayElemValType through one index step,
-  // so `chord[j]` is a Number and skips __to_num. Single-level only — enough for the
-  // 2-D table pattern without a general nested-type lattice.
-  let arrElemElemValTypes = null
-  // `name`'s elements are all typed arrays of one ctor ('new.Float32Array'), e.g.
-  // `Array.from(nCh, () => new Float32Array(n))` (codec channelData). Lets `arr[i]`
-  // resolve as that typed array so `arr[i][j]` / `let o = arr[i]; o[j]` inline.
+  let arrayHoles = null
   let arrElemTypedCtors = null
   const typedElems = new Map()
   let typedLens = null
@@ -128,6 +129,7 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
   const doSchemas = !!ctx.schema?.register
   // Per-walk local schema map for chained `arr.push(name)` resolution.
   let localSchemaMap = null
+  const summary = ctx.summary?.at(body)
 
   // === Observation helpers ===
   //
@@ -161,101 +163,23 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
     else if (arrElemSchemas.get(arr) !== sid) arrElemSchemas.set(arr, null)
   }
 
-  const observeArrValType = (arr, vt) => {
-    if (typeof arr !== 'string') return
-    if (arrElemValTypes.get(arr) === null) return
-    if (!vt) { arrElemValTypes.set(arr, null); return }
-    if (!arrElemValTypes.has(arr)) arrElemValTypes.set(arr, vt)
-    else if (arrElemValTypes.get(arr) !== vt) arrElemValTypes.set(arr, null)
-  }
-
-  const elemValOf = (name) => {
-    if (typeof name !== 'string') return null
-    const repVt = ctx.func.localReps?.get(name)?.arrayElemValType
-    if (repVt) return repVt
-    return arrElemValTypes.get(name) || null
-  }
-
-  // Disagreement → null poison, like observeArrValType. Records the common
-  // TypedArray ctor of an array's elements.
-  const observeArrTypedCtor = (arr, ctor) => {
-    if (typeof arr !== 'string') return
-    if (arrElemTypedCtors?.get(arr) === null) return
-    arrElemTypedCtors ||= new Map()
-    if (!ctor) { arrElemTypedCtors.set(arr, null); return }
-    if (!arrElemTypedCtors?.has(arr)) arrElemTypedCtors.set(arr, ctor)
-    else if (arrElemTypedCtors.get(arr) !== ctor) arrElemTypedCtors.set(arr, null)
-  }
-  // The concrete typed storage an element expression produces, including
-  // species-preserving method chains, if any.
-  const elemTypedCtorOf = (expr) => {
-    const c = typedStorageCtorFromContext(ctx, expr, {
-      resolveName: n => typedElems.get(n) ?? ctx.func.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null,
-    })
-    // typed-array views/buffers only — exclude ArrayBuffer/DataView (no element index).
-    return c && !c.includes('ArrayBuffer') && !c.includes('DataView') ? c : null
-  }
-
-  // A literal negative index or a non-numeric STRING-literal key addresses a
-  // PROPERTY, not an element (mirrors kind.js VT['[]']'s own guard — keep the
-  // two in sync, they classify the same AST shape for the same reason: typing
-  // a property read by the receiver's element kind would fold a `'@@iterator'
-  // in arr`-style guard on a false premise).
-  const isElemAccessKey = (key) => {
-    const li = intLiteralValue(key)
-    if (li != null) return li >= 0
-    const lit = Array.isArray(key) && key.length === 2 && key[0] == null ? key[1]
-      : Array.isArray(key) && key[0] === 'str' ? key[1] : undefined
-    return !(typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit))
-  }
-
-  const exprElemSourceVal = (expr) => {
-    if (typeof expr === 'string') {
-      // Prefer this body walk's settled local slice. localReps is intentionally
-      // sparse and globalValTypes cannot describe locals; omitting valTypes made
-      // `let s = ...; strings.push(s)` poison an otherwise monomorphic array.
-      const localVt = valTypes.get(expr)
-      if (localVt) return localVt
-      const repVt = ctx.func.localReps?.get(expr)?.val
-      if (repVt) return repVt
-      return ctx.scope.globalValTypes?.get(expr) || null
+  /** The summary's element facts of the array `name` declares: the kind when
+   *  no producer is nullish (a null element has no numeric path), holes as
+   *  presence, a typed element's constructor. Elements the cell knows are not
+   *  objects poison the schema census below, whose push observation would
+   *  otherwise stand after an `unshift('y')` it cannot see. */
+  const readElemFacts = (name) => {
+    const e = summary?.elemKindOf(name)
+    if (e == null) return
+    if (!hasTag(e, K.NULLISH)) {
+      const ev = valOf(core(e))
+      if (ev != null) {
+        arrElemValTypes.set(name, ev)
+        if (hasTag(e, K.ABSENT)) (arrayHoles ||= new Set()).add(name)
+        if (ev === VAL.TYPED && paramOf(e) !== UNKNOWN) (arrElemTypedCtors ||= new Map()).set(name, ctorFromElemAux(paramOf(e)))
+      }
     }
-    // One-hop element read `recv[i]` whose RECEIVER is a name this SAME body
-    // walk already has an element-kind fact for (elemValOf: rep ∪ this walk's
-    // in-progress arrElemValTypes — the identical fallback `elemValOf` already
-    // uses for the alias case below). Lets `probes.push(words[i])` observe
-    // probes' element kind as STRING when `words` is itself a body-local array
-    // built earlier in program order (a call-return array, e.g. `buildWords()`)
-    // — kind.js's generic valTypeOf can't see this walk's in-progress facts, only
-    // settled localReps, so a receiver that's a LOCAL (not a param) with no rep
-    // yet fell through to null here and poisoned the pushed-to array (the class
-    // reverted before: see .work/archive/todo.md "WORDCOUNT TRUE ROOT"). Deterministic
-    // and safe to read mid-walk: the receiver's own decl is processed earlier in
-    // this same forward, program-order pass (`arrElemValTypes` is a fresh Map per
-    // analyzeBody call, so re-walks after a caller-side fact settles converge to
-    // the same answer — no cross-invocation staleness). Try this FIRST (more
-    // precise than valTypeOf can be here); fall through unchanged otherwise —
-    // never overrides or bypasses the elemOrigin-gated observation this reads.
-    if (Array.isArray(expr) && expr[0] === '[]' && expr.length === 3 && typeof expr[1] === 'string'
-        && isElemAccessKey(expr[2])) {
-      const v = elemValOf(expr[1])
-      if (v) return v
-    }
-    return valTypeOf(expr)
-  }
-
-  // Common element VAL of an array-literal node (`[a,b,c]`), or null if not a literal
-  // or its elements disagree. Used to read one level into an array-of-arrays literal.
-  const arrLitElemCommonVal = (litNode) => {
-    const raw = staticArrayElems(litNode)
-    if (!raw) return null
-    const items = raw.filter(e => e != null)
-    if (!items.length || items.length !== raw.length) return null
-    let common = exprElemSourceVal(items[0])
-    for (let k = 1; k < items.length && common != null; k++) {
-      if (exprElemSourceVal(items[k]) !== common) common = null
-    }
-    return common
+    if (tagOf(core(e)) !== K.OBJECT) { arrElemSchemas.set(name, null); (arrElemSchemaSets ||= new Map()).set(name, null) }
   }
 
   // Names declared (`let`/`const`) in THIS body. A reassignment to any OTHER
@@ -270,15 +194,12 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
   // guard), and scalar guards don't take part in the ptr-tag fold class.
   // Names whose INITIAL element contents this body fully described: a decl whose
   // array-literal elems were all statically visible (including the empty `[]`).
-  // Mutation observations (push / index-write) describe only elements ADDED here —
-  // they may settle an element fact only when the pre-existing contents are also
-  // known (elemOrigin, or an entry already recorded from a construction source:
-  // call-return fact, split/map chain, literal elems). A push on a PARAM or an
-  // unknown-origin alias proves nothing about the elements the array arrived
-  // with — watr's `outline(ast)` pushes `['func',…]` nodes onto the module tree,
-  // which settled arrayElemValType=ARRAY for the heterogeneous ['module', …]
-  // param and const-folded the very `ast[0] !== 'module'` guard protecting it
-  // (emitStrictEq's differing-primitive fold → outline dead in-kernel). Skip,
+  // A push observation describes only the elements ADDED here — the schema
+  // census may settle on it only when the pre-existing contents are also known
+  // (elemOrigin, or an entry already recorded from a construction source). A
+  // push on a PARAM or an unknown-origin alias proves nothing about the
+  // elements the array arrived with — watr's `outline(ast)` pushes `['func',…]`
+  // nodes onto the module tree, the heterogeneous ['module', …] param. Skip,
   // don't poison: the array simply stays untyped, and a caller-proven preseed
   // (index.js param facts) survives unchallenged.
   const poisonUndeclared = (name, vt) =>
@@ -386,111 +307,15 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
       // The program summary: an array whose every element, from every
       // construction and store in the program, is one shape (a factory's
       // result built by pushes, an element read from another such array).
-      const sumSid = ctx.summary?.at(ctx.func.current).arrayElemSidOf(name)
+      const sumSid = summary?.arrayElemSidOf(name)
       if (sumSid != null) observeArrSchema(name, sumSid)
     }
-
-    // arr-elem val type (arrElemValTypes slice) — array-literal init + call return + alias + .map/.filter/.slice/.concat chain
+    // A decl whose initial contents this body fully described (the schema census's push gate).
     {
       const rawElems = staticArrayElems(rhs)
       if ((rawElems && rawElems.every(e => e != null)) || isFreshArrayCtor(rhs)) elemOrigin.add(name)
-      if (rawElems) {
-        const elems = rawElems.filter(e => e != null)
-        if (elems.length && elems.length === rawElems.length) {
-          let common = exprElemSourceVal(elems[0])
-          for (let k = 1; k < elems.length && common != null; k++) {
-            if (exprElemSourceVal(elems[k]) !== common) common = null
-          }
-          if (common != null) observeArrValType(name, common)
-          // Array-of-typed-arrays literal (`[new Float32Array(n), …]`): record the
-          // common element ctor so `name[i]` is a known typed array.
-          if (common === VAL.TYPED) {
-            let ctor = elemTypedCtorOf(elems[0])
-            for (let k = 1; k < elems.length && ctor != null; k++)
-              if (elemTypedCtorOf(elems[k]) !== ctor) ctor = null
-            observeArrTypedCtor(name, ctor)
-          }
-          // Array-of-arrays literal: record the common element-of-element kind so a
-          // later `x = name[i]` binds `x`'s element type one level down.
-          if (common === VAL.ARRAY) {
-            let nested = arrLitElemCommonVal(elems[0])
-            for (let k = 1; k < elems.length && nested != null; k++) {
-              if (arrLitElemCommonVal(elems[k]) !== nested) nested = null
-            }
-            if (nested != null) (arrElemElemValTypes ||= new Map()).set(name, nested)
-          }
-        }
-      }
-      // `x = arr[i]` where `arr` is a known array-of-arrays → `x`'s elements take
-      // `arr`'s nested element kind (the missing index-step in observeArrValType).
-      // `arr` may be a function-local (arrElemElemValTypes) or a module-level const
-      // table (global rep, recorded by recordGlobalRep) — the latter dynWrite-guarded.
-      if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string') {
-        const nested = arrElemElemValTypes?.get(rhs[1])
-          ?? (!ctx.func.localReps?.has(rhs[1]) && !ctx.types?.dynWriteVars?.has(rhs[1])
-                ? ctx.scope.globalReps?.get(rhs[1])?.arrayElemElemValType : null)
-        if (nested) observeArrValType(name, nested)
-      }
     }
-    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-      const f = ctx.funcs.map?.get(rhs[1])
-      if (f?.arrayElemValType) observeArrValType(name, f.arrayElemValType)
-    }
-    // `Array.from(arg, () => new XxxArray(...))` — codec channelData and per-row
-    // typed-array tables. The map-callback's returned ctor is every element's type.
-    // Post-prepare AST: `['()', 'Array.from', [',', arg, callback]]` (args in a comma node).
-    if (Array.isArray(rhs) && rhs[0] === '()' && rhs[1] === 'Array.from' && Array.isArray(rhs[2])) {
-      const args = rhs[2][0] === ',' ? rhs[2].slice(1) : [rhs[2]]
-      const fn = args[1]
-      const body = Array.isArray(fn) && fn[0] === '=>' ? fn[2] : null
-      const ret = Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === 'return'
-        ? body[1][1] : body
-      const ctor = ret && elemTypedCtorOf(ret)
-      if (ctor) { observeArrValType(name, VAL.TYPED); observeArrTypedCtor(name, ctor) }
-    }
-    if (typeof rhs === 'string') {
-      const v = elemValOf(rhs)
-      if (v) observeArrValType(name, v)
-    }
-    if (Array.isArray(rhs) && rhs[0] === '()' &&
-        Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
-        typeof rhs[1][1] === 'string') {
-      const recvName = rhs[1][1], method = rhs[1][2]
-      if (method === 'filter' || method === 'slice' || method === 'concat') {
-        const v = elemValOf(recvName)
-        if (v) observeArrValType(name, v)
-      } else if (method === 'split' && valTypeOf(recvName) === VAL.STRING) {
-        observeArrValType(name, VAL.STRING)
-      } else if (method === 'map') {
-        const arrowFn = rhs[2]
-        const recvVt = elemValOf(recvName)
-        const param = Array.isArray(arrowFn) && arrowFn[0] === '=>' ? arrowFn[1] : null
-        const paramName = typeof param === 'string' ? param :
-          (Array.isArray(param) && param[0] === '()' && typeof param[1] === 'string' ? param[1] : null)
-        const arrowBody = paramName ? arrowFn[2] : null
-        const exprBody = (Array.isArray(arrowBody) && arrowBody[0] === '{}' &&
-          Array.isArray(arrowBody[1]) && arrowBody[1][0] === 'return') ? arrowBody[1][1] : arrowBody
-        if (paramName && exprBody != null) {
-          const refs = recvVt ? (ctx.func.refinements ??= new Map()) : null
-          const hadParam = refs?.has(paramName)
-          const prev = hadParam ? refs.get(paramName) : undefined
-          if (refs) refs.set(paramName, { val: recvVt })
-          let bodyVt = null
-          try { bodyVt = valTypeOf(exprBody) }
-          finally {
-            if (refs) {
-              if (hadParam) refs.set(paramName, prev); else refs.delete(paramName)
-            }
-          }
-          if (bodyVt) observeArrValType(name, bodyVt)
-        }
-      }
-    }
-    if (Array.isArray(rhs) && rhs[0] === '()' &&
-        Array.isArray(rhs[1]) && rhs[1][0] === '.' && rhs[1][2] === 'split' &&
-        valTypeOf(rhs[1][1]) === VAL.STRING) {
-      observeArrValType(name, VAL.STRING)
-    }
+    readElemFacts(name)
   }
 
   // arrElem invalidation rule — fires on `=` reassign of tracked name to non-array
@@ -566,43 +391,19 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
       markEscapeArgs(node[2])
     }
 
-    // arr.push(...) — observe both schemas and val types in one pass. Mutation
-    // evidence describes only the ADDED elements — each slice may settle only
-    // when the array's prior contents are known (elemOrigin decl, or an entry
-    // this body already recorded from a construction source); see elemOrigin.
+    // arr.push(...) — observe the element schemas. Mutation evidence describes
+    // only the ADDED elements — the slice may settle only when the array's
+    // prior contents are known (elemOrigin decl, or an entry this body already
+    // recorded from a construction source); see elemOrigin.
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'push' && typeof node[1][1] === 'string') {
       const arr = node[1][1]
-      const originVal = elemOrigin.has(arr) || arrElemValTypes.has(arr)
-      const originSchema = elemOrigin.has(arr) || arrElemSchemas.has(arr) || arrElemSchemaSets?.has(arr)
-      const originCtor = elemOrigin.has(arr) || arrElemTypedCtors?.has(arr)
-      const list = commaList(node[2])
-      for (const a of list) {
-        if (Array.isArray(a) && a[0] === '...') {
-          if (originSchema) observeArrSchema(arr, null)
-          if (originVal) observeArrValType(arr, null)
-          continue
-        }
-        if (originSchema) observeArrSchema(arr, exprSchemaId(a, localSchemaMap || EMPTY_BODY_FACT_MAP))
-        if (originVal) observeArrValType(arr, exprElemSourceVal(a))
-        // `ch.push(new Float32Array(m))` — track the element ctor so `ch[c][i]`
-        // inlines, same as the Array.from / array-literal forms.
-        if (originCtor && exprElemSourceVal(a) === VAL.TYPED) observeArrTypedCtor(arr, elemTypedCtorOf(a))
+      if (elemOrigin.has(arr) || arrElemSchemas.has(arr) || arrElemSchemaSets?.has(arr)) {
+        for (const a of commaList(node[2])) observeArrSchema(arr, Array.isArray(a) && a[0] === '...' ? null : exprSchemaId(a, localSchemaMap || EMPTY_BODY_FACT_MAP))
       }
     }
 
-    // `ch[c] = new Float32Array(m)` — index-fill construction of a typed-array-of-
-    // arrays (`let ch = new Array(n); for(c) ch[c] = new T(m)`). Mirror push,
-    // including the known-origin gate (an index-write on a param array proves
-    // nothing about its other elements).
-    if (op === '=' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3
-        && typeof node[1][1] === 'string' && valTypeOf(node[2]) === VAL.TYPED
-        && (elemOrigin.has(node[1][1]) || arrElemValTypes.has(node[1][1]) || arrElemTypedCtors?.has(node[1][1]))) {
-      observeArrValType(node[1][1], VAL.TYPED)
-      observeArrTypedCtor(node[1][1], elemTypedCtorOf(node[2]))
-    }
-
     // `=` reassignment — locals widen, valTypes/typedElems track,
-    // arrElemSchemas/ValTypes invalidate when rhs isn't array-producing.
+    // arrElemSchemas invalidate when rhs isn't array-producing.
     if (op === '=' && typeof node[1] === 'string') {
       const name = node[1], rhs = node[2]
       walk(rhs)
@@ -613,8 +414,6 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
       trackVal(name, poisonUndeclared(name, valTypeOf(rhs)))
       trackTyped(name, rhs)
       if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)
-      if (arrElemValTypes.has(name) && !isArrayProducingRhs(rhs)) observeArrValType(name, null)
-      if (arrElemTypedCtors?.has(name) && !isArrayProducingRhs(rhs)) observeArrTypedCtor(name, null)
       return
     }
 
@@ -656,7 +455,7 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
   // Install the in-progress valTypes as a lookup overlay so successive decls
   // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
   // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
-  let unsignedLocals, numericFill
+  let unsignedLocals
   withValueOverlay(valTypes, () =>
     withTypedElemOverlay(typedElems, () => {
     walk(body)
@@ -704,18 +503,6 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
         narrowed = next
       }
     }
-    // Numeric-fill arrays — fresh `Array(n)`/`[]` whose every element write stores a
-    // Number, so `a[i]` reads can skip __to_num (the win `[1,2,3]` already gets, for the
-    // construct-then-fill kernel shape). Runs HERE, inside the val-type overlay, so a
-    // write of a bare numeric local (`a[i] = out`) resolves via the just-built `valTypes`.
-    // A bare read of the array's OWN elements (`a[i] = a[j]`, heapsort) is Numeric by
-    // induction; any genuinely non-numeric write still fails the test and disqualifies.
-    const numericFillRhs = (rhs, selfName) => {
-      if (Array.isArray(rhs) && rhs[0] === '[]' && rhs[1] === selfName) return true
-      if (typeof rhs === 'string') return valTypes.get(rhs) === VAL.NUMBER || exprElemSourceVal(rhs) === VAL.NUMBER
-      return valTypeOf(rhs) === VAL.NUMBER
-    }
-    numericFill = scanNumericFill(body, numericFillRhs)
   }))
 
   // SRoA: dissolve non-escaping object-literal bindings into field locals.
@@ -742,11 +529,12 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
     locals, valTypes, arrElemSchemas,
     arrElemSchemaSets: arrElemSchemaSets || EMPTY_BODY_FACT_MAP,
     arrElemValTypes,
+    arrayHoles: arrayHoles || EMPTY_BODY_FACT_SET,
     arrElemTypedCtors: arrElemTypedCtors || EMPTY_BODY_FACT_MAP,
     typedElems,
     typedLens: typedLens || EMPTY_BODY_FACT_MAP,
     escapes: escapes || EMPTY_BODY_FACT_MAP,
-    flatObjects, sliceViews, unsignedLocals, neverGrown, ownCurrent, numericFill,
+    flatObjects, sliceViews, unsignedLocals, neverGrown, ownCurrent,
   }
   // null (not '') when ctx.func.current is unset at capture time — some legitimate
   // callers (plan/literals.js's AST-rewrite passes, narrow.js's refreshCallerLocals)

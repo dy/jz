@@ -363,28 +363,21 @@ function analyzeValTypesIn(body, declared) {
     !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
-  // Parallel arrElemValTypes walk records VAL.* element kinds into
-  // rep.arrayElemValType so valTypeOf's `arr[i]` rule can elide __to_num and route
-  // method dispatch on `arr[i].method()`. Both come from a single unified walk.
+  // The element kind, holes and typed constructor are the program summary's
+  // cell, read by analyzeBody at each array's declaration: rep.arrayElemValType
+  // lets valTypeOf's `arr[i]` rule elide __to_num and route method dispatch on
+  // `arr[i].method()`; an unwritten slot of `Array(n)` is a hole reading
+  // undefined, a NaN through every numeric path (`arrayHoles`: toNumF64
+  // canonicalizes it, an identity compare stays live); an array of typed
+  // arrays names their ctor so `arr[i][j]` / `let o = arr[i]; o[j]` inline.
   const facts = analyzeBody(body)
   const arrElems = facts.arrElemSchemas
   for (const [name, vt] of facts.arrElemValTypes) {
     if (vt != null) updateRep(name, { arrayElemValType: vt })
   }
-  // Array-of-typed-arrays element ctor → rep, so `arr[i]` resolves as a typed array
-  // and `arr[i][j]` / `let o = arr[i]; o[j]` inline (codec channelData scatter).
+  for (const name of facts.arrayHoles) updateRep(name, { arrayHoles: true })
   for (const [name, ctor] of facts.arrElemTypedCtors) {
     if (ctor != null) updateRep(name, { arrayElemTypedCtor: ctor })
-  }
-  // Construct-then-fill numeric arrays (`let a = Array(n); a[i] = expr`) carry no
-  // element evidence at their decl, so the walk above leaves them untyped. scanNumericFill
-  // proved every write Numeric and every other use a pure read — record NUMBER so `arr[i]`
-  // reads skip __to_num, unless an observation already poisoned the slot to a conflict.
-  // An unwritten slot is a hole and reads undefined: a NaN through every
-  // numeric path, so the NUMBER claim holds for dispatch; an identity
-  // compare (`a[i] === undefined`) consults `arrayHoles` and stays live.
-  for (const name of facts.numericFill || []) {
-    if (facts.arrElemValTypes.get(name) !== null) updateRep(name, { arrayElemValType: VAL.NUMBER, arrayHoles: true })
   }
   // Propagate body-observed array-elem schemas to localReps so unboxablePtrs's
   // `let p = arr[i]` rule (which only consults rep) sees the schema and can unbox `p`
@@ -611,14 +604,13 @@ function analyzeValTypesIn(body, declared) {
         const sh = shapeOf(a[2])
         if (sh) {
           updateRep(a[1], { jsonShape: sh })
-          if (sh.val === VAL.ARRAY && sh.elem?.val) {
-            updateRep(a[1], { arrayElemValType: sh.elem.val })
-            // Array of fixed-shape OBJECTs: register elem schema so `it = items[j]`
-            // → `it.prop` lowers to slot read via the existing arr-elem-schema path.
-            if (sh.elem.val === VAL.OBJECT && sh.elem.names && ctx.schema.register) {
-              const elemSid = ctx.schema.register(sh.elem.names)
-              updateRep(a[1], { arrayElemSchema: elemSid })
-            }
+          // Array of fixed-shape OBJECTs: register elem schema so `it = items[j]`
+          // → `it.prop` lowers to slot read via the existing arr-elem-schema path.
+          // The element kind itself is the summary's (a store of another kind
+          // poisons the schema slice: analyzeBody readElemFacts).
+          if (sh.val === VAL.ARRAY && sh.elem?.val === VAL.OBJECT && sh.elem.names && ctx.schema.register && arrElems.get(a[1]) !== null) {
+            const elemSid = ctx.schema.register(sh.elem.names)
+            updateRep(a[1], { arrayElemSchema: elemSid })
           }
           if (sh.val === VAL.OBJECT && sh.names && ctx.schema.register) {
             const sid = ctx.schema.register(sh.names)

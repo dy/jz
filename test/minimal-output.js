@@ -363,11 +363,12 @@ test('minimal: typed-array reads skip the forwarding follow', () => {
 })
 
 // === Numeric Array(n) sheds the ToNumber / string-format subsystem ===
-// A fresh `Array(n)` / `[]` filled only with Number element writes is provably numeric, so
-// its `a[i]` reads skip __to_num — the same win a numeric array LITERAL already gets, now
-// for the dominant construct-then-fill kernel shape (`let a = Array(n); for(..) a[i] = …`).
-// Without it every untyped index drags the full __to_num → __to_str → __ftoa/__itoa/__skipws
-// string battery: a 4–17× bloat over the typed-array form (the REPL "Array swap" cliff).
+// An `Array(n)` every store into which is a Number holds numbers (the program summary's
+// cell: `Array(n)` is holes, each index write joins its kind), so its `a[i]` reads skip
+// __to_num — the same win a numeric array LITERAL already gets, now for the dominant
+// construct-then-fill kernel shape (`let a = Array(n); for(..) a[i] = …`). Without it every
+// untyped index drags the full __to_num → __to_str → __ftoa/__itoa/__skipws string battery:
+// a 4–17× bloat over the typed-array form (the REPL "Array swap" cliff).
 const NUMERIC_FILL = {
   'arithmetic fill': 'export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=(i%13)-6; let s=0; for(let i=0;i<n;i++)s+=a[i]*a[i]; return s|0}',
   'bare numeric-local write': 'export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++){let v=i*0.5+1; a[i]=v} let s=0; for(let i=0;i<n;i++)s+=a[i]; return s|0}',
@@ -391,13 +392,13 @@ test('minimal: numeric Array(n) narrowing preserves results', () => {
   is(jz(NUMERIC_FILL['arithmetic fill']).exports.f(64), 874, 'arithmetic-fill sum of squares')
   is(jz('export let f=()=>{let a=Array(4); a[0]=5; a[1]=6; let s=0; for(let i=0;i<4;i++)s+=a[i]; return s}').exports.f(), NaN, 'unwritten holes read undefined: NaN through the sum, as JS')
 })
-// SOUNDNESS (default-deny): the moment an array could hold a non-Number, narrowing must
-// NOT fire — else `+` would compile to f64.add on a string pointer. These are the cases
-// that would catch an over-eager future relaxation of scanNumericFill.
+// SOUNDNESS: the moment an array could hold a non-Number, narrowing must NOT fire — else
+// `+` would compile to f64.add on a string pointer. The cell joins the store in a callee
+// through the parameter, and the string store in the body.
 test('minimal: numeric Array(n) narrowing stays sound under non-numeric use', () => {
   if (skip) return
-  // escapes to a mutator that writes a string → scanNumericFill disqualifies (any non-index
-  // use bails), so `a[0]+a[1]` stays a polymorphic concat, not a numeric add.
+  // a mutator that writes a string through its parameter reaches the cell, so
+  // `a[0]+a[1]` stays a polymorphic concat, not a numeric add.
   is(jz('let g=(arr)=>{arr[1]="x"+"y"}; export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=i; g(a); return a[0]+a[1]}').exports.f(3), '0xy', 'escape to string mutator stays string-correct')
   // a string element write in-body poisons the numeric proof (rhs is not VAL.NUMBER).
   is(jz('export let f=(n)=>{let a=Array(n); for(let i=0;i<n;i++)a[i]=i; a[0]="hi"; return a[0]+a[1]}').exports.f(3), 'hi1', 'mixed string write disqualifies narrowing')
