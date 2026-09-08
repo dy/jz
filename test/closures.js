@@ -1017,6 +1017,39 @@ test('func-namespace SROA: single-write only-called slot direct-calls, no table'
   ok(!/__dyn_set/.test(w), 'no __dyn_set for a single-write only-called slot')
 })
 
+// A computed-key write on a function value, `g[k] = v`, addresses the same
+// property bag `g.tag = v` writes (the closure-keyed side table): a closure has
+// no elements, so no key is an index. The element store's path reassigned the
+// receiver binding with the "relocated" pointer: an f64 into the unboxed i32
+// closure local (invalid wasm), or a function's own name (no binding at all).
+// Each receiver form against JS at O0, O1 and O2: a local closure, one with a
+// capture, a module-level arrow and function declaration, the read, `in`,
+// `delete`, a numeric key (ToPropertyKey) and a call after the write.
+test('a computed-key write on a closure is a property write, on every receiver form', () => {
+  const SRC = `const g = (x) => x + 1
+  function h(x) { return x * 2 }
+  export const local = (k, v) => { const c = (x) => x + 1; c[k] = v; return c[k] }
+  export const localCall = (k, v) => { const c = (x) => x + 1; c[k] = v; return c(1) + c[k] }
+  export const captured = (k, v) => { let n = 0; const c = (x) => x + n; c[k] = v; n = 2; return c(1) * 10 + c[k] }
+  export const arrow = (k, v) => { g[k] = v; return g[k] }
+  export const arrowCall = (k, v) => { g[k] = v; return g(1) + g[k] }
+  export const decl = (k, v) => { h[k] = v; return h[k] + h(2) }
+  export const member = (k) => { const c = (x) => x; c[k] = 1; return k in c }
+  export const deleted = (k) => { const c = (x) => x; c[k] = 1; delete c[k]; return k in c }
+  export const numeric = (v) => { const c = (x) => x; c[7] = v; return c['7'] + c[7] }
+  export const overwritten = (k) => { const c = (x) => x; c[k] = 1; c[k] = 2; return c[k] }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { local, localCall, captured, arrow, arrowCall, decl, member, deleted, numeric, overwritten }')()
+  const calls = [
+    ['local', ['z', 3]], ['localCall', ['z', 3]], ['captured', ['z', 3]],
+    ['arrow', ['z', 3]], ['arrow', ['w', 4]], ['arrowCall', ['z', 3]], ['decl', ['z', 3]],
+    ['member', ['z']], ['deleted', ['z']], ['numeric', [5]], ['overwritten', ['z']],
+  ]
+  for (const optimize of [0, 1, 2]) {
+    const ex = runHost(SRC, { optimize })
+    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+  }
+})
+
 test('func-namespace SROA: cross-module single-write only-called slot direct-calls, no table', () => {
   // subscript's asi.js writes `parse.enter`/`parse.exit` onto parse.js's
   // EXPORTED `parse` — the lift's name must carry parse.js's module prefix

@@ -466,6 +466,22 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // the func-ref handling in the call/let/general cases below.
         if (isFuncRef(node[2], ctx.funcs.names)) acc.addressTakenNames.add(node[2])
         else walkFacts(node[2], true, inArrow, caller)
+        // The target's own slot is written, not read (a bare name is a
+        // reassignment, `ns.p` a namespace slot: propMap above), but what the
+        // target is built from is read: a member target's receiver and key.
+        // `g[k] = v` on a function name takes the function as a value (its
+        // property bag is keyed by the closure), and a call in the key is a
+        // call site.
+        const target = node[1]
+        if (Array.isArray(target) && (target[0] === '[]' || target[0] === '.' || target[0] === '?.')) {
+          const [, obj, key] = target
+          if (target[0] === '[]' && isFuncRef(obj, ctx.funcs.names)) acc.addressTakenNames.add(obj)
+          else walkFacts(obj, true, inArrow, caller)
+          if (target[0] === '[]') {
+            if (isFuncRef(key, ctx.funcs.names)) acc.addressTakenNames.add(key)
+            else walkFacts(key, true, inArrow, caller)
+          }
+        }
         return
       }
       for (let i = 1; i < node.length; i++) {

@@ -742,7 +742,14 @@ export function emitElementAssign(arr, idx, val) {
   //     A known-HASH receiver (dictionary-mode `{}`) is the same class: a raw
   //     indexed store would scribble into probe-table slots — ToPropertyKey says
   //     o[97] addresses the '97' string slot. __dyn_set stringifies and probes.
-  if (knownArrVT === VAL.OBJECT || knownArrVT === VAL.HASH) return dynSetCall(arr, keyExpr, valueExpr)
+  //     A CLOSURE has no elements either, a local closure or a function's own
+  //     name (emitPropertyAssign's `g.tag = v` receiver rule): every key addresses
+  //     its property bag (__dyn_set rekeys a closure receiver), and the element
+  //     store's relocation write-back would store an f64 into the unboxed i32
+  //     closure local, or into a function name that is no binding at all.
+  const closureReceiver = knownArrVT === VAL.CLOSURE ||
+    (typeof arr === 'string' && knownArrVT == null && ctx.funcs.names.has(arr) && !isBoundName(arr))
+  if (knownArrVT === VAL.OBJECT || knownArrVT === VAL.HASH || closureReceiver) return dynSetCall(arr, keyExpr, valueExpr)
 
   // A receiver "may be an OBJECT/HASH at runtime" unless the analyzer has proven it
   // is an indexable array/typed candidate (`rep.notString`, set by infer.js for
