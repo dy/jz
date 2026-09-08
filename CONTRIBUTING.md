@@ -25,6 +25,9 @@ builds are using it. Replace the local dependency with a published npm version
 and regenerate the lockfile before distributing JZ.
 See [PLAN.md](PLAN.md) for the red gates and integration evidence.
 
+Historical `.work/` citations below refer to retired evidence, recoverable using
+[.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.
+
 ## Code layout
 
 ```

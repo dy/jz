@@ -105,7 +105,8 @@ names beyond exported ones — the name section is opt-in via `--names`);
   passed on that artifact. This closes the earlier fit-under-4-GiB blocker,
   not the remaining correctness or competitive-performance gates. Repeat
   release verification on the final packaged revision. Evidence and remaining
-  failures are recorded in `.work/session-recovery-2026-09-08.md`.
+  failures are tracked in [PLAN.md](PLAN.md); historical verification is
+  recoverable through [.work/README.md](.work/README.md).
 
 ## Known limitations at v1
 
