@@ -181,6 +181,7 @@ export function analyzeFuncForEmit(func, programFacts) {
       // the maybe-miss distinction lives in the param lattice, not the ValueRep.)
       if (r.missArg) updateRep(pname, { nullable: true })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
+      if (r.arrayHoles) updateRep(pname, { arrayHoles: true })
       if (r.arrayElemRange != null) updateRep(pname, { arrayElemRange: r.arrayElemRange })
       if (r.arrayLen != null) updateRep(pname, { arrayLen: r.arrayLen })
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
