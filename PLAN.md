@@ -871,6 +871,75 @@ a push through a helper on a numeric-literal array, `a[i] === 'y'` folds
 false; `unshift` on a shifted array could move the header down instead of
 a memmove.
 
+### The result contract, slice 1 – 2026-09-07
+
+Native **4367 pass / 2 fail / 1 skip** (`2ea67766` + four commits; the same
+two reds). The summary publishes one frozen result contract per callable at
+its freeze (`src/summary/contract.js`: `{kind, presence, carrier, abi}`,
+read through `summary.resultContract(idOrName)` and, per scope,
+`calleeContract(call)`); ProgramIndex holds the one the plan's summary
+published (`resultContract`, a variant inheriting its source's), and the
+copies read it or are gone: `seedResultKinds` seeds `valResult` from it;
+`calleeValType`, `VT['()']`, the call-result presence arm and the
+boundary's result record read it. Deleted: `ctx.closure.valResult`/
+`valResultMayBeUndefined` with the closure return-kind pre-pass
+(`closureBodyReturnKind` and its `crk` walkers), `closureTableValResult`,
+body-data's `closureCalleeKind`, `resultSemantic`/`currentResultRep`,
+provenance's `results` and `dispatchClosureMayBigint` (three return
+walkers; production −112 lines). The carrier is §3.1's rule (RAW_I64 for a
+direct-only function whose every completion is a BigInt; BOXED for an
+export, a value-used function, a dispatcher, a closure, a BigInt beside
+other kinds or a nullish completion; the wasm result the narrowing writes
+as the ABI half) with one qualification: an unbounded kind names a carrier
+(BOXED) only when a return names BigInt among a bounded set, through joins,
+calls and bindings with such a definition (the join to ANY erased the
+member); otherwise ANY, no claim, the plan's dynamic reads. Not this slice:
+the per-tail carrier join (`resultReps`) still feeds the boundary's
+`current`, since the return edge does not yet convert to the contract's
+carrier and the host lane reads `current`'s openness (materialize.js:460);
+the export/value-used → BOXED rule is published, not enforced, until slice
+2's return edge (4.4's wire change). Findings, each a copy disagreeing with
+the summary, resolved at the root: (1) prepare's postfix recovery (`x++` as
+`(++x) - 1`) read in the lattice as BigInt minus Number, no completion:
+every postfix-incremented BigInt result had kind NONE and provenance's name
+taint carried the box; the solver and the query read the recovery as the
+operand's kind, and the postfix family (138 compiles in test/bigint-tag.js,
+statements.js, data.js) gets an exact-BigInt contract, the raw lane, no
+box. (2) The query had no array-literal arm (ANY where the solver had the
+cell), so `box = v => [v][0]` claimed no BigInt to the plan; it reads the
+cell, as `new Map` does. (3) Provenance's `exprMay` read `results`
+unvetoed while the boundary applied the summary's veto: watr's `cleanInt`/
+`parseUint`/`i32.parse` results (a string, a Number) were may-BigInt by
+name taint; under one authority `ulebSize` loses a dead TypeError path on
+`>>>`, `f16`/`f32`/`i32` their open parameter semantics, a dispatch
+handler its tagged spread (58,137 → 33,096 WAT bytes). (4) An IIFE arrow's
+call answered the global `indirectResult`; its contract (it never
+completes) answers. (5) A binding some definition of which names BigInt
+(`n = BigInt(n)` on one path of a parameter of every kind) joins to ANY:
+the certain-return walk reads it, so `gnorm` keeps its strict proof. (6)
+The demand pass gave a computed callee's arguments (`TABLE[k](x, k)`)
+plain reads; they flow into the closure set now as a bare-name closure's
+do, so a table's numeric uses narrow its callers' host parameters (the
+creation-time walk had assumed `|` on unknown operands yields a Number:
+the `ops` module drops from 178 KB of WAT to 6 KB; a `+`-compatible flow
+now seeds the parameter NUMBER as a direct `g(v)` call already did, so
+`table[0]('a')` is NaN where it was `'a1'`). (7) A direct closure whose
+tail calls another closure, or returns a literal object, is kinded by the
+summary where the creation-time walk answered null (`total += hashOf(n)`
+is an `f64.add`; URLSearchParams' std closures read their arrays as
+arrays). (8) `plus(ANY, ANY)` is a bounded {NUMBER, BIGINT, STRING}:
+watr's `blockid`/`memargSize` claim a BigInt member now, with no byte
+effect. (9) A {NUMBER, BOOL} result narrowed to i32 crosses the Boolean as
+0/1 (`valResult` NUMBER): the range half's own choice, recorded. Over the
+suite's 14,769 compiles 195 differ from `2ea67766`, every one in the
+classes above (138 postfix, 22 URLSearchParams, 15 table dispatch, 10
+`box`, 5 watr, 5 closure results). Functional 20/20 native-identical;
+sequences GREEN; recursive GREEN (14,260,777 bytes, heap 965.8 MiB:
+−21,594 bytes); oracle 15/15, parity 3/3; families 45/50, the base's five.
+Slice 2 starts at the return edge: `bodyResultTarget` reads the contract's
+carrier and the return converts, which retires `resultReps`, the
+boundary's `current`, and lets the export/value-used rule enforce.
+
 ### Next ownership and order
 
 1. One session owns main; slices run in parallel worktrees at `2ea67766`
