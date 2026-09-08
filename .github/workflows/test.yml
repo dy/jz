@@ -52,6 +52,14 @@ jobs:
       # Public declarations are release code: type-check every exported subpath.
       - run: npm run test:types
         if: matrix.variant == 'default'
+      - name: verify the published package installs and runs
+        if: matrix.variant == 'default'
+        run: |
+          package_tarball=$(npm pack --ignore-scripts --silent)
+          smoke_dir="$RUNNER_TEMP/jz-package-smoke"
+          npm install --prefix "$smoke_dir" --ignore-scripts "$PWD/$package_tarball"
+          cd "$smoke_dir"
+          node --input-type=module -e 'import jz from "jz"; import "jz/interop"; if (jz("export let f = () => 42").exports.f() !== 42) throw Error("package compile failed")'
 
   # Extended differential fuzz: `npm test`'s in-suite `fuzz` test gates only seeds
   # 1..200; this runs the full 5000-seed pass (jz-wasm vs JS at opt {0,1,2,3},

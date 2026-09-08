@@ -33,6 +33,8 @@
     "wasi.js",
     "interop.js",
     "layout.js",
+    "layout-kinds.js",
+    "err-codes.js",
     "transform.js",
     "jzify",
     "src",
@@ -93,7 +95,7 @@
   "license": "MIT",
   "dependencies": {
     "subscript": "^10.7.1",
-    "watr": "file:../watr"
+    "watr": "https://codeload.github.com/dy/watr/tar.gz/cdc631a81fc8fc2d1ceb2f1c99c5fdf4b93e3e93"
   },
   "keywords": [
     "javascript",

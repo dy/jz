@@ -9,21 +9,18 @@ npm test              # 2800+ tests
 node bench/bench.mjs  # run benchmarks
 ```
 
-### Local watr integration checkpoint
+### Shared watr optimizer
 
-The watr safety fixes are in GitHub release `v5.10.2` (`6614120`); npm
-publication is separate. Sibling commit `cdc631a` removes the subsequent
-annotation transport experiment: JZ emits schema sections before watr, so
-watr's original plain clone is sufficient. Generic local propagation and
-local merging run after linking through watr, including the fast tier; the
-duplicate JZ implementations and their repeated cleanup sweep are removed.
-`package.json` and the lockfile consume sibling `../watr` explicitly;
-`.npmrc` installs a copy, keeping self-build paths under `node_modules/watr`.
-Check the sibling revision before installing: npm does not refresh a copy
-for same-version source changes. Refresh the complete package only when no
-builds are using it. Replace the local dependency with a published npm version
-and regenerate the lockfile before distributing JZ.
-See [PLAN.md](PLAN.md) for the red gates and integration evidence.
+`package.json` and the lockfile pin the public watr source archive at `cdc631a`.
+It contains the 5.10.2 safety fixes and retains plain instruction arrays and
+cloning. A clean install needs no sibling checkout. Switch to a published npm
+version once it contains these changes; until then the archive's full commit
+and integrity hash keep CI reproducible.
+
+Generic local propagation and merging run in watr after linking, including
+the fast tier. The duplicate JZ implementations and cleanup sweep are removed.
+The downstream watr workflow builds and tests with the same current JZ package.
+See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
 Historical `.work/` citations below refer to retired evidence, recoverable using
 [.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.
@@ -79,7 +76,7 @@ Current pipeline: `source → parse (subscript/jessie) → jzify (default-on; st
 
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
-The tape (`src/ir/tape.js`) currently transports WAT through link; it is not semantic FunctionIR. [PLAN.md](PLAN.md) defines the target: immutable program summaries and explicit producer contracts, disposable verified FunctionIR, and shared optimization in watr. Each migration slice deletes the authority it replaces.
+The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 

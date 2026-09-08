@@ -11,22 +11,38 @@ and installs reliably. Compiler architecture serves that result.
 
 ## Next work
 
-1. **Establish one end-to-end plugin fixture.** Select a real audiojs processor
-   and pin its sample buffers, parameters, persistent state, channel layout,
-   and supported block sizes. Exercise JS → Wasm → VST, including parameter
-   changes, reset, silence, and repeated processing. This fixture should define
-   the compiler-independent DSP interface; do not invent another general ABI.
-2. **Bound processing cost.** Measure worst observed block time and memory
-   growth over a sustained run. Keep allocation and compilation outside the
-   audio callback. Compare output against the JS processor with an explicit
-   numeric tolerance. An average benchmark win alone does not establish this.
-3. **Make distribution reproducible.** Replace the sibling `file:../watr`
-   dependency with a published version. Verify a clean package installation,
-   CLI, declarations, and the plugin fixture. Porffor support requires passing
-   the same fixture, not merely providing a compiler-selection flag.
+1. **Restore reproducible, passing builds.** Use a remotely installable watr
+   revision; run the core/matrix and both projects' compiled suites. Separate
+   semantic failures from stale benchmark evidence; do not relax the gates.
+2. **Prove stateful DSP lifetime.** The gain fixture in `@audio/compile` now
+   passes 132 checks per compiler (JZ and Porffor), including parameter queues,
+   overlapping instances and 12,000 blocks without observed heap growth.
+   Gain is stateless: next use a filter or the existing compressor to exercise
+   exact frame counts, variable blocks, persistent state and instance teardown.
+   Keep the same source and JS oracle for both compiler chains.
+3. **Remove late AST rewrites that bypass settled facts.** The O3
+   `if (condition) value |= bigint` regression came from emitter-time
+   if-to-select rewriting losing the boxed result's representation plan.
+   The immediate fix requires compatible proven kinds and numeric arithmetic
+   operands. The next deletion is to let watr's existing `ifset` own this conversion, extending
+   its numeric-local handling only as needed to retain current speed tests.
+   Do not add another analysis pass to repair synthetic emitter ASTs.
+4. **Make ownership explicit where it fails.** Keep compiler-specific memory
+   layouts behind the existing DSP adapter. Establish setup/process/disposal
+   ownership and bounded callback allocation before generalizing compile-vst.
+   For JZ itself, measure warm compiler allocation and reset behavior before
+   removing ambient state; fix the responsible lifetime, not every ctx reader.
 
-The plugin fixture and host contract are not implemented by this plan. Choose
-an existing processor and inspect its host before changing compiler interfaces.
+Gain timing on M4 Max (48 kHz stereo, scalar builds) measured median block
+costs of 0.625 µs for JZ and 1.166 µs for Porffor at 128 frames, including the
+native host, shell and copies. Three alternating trials establish feasibility
+for this fixture, not a compiler-wide ranking or real-time guarantee. The
+Porffor adapter retains its shared arena until the final instance closes;
+concurrent audio threads and within-block automation are unvalidated.
+
+Compiler selection belongs to `@audio/compile-vst`'s build options, not atom
+metadata or the host. The implemented fixture accepts `--compiler=jz|porffor`;
+the general package is still planned. Both chains must pass the same contract.
 
 ## Compiler pipeline
 
@@ -48,12 +64,13 @@ JZ retains lowering-specific optimization and representation proofs.
   revision. Record baseline failures separately from regressions.
 - String construction and byte-string builders need one consistent contract;
   changing fromCharCode alone previously broke compiler builders.
-- The dedicated self suite previously trapped during repeated Map/property
-  compiles without reset. Bound that lifecycle before promising reusable
-  compiler instances.
+- The warm Map/property failure came from counting duplicate and cancelled
+  durable-slot log entries toward a fixed limit. The log now reuses them;
+  retain the repeated-compile and reset tests as lifecycle gates.
 - Speed and size promises require measured evidence, including the DSP fixture.
   Architecture changes alone do not establish real-time suitability.
-- Replace the local watr dependency with a published version before distribution.
+- Replace the pinned watr source archive with an npm release when it contains
+  the required fixes.
 
 Semantic IR, more generic-pass migration, JS runtime replacements and removing
 ambient ctx are optional follow-ups. Take one only for a reproduced defect,

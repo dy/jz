@@ -6,20 +6,12 @@ name: kernel-gate
 # baseline to judge against in CI). Speed needs an unloaded machine and an
 # attested baseline kernel: not a CI job.
 #
-# Dependencies: jz consumes watr as `file:../watr`, so a clean checkout needs the
-# sibling watr checkout at the exact commit jz's gates were run against (WATR_REF
-# below), installed with its submodules. That commit must exist upstream for this
-# workflow to run remotely; a commit only in a local worktree is an availability
-# blocker, not a reason to publish or to pin a release that lacks the change.
+# Dependencies are pinned by package-lock.json; no sibling checkout is needed.
 on:
   push:
     paths-ignore: ['**/*.md', '**/*.svg', '**/*.html', '.work/**', 'LICENSE']
   pull_request:
     paths-ignore: ['**/*.md', '**/*.svg', '**/*.html', '.work/**', 'LICENSE']
-env:
-  # the watr commit the gates are run against (scripts/kernel-gate.mjs records the
-  # installed watr's content hash in every manifest; a mismatch is not this pin)
-  WATR_REF: deb62e4
 jobs:
   functional:
     runs-on: ubuntu-latest
@@ -27,13 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { path: jz }
-      - uses: actions/checkout@v4
-        with: { repository: dy/watr, ref: '${{ env.WATR_REF }}', path: watr, submodules: recursive }
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
-      - name: install (watr from the sibling checkout, as package.json declares)
+      - name: install locked dependencies
         working-directory: jz
-        run: npm install
+        run: npm ci
       - name: runner failure modes, verdicts and corpus expectations
         working-directory: jz
         run: node test/index.js kernel-gate self-build
@@ -50,12 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { path: jz }
-      - uses: actions/checkout@v4
-        with: { repository: dy/watr, ref: '${{ env.WATR_REF }}', path: watr, submodules: recursive }
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
       - working-directory: jz
-        run: npm install
+        run: npm ci
       - name: recursive and memory on a fresh attested kernel
         working-directory: jz
         run: node scripts/kernel-gate.mjs --build --gate recursive,memory --json kernel-gate-recursive.json

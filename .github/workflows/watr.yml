@@ -6,7 +6,7 @@ name: watr
 # broad correctness probe (the "compile a big real program and run its tests" signal).
 #
 # jz ↔ watr are mutually dependent (jz uses watr to encode; watr is built BY jz), so the
-# job npm-links both HEAD checkouts: jz encodes with HEAD watr, watr is built by HEAD jz.
+# job installs the checkout of JZ into watr; JZ keeps its locked encoder dependency.
 # Kept as its OWN workflow (slow; a downstream integration signal, not a unit gate).
 on:
   push:
@@ -36,19 +36,21 @@ jobs:
           path: jz
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: checkout watr
         uses: actions/checkout@v4
         with:
           repository: dy/watr
           path: watr
           submodules: recursive
-      - name: install + cross-link HEAD jz ⇄ HEAD watr
+      - name: install JZ's locked dependencies
+        working-directory: jz
+        run: npm ci
+      - name: install watr and the current JZ compiler/runtime together
+        working-directory: watr
         run: |
-          (cd jz && npm install && npm link)
-          (cd watr && npm install && npm link)
-          (cd jz && npm link watr)   # jz encodes with HEAD watr (opts.pin)
-          (cd watr && npm link jz)   # watr is built by HEAD jz
+          npm ci
+          npm install --no-save --ignore-scripts --install-links ../jz
       - name: build watr.wasm with HEAD jz
         working-directory: watr
         run: npm run build:wasm
