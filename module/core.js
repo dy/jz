@@ -49,7 +49,8 @@ export default (ctx) => {
   const lane = collectionLaneBytes()
   deps({
     __eq: ['__str_eq', '__ptr_type', '__is_nullish'],
-    __eq_strict: ['__eq', '__is_nullish'],
+    __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
+    __eq_num: () => ['__ptr_type', ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
@@ -170,21 +171,45 @@ export default (ctx) => {
             ;; the gap where the promised fallback never existed.
             ${eqIdentityChain()}))))))))`
 
-  // Strict `===` fallback for the fully-dynamic (neither-side-a-literal) case
-  // emitStrictEq delegates to — everywhere ELSE strict and loose equality agree
-  // bit-for-bit (that's why the delegation exists at all), EXCEPT the one loose-
-  // only exception __eq implements: null == undefined. A thin wrapper, not a
-  // duplicate of __eq's body: defer to __eq for every case, but intercept
-  // "bits differ, both nullish" (the exact condition __eq's own exception
-  // fires on) and force it back to unequal.
+  // IsStrictlyEqual for the fully-dynamic case emitStrictEq delegates to:
+  // identical bits (unless the number NaN), two Numbers by value (-0 is +0),
+  // two BigInts or two strings by content. No conversion of any kind: a
+  // boolean atom beside a number and null beside undefined are the loose
+  // exceptions __eq alone implements (it once delegated to __eq and
+  // inherited the boolean conversion: `true === 1` read true through any
+  // operands).
   ctx.core.stdlib['__eq_strict'] = `(func $__eq_strict (param $a i64) (param $b i64) (result i32)
+    (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     (if (result i32) (i64.eq (local.get $a) (local.get $b))
-      (then (call $__eq (local.get $a) (local.get $b)))
+      (then (i64.ne (local.get $a) (i64.const ${NAN_BITS})))
       (else
+        (local.set $fa (f64.reinterpret_i64 (local.get $a)))
+        (local.set $fb (f64.reinterpret_i64 (local.get $b)))
         (if (result i32)
-          (i32.and (call $__is_nullish (local.get $a)) (call $__is_nullish (local.get $b)))
-          (then (i32.const 0))
-          (else (call $__eq (local.get $a) (local.get $b)))))))`
+          (i32.and
+            (f64.eq (local.get $fa) (local.get $fa))
+            (f64.eq (local.get $fb) (local.get $fb)))
+          (then (f64.eq (local.get $fa) (local.get $fb)))
+          (else
+            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            ${eqIdentityChain()})))))`
+
+  // Loose `==` of a Number $n against a carrier the lowering could not kind:
+  // a Number by value, a boolean as its ToNumber, a string through ToNumber
+  // when the program parses strings at all; null, undefined and every heap kind are unequal. The
+  // static lowering compares a genuine number inline and calls this for the
+  // NaN-boxed remainder.
+  ctx.core.stdlib['__eq_num'] = () => `(func $__eq_num (param $n f64) (param $v i64) (result i32)
+    (local $f f64) (local $t i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (f64.eq (local.get $n) (local.get $f)))))
+    (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.eq (local.get $n) (f64.const 1)))))
+    (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.eq (local.get $n) (f64.const 0)))))
+    (local.set $t (call $__ptr_type (local.get $v)))${ctx.core.stdlib['__to_num'] ? `
+    (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+      (then (return (f64.eq (local.get $n) (call $__to_num (local.get $v))))))` : ''}
+    (i32.const 0))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)
     (i64.eq (local.get $v) (i64.const ${NULL_NAN})))`

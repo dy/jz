@@ -518,15 +518,16 @@ function emitLooseEq(a, b, negate, strict) {
   // nullable) both wrongly reading false — JS true — pre-fix.
   const aSafe = vta === VAL.NUMBER && !nullableOperand(a)
   const bSafe = vtb === VAL.NUMBER && !nullableOperand(b)
-  // Loose `==` converts the other side (ToNumber): a boolean member (JS: `true == 1`),
-  // a string, an unknown member read; a nullish member equals no number. Strict `===`
-  // converts nothing: a certain number equals no string, boolean, BigInt or nullish,
-  // and every one of those is a NaN-box on the unknown side, so `f64.eq` against the
-  // carrier as it is answers (`b[1] === 0` with `b[1]` holding '0' is false).
-  const converts = (n, vt) => needsToNumberCoercion(n, vt) || boolOrNullish(n) || mayCarryRawBool(n)
+  // Loose `==` of a certain number against a partner of no static kind (a
+  // boolean atom, a boxed BigInt, a string: each converts) or a static
+  // string: looseNumberEq. Every other known kind is a raw f64 compare: a
+  // nullable number's sentinel and a heap kind's NaN-box equal no number.
+  // Strict `===` converts nothing: every one of those is a NaN-box on the
+  // unknown side, so `f64.eq` against the carrier as it is answers (`b[1]
+  // === 0` with `b[1]` holding '0' is false).
   if (!strict) {
-    if (aSafe && converts(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
-    if (bSafe && converts(a, vta)) return looseNumberEq(numB(), a, va, negate)
+    if (aSafe && (rawB == null || rawB === VAL.STRING)) return looseNumberEq(numA(), b, vb, rawB, negate, true)
+    if (bSafe && (rawA == null || rawA === VAL.STRING)) return looseNumberEq(numB(), a, va, rawA, negate, false)
   }
   if (aSafe || bSafe) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
   // Both sides proven VAL.NUMBER but NEITHER individually "safe" above (both
@@ -913,15 +914,27 @@ function needsToNumberCoercion(expr, vt) {
   return mayReadBoxedValue(expr)
 }
 
-function looseNumberEq(numIR, otherNode, otherIR, negate = false) {
-  const t = temp('eq')
-  const other = typed(['local.get', `$${t}`], 'f64')
-  const cmp = ['f64.eq', asF64(numIR), toNumF64(otherNode, other)]
-  return typed(['block', ['result', 'i32'],
-    ['local.set', `$${t}`, asF64(otherIR)],
-    ['if', ['result', 'i32'], isNullish(other),
-      ['then', ['i32.const', negate ? 1 : 0]],
-      ['else', negate ? ['i32.eqz', cmp] : cmp]]], 'i32')
+// Loose `==` of a certain number `num` against `other`. A static string is
+// its ToNumber. A partner of no static kind is compared inline when it is a
+// genuine number; the NaN-boxed remainder (a boolean atom, a boxed BigInt, a
+// string, a sentinel, a heap kind) goes to $__eq_num. Both operands evaluate
+// once, in source order (`numLeft`).
+function looseNumberEq(num, other, otherIR, otherVt, negate, numLeft) {
+  const fin = cmp => negate ? typed(['i32.eqz', cmp], 'i32') : cmp
+  if (otherVt === VAL.STRING && !nullableOperand(other)) {
+    const n = asF64(num), o = toNumF64(other, asF64(otherIR))
+    return fin(typed(['f64.eq', ...(numLeft ? [n, o] : [o, n])], 'i32'))
+  }
+  inc('__eq_num')
+  const lit = isLit(num)
+  const n = lit ? null : temp('eqn'), o = temp('eqo')
+  const nG = () => lit ? asF64(num) : ['local.get', `$${n}`], oG = ['local.get', `$${o}`]
+  const setN = lit ? [] : [['local.set', `$${n}`, asF64(num)]]
+  const setO = [['local.set', `$${o}`, asF64(otherIR)]]
+  const cmp = typed(['if', ['result', 'i32'], ['f64.eq', oG, oG],
+    ['then', ['f64.eq', nG(), oG]],
+    ['else', ['call', '$__eq_num', nG(), ['i64.reinterpret_f64', oG]]]], 'i32')
+  return typed(['block', ['result', 'i32'], ...(numLeft ? [...setN, ...setO] : [...setO, ...setN]), fin(cmp)], 'i32')
 }
 
 function mayReadBoxedValue(expr) {

@@ -243,6 +243,36 @@ test('bool identity: dynamic loose equality converts a boolean beside a number',
   }
 })
 
+// Loose `==` of a value the program cannot kind against a number or a
+// boolean it can (a literal, a proven local, a comparison result): the
+// boolean atom converts on either side (`true == 1`, `x == true` with x
+// holding true), null and undefined equal no number; `!=` negates. Strict `===` through the same dynamic path
+// stays identity: `true === 1` is false whatever carries the operands.
+// The static side once compared raw bits (a NaN-boxed atom equals no f64),
+// and the runtime's strict form inherited the loose boolean conversion.
+test('bool identity: loose equality of a number or boolean against any converts; strict stays identity', () => {
+  const PARTNERS = ['1', '0', '2', '-0', 'NaN', 'true', 'false', 'k > 0', 'k === 0', 'null', 'undefined']
+  const table = (X) => `[${PARTNERS.flatMap(p => [`${X} == ${p}`, `${p} == ${X}`, `${X} != ${p}`, `${X} === ${p}`, `${p} === ${X}`]).join(', ')}].map(v => v ? 1 : 0).join('')`
+  const VALUES = ['true', 'false', '1', '0', '2', 'null', 'undefined', "'1'"]
+  const SRC = (V) => `const box = (v) => [v][0]
+  export const f = (k) => { const x = box(${V}); return ${table('x')} }
+  export const g = (k) => { const x = box(${V}), y = box(${V}); return [x == y, x === y, x != y, x !== y, box(true) === box(1), box(1) === box(true), box(false) === box(0), box(true) == box(1)].map(v => v ? 1 : 0).join('') }`
+  for (const V of VALUES) {
+    const src = SRC(V)
+    const oracle = Function(src.replaceAll('export ', '') + ';return {f, g}')()
+    for (const optimize of LEVELS) {
+      const ex = run(src, { memory: 256, optimize })
+      for (const k of [0, 1]) {
+        const got = ex.f(k), want = oracle.f(k)
+        const at = got === want ? -1 : [...got].findIndex((c, i) => c !== want[i])
+        const where = at < 0 ? '' : ` ${['==', '== (reversed)', '!=', '===', '=== (reversed)'][at % 5]} ${PARTNERS[Math.floor(at / 5)]}`
+        is(got, want, `any ${V}${where} (k=${k}, optimize:${optimize})`)
+        is(ex.g(k), oracle.g(k), `any ${V} against any (k=${k}, optimize:${optimize})`)
+      }
+    }
+  }
+})
+
 // `Number` and `Boolean` as values convert (`.map(Number)` of strings and
 // booleans, `.map(Boolean)`); the identity arrow they lowered to served
 // `.filter(Boolean)` alone. (A boolean's identity through a closure result
