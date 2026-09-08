@@ -9,7 +9,7 @@
  * @module compile/analyze/val-types
  */
 import { OPTF, DBG_INVARIANTS, ctx } from '../../ctx.js'
-import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr, collectAllBoundNames, walkAst } from '../../ast.js'
+import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr, collectAllBoundNames, walkAst, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { VAL, repOf, updateRep, KIND_UNIVERSE } from '../../reps.js'
 import { valTypeOf, shapeOf, censusMaybeUndefinedKind } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
@@ -324,6 +324,10 @@ function mapValueTypeOf(body, name) {
 }
 
 export function analyzeValTypes(body) {
+  const declared = takeScratchSet()   // the names declared in this body
+  try { return analyzeValTypesIn(body, declared) } finally { releaseScratchSet(declared) }
+}
+function analyzeValTypesIn(body, declared) {
   // localReps slice: store reads/writes the rep's `val` field (updateRep clears it
   // when set to undefined, matching the old explicit delete).
   const setVal = makeValTracker(
@@ -355,7 +359,6 @@ export function analyzeValTypes(body) {
   // (the kernel JSON.parse-emitter head-coercion: array reads on a string →
   // OOB). Scalar kinds (NUMBER/BOOL/BIGINT) and coupled-tracker kinds (TYPED/BUFFER, whose trackTyped slice owns coherence) keep the settled-kind behavior —
   // see analyzeBody's poisonUndeclared for why.
-  const declared = new Set()
   const poisonUndeclared = (name, vt) =>
     !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId

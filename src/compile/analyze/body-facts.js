@@ -8,7 +8,7 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { commaList, isReassigned, collectParamNames, walkAst, some } from '../../ast.js'
+import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { VAL, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
@@ -98,7 +98,14 @@ export function analyzeBody(body) {
       return hit
     bodyFacts.delete(body)
   }
+  // The names declared in the body and the arrays whose initial contents it
+  // described: two tables keyed by the body's names, dropped at exit.
+  const declared = takeScratchSet(), elemOrigin = takeScratchSet()
+  try { return computeBodyFacts(body, bodyFacts, declared, elemOrigin) }
+  finally { releaseScratchSet(elemOrigin); releaseScratchSet(declared) }
+}
 
+function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
   const locals = new Map()
   const valTypes = new Map()
   const arrElemSchemas = new Map()
@@ -261,7 +268,6 @@ export function analyzeBody(body) {
   // (NUMBER/BOOL/BIGINT) and coupled-tracker kinds (TYPED/BUFFER, whose trackTyped slice owns coherence) keep the settled-kind behavior: the i32-narrowing
   // machinery's locals/val coherence depends on it (unswitch reassigned-param
   // guard), and scalar guards don't take part in the ptr-tag fold class.
-  const declared = new Set()
   // Names whose INITIAL element contents this body fully described: a decl whose
   // array-literal elems were all statically visible (including the empty `[]`).
   // Mutation observations (push / index-write) describe only elements ADDED here —
@@ -275,7 +281,6 @@ export function analyzeBody(body) {
   // (emitStrictEq's differing-primitive fold → outline dead in-kernel). Skip,
   // don't poison: the array simply stays untyped, and a caller-proven preseed
   // (index.js param facts) survives unchallenged.
-  const elemOrigin = new Set()
   const poisonUndeclared = (name, vt) =>
     !declared.has(name) && vt != null && vt !== VAL.NUMBER && vt !== VAL.BOOL && vt !== VAL.BIGINT && vt !== VAL.TYPED && vt !== VAL.BUFFER ? null : vt
 

@@ -142,6 +142,19 @@ export const releaseScratchMap = (m) => {
   scratchDepth--
   if (scratchDepth < SCRATCH_MAPS.length) SCRATCH_MAPS[scratchDepth] = m   // the pointer as the walk last saw it
 }
+const SCRATCH_SETS = [new Set(), new Set(), new Set(), new Set()]
+let scratchSetDepth = 0
+export const takeScratchSet = () => {
+  const i = scratchSetDepth++
+  if (i >= SCRATCH_SETS.length) return new Set()
+  const s = SCRATCH_SETS[i]
+  s.clear()
+  return s
+}
+export const releaseScratchSet = (s) => {
+  scratchSetDepth--
+  if (scratchSetDepth < SCRATCH_SETS.length) SCRATCH_SETS[scratchSetDepth] = s
+}
 
 // === Shared traversal ===
 
