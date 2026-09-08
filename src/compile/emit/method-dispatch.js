@@ -18,7 +18,7 @@ import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../ki
 import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
-import { REP_EDGE_BOX, REP_EDGE_REJECT, representationResultTagRequired, representationStorageWriteAction } from '../representation-plan.js'
+import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationResultTagRequired, representationStorageWriteAction } from '../representation-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, materializeMulti } from './call-args.js'
 import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
@@ -478,6 +478,14 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     const cases = []
     if (strEmitter) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
     if (typedEmitter) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
+    // A boxed BigInt receiver (`x.toString(16)` on a carrier the program
+    // could not kind) takes the `.bigint:` emitter; `t` holds the box, so the
+    // emitter's readI64 unboxes it (ir/bigint.js isTaggedLocal).
+    const bigintEmitter = representationProgramHasBigint(ctx) && ctx.core.emit[`.bigint:${method}`]
+    if (bigintEmitter) {
+      ctx.func.taggedLocals?.add(t)
+      cases.push([PTR.BIGINT, materializeBuiltinResult(VAL.BIGINT, callMethod(t, bigintEmitter))])
+    }
     // Date carve-out — see dateAuxFallback's doc for the discrimination
     // rationale (.work/archive/printer-trio.md residual). `tt` is already computed
     // below (the ptr-type local this fork uses for its own STRING/TYPED

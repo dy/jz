@@ -20,7 +20,7 @@ import { typed } from './tag.js'
 import { temp, tempI32, tempI64, block64, freshId } from './locals.js'
 import { ptrOffsetIR, ptrTypeEq } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
-import { isBigIntBox, isPlanTaggedBigint, materializeDeferredBigint, readI64, unboxBigInt } from './bigint.js'
+import { isPlanTaggedBigint, materializeDeferredBigint, readI64 } from './bigint.js'
 import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
@@ -536,20 +536,14 @@ export function toStrI64(node, v) {
     return typed(['i64.reinterpret_f64',
       ['call', '$__radix_str', readI64(node, v), ['i32.const', 10]]], 'i64')
   }
-  // A mixed Number/BigInt value uses RepresentationPlan's tagged carrier.
-  // Keep the tag until this dispatch: the BigInt arm formats the cell payload,
-  // while every other tag and raw Number retains __to_str's normal semantics.
+  // A mixed Number/BigInt value uses RepresentationPlan's tagged carrier:
+  // keep the tag. $__to_str formats a box's payload (its BIGINT arm, module/
+  // string.js) and keeps its normal semantics for every other tag and a raw
+  // Number; a checked read's deferred box materializes here.
   if (isPlanTaggedBigint(node) || vt === VAL.BIGINT ||
       censusMaybeUndefinedKind(node) === VAL.BIGINT || typeof v?.bigintBox === 'function') {
-    inc('__radix_str', '__to_str')
-    const t = temp('bstr')
-    const get = () => typed(['local.get', `$${t}`], 'f64')
-    return typed(['block', ['result', 'i64'],
-      ['local.set', `$${t}`, asF64(materializeDeferredBigint(v))],
-      ['if', ['result', 'i64'], isBigIntBox(get(), t),
-        ['then', ['i64.reinterpret_f64',
-          ['call', '$__radix_str', unboxBigInt(get()), ['i32.const', 10]]]],
-        ['else', ['call', '$__to_str', asI64(get())]]]], 'i64')
+    inc('__to_str')
+    return typed(['call', '$__to_str', asI64(materializeDeferredBigint(v))], 'i64')
   }
   // Error-schema special case (.work/archive/todo.md §deletion-sweep §Consequence): `${e}`/
   // String(e) on a real Error object must format via spec's Error.prototype.toString
@@ -623,12 +617,12 @@ function coerceRest(node, v, vt) {
     return typed(['i64.reinterpret_f64', ['call', '$__i32_to_str', v]], 'i64')
   }
   inc('__to_str')
-  // readI64 (CARRIER PROGRAM Slice 3): a proven-BIGINT node whose bare name
-  // is a currently-boxed param must be unboxed before $__to_str sees it —
-  // for every other shape this is byte-identical to the old asI64(v) call
-  // (dynamic/unproven operands still pass their raw bits through unchanged,
-  // for $__to_str's own tag dispatch to interpret).
-  return typed(['call', '$__to_str', readI64(node, v)], 'i64')
+  // The carrier goes through as it is: $__to_str's own tag dispatch formats a
+  // boxed BigInt's payload (a tagged local, an array element, a closure
+  // result). Unboxing here would hand it the raw i64 as a subnormal Number.
+  // A proven BigInt never reaches this point: toStrI64's own arms above
+  // format it.
+  return typed(['call', '$__to_str', asI64(v)], 'i64')
 }
 
 /** Spec's Error.prototype.toString (20.5.3.4) for a proven Error-schema object,

@@ -249,6 +249,32 @@ const EQ_SHAPES = {
   hostValue: (V) => `export let f = (x, k) => { const y = typeof x === 'bigint' ? x : 0n; return ${eqTable('x')} }`,
   anyPartner: (V) => `const box = (v) => [v][0]; export let f = (k) => { const b = ${V}; return ${eqTable('b', p => `box(${p})`, EQ_OPS.slice(0, 3))} }`,
 }
+// ToString (ES2024 7.1.17) of a BigInt through every carrier: its decimal
+// digits, whatever box it rides in. String(), a template, concatenation on
+// either side, a join, .toString() and a radix. The runtime's __to_str
+// formats the box; nothing unboxes ahead of it.
+const strTable = (X) => `[String(${X}), \`\${${X}}\`, ${X} + '', '' + ${X}, [${X}].join('/'), ${X}.toString(), ${X}.toString(16)].join('|')`
+const STR_SHAPES = {
+  literal: (V) => `export let f = (k) => ${strTable(V)}`,
+  local: (V) => `export let f = (k) => { const b = ${V}; return ${strTable('b')} }`,
+  param: (V) => `const h = (v, k) => ${strTable('v')}; export let f = (k) => h(${V}, k)`,
+  mixedParam: (V) => `const h = (v, k) => ${strTable('v')}; export let f = (k) => h(k ? ${V} : 'z', k)`,
+  tagged: (V) => `export let f = (k) => { const v = k ? ${V} : k; return ${strTable('v')} }`,
+  element: (V) => `export let f = (k) => { const a = [${V}, 'x', 7]; return ${strTable('a[k - 1]')} }`,
+  bigintElement: (V) => `export let f = (k) => { const a = [${V}, 1n]; return ${strTable('a[k - 1]')} }`,
+  mapValue: (V) => `const m = new Map(); export let f = (k) => { m.set('k', ${V}); return ${strTable("m.get('k')")} }`,
+  closureResult: (V) => `const mk = (k) => () => k ? ${V} : 'z'; export let f = (k) => { const g = mk(k); return ${strTable('g()')} }`,
+  hostValue: (V) => `export let f = (x, k) => { const y = typeof x === 'bigint' ? x : 0n; return ${strTable('x')} }`,
+}
+test('bigint tag: ToString across every carrier formats the digits', () => {
+  for (const [shape, src] of Object.entries(STR_SHAPES)) for (const V of ['300n', '-5n', '0n', '9007199254740993n']) {
+    const source = src(V)
+    const oracle = Function(source.replace('export let ', 'var ') + ';return f')()
+    const args = shape === 'hostValue' ? [Function(`return ${V}`)(), 1] : [1]
+    for (const optimize of levels) is(jz(source, { optimize }).exports.f(...args), oracle(...args), `${shape} ${V} (O${optimize || 0})`)
+  }
+})
+
 test('bigint tag: loose equality across domains, through every carrier', () => {
   for (const [shape, src] of Object.entries(EQ_SHAPES)) for (const V of EQ_VALUES) {
     const source = src(V)
