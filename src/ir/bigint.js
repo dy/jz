@@ -14,7 +14,8 @@
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_UNBOX, STORAGE_READ_METHODS, representationActiveMaterializedRep, representationResultTagRequired } from '../compile/representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS, callContractOf, representationActiveMaterializedRep, representationProvesBigint } from '../compile/representation-plan.js'
+import { CARRIER } from '../summary/contract.js'
 import { typed } from './tag.js'
 import { temp, tempI32, blockTyped } from './locals.js'
 import { mkPtrIR, ptrOffsetIR } from './pointers.js'
@@ -61,6 +62,15 @@ export function boxBigInt(i64IR) {
     ['local.set', `$${p}`, ['call', '$__alloc', ['i32.const', 8]]],
     ['i64.store', ['local.get', `$${p}`], i64IR],
     mkPtrIR(PTR.BIGINT, 0, ['local.get', `$${p}`]))
+}
+
+/** Mark emitted f64 IR as a raw BigInt the producer computed in the i64
+ *  domain (an arithmetic, bitwise or update emitter that took the BigInt
+ *  path): its value is a BigInt whatever the plan's or the kind's own
+ *  claim, so a carrier edge on it acts without a kind gate. */
+export function rawBigInt(ir) {
+  ir.bigintRaw = true
+  return ir
 }
 
 /** Attach a lazy, branch-aware BOX materializer to emitted f64 IR. Checked
@@ -148,17 +158,35 @@ export function applyBigintRepresentationAction(ir, node, action) {
   // producer that planned representation is its tagged alternate, not the raw
   // hot-path IR returned to immediate consumers such as strict comparison.
   if (ir && typeof ir.bigintBox === 'function' &&
-      (action === REP_EDGE_KEEP || action === REP_EDGE_BOX || isPlanTaggedBigint(node)))
+      (action === REP_EDGE_KEEP || action === REP_EDGE_BOX || action === REP_EDGE_TAG_BOX || isPlanTaggedBigint(node)))
     return materializeDeferredBigint(ir)
-  // The edge acts on a BigInt the kind proves, or on a carrier the plan
-  // itself materialized (edgeMaterializable's ready-producer admission): a
-  // join of `typeof v === 'bigint' ? v : BigInt(v)` has no valTypeOf kind,
-  // yet its materialized BOXED value must unbox into the RAW binding it
-  // initializes, or the binding's raw reads take the box's pointer bits.
-  if (valTypeOf(node) !== VAL.BIGINT && !isPlanTaggedBigint(node) && !isPlanRawBigint(node)) return ir
+  // The edge acts on a BigInt the kind proves, on a carrier the plan itself
+  // materialized (edgeMaterializable's ready-producer admission: a join of
+  // `typeof v === 'bigint' ? v : BigInt(v)` has no valTypeOf kind, yet its
+  // materialized BOXED value must unbox into the RAW binding it initializes,
+  // or the binding's raw reads take the box's pointer bits), or on a node
+  // the plan's own semantic proves a BigInt (a call whose callee's contract
+  // names one, returned by a function with the other carrier).
+  if (ir?.bigintRaw !== true && valTypeOf(node) !== VAL.BIGINT && !isPlanTaggedBigint(node) && !isPlanRawBigint(node) &&
+      !representationProvesBigint(ctx, node)) return ir
   if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
+  if (action === REP_EDGE_TAG_BOX) return tagBoxBigInt(asF64(ir))
   if (action === REP_EDGE_UNBOX) return fromI64(maybeUnboxBigInt(asF64(ir)))
   return ir
+}
+
+/** Box a BigInt whose carrier the plan could not settle: a NaN-box (a box
+ *  already, a nullish sentinel of a nullable result) passes as itself, a
+ *  plain bit pattern is the raw payload and boxes. The twin of
+ *  `maybeUnboxBigInt` for the return edge into a boxed contract
+ *  (representation-plan/common.js returnEdgeAction); a raw payload whose
+ *  bits spell a NaN is the collision class only a settled carrier closes. */
+export function tagBoxBigInt(f64expr) {
+  const t = temp('tbig')
+  return typed(['if', ['result', 'f64'],
+    ['f64.ne', ['local.tee', `$${t}`, materializeDeferredBigint(f64expr)], ['local.get', `$${t}`]],
+    ['then', ['local.get', `$${t}`]],
+    ['else', boxBigInt(['i64.reinterpret_f64', ['local.get', `$${t}`]])]], 'f64')
 }
 
 /** Runtime twin of unboxBigInt for a value with no STATIC boxed-or-raw proof
@@ -256,15 +284,18 @@ const isBoxedStorageMethodRead = node => {
   return sid != null && ctx.schema.list[sid]?.includes(method) === true
 }
 
-/** A call through a name: a known function's BigInt result is boxed when the
- *  plan says so; a closure's crosses the closure ABI tagged
- *  (tagDynamicMethodResult boxes a raw target's result there too); a
- *  builtin's (`BigInt(s)`) is raw. */
+/** A call crosses in its callee's contract carrier: boxed for a boxed one
+ *  and, by tag, for one naming no carrier (its return edges box every BigInt
+ *  they know of); raw for a raw one. Without a contract: a call through a
+ *  computed callee (`T[k]()`) returns through the closure ABI's any slot,
+ *  boxed; an import's crosses its any lane boxed; a builtin's (`BigInt(s)`)
+ *  is raw, and a builtin method's is its receiver's (isBoxedStorageMethodRead). */
 const isTaggedCallResult = node => {
-  if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string') return false
-  const func = ctx.funcs.map.get(node[1])
-  if (func) return representationResultTagRequired(ctx, func, new WeakSet(), true)
-  return !ctx.core.emit[node[1]]
+  if (!Array.isArray(node) || node[0] !== '()') return false
+  const contract = callContractOf(ctx, node)
+  if (contract) return contract.carrier === CARRIER.BOXED || contract.carrier === CARRIER.ANY
+  if (typeof node[1] === 'string') return !ctx.core.emit[node[1]]
+  return !(Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.'))
 }
 
 /** An array element is a tagged slot: every element write boxes a BigInt

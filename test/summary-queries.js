@@ -259,3 +259,56 @@ test('summary contract: prepare\'s postfix recovery keeps the operand\'s kind; a
   is(summary.resultContract('box').carrier, CARRIER.BOXED, 'an element of an array literal is its cell\'s kind, absent-capable')
   is(summary.at('box').kindOfExpr(['[', 'v']), summary.at('box').kindOfExpr(['[', 'v']))
 })
+
+// The return edge converts to the contract's carrier (slice 2): the query
+// answers the carrier at both ends of an edge, so a caller reads one carrier
+// whatever the callee's tails produced.
+test('summary contract: a call through a dispatch table crosses boxed; the direct-only function returning it crosses raw', () => {
+  const nodes = 'nodes', block = (...stmts) => ['{}', ...stmts]
+  const handlerParams = [',', nodes]
+  const handler = ['=>', handlerParams, block(['let', ['=', 'n', ['()', ['.', nodes, 'shift'], null]]], ['>>=', 'n', lit(7n)], ['return', 'n'])]
+  const funcs = [
+    { name: 'encode', sig: { params: [{ name: 'imm' }, { name: nodes }], results: ['f64'] }, body: ['()', ['[]', 'HANDLER', 'imm'], nodes] },
+    { name: 'f', sig: { params: [], results: ['f64'] }, body: block(['let', ['=', 'ns', ['[', lit(900n)]]], ['return', ['()', 'encode', [',', lit('i64'), 'ns']]]) },
+  ]
+  const ast = [';', ['const', ['=', 'HANDLER', ['{}', [':', 'i64', handler]]]]]
+  const summary = summarize(ast, { funcs, schemas: [['i64']], brandOf: () => null, imports: new Map(), exported: f => f.name === 'f' })
+  const call = summary.at('encode').calleeContract(['()', ['[]', 'HANDLER', 'imm'], nodes])
+  is(call.carrier, CARRIER.BOXED, 'the table\'s closure crosses its any slot boxed')
+  is(summary.resultContract(handlerParams).carrier, CARRIER.BOXED)
+  const encode = summary.resultContract('encode')
+  is(encode.kind, kind(K.BIGINT)); is(encode.carrier, CARRIER.RAW_I64, 'a direct-only function returning that call crosses raw: its return edge unboxes')
+  is(summary.resultContract('f').carrier, CARRIER.BOXED, 'the export returning it crosses boxed: its return edge boxes')
+})
+
+test('summary contract: a typed array callback\'s parameter is unbounded, its result boxed, the reduce\'s the element domain', () => {
+  const params = [',', 'x'], accParams = [',', 'a', 'b']
+  const typedArr = ['()', 'new.BigInt64Array', ['[', lit(2n), lit(3n)]]
+  const funcs = [
+    { name: 'mapped', sig: { params: [], results: ['f64'] }, body: ['[]', ['()', ['.', typedArr, 'map'], ['=>', params, ['+', 'x', lit(1n)]]], lit(1)] },
+    { name: 'reduced', sig: { params: [], results: ['f64'] }, body: ['()', ['.', typedArr, 'reduce'], ['=>', accParams, ['+', 'a', 'b']]] },
+  ]
+  const summary = summarize([';'], { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+  is(summary.at(params).kindOf('x'), kind(K.ANY), 'the map callback escapes: its parameter is every kind')
+  is(summary.resultContract(params).carrier, CARRIER.BOXED, 'a BigInt among a bounded result crosses the closure ABI boxed')
+  is(summary.at(accParams).kindOf('a'), kind(K.BIGINT), 'the reduce callback is bound: accumulator and element are the element kind')
+  is(summary.resultContract(accParams).carrier, CARRIER.BOXED)
+  is(summary.resultContract('reduced').kind, kind(K.BIGINT)); is(summary.resultContract('reduced').carrier, CARRIER.RAW_I64, 'the reduce result stays in the element domain')
+})
+
+test('summary contract: the plan\'s result target is the contract\'s carrier, boxed for an export', async () => {
+  if (onKernel()) return
+  const { representationResultRep, BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW } = await import('../src/compile/representation-plan.js')
+  compile(`
+    function parse(n) { if (typeof n === 'string') n = BigInt(n); n >>= 7n; return n }
+    function inner(x) { return parse(x) }
+    export function f(k) { return inner(k) }
+    export let g = () => inner('900')
+  `, { optimize: false })
+  is(ctx.summary.resultContract('parse').carrier, CARRIER.RAW_I64, 'a direct-only BigInt result')
+  is(ctx.summary.resultContract('inner').carrier, CARRIER.RAW_I64, 'through a direct call')
+  is(ctx.summary.resultContract('f').carrier, CARRIER.BOXED, 'an export crosses boxed')
+  is(representationResultRep(ctx, ctx.funcs.map.get('inner')), BIGINT_REP_RAW | BIGINT_REP_CLOSED, 'the plan\'s result target is the contract\'s carrier')
+  is(representationResultRep(ctx, ctx.funcs.map.get('f')), BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
+  is(representationResultRep(ctx, ctx.funcs.map.get('g')), BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
+})

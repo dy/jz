@@ -20,7 +20,7 @@
  * @module test/_matrix
  */
 
-import { f64ToI64, i64ToF64, coerce, memory as jzMemory } from '../interop.js'
+import { f64ToI64, i64ToF64, coerce, memory as jzMemory, type as ptrType } from '../interop.js'
 import { PTR, encodePtrHi, encodeTypedElemAux } from '../layout.js'
 
 // i64 bits for an arg: a box (BigInt, incl. coerce's null/undef sentinels) passes through;
@@ -37,6 +37,9 @@ const argBits = (v) => typeof v === 'bigint' ? v : f64ToI64(v)
  * `mod` is the WebAssembly.Module (for the custom section), `raw` its instance
  * exports. With no i64 exports the raw object is returned untouched.
  */
+// A NaN-box carrying the PTR.BIGINT tag (interop.js isBox and type).
+const bigintBox = b => typeof b === 'bigint' && (Number((b >> 32n) & 0xFFFFFFFFn) & 0xFFF80000) === 0x7FF80000 && ptrType(b) === PTR.BIGINT
+
 export function adaptI64(mod, raw) {
   const i64Exp = new Map()
   const sec = WebAssembly.Module.customSections(mod, 'jz:i64exp')
@@ -82,7 +85,10 @@ export function adaptI64(mod, raw) {
       // `m`: a multi-value tuple crosses as i64 lanes — reinterpret each back to the f64
       // NaN-box ABI (numbers restore; boxes' bits are exact on V8, where tests run).
       if (m) return ret.map(i64ToF64)
-      return r ? i64ToF64(ret) : ret
+      // A boxed BigInt result (an export's result contract: the BigInt crosses
+      // boxed) reads as interop's decoder reads it, the cell's payload; every
+      // other box keeps its f64 bits for the raw host to inspect.
+      return r ? (bigintBox(ret) ? jzMemory(raw.memory).read(ret) : i64ToF64(ret)) : ret
     }
   }
   return out

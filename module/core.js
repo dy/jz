@@ -59,6 +59,7 @@ export default (ctx) => {
     __typed_data: ['__ptr_offset', '__ptr_aux'],
     __typed_idx: () => (ctx.linkDemand.f16 ? ['__f16_to_f64'] : []),
     __typed_idx_tagged: ['__typed_idx', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
+    __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
@@ -459,6 +460,16 @@ export default (ctx) => {
       (br $dl)))
     (f64.copysign (local.get $x) (local.get $a)))`
 
+
+  // A raw BigInt payload boxed: an 8-byte PTR.BIGINT cell (the emitters'
+  // boxBigInt inline; this is the runtime form for a cold arm: a closure
+  // ABI slot receiving a typed BigInt element, a raw result crossing a
+  // named function's trampoline).
+  ctx.core.stdlib['__box_bigint'] = `(func $__box_bigint (param $v f64) (result f64)
+    (local $off i32)
+    (local.set $off (call $__alloc (i32.const 8)))
+    (i64.store (local.get $off) (i64.reinterpret_f64 (local.get $v)))
+    (call $__mkptr (i32.const ${PTR.BIGINT}) (i32.const 0) (local.get $off)))`
 
   ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr i64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))`

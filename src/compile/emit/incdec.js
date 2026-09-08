@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  asF64, asI32, boxBigInt, fromI64, isConst, maybeUnboxBigInt, readI64, readVar, typed, writeVar,
+  asF64, asI32, boxBigInt, fromI64, rawBigInt, isConst, maybeUnboxBigInt, readI64, readVar, typed, writeVar,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -14,6 +14,7 @@ import { typedIdxProven } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationUnaryUpdateAction } from '../representation-plan.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
+import { numericStep } from './bigint.js'
 
 
 // Element ctors whose spec [[Set]] numeric conversion is a MODULAR reduction
@@ -85,7 +86,8 @@ export const incdecOps = {
   // codegen on the BIGINT-gated path.
   ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n => {
     if (valTypeOf(n) === VAL.BIGINT)
-      return fromI64([`i64.${fn}`, readI64(n, emit(n)), ['i64.const', 1]])
+      return rawBigInt(fromI64([`i64.${fn}`, readI64(n, emit(n)), ['i64.const', 1]]))
+    if (ctx.features.bigint && valTypeOf(n) == null) return numericStep(n, fn)
     // Self-referential typed-int-element increment (`count[d]++` — the
     // histogram/bucket-fill idiom): `n` is ALWAYS the exact same '[]' member
     // node this op's result is written straight back into (prepare's own

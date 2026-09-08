@@ -3143,15 +3143,18 @@ test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i
   }
   // WAT-shape (O0, unfolded): `f`'s own body must carry the raw i64 bits
   // straight into `leb` — no `$__ptr_type` tag-check (maybeUnboxBigInt's
-  // own primitive) and no `$__alloc` call (boxBigInt's own primitive)
-  // inserted for an edge that never needed either.
+  // own primitive) and no box inserted on the argument edge, which never
+  // needed either. The one box in `f` is its own result's: an export's
+  // BigInt result crosses boxed (its result contract), so the raw call
+  // result boxes once at the return edge, after the call.
   const wat = String(compile(src, { optimize: false, wat: true }))
   const start = wat.indexOf('(func $f')
   ok(start >= 0, '$f found in WAT')
   const next = wat.indexOf('\n  (func ', start + 1)
   const fBody = next >= 0 ? wat.slice(start, next) : wat.slice(start)
   ok(!/call \$__ptr_type/.test(fBody), 'O0: no unbox tag-check inserted for an already-RAW call argument')
-  ok(!/call \$__alloc/.test(fBody), 'O0: no box allocation inserted for an already-RAW call argument')
+  ok(/\(call \$leb\s+\(f64\.reinterpret_i64 \(i64\.const 900\)\)\s*\)/.test(fBody), 'O0: the RAW literal argument crosses unchanged')
+  is((fBody.match(/call \$__alloc\b/g) || []).length, 1, 'O0: the one box is the export result\'s, at the return edge')
 })
 
 // Range-boundary BOX/UNBOX OOB (2026-08 fix, src/ir.js applyBigintRepresentationAction

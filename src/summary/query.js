@@ -13,7 +13,7 @@ import {
 
 export function summaryQueries(facts) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameScopes,
-    scopeOfSig, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, unions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, cellProps, cellWild, closureSets, cells, jsonKinds, unions,
     schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps } = facts
   const keyIn = (scope, name) => scope === '' ? name : scope + '\0' + name
   // The solver owns union-find compression; querying a root never writes it.
@@ -119,8 +119,10 @@ export function summaryQueries(facts) {
       if (op === 'bool') return BOOL
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
-      // A construction site owns its cell (the solver's cellOf): an array literal or a `new Map`.
-      if (op === '[' || op === '()' && n[1] === 'new.Map') { const c = cells.get(n); return c === undefined || c >= UNKNOWN ? kind(op === '[' ? K.ARRAY : K.MAP) : canon(kind(op === '[' ? K.ARRAY : K.MAP, c)) }
+      // A construction site owns its cell (the solver's cellOf): an array literal, a `new Map`, an
+      // array constructor, `JSON.parse`, and the array methods that build a fresh array.
+      if (op === '[' || op === '()' && cells.has(n)) { const c = cells.get(n), t = n[1] === 'new.Map' ? K.MAP : K.ARRAY; return c === undefined || c >= UNKNOWN ? kind(t) : canon(kind(t, c)) }
+      if (op === '()' && n[1] === 'JSON.parse' && jsonKinds.has(n)) return canon(jsonKinds.get(n))
       if (op === '=>') { const id = closures.get(n) ?? closuresByBody.get(n[2]); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
       if (op === '{}' && n.length > 1 && n.slice(1).every(p => typeof p === 'string' || Array.isArray(p) && (p[0] === ':' || p[0] === '...'))) {
         const names = []
@@ -171,6 +173,7 @@ export function summaryQueries(facts) {
           for (const id of membersOf(paramOf(k))) r = join(r, results.get(id) ?? ANY)
           return r
         }
+        if (n[1] === 'Object.assign') { const t = kindOfExpr(args(n[2])[0]); if (tagOf(t) === K.ARRAY && paramOf(t) !== UNKNOWN) return t }   // the solver's rule: the array target
         return imports.has(n[1]) ? kindOfVal(imports.get(n[1])) : builtinResult(n[1])
       }
       if (op === '()' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') {
@@ -184,12 +187,12 @@ export function summaryQueries(facts) {
         }
         else if (t === K.MAP && name === 'get') result = orAbsent(elemOf(r))
         else if (t === K.TYPED && name === 'at') result = orAbsent(typedElemKind(r))
-        else if (t === K.TYPED && name === 'reduce') {
+        else if ((t === K.TYPED || t === K.ARRAY) && (name === 'reduce' || name === 'reduceRight')) {
           // The fixpoint has already solved callback recurrence. A query may
           // combine results, but must not bind even a hypothetical argument.
           const as = args(n[2]).map(kindOfExpr), cb = as[0]
           result = tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN ? ANY
-            : join(as.length > 1 ? as[1] : typedElemKind(r), closureResult(paramOf(cb)))
+            : join(as.length > 1 ? as[1] : t === K.TYPED ? typedElemKind(r) : elemOf(r), closureResult(paramOf(cb)))
         }
         // The solver bound the callback and, for `map`/`flatMap`, filled the call's own cell.
         else if (t === K.ARRAY && paramOf(r) !== UNKNOWN && ARRAY_CALLBACK_RESULT.has(name)) result = ARRAY_CALLBACK_RESULT.get(name)(r, cells.get(n))
@@ -281,10 +284,11 @@ export function summaryQueries(facts) {
   const resultContract = x => { const f = facts.contracts?.get(identityOf(x)); return f ? readContract(f) : NONE_CONTRACT }
   return {
     ...view(''),
-    // Named function/signature, closure id/parameter identity, or module. A
-    // one-parameter arrow's parameter identity is its name (`v => …`): the
-    // closure's scope, not a function's.
-    at: x => view(scopeOfParams.has(x) ? scopeOfParams.get(x) : typeof x === 'string' || typeof x === 'number' ? x : scopeOfSig.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
+    // Named function/signature, closure id/parameter identity, a function's or
+    // closure's block body, or module. A one-parameter arrow's parameter
+    // identity is its name (`v => …`): the closure's scope, not a function's.
+    at: x => view(scopeOfParams.has(x) ? scopeOfParams.get(x) : typeof x === 'string' || typeof x === 'number' ? x
+      : scopeOfSig.get(x) ?? scopeOfBody.get(x) ?? closuresByBody.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
     resultContract,
     fieldKind: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? K.NONE : fields.get(sid)?.[i] ?? K.NONE },
     fieldVal: (sid, prop) => { const i = schemas[sid]?.indexOf(prop); return i == null || i < 0 ? null : valOf(fields.get(sid)?.[i] ?? K.NONE) },

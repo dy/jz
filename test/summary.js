@@ -194,6 +194,73 @@ test('summary: array cells join every store; two arrays joined share one cell', 
   is(tagOf(join(kind(K.NUMBER), kind(K.BOOL))), K.ANY, 'two tags read as ANY through the one-tag API'); ok(hasTag(join(kind(K.NUMBER), kind(K.BOOL)), K.BOOL) && !hasTag(join(kind(K.NUMBER), kind(K.BOOL)), K.STRING), 'and keep their set')
 })
 
+// Every construction of an array owns a cell, like a literal: the constructors,
+// `Array.of`, `Array.from`, a string's `split`, an array's `concat` and `splice`,
+// `JSON.parse` of a string the program holds. A method that builds a fresh array
+// leaves the receiver's cell alone; one that stores into the receiver joins the
+// stored kinds; a length store extends with holes.
+test('summary: array constructions own cells; concat, splice, split, JSON.parse and Array(n) holes', () => {
+  const elemOf = (fn, bare) => ctx.summary.at(fn).elemKindOf(binding(fn, bare))
+  summarize(`const S = '[3,4]'
+    export const f = (k) => {
+      const holes = Array(3); holes[0] = 1
+      const empty = Array(); const pair = Array(1, 2); const one = Array('x')
+      const of = Array.of(1, 2); const chars = Array.from('xy'); const copy = Array.from([1, 2]); const made = Array.from({ length: 2 }, (_, i) => i)
+      const parts = 'x,y'.split(','); parts.unshift(1)
+      const nums = [1, 2]; const both = nums.concat(['y'])
+      const spliced = [1, 2]; const removed = spliced.splice(1, 0, 'y')
+      const json = JSON.parse('[1,2]'); json.push('y')
+      const rows = JSON.parse('[[1,2],[3]]'); const row = rows[0]
+      const named = JSON.parse(S); const bools = JSON.parse('[true]')
+      const grown = [1, 2]; grown.length = 4
+      return [holes[k], empty[k], pair[k], one[k], of[k], chars[k], copy[k], made[k], parts[k], both[k], removed[k], json[k], row[k], named[k], bools[k], grown[k]]
+    }`)
+  is(tagOf(elemOf('f', 'holes')), K.NUMBER, 'Array(n) filled by index holds numbers'); ok(hasTag(elemOf('f', 'holes'), K.ABSENT), 'and holes: an unwritten slot reads undefined')
+  is(tagOf(elemOf('f', 'empty')), K.NONE, 'Array() is empty')
+  is(tagOf(elemOf('f', 'pair')), K.NUMBER, 'Array(a, b) holds its arguments'); ok(!hasTag(elemOf('f', 'pair'), K.ABSENT))
+  is(tagOf(elemOf('f', 'one')), K.STRING, 'Array(x) of no number holds x')
+  is(tagOf(elemOf('f', 'of')), K.NUMBER, 'Array.of holds its arguments')
+  is(tagOf(elemOf('f', 'chars')), K.STRING, 'Array.from of a string holds its characters')
+  is(tagOf(elemOf('f', 'copy')), K.NUMBER, 'Array.from of an array holds its elements')
+  is(tagOf(elemOf('f', 'made')), K.NUMBER, 'Array.from with a callback holds what the callback makes')
+  is(tagOf(elemOf('f', 'parts')), K.ANY, 'split holds strings; an unshift joins the number'); ok(hasTag(elemOf('f', 'parts'), K.STRING) && hasTag(elemOf('f', 'parts'), K.NUMBER))
+  is(tagOf(elemOf('f', 'nums')), K.NUMBER, 'concat leaves the receiver alone')
+  is(tagOf(elemOf('f', 'both')), K.ANY, 'and its result joins the arguments\' elements'); ok(hasTag(elemOf('f', 'both'), K.STRING))
+  is(tagOf(elemOf('f', 'spliced')), K.ANY, 'splice stores its items into the receiver')
+  is(tagOf(elemOf('f', 'removed')), K.ANY, 'and returns the receiver\'s elements')
+  is(tagOf(elemOf('f', 'json')), K.ANY, 'a JSON array is a cell: the push joins'); ok(hasTag(elemOf('f', 'json'), K.NUMBER) && hasTag(elemOf('f', 'json'), K.STRING))
+  is(tagOf(elemOf('f', 'row')), K.NUMBER, 'a nested JSON array has its own cell')
+  is(tagOf(elemOf('f', 'named')), K.NUMBER, 'a module const string parses too')
+  is(tagOf(elemOf('f', 'bools')), K.BOOL, 'a JSON boolean is a boolean')
+  ok(hasTag(elemOf('f', 'grown'), K.ABSENT), 'a length store extends with holes')
+  // `Array(x)` sizes by a number and holds anything else: the argument is no evidence for the demand pass.
+  summarize(`export const f = (n) => { const a = Array(n); for (let i = 0; i < n; i++) a[i] = i; return a[0] }`)
+  is(tagOf(kindOf('f', 'n')), K.NUMBER, 'a compared parameter that also sizes an array is demanded')
+  is(tagOf(elemOf('f', 'a')), K.NUMBER, 'so Array(n) has holes, not an element of any kind'); ok(hasTag(elemOf('f', 'a'), K.ABSENT))
+  summarize(`export const f = (n) => Array(n).length`)
+  is(tagOf(kindOf('f', 'n')), K.ANY, 'a parameter read only there stays ANY: the host may pass an element')
+  // A method that reads the receiver leaves its cell alone: a reduce binds its
+  // callback, a copy owns a fresh cell; a spread reads its source's elements,
+  // and a parameter from a spread argument on takes any element, a later
+  // argument or nothing.
+  summarize(`const g = (u, v) => v
+    export const f = (k) => {
+      const nums = [1, 2]; const sum = nums.reduce((p, x) => p + x, 0)
+      const rev = nums.toReversed(); const srt = nums.toSorted((x, y) => x - y); const wth = nums.with(0, 's'); const flat = [[1], [2]].flat(); const spl = nums.toSpliced(0, 1, 's')
+      const lit = [...nums, 9]; const pushed = []; pushed.push(...nums)
+      const tagged = [1, 2]; Object.assign(tagged, { name: 's' }); const indexed = [1, 2]; Object.assign(indexed, { 0: 's' })
+      const last = g(...nums)
+      return [nums[k], rev[k], srt[k], wth[k], flat[k], spl[k], lit[k], pushed[k], tagged[k], indexed[k], sum + last]
+    }`)
+  is(tagOf(elemOf('f', 'nums')), K.NUMBER, 'reduce, the copies, the spreads and Object.assign leave the receiver\'s cell alone')
+  is(tagOf(kindOf('f', 'sum')), K.NUMBER, 'reduce binds its callback and joins the accumulator')
+  is(tagOf(elemOf('f', 'rev')), K.NUMBER, 'toReversed copies the elements'); is(tagOf(elemOf('f', 'srt')), K.NUMBER, 'toSorted too')
+  is(tagOf(elemOf('f', 'wth')), K.ANY, 'with joins the value'); is(tagOf(elemOf('f', 'flat')), K.NUMBER, 'flat holds the elements\' elements'); is(tagOf(elemOf('f', 'spl')), K.ANY, 'toSpliced joins the items')
+  is(tagOf(elemOf('f', 'lit')), K.NUMBER, 'a spread into a literal reads the source\'s elements'); is(tagOf(elemOf('f', 'pushed')), K.NUMBER, 'a spread push too')
+  is(tagOf(elemOf('f', 'tagged')), K.NUMBER, 'Object.assign of a named property is no element'); is(tagOf(elemOf('f', 'indexed')), K.ANY, 'of an index-named one is')
+  is(tagOf(kindOf('g', 'v')), K.NUMBER, 'a parameter after a spread argument takes the elements'); ok(hasTag(kindOf('g', 'v'), K.NULLISH), 'or nothing')
+})
+
 test('summary codegen: a typed field read through a parameter, a factory, a class, a method closure lowers to typed storage', () => {
   if (onKernel()) return
   const shapes = {

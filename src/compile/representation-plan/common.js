@@ -1,5 +1,6 @@
 import { ASSIGN_OPS, commaList, walkAst } from '../../ast.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
+import { CARRIER } from '../../summary/contract.js'
 import { isExportedIn } from '../func-exports.js'
 
 // RepresentationPlan v2 uses compact scalar facts. The low two bits describe
@@ -20,6 +21,9 @@ export const REP_EDGE_BOX = 1
 export const REP_EDGE_UNBOX = 2
 export const REP_EDGE_HOST_BOX = 3
 export const REP_EDGE_REJECT = 4
+// Box unless the carrier already holds a box (a tag test): the return edge
+// of a tail whose carrier the plan left open, into a boxed contract.
+export const REP_EDGE_TAG_BOX = 5
 
 const KIND_BITS = new Map(KIND_UNIVERSE.map((kind, i) => [kind, 1 << i]))
 const ALL_KIND_BITS = (1 << KIND_UNIVERSE.length) - 1
@@ -118,11 +122,34 @@ export const targetRepFor = (sem, current) => {
   return BOXED_BIGINT
 }
 
+/** The plan's carrier for a result contract (summary/contract.js): the raw
+ *  or the boxed BigInt lane, NO_BIGINT for a result with no BigInt member,
+ *  null for a contract that names no carrier (`any`: the plan's own walk
+ *  decides the producer's edge, the readers test the tag). */
+export const contractRep = c => c == null || c.carrier === CARRIER.ANY ? null
+  : c.carrier === CARRIER.RAW_I64 ? RAW_BIGINT
+  : c.carrier === CARRIER.BOXED ? BOXED_BIGINT
+  : NO_BIGINT
+
 export const isExported = (ctx, func) => isExportedIn(ctx.funcs, func)
 
 export const noBigintSemantic = () => packSemantic(ALL_KIND_BITS & ~BIGINT_KIND_BIT, true, true)
 
 export const programPlanRecord = ctx => ctx.plans.representationData.get(ctx.plans)
+
+/** The result contract of the callable a call reaches: a source function's
+ *  (ProgramIndex holds the one the plan's summary published; a `.`-member
+ *  callee the frozen index resolves is one), else the closure's or closure
+ *  set's the summary names in `scope`; null for a builtin, an import or a
+ *  callee the summary cannot name. */
+export const callContractOf = (ctx, node, scope = ctx.func.current) => {
+  if (!Array.isArray(node) || node[0] !== '()') return null
+  const name = typeof node[1] === 'string' ? node[1]
+    : programPlanRecord(ctx)?.provenance?.resolveMemberCallee(node[1])?.name ?? null
+  const func = name != null ? ctx.funcs.map.get(name) : null
+  if (func?.body) return ctx.plans.programIndex?.resultContract(func) ?? ctx.summary?.resultContract(func.name) ?? null
+  return ctx.summary?.at(scope).calleeContract(node) ?? null
+}
 
 export const BIGINT_TYPED_CTORS = new Set(['new.BigInt64Array', 'new.BigUint64Array'])
 export const BIGINT_READ_METHODS = new Set(['getBigInt64', 'getBigUint64'])
@@ -233,4 +260,15 @@ export const edgeAction = (source, target, host = false) => {
     return REP_EDGE_REJECT
   }
   return sb === tb ? REP_EDGE_KEEP : REP_EDGE_REJECT
+}
+
+/** The return edge's action: `edgeAction`, except that a tail whose carrier
+ *  the plan could not settle to one (open, or either by path: a binding no
+ *  edge normalized) still converts to the contract's, by tag (the contract
+ *  is total: every tail crosses in its carrier): into a boxed one a box
+ *  passes and raw bits box, into a raw one a box unboxes and raw bits pass. */
+export const returnEdgeAction = (source, target) => {
+  const action = edgeAction(source, target)
+  if (action !== REP_EDGE_REJECT || bigintRepBits(source) !== BIGINT_REP_TOP) return action
+  return target === BOXED_BIGINT ? REP_EDGE_TAG_BOX : target === RAW_BIGINT ? REP_EDGE_UNBOX : action
 }

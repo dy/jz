@@ -891,76 +891,15 @@ export function scanObjectArrayFacts(body) {
   return [flatObjects || EMPTY_SCAN_MAP, sliceViews || EMPTY_SCAN_SET, neverGrown || EMPTY_SCAN_SET, ownCurrent || EMPTY_SCAN_SET]
 }
 
-/**
- * Numeric-fill arrays — the construct-then-fill counterpart of an all-number array
- * literal. A fresh `Array(n)` / `new Array(n)` / `[]` binding whose EVERY element write
- * stores a provably-NUMBER value, and which never escapes, aliases, is reassigned, grows
- * by method, or takes a non-numeric / compound element write, holds only Numbers where
- * written; an unwritten hole reads undefined, a NaN through every numeric path (the
- * identity compares consult the rep's `arrayHoles`). So its `a[i]` reads can skip the
- * polymorphic `__to_num` coercion — exactly the win `[1,2,3]` already gets, extended to
- * the dominant numeric-kernel shape `let a = Array(n); for (..) a[i] = expr`.
- *
- * Default-deny and self-contained, like scanNeverGrown (the same memory-safety discipline):
- * any occurrence that isn't a pure index/length READ or a NUMBER-valued `a[i] = …` write
- * disqualifies — so `w.x = a`, `f(a)`, `let b = a`, `a.push(x)`, `a[i] += x` all bail.
- * `isNumericRhs` injects the value-type judgement (valTypeOf === VAL.NUMBER) the syntactic
- * scan can't make itself.
- */
 // Both `Array(n)` and `new Array(n)` normalize to a `new.Array` call by prepare; an
 // empty literal stays `['[]', null]`. (Typed ctors become `new.Float64Array` etc. — the
-// exact-match on `new.Array` keeps them out.)
+// exact-match on `new.Array` keeps them out.) A decl so initialized described its own
+// initial contents: the schema census's push observations may settle on it.
 export const isFreshArrayCtor = (rhs) =>
   Array.isArray(rhs) && (
     (rhs[0] === '[]' && rhs.length <= 2) ||             // empty `[]`
     (rhs[0] === '()' && rhs[1] === 'new.Array')         // `Array(n)` / `new Array(n)` / `Array()`
   )
-
-function numFillSafe(node, name, isNumericRhs) {
-  if (typeof node === 'string') return node !== name              // bare value use → escape
-  if (!Array.isArray(node)) return true
-  const op = node[0]
-  // `a[i] = rhs` — the fill write. Allowed iff rhs is provably NUMBER; recurse the index
-  // and rhs so a stray `a` inside either still disqualifies. (Compound `a[i] += …` is NOT
-  // matched here, so it falls through to the deny below — conservative for v1.)
-  if (op === '=' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name)
-    return isNumericRhs(node[2], name) &&
-      numFillSafe(node[1][2], name, isNumericRhs) && numFillSafe(node[2], name, isNumericRhs)
-  // calling `a`, `a.m(…)`, `a[i](…)` may grow/escape it
-  if (op === '()') {
-    const c = node[1]
-    if (c === name) return false
-    if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.' || c[0] === '[]' || c[0] === '?.[]') && c[1] === name) return false
-  }
-  // any other write/update/delete on `a`, `a[..]`, `a.x` (incl. `a.length = …`, compounds)
-  if (grownOrEscapes(op)) {
-    const t = node[1]
-    if (t === name) return false
-    if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name) return false
-  }
-  if (op === 'let' || op === 'const' || op === 'var') {
-    for (let i = 1; i < node.length; i++) {
-      const d = node[i]
-      if (Array.isArray(d) && d[0] === '=' && !numFillSafe(d[2], name, isNumericRhs)) return false
-    }
-    return true
-  }
-  // the only safe forms: `a.length` read, and `a[i]` index read (recurse the index expr).
-  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
-  if (op === '[]' && node[1] === name) return numFillSafe(node[2], name, isNumericRhs)
-  if (op === '...' && node[1] === name) return false              // spread → escape
-  for (let i = 1; i < node.length; i++) if (!numFillSafe(node[i], name, isNumericRhs)) return false
-  return true
-}
-
-export function scanNumericFill(body, isNumericRhs) {
-  let out = null
-  for (const [name, s] of scanBindingUses(body)) {
-    if (s[BINDING_USE_DECLS] !== 1 || !isFreshArrayCtor(s[BINDING_USE_INIT])) continue
-    if (numFillSafe(body, name, isNumericRhs)) (out ||= new Set()).add(name)
-  }
-  return out || EMPTY_SCAN_SET
-}
 
 /**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its

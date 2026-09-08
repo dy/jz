@@ -179,6 +179,7 @@ export function assemble(ast, profiler) {
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
     hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
+    constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
   })
   ctx.summary = timePhase(profiler, 'summary', summarizeProgram)
   // Include imported functions for call resolution (e.g. template interpolations).

@@ -29,6 +29,7 @@ import { summaryTypedCtor, typedStorageCtorFromContext } from '../typed-context.
 import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
 import { valOf as summaryVal, contractVal } from '../summary/index.js'
+import { isPostfixRecovery } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 
 /**
@@ -308,18 +309,16 @@ VT['[]'] = (args) => {
   }
   // Indexed read on a STRING returns a 1-char string (SSO at runtime).
   if (recvVt === VAL.STRING) return VAL.STRING
-  // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType.
-  // Set by analyzeValTypes from body observations + emitFunc preseed for params.
+  // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType,
+  // the program summary's element cell (every store in the program joined),
+  // stamped by analyzeValTypes on a local, emitFunc's preseed on a parameter,
+  // moduleGlobalKinds on a module array (a numeric/uniform table).
   if (typeof args[0] === 'string') {
     const elemVt = ctx.func.localReps?.get(args[0])?.arrayElemValType
     if (elemVt) return elemVt
-    // Module-level const array (a numeric/uniform table): its element val-type was
-    // recorded on the global rep at decl time. Trust it only when no function element-
-    // writes the array — dynWriteVars holds every var written via a non-named-property
-    // index, so a `X[i]=str` anywhere disables this and falls back to the untyped read.
     if (!ctx.func.localReps?.has(args[0])) {
       const gElem = ctx.scope.globalReps?.get(args[0])?.arrayElemValType
-      if (gElem && !ctx.types?.dynWriteVars?.has(args[0])) return gElem
+      if (gElem) return gElem
     }
   }
   // INVARIANT: NO dict-mode receiver fold here: dictValueKindOf
@@ -330,13 +329,12 @@ VT['[]'] = (args) => {
   // global promotion.
   // Direct double-index on a module-level nested numeric table — `C[i][j]` where
   // `C = [[…number…], …]`. The receiver is itself a single-index read of a global
-  // array whose nested element kind was recorded at decl time. Same dynWriteVars
-  // guard (now root-aware, so a `C[i][j]=…` write anywhere disables it).
+  // array whose rows' element cell the summary joined (a `C[i][j] = 'y'` anywhere is in it).
   if (Array.isArray(args[0]) && args[0][0] === '[]' && args[0].length === 3 && typeof args[0][1] === 'string') {
     const base = args[0][1]
     if (!ctx.func.localReps?.has(base)) {
       const gNested = ctx.scope.globalReps?.get(base)?.arrayElemElemValType
-      if (gNested && !ctx.types?.dynWriteVars?.has(base)) return gNested
+      if (gNested) return gNested
     }
   }
   // Indexed read on an inline all-numeric array literal — `[2,4,2,9][i]` (floatbeat
@@ -681,6 +679,7 @@ export function valTypeOf(expr) {
   if (!Array.isArray(expr)) return null
 
   const op = expr[0]
+  if (isPostfixRecovery(op, expr[1], expr[2])) return valTypeOf(expr[1])
   if (op == null) {
     // Literal forms: [] = undefined, [null, null] = null, [null, n] = number, [, bool] = boolean.
     // Bigint literals are NEVER this shape — the parser tags them structurally
@@ -734,6 +733,7 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   if (!Array.isArray(expr)) return valTypeOf(expr)
   const op = expr[0]
   const rec = (e) => valTypeOfWithLocals(e, resolveLocal)
+  if (isPostfixRecovery(op, expr[1], expr[2])) return rec(expr[1])
   if (op === ',') return rec(expr[expr.length - 1])
   if (op === '?:') {
     const a = rec(expr[2]), b = rec(expr[3])

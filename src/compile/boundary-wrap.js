@@ -1,9 +1,8 @@
 import { ctx, inc } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { typed, mkPtrIR, valKindToPtr, boolBoxIR } from '../ir.js'
-import {
-  representationHostBoxesParam, representationResultTagRequired, representationResultRawBigint,
-} from './representation-plan.js'
+import { representationHostBoxesParam } from './representation-plan.js'
+import { CARRIER } from '../summary/contract.js'
 import { isExported } from './func-exports.js'
 
 /**
@@ -17,6 +16,10 @@ import { isExported } from './func-exports.js'
  * coercion `n | 0` semantics for integer-shaped values; a JS caller passing a
  * fractional Number gets the same truncation it would get from `arr[n]`).
  */
+// The carrier an export's result crosses in: its result contract's (the
+// callable identity's, published from the plan's summary).
+const resultCarrier = func => ctx.plans.programIndex.resultContract(func)?.carrier ?? CARRIER.ANY
+
 export const isBoundaryWrapped = (func) => {
   if (!isExported(func) || func.raw) return false
   // Multi-value return: every lane is an f64 NaN-box carrier (the `return [a,b,…]` emit forces
@@ -75,23 +78,23 @@ export function synthesizeBoundaryWrappers() {
     // `jz:i64exp` section emitted below. Non-JS hosts (WASI) read the same signature — i64 is
     // just int64 there, no BigInt.
     const resultPtr = sig.ptrKind != null
-    // Plan-tagged UNION result (phase-c C2): valResult can settle VAL.BIGINT
-    // for a result the plan carries as a tagged union (BigInt member BOXED,
-    // number raw, pointers self-tagged) — the raw-bigint passthrough lane
-    // would hand the host the union's BITS as one BigInt (a box pointer's
-    // own bits for the boxed member). Route it to resultDynamic's generic
-    // tag decode instead; interop's PTR.BIGINT arm derefs the box.
-    const resultTaggedUnion = !resultPtr && representationResultTagRequired(ctx, func)
-    const resultRawBigint = !resultPtr && !resultTaggedUnion && representationResultRawBigint(ctx, func)
-    const resultBool = func.valResult === VAL.BOOL && !func.valResultMayBeUndefined && !resultPtr
-    const resultBigint = (func.valResult === VAL.BIGINT || resultRawBigint) && !resultPtr && !resultTaggedUnion
-    // Dynamic f64 result: not pointer/bool/raw-bigint and not a proven number.
-    // It may be a NaN box, so cross i64 and let interop's generic decoder own it.
-    const resultDynamic = !resultPtr && !resultBool && !resultBigint &&
+    // The result contract decides the BigInt lane: an export's BigInt
+    // crosses boxed (contract.js: its callers are unknown, the return edges
+    // box every tail), so it takes the generic tag decode, whose PTR.BIGINT
+    // arm dereferences the box.
+    const carrier = resultCarrier(func)
+    // A raw i64 result is the value itself: it crosses unmarked. The contract
+    // names it for a direct-only callable, never for an export; the lane
+    // stays the carrier's projection.
+    const resultRawBigint = !resultPtr && carrier === CARRIER.RAW_I64
+    const resultBool = func.valResult === VAL.BOOL && !func.valResultMayBeUndefined && !resultPtr && !resultRawBigint
+    // Dynamic f64 result: not pointer/bool/raw-bigint and not a proven
+    // number. It may be a NaN box (a boxed BigInt among them), so cross i64
+    // and let interop's generic decoder own it.
+    const resultDynamic = !resultPtr && !resultBool && !resultRawBigint &&
       sig.results[0] === 'f64' && !func._resultNumeric
-    const resultI64 = resultPtr || resultBool || resultBigint || resultDynamic
+    const resultI64 = resultPtr || resultBool || resultRawBigint || resultDynamic
     // jz:i64exp `r` marks results interop must reinterpret then `mem.read`.
-    // A proven raw BigInt result is already the value, so it stays unmarked.
     const resultReinterpret = resultPtr || resultBool || resultDynamic
     // i64 carrier per param: pointer-ABI (offset) or a dynamic f64 param (boundaryI64).
     const paramIsI64 = (p) => !p.jsstring && (p.ptrKind != null || p.boundaryI64)
@@ -178,8 +181,8 @@ export function synthesizeBoundaryWrappers() {
         carrier = typed(['call', '$__is_truthy', toI64(callIR)], 'i32')
       }
       body = toI64(boolBoxIR(carrier))
-    } else if (resultBigint || resultDynamic) {
-      // Proven raw BigInt and generic tagged results both cross losslessly as
+    } else if (resultRawBigint || resultDynamic) {
+      // A raw BigInt and a generic tagged result both cross losslessly as
       // i64. Only the latter sets `r`, so interop dereferences PTR.BIGINT boxes.
       body = toI64(callIR)
     } else if (sig.results[0] === 'i32') {

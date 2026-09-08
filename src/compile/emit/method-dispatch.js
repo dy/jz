@@ -12,13 +12,13 @@ import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, allocPtr, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, boxBigInt, carrierF64, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, allocPtr, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, carrierF64, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
-import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationResultTagRequired, representationStorageWriteAction } from '../representation-plan.js'
+import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, materializeMulti } from './call-args.js'
 import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
@@ -341,14 +341,10 @@ function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
   if (!mayShadow) return callMethod(obj, emitter)
 
   includeModule('collection')
-  const targets = bigintMethodTargets(obj, method)
-  const callOverride = prop => {
-    const native = parsed.hasSpread
-      ? ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'),
-          [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
-      : ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'), parsed.normal)
-    return tagDynamicMethodResult(prop, native, targets)
-  }
+  const callOverride = prop => parsed.hasSpread
+    ? ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'),
+        [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
+    : ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'), parsed.normal)
   const callBuiltin = receiver => {
     const value = materializeDeferredBigint(callMethod(receiver, emitter))
     return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
@@ -549,23 +545,10 @@ function trySchemaClosureCall({ obj, method, parsed }) {
       const callArgs = prebuilt
         ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
         : parsed.normal
-      // Same runtime-verified box-tag strategy 11 (tryDynamicPropCall) already
-      // applies for its own dynamic dispatch: this property read is resolved
-      // to a real closure/function value at COMPILE time (a known schema
-      // slot), but WHICH function it holds is a runtime fact here — a proven
-      // same-module BigInt-returning candidate (Shape #8, program-index.js;
-      // still name-guess-only for the object-literal-method-shorthand shape
-      // bigintMethodTargets already covered) means the raw i64 payload needs
-      // boxing when the runtime dispatch actually lands on it. Unresolved
-      // (targets.size === 0) is byte-identical to the pre-existing code path —
-      // tagDynamicMethodResult's own total-passthrough contract.
-      const targets = bigintMethodTargets(obj, method)
-      if (!targets.size) return ctx.closure.call(propRead, callArgs, prebuilt)
-      const propTmp = temp('schemaProp')
-      const nativeCall = ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), callArgs, prebuilt)
-      return block64(
-        ['local.set', `$${propTmp}`, propRead],
-        tagDynamicMethodResult(propTmp, nativeCall, targets))
+      // Whichever function the slot holds at runtime, its result crosses the
+      // closure ABI in the boxed carrier: a closure's return edge boxes, a
+      // named function's trampoline boxes a raw result (emit/dispatch.js).
+      return ctx.closure.call(propRead, callArgs, prebuilt)
     }
   }
 }
@@ -670,9 +653,8 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
       // module-global string receiver reaches the ABI op as `global.get` and
       // the charCodeAt shape-1b entry decomposition can fire (the layered-
       // parser `cur.charCodeAt(idx)` hot shape; a local temp would hide it).
-      const targets = bigintMethodTargets(obj, method)
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
-        (p) => tagDynamicMethodResult(p, ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed), targets),
+        (p) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed),
         (o) => {
           const value = materializeDeferredBigint(callFlat(typeof obj === 'string' ? obj : o))
           return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
@@ -680,74 +662,6 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
     }
     return callFlat(obj)
   }
-}
-
-const indexedMemberFunction = (receiver, method) => {
-  const index = ctx.plans.programIndex
-  const sourceId = index?.resolveMemberSourceId(receiver, method) ?? -1
-  return index?.sourceFunctionById(sourceId) ?? null
-}
-
-function bigintMethodTargets(obj, method) {
-  const out = new Set()
-  const addRawTarget = func => {
-    if (func?.valResult === VAL.BIGINT && !representationResultTagRequired(ctx, func, new WeakSet(), true))
-      out.add(func.name)
-  }
-  const scan = expr => {
-    if (Array.isArray(expr)) {
-      const resolved = indexedMemberFunction(expr, method)
-      if (resolved) { addRawTarget(resolved); return }
-    }
-    if (typeof expr === 'string') {
-      for (const name of [`${expr}$${method}`, `${expr}${T}${method}`])
-        addRawTarget(ctx.funcs.map.get(name))
-      // Shape #8 (program-index.js): a same-module named function
-      // reached through a schema property, proven by frozen ProgramIndex IDs
-      // index rather than guessed from a naming convention — complements
-      // the two name-guesses above rather than replacing them (they serve a
-      // different, unrelated shape: an object-literal-method-shorthand
-      // property, synthesized as a standalone function at those exact
-      // names, never recorded as a write this index's own write-census
-      // would see).
-      const resolved = indexedMemberFunction(expr, method)
-      addRawTarget(resolved)
-      return
-    }
-    if (!Array.isArray(expr)) return
-    for (let i = 1; i < expr.length; i++) scan(expr[i])
-  }
-  scan(obj)
-  return out
-}
-
-function tagDynamicMethodResult(propLocal, result, targets) {
-  if (!targets.size) return result
-  const indices = []
-  for (const name of targets) {
-    // Mint the ordinary function-value trampoline now if the property-init
-    // path has not reached it yet; the ignored IR has no runtime effect.
-    const errorNode = ctx.error.node, errorLoc = ctx.error.loc
-    emit(name)
-    ctx.error.node = errorNode; ctx.error.loc = errorLoc
-    const idx = ctx.closure.table.indexOf(`${T}tramp_${name}`)
-    if (idx >= 0) indices.push(idx)
-  }
-  if (!indices.length) return result
-  const r = temp('mresult')
-  const aux = () => ['i32.wrap_i64', ['i64.and',
-    ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${propLocal}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
-    ['i64.const', LAYOUT.AUX_MASK]]]
-  let isBig = null
-  for (const idx of indices) {
-    const eq = ['i32.eq', aux(), ['i32.const', idx]]
-    isBig = isBig ? ['i32.or', isBig, eq] : eq
-  }
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${r}`, asF64(result)],
-    ['if', ['result', 'f64'], isBig,
-      ['then', boxBigInt(['i64.reinterpret_f64', ['local.get', `$${r}`]])],
-      ['else', ['local.get', `$${r}`]]]], 'f64')
 }
 
 // 11. Dynamic property function call on non-external values. Two emission shapes:
@@ -833,14 +747,13 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
             ['i64.reinterpret_f64', extArrayIR]]]],
           ['else', undefExpr()]]
     const nativeCall = ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread)
-    const taggedCall = tagDynamicMethodResult(propTmp, nativeCall, bigintMethodTargets(obj, method))
     return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${propTmp}`, propRead],
       ...setup,
       ['if', ['result', 'f64'],
         ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
-        ['then', taggedCall],
+        ['then', nativeCall],
         ['else', extFallback]])
   }
 }

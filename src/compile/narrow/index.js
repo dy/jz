@@ -73,7 +73,7 @@ function seedParamKinds(paramReps, addressTaken) {
         if (!hasTag(e, K.NULLISH)) {
           if (tagOf(e) === K.OBJECT && paramOf(e) !== UNKNOWN) r.arrayElemSchema = paramOf(e)
           const ev = valOf(core(e))
-          if (ev != null) r.arrayElemValType = ev
+          if (ev != null) { r.arrayElemValType = ev; if (hasTag(e, K.ABSENT)) r.arrayHoles = true }
         }
       }
       // module/array.js's numeric-key receiver guard (reps.js recvArrTyped): every argument an array or a typed array.

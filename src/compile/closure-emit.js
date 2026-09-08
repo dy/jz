@@ -22,7 +22,7 @@ import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
 import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
-import { K, tagOf, isNullable } from '../summary/index.js'
+import { K, tagOf, isNullable, unbounded } from '../summary/index.js'
 
 const normalizeClosureBody = cb => {
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
@@ -119,6 +119,13 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
     if (!ctx.func.localReps?.get(p)?.val && !cb.defaults?.[p] && (summary?.kindOf(p) ?? 0) === 0 &&
         paramAllUsesNumeric(cb.body, p, new Set(), true, false))
       updateRep(p, { val: VAL.NUMBER })
+  // A parameter the summary cannot bound (an escaped callback's: a typed
+  // array method's, a comparator's) holds whatever its any slot received: a
+  // BigInt in it is a box (the closure-arg edge every caller applies), so a
+  // BigInt read of it tests the tag (ir/bigint.js isTaggedLocal).
+  for (const p of cb.params)
+    if (!ctx.func.localReps?.get(p)?.val && unbounded(summary?.kindOf(p) ?? 0))
+      (ctx.func.taggedLocals ??= new Set()).add(p)
 
   for (const name of cb.captures)
     ctx.func.locals.set(name, ctx.func.boxed.has(name) ? 'i32' : 'f64')
@@ -198,15 +205,12 @@ export function analyzeClosureBodyForEmit(cb) {
       results: ['f64'],
     }
     mintTypedStoragePlan(ctx, cb, repSig, cb.body, ctx.func.localReps)
-    // A closure's result crosses its ABI (`$ftN`, an any slot) tagged: every
-    // caller reads a possibly-BigInt result as a box (body-data.js
-    // genericCallBoxed, ir/bigint.js isTaggedCallResult).
-    if (representationProgramHasBigint(ctx)) {
-      mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, {
-        generic: true,
-        forceTaggedResult: true,
-      })
-    }
+    // A closure's result crosses its ABI (`$ftN`, an any slot) tagged: its
+    // result contract (summary/contract.js) is the boxed carrier, which its
+    // return edges convert to and every caller reads (body-data.js callRep,
+    // ir/bigint.js isTaggedCallResult).
+    if (representationProgramHasBigint(ctx))
+      mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, { generic: true })
     return publishPreparedFunctionPlan(ctx, cb, ctx.func)
   } finally {
     ctx.schema.vars = prevSchemaVars

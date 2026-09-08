@@ -254,13 +254,11 @@ export function seedResultKinds() {
     // BigInt needs this especially: without it the raw i64 result would reinterpret
     // an out-of-range read's undefined atom as an integer payload.
     if (contract.presence !== PRESENCE.PRESENT) func.valResultMayBeUndefined = true
+    // The element schema, for a caller's schema census (analyzeBody); the
+    // element kind a caller reads from the summary's cell directly.
     if (v === VAL.ARRAY) {
       const e = ctx.summary.elemOfKind(k)
-      if (!hasTag(e, K.NULLISH)) {
-        if (tagOf(e) === K.OBJECT && paramOf(e) !== UNKNOWN) func.arrayElemSchema = paramOf(e)
-        const ev = valOf(core(e))
-        if (ev != null) func.arrayElemValType = ev
-      }
+      if (!hasTag(e, K.NULLISH) && tagOf(e) === K.OBJECT && paramOf(e) !== UNKNOWN) func.arrayElemSchema = paramOf(e)
     }
   }
 }

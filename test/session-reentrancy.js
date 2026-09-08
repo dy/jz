@@ -312,9 +312,11 @@ test('RepresentationPlan v2 publishes normalized edge facts without exposing mut
   ok(representationResultRep(ctx, raw) === RAW,
     'public-handle mutation cannot alter canonical RepresentationPlan data')
 
+  // An export's BigInt result crosses boxed (its contract: callers unknown),
+  // so the typed read's raw element boxes at the return edge.
   compile(`export let typedOnly = () => { let a = new BigInt64Array(1); return a[0] }`, { optimize: false })
   ok(representationProgramHasBigint(ctx) &&
-      representationResultRep(ctx, ctx.funcs.map.get('typedOnly'), false) === RAW &&
+      representationResultRep(ctx, ctx.funcs.map.get('typedOnly')) === BOXED &&
       representationProgramRejectCount(ctx) === 0,
     'BigInt typed-array reads activate raw planning without a BigInt literal or BigInt() call')
   compile(`export let numericOnly = x => x + 1`, { optimize: false })

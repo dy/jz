@@ -10,8 +10,8 @@ import { VAL } from '../../reps.js'
 import { K as SUMMARY_KIND, hasTag as summaryHasTag, tagOf as summaryTagOf, isNullable as summaryNullable, CARRIER } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_DEMAND_RAW_OK, BIGINT_DEMAND_TAG_REQUIRED, BOXED_BIGINT, EDGE_KIND, NO_BIGINT, RAW_BIGINT,
-  REP_EDGE_REJECT, SEM_CLOSED_BIT, bitOfKind, canBeBigint, canBeOther, edgeAction, excludesBigint, isExported,
-  noBigintSemantic, onlyBigintKind, packSemantic, programPlanRecord, semAll, semKind, semanticClosed,
+  REP_EDGE_REJECT, SEM_CLOSED_BIT, bitOfKind, canBeBigint, canBeOther, contractRep, edgeAction, excludesBigint,
+  isExported, noBigintSemantic, onlyBigintKind, packSemantic, programPlanRecord, semAll, semKind, semanticClosed,
   semanticFromRep, semanticKinds, semanticNullish, targetRepFor,
 } from './common.js'
 import { solveBigintProvenance } from './provenance.js'
@@ -37,16 +37,10 @@ const currentParamRep = (rep, sem, uncovered, rawOnly) => {
 // BigInt semantic; a BigInt beside other kinds stays the open one, as before
 // the contract (the plan's lattice takes the summary's bound in a later
 // slice). An unbounded result that names no BigInt return claims nothing.
-const contractClaimsBigint = c => c.carrier === CARRIER.RAW_I64 || c.carrier === CARRIER.BOXED
+const contractClaimsBigint = c => c != null && (c.carrier === CARRIER.RAW_I64 || c.carrier === CARRIER.BOXED)
 const contractSemantic = c => summaryTagOf(c.kind) === SUMMARY_KIND.BIGINT
   ? semKind(VAL.BIGINT, summaryNullable(c.kind))
   : semAll()
-// The carrier the tails produce, before any edge: the body's own joined
-// fact (provenance's resultReps, per return tail) when the tails carry one,
-// else the contract's carrier (raw when every completion crosses raw, open
-// for a boxed one the tails have not named). The return edge converts to
-// the contract's carrier in a later slice; until then the body's fact stands.
-const contractCurrent = (c, rep) => rep ?? (c.carrier === CARRIER.RAW_I64 ? RAW_BIGINT : ANY_BIGINT)
 
 const makeNoBigintBoundary = (func, sig = func?.sig) => ({
   kind: 'boundary',
@@ -59,7 +53,7 @@ const makeNoBigintBoundary = (func, sig = func?.sig) => ({
   })),
   result: {
     semantic: noBigintSemantic(),
-    current: NO_BIGINT,
+    claimed: NO_BIGINT,
     target: NO_BIGINT,
     demand: BIGINT_DEMAND_RAW_OK,
   },
@@ -155,20 +149,18 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
       stable: !isReassigned(func.body, param.name),
     }
   })
-  // A named callable's result is its contract (ProgramIndex holds the one the
-  // plan's summary published): `parse(n) { n = parseInt(n); return n }` is a
-  // Number whatever its parameter held. A closure's is its local provenance.
-  const contract = generic ? null : ctx.plans.programIndex?.resultContract(func) ?? ctx.summary?.resultContract(func.name)
-  const resultMayBigint = generic ? options.localProvenance?.result === true : contract != null && contractClaimsBigint(contract)
+  // A callable's result is its contract: ProgramIndex holds the one the plan's
+  // summary published for a named function (`parse(n) { n = parseInt(n);
+  // return n }` is a Number whatever its parameter held), the summary's freeze
+  // a closure's. The contract's carrier is the target every return tail
+  // converts to; a contract naming no carrier (`any`) leaves the target to the
+  // body's own walk, which for a closure plans against its local provenance.
+  const contract = generic
+    ? ctx.summary?.resultContract(func) ?? null
+    : ctx.plans.programIndex?.resultContract(func) ?? ctx.summary?.resultContract(func.name) ?? null
+  const claimed = contractRep(contract)
+  const resultMayBigint = contractClaimsBigint(contract) || (generic && claimed == null && options.localProvenance?.result === true)
   const semantic = resultMayBigint ? (generic ? semAll() : contractSemantic(contract)) : noBigintSemantic()
-  const current = resultMayBigint
-    ? (generic ? ANY_BIGINT : contractCurrent(contract, options.provenance?.resultReps.get(func.name)))
-    : NO_BIGINT
-  // A mixed-result closure table explicitly marks its member bodies: raw i64
-  // BigInt bits cannot share the uniform closure result lane with Number.
-  // Named top-level function values use their dedicated trampoline producer
-  // boundary (emit.js) instead.
-  const forceTaggedResult = resultMayBigint && options.forceTaggedResult === true
   return {
     kind: 'boundary',
     func,
@@ -176,10 +168,9 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     params,
     result: {
       semantic,
-      current,
-      target: forceTaggedResult ? BOXED_BIGINT : targetRepFor(semantic, current),
+      claimed,
+      target: claimed ?? targetRepFor(semantic, ANY_BIGINT),
       demand: demandFor(semantic),
-      forceTagged: forceTaggedResult,
     },
     edges: [],
   }
@@ -248,10 +239,6 @@ export function solveRepresentationBoundaries(ctx, programFacts, ast) {
     const data = makeBoundaryData(ctx, func, programFacts.paramReps, {
       addressTaken: programFacts.programIndex.addressTaken,
       provenance: program.provenance,
-      // A class dispatcher joins direct raw method results with generic
-      // closure/storage branches. Give that synthesized boundary one tagged
-      // result ABI instead of asking each caller to recover branch provenance.
-      forceTaggedResult: func.sig.dispatcher === true,
     })
     if (isExported(ctx, func)) for (let k = 0; k < data.params.length; k++) {
       const p = data.params[k]
@@ -266,9 +253,13 @@ export function solveRepresentationBoundaries(ctx, programFacts, ast) {
 export function ensureBoundary(ctx, identity, sig, options = {}) {
   const handle = ctx.plans.representations.get(identity)
   if (handle && boundaryDataOf(ctx, identity)) return handle
+  // A closure's boundary record carries the summary's key for it (`scope`,
+  // its parameter node: closure-emit.js closureSig), so its contract is read
+  // as a named function's is.
   const func = identity?.sig ? identity : {
     name: identity?.name || sig?.name,
     sig,
+    scope: identity?.scope ?? null,
     valResult: options.valResult || null,
     valResultMayBeUndefined: !!options.valResultMayBeUndefined,
     exported: !!options.exported,

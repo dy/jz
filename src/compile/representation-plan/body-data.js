@@ -7,11 +7,11 @@ import { K as SUMMARY_KIND, core as summaryCore, hasTag as summaryHasTag, tagOf 
 import {
   ANY_BIGINT, BIGINT_DEMAND_TAG_REQUIRED, BIGINT_KIND_BIT, BIGINT_REP_BOXED, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BOXED_BIGINT,
   CONDITIONAL_ASSIGN_OPS, DEF_OWNER, DEF_RHS, EDGE_KIND, EDGE_KIND_NAME, JOIN_OPS, NO_BIGINT, NUMERIC_VALUE_OPS,
-  RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_UNBOX, STORAGE_READ_METHODS,
-  bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures,
+  RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS,
+  bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures, contractRep,
   definiteBigint, edgeAction, excludesBigint, isBigintOrigin, isExported, joinRep, joinSem, memberReceiver,
-  noBigintSemantic, packSemantic, programPlanRecord, sameSem, semAll, semBottom, semKind, semanticClosed,
-  semanticFromRep, semanticObserved, targetRepFor,
+  noBigintSemantic, packSemantic, programPlanRecord, returnEdgeAction, sameSem, semAll, semBottom, semKind,
+  semanticClosed, semanticFromRep, semanticObserved, targetRepFor,
 } from './common.js'
 import { boundaryDataOf, ensureBoundary } from './boundaries.js'
 import { deriveLocalProvenance } from './provenance.js'
@@ -42,16 +42,6 @@ const directCallBoundary = (ctx, name) => {
   const func = ctx.funcs.map.get(name)
   return func ? boundaryDataOf(ctx, func) : null
 }
-
-/** True iff SOME return tail of `body` is the bare name `paramName`, verbatim
- *  — a genuine passthrough (`if (…) return x`), not a freshly-computed
- *  expression (`return BigInt(x)` doesn't count: its OWN carrier is always a
- *  fresh conversion, independent of x's). This is the ONE shape whose result
- *  carrier is inherited, unchanged, from the param's own entry — reuses
- *  returnExprs (ast.js), the same return-tail set buildBodyData's own
- *  resultExprs/materializedResult already fold over, so this asks the
- *  identical question a closure's own plan will ask of itself. */
-const paramForwardsToReturn = (body, paramName) => returnExprs(body).some(e => e === paramName)
 
 // A local—or a parameter on a covered direct boundary—whose complete def
 // set uses plain writes can have every incoming edge normalized at
@@ -126,6 +116,22 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // `provenance?.` guarded fact in this function.
   const calleeNameOf = node =>
     typeof node[1] === 'string' ? node[1] : provenance?.resolveMemberCallee(node[1])?.name ?? null
+  // A direct callee's result carrier is its contract's (ProgramIndex holds
+  // the one the plan's summary published), the carrier its own return edges
+  // convert every tail to. A contract naming no carrier (`any`) leaves the
+  // callee body's own target when that body is built (callee before caller),
+  // else the open carrier; its semantic is the body's joined tails when
+  // built, else the boundary's.
+  const calleeBodyOf = name => {
+    const callee = ctx.funcs.map.get(name)
+    const handle = callee && ctx.plans.representations.get(callee)
+    return handle ? ctx.plans.representationData.get(handle)?.body ?? null : null
+  }
+  const directCallClaim = name => {
+    const callee = ctx.funcs.map.get(name)
+    return callee ? contractRep(ctx.plans.programIndex?.resultContract(callee) ?? ctx.summary?.resultContract(callee.name)) : null
+  }
+  const directCallRep = name => directCallClaim(name) ?? calleeBodyOf(name)?.resultTarget ?? ANY_BIGINT
   const semanticNames = new Map()
   const currentNames = new Map()
   const targetNames = new Map()
@@ -216,25 +222,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
              (node[1] === 'BigInt' || node[1].startsWith('BigInt.')))
       out = semKind(VAL.BIGINT)
     else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node))) {
-      // Same callee-before-caller upgrade currentOf/plannedOf already apply
-      // (below, and see plannedOf's own comment): the BOUNDARY's semantic is
-      // a coarse, PRE-BODY guess; once the callee's BODY has settled, its
-      // OWN resultSemantic (stored on the body record right alongside
-      // resultTarget) is the precise, PROVEN semantic every one of its
-      // return edges already normalizes to. Without this, a join whose one
-      // arm is this call node could never prove `definiteBigint` even when
-      // the callee's body plainly does (watr's real i64.parse, a proven-RAW
-      // typed-array storage read) — targetRepFor's OWN gate requires
-      // definiteBigint before it will ever trust `current`, so a
-      // still-coarse boundary semantic forced the BOXED default onto a join
-      // whose value is a single, closed, proven carrier.
+      // The callee body's joined tail semantic once built (callee before
+      // caller: a join whose arm is this call proves `definiteBigint` when
+      // the callee's tails do), else the boundary's contract semantic.
       const calleeName = calleeNameOf(node)
-      const callee = ctx.funcs.map.get(calleeName)
-      const calleeHandle = callee && ctx.plans.representations.get(callee)
-      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
-      out = calleeBody?.materializedResult === true
-        ? calleeBody.resultSemantic ?? directCallBoundary(ctx, calleeName).result.semantic
-        : directCallBoundary(ctx, calleeName).result.semantic
+      out = calleeBodyOf(calleeName)?.resultSemantic ?? directCallBoundary(ctx, calleeName).result.semantic
     }
     else if (NUMERIC_VALUE_OPS.has(node[0])) {
       const operands = node.slice(1).filter(x => x !== undefined).map(semanticOf)
@@ -297,57 +289,27 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   }
   nodeSemantic.clear()
 
-  // Closure-forwarding slice (.work/archive/phase-c-unification.md §C4b queue): a
-  // call to a SAME-BODY local closure whose callee has a return tail that's
-  // the bare forwarded param (paramForwardsToReturn), fed here by an
-  // argument that isn't itself provably bigint-free. The value flowing back
-  // is EITHER the closure's own fresh (raw) computation on some OTHER tail
-  // OR this argument's own carrier forwarded unchanged — when the argument
-  // may itself be a host-tag-ingress box (C4b: paramNeedsHostTag's own
-  // closure-forwarding case, below, is what granted it that evidence in the
-  // first place), the ordinary unresolved-call default just below (assume
-  // RAW) would misread a forwarded box's pointer bits as a raw i64 payload —
-  // the exact silent-wrong this slice exists to close (see the pin's own
-  // comment, test/inference.js: `f(5n)` → box bits + 1n). BOXED is the
-  // ADR-0001 default for an edge the plan cannot prove single-representation
-  // end-to-end. Paired with the closure's OWN return-edge materialization
-  // (closureAbiIdentity's relaxed covered gate, below) — that side boxes the
-  // SAME tail for the identical reason (the callee's own x is
-  // closureBoxParams-tagged whenever its ingress is ambiguous), so caller
-  // and callee agree by construction: not a guess replicated on both sides,
-  // but the one condition (a forwarded, non-excluded argument reaching a
-  // passthrough tail) that both queries ask independently of each other.
-  // Literal/provably-raw arguments (`parse(3)`) never reach this — their
-  // OWN currentOf is excludesBigint-short-circuited to NO_BIGINT — so a
-  // closure with no ambiguous callers keeps the ordinary RAW default
-  // (unaffected; see e.g. a pure `(x) => BigInt(x) * 2n` fresh-conversion
-  // closure, which has NO passthrough tail at all and never matches here).
-  const closureCallNeedsBox = node => {
-    if (node[0] !== '()' || typeof node[1] !== 'string') return false
-    const callee = localClosures.get(node[1])
-    if (!callee) return false
-    const args = commaList(node[2])
-    for (let k = 0; k < args.length && k < callee.params.length; k++) {
-      if (typeof args[k] !== 'string') continue
-      if (!paramForwardsToReturn(callee.body, callee.params[k])) continue
-      if (bigintRepBits(currentOf(args[k])) !== BIGINT_REP_NONE) return true
-    }
-    return false
-  }
-
-  // A call the plan cannot name a function for (a closure, a closure table,
-  // a dynamic method) returns through an any slot: a possibly-BigInt result
-  // crosses it tagged (closure-emit.js forceTaggedResult, the dynamic
-  // dispatch's tagDynamicMethodResult), and the caller reads a box, never
-  // raw bits (`value | rhs()`, rhs a closure returning 4n; `parse(v)` with
-  // `parse` one of two closures, one returning a BigInt). A builtin's result
-  // is raw (`BigInt(s)`: isBigintOrigin decides first).
-  const genericCallBoxed = node => {
-    if (node[0] !== '()') return false
-    if (typeof node[1] === 'string' && ctx.core.emit[node[1]]) return false
-    const callee = calleeNameOf(node)
-    if (callee && directCallBoundary(ctx, callee)) return false
-    return canBeBigint(semanticOf(node))
+  // The carrier a call the plan names no direct callee for crosses in: a
+  // closure's or closure set's contract (every closure result crosses its
+  // any slot boxed; a contract naming no carrier is open), a builtin's is
+  // raw (`BigInt(s)`: isBigintOrigin decides first; a typed array method
+  // stays in the element domain, `.typed:reduce` normalizing its callback's
+  // result), and a callee the summary cannot name (a parameter, a slot of an
+  // unknown shape, a dynamic method) returns through the closure ABI's any
+  // slot: a possible BigInt crosses it boxed, and the caller reads a box,
+  // never raw bits (`value | rhs()`, rhs a closure returning 4n).
+  const typedReceiver = recv => valTypeOf(recv) === VAL.TYPED || summary?.valOfExpr(recv) === VAL.TYPED
+  const callRep = node => {
+    if (node[0] !== '()') return null
+    if (typeof node[1] === 'string' && ctx.core.emit[node[1]] && !ctx.funcs.map.get(node[1])?.body) return null
+    const contract = summary?.calleeContract(node)
+    if (contract) return contractRep(contract)
+    if (!canBeBigint(semanticOf(node))) return null
+    // An optional call (`recv?.reduce(…)`) joins its result with undefined:
+    // the chain's lowering boxes a raw BigInt inside the successful arm
+    // (emit/dispatch.js liftOptionalChain).
+    const cm = callMember(node)
+    return cm && cm[0] !== '?.' && typedReceiver(cm[1]) ? RAW_BIGINT : BOXED_BIGINT
   }
 
   const currentOf = node => {
@@ -359,31 +321,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (cached != null) return cached
     let out
     if (isBigintOrigin(node)) out = RAW_BIGINT
-    else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node))) {
-      // Shape #7 (encode.i64's own real watr shape): the BOUNDARY's current
-      // is the coarse, pre-body fact (open/ambiguous whenever the callee's
-      // own return sites disagree on raw-vs-boxed by construction, e.g.
-      // i64.parse's own multi-branch numeric-string parser) — but once the
-      // callee's BODY has settled, its OWN materializedResult/resultTarget
-      // is the precise, PROVEN single carrier every one of its return edges
-      // already normalizes to (ground truth, not a guess). emittedCandidate
-      // (below) already prefers this fact for join/materializedNames
-      // propagation; currentOf lagged behind it for the identical reason —
-      // a callee whose result is definitely one carrier, reached from a
-      // caller whose OWN call-argument evidence doesn't otherwise resolve
-      // the ambiguity, never got to use it. Same callee-before-caller
-      // ordering guarantee (analyzeFuncs completes every function's body
-      // before any caller's own buildBodyData runs) that emittedCandidate's
-      // own comment already documents; falls open to the boundary's current
-      // exactly like emittedCandidate does when the body isn't there yet.
-      const calleeName = calleeNameOf(node)
-      const callee = ctx.funcs.map.get(calleeName)
-      const calleeHandle = callee && ctx.plans.representations.get(callee)
-      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
-      out = calleeBody?.materializedResult === true
-        ? calleeBody.resultTarget ?? ANY_BIGINT
-        : directCallBoundary(ctx, calleeName).result.current
-    }
+    else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node)))
+      out = directCallRep(calleeNameOf(node))
     else if (node[0] === ',') out = currentOf(node[node.length - 1])
     else if (node[0] === '=') out = memberReceiver(node[1]) != null ? memberStorageRep(ctx, node[1]) : currentOf(node[2])
     else {
@@ -401,8 +340,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         else out = joinRep(currentOf(a), currentOf(b))
       } else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
         out = joinRep(currentOf(node[1]), currentOf(node[2]))
-      else if (closureCallNeedsBox(node)) out = BOXED_BIGINT
-      else if (genericCallBoxed(node)) out = BOXED_BIGINT
+      else if (node[0] === '()' && callRep(node) != null) out = callRep(node)
       else if (NUMERIC_VALUE_OPS.has(node[0]) && canBeBigint(sem)) out = RAW_BIGINT
       else if (definiteBigint(sem)) out = RAW_BIGINT
       else out = ANY_BIGINT
@@ -430,7 +368,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     targetNames.set(name, targetRepFor(sem, currentNames.get(name) ?? ANY_BIGINT))
 
   const addEdge = (kind, source, target, _detail, host = false) => {
-    const action = edgeAction(source, target, host)
+    const action = kind === 'return' ? returnEdgeAction(source, target) : edgeAction(source, target, host)
     if (action === REP_EDGE_REJECT) programPlanRecord(ctx).rejects++
     // KEEP is the default edge equation and needs no retained record. Canonical
     // storage contains only an actual normalization or unresolved obligation.
@@ -448,29 +386,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (cached != null) return cached
     let target, normalizedElsewhere = false
     if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node))) {
-      // Same callee-before-caller upgrade currentOf's own Shape #7 comment
-      // already documents and applies (above): the BOUNDARY's target is a
-      // coarse, PRE-BODY guess (targetRepFor defaults to BOXED whenever the
-      // boundary can't yet prove a closed-RAW current) — once the callee's
-      // BODY has settled, its OWN materializedResult/resultTarget is the
-      // precise, PROVEN single carrier every one of its return edges already
-      // normalizes to. plannedOf lacked this upgrade even for a bare-name
-      // callee before this fix (a pre-existing asymmetry with currentOf,
-      // not introduced by `.`-member resolution) — found live via a
-      // `.`-member callee whose body IS a proven-RAW typed-array storage
-      // read (watr's real i64.parse) but whose boundary alone can't prove
-      // it: a ternary joining this callee's call against a plain closed-RAW
-      // global literal boxed ONLY the callee arm, corrupting the join (the
-      // callee arm's stale BOXED target disagreed with its own settled RAW
-      // body, and nothing coerced the mismatch away since
-      // `normalizedElsewhere` skips the ordinary result-edge check).
-      const calleeName = calleeNameOf(node)
-      const callee = ctx.funcs.map.get(calleeName)
-      const calleeHandle = callee && ctx.plans.representations.get(callee)
-      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
-      target = calleeBody?.materializedResult === true
-        ? calleeBody.resultTarget ?? ANY_BIGINT
-        : directCallBoundary(ctx, calleeName).result.target
+      target = directCallRep(calleeNameOf(node))
       normalizedElsewhere = true // the callee's return edges own this transition
     } else {
       const recv = memberReceiver(node)
@@ -513,10 +429,20 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   if (!semanticObserved(bodyResultSemantic) || definiteBigint(boundary.result.semantic) ||
       boundary.result.demand === BIGINT_DEMAND_TAG_REQUIRED)
     bodyResultSemantic = boundary.result.semantic
-  bodyResultCurrent ??= boundary.result.current
-  const bodyResultTarget = (options.forceTaggedResult || boundary.result.forceTagged ||
-      boundary.result.demand === BIGINT_DEMAND_TAG_REQUIRED) && canBeBigint(boundary.result.semantic)
-    ? BOXED_BIGINT : targetRepFor(bodyResultSemantic, bodyResultCurrent)
+  bodyResultCurrent ??= ANY_BIGINT
+  // The result's carrier is the contract's (the boundary's `claimed`): every
+  // return tail converts to it once, whatever the tail's own producer. A
+  // contract naming no carrier leaves the body's own walk under the
+  // contract's rule: a closure, a dispatcher, an export or a value-used
+  // function returns through an any slot (its callers unknown, or the host's
+  // generic decode), so a tail that can be a BigInt boxes; a direct-only
+  // function's tails keep their joined carrier. A result the ABI carries as
+  // i32, a pointer or several lanes holds no BigInt lane.
+  const anySlotResult = options.generic || boundary.covered === false || sig?.dispatcher === true
+  const bodyResultTarget = sig?.results?.length === 1 && sig.results[0] === 'f64'
+    ? boundary.result.claimed ?? (anySlotResult && canBeBigint(bodyResultSemantic)
+      ? BOXED_BIGINT : targetRepFor(bodyResultSemantic, bodyResultCurrent))
+    : NO_BIGINT
 
   const walkEdges = (node, root = false) => {
     if (!Array.isArray(node)) return
@@ -706,26 +632,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       if (materializedJoins.has(node)) return { rep: nodeTarget.get(node) ?? ANY_BIGINT, ready: true }
       if (isStorageReadProducer(node)) return { rep: currentOf(node), ready: true }
       if (node[0] === '()') {
+        // A direct callee's contract names the carrier its return edges
+        // convert to: the call is a ready producer of that carrier.
         const calleeName = calleeNameOf(node)
-        if (calleeName) {
-          const callee = ctx.funcs.map.get(calleeName)
-          const calleeHandle = callee && ctx.plans.representations.get(callee)
-          const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
-          if (calleeBody?.materializedResult === true)
-            return { rep: calleeBody.resultTarget ?? ANY_BIGINT, ready: true }
-        }
-        // Closure-forwarding slice: a same-body local closure's plan doesn't
-        // exist yet at THIS body's build time (closures compile at module
-        // end, after their callers — the ctx.funcs.map lookup above always
-        // misses), so closureCallNeedsBox's own structural proof (a
-        // passthrough tail fed a non-excluded argument) stands in for the
-        // callee-plan lookup this branch ordinarily uses. Bare-name only by
-        // construction (its own internal gate): a local closure is never
-        // reachable through a `.`-member call, using program-index.js's own
-        // property-write census never descends into any function body, so a
-        // closure assigned to a property from inside one is never indexed.
-        if (closureCallNeedsBox(node)) return { rep: BOXED_BIGINT, ready: true }
-        if (genericCallBoxed(node)) return { rep: BOXED_BIGINT, ready: true }
+        const claim = calleeName ? directCallClaim(calleeName) : null
+        if (claim != null) return { rep: claim, ready: true }
+        // A closure's contract, or the closure ABI's any slot for a callee
+        // the summary cannot name: the boxed carrier, ready by construction.
+        const rep = callRep(node)
+        if (rep === BOXED_BIGINT) return { rep, ready: true }
       }
     }
     return { rep: currentOf(node), ready: false }
@@ -784,9 +699,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     // Census-shaped unary '-'/'~' and joint-binary result nodes. Reuses the
     // SAME `materializedJoins` set as the JOIN_OPS
     // fixpoint above — every consumer (emittedCandidate, materializedNames'
-    // propagation pass, materializedResult, representationResultTagRequired's
-    // exprMayBox below) already asks that one Set, so admitting a new node
-    // shape into it is the whole wiring; no new consumer-side plumbing. NOT a
+    // propagation pass, the emitters' computedBoxOf) already asks that one
+    // Set, so admitting a new node shape into it is the whole wiring; no
+    // new consumer-side plumbing. NOT a
     // fixpoint (single pass, no `while`, unlike JOIN_OPS above): a JOIN_OPS
     // node's arms can be ARBITRARY sub-expressions (a name, a call, another
     // join) whose OWN readiness may only settle on a later round — but
@@ -878,63 +793,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
   }
 
-  // Closure-forwarding slice: a closure's boundary is ALWAYS uncovered
-  // (options.generic forces it, independent of how enumerable its call sites
-  // actually are — see the emittedCandidate param-branch comment above), so
-  // `covered` alone would keep materializedResult permanently unreachable
-  // for every closure. closureAbiIdentity ALONE is too broad an admission,
-  // though (found live: array-methods.js's `.map(x => { return x + 1n })`
-  // BigInt64Array callback) — `.map()`'s own internal call site has a FIXED,
-  // unboxed calling convention baked into $__typed_set_idx (the callback's
-  // return is stored as the raw target-array element, never a box; that
-  // codegen is generic-array-method machinery, plan-blind, and unrelated to
-  // representation-plan entirely), so boxing a result on the strength of the
-  // ordinary "mixed-semantic result → BOXED" default (targetRepFor's own
-  // fallback — x's OWN param provenance is unproven here, so `x + 1n`'s
-  // semantic reads {number, bigint} mixed, same shape ANY export boundary
-  // would legitimately box) corrupts that store. The closure-forwarding
-  // slice's own proof is narrower and is exactly what distinguishes the two:
-  // closureBoxParams is non-empty only when SOME param carries genuine,
-  // plan-proven tag-required evidence (paramNeedsHostTag's closure-
-  // forwarding case, or any other closureBoxParams producer) — requiring
-  // that here scopes the admission to closures this slice actually reasons
-  // about, leaving a closure with no tag-required param (the .map callback:
-  // x's own boundary semantic excludes bigint entirely, closureBoxParams
-  // stays empty) on its pre-existing REJECT path, unchanged.
-  //
-  // Shape #7: a SECOND, independent producer of genuine evidence —
-  // closureBoxParams only ever looks at the closure's OWN params, but a
-  // closure can be pure forwarding (`(nodes) => leb(nodes.shift())`, watr's
-  // dispatch-table entry) whose bigint-ness comes entirely from its RETURN,
-  // through a call to an ordinary named function, never touching a
-  // param at all. emittedCandidate's `ready: true` branches (a materialized
-  // name, a materialized join, or a callee whose OWN materializedResult is
-  // already proven — exactly this case, once leb's param provenance sees
-  // through the closure that calls it, see solveBigintProvenance's
-  // visitCallSites) are ground truth, not a guess — the SAME distinction
-  // that already excludes the .map callback above: `x + 1n` is a bare binary
-  // op, covered by none of emittedCandidate's proof branches, so it falls to
-  // the unready `{rep: currentOf(node), ready: false}` default and this
-  // clause stays false for it, unchanged. Additive only: closureBoxParams
-  // keeps its own job for a genuinely param-sourced result.
-  const resultForwardsProvenCallee = !!closureAbiIdentity && resultExprs.length > 0 &&
-    resultExprs.every(expr => expr != null && emittedCandidate(expr).ready === true)
-  // A result with a nullable/heterogeneous BigInt member cannot use the raw
-  // i64 carrier: null/undefined and an arbitrary i64 payload share the same
-  // bits. Materialize the BigInt-producing return tails even at an uncovered
-  // (exported/address-taken) boundary; the nullish fallthrough arm already
-  // emits its tagged sentinel. Previously only covered and explicitly-forced
-  // closure boundaries qualified, so `if (x) return 1n` exported the
-  // UNDEF_NAN bits as the BigInt 9221120245631025152n.
-  const materializedResult = (boundary.covered === true || boundary.result.forceTagged === true ||
-      boundary.result.demand === BIGINT_DEMAND_TAG_REQUIRED ||
-      (!!closureAbiIdentity && closureBoxParams.size > 0) || resultForwardsProvenCallee) &&
-    sig?.results?.length === 1 && sig.results[0] === 'f64' &&
-    resultExprs.every(expr => {
-      if (expr == null) return true
-      const source = emittedCandidate(expr)
-      return edgeMaterializable(source.rep, bodyResultTarget, expr, source.ready)
-    })
+  // The result edge is per tail: every return converts its tail to the
+  // contract's carrier (representationReturnAction), so no readiness verdict
+  // over the tails gates it; a tail the plan left open converts by tag.
 
   // Compact canonical node facts into one primitive-valued Map. The three
   // temporary caches above are build-time solver state and do not remain
@@ -954,13 +815,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     keptCurrent.set(name, currentNames.get(name) ?? ANY_BIGINT)
     keptTarget.set(name, targetNames.get(name) ?? ANY_BIGINT)
   }
-  const trivial = !materializedResult && packedSemantics.size === 0 && nodeFacts.size === 0 && edges.length === 0
+  const trivial = packedSemantics.size === 0 && nodeFacts.size === 0 && edges.length === 0
 
   return trivial ? {
     kind: 'body', identity, boundary, trivial: true,
     semanticNames: null, currentNames: null, targetNames: null, nodeFacts: null,
     materializedNames: null, hostBoxParams: null, closureBoxParams: null,
-    materializedJoins: null, materializedResult: false,
+    materializedJoins: null,
     resultSemantic: bodyResultSemantic, resultTarget: bodyResultTarget, edges,
   } : {
     kind: 'body', identity, boundary, trivial: false,
@@ -972,7 +833,6 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     hostBoxParams,
     closureBoxParams,
     materializedJoins,
-    materializedResult,
     resultSemantic: bodyResultSemantic,
     resultTarget: bodyResultTarget,
     edges,
@@ -986,7 +846,7 @@ export function mintRepresentationPlan(ctx, identity, sig, body, localReps, opti
   if (prior && ctx.plans.representationData.get(prior)?.body)
     throw new Error(`RepresentationPlan already published for ${identity?.name || '<anonymous>'}`)
   const localProvenance = options.generic && program.provenance
-    ? deriveLocalProvenance(sig, body, localReps, program.provenance)
+    ? deriveLocalProvenance(sig, body, localReps, program.provenance, ctx.summary?.at(identity))
     : null
   const planOptions = {
     ...options,
@@ -1043,7 +903,7 @@ function assertRepresentationPlan(ctx, plan) {
     if (action === REP_EDGE_REJECT) continue
     const sourceBits = bigintRepBits(source)
     let outputBits = sourceBits
-    if (action === REP_EDGE_BOX || action === REP_EDGE_HOST_BOX)
+    if (action === REP_EDGE_BOX || action === REP_EDGE_HOST_BOX || action === REP_EDGE_TAG_BOX)
       outputBits = sourceBits === BIGINT_REP_NONE ? BIGINT_REP_NONE : BIGINT_REP_BOXED
     else if (action === REP_EDGE_UNBOX)
       outputBits = sourceBits === BIGINT_REP_NONE ? BIGINT_REP_NONE : BIGINT_REP_RAW

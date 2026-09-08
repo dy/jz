@@ -1982,3 +1982,106 @@ test('array callbacks: a mapped element that may be null keeps its null test; fi
     for (const k of [0, 2]) is(ex.e(k, 2), oracle.e(k, 2), `e(${k}, 2) O${optimize || 0}`)
   }
 })
+
+// The element kind of an array is the program summary's cell (src/summary):
+// one cell per array, joining every store through every alias, helper,
+// callback and closure. The body census widened on `push` alone, so after an
+// `unshift('y')`, a `splice` insert, `fill`, an index write, a push through
+// a helper or an alias, or a store from a callback, `a[i] === 'y'` folded
+// false on the literal's numeric claim; a `concat` took the receiver's kind
+// and ignored its arguments; a `split`, a call result, a JSON array, a table
+// row and a typed-array literal were claimed for good. Each case runs against
+// JS at every level.
+test('element kind: the summary cell joins every store, so a non-number store keeps the read live', () => {
+  const cases = {
+    'index write': `export let f = (i) => { const a = [1, 2]; a[1] = 'y'; return a[1] === 'y' ? 1 : 0 }`,
+    'index write, variable': `export let f = (i) => { const a = [1, 2]; a[i] = 'y'; return a[i] === 'y' ? 1 : 0 }`,
+    'unshift': `export let f = (i) => { const a = [1, 2]; a.unshift('y'); return a[0] === 'y' ? 1 : 0 }`,
+    'unshift spread': `export let f = (i) => { const a = [1, 2]; const s = ['x', 'y']; a.unshift(...s); return a[1] === 'y' ? 1 : 0 }`,
+    'splice insert': `export let f = (i) => { const a = [1, 2]; a.splice(1, 0, 'y'); return a[1] === 'y' ? 1 : 0 }`,
+    'fill': `export let f = (i) => { const a = [1, 2]; a.fill('y'); return a[1] === 'y' ? 1 : 0 }`,
+    'push through a helper': `const put = (a, v) => a.push(v)
+      export let f = (i) => { const a = [1, 2]; put(a, 'y'); return a[2] === 'y' ? 1 : 0 }`,
+    'push through an alias': `export let f = (i) => { const a = [1, 2]; const b = a; b.push('y'); return a[2] === 'y' ? 1 : 0 }`,
+    'callback store': `export let f = (i) => { const a = [1, 2]; a.forEach((x, i) => { a[i] = 'y' }); return a[1] === 'y' ? 1 : 0 }`,
+    'closure store': `export let f = (i) => { const a = [1, 2]; const g = () => { a[1] = 'y' }; g(); return a[1] === 'y' ? 1 : 0 }`,
+    'concat result': `export let f = (i) => { const a = [1, 2]; const b = a.concat(['y']); return b[2] === 'y' ? 1 : 0 }`,
+    'spread result': `export let f = (i) => { const a = [1, 2]; const b = [...a, 'y']; return b[2] === 'y' ? 1 : 0 }`,
+    'for-of after unshift': `export let f = (i) => { const a = [1, 2]; a.unshift('y'); let n = 0; for (const x of a) if (x === 'y') n++; return n }`,
+    'for-of after fill': `export let f = (i) => { const a = [1, 2]; a.fill('y'); let n = 0; for (const x of a) if (x === 'y') n++; return n }`,
+    'split then unshift': `export let f = (i) => { const a = 'x,y'.split(','); a.unshift(1); return a[0] === 1 ? 1 : 0 }`,
+    'call result then unshift': `const mk = () => [1, 2]
+      export let f = (i) => { const a = mk(); a.unshift('y'); return a[0] === 'y' ? 1 : 0 }`,
+    'JSON array then push': `export let f = (i) => { const a = JSON.parse('[1,2]'); a.push('y'); return a[2] === 'y' ? 1 : 0 }`,
+    'typed-array literal then unshift': `export let f = (i) => { const a = [new Float32Array(2), new Float32Array(2)]; a.unshift('y'); return a[0] === 'y' ? 1 : 0 }`,
+    'table row then unshift': `export let f = (i) => { const C = [[1, 2], [3, 4]]; const r = C[i]; r.unshift('y'); return r[0] === 'y' ? 1 : 0 }`,
+    'table row store': `export let f = (i) => { const C = [[1, 2], [3, 4]]; C[0][0] = 'y'; const r = C[i]; return r[0] === 'y' ? 1 : 0 }`,
+    'Array(n) fill then string': `export let f = (i) => { const a = Array(3); a[0] = 1; a[1] = 2; a[2] = 'y'; return a[2] === 'y' ? 1 : 0 }`,
+    'numeric stores keep the read numeric': `export let f = (i) => { const a = [1, 2]; a.push(3); a[0] = 4; a.unshift(5); return a[i] === 'y' ? 1 : 0 }`,
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    const oracle = Function(src.replace('export let f', 'var f') + '; return f')()
+    for (const optimize of [0, 1, 2, 3]) {
+      const { f } = jz(src, { optimize }).exports
+      for (const i of [0, 1]) is(f(i), oracle(i), `${name} (i=${i}) O${optimize}`)
+    }
+  }
+})
+
+// A module array's element kind is its cell too (plan/scope.js moduleGlobalKinds):
+// the declaration's literal census trusted the literal wherever no function
+// index-wrote the array, so a push through a helper, an `unshift`, a `fill` or
+// a row's store folded the read; a table's rows share one cell.
+test('element kind: a module array reads its cell, joined over every function', () => {
+  const cases = {
+    'push through a helper': `const a = [1, 2]
+      const put = (v) => a.push(v)
+      export let f = (i) => { put('y'); return a[2] === 'y' ? 1 : 0 }`,
+    'unshift': `const a = [1, 2]
+      export let f = (i) => { a.unshift('y'); return a[0] === 'y' ? 1 : 0 }`,
+    'index write': `const a = [1, 2]
+      export let f = (i) => { a[i] = 'y'; return a[i] === 'y' ? 1 : 0 }`,
+    'fill': `const a = [1, 2]
+      export let f = (i) => { a.fill('y'); return a[1] === 'y' ? 1 : 0 }`,
+    'table row store': `const C = [[1, 2], [3, 4]]
+      export let f = (i) => { C[0][0] = 'y'; return C[i][0] === 'y' ? 1 : 0 }`,
+    'table row unshift': `const C = [[1, 2], [3, 4]]
+      export let f = (i) => { C[0].unshift('y'); return C[i][0] === 'y' ? 1 : 0 }`,
+    'table row through a binding': `const C = [[1, 2], [3, 4]]
+      export let f = (i) => { C[1][0] = 'y'; const r = C[i]; return r[0] === 'y' ? 1 : 0 }`,
+    'numeric stores keep the read numeric': `const a = [1, 2]
+      export let f = (i) => { a.push(3); a[0] = 4; return a[i] === 'y' ? 1 : 0 }`,
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    const oracle = Function(src.replace('export let f', 'var f') + '; return f')()
+    for (const optimize of [0, 1, 2, 3]) {
+      const { f } = jz(src, { optimize }).exports
+      for (const i of [0, 1]) is(f(i), oracle(i), `${name} (i=${i}) O${optimize}`)
+    }
+  }
+})
+
+// The negative: every store a number keeps the element read numeric, so the
+// typed loop pays no ToNumber – through a helper's push, an alias, a callback
+// and a closure alike.
+test('element kind: an array every store into which is a number reads numbers without ToNumber', () => {
+  if (onKernel()) return
+  const cases = {
+    'pushes through a helper': `const put = (a, v) => a.push(v)
+      export let f = (n) => { const a = [1, 2]; for (let i = 0; i < n; i++) put(a, i * 2); let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }`,
+    'stores through an alias and a callback': `export let f = (n) => { const a = [1, 2, 3]; const b = a; b[0] = n; a.forEach((x, i) => { a[i] = x * 2 }); let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }`,
+    'a closure store and an unshift': `export let f = (n) => { const a = [1, 2, 3]; const g = () => { a[1] = n }; g(); a.unshift(n * 2); let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }`,
+    'Array(n) filled by index': `export let f = (n) => { const a = Array(n); for (let i = 0; i < n; i++) a[i] = i * 2; let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }`,
+    'a concat of numbers': `export let f = (n) => { const a = [1, 2].concat([n, n * 2]); let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }`,
+    'a module table': `const T = [1.5, 2.5, 3.5, 4.5]
+      export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += T[i & 3]; return s }`,
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    for (const optimize of [0, 2]) {
+      const wat = compile(src, { wat: true, optimize })
+      ok(!/\$__to_num[ )]/.test(wat), `${name} O${optimize}: no ToNumber on the element read`)
+    }
+    const oracle = Function(src.replace('export let f', 'var f') + '; return f')()
+    is(jz(src).exports.f(4), oracle(4), `${name}: value`)
+  }
+})

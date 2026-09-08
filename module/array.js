@@ -1913,10 +1913,10 @@ export default (ctx) => {
       const recv = hoistArrayValue(up.source)
       const acc = temp('ra'), mapped = temp('mv')
       const upReps = callbackArgReps(up.source)
-      const mapCb = makeCallback(up.fn, upReps), redCb = makeCallback(fn)
+      const mapCb = makeCallback(up.fn, upReps), redCb = makeCallback(fn, [{ tagged: true }])
       const mget = typed(['local.get', `$${mapped}`], 'f64')
       // map preserves indices → the reduce callback's index is the loop counter.
-      const fold = i => ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), mget, idxArg(redCb, i, 2)]))]
+      const fold = i => ['local.set', `$${acc}`, asF64(redCb.stored([typed(['local.get', `$${acc}`], 'f64'), mget, idxArg(redCb, i, 2)]))]
       let inputLen
       const loop = arrayLoop(recv.value, (_p, len, i, item) => {
         inputLen = len
@@ -1931,7 +1931,7 @@ export default (ctx) => {
       })
       return typed(['block', ['result', 'f64'],
         recv.setup, mapCb.setup, redCb.setup,
-        ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
+        ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
         ...loop, reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
     }
     // .filter(f).reduce(g, init) → single loop: test f, accumulate with g if passes
@@ -1944,13 +1944,13 @@ export default (ctx) => {
       const upReps = callbackArgReps(up.source)
       const filterCb = makeCallback(up.fn, upReps)
       // reduce cb signature: (acc, item, idx). Item rep mirrors upstream's item rep.
-      const redCb = makeCallback(fn, [null, upReps[0], { val: VAL.NUMBER }])
+      const redCb = makeCallback(fn, [{ tagged: true }, upReps[0], { val: VAL.NUMBER }])
       // filter renumbers: the reduce index counts *passing* elements, not the
       // source position, so track a dedicated filtered-position counter (only when
       // the callback actually reads its index — else idxArg drops the arg anyway).
       const usesIdx = redCb.usedParams ? !!redCb.usedParams[2] : true
       const fpos = usesIdx ? tempI32('rp') : null
-      const fold = item => ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), item, fpos ? idxArg(redCb, fpos, 2) : null]))]
+      const fold = item => ['local.set', `$${acc}`, asF64(redCb.stored([typed(['local.get', `$${acc}`], 'f64'), item, fpos ? idxArg(redCb, fpos, 2) : null]))]
       const bump = fpos ? [['local.set', `$${fpos}`, ['i32.add', ['local.get', `$${fpos}`], ['i32.const', 1]]]] : []
       const accumulate = item => ['block',
         seeded
@@ -1967,24 +1967,22 @@ export default (ctx) => {
         recv.setup, filterCb.setup, redCb.setup,
         ...(fpos ? [['local.set', `$${fpos}`, ['i32.const', 0]]] : []),
         ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 0]]] : []),
-        ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
+        ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
         ...loop, reductionResult(acc, seeded)], 'f64')
     }
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
     // reduce cb signature: (acc, item, idx). Item rep mirrors recv's elem val type.
-    // A BIGINT init seeds the acc's kind: the fold can't silently change type
-    // (mixed BigInt arithmetic rejects at compile), and without the seed the
-    // acc param reads as unknown/number and trips the mix guard on jz's own
-    // SWAR packing idiom (`arr.reduce((a, b, k) => a | (BigInt(b) << …), 0n)`).
+    // The accumulator is a tagged value across the seed, callback result,
+    // and next iteration. Its kind can change during the fold.
     const reps = callbackArgReps(arr)
-    const accRep = init !== undefined && valTypeOf(init) === VAL.BIGINT ? { val: VAL.BIGINT } : null
+    const accRep = { tagged: true }
     const cb = makeCallback(fn, [accRep, reps[0], { val: VAL.NUMBER }])
     // No initial value: JS seeds the accumulator with element 0 and folds from
     // index 1 — NOT a 0 seed folded over every element. A 0 seed is invisible
     // for `+` (additive identity) but wrong for `*` (→0) and corrupts non-numeric
     // folds (string reduce emits a bare `0` in the joined result). Seed at i==0.
-    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
+    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
     let inputLen
     const loop = arrayLoop(recv.value, (_ptr, len, i, item) => {
       inputLen = len
@@ -1996,7 +1994,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
-      ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
+      ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
       ...loop,
       reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
   }
@@ -2010,9 +2008,9 @@ export default (ctx) => {
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
     const reps = callbackArgReps(arr)
-    const cb = makeCallback(fn, [null, reps[0], { val: VAL.NUMBER }])
+    const cb = makeCallback(fn, [{ tagged: true }, reps[0], { val: VAL.NUMBER }])
     // No-init: reverse walk seeds with the last element (i == len-1), folds down.
-    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
+    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
     let inputLen
     const loop = arrayLoop(recv.value, (_ptr, len, i, item) => {
       inputLen = len
@@ -2024,7 +2022,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
-      ['local.set', `$${acc}`, init !== undefined ? asF64(emit(init)) : ['f64.const', 0]],
+      ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
       ...loop,
       reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
   }

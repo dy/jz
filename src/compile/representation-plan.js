@@ -27,10 +27,13 @@ export {
   REP_EDGE_UNBOX,
   REP_EDGE_HOST_BOX,
   REP_EDGE_REJECT,
+  REP_EDGE_TAG_BOX,
   JOIN_OPS,
   STORAGE_READ_METHODS,
   bigintRepBits,
   bigintRepIsClosed,
+  callContractOf,
+  contractRep,
 } from './representation-plan/common.js'
 
 export { solveRepresentationBoundaries } from './representation-plan/boundaries.js'
@@ -46,6 +49,7 @@ export {
   representationActionCount,
   representationBoundaryActionCount,
   representationActiveMaterializedRep,
+  representationProvesBigint,
   representationStorageWriteAction,
   representationHostBoxesParam,
   representationJoinArmAction,
@@ -54,8 +58,6 @@ export {
   representationBindingWriteAction,
   representationCompoundAssignAction,
   representationUnaryUpdateAction,
-  representationResultRawBigint,
-  representationResultTagRequired,
   representationProgramHasBigint,
   representationProgramRejectCount,
 } from './representation-plan/materialize.js'

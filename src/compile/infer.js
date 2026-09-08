@@ -51,7 +51,6 @@
 import { ctx } from '../ctx.js'
 import { collectParamNames, ASSIGN_OPS, typeofPredicate } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
-import { staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
 import { typedStaticLen } from '../type.js'
 import { typedStorageCtorFromContext } from '../typed-context.js'
@@ -307,41 +306,8 @@ export function recordGlobalRep(name, expr) {
       ;(ctx.scope.pendingTypedLens ||= new Map()).set(name, expr)
     }
   }
-  // Module-level const array literal with a uniform element val-type (e.g. a numeric
-  // table `const FREQS = [261.63, …]`): record it so `FREQS[i]` reads in any using
-  // function are typed (NUMBER) rather than untyped. Without this an untyped element
-  // read makes `s += FREQS[i]` take the polymorphic +/ToString path — dragging the
-  // entire string runtime (~5 kB) into a kernel that uses no strings. A function-local
-  // array gets this from analyzeValTypes; a module-level one is invisible to the using
-  // function's body walk, so capture it here. Soundness for a later `FREQS[i]=…` is the
-  // read-site dynWriteVars guard in valTypeOf (kind.js) — this is just the literal fact.
-  if (vt === VAL.ARRAY) {
-    const elems = staticArrayElems(expr)
-    if (elems && elems.length && elems.every(e => e != null)) {
-      let common = valTypeOf(elems[0])
-      for (let k = 1; k < elems.length && common != null; k++)
-        if (valTypeOf(elems[k]) !== common) common = null
-      if (common != null) updateGlobalRep(name, { arrayElemValType: common })
-      // Array-of-arrays numeric table (`const C = [[0,4,7], …]`): also record the
-      // nested element kind so `C[i][j]` (and `ch = C[i]; ch[j]`) reads stay typed —
-      // the same string-runtime drop as the flat case, one level down. Single-level
-      // (mirrors analyzeValTypes' local arrElemElemValTypes); deeper nesting falls back.
-      if (common === VAL.ARRAY) {
-        let nested = null, seen = false, ok = true
-        for (const el of elems) {
-          const inner = staticArrayElems(el)
-          if (!inner || !inner.length || !inner.every(e => e != null)) { ok = false; break }
-          for (const ie of inner) {
-            const ivt = valTypeOf(ie)
-            if (!seen) { nested = ivt; seen = true }
-            else if (ivt !== nested) { ok = false; break }
-          }
-          if (!ok) break
-        }
-        if (ok && nested != null) updateGlobalRep(name, { arrayElemElemValType: nested })
-      }
-    }
-  }
+  // A module array's element facts (`FREQS[i]`, `C[i][j]`) are the program
+  // summary's cell, stamped on the global rep by plan/scope.js moduleGlobalKinds.
   // Static-shape capture for module-level object literals — lets `{ ...G.path }`
   // resolve its source schema by walking the global rep's shape tree at the
   // spread site (see shape walk in analyze.js / resolveSchema in object.js).

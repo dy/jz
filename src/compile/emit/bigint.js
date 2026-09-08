@@ -9,7 +9,7 @@ import { ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
 import { ctx, err, PTR } from '../../ctx.js'
 import {
-  asF64, asI64, boxBigInt, coerceNullishToNum, fromI64, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
+  asF64, asI64, boxBigInt, coerceNullishToNum, deferBigintBox, fromI64, rawBigInt, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -273,6 +273,13 @@ export function bigIntDomainsCanMix(a, b, allowUnresolved) {
 // carrier; BOX materializes only the runtime BigInt branch.
 export const computedBoxOf = (self) => self != null && representationComputedExprAction(ctx, self) === REP_EDGE_BOX
 
+/** A BigInt-domain result (`raw` its i64 IR): the plan's materialized joint
+ *  (representation-plan body-data.js: a mixed node the emitter resolves in
+ *  the i64 domain) boxes it at the producer; every other one is the raw
+ *  carrier, marked as such (ir/bigint.js rawBigInt) so a carrier edge on it
+ *  acts without a kind gate. */
+export const bigintResult = (raw, self) => computedBoxOf(self) ? boxBigInt(raw) : rawBigInt(fromI64(raw))
+
 // `box` is true when RepresentationPlan proved the OUTER node needs a tagged
 // mixed result. Box only the runtime BigInt arm; the Number arm must remain a
 // genuine f64 (not a BigInt box containing the Number's bit pattern).
@@ -345,7 +352,7 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, numGeneri
   // control flow, not a `select` — unlike bigIntUnary's arm, boxBigInt's own
   // $__alloc call is gated by THIS if (only the taken branch's code runs), so
   // no wasted-allocation hazard exists at this level.
-  const bigResult = box ? boxBigInt(rawBigIR) : fromI64(rawBigIR)
+  const bigResult = box ? boxBigInt(rawBigIR) : rawBigInt(fromI64(rawBigIR))
   const bothBranch = definite ? (definite === 'bigint' ? bigResult : numResult)
     : typed(['if', ['result', 'f64'], flagA ?? flagB, ['then', bigResult], ['else', numResult]], 'f64')
   const emitOperand = (dom, node) => dom === 'census' || dom === 'tagged'
@@ -472,7 +479,7 @@ export function bigIntUnary(node, mkI64, undefF64, box) {
   const deferred = emitted && typeof emitted.bigintBox === 'function'
   const maybeAbsent = deferred || censusMaybeUndefinedKind(node) === VAL.BIGINT ||
     ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true
-  if (!maybeAbsent) return fromI64(mkI64(readI64(node, emitted)))
+  if (!maybeAbsent) return rawBigInt(fromI64(mkI64(readI64(node, emitted))))
   const t = temp('unaryBigU')
   // Same CARRIER_BOX gap as bigIntOperand's own throw-check branch above,
   // narrower consequence (a wrong VALUE, not a wrong-address dereference —
@@ -557,5 +564,18 @@ export function bigIntShiftIR(op, av, bv) {
 // same permissive-by-construction argument as the bare-name case.
 export function bigintMemberAssignTarget(a) {
   return Array.isArray(a) && a[0] === '=' && Array.isArray(a[1]) &&
+    Array.isArray(a[2]) && (a[2][0] === '+1' || a[2][0] === '-1') &&
     (a[1][0] === '.' || a[1][0] === '[]') && valTypeOf(a[1]) === VAL.BIGINT ? a : null
+}
+
+// ToNumeric for an update whose operand can be either Number or BigInt.
+// A tagged slot stays tagged across both the store and postfix recovery.
+export function numericStep(node, fn) {
+  const t = temp('step'), value = typed(['local.get', `$${t}`], 'f64')
+  const result = typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
+    ['if', ['result', 'f64'], isBigIntBox(value),
+      ['then', boxBigInt([`i64.${fn}`, maybeUnboxBigInt(value), ['i64.const', 1]])],
+      ['else', [`f64.${fn}`, toNumF64(node, value), ['f64.const', 1]]]]], 'f64')
+  return deferBigintBox(result, () => result)
 }

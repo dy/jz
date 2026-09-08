@@ -24,7 +24,7 @@ import { warningsView } from '../../session-views.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { intLevelMap } from '../../type.js'
-import { K, tagOf, paramOf, isNullable, valOf, core, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, paramOf, isNullable, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
 import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
@@ -41,7 +41,11 @@ import { invalidateProgramFactsCache } from '../program-facts.js'
  *  not claimed: this runs on the entry summary, before materializeAutoBoxSchemas
  *  gives a dot-written `{}` its schema (classifyHashDictGlobals decides the
  *  dictionaries). An exported global keeps its kind: the host can
- *  store only a number through its export (src/summary). */
+ *  store only a number through its export (src/summary). An array global's
+ *  element facts are its cell's, the join of every store in the program (a
+ *  table `const T = [1.5, …]` reads numbers; `C[i][j]` one level down): the
+ *  kind when no producer is nullish, holes as presence, a typed element's
+ *  constructor, an array element's own element kind. */
 export const moduleGlobalKinds = (summary) => {
   if (!summary || !ctx.scope.userGlobals?.size) return
   for (const name of ctx.scope.userGlobals) {
@@ -56,6 +60,19 @@ export const moduleGlobalKinds = (summary) => {
     if (vt === VAL.HASH || (vt === VAL.OBJECT && summary.sidOf(name) == null)) continue
     if (vt == null) { vts.delete(name); ctx.scope.globalTypedElem?.delete(name); continue }
     vts.set(name, vt)
+    if (vt === VAL.ARRAY) {
+      const e = summary.elemKindOf(name)
+      if (e != null && !hasTag(e, K.NULLISH)) {
+        const ev = valOf(core(e))
+        if (ev != null) {
+          const facts = { arrayElemValType: ev }
+          if (hasTag(e, K.ABSENT)) facts.arrayHoles = true
+          if (ev === VAL.TYPED && paramOf(e) !== UNKNOWN) facts.arrayElemTypedCtor = ctorFromElemAux(paramOf(e))
+          if (ev === VAL.ARRAY) { const ee = summary.elemOfKind(e), nested = hasTag(ee, K.NULLISH) ? null : valOf(core(ee)); if (nested != null) facts.arrayElemElemValType = nested }
+          updateGlobalRep(name, facts)
+        }
+      }
+    }
     if (vt === VAL.TYPED) {
       const ctor = paramOf(k) !== UNKNOWN ? ctorFromElemAux(paramOf(k)) : null
       if (ctor) (ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
