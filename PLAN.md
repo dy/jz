@@ -990,12 +990,50 @@ allocates a pair per entry; then emit's body IR 277 + 289, buildBodyData 100
 (the milestone's), scanBindingUses 64, analyzeValTypes 54, scanNumericFill
 53, updateRep 39 (163K copy-on-update reps).
 
+### The kernel keeps nothing between compiles – 2026-09-08
+
+Native **4372 pass / 2 fail / 1 skip** (`a4a4f1e9`). Families 45 → **47/50**:
+the warm-instance leg (`sleb, _clear(), sleb` on one instance) trapped
+because the IR tape (`src/ir/tape.js`) kept its seven grown columns across
+compiles; in the kernel they are arena pointers `_clear()` and an
+in-compile checkpoint rewind, so the next link wrote through stale columns
+(the trap's stack `tape$decode → tape$str → tape$node → __dyn_set →
+__str_hash`; watr's "Unexpected token 1.94e+227" was a string's bytes read
+as a node). `resetTape()` drops the columns and `fromWat`'s `reserve`
+allocates them per compile, nothing kept; the families' warm rows compare
+each compile against a fresh instance's outcome, so the leg measures reuse
+alone. `[1,2].join()` on a string-free program: `.join` renders through
+`__str_join` and a `','` literal while only the program's own literals
+loaded the string module; the emitter-uses-a-module registry is autoload's
+`PROP_MODULES` (`at`, `concat` already carry `string`), one row. `'a' in
+{a: undefined}` read absent: `__dyn_del` wrote UNDEF into the schema slot
+as the delete marker, so every undefined slot was a miss and enumeration
+listed deleted fields; the slot keeps UNDEF (every static read is JS's
+`o.a`, byte-identical) and absence is a deleted-slot mask in the OBJECT
+header's `len` word (unused for objects; bit 31 sticky for slots past it),
+set by delete, cleared by a write, read by `__dyn_get_t_hm` and every
+enumeration, copied by clone; `hasOwnProperty` is a boolean. `f[k] = v` on
+a closure failed validation (the element store's relocation write-back put
+an f64 into the i32 closure local; a function's own name was "not in
+scope"): a CLOSURE receiver takes the property write the spec admits
+(`g.tag = v` already does), and `walk-facts` walks a write target, so a
+function name under `g[k]` is a value use. Pinned against JS: 36 `in`/
+keys/for-in/clone calls through unkinded receivers (a 34-slot schema, a
+spread clone, JSON), six join forms, eleven closure-write forms, the tape's
+reset. Functional 20/20 certified; sequences GREEN; recursive GREEN
+(13,903,763 bytes, +28,643 for the mask at the dynamic readers and every
+enumeration site; heap 943.1 MiB); oracle 15/15, parity 3/3. Seen, not
+fixed: a deleted-then-rewritten schema field enumerates in slot order where
+JS appends it; `[null, undefined].join()` renders the words; a
+host-marshalled `{a: undefined}` reads `'a' in o` false (interop's
+marshal).
+
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `f7af2b18`
+1. One session owns main; slices run in parallel worktrees at `a4a4f1e9`
    and land one by one with the gates. In flight: the two native reds (the
    plain array's update-expression result above; the fromCharCode family is
-   the string contract, below), the warm-instance `_clear()` trap, the
+   the string contract, below), the
    element-kind census widening on `push` alone (above), the dynamic-props
    mirror on the compiler's own graph (`dynPointsTo` `'ALL'`: the reach
    analysis's precision, ~250 MB of the pre-checkpoint peak), and milestone item 3's second slice from the inventory of every
