@@ -126,6 +126,12 @@ export function mkPtrIR(type, aux, offset) {
  *  If the node is already an unboxed pointer (ptrKind), return it directly. */
 export function ptrOffsetIR(valIR, valType) {
   if (valIR.ptrKind != null && valIR.ptrKind !== VAL.ARRAY) return valIR
+  // asF64 may have just boxed a proven fixed-layout pointer. Recover that
+  // same offset; growable containers still go through the forwarding reader.
+  if ((valIR.srcPtrKind === VAL.OBJECT || valIR.srcPtrKind === VAL.TYPED ||
+       valIR.srcPtrKind === VAL.BUFFER || valIR.srcPtrKind === VAL.CLOSURE) &&
+      valIR[0] === 'f64.reinterpret_i64' && valIR[1]?.[0] === 'i64.or' &&
+      valIR[1][2]?.[0] === 'i64.extend_i32_u') return valIR[1][2][1]
   inc('__ptr_offset')
   return ['call', '$__ptr_offset', ['i64.reinterpret_f64', valIR]]
 }

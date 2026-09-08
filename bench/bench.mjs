@@ -91,6 +91,7 @@ const CASE_NAMES = {
   tokenizer: 'tokenizer scan',
   callback: 'callback map',
   aos: 'AoS to SoA',
+  entity: 'in-place entity field updates',
   mandelbrot: 'mandelbrot escape',
   json: 'JSON parse+walk (single literal source)',
   sort: 'in-place heapsort',

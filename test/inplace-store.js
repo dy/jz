@@ -52,6 +52,31 @@ const jsEval = (src) => {
   return exports
 }
 
+test('inplace-store: field updates reuse a proven object pointer', () => {
+  const src = `const make = n => {
+    const a = []; for (let i = 0; i < n; i++) a.push({x:i, y:-i, vx:0.5, vy:-0.25}); return a
+  }
+  function step(a) {
+    for (let i = 0; i < a.length; i++) {
+      const p = a[i]; p.x += p.vx; p.y += p.vy; p.vy -= 0.125
+    }
+  }
+  export let f = n => {
+    const a = make(n); for (let j = 0; j < 4; j++) step(a)
+    let s = 0; for (let i = 0; i < n; i++) s += a[i].x + a[i].y; return s
+  }`
+  const expected = jsEval(src).f
+  for (const optimize of [0, 2, 3]) {
+    const f = jz(src, {optimize}).exports.f
+    for (const n of [0, 1, 9, 1]) is(f(n), expected(n), `O${optimize}: ${n} objects`)
+    if (optimize) {
+      const wat = jz.compile(src, {optimize, wat:true})
+      const body = wat.split(/\(func /).find(s => /^\$step\s/.test(s))
+      ok(body && !/call \$__ptr_offset\b/.test(body), 'field stores do not decode freshly boxed pointers')
+    }
+  }
+})
+
 test('inplace-store: fires on the immutable-update kernel and bit-matches JS', () => {
   const wat = jz.compile(KERNEL, { wat: true, optimize: 'speed' })
   // The transform's signature, either strength: the masked OBJECT|sid runtime

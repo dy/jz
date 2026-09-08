@@ -78,6 +78,7 @@ const SPEED = {
   bitwise:        { v8: 'win',  as: 'win' },
   tokenizer:      { v8: 'win',  as: 'diff' },
   aos:            { v8: 'win',  as: 'win' },
+  entity:         { v8: 'win',  as: 'win' },
   json:           { v8: 'win',  as: 'na' },
   // in-place heapsort over a Float64Array. The sift-down loop is deliberately
   // inline in the source so the case measures typed-array loop codegen, not
@@ -228,6 +229,7 @@ const SIZE = {
   // exactly that thin (0.993× → 1.006×). Ring-ratchet precedent: a deliberate,
   // understood, sub-1% shift from a correct fix is re-baselined, not chased.
   aos:            { as: 'tie' },
+  entity:         { as: 'todo' },
   json:           { as: 'na' },
   sort:           { as: 'win' },
   crc32:          { as: 'win' },
@@ -303,6 +305,7 @@ const WASMOPT_SLACK_MIN = 0.90
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
+  entity: 1900,
   // watr 245000 → 298000: the old budget was calibrated at 9228c5d1, BEFORE BigInt
   // literals existed at all. Checkpoint attribution (perf/size-regressions, fixed
   // watr@5.9.1 specimen bytes at every jz checkpoint): 262,482 B pre-campaign →
