@@ -304,14 +304,15 @@ result contract replaces (PLAN.md, next milestone): not polished here.
   src/wat/assemble/static-data.js; consumers src/compile/index.js) – the
   patch is kept at `.work/patches/fromcharcode-utf8-code-unit.patch`. The
   string representation is a charter item (PLAN.md step 7), not a local fix.
-- The encoder's remaining 1.0 GB: the rest-parameter array per `push` (an
-  engine gap), the per-`if` head and per-`call_indirect` reader arrays, the
-  exact copy of each body. Then emitClosures (675 MB: 50 KB of analysis and
-  52 KB of emit per closure), emitFuncs (339), narrowSignatures (336),
-  analyzeFuncs (269), the frame's forty collections per function (13 KB).
+- The encoder's remaining 1.0 GB: the rest-parameter array per `push` (the
+  rest slot view, item 14 below, removes it), the per-`if` head and
+  per-`call_indirect` reader arrays, the exact copy of each body. Then
+  emitClosures (675 MB: 50 KB of analysis and 52 KB of emit per closure),
+  emitFuncs (339), narrowSignatures (336), analyzeFuncs (269), the frame's
+  forty collections per function (13 KB).
 - `a.unshift(...t)` on an array fails to compile ("stdlib '__to_str' was
   requested but never registered"); `a.shift()` followed by `push` on a
-  1000-element array reallocates (680 bytes per pair).
+  1000-element array reallocates (680 bytes per pair): items 15 and 16 below.
 - The self-compile build profile still rewrites watr's printer flatness
   checks (`printRewrites`): the callback form's boolean result widens under
   the O1 kernel, the result-carrier family.
@@ -386,3 +387,74 @@ Open, found on the way:
   never-reassigned parameter of null domain) still reads a subnormal as a
   raw BigInt carrier; interop boxes every host BigInt, so that arm is
   unreachable from the host today.
+
+## The rest slot view, the spread staging, the queue's head (2026-09-07, on `d8ad7958`)
+
+14. **A closure's rest parameter packed an array at every entry**
+    (`src/compile/closure-emit.js`): watr's ByteBuf `push(...xs)` took 24
+    bytes per byte. A rest whose every mention is an element read, a length
+    read or a `for…of` (`restViewAliases`, analyze-scans.js: safeReads' proof
+    with the for…of alias, a mention in a nested arrow an escape) is a view of
+    the closure ABI's argument slots (`src/compile/rest-view.js`): `xs.length`
+    is `argc` past the fixed parameters, `xs[i]` selects among `$__a0..` and
+    reads the spread site's spill array past them, whose offset is taken at
+    entry, before a call the body makes republishes it; the alias binds
+    nothing. A program without a spread call elides the spill arm
+    (`ctx.closure.spread`). The per-arity clone of a module function's rest
+    (`specializeFixedRestCalls`) admits the `for…of` alias too. A rest that
+    escapes (aliased, captured, spread on, mutated, returned) packs as before.
+    Rejected: per-arity clones for closures (the ByteBuf's callers are
+    dynamic, no site to retarget); a caller-built stack frame (jz has no
+    shadow stack; every prologue and every unwind would carry one); a static
+    per-closure scratch (unsound under reentrancy). ByteBuf pair of pushes:
+    72 → 0 bytes; a module `for…of` rest at fixed arities: 96 → 0. Pins:
+    `closures` (ten differential rows against JS at O0–O2, the WAT shape),
+    `allocation`.
+15. **A method spread's source was measured with `__len` and read by a key of
+    unknown kind** (`src/compile/emit/call-args.js`): `push/unshift(...s)`
+    read 0 characters of a string source, never normalized a Set in the
+    per-element loop, and read each element through ToPropertyKey's runtime
+    dispatch, which requests the string module's `__to_str`: a program
+    without a string of its own failed the stdlib pull (`a.unshift(...t)`
+    after a shift). One `stageSpreadSource` serves the array literal, the
+    bulk push and the loop (normalized through `__iter_arr`, the count by the
+    source's kind, the loop's counter published as a number), and the
+    dispatch owns its `__to_str` dependency as the default sort comparator
+    does. Pins in `spread`.
+16. **A shift then a push extended the storage by a slot per pair for good**
+    (`module/array.js`): the 680 bytes per pair was the window that also paid
+    the durable array's first snapshot and doubling; the asymptote was 8
+    bytes per pair, never reclaimed. A shift moves the header up one slot;
+    the vacated header now carries the storage's base in its props word
+    (`[base, -1]`, the same nonzero non-HASH "props are global" signal) and
+    the base's record always forwards to the live header, so nothing refers
+    to the slots between them (path compression, which pointed an old block's
+    record at whichever header was newest, is gone: a stale binding takes two
+    hops). A grow of an ephemeral array slides the elements back to the base
+    when the slack holds the array (`head ≥ len`, amortized O(1)) and slides
+    before extending in place otherwise; a durable array keeps its slots for
+    the heal; the reclaim links only with `__arr_shift`. Queue of 1000: 0
+    bytes per pair. Pins: `allocation`, `array-methods` (the randomized
+    run's sequence with an alias, a relocation, a push through the alias and
+    properties).
+
+Gates on `d8ad7958` with the three: functional **20/20 GREEN, certified**;
+sequences GREEN 9/9; recursive GREEN, 14,282,371 bytes (14,278,487 at the
+base) in 74 s, heap **1,013,778,792 B, 966.8 MiB** (1,295,431,264 B, 1,235
+MiB at the base: 268.6 MiB less, the encoder's rest arrays), 3,129 MiB of
+headroom; kernel oracle 15/15; parity 3/3; hosted families 45/50 (the
+fromCharCode rows and the warm-instance tests, as recorded). Native `node
+test/index.js`: **4364 pass / 2 fail / 1 skip** (the complex `[2n]` member
+`++` result at O0, the fromCharCode family; 4348 / 2 / 1 at the base, the
+sixteen pins added).
+
+Open, found on the way:
+
+- The element-kind census (`arrayElemValType`, analyze/body-facts.js) is
+  widened by `push` alone: after `a.unshift('y')`, `a.splice(1, 0, 'y')`,
+  `a.fill('y')`, `a[1] = 'y'` at O0, or a push through a helper on a
+  numeric-literal array, `a[i] === 'y'` folds false.
+- A view spread into another call (`f(...xs)`) packs the array at entry; the
+  call's array could be built from the slots at the site.
+- An unshift on a shifted array could take the header down one slot instead
+  of moving the elements.
