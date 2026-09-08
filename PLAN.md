@@ -833,15 +833,51 @@ SRoA'd flat slot with a STRING∪BIGINT union keeps a raw BigInt
 throws `Unknown op: str`; `sameValueZeroIdentityChain`'s BIGINT arm lacks
 the STRING arm's NaN re-guard.
 
+### The rest parameter is a view of the argument slots – 2026-09-07
+
+Native **4364 pass / 2 fail / 1 skip** (`2ea67766`). Recursive heap 1,235 →
+**966.8 MiB** (1,013,778,792 bytes; −268.6 MiB), 14,282,371 bytes. The
+closure ABI already passes arguments in slots (`$__argc`, `$__a0..`, a spread
+call's spill array past them), so a rest parameter that never escapes is a
+view of those slots, not an array: `restViewAliases` (analyze-scans.js,
+beside `safeReads`) proves every mention is `xs[i]` or `xs.length`, holds a
+`for…of` alias to the same proof and treats a mention in a nested arrow as
+an escape; `src/compile/rest-view.js` lowers `xs.length` to `argc − fixed`
+and `xs[i]` to a bound-checked select over the inline slots with the spill
+load past them, the spill offset snapshotted at entry (a call republishes
+the global); closure-emit mints the helper locals before the body and
+packs nothing; a program with no spread call elides the spill arm. The
+encoder's ByteBuf pair of pushes 72 → 0 bytes; a module `for…of` rest 96 →
+0. Rejected: per-arity closure clones (the ByteBuf's callers are dynamic),
+a caller-built frame (no shadow stack), a static per-closure scratch
+(reentrancy). `f(...xs)` of a view still packs (open). The loop behind
+`push/unshift(...s)` measured every source with `__len` (0 on a string),
+never normalized a Set and read elements by a key of unknown kind, whose
+ToPropertyKey dispatch requested `__to_str` without owning the string
+module (the `a.unshift(...t)` compile failure); one `stageSpreadSource`
+serves the array literal, the bulk push and the loop. The shift/push pair's
+680 bytes were the measurement window paying the durable array's first
+snapshot and doubling, the asymptote 8 bytes per pair never reclaimed: a
+shifted header carries its base in its props word, the base's record
+forwards to the live header (path compression gone), a grow slides
+elements back to the base when `head ≥ len` and before an in-place
+extension otherwise, linked only with `__arr_shift`; a queue of 1000 is
+0 bytes per pair, a randomized deque differential with aliases,
+relocations and dynamic props matches JS. Functional 20/20; sequences
+GREEN; oracle 15/15, parity 3/3; families 45/50, the same rows. Found, not
+fixed: the element-kind census (`arrayElemValType`) widens on `push` alone,
+so after `a.unshift('y')`, a `splice` insert, `fill`, `a[i] = 'y'` at O0 or
+a push through a helper on a numeric-literal array, `a[i] === 'y'` folds
+false; `unshift` on a shifted array could move the header down instead of
+a memmove.
+
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `d8ad7958`
+1. One session owns main; slices run in parallel worktrees at `2ea67766`
    and land one by one with the gates. In flight: the two native reds (the
    plain array's update-expression result above; the fromCharCode family is
-   the string contract, below), the warm-instance `_clear()` trap, a rest
-   parameter that never escapes reading the argument slots (the encoder's
-   `push(...xs)` takes an array per byte, 322 MB; with `a.unshift(...t)`'s
-   compile failure and the shift/push reallocation), emit's per-closure
+   the string contract, below), the warm-instance `_clear()` trap, the
+   element-kind census widening on `push` alone (above), emit's per-closure
    allocation (675 MB on jz × jz, the frame's forty collections per
    function; the plan's body data excluded, the milestone replaces it),
    the attribution of the equality family's +417,549 recursive bytes,
