@@ -502,6 +502,33 @@ test('in: a deleted field written again through a static dot write is present', 
   }
 })
 
+// The read-side reach (collectSlotWriteHazards' dynPointsTo) names a receiver
+// sidOf cannot by the summary's kind per site, and classes a numeric key: a
+// number addresses a schema slot only through its canonical-integer string,
+// so `node[1]` on a parameter of unknown kind (the AST walker's shape) reaches
+// the integer-named schemas alone. What the reach still gates: a constant
+// literal's shared static instance. A string key on an unknown receiver
+// reaches every schema (the fail-closed ALL).
+test('dyn-reach: a numeric key on an unknown receiver reaches only integer-named schemas', () => {
+  const lits = `export const mk = () => ({ x: 1, y: 2 })\nexport const mk1 = () => ({ 1: 10, 2: 20 })\n`
+  const cases = [
+    ['numeric literal key', `export const first = (node) => node[1]`, false, true],
+    ['numeric counter key', `export const scan = (src) => { let n = 0; for (let i = 0; i < src.length; i++) if (src[i] === 40) n++; return n }`, false, true],
+    ['array receiver', `const T = [1, 2, 3]\nexport const at = (i) => T[i]`, false, false],
+    ['string key', `export const get = (o, k) => o[k]`, true, true],
+  ]
+  for (const [name, fn, mkAllocs, mk1Allocs] of cases) {
+    const src = lits + fn
+    const wat = compile(src, { optimize: 0, wat: true })
+    const body = (f) => { const i = wat.indexOf(`(func $${f}\n`); return wat.slice(i, wat.indexOf('\n  (func ', i + 1)) }
+    is(/__alloc_hdr/.test(body('mk')), mkAllocs, `${name}: {x, y} ${mkAllocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
+    is(/__alloc_hdr/.test(body('mk1')), mk1Allocs, `${name}: {1, 2} ${mk1Allocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
+    const ex = jz(src, { optimize: 0 }).exports
+    is(ex.mk().x + ex.mk().y, 3, `${name}: {x, y} reads`)
+    is(ex.mk1()[1] + ex.mk1()[2], 30, `${name}: {1, 2} reads`)
+  }
+})
+
 // audit P0 (1db8e55e revert, external bisection): the Map value-census .get()
 // consumer promoted EVERY read on a proven-Map receiver to the exact VAL.*
 // kind of every observed .set() write. Unsound two ways: (1) an ABSENT key

@@ -530,9 +530,12 @@ export function initSchema(ctx) {
    *  before ever reaching here — this is the second, independent belt: a
    *  resolvable sid that simply isn't in the (non-'ALL') set answers false. */
   ctx.schema.schemaDynReach = (sid) => {
-    const dp = ctx.schema.slotWriteHazards?.dynPointsTo
+    const hz = ctx.schema.slotWriteHazards, dp = hz?.dynPointsTo
     if (dp == null || dp === 'ALL') return true
-    return sid != null && dp.has(sid)
+    if (sid == null) return false
+    // a numeric read on an unnamed receiver (hz.dynNumeric) reaches the
+    // integer-named schemas alone: `o[1]` is the field "1"
+    return dp.has(sid) || (hz.dynNumeric && ctx.schema.list[sid].some(n => /^(0|[1-9][0-9]*)$/.test(String(n))))
   }
 
   /** WRITE-usable fact: true iff a BIGINT value stored at (sid, prop) must be
