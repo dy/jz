@@ -458,3 +458,87 @@ Open, found on the way:
   call's array could be built from the slots at the site.
 - An unshift on a shifted array could take the header down one slot instead
   of moving the elements.
+
+## The per-body allocation of the analyses (2026-09-07)
+
+Seven slices, each an allocation class every compiled program paid per
+function or closure body, each measured through the overlay kernel
+(`$S/clo/overlay.json`, `rec-marks.mjs`: `__heap_mark` deltas per step,
+jz × jz, 5,433 closures, 2,562 functions, 22,603 analyzeBody computations
+on `2ea67766`) and pinned on output: the new compiler, run natively on the
+base commit's tree, reproduces the base kernel byte for byte (`$S/clo/
+pin.mjs`; 14,548,079 bytes on `2ea67766`). The recursive gate's heap does
+not move (966.4 → 966.4 MB on `2ea67766`): it is the residual after the
+second checkpoint plus the encoder; these phases sit before the first
+checkpoint, where the wasm32 ceiling is, and the number that moves is the
+pre-checkpoint peak, **3,167.6 → 2,978.6 MB** on `2ea67766` (phase marks,
+`marks-base2.txt` → `diag-final.txt`; plan:narrowSignatures 335.6 → 285.0,
+analyzeFuncs 271.6 → 227.6, emitFuncs 344.4 → 340.1, emitClosures 692.1 →
+657.0). The table's peak column is the base each slice was measured on
+(`2db662d3` for 1–2, `0f26b470` for 3–4, `f0efa85b` for 5–7); the series
+rebased over the loose-equality and rest-parameter families, whose two new
+writers to a lazily created collection (`ctx.func.taggedLocals?.add(t)` in
+method-dispatch.js, `ctx.func.closureAux.set('restView', …)` in
+closure-emit.js) are folded into slice 1's first-writer discipline: the
+first dropped the write and the pin differed by 132 bytes, the second would
+have thrown.
+
+| slice | site | mechanism | MB before → after | peak (MB) |
+|---|---|---|---:|---:|
+| 1 | `active-function.js`, the entry paths | thirteen of the frame's seventeen collections created by their first writer; no re-allocation of what the entry paths replaced; `capturedNames`/`identityShadow` declared on the record; the scope helpers name their field (no `frame[field]`) | enterClosureFrame 33.5 → 30.1, seedClosureFrame 25.1 → 23.1, enterFunc 11.9 → 10.3, emitFunc entry 19.9 → 18.0 | 3,192.6 → 3,183.4 (at `2db662d3`) |
+| 2 | `analyze-scans.js` boxedCaptures | one `seen` set with an undo log per block instead of `new Set(seen)` per block | closures 17.2 → 8.0; functions (with unboxablePtrs) 19.4 → 13.6 | 3,183.4 → 3,168.3 |
+| 3 | narrowUint32, collectI32SafeIndexVars, intLevelMap | one state table kept across calls; no `new Set(seen)` per affine operand, no set per edge per round; defs read by index, not entry pairs | narrowUint32 57.7 → 7.6, collectI32SafeIndexVars 72.7 → 69.3, intLevelMap 58.4 → 54.3 | 3,170.3 → 3,108.5 |
+| 4 | eight walkers' `[…].includes(op)`; updateRep | module-level Sets (exprType paid 64 bytes per arithmetic node); a rep's keys counted by `for…in`, no `Object.keys` arrays | narrowSignatures 333.7 → 301.7, updateRep (163,278 calls) 45.4 → 38.9 | 3,108.5 → 3,081.6 |
+| 5 | scanBindingUses | equal use records shared (per key/flags, per callee/position, per operator) | scanBindingUses (11,598) 75.0 → 63.7, scanNumericFill 61.3 → 53.3 | 3,081.6 → 3,070.6 |
+| 6 | collectI32SafeIndexVars, intLevelMap, narrowUint32 | the per-body definition tables from `ast.js`'s scratch pool (taken cleared, released by depth, the grown pointer stored back) | collectI32SafeIndexVars 69.1 → 58.1, intLevelMap 54.4 → 41.7 | 3,070.6 → 3,039.9 |
+| 7 | analyzeBody, analyzeValTypes | the declared-name sets from the scratch pool | analyzeBody's walk 58.7 → 51.1, narrowSignatures 291.8 → 284.1 | 3,039.9 → 3,011.0 |
+
+What the kernel's profile made of each shape (`$S/clo/frame-cost.mjs`,
+`walker-cost.mjs`, `scratch-probe.mjs`: `__heap_mark` around one call of a
+jz-compiled probe, collectionInitCap 2, compact collections):
+
+- A `new Map()` is 64 bytes and a `new Set()` 48, so the frame's seventeen
+  collections were 0.9 KB of its 5.8 KB. The rest is the **dynamic-props
+  mirror**: `collectSlotWriteHazards`' `dynPointsTo` is `'ALL'` on the
+  compiler's graph (an unresolvable computed-key read somewhere), so
+  `needsDynShadow` is true for every schema and every runtime object literal
+  builds a sidecar hash of 1.3× its field count and mirrors each field with
+  `__dyn_set` (`module/object.js`, `hashCapFor`): the 52-slot frame carries
+  a 64-slot hash, 1.5 KB and 46 `__dyn_set`s. The helper counters
+  (`JZ_HELPER_COUNTERS=1`, `$S/clo/hc.mjs`) count 2,006,398 `__hash_new_cap`
+  and 39,499,952 `__dyn_set` on jz × jz: of the order of 250 MB of the
+  peak, in every record the compiler allocates. Removing the mirror where
+  no dyn read can reach the schema is a codegen change (the functional
+  bytes move), outside an allocation-only slice; the reach analysis's
+  precision is the engine fix.
+- A collection grows from two entries by doubling at 75% load: a 30-entry
+  Map allocates 3.6 KB, 1.5 KB of it abandoned tables; a Set 2.6 KB. Every
+  per-body table keyed by the body's names paid this (slices 3, 6, 7).
+- `for (const [k, v] of map)` allocates a pair per entry (368 bytes for 8
+  entries); `map.keys()` and a Set iterate for 112. `Object.keys` costs an
+  array; `for…in` nothing.
+- A constant array literal read only by `includes` is built on every call
+  (64 bytes for six strings): an engine gap, the literal never escapes.
+- `{ ...prev, ...fields }` of a rep held in a Map is a hash (288 bytes and
+  up per updateRep; 163K calls). A rep updated in place would remove it;
+  41 sites hold rep references, so that is a contract change, not a slice.
+- A grown collection is reached through a forwarding header and its boxed
+  pointer changes: `===` on a collection across a growth is unreliable in
+  the kernel (slice 6's first form released its scratch table by identity,
+  the pool ran dry and the peak rose to 3,108.7 MB). Reads, `clear`, `has`
+  and `set` follow the forwarding correctly (`scratch-probe.mjs`).
+- The closure's `.find`/`.some` callbacks are inlined (0 bytes); a walkAst
+  call is 144 bytes (its options record and closures).
+
+What remains, by the overlay kernel after slice 7 (MB): closure emit body
+IR 276, function emit body IR 288 (the IR itself and the emitters'
+temporaries), buildBodyData 96 (the representation plan's body data, the
+verified-result milestone's), collectI32SafeIndexVars 58, scanBindingUses
+64 (the summary map and the per-name slot and use lists), analyzeValTypes
+54, analyzeBody's walk 51, scanNumericFill 53, intLevelMap 42, updateRep
+39, scanObjectArrayFacts + result 34, the closure frame's entry 30 (the
+mirror), seedClosureFrame 23 (two `new Map(cb.schemaVars)` copies, one at
+analysis and one at emission, and paramAllUsesNumeric's walk per
+parameter), mintRepresentationPlan's boundary 26, the function pass's
+slotI32Certain re-walk 26 (a second analyzeBody per function whose only
+purpose is a width refresh).
