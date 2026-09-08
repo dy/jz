@@ -940,16 +940,51 @@ Slice 2 starts at the return edge: `bodyResultTarget` reads the contract's
 carrier and the return converts, which retires `resultReps`, the
 boundary's `current`, and lets the export/value-used rule enforce.
 
+### The per-body allocation of the analyses – 2026-09-07
+
+Seven slices (`d273b039`; measured on `2ea67766`, landed over the contract's
+first slice): the recursive gate's heap is the residual after the second
+checkpoint plus the encoder, so these move the pre-checkpoint peak, where
+the wasm32 ceiling is: **3,167.6 → 2,978.6 MB** (−189 MB; narrowSignatures
+335.6 → 285.0, analyzeFuncs 271.6 → 227.6, emitClosures 692.1 → 657.0,
+emitFuncs 344.4 → 340.1), the recursive heap unchanged at 966.4 MiB; on
+main over the contract's first slice: native 4367 / 2 / 1, functional
+20/20 certified, recursive GREEN 14,264,604 bytes, heap 965.4 MiB, oracle
+15/15, parity 3/3, families 45/50. Output
+pin per slice: the new compiler run natively on the base tree reproduces the
+base kernel byte for byte (14,548,079 bytes). The frame creates 13 of 17
+collections at their first write (enterClosureFrame 33.5 → 30.1 MB);
+`boxedCaptures` scopes its declared-name set by an undo log instead of a
+copy per block (17.2 → 8.0); `narrowUint32` keeps one state table and
+`collectI32SafeIndexVars` walks defs by index (57.7 → 7.6); eight
+`[…].includes(op)` literals are module Sets (`exprType` paid 64 bytes per
+arithmetic node) and `updateRep` counts keys without an array
+(narrowSignatures 333.7 → 301.7); equal binding-use records are shared
+(75.0 → 63.7); the per-body definition tables and the body walks'
+declared-name sets come from scratch pools (`ast.js`; a pool released by
+identity failed: a grown collection's boxed pointer changes in the kernel).
+Two writers the families in between had added to lazily created
+collections were folded in (`taggedLocals?.add` silently dropped its write:
+the pin differed by 132 bytes; `closureAux.set('restView')` would have
+thrown). Where the next MB are: the frame's cost is the dynamic-props
+mirror, not its collections (`dynPointsTo` is `'ALL'` on the compiler's
+graph, so every runtime object literal builds a sidecar hash of 1.3× its
+fields and `__dyn_set`s each: 2,006,398 `__hash_new_cap`, 39.5M `__dyn_set`,
+~250 MB on jz × jz; the reach analysis's precision is the engine fix);
+collections grow from two entries by doubling; `for (const [k, v] of map)`
+allocates a pair per entry; then emit's body IR 277 + 289, buildBodyData 100
+(the milestone's), scanBindingUses 64, analyzeValTypes 54, scanNumericFill
+53, updateRep 39 (163K copy-on-update reps).
+
 ### Next ownership and order
 
-1. One session owns main; slices run in parallel worktrees at `0889e70d`
+1. One session owns main; slices run in parallel worktrees at `d273b039`
    and land one by one with the gates. In flight: the two native reds (the
    plain array's update-expression result above; the fromCharCode family is
    the string contract, below), the warm-instance `_clear()` trap, the
-   element-kind census widening on `push` alone (above), emit's per-closure
-   allocation (675 MB on jz × jz, the frame's forty collections per
-   function; the plan's body data excluded, the milestone replaces it),
-   the attribution of the equality family's +417,549 recursive bytes,
+   element-kind census widening on `push` alone (above), the dynamic-props
+   mirror on the compiler's own graph (`dynPointsTo` `'ALL'`: the reach
+   analysis's precision, ~250 MB of the pre-checkpoint peak), the attribution of the equality family's +417,549 recursive bytes,
    and milestone item 3's second slice from the inventory of every
    result-reconstruction site (`.work/result-contract-inventory.md`: 90
    sites in eight classes, the conflicting authorities and their precedence,
