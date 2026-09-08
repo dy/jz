@@ -8,9 +8,9 @@
  * module map and build order.
  * @module program-facts/slot-kind-census
  */
-import { commaList, isLiteralStr, MUTATE_OPS, collectAllBoundNames, walkAst } from '../../ast.js'
+import { MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
-import { VAL, repOf, updateGlobalRep, KIND_UNIVERSE } from '../../reps.js'
+import { VAL, repOf } from '../../reps.js'
 import { valTypeOf, nullishArm } from '../../kind.js'
 import { staticObjectProps, objLiteralSchemaId } from '../../static.js'
 import { typedStorageCtorFromContext } from '../../typed-context.js'
@@ -206,7 +206,6 @@ export function observeProgramSlots(ast, opts) {
   const pf = getFactStore().programFacts
   const slotFacts = ctx.schema.slotFacts
   const slotConstInts = ctx.schema.slotConstInts
-  const dictValueTypes = ctx.schema.dictValueTypes
   // Grow-and-return the SlotFact object at (sid, idx) — the ONE shared
   // storage primitive every writer below mutates (product-lattice design
   // Slice 6a, ctx.js's slotFacts doc). Replaces the 4 separately-grown
@@ -258,28 +257,6 @@ export function observeProgramSlots(ast, opts) {
     else if (f.objSid !== childSid) f.objSid = null
   }
   const poisonObjSid = (sid, idx) => { slotFact(sid, idx).objSid = null }
-  // Dict-value-type census (global half, product-lattice Slice 7): union-join
-  // (existential fact — "which kinds was this dict ever written with"), keyed
-  // by bare name instead of (sid, idx) — same whole-program name-keyed
-  // convention as dynWriteVars/nameEscapes above. Disagreeing writes UNION
-  // instead of the old first-wins-then-clash null-poison; an unresolved write
-  // unions in the full KIND_UNIVERSE (TOP) — absorbing, same effect on the
-  // exact-or-null projection (dictValueKindOf: size!==1 → null) as the old
-  // sentinel, but now `censusKindsOf` can see which kinds, plural.
-  const dictValueKindSet = (name) => {
-    let s = dictValueTypes.get(name)
-    if (!s) { s = new Set(); dictValueTypes.set(name, s) }
-    return s
-  }
-  const observeDictValue = (name, vt) => {
-    if (!vt) return
-    const s = dictValueKindSet(name)
-    if (s.size < KIND_UNIVERSE.length) s.add(vt)
-  }
-  const poisonDictValue = (name) => {
-    const s = dictValueKindSet(name)
-    for (const k of KIND_UNIVERSE) s.add(k)
-  }
   const paramReps = opts?.paramReps ?? null
   // Poison every hazarded slot's kind AND elem-ctor up front (unresolvable
   // receivers, computed-key writes, extern constructors — see
@@ -291,7 +268,7 @@ export function observeProgramSlots(ast, opts) {
   // hazard recompute resolves receivers the early pass poisoned wholesale
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
-  if (opts?.fresh) { slotFacts.clear(); dictValueTypes.clear() }
+  if (opts?.fresh) { slotFacts.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh
     ? { paramReps: opts.paramReps, callSites: opts.callSites, addressTaken: opts.addressTaken } : undefined)
   // Hazard fail-OPEN belt (slotBigintObserved's own doc, ctx.js): a slot the
@@ -407,39 +384,10 @@ export function observeProgramSlots(ast, opts) {
   const ctorOfValue = expr => typedStorageCtorFromContext(ctx, expr, {
     resolveName: name => teOverlay?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null,
   })
-  // Census continues INTO a nested closure for the dict-`[]=` / Map-`.set()`
-  // write shapes ONLY — a write inside a closure body (e.g.
-  // `[0].forEach(() => m.set('y','oops'))`) is otherwise invisible to the
-  // census, unsoundly missing a real write. This is the global-half twin of
-  // analyze.js's dictValueTypeOf/mapValueTypeOf local-half census; see that
-  // file's doc comment for the full soundness argument. Schema-slot
-  // (`{}`/`.prop=`) census reach stays scoped to the current function —
-  // `visit` below still stops at `=>` for those. `collectAllBoundNames`
-  // (ast.js) is position-insensitive: ANY name it returns for this arrow's
-  // whole subtree is treated as shadowed everywhere in it, which only ever
-  // forfeits a fact, never misattributes a local write to an outer receiver.
-  const observeNestedDictWrites = (arrowNode, paramVts) => {
-    const bound = collectAllBoundNames(arrowNode, new Set())
-    const walk = (node) => walkAst(node, { enter: node => {
-      const op = node[0]
-      if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
-        const [, wobj, widx] = node[1]
-        if (!isLiteralStr(widx)) {
-          let root = wobj
-          while (Array.isArray(root) && root[0] === '[]') root = root[1]
-          if (typeof root === 'string' && !bound.has(root)) {
-            const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { root, paramVts })
-            if (vt) observeDictValue(root, vt); else poisonDictValue(root)
-          }
-        }
-      }
-    } })
-    walk(arrowNode[2])
-  }
   const visit = (node, intRefs = null, paramVts = null) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') { observeNestedDictWrites(node, paramVts); return }
+    if (op === '=>') return
     // Preserve exact branch-local constants while censusing literals such as
     // `if (kind === 3) rows.push({kind, ...})`. Else arms accumulate the
     // excluded values; with a known mask range the trailing else resolves to
@@ -495,20 +443,6 @@ export function observeProgramSlots(ast, opts) {
           else poisonObjSid(sid, idx)
         }
       }
-    } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
-      // Dict-value-type census (global half, design §1b): `name[key] = rhs` for
-      // any non-literal key, rooted through nested `[]` chains at a bare name.
-      // NOT gated on dynWriteVars here (the early call runs before it exists) —
-      // unconditional census, gate lives at CONSUME time (kind.js).
-      const [, wobj, widx] = node[1]
-      if (!isLiteralStr(widx)) {
-        let root = wobj
-        while (Array.isArray(root) && root[0] === '[]') root = root[1]
-        if (typeof root === 'string') {
-          const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { root, paramVts })
-          if (vt) observeDictValue(root, vt); else poisonDictValue(root)
-        }
-      }
     }
     for (let i = 1; i < node.length; i++) visit(node[i], intRefs, paramVts)
   }
@@ -543,9 +477,6 @@ export function observeProgramSlots(ast, opts) {
         for (const [sid, idx, vt, ctor, ci] of hit.obs) {
           observeSlot(sid, idx, vt); observeCtor(sid, idx, ctor); observeConstInt(sid, idx, ci)
         }
-        for (const [name, vt] of hit.dictObs) {
-          if (vt) observeDictValue(name, vt); else poisonDictValue(name)
-        }
         continue
       }
       const obs = []
@@ -554,11 +485,6 @@ export function observeProgramSlots(ast, opts) {
         observeSlot(sid, idx, vt)
         observeCtor(sid, idx, ctor)
         observeConstInt(sid, idx, ci)
-      }
-      const dictObs = []
-      const recordDict = (name, vt) => {
-        dictObs.push([name, vt])
-        if (vt) observeDictValue(name, vt); else poisonDictValue(name)
       }
       const visitInit = (node, intRefs = null) => {
         if (!Array.isArray(node)) return
@@ -580,38 +506,15 @@ export function observeProgramSlots(ast, opts) {
                 intLiteral(value) ?? (typeof value === 'string' ? intRefs?.get(value) : null))
             }
           }
-        } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
-          // Dict-value-type census, moduleInit half (Fix B) — mirrors visit()'s
-          // branch above. Module inits carry no params, so wctx is root-only.
-          const [, wobj, widx] = node[1]
-          if (!isLiteralStr(widx)) {
-            let root = wobj
-            while (Array.isArray(root) && root[0] === '[]') root = root[1]
-            if (typeof root === 'string') {
-              const vt = writeVT(effectiveWriteValue(op, node[1], node[2]), { root })
-              recordDict(root, vt)
-            }
-          }
         }
         for (let i = 1; i < node.length; i++) visitInit(node[i], intRefs)
       }
       teOverlay = null
       visitInit(mi)
-      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs, dictObs })
+      if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs })
     }
   }
   })
-  // Publish the dict-value-type census onto globalReps — kind.js's
-  // dictValueKindOf projects the exact-or-null answer from this Set
-  // (size===1 → the kind, else null); censusKindsOf (opt-in, product-lattice
-  // Slice 7) reads the raw union. Runs every observeProgramSlots call (both
-  // the early hasSchemaLiterals-gated pass and the late {fresh:true}
-  // rebuild), so a poisoned-then-cleared entry on rebuild correctly
-  // overwrites the earlier value via updateGlobalRep's merge. Published as a
-  // COPY (`new Set(s)`), never the live working Set, so a later observation
-  // in the SAME pass (before the next {fresh:true} clear) can't silently
-  // mutate an already-published rep field by aliasing.
-  for (const [name, s] of dictValueTypes) if (s.size) updateGlobalRep(name, { dictValueValType: new Set(s) })
 
 }
 // Self-referential compound `.prop=` writes (`o.n = o.n + 1n`, `o.n += 1n`,

@@ -169,7 +169,8 @@ function computeBodyFacts(body, bodyFacts, declared, elemOrigin) {
    *  objects poison the schema census below, whose push observation would
    *  otherwise stand after an `unshift('y')` it cannot see. */
   const readElemFacts = (name) => {
-    const e = summary?.elemKindOf(name)
+    if (!summary || tagOf(summary.kindOf(name)) !== K.ARRAY) return
+    const e = summary.elemKindOf(name)
     if (e == null) return
     if (!hasTag(e, K.NULLISH)) {
       const ev = valOf(core(e))

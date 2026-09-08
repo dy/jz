@@ -60,7 +60,7 @@ import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
-  plus, arith, typedStore, isPostfixRecovery,
+  plus, arith, typedStore, isPostfixRecovery, logicalMask, selectKind,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, kindOfVal, valsOf, core } from './kind.js'
 
@@ -193,7 +193,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // construction site owns; every store and push joins into it, so a read sees
   // every element the program can put there. Cells joined are one cell (a
   // union-find over ids); a kind names a cell by any id in it, `canon` by the root.
-  const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP) && paramOf(k) !== UNKNOWN
+  const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH) && paramOf(k) !== UNKNOWN
   const elems = []               // cell root → element kind
   const cellUp = []              // cell id → its parent; a root is its own
   const cells = new Map()        // construction node (an array literal, a `new Map`) → cell id
@@ -249,7 +249,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const t = tagOf(k), p = paramOf(k)
     if (p === UNKNOWN) return
     if (t === K.CLOSURE) for (const id of membersOf(p)) escapeId(id)
-    else if (t === K.ARRAY || t === K.MAP) { const c = cell(p); if (!seen.has(-1 - c)) { seen.add(-1 - c); escapeToHost(elems[c], seen); if (t === K.ARRAY) escapeToHost(anyPropOf(k), seen) } }
+    else if (t === K.ARRAY || t === K.MAP || t === K.HASH) { const c = cell(p); if (!seen.has(-1 - c)) { seen.add(-1 - c); escapeToHost(elems[c], seen); if (t === K.ARRAY) escapeToHost(anyPropOf(k), seen) } }
     else if (t === K.OBJECT) { if (!seen.has(p)) { seen.add(p); for (const s of slots(p)) escapeToHost(s, seen) } }
   }
   // A parameter's incoming kind, the join of its arguments alone: a read of
@@ -342,11 +342,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // `Object.assign` onto an array: a source of known shape stores its slots
       // as the array's properties (an index-named one as an element); any
       // other source may store anything.
-      if (callee === 'Object.assign' && n > 0 && tagOf(ks[base]) === K.ARRAY && paramOf(ks[base]) !== UNKNOWN) {
+      if (callee === 'Object.assign' && n > 0 && (tagOf(ks[base]) === K.ARRAY || tagOf(ks[base]) === K.HASH) && paramOf(ks[base]) !== UNKNOWN) {
         const target = ks[base]
         for (let i = 1; i < n; i++) {
           const s = ks[base + i]
-          if (tagOf(s) === K.OBJECT && paramOf(s) !== UNKNOWN && !kspread[base + i]) { const sid = paramOf(s), sl = slots(sid); schemas[sid].forEach((p, j) => { if (/^\d+$/.test(p)) raiseElem(target, sl[j]); else raiseProp(target, p, sl[j]) }) }
+          if (tagOf(s) === K.OBJECT && paramOf(s) !== UNKNOWN && !kspread[base + i]) { const sid = paramOf(s), sl = slots(sid); schemas[sid].forEach((p, j) => { if (tagOf(target) === K.HASH || /^\d+$/.test(p)) raiseElem(target, sl[j]); else raiseProp(target, p, sl[j]) }) }
+          else if (tagOf(target) === K.HASH && tagOf(s) === K.HASH && !kspread[base + i]) raiseElem(target, elemOf(s))
           else { escape(target); escapeObject(s) }
         }
         return target
@@ -665,14 +666,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (sourceSid === UNKNOWN || !schemas[sourceSid]) {
           escape(source)
           for (const [, v] of writes) escape(v)
-          return kind(K.HASH)
+          return cellOf(n, K.HASH, ANY)
         }
         const sourceSlots = slots(sourceSid)
         for (let j = 0; j < schemas[sourceSid].length; j++) add(schemas[sourceSid][j], sourceSlots[j])
       } else {
         if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j]))
         for (const [, v] of writes) escape(v)
-        return kind(K.HASH)
+        return cellOf(n, K.HASH, ANY)
       }
     }
     const sid = sidByKey.get(schemaKey(names, brand))
@@ -718,13 +719,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       callCandidates(recv, getterOf(prop), 0, 0)
       if (!prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const fn of membersByName.get(prop) ?? NO_MEMBERS) callWith(binderOf(fn), recv)
     }
+    if (t === K.HASH) return optionalResult(op, recv, orAbsent(elemOf(recv)))
     if (isCount(prop, t)) return optionalResult(op, recv, NUMBER)
     if (prop === 'buffer' && t === K.TYPED) return optionalResult(op, recv, kind(K.BUFFER))
     if (t === K.ARRAY && paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return optionalResult(op, recv, orAbsent(propOf(recv, prop)))
     return optionalResult(op, recv, ANY)
   }
   /** The kind of an expression, with its effects: calls bind parameters, stores raise slots. */
-  const expr = (n) => {
+  const expr = n => selectedExpr(n, 7)
+  const selectedExpr = (n, mask) => {
+    const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
+    if (mask !== 7 && !logical) return selectKind(expr(n), mask)
     if (n == null) return NULLISH
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
@@ -765,6 +770,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const ik = expr(idx)
       if (t === K.NONE) return K.NONE
       if (t === K.TYPED) return orAbsent(typedElemKind(recv))
+      if (t === K.HASH) return orAbsent(elemOf(recv))
       if (t === K.ARRAY) return orAbsent(entryOf(recv, ik))
       if (t === K.STRING) return STRING
       // A computed key on a known shape reads one of its slots (a dispatch table's member), or misses.
@@ -801,12 +807,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '+1' || op === '-1') return arith(op, expr(n[1]))  // a member's ++/-- (prepare)
     if (op === 'u+') { expr(n[1]); return NUMBER }
     if (BOOL_OPS.has(op)) { for (let i = 1; i < n.length; i++) expr(n[i]); return BOOL }
-    if (op === '&&' || op === '||' || op === '??') {
-      const a = expr(n[1])
+    if (logical) {
+      const a = selectedExpr(n[1], mask & logical)
       branch++
       const mark = rtop
       proves(n[1], op === '&&')
-      const b = expr(n[2])
+      const b = selectedExpr(n[2], mask)
       unwind(mark)
       branch--
       return merge(a, b)
@@ -861,6 +867,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       // A length store extends an array with holes (`a.length = n`: the new slots read undefined).
       else if (t === K.ARRAY) { if (prop === 'length') raiseElem(recv, ABSENT); else if (paramOf(recv) !== UNKNOWN) raiseProp(recv, prop, v); else escape(v) }
+      else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseElem(recv, v); else escape(v) }
       else if (builtinReceiverTag(t)) escape(v)
       else if (t !== K.STRING) { if (unknownReceiver(recv)) { const b = sp; pushK(v); callCandidates(recv, setterOf(prop), b, 1); sp = b } poisonProp(prop); dynamicProps.add(prop); escape(v) }
       return v
@@ -870,6 +877,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return assign(op, ['.', target[1], idx[1]], value)
       const ik = expr(idx)
       if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) raiseEntry(recv, ik, v); else escape(v) }
+      else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseElem(recv, v); else escape(v) }
       else if (t === K.TYPED) return typedStore(typedElemKind(recv), v)
       else if (t !== K.NONE && t !== K.STRING) { poisonAll(recv, ik); escapeObject(v) }
       return v
@@ -969,7 +977,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       for (let i = 1; i < value.length; i++) { const p = value[i]; if (typeof p === 'string') raiseSlot(bound, props.indexOf(p), expr(p)); else if (!isBrand(p[1])) raiseSlot(bound, props.indexOf(p[1]), init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2])) }
       return kind(K.OBJECT, bound)
     }
-    return value.length === 1 && !props?.length && dictKeys.has(keyOf(name)) ? kind(K.HASH) : expr(value)
+    return value.length === 1 && !props?.length && dictKeys.has(keyOf(name)) ? cellOf(value, K.HASH, K.NONE) : expr(value)
   }
   const pattern = (p) => { if (typeof p === 'string') declare(p, ANY); else if (Array.isArray(p)) for (let i = 1; i < p.length; i++) pattern(Array.isArray(p[i]) && p[i][0] === ':' ? p[i][2] : Array.isArray(p[i]) && p[i][0] === '=' ? p[i][1] : p[i]) }
 

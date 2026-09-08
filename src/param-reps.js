@@ -179,36 +179,13 @@ export const joinKinds = (fact, key, observedSet) => {
   }
 }
 
-/**
- * Every Set-valued field across BOTH storages `cloneRep` serves: the
- * Fact-shaped `paramReps` records (`possibleKinds`, populated Slice 4a) and
- * the plain `ValueRep` `localReps`/`globalReps` records (`dictValueValType`, `reps.js` REP_FIELDS, product-lattice Slice 7's
- * producer-union storage). `arrayElemSchemaSet`/`schemaIdSet`/`range`/
- * `arrayElemRange` are `number[]`, not `Set` — `updateRep` always replaces
- * them wholesale (never mutates an existing array in place), so a shallow
- * copy of the array reference is safe and they do NOT belong on this list.
- * THE one place a future Set-valued Fact/ValueRep field is registered —
- * re-audit item 9(c): a Set field added anywhere else without a line here is
- * a clone-aliasing leak waiting to happen, caught by the drift assert below.
- */
-const REP_SET_FIELDS =Object.freeze(['possibleKinds', 'dictValueValType'])
+// Set-valued parameter facts must be copied when a specialization is cloned.
+const REP_SET_FIELDS =Object.freeze(['possibleKinds'])
 const REP_SET_FIELDS_SET = new Set(REP_SET_FIELDS)
 
 const DBG_CLONE = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
-/**
- * THE authoritative Fact/rep clone (audit-#16 P1-3): `{ ...r }` shallow-copies
- * Set-valued lattice fields, so a join on the clone silently mutates the
- * source (confirmed live — a specialization's observation leaked into its
- * origin's possibleKinds). Every rep-copy path MUST use this instead of a
- * bare spread — both `narrow.js`'s paramReps clone sites (`possibleKinds`)
- * AND `compile/index.js`'s `cloneRepMap` (`ctx.func.localReps`, where
- * `dictValueValType` lives) route through here. Deep-copies
- * every field in `REP_SET_FIELDS`; under `JZ_DEBUG_INVARIANTS`, also asserts
- * no OTHER field on `r` is a `Set` — a drift gate so a future Set-valued
- * field can't silently reintroduce this same aliasing leak by landing
- * outside `REP_SET_FIELDS`.
- */
+/** Copy Set-valued fields; debug builds reject an unregistered Set field. */
 export const cloneRep = (r) => {
   const c = { ...r }
   for (const k of REP_SET_FIELDS) if (r[k]) c[k] = new Set(r[k])

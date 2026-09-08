@@ -59,11 +59,14 @@ as is a duplicate summary lookup at each call site. Twelve sampled O2/O3 builds
 (including FFT and resampling) remain byte-identical; specialization and fresh
 functional bootstrap checks pass.
 
-The next result consumer is the export boundary's numeric proof. Its replacement
-must first preserve the precision needed by the existing ABI and output-size
-tests: directly substituting the current summary adds wrappers to void/nullable
-results and conservatively boxes some numeric results. That migration is not
-ready to land. Keep the existing boundary proof until its replacement is proven.
+Result boundaries now read the summary contract, including whether a body has
+any explicit result. Map and dictionary contents use its alias-aware cells;
+their local/global scans and duplicate state are removed. Short-circuit value
+selection is shared by the solver and its queries. Focused inference checks
+and fresh functional bootstrap pass; the full core run is still pending.
+
+Remaining analysis consolidation: schema-slot values and representation hints,
+then local value/presence inference. Finish this before the shared optimizer.
 
 ## Deferred architecture
 

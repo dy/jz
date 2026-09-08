@@ -7,7 +7,7 @@ import { NONE_CONTRACT, readContract } from './contract.js'
 
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
-  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, isPostfixRecovery,
+  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, isPostfixRecovery, logicalMask, selectKind,
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
 } from './kind.js'
 
@@ -18,7 +18,7 @@ export function summaryQueries(facts) {
   const keyIn = (scope, name) => scope === '' ? name : scope + '\0' + name
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
-  const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP) && paramOf(k) !== UNKNOWN
+  const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH) && paramOf(k) !== UNKNOWN
   const canon = k => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
   const elemOf = k => celled(k) ? elems[cell(paramOf(k))] : ANY
   const NO_SLOTS = []
@@ -109,7 +109,10 @@ export function summaryQueries(facts) {
       return keys
     }
     const readKind = name => { const key = keyOfAnywhere(name); if (key === null) return K.NONE; if (typeof key === 'string') return canon(kinds.get(key) ?? K.NONE); let k = K.NONE; for (const kk of key) k = join(k, canon(kinds.get(kk) ?? K.NONE)); return k }
-    const kindOfExpr = n => {
+    const kindOfExpr = n => selectedExpr(n, 7)
+    const selectedExpr = (n, mask) => {
+      const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
+      if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
       if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE) : ANY) : readKind(n) }
       if (typeof n === 'number') return NUMBER
       if (!Array.isArray(n)) return ANY
@@ -121,7 +124,7 @@ export function summaryQueries(facts) {
       if (op === '//') return kind(K.REGEX)
       // A construction site owns its cell (the solver's cellOf): an array literal, a `new Map`, an
       // array constructor, `JSON.parse`, and the array methods that build a fresh array.
-      if (op === '[' || op === '()' && cells.has(n)) { const c = cells.get(n), t = n[1] === 'new.Map' ? K.MAP : K.ARRAY; return c === undefined || c >= UNKNOWN ? kind(t) : canon(kind(t, c)) }
+      if (op === '[' || (op === '()' || op === '{}') && cells.has(n)) { const c = cells.get(n), t = op === '{}' ? K.HASH : n[1] === 'new.Map' ? K.MAP : K.ARRAY; return c === undefined || c >= UNKNOWN ? kind(t) : canon(kind(t, c)) }
       if (op === '()' && n[1] === 'JSON.parse' && jsonKinds.has(n)) return canon(jsonKinds.get(n))
       if (op === '=>') { const id = closures.get(n) ?? closuresByBody.get(n[2]); return id === undefined || id >= UNKNOWN ? kind(K.CLOSURE) : kind(K.CLOSURE, id) }
       if (op === '{}' && n.length > 1 && n.slice(1).every(p => typeof p === 'string' || Array.isArray(p) && (p[0] === ':' || p[0] === '...'))) {
@@ -152,6 +155,7 @@ export function summaryQueries(facts) {
           const getter = classMember(r, getterOf(n[2])), fn = getter ?? (classMember(r, n[2]) ? binderOf(classMember(r, n[2])) : null)
           return optionalResult(op, r, fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH)
         }
+        if (t === K.HASH) return optionalResult(op, r, orAbsent(elemOf(r)))
         if (isCount(n[2], t)) return optionalResult(op, r, NUMBER)
         if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return optionalResult(op, r, orAbsent(propOf(r, n[2])))
         return optionalResult(op, r, n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY)
@@ -160,7 +164,7 @@ export function summaryQueries(facts) {
         const r = kindOfExpr(n[1]), t = tagOf(r)
         if (Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const s of slots(paramOf(r))) k = merge(k, s); return orAbsent(k) }
-        return t === K.TYPED ? orAbsent(typedElemKind(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
+        return t === K.TYPED ? orAbsent(typedElemKind(r)) : t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
         if (n[1].startsWith('new.') && TYPED_CTOR.test(n[1])) return builtinResult(n[1])
@@ -173,7 +177,7 @@ export function summaryQueries(facts) {
           for (const id of membersOf(paramOf(k))) r = join(r, results.get(id) ?? ANY)
           return r
         }
-        if (n[1] === 'Object.assign') { const t = kindOfExpr(args(n[2])[0]); if (tagOf(t) === K.ARRAY && paramOf(t) !== UNKNOWN) return t }   // the solver's rule: the array target
+        if (n[1] === 'Object.assign') { const t = kindOfExpr(args(n[2])[0]); if ((tagOf(t) === K.ARRAY || tagOf(t) === K.HASH) && paramOf(t) !== UNKNOWN) return t }   // the solver's rule: the array target
         return imports.has(n[1]) ? kindOfVal(imports.get(n[1])) : builtinResult(n[1])
       }
       if (op === '()' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') {
@@ -215,7 +219,7 @@ export function summaryQueries(facts) {
         return tagOf(r) === K.TYPED ? typedStore(typedElemKind(r), v) : v
       }
       if (op === '?' || op === '?:') return merge(kindOfExpr(n[2]), kindOfExpr(n[3]))
-      if (op === '&&' || op === '||' || op === '??') return merge(kindOfExpr(n[1]), kindOfExpr(n[2]))
+      if (logical) return merge(selectedExpr(n[1], mask & logical), selectedExpr(n[2], mask))
       if (op === ',') return kindOfExpr(n[n.length - 1])
       if (isPostfixRecovery(op, n[1], n[2])) return kindOfExpr(n[1])
       if (op === '+') return plus(kindOfExpr(n[1]), kindOfExpr(n[2]))

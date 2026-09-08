@@ -105,3 +105,14 @@ export const arith = (op, a, b) => {
   const number = (modes & 1) !== 0, bigint = (modes & 2) !== 0 && op !== '>>>' && op !== '>>>='
   return number ? (bigint ? join(NUMBER, BIGINT) : NUMBER) : bigint ? BIGINT : K.NONE
 }
+
+// Which values of a logical operator's left operand can be its result:
+// truthy (1), falsy but present (2), nullish (4). A selection of 7 keeps all.
+export const logicalMask = op => op === '&&' ? 6 : op === '||' ? 1 : op === '??' ? 3 : 0
+export const selectKind = (k, mask) => {
+  let bits = k & TAGS
+  if (!(mask & 4)) bits &= ~NULL_BITS
+  if (!(mask & 1)) bits &= ~COERCION_UNKNOWN
+  if (!(mask & 3)) bits &= NULL_BITS
+  return bits ? bits | (k & UNKNOWN) : K.NONE
+}

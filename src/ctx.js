@@ -721,31 +721,6 @@ export function reset(proto, globals, bridge) {
                                 //   `ctx.schema.slotI32CertainAt` → raw i32 slot
                                 //   loads (module/core.js) + i32 local typing
                                 //   (type.js exprType '.').
-    dictValueTypes: new Map(),  // name → Set<VAL.*> — dict-value-census global
-                                //   half (product-lattice Slice 7, retiring the
-                                //   old first-wins-then-clash poison-to-null
-                                //   algebra per .work/archive/lattice-design.md §thesis:
-                                //   this is an EXISTENTIAL fact — "which kinds
-                                //   was this dict ever written with" — so
-                                //   disagreeing writes UNION into the Set
-                                //   instead of collapsing it to null; an
-                                //   unresolved write unions in the full
-                                //   KIND_UNIVERSE (TOP), never a sentinel).
-                                //   Every VAL.* kind ever written through
-                                //   `name[key] = v` (any key) across the whole
-                                //   program (ast top-level, every function body,
-                                //   module inits), populated/cleared by
-                                //   observeProgramSlots alongside slotTypes/
-                                //   slotCtors. Rooted at the bare name (nested
-                                //   `[]` chains resolve to their root), whole-
-                                //   program name-keyed same as dynWriteVars/
-                                //   nameEscapes — NOT scope-aware, consumers
-                                //   gate at read time. Published into
-                                //   ctx.scope.globalReps as dictValueValType (a
-                                //   Set, same exact-or-null projection kept by
-                                //   kind.js's dictValueKindOf) by
-                                //   observeProgramSlots itself; the raw Set is
-                                //   also the union censusKindsOf exposes.
     externSlotSids: new Set(),  // schemaId set — sids whose slot VALUES can be
                                 //   written by machinery the write censuses never
                                 //   see: the JSON const emitter / shaped runtime

@@ -9,8 +9,8 @@
  * @module compile/analyze/val-types
  */
 import { OPTF, DBG_INVARIANTS, ctx } from '../../ctx.js'
-import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr, collectAllBoundNames, walkAst, takeScratchSet, releaseScratchSet } from '../../ast.js'
-import { VAL, repOf, updateRep, KIND_UNIVERSE } from '../../reps.js'
+import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf, censusMaybeUndefinedKind } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
@@ -213,87 +213,6 @@ function dictDomainOf(body, name) {
  * Writes the per-name `val` field of `ctx.func.localReps` for method dispatch
  * and schema resolution.
  */
-// Strict write-kind resolver for the dict-value-type census (local half,
-// design .work/archive/todo.md §deletion-sweep §1a) — a local mirror of
-// program-facts.js's writeVT/effectiveWriteValue. Not imported: program-facts.js
-// already imports analyzeBody from this module, so importing back would cycle.
-// Kept in exact lockstep with the program-facts.js pair — any resolver change
-// there belongs here too.
-function dictWriteVT(n) {
-  if (Array.isArray(n)) {
-    const op = n[0]
-    if (op === '.' || op === '?.') return null
-    if (op === '+' || op === '+=') {
-      const ta = dictWriteVT(n[1]), tb = dictWriteVT(n[2])
-      if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
-      if (ta == null || tb == null) return null
-      if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-      return VAL.NUMBER
-    }
-    if (op === '?:') { const a = dictWriteVT(n[2]), b = dictWriteVT(n[3]); return a === b ? a : null }
-    if (op === '&&' || op === '||' || op === '??') { const a = dictWriteVT(n[1]), b = dictWriteVT(n[2]); return a === b ? a : null }
-  }
-  return valTypeOf(n)
-}
-function dictEffectiveWriteValue(op, lhs, rhs) {
-  if (op === '=') return rhs
-  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
-  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
-  return [op.slice(0, -1), lhs, rhs]
-}
-// Same-body scan for every `name[key] = rhs` (any MUTATE_OP, any key —
-// dict-mode receivers have no literal-key fast path) rooted at `name` through
-// nested `[]` chains. First-wins-then-clash, poisons to null on any
-// unresolved write — identical lattice to observeProgramSlots' global-half
-// dictValueTypes census.
-//
-// Observes THROUGH nested `=>` bodies: a write captured in a
-// callback — `[0].forEach(() => m.set('y', 'oops'))` — is a write to the SAME
-// lexical `name` binding as any top-level write, so leaving it unobserved
-// (the old blanket `if (op === '=>') return`) let a stale census kind survive
-// past a mutation that actually happened, miscompiling `m.get('y') + 1` to a
-// bare NUMBER add. Sound direction: MORE observations only ever tightens or
-// poisons the join, never loosens it. The one exception is a SHADOW — an
-// arrow whose own param or nested let/const/var re-declares `name` binds a
-// DIFFERENT variable for its whole body, so `collectAllBoundNames` (ast.js;
-// position-insensitive, scans the whole arrow subtree including further
-// nesting) gates entry per arrow: shadowed → skip the subtree entirely (same
-// "over-bail is sound, never unsound" precedent as scanBindingUses' CAPTURE
-// rule, this file's doc comment ~line 65). dictWalkLean/dictWalkI32 keep their
-// own `=>`-stopping cut — this census only feeds the maybeUndefined-joined
-// consumer path (kind.js dictValueKindOf), not those leaner direct-index ones.
-//
-// PRODUCT-LATTICE Slice 7: union-join instead of first-wins-then-clash
-// poison-to-null (.work/archive/lattice-design.md §thesis — this is an EXISTENTIAL
-// fact, "which kinds has this dict been written with," and existential facts
-// compose by union, not meet). Returns the raw Set (possibly empty = BOTTOM/
-// unobserved): a disagreeing write ADDS to the set instead of nulling it; an
-// unresolved write union-joins the full KIND_UNIVERSE (TOP) instead of a
-// null sentinel — dictValueKindOf's exact-or-null projection (size===1 → the
-// kind, else null) reproduces today's observable answer byte-for-byte from
-// this Set, while censusKindsOf (opt-in) can now see the real union.
-function dictValueTypeOf(body, name) {
-  const kinds = new Set()
-  walkAst(body, { enter: node => {
-    if (kinds.size === KIND_UNIVERSE.length) return false
-    const op = node[0]
-    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return false
-    if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
-      const [, wobj, widx] = node[1]
-      if (!isLiteralStr(widx)) {
-        let root = wobj
-        while (Array.isArray(root) && root[0] === '[]') root = root[1]
-        if (root === name) {
-          const wvt = dictWriteVT(dictEffectiveWriteValue(op, node[1], node[2]))
-          if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return false }
-          kinds.add(wvt)
-        }
-      }
-    }
-  } })
-  return kinds
-}
-
 export function analyzeValTypes(body) {
   const declared = takeScratchSet()   // the names declared in this body
   try { return analyzeValTypesIn(body, declared) } finally { releaseScratchSet(declared) }
@@ -497,13 +416,6 @@ function analyzeValTypesIn(body, declared) {
         if (!dict && emptyLit && merged == null && ctx.schema.register && !ctx.schema.poisoned?.has(a[1]))
           ctx.schema.vars.set(a[1], ctx.schema.register([]))
         const vt = dict ? VAL.HASH : valTypeOf(a[2])
-        // Dict-value-type census, local half (design §1a): every value ever
-        // written through `a[1][key] = rhs` in this body, additive alongside
-        // the HASH receiver stamp above — never a substitute for `val`.
-        if (dict) {
-          const dvt = dictValueTypeOf(body, a[1])
-          if (dvt.size) updateRep(a[1], { dictValueValType: dvt })
-        }
         const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
           (ctx.func.leanHashLocals ??= new Set()).add(a[1])
@@ -628,10 +540,6 @@ function analyzeValTypesIn(body, declared) {
       const vt = dict ? VAL.HASH : valTypeOf(node[2])
       // Dict-value-type census, local half (design §1a) — reassignment site
       // sibling of the decl-site stamp above.
-      if (dict) {
-        const dvt = dictValueTypeOf(body, node[1])
-        if (dvt.size) updateRep(node[1], { dictValueValType: dvt })
-      }
       // Map-value-type census, local half — reassignment site sibling of the
       // decl-site stamp above.
       if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(node[1])) {

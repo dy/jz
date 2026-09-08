@@ -213,35 +213,6 @@ export const VAL = {
  *   (emitNeg's OR-arm, other `censusMaybeUndefinedKind`-consulting
  *   chokepoints) already asks unconditionally, so seeding the fact onto the
  *   param is the entire fix.
- * @property {Set<string>} [dictValueValType] Set<VAL.*> — every kind ever
- *   observed for a value written through `name[key] = v` (any key, HASH
- *   dict-mode local or global). Product-lattice Slice 7: UNION lattice, not
- *   first-wins-then-clash (this is an existential fact, per
- *   .work/archive/lattice-design.md §thesis — disagreeing writes widen the Set, an
- *   unresolved write unions in the full KIND_UNIVERSE/TOP instead of a null
- *   sentinel). `dictValueKindOf` (kind.js) projects the EXACT-OR-NULL answer
- *   consumers historically got (`size===1` → that kind, else `null`) —
- *   byte-identical to the old poison-to-null field. `censusKindsOf` (kind.js,
- *   opt-in only, per the COORDINATOR RULING on OQ1) exposes the raw union.
- *   Additive-only fact (dict-value-census design, .work/archive/todo.md §deletion-sweep):
- *   NEVER a substitute for `val`, never mutated alongside it. Two producers
- *   remain live — analyze.js's same-body scan (local half, updateRep) and
- *   observeProgramSlots' dictValueTypes census (global half, updateGlobalRep)
- *   — the fact itself stays additive-only, never a `val` substitute. Two
- *   consumers, two different re-enablement states (.work/archive/todo.md
- *   §deletion-sweep, Slice 1 of §8): `dictValueKindOf` (kind.js) — the
- *   helper VT['[]']/VT['.']'s dict-mode fold used to call to promote a dict
- *   read to an EXACT `val` — stays DORMANT, called from nowhere; re-enabling
- *   THAT is Slice 4, gated on §5's full criteria. `censusMaybeUndefinedKind`'s
- *   dict arm (kind.js) — a DIFFERENT consumer, asking "is this specific node
- *   maybeUndefined-shaped", never "what val should VT[...] claim" — calls the
- *   SAME `dictValueKindOf` helper directly (bypassing VT/valTypeOf entirely)
- *   and is RE-ENABLED (Slice 1), now also answering a bare NAME whose rep
- *   carries `mayBeUndefined` (reps.js, this file). See
- *   .work/archive/todo.md §deletion-sweep for the `mayBeUndefined` REP
- *   field this needs and full re-enablement criteria for the VT-side
- *   consumer. Do not wire dictValueKindOf back into VT['[]']/VT['.'] without
- *   first meeting §5.
  * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof, the
  *   follow-up to the numeric-key unknown-receiver soundness fix:
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
@@ -265,7 +236,7 @@ export const VAL = {
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayHoles', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
-  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped', 'dictValueValType',
+  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped',
   'mayBeUndefined', 'presentVal', 'presence', 'localMapBigintUnknown',
 ])
 

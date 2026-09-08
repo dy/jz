@@ -37,6 +37,7 @@ import { belowOpt, onKernel, onWasi, withBigintStrict } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
+import { dictValueKindOf, mapValueKindOf } from '../src/kind.js'
 import { ctx } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
 import { constIntExpr, intLiteralValue } from '../src/static.js'
@@ -2526,40 +2527,10 @@ test('closure return-kind: fails open when the return depends on an unsettled ca
 
 // ───────────────────────────────────────────── dict-value-type census (global half)
 // .work/archive/todo.md §deletion-sweep §1b/§5 step 2: observeProgramSlots' whole-
-// program census of `name[key] = rhs` value kinds, published onto
-// ctx.scope.globalReps as dictValueValType. These tests inspect the fact
-// directly, module-global HASH dict, comma-chained export let, filled through
-// a param-aliased (dynamic-key) write in one function, read in another.
-//
-// PRODUCT-LATTICE Slice 7: dictValueValType/mapValueValType are now
-// Set<VAL.*> (union lattice, .work/archive/lattice-design.md §thesis — disagreeing
-// writes widen the set instead of poisoning to null; an unresolved write
-// unions in the full KIND_UNIVERSE/TOP). soleKind() reproduces the OLD
-// exact-or-null field shape these fixtures assert against — the SAME
-// projection kind.js's dictValueKindOf/mapValueKindOf apply — so these tests
-// keep verifying the public exact-or-null contract byte-for-byte
-// unchanged; undefined (never observed) stays distinguishable from null
-// (observed but poisoned/mixed).
-const soleKind = s => s === undefined ? undefined : (s.size === 1 ? [...s][0] : null)
-//
-// audit-#11 item 7 sub-4 (test:wasm classification, 2026-08-05): every test in
-// this section (through the receiver-HASH section below) reads a host-side
-// `ctx.*` fact directly (`ctx.scope.globalReps`, `ctx.types.nameEscapes`,
-// `ctx.scope.globalValTypes`) — pure white-box introspection of the NATIVE
-// compiler's internal state. Under JZ_TEST_TARGET=jz.wasm, compilation
-// delegates into the self-compiled wasm kernel; the host `ctx` singleton is
-// structurally never populated (same documented class as test/invariants.js's
-// own onKernel() guard, and the 2026-08-03 "NEW FINDINGS" ledger entry that
-// first named these 18-ish files as leg-harness debt, not miscompiles — this
-// session finally lands the guards). `if (onKernel()) return` on each.
+// Container kinds come from the whole-program summary.
 
-test('dict-value census: module-global dict-mode value kind populates globalReps', () => {
+test('dictionary summary: module-global dict-mode value kind tracks module-global values', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps is host-only (see section note above)
-  // Mirrors the design's verified real target (§0.3): watr's
-  // `export const OPCODE = {}, IMM = {}` filled `OPCODE[nm] = code++` in a
-  // loop (watr/src/const.js:161,168) — a monotone counter value, independently
-  // provable by writeVT's '++' → valTypeOf arm without needing any per-call
-  // param-kind resolution.
   const src = `
     export let OPCODE = {}, code = 0
     export let register = (nm) => { OPCODE[nm] = code++ }
@@ -2568,25 +2539,12 @@ test('dict-value census: module-global dict-mode value kind populates globalReps
     register('sub')
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType), 'number',
+  is(dictValueKindOf('OPCODE'), 'number',
     'OPCODE[nm] = code++ census resolves to VAL.NUMBER')
 })
 
-test('dict-value census: a raw bare-param VALUE fails open (poisons), same as the pre-existing .prop= census', () => {
+test('dictionary summary: a raw bare-param VALUE fails open (poisons), same as the pre-existing .prop= census', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // Ground truth, verified empirically before writing this test: valTypeOf on
-  // a bare, never-locally-reassigned PARAM name resolves through
-  // lookupValType's four tiers (refinements / localValTypesOverlay /
-  // localReps / globalValTypes) — none of which observeProgramSlots' function
-  // loop seeds with param-kind info (analyzeBody's valTypes overlay is
-  // context-pure, built only from the body's own decls/reassignments,
-  // deliberately WeakMap-cached independent of paramReps). The PRE-EXISTING
-  // `.prop=` schema-slot census has the identical gap (confirmed against this
-  // unmodified mechanism: `o.x = p` for a monomorphic-NUMBER param `p` also
-  // poisons ctx.schema.slotTypes to null). subscript's actual `prec[op] = p`
-  // shape (parse.js:82,86) hits exactly this arm — its value-kind fact is
-  // NOT expected to populate under this design; poisoning here is the
-  // correct, sound fail-open behavior, not a defect.
   const src = `
     export let prec = {}, seen = 0
     export let register = (op, p) => { prec[op] = p }
@@ -2595,11 +2553,11 @@ test('dict-value census: a raw bare-param VALUE fails open (poisons), same as th
     register('*', 20)
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('prec')?.dictValueValType), null,
+  is(dictValueKindOf('prec'), null,
     'bare-param write value is unproven by writeVT — poisons, does not guess')
 })
 
-test('dict-value census: mixed-kind writes poison the fact to null', () => {
+test('dictionary summary: mixed-kind writes poison the fact to null', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let bag = {}
@@ -2608,38 +2566,23 @@ test('dict-value census: mixed-kind writes poison the fact to null', () => {
     put('b', 'oops')
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('bag')?.dictValueValType), null,
+  is(dictValueKindOf('bag'), null,
     'a NUMBER write and a STRING write clash — fact must poison, not settle')
 })
 
-test('dict-value census: an unresolvable write poisons the fact', () => {
+test('dictionary summary: an unresolvable write poisons the fact', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // writeVT deliberately answers null for any `.`/`?.` read (program-facts.js
-  // writeVT, ~452) — consulting live slot/dict state mid-census would make
-  // the census order-dependent. `cache[k] = src.val` hits that arm.
   const src = `
     export let cache = {}
     export let store = (k, src) => { cache[k] = src.val }
     store('x', {val: 1})
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('cache')?.dictValueValType), null,
+  is(dictValueKindOf('cache'), null,
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-// RE-REVERTED (.work/archive/todo.md §deletion-sweep §14, audit #10 — Slice
-// 4's VT['[]']/['.']/['()'] wiring this "positive win" pin proved is dormant
-// again). Was: dictValueKindOf claiming the exact NUMBER kind at `OPCODE[nm]`
-// dropped `+`'s `$__str_concat` STRING-coercion fallback arm entirely for a
-// non-escaping receiver, kept for an escaping one (nameEscapes gate). With
-// the census dormant, `OPCODE[nm]`'s static kind is unproven regardless of
-// escape status, so the fallback arm is present in BOTH shapes now —
-// verified empirically, not assumed. Kept as a plain regression pin on the
-// generic dynamic `+` dispatch's own (independently sound) codegen shape,
-// same "RENAMED, no longer distinguishes the consumer" treatment the
-// audit-#9 revert already applied to this file's dict-read-vs-literal
-// sibling below.
-test('dict-value census: unproven dict read keeps the `+` STRING-coercion arm regardless of escape status (regression pin, was Slice 4 positive win)', () => {
+test('dictionary summary: unproven dict read keeps the `+` STRING-coercion arm regardless of escape status (regression pin, was Slice 4 positive win)', () => {
   if (onKernel()) return  // white-box: ctx.types.nameEscapes (see section note above)
   const src = `
     export let OPCODE = {}, code = 0
@@ -2667,19 +2610,7 @@ test('dict-value census: unproven dict read keeps the `+` STRING-coercion arm re
   is(run(escapingSrc).bigOp('add'), 1, 'functional result still correct via the generic path')
 })
 
-// RENAMED from "consumer wiring" (audit #9 P0-1, .work/archive/todo.md "audit-#9
-// P0-1 closed": kind.js's dictValueKindOf, the consumer this test originally
-// meant to prove, is reverted/dormant). Verified this WAT shape is IDENTICAL
-// with the consumer on or off: cmpOp's relational family (emit.js ~2928-2931)
-// emits `f64.${f64op}` whenever the OTHER operand is a proven NUMBER
-// LITERAL, wrapping the unproven side in `toNumF64`'s runtime coercion —
-// the regex below only checks for an `f64.gt` OPCODE and the absence of the
-// separate `$__gt` two-sided-dynamic-dispatch helper, neither of which
-// distinguishes "operand statically proven NUMBER" from "operand runtime-
-// coerced via toNumF64 then compared". This test never actually exercised
-// dictValueKindOf's exact-kind claim — kept as a plain regression pin on
-// cmpOp's own (independently sound) shape for a dict-read-vs-literal compare.
-test('dict-value census: dict read against a NUMBER literal compares via cmpOp\'s coerced f64 path', () => {
+test('dictionary summary: dict read against a NUMBER literal compares via cmpOp\'s coerced f64 path', () => {
   const src = `
     export let OPCODE = {}, code = 0
     export let register = (nm) => { OPCODE[nm] = code++ }
@@ -2693,13 +2624,7 @@ test('dict-value census: dict read against a NUMBER literal compares via cmpOp\'
   is(run(src).bigOp('add'), false, 'functional result unchanged (0 > 0xffff is false)')
 })
 
-test('dict-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
-  // The exact miscompile class the design's carve-out (§2, kind.js
-  // dictValueKindOf docstring, emit.js nullableOperand) exists to prevent:
-  // without it, `OPCODE[nm] === undefined` on a proven-NUMBER dict would
-  // const-fold to always-false via emitStrictEq's strictSentinel — but an
-  // unregistered key's real runtime value IS undefined, so the idiomatic
-  // "does this key exist" probe must still observe true.
+test('dictionary summary: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
   const src = `
     export let OPCODE = {}, code = 0
     export let register = (nm) => { OPCODE[nm] = code++ }
@@ -2711,21 +2636,9 @@ test('dict-value census: soundness carve-out — an unregistered key still ident
   is(has('missing'), false, 'unregistered key: does NOT exist — must not const-fold to true')
 })
 
-// ─────────────────────────── writeVT strengthening: value-set &&/||/??, self-read
-// neutrality, parameter-kind channel (2026-07-31, subscript's real `prec[op] =
-// !lookup[c] && prec[op] || p` target — .work/archive/todo.md §deletion-sweep's
-// primary target didn't fire until these three pieces landed; see the writeVT
-// docstring in src/compile/program-facts.js for the resolver rules).
 
-test('dict-value census: self-read neutrality — a self-increment (`d[k]++`) is NOT poisoned by its own read', () => {
+test('dictionary summary: self-read neutrality — a self-increment (`d[k]++`) is NOT poisoned by its own read', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // effectiveWriteValue turns `d[k]++` into `d[k] = d[k] + 1` — the RHS's `d[k]`
-  // reads the SAME dict this write targets. Without self-read neutrality this
-  // poisons (writeVT's old `.`/`[]`-read-in-'+' branch had no way to say
-  // "ignore this operand"); with it, the self-read is the join identity and
-  // the literal `1` alone proves NUMBER — the watr/subscript monotone-counter
-  // idiom (`OPCODE[nm] = code++` already covers the OTHER dict's counter;
-  // this covers incrementing the SAME dict directly).
   const src = `
     export let OPCODE = {}
     let bump = (nm) => { OPCODE[nm]++ }
@@ -2734,18 +2647,12 @@ test('dict-value census: self-read neutrality — a self-increment (`d[k]++`) is
     bump('b')
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('OPCODE')?.dictValueValType), 'number',
+  is(dictValueKindOf('OPCODE'), 'number',
     'self-read `d[k]++` resolves NUMBER via the literal `1` operand alone')
 })
 
-test('dict-value census: value-set &&/||/?? — a genuine kind mismatch reached THROUGH a logical chain still poisons', () => {
+test('dictionary summary: value-set &&/||/?? — a genuine kind mismatch reached THROUGH a logical chain still poisons', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // Distinct from the pre-existing "mixed-kind writes poison" test (two
-  // SEPARATE write call sites) — this exercises the vs()/reduceVS
-  // composition itself: `(1 > 0) && 'x' || (code++)` unions a STRING and a
-  // NUMBER element through one `&&`/`||` chain (the BOOL guard falls away
-  // via falsy/truthy filtering same as the target shape, but the two real
-  // arms disagree) — must still poison, not silently pick one.
   const src = `
     export let bag = {}, code = 0
     let put = (k) => { bag[k] = (1 > 0) && 'x' || (code++) }
@@ -2753,16 +2660,12 @@ test('dict-value census: value-set &&/||/?? — a genuine kind mismatch reached 
     put('b')
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('bag')?.dictValueValType), null,
+  is(dictValueKindOf('bag'), null,
     'STRING vs NUMBER through &&/|| composition must poison, not guess')
 })
 
-test('dict-value census: ?? atom-arm — a null/undefined literal in the ?? arm is excluded, not poisoning', () => {
+test('dictionary summary: ?? atom-arm — a null/undefined literal in the ?? arm is excluded, not poisoning', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // vs(A ?? B) = nonNullish(vs(A)) ∪ vs(B): a provably-nullish literal arm
-  // contributes nothing (excluded entirely), so the write resolves to B's
-  // kind alone instead of the atom (no VAL.* for undefined/null) poisoning
-  // the whole expression.
   const src = `
     export let a = {}, b = {}, code = 0
     let regA = (k) => { a[k] = null ?? (code++) }
@@ -2771,27 +2674,12 @@ test('dict-value census: ?? atom-arm — a null/undefined literal in the ?? arm 
     regB('x'); regB('y')
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('a')?.dictValueValType), 'number', 'null ?? p excludes the atom arm')
-  is(soleKind(ctx.scope.globalReps?.get('b')?.dictValueValType), 'number', 'undefined ?? p — same exclusion')
+  is(dictValueKindOf('a'), 'number', 'null ?? p excludes the atom arm')
+  is(dictValueKindOf('b'), 'number', 'undefined ?? p — same exclusion')
 })
 
-test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[c] && prec[op] || p` resolves NUMBER end-to-end', () => {
+test('dictionary summary: subscript\'s real target shape — `prec[op] = !lookup[c] && prec[op] || p` resolves NUMBER end-to-end', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // The exact shape from subscript/parse.js:86 (token()'s `p: prec[op] =
-  // !lookup[c] && prec[op] || p`), reduced to its load-bearing parts: a BOOL
-  // guard (`!lookup[c]`), a self-read of the dict being written (`prec[op]`),
-  // and a parameter (`p`) whose kind is provable only through call-site
-  // consensus (narrowSignatures' paramReps — `register` is NOT exported, so
-  // it's eligible for signature narrowing; an exported function's params are
-  // never narrowed from internal call evidence, which is why the pre-existing
-  // "raw bare-param VALUE fails open" fixture above still poisons — that
-  // probe's function IS exported).
-  //
-  // Derivation (value-set rules): vs(!lookup[c] && prec[op]) =
-  // falsy(vs(!lookup[c])) ∪ vs(prec[op]) = {BOOL:false} ∪ [] (self-read
-  // identity) = {BOOL:false}. Then vs(… || p) = truthy({BOOL:false}) ∪
-  // vs(p) = ∅ ∪ {NUMBER} = {NUMBER} — the BOOL guard is eliminated entirely,
-  // leaving only `p`'s kind.
   const src = `
     export let prec = {}, lookup = {}
     let register = (op, c, p) => { prec[op] = !lookup[c] && prec[op] || p }
@@ -2800,42 +2688,15 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
     register('*', 2, 20)
   `
   const wat = jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('prec')?.dictValueValType), 'number',
+  is(dictValueKindOf('prec'), 'number',
     'the subscript shape resolves NUMBER: self-read neutrality + BOOL elimination + param channel')
   const body = wat.slice(wat.indexOf('$bigOp'))
-  // cmpOp's own (census-independent) coerced-f64 compare shape — see the
-  // "dict read against a NUMBER literal" test above for why this doesn't
-  // exercise dictValueKindOf (reverted/dormant, audit #9 P0-1).
   ok(/\(f64\.gt\b/.test(body), 'f64.gt at the compare site (toNumF64-coerced operand)')
   ok(!/\$__gt\b/.test(body), 'no two-sided-dynamic compare helper (RHS is a proven NUMBER literal)')
 })
 
-// ─────────────────────────── dict-value census: moduleInit gap fix (Fix A/B)
-// .work/archive/todo.md §deletion-sweep: bundled sub-module top-level init code
-// (ctx.module.moduleInits, OUTSIDE `ast`) is exactly watr's real shape
-// (`export const OPCODE = {}` then `OPCODE[nm] = code++` in a bare top-level
-// C-STYLE `for` loop, const.js:161) — the census's own fixtures above never
-// covered this domain, which is how the gap survived them. Two independent
-// bugs, both fixed here: (A) initFacts.dynWriteVars was never merged into
-// the program-wide set consumers gate on; (B) observeProgramSlots' visitInit
-// walker had no dict-write branch at all, so even with (A) fixed the fact
-// was never populated. Fix B also extends the moduleInitSlot memo cache from
-// flat {gen,obs} schema-slot tuples to {gen,obs,dictObs} — a normal compile
-// already calls observeProgramSlots 3× on the same AST/gen (collectProgramFacts's
-// early pass, narrow.js's post-E2 pass, plan/index.js's late {fresh:true}
-// rebuild), so passes 2 and 3 replay dictObs from cache — these fixtures
-// exercise that path for free, and the last one makes it explicit.
-//
-// C-style `for` here matches watr's real shape exactly (const.js:161's
-// `for (let i = 0, code = 0; i < TABLE.length; i++)`). The for-of variant
-// was a latent OOB miscompile (dict-mode alloc emitted a RUNTIME read of
-// the leanHashDomains hint array's length at the `{}` literal's emission
-// point — a def-before-use when the domain is a local declared after the
-// dict, which a for-of iterator temp always is; .work/archive/todo.md
-// §deletion-sweep) — FIXED by static-only sizing (repOf arrayLen, mirroring
-// emit-assign.js's RMW capHint) and pinned in the for-of tests below.
 
-test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-style for) populates globalReps', () => {
+test('dictionary summary: bundled moduleInit dict-write (watr\'s OPCODE shape, C-style for) tracks module-global values', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const dep = `
     const TABLE = ['add', 'sub', 'mul']
@@ -2846,14 +2707,14 @@ test('dict-value census: bundled moduleInit dict-write (watr\'s OPCODE shape, C-
     'import { OPCODE } from "./dep.js"; export let lookup = (nm) => OPCODE[nm] || 0',
     { modules: { './dep.js': dep } }
   )
-  const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
-  ok(mangled, 'a mangled global rep exists for the bundled OPCODE dict')
-  is(soleKind(ctx.scope.globalReps.get(mangled)?.dictValueValType), 'number',
+  const mangled = [...ctx.scope.globals.keys()].find(k => k.endsWith('$OPCODE'))
+  ok(mangled, 'a mangled global binding exists for the bundled OPCODE dict')
+  is(dictValueKindOf(mangled), 'number',
     'the bare top-level `OPCODE[TABLE[i]] = code++` loop (visitInit, not visit) resolves VAL.NUMBER')
   is(exports.lookup('sub'), 1, 'functional result unaffected — census is purely additive')
 })
 
-test('dict-value census: bundled moduleInit mixed-kind dict-write poisons the fact', () => {
+test('dictionary summary: bundled moduleInit mixed-kind dict-write poisons the fact', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const dep = `
     const KEYS = ['a', 'b']
@@ -2864,23 +2725,14 @@ test('dict-value census: bundled moduleInit mixed-kind dict-write poisons the fa
     'import { bag } from "./dep.js"; export let lookup = (k) => bag[k]',
     { modules: { './dep.js': dep } }
   )
-  const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  ok(mangled, 'a mangled global rep exists for the bundled bag dict')
-  is(soleKind(ctx.scope.globalReps.get(mangled)?.dictValueValType), null,
+  const mangled = [...ctx.scope.globals.keys()].find(k => k.endsWith('$bag'))
+  ok(mangled, 'a mangled global binding exists for the bundled bag dict')
+  is(dictValueKindOf(mangled), null,
     'a NUMBER write and a STRING write inside the moduleInit clash — must poison, not settle')
 })
 
-test('dict-value census: moduleInitSlot memo-cache replay is order-independent (cold vs cache-hit agree)', () => {
+test('dictionary summary: module facts agree across repeated compiles', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // observeProgramSlots runs 3× per compile on the same moduleInit nodes/gen
-  // (collectProgramFacts, narrow.js post-E2, plan/index.js late {fresh:true}) —
-  // passes 2 and 3 hit pf.moduleInitSlot's cache and replay dictObs instead of
-  // re-walking. Compiling the SAME source twice (fresh session each time, gen
-  // reset by beginSession) forces two independent cold-then-cached sequences;
-  // if the {gen,obs,dictObs} replay ever dropped a poison (replayed as a skip
-  // instead of poisonDictValue) or mis-threaded a name, the two compiles'
-  // published dictValueValType would disagree, or the first-vs-later-pass
-  // fact within one compile would silently diverge from the cold walk.
   const dep = `
     const TABLE = ['add', 'sub'], KEYS = ['a', 'b']
     export const OPCODE = {}, bag = {}
@@ -2891,16 +2743,16 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
   const modules = { './dep.js': dep }
 
   jz(src, { modules })
-  const opcodeKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
-  const bagKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const opcode1 = soleKind(ctx.scope.globalReps.get(opcodeKey1)?.dictValueValType)
-  const bag1 = soleKind(ctx.scope.globalReps.get(bagKey1)?.dictValueValType)
+  const opcodeKey1 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$OPCODE'))
+  const bagKey1 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$bag'))
+  const opcode1 = dictValueKindOf(opcodeKey1)
+  const bag1 = dictValueKindOf(bagKey1)
 
   jz(src, { modules })
-  const opcodeKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$OPCODE'))
-  const bagKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const opcode2 = soleKind(ctx.scope.globalReps.get(opcodeKey2)?.dictValueValType)
-  const bag2 = soleKind(ctx.scope.globalReps.get(bagKey2)?.dictValueValType)
+  const opcodeKey2 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$OPCODE'))
+  const bagKey2 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$bag'))
+  const opcode2 = dictValueKindOf(opcodeKey2)
+  const bag2 = dictValueKindOf(bagKey2)
 
   is(opcode1, 'number', 'first compile: OPCODE resolves NUMBER (cold walk agrees with cached replay within the compile)')
   is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')
@@ -2908,30 +2760,8 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
   is(bag2, bag1, 'second independent compile agrees on the poison too')
 })
 
-// ───────────────────────────────────────────── Map-value-type census (Tier 1)
-// .work/archive/todo.md §deletion-sweep: dict-value census's Map sibling — scalar
-// mapValueValType only (Tier 2 schema-id fact for the fftplan/provenance
-// OBJECT-valued edges is a separate, later design). Same first-wins-then-
-// clash lattice, published onto ctx.scope.globalReps as mapValueValType.
-//
-// The `.get()` read-side consumer (kind.js mapValueKindOf, VT['()']'s 'get'
-// short-circuit) was REVERTED (audit P0, external bisection, .work/archive/todo.md
-// "audit-#7 P0 closed"), RE-ENABLED (.work/archive/todo.md §deletion-sweep §3,
-// Slice 4) once the absent-key case (censusMaybeUndefined's Map arm) and the
-// alias case (mapValueKindOf's nameEscapes gate) were closed at CONSUME
-// time, then REVERTED AGAIN (audit #9, .work/archive/todo.md "audit-#9 P0-1
-// closed"): both closures keyed off the READ NODE'S OWN AST SHAPE, not a
-// fact carried by the value — `let x = m.get(missing); x + 1` still gave
-// `undefined` instead of `NaN` (decl propagation evaporates the join), and
-// arithmetic sites outside the curated chokepoint list (the `+` STRING-
-// concat fast path, bigintMixReject's compile-time check) never consulted
-// it at all. See .work/archive/todo.md §deletion-sweep for the
-// replacement (a REPRESENTED `{presentKind, mayBeUndefined}` fact) and its
-// re-enablement criteria. The miscompile repros this section's tests below
-// still functionally pin (now green via the generic dynamic path, not any
-// exact-kind consumer) live in test/dyn-keys.js ("audit P0").
 
-test('map-value census: module-global Map.set value kind populates globalReps', () => {
+test('Map summary: module-global Map.set value kind tracks module-global values', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let MEMO = new Map(), n = 0
@@ -2941,11 +2771,11 @@ test('map-value census: module-global Map.set value kind populates globalReps', 
     put('b')
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('MEMO')?.mapValueValType), 'number',
+  is(mapValueKindOf('MEMO'), 'number',
     'MEMO.set(k, n++) census resolves to VAL.NUMBER')
 })
 
-test('map-value census: function-local Map populates the local half (analyze.js mapValueTypeOf)', () => {
+test('Map summary: function-local Map tracks its values', () => {
   const src = `
     export let sumTwice = (a, b) => {
       const cache = new Map()
@@ -2957,7 +2787,7 @@ test('map-value census: function-local Map populates the local half (analyze.js 
   is(run(src).sumTwice(3, 4), 14, 'local Map get/set round-trips correctly')
 })
 
-test('map-value census: mixed-kind writes poison the fact to null', () => {
+test('Map summary: mixed-kind writes poison the fact to null', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let bag = new Map()
@@ -2966,11 +2796,11 @@ test('map-value census: mixed-kind writes poison the fact to null', () => {
     put('b', 'oops')
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('bag')?.mapValueValType), null,
+  is(mapValueKindOf('bag'), null,
     'a NUMBER write and a STRING write clash — fact must poison, not settle')
 })
 
-test('map-value census: an unresolvable write poisons the fact', () => {
+test('Map summary: an unresolvable write poisons the fact', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   const src = `
     export let cache = new Map()
@@ -2978,17 +2808,11 @@ test('map-value census: an unresolvable write poisons the fact', () => {
     store('x', {val: 1})
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('cache')?.mapValueValType), null,
+  is(mapValueKindOf('cache'), null,
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-test('map-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
-  // Was the design's carve-out test (§2) for kind.js mapValueKindOf /
-  // censusMaybeUndefined's Map arm, RE-ENABLED at Slice 4 then REVERTED
-  // AGAIN (audit #9, .work/archive/todo.md "audit-#9 P0-1 closed") — see this
-  // file's Map-value-census section header above. With no consumer at all,
-  // `MEMO.get(k)` never gets a static kind claim to protect against in the
-  // first place; kept as a plain baseline-correctness regression pin.
+test('Map summary: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
   const src = `
     export let MEMO = new Map(), n = 0
     export let put = (k) => { MEMO.set(k, n++) }
@@ -3000,15 +2824,7 @@ test('map-value census: soundness carve-out — an unregistered key still identi
   is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
 })
 
-// RE-RE-REVERTED (.work/archive/todo.md §deletion-sweep §14, audit #10 —
-// mapValueKindOf's own VT['()'] wiring, Slice 4, is dormant again). nameEscapes
-// itself is still unconditionally checked (both cases — the fact is computed
-// regardless), but the codegen-shape consequence is GONE: with the census
-// dormant, neither the non-escaping nor the escaping receiver gets the
-// `+`-arm-elimination win — both keep the generic dynamic dispatch's own
-// STRING-coercion fallback. Same "RENAMED, no longer distinguishes" treatment
-// as this file's dict-value-census sibling above.
-test('map-value census: nameEscapes is still computed but no longer changes `+` codegen for either receiver (regression pin, was Slice 4 positive win)', () => {
+test('Map summary: nameEscapes is still computed but no longer changes `+` codegen for either receiver (regression pin, was Slice 4 positive win)', () => {
   if (onKernel()) return  // white-box: ctx.types.nameEscapes (see section note above)
   const nonEscaping = `
     export let OPCODE = new Map(), code = 0
@@ -3037,29 +2853,19 @@ test('map-value census: nameEscapes is still computed but no longer changes `+` 
   is(run(escaping).bigOp('add'), 1, 'functional result still correct via the generic (gated-off) path')
 })
 
-test('map-value census: new Map(seed) literal stays uncovered — census ignores it silently, no crash', () => {
-  // Ground truth (design): seed literals are a real shape difference,
-  // deliberately DEFERRED (YAGNI — zero corpus occurrences). The census only
-  // matches `.set(...)` CALL nodes, so a seeded Map with no explicit .set()
-  // call anywhere simply never populates — no special-case code, no crash.
+test('Map summary: new Map(seed) remains conservative and executes correctly', () => {
   const src = `
     export let seeded = new Map([['a', 1], ['b', 2]])
     export let get = (k) => seeded.get(k)
   `
   jz.compile(src, { wat: true })
-  is(soleKind(ctx.scope.globalReps?.get('seeded')?.mapValueValType), undefined,
-    'seed-literal shape is out of Tier-1 scope by design — must not crash or falsely populate')
+  is(mapValueKindOf('seeded'), null,
+    'an unmodeled constructor input makes no single-kind claim')
   is(run(src).get('a'), 1, 'seeded Map still functions correctly (generic .get path)')
 })
 
-test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style for) populates globalReps', () => {
+test('Map summary: bundled moduleInit Map.set (watr\'s memo shape, C-style for) tracks module-global values', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // Cross-module coverage: bundled sub-module top-level init code
-  // (ctx.module.moduleInits, OUTSIDE `ast`) — mirrors the dict census's own
-  // moduleInit fixture (.work/archive/todo.md §deletion-sweep), but `new Map()` has
-  // no `{}` literal to trip hasSchemaLiterals on its own, so this also
-  // exercises the hasMapSet gate widening (program-facts.js observeNodeFacts
-  // + narrow.js's own hasSchemaLiterals-gated re-observation pass).
   const dep = `
     export const MEMO = new Map()
     for (let i = 0, v = 0; i < 3; i++) MEMO.set(i, v += 10)
@@ -3068,20 +2874,15 @@ test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style 
     'import { MEMO } from "./dep.js"; export let lookup = (k) => MEMO.get(k) || -1',
     { modules: { './dep.js': dep } }
   )
-  const mangled = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
-  ok(mangled, 'a mangled global rep exists for the bundled MEMO map')
-  is(soleKind(ctx.scope.globalReps.get(mangled)?.mapValueValType), 'number',
+  const mangled = [...ctx.scope.globals.keys()].find(k => k.endsWith('$MEMO'))
+  ok(mangled, 'a mangled global binding exists for the bundled MEMO map')
+  is(mapValueKindOf(mangled), 'number',
     'the bare top-level `MEMO.set(i, v += 10)` loop (visitInit, not visit) resolves VAL.NUMBER')
   is(exports.lookup(1), 20, 'functional result correct')
 })
 
-test('map-value census: moduleInitSlot memo-cache replay is order-independent (cold vs cache-hit agree)', () => {
+test('Map summary: module facts agree across repeated compiles', () => {
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
-  // observeProgramSlots runs 3× per compile on the same moduleInit nodes/gen
-  // (collectProgramFacts, narrow.js post-E2, plan/index.js late {fresh:true}) —
-  // passes 2 and 3 hit pf.moduleInitSlot's cache and replay mapObs instead of
-  // re-walking. Compiling the SAME source twice forces two independent
-  // cold-then-cached sequences — mirrors the dict census's identical test.
   const dep = `
     export const MEMO = new Map(), bag = new Map()
     for (let i = 0, v = 0; i < 2; i++) MEMO.set(i, v += 10)
@@ -3091,16 +2892,16 @@ test('map-value census: moduleInitSlot memo-cache replay is order-independent (c
   const modules = { './dep.js': dep }
 
   jz(src, { modules })
-  const memoKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
-  const bagKey1 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const memo1 = soleKind(ctx.scope.globalReps.get(memoKey1)?.mapValueValType)
-  const bag1 = soleKind(ctx.scope.globalReps.get(bagKey1)?.mapValueValType)
+  const memoKey1 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$MEMO'))
+  const bagKey1 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$bag'))
+  const memo1 = mapValueKindOf(memoKey1)
+  const bag1 = mapValueKindOf(bagKey1)
 
   jz(src, { modules })
-  const memoKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$MEMO'))
-  const bagKey2 = [...ctx.scope.globalReps.keys()].find(k => k.endsWith('$bag'))
-  const memo2 = soleKind(ctx.scope.globalReps.get(memoKey2)?.mapValueValType)
-  const bag2 = soleKind(ctx.scope.globalReps.get(bagKey2)?.mapValueValType)
+  const memoKey2 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$MEMO'))
+  const bagKey2 = [...ctx.scope.globals.keys()].find(k => k.endsWith('$bag'))
+  const memo2 = mapValueKindOf(memoKey2)
+  const bag2 = mapValueKindOf(bagKey2)
 
   is(memo1, 'number', 'first compile: MEMO resolves NUMBER (cold walk agrees with cached replay within the compile)')
   is(bag1, null, 'first compile: bag poisons (poison survives cached replay within the compile)')

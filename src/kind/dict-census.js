@@ -1,112 +1,33 @@
-/**
- * Dict/Map value-kind census — whole-program tracking of "every VAL kind
- * ever written through `name[dynKey]=v` / `map.set(dynKey,v)`", consulted
- * ONLY through the gated projections below (`dictValueKindOf`/
- * `mapValueKindOf`/`censusMaybeUndefinedKind`/…), never wired into the VT
- * dispatch table's general `[]`/`.`/`()` resolution — see kind/val-type-of.js's
- * `VT['[]']`/`VT['.']`/`VT['()']` own "INVARIANT: NO dict-mode receiver fold
- * here" comments for the soundness argument this family exists behind.
- * Three prior attempts to promote this census into the general dispatch were
- * reverted as unsound (censusKindsOf's own doc, below) — this logic is moved
- * verbatim from kind.js, unedited (.work/archive/kind-split.md §3).
- *
- * Split out of kind.js (pipeline-minimality slice, .work/archive/kind-split.md).
- *
- * @module kind/dict-census
- */
+/** Container payload queries and presence traces. Container contents are
+ *  owned by the program summary; payload queries retain the missing-key
+ *  distinction instead of promoting a read to an unconditional value kind. */
 
 import { ctx, getFactStore } from '../ctx.js'
-import { VAL, KIND_UNIVERSE, lookupValType, repOf, mayBeUndefined } from '../reps.js'
+import { VAL, KIND_UNIVERSE, repOf, mayBeUndefined } from '../reps.js'
 import { commaList, walkAst } from '../ast.js'
 import { PRESENCE } from '../summary/contract.js'
 import { K, tagOf, hasTag, valsOf, valOf, core } from '../summary/kind.js'
 
-// Dict-value-type census consumer — an INTERNAL HELPER ONLY
-// (.work/archive/todo.md §deletion-sweep Slice 1).
-// `name[key]`/`name.prop` on a HASH dict-mode receiver: the VAL.* kind of
-// every value ever WRITTEN through `name[anyKey] = v`
-// (.work/archive/todo.md §deletion-sweep §2, nameEscapes alias gate per
-// .work/archive/todo.md §deletion-sweep §2 Slice 3). INVARIANT: this stays OUT of
-// VT['[]']/VT['.']'s own dict-mode fold — promoting a census read to an
-// exact VT globally would make every OTHER consumer of that VT — composed
-// expressions, container storage, kind-specific dispatch, string `+`,
-// BigInt joint ops — silently bypass the mayBeUndefined protection unless it
-// separately remembers to call censusMaybeUndefined too; opt-out instead of
-// opt-in, unsound by construction. .work/archive/todo.md §deletion-sweep §14 is the
-// re-enablement path: an opt-in `presentVal` fact consumers must explicitly
-// ask for, not a global VT promotion. Called ONLY from
-// censusMaybeUndefinedKind below, which asks a narrower question ("is THIS
-// node maybeUndefined-shaped, and what kind does the census claim for it")
-// that bypasses VT/valTypeOf entirely — restoring this helper for that
-// caller alone reopens no soundness hole: nothing outside
-// censusMaybeUndefinedKind's own mayBeUndefined-gated chokepoints ever sees
-// this claim.
-//
-// SOUNDNESS: an unwritten key reads back NaN-boxed undefined at runtime, so
-// this fact is trustworthy ONLY where NUMBER arithmetic/relational semantics
-// coincide with ToNumber(undefined) — the same precedent as the unproven
-// TYPED-index read (kind.js:257-263 above). Identity (`===`/`==` against
-// null/undefined) and typeof MUST NOT const-fold on it: that carve-out lives
-// in emit.js's `nullableOperand`, which calls censusMaybeUndefined directly.
-// nameEscapes ALIAS GATE (.work/archive/todo.md §deletion-sweep §2, Slice 3): the
-// census keys observations by SYNTACTIC receiver name (analyze.js's
-// dictValueTypeOf same-body scan, program-facts.js's observeDictValue global
-// half) — a write through an ALIAS (`const a = d; a[k] = v`) is invisible to
-// a census keyed on `d`, leaving a stale kind live after the alias write
-// changes it. `ctx.types.nameEscapes` (program-facts.js, installed
-// plan/index.js) is a whole-program, name-keyed set of every binding read in
-// a VALUE position — exactly the set of names that COULD have been aliased.
-// dictValueKindSet(name) — the raw union Set behind dictValueKindOf's
-// exact-or-null projection (product-lattice Slice 7). Same alias/receiver
-// gating as dictValueKindOf; returns undefined where dictValueKindOf would
-// return null (gated out or unobserved) so callers can distinguish "no
-// evidence" (∅, not even queried) from a genuine empty answer if that
-// distinction is ever needed — today's two callers (dictValueKindOf,
-// censusKindsOf) both treat a falsy return as "nothing."
-function dictValueKindSet(name) {
-  if (ctx.types?.nameEscapes?.has(name)) return undefined
-  const local = ctx.func.localReps?.get(name)?.dictValueValType
-  if (local) return local
-  if (!ctx.func.localReps?.has(name) && ctx.types?.dynWriteVars?.has(name))
-    return ctx.scope.globalReps?.get(name)?.dictValueValType
-  return undefined
-}
-export function dictValueKindOf(name) {
-  const s = dictValueKindSet(name)
-  return s && s.size === 1 ? [...s][0] : null
-}
+function dictValueKindSet(name) { return containerValueKindSet(name, K.HASH) }
+export function dictValueKindOf(name) { return containerValueVal(name, K.HASH) }
 
-// RECEIVER-KIND GUARD (.work/archive/todo.md §deletion-sweep Slice 1; test/simd.js
-// pins the regression this guards against): the dict census's GLOBAL half
-// (program-facts.js) records a dictValueValType fact for ANY
-// `name[dynKey] = v`, receiver-kind-BLIND — a Float64Array named `a` written
-// via `a[i] = …` gets one too. In VT['[]']/VT['.']'s real dispatch this is
-// harmless (the TYPED/STRING/tracked-Array<VAL> branches resolve the
-// receiver FIRST and dictValueKindOf's fallback is never reached), but
-// censusMaybeUndefinedKind below calls dictValueKindOf DIRECTLY, bypassing
-// that elimination order — replicate the same three name-keyed,
-// key-independent receiver-kind facts VT's real dispatch checks first.
-const dictCensusReceiverIsLive = (name) => {
-  if (lookupValType(name) === VAL.TYPED || lookupValType(name) === VAL.STRING) return false
-  if (ctx.func.localReps?.get(name)?.arrayElemValType) return false
-  if (!ctx.func.localReps?.has(name) && ctx.scope.globalReps?.get(name)?.arrayElemValType) return false
-  return true
-}
-
-// Map cells already join every write and alias in the program summary.
-function mapValueKind(name) {
+// Container cells join every write and alias in the program summary.
+function containerValueKind(name, tag) {
   if (typeof name !== 'string') return null
   const view = ctx.summary?.at(ctx.func.current)
-  return view && tagOf(view.kindOf(name)) === K.MAP ? view.elemKindOf(name) : null
+  return view && tagOf(view.kindOf(name)) === tag ? view.elemKindOf(name) : null
 }
-function mapValueKindSet(name) {
-  const k = mapValueKind(name)
+function containerValueKindSet(name, tag) {
+  const k = containerValueKind(name, tag)
   return k == null ? undefined : new Set(hasTag(k, K.NULLISH) ? KIND_UNIVERSE : valsOf(k))
 }
-export function mapValueKindOf(name) {
-  const k = mapValueKind(name)
+function containerValueVal(name, tag) {
+  const k = containerValueKind(name, tag)
   return k == null || hasTag(k, K.NULLISH) ? null : valOf(core(k))
 }
+
+function mapValueKindSet(name) { return containerValueKindSet(name, K.MAP) }
+export function mapValueKindOf(name) { return containerValueVal(name, K.MAP) }
 
 // censusKindsOf(name) — OPT-IN, set-valued sibling of dictValueKindOf/
 // mapValueKindOf (COORDINATOR RULING on OQ1, .work/archive/lattice-design.md: a
@@ -188,7 +109,7 @@ export function censusKindsOf(name) {
 // caveat narrow.js's bodyNameNullable already documents for mayBeNullish —
 // "at plan time no caller ctx.func is installed, so rep lookups would
 // misread"). A pure shape test is a conservative OVER-approximation of the
-// real census (skips dictCensusReceiverIsLive/nameEscapes/dynWriteVars) —
+// real census (skips receiver-kind/escape checks) —
 // sound because every caller below only ever uses it to decide
 // `mayBeUndefined = true`, never to claim an exact kind (the design's own
 // fail-closed direction: absence of proof of presence keeps this fact TRUE,
@@ -218,7 +139,7 @@ function callResultMayBeUndefinedKind(node) {
 
 export function censusMaybeUndefinedKind(node) {
   if (censusShapedNode(node)) {
-    if (node[0] === '[]' || node[0] === '.') return dictCensusReceiverIsLive(node[1]) ? dictValueKindOf(node[1]) : null
+    if (node[0] === '[]' || node[0] === '.') return dictValueKindOf(node[1])
     return mapValueKindOf(node[1][1])
   }
   if (typeof node === 'string') {
