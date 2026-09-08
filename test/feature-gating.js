@@ -228,7 +228,8 @@ test('collection: literal keys prehash; probes bit-eq before the equality call',
   // short-circuits the __same_value_zero / __str_eq call for the identity (interned/SSO) case —
   // the distinctive `… (then (i32.const 1)) (else (call $__same_value_zero …` probe shape.
   const flat = g.replace(/\s+/g, ' ')
-  ok(flat.includes('(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))'))
+  // the slot address reaches the first key load as a get or as the tee propagation sinks there
+  ok(/\(i64\.eq \(i64\.load \(i32\.add \(local\.(get|tee) \$slot\b/.test(flat))
   ok(flat.includes('(then (i32.const 1)) (else (call $__same_value_zero'))
 })
 

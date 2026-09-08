@@ -48,10 +48,6 @@ export { hoistPtrType, hoistAddrBase } from './cse-address.js'
 // — see src/optimize/licm.js for the full doc.
 export { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 
-// Local def/use simplification family (propagateSingleUse, foldSetToTee) — see
-// src/optimize/locals.js for the full doc.
-export { propagateSingleUse, foldSetToTee } from './locals.js'
-
 // Global/memory hoisting family (collectVolatileGlobals,
 // collectReachableGlobalWrites, STABLE_PTR_VALS, stablePtrGlobalNames,
 // hoistGlobalPtrOffset, collectReachableMemoryWrites, hoistStableGlobalConstLoads,

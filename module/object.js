@@ -11,7 +11,6 @@ import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-dat
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
-import { GROW_QUAD_CAP } from './collection.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
@@ -51,34 +50,6 @@ const objectToStringTagForVal = (obj) => {
 // dyn-prop truth. See collection.js's heapResetWat for the full durable-
 // receiver policy rationale.
 const heapResetIR = () => ctx.scope.globals.has('__heap_reset') ? ['global.get', '$__heap_reset'] : ['i32.const', 0]
-
-// Exact safe capacity for a KNOWN-SIZE dyn-props shadow mirror (the per-object
-// props hash a `needsDynShadow` literal mirrors every schema field into at
-// construction — see the `shadow` branch below). module/collection.js's
-// __hash_new_small floors/guesses a fixed cap (module-wide hashSmallInitCap,
-// 2 or 8) for the ad-hoc "unknown eventual size, probably 0-2 props" receiver
-// — the RIGHT default for that case (module/collection.js's own doc), but
-// wrong in both directions for a schema mirror, whose final size
-// (schema.length) is a compile-time FACT, not a guess: too big for a 1-2-field
-// schema (wasted slots, paid on every construction) and too small for a
-// 7+-field schema (1-2 wasted grow generations, each abandoned forever in the
-// bump arena, never reclaimed). This simulates genUpsertGrow's real grow
-// mechanics step by step (rather than a derived closed form) so it can never
-// drift out of sync with what it's sizing against: the 75%-load trigger
-// (`size*4 >= cap*3`, unchanged by the map-growth tiering) AND nextCapIR's
-// post-map-growth tiered RATE (2× below GROW_QUAD_CAP, 4× at/above it — both
-// module/collection.js). schema.length is a literal's own field count, never
-// remotely near GROW_QUAD_CAP (8192), so the 4× tier is dead code for every
-// real caller today — simulated anyway so this can't silently go stale the
-// day some generated/bundled literal schema ever does cross it.
-const hashCapFor = (n) => {
-  let cap = 2, size = 0
-  for (let i = 0; i < n; i++) {
-    if (size * 4 >= cap * 3) cap *= cap >= GROW_QUAD_CAP ? 4 : 2
-    size++
-  }
-  return cap
-}
 
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
@@ -183,10 +154,8 @@ export default (ctx) => {
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')
-    const ptr = temp('objp')
 
     // R: Static data segment for objects of pure-literal property values (own-memory only).
-    // Even with shadow needed, we can skip alloc + N stores; just feed literal values to __dyn_set.
     // schemaId (dyn-reach slice): this construction's OWN just-resolved sid —
     // the SAME id the write-hazard scan resolves for this exact literal shape,
     // so needsDynShadow's per-schema check agrees with dynPointsTo's granularity.
@@ -205,17 +174,14 @@ export default (ctx) => {
     // whose schema intersects it allocates per-evaluation instead.
     const neverWritten = names.every(n => !ctx.module.writtenProps?.has(n))
     // `!shadow`: a computed-key write on the target (`o[k]=v`) mutates the object —
-    // a shared static instance would leak call N's writes into call N+1. The old
-    // shadow-mirror masked this by re-storing literal values through __dyn_set's
-    // schema-arm on every evaluation (an accidental reset that still leaked
-    // runtime-ADDED keys); with the mirror gone (tier 2), mutable literals must
-    // allocate fresh per evaluation — the runtime path below.
+    // a shared static instance would leak call N's writes into call N+1, so a
+    // literal a computed key can reach allocates fresh per evaluation (the
+    // runtime path below).
     // A class instance (brand) is never one shared static instance: each `new` is its own identity.
-    if (neverWritten && !shadow && !brand && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
+    if (!ctx.types.anyDelete && neverWritten && !shadow && !brand && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       // storedValueNarrow, NOT storedValue: this branch only runs when
-      // `!shadow` (just checked above), so there is NEVER a __dyn_get mirror
-      // for this literal's fields — no registry-aware dynamic reader can ever
-      // observe them. See carrierF64Narrow's own doc comment (ir.js).
+      // `!shadow` (just checked above), so no dynamic reader can ever observe
+      // these fields. See carrierF64Narrow's own doc comment (ir.js).
       const emitted = values.map(storedValueNarrow)
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(v))
@@ -227,12 +193,8 @@ export default (ctx) => {
         // dyn machinery reads the off-16 props word — a headerless static object
         // aliased whatever data preceded it (the durable-dangler garbage class),
         // and a runtime dyn-set/delete on the shared instance now has a real,
-        // writable slot to install a sidecar into. No runtime shadow mirror
-        // either way (tier 2): dyn READS of schema props resolve through the
-        // schema-arm (__schema_tbl — itself static data now), so the old
-        // per-prop __dyn_set mirror was pure init cost — the block it emitted
-        // also made the literal non-const, forcing every ENCLOSING literal
-        // (`const A = [{…}, {…}]`) to build at runtime.
+        // writable slot to install a sidecar into. Dyn READS of schema props
+        // resolve through the schema-arm (__schema_tbl — itself static data).
         dataAlign(8)
         const hdrOff = dataLen()
         const hdr = new Uint8Array(16); const hdv = new DataView(hdr.buffer)
@@ -245,18 +207,15 @@ export default (ctx) => {
       }
     }
 
+    // The slots are the fields' only home (module/collection.js
+    // buildObjectSchemaSetArm's invariant): a dynamic reader finds a field
+    // through the schema arm, so construction stores the slots and nothing
+    // else. A sidecar exists only once a key outside the schema is written,
+    // installed on demand by __dyn_set.
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]],
     ]
-    // storedValueNarrow when !shadow — same reasoning as the static-segment
-    // branch just above (carrierF64Narrow's own doc comment, ir.js): no
-    // __dyn_set mirror below means no registry-aware reader ever observes
-    // this slot. Using the wide box here instead would corrupt the next
-    // fixed-offset f64.load reading raw, e.g. `let o = {n: 4611686018427387903n};
-    // o.n += 1n` on an object that doesn't qualify for the static path
-    // (`values.length < 2`) and so takes this runtime-alloc path.
-    //
-    // CARRIER PROGRAM §15/§16: the per-FIELD choice derives from
+    // CARRIER PROGRAM §15/§16: the per-FIELD carrier derives from
     // ctx.schema.slotBigintBoxedBySid (module/schema.js) — the per-SCHEMA
     // census fact — instead of this literal's own raw `shadow`. A schemaId
     // can be shared by a shadowed and a non-shadowed constructor; write and
@@ -273,22 +232,7 @@ export default (ctx) => {
       (ctx.schema.slotBigintBoxedBySid?.(schemaId, names[i]) ? storedValue : storedValueNarrow)(values[i])
     for (let i = 0; i < values.length; i++)
       body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(i)))
-    body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
-    if (shadow) {
-      inc('__dyn_set', '__hash_new_cap')
-      // Presize the props hash to hold every schema field with zero grows
-      // (hashCapFor's doc above) instead of leaving it to __dyn_set's own
-      // lazy __hash_new_small create-on-first-write. off-16 is the fresh
-      // __alloc_hdr header's props slot (zeroed above) — writing the sized
-      // hash there directly means the FIRST __dyn_set call below already
-      // finds a correctly-sized table and never re-creates or re-grows it.
-      body.push(['i64.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 16]],
-        ['i64.reinterpret_f64', ['call', '$__hash_new_cap', ['i32.const', hashCapFor(schema.length)]]]])
-      for (let i = 0; i < schema.length; i++)
-        body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
-          ctx.abi.object.ops.loadBits(['local.get', `$${t}`], i)]])
-    }
-    body.push(['local.get', `$${ptr}`])
+    body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -450,7 +394,7 @@ export default (ctx) => {
     // writes land in the dyn sidecar — see hasOutOfSchemaWrites).
     // `mayHaveDynProps` is too coarse here — it also flags computed-READ receivers,
     // and for-in's own `o[k]` read would otherwise veto its own pooling.
-    if (typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
+    if (!ctx.types.anyDelete && typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
       const schema = resolveSchema(obj)
       if (schema && !hasOutOfSchemaWrites(obj, schema)) {
         const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
@@ -475,7 +419,7 @@ export default (ctx) => {
           ['drop', asF64(emit(obj))],
           ['i32.const', has ? 1 : 0]], 'i32')
       }
-      if (typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
+      if (!ctx.types.anyDelete && typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
         return typed(['i32.const', 1], 'i32')
     }
     // This fallback is emitted as an `in` AST node; own the operator module
@@ -721,16 +665,9 @@ export default (ctx) => {
     if (tSid != null) ctx.schema.externSlotSids?.add(tSid)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
-    // When the target carries a dynamic-props shadow (needsDynShadow), reads of an
-    // unknown-schema alias (`let r = Object.assign(t, …); r.a`) dispatch through
-    // __dyn_get_any → the hash, not the schema slot. A slot-only write would leave
-    // the hash stale, so mirror each store into __dyn_set, exactly as the object
-    // literal emit does (above). False unless a collection/dyn-key module is live,
-    // so the common fixed-schema assign keeps its slot-only fast path.
-    // tSid (dyn-reach slice): already resolved just above for the extern-belt
-    // add — the target's own sid, same granularity the write-hazard scan uses.
-    const shadow = needsDynShadow(target, tSid)
-    if (shadow) inc('__dyn_set')
+    // Slot copies only: a read of an unknown-schema alias (`let r =
+    // Object.assign(t, …); r.a`) dispatches through __dyn_get_any, whose
+    // schema arm reads the same slot (the field's only home).
     const body = [['local.set', `$${t}`, asF64(emit(target))],
       ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (let i = 0; i < sources.length; i++) {
@@ -742,9 +679,6 @@ export default (ctx) => {
         const ti = tSchema.indexOf(sSchema[si])
         if (ti < 0) continue
         body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase2}`], si)))
-        if (shadow)
-          body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
-            asI64(emit(['str', String(tSchema[ti])])), ctx.abi.object.ops.loadBits(['local.get', `$${tBase}`], ti)]])
       }
     }
     body.push(['local.get', `$${t}`])
@@ -968,8 +902,8 @@ function emitObjectAssignDynamic(target, sources) {
 // to it — program-facts records these in `ctx.types.dynKeyVars`. Such an object
 // can hold props beyond its static schema, so schema-only enumeration would drop
 // them; callers route it through the runtime schema∪dyn-props merge instead.
-const mayHaveDynProps = (obj) => typeof obj === 'string' &&
-  (!!ctx.types.dynKeyVars?.has(obj) || !!ctx.types.dynWriteVars?.has(obj))
+const mayHaveDynProps = (obj) => ctx.types.anyDelete || (typeof obj === 'string' &&
+  (!!ctx.types.dynKeyVars?.has(obj) || !!ctx.types.dynWriteVars?.has(obj)))
 
 // A literal-key write of a key OUTSIDE the receiver's schema lands in the
 // dyn-props sidecar (locals get no propMap/autoBox merge) — the static schema
@@ -1131,7 +1065,10 @@ function spreadLiteralSchema(props) {
   return mergeSpreadNames(props)
 }
 
-function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
+// The second argument is the literal's target, already taken by the `{}`
+// emitter; the default takes it here so a nested literal in a source does not
+// bind to the target's name.
+function emitObjectSpread(props, _target = takeLiteralTarget()) {
   // Resolve every spread source's schema. A source with no static schema means
   // its full key set is unknown at compile time, so the merge result must be a
   // HASH (dynamic dict) — a fixed schema would silently drop the source's keys
@@ -1159,7 +1096,6 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   ctx.schema.externSlotSids?.add(schemaId)
   const schema = ctx.schema.list[schemaId]
   const t = tempI32('obj')
-  const ptr = temp('objp')
   const src = tempI32('osp')
 
   const body = [['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]]]
@@ -1218,16 +1154,7 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
     }
   }
 
-  body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
-  // schemaId (dyn-reach slice): this spread's OWN just-registered sid (above) —
-  // same granularity the write-hazard scan resolves for this merged shape.
-  if (needsDynShadow(spreadTarget, schemaId)) {
-    inc('__dyn_set')
-    for (let i = 0; i < schema.length; i++)
-      body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
-        ctx.abi.object.ops.loadBits(['local.get', `$${t}`], i)]])
-  }
-  body.push(['local.get', `$${ptr}`])
+  body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
   return typed(['block', ['result', 'f64'], ...body], 'f64')
 }
 
@@ -1750,14 +1677,13 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$sloop${id}`]]],
     // Dyn-prop slots in insertion order (__coll_order sorts the live 24-byte
-    // slots by packed seq; hash@+0, key@+8, value@+16). Skip entries whose key
-    // is already in the schema — when an object literal has shadow=true (per
-    // needsDynShadow), each schema key is mirrored into propsPtr at construction
-    // so dyn-key reads hit the hash fast path; the mirror is not an enumeration
-    // entity, so we must not emit it twice. Global walks first (schema-dedup
-    // only); sidecar walks second (schema-dedup AND global-dedup, so a key
-    // present in both — reassigned at runtime after being set at init — is
-    // emitted once, from the authoritative global copy).
+    // slots by packed seq; hash@+0, key@+8, value@+16). A key already in the
+    // schema is skipped: __dyn_set keeps a schema key in its slot (collection.js
+    // buildObjectSchemaSetArm's invariant), so this is a belt, not a dedup of
+    // a construction mirror. Global walks first (schema-dedup only); sidecar
+    // walks second (schema-dedup AND global-dedup, so a key present in both —
+    // reassigned at runtime after being set at init — is emitted once, from
+    // the authoritative global copy).
     ['if', ['i32.ne', ['local.get', `$${poffG}`], ['i32.const', 0]],
       ['then',
         ['local.set', `$${ordG}`, ['call', '$__coll_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]],

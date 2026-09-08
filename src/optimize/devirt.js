@@ -119,7 +119,7 @@ export function devirtSchemaReads(fn) {
       if (slot >= 0) withProp.push([sid, slot])
     }
     if (!withProp.length) return
-    // `local.tee` operands (foldSetToTee folds shared tag/CSE
+    // `local.tee` operands (propagateLocals sinks shared tag/CSE
     // locals into the FIRST read's call, possibly nested) are hoisted to
     // standalone sets before the dispatch, innermost first — the original call
     // evaluated them unconditionally, so unconditional sets are observationally

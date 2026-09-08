@@ -10,6 +10,21 @@ import { onKernel, withBigintStrict } from './_matrix.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('dyn-keys: deletion invalidates static presence and enumeration through aliases', () => {
+  for (const rewrite of ['', 'alias.a = undefined;', 'alias.a = 9;']) {
+    const src = `const o = {a:1,b:2}; const alias = o; let k = 'a';
+      delete o[k]; ${rewrite} let keys = ''; for (const p in o) keys += p;
+      return ['a' in o, Object.hasOwn(o, 'a'), Object.keys(o).length,
+        Object.values(o).length, Object.entries(o).length, keys.includes('a'), o.a]`
+    const expected = Function(src)()
+    for (const optimize of [0, 2, 3]) {
+      const f = jz('export let f = () => {' + src + '}', {optimize}).exports.f
+      is(f(), expected, `O${optimize}: ${rewrite || 'deleted'}`)
+      is(f(), expected, 'a fresh invocation does not inherit object mutations')
+    }
+  }
+})
+
 test('dyn-keys: direct-write dict, present + missing keys', () => {
   is(run(`const d = {}; d['a'] = 1; return d['a']`), 1)
   is(run(`const d = {}; d['a'] = 1; return d['zz'] === undefined ? 1 : 0`), 1)
@@ -298,18 +313,19 @@ test('in: inferred-schema aliases cannot bypass source-side shape mutations', ()
   }
 })
 
-// dyn-reach slice (per-schema precision for needsDynShadow, .work/archive/dyn-reach-
-// slice.md): anyDynKey used to mirror EVERY object literal's schema fields
-// into the per-object props-hash the instant ANY `obj[computedKey]` read or
-// `for-in` existed ANYWHERE in the program. schemaDynReach narrows this to
-// the schemas a dyn-key read/for-in receiver can actually resolve to
-// (collectSlotWriteHazards' hz.dynPointsTo sibling channel, program-facts.js)
-// — fail-closed on an unresolvable call-site sid and on dynPointsTo's own
-// 'ALL' top sentinel.
-test('dyn-reach: a dyn-touched schema keeps its mirror; an untouched sibling schema loses it', () => {
+// A schema field lives in its slot only (module/collection.js
+// buildObjectSchemaSetArm's invariant): a dynamic read of a schema key is the
+// slot through the schema arm, so no literal mirrors its fields into the
+// per-object sidecar and no dot write re-mirrors them, whatever the program's
+// computed-key reach (`__dyn_set` is emitted for a computed-key WRITE only).
+// The reach channel itself (collectSlotWriteHazards' hz.dynPointsTo,
+// schemaDynReach, needsDynShadow) still gates a constant literal's shared
+// static instance and a slot store's carrier width; the value pins below hold
+// for both a reached and an unreached schema.
+test('dyn-reach: a dyn-read schema and an untouched sibling both read through their slots, no mirror', () => {
   // b's OWN sid is the only entry a resolvable `b[k]` read adds to
   // dynPointsTo — a's sid (a DIFFERENT schema, never itself a `[]`/for-in
-  // receiver) must not be in it, even though anyDynKey is true program-wide.
+  // receiver) is not in it; neither construction mirrors anything.
   const src = `export let f = (k) => {
     let a = { aOnly: 1 }
     let b = { bOnly: 2 }
@@ -321,17 +337,13 @@ test('dyn-reach: a dyn-touched schema keeps its mirror; an untouched sibling sch
     is(jz(src, { optimize }).exports.f('bOnly'), 44, `O${optimize}: clean schema a reads/writes through the plain static path`)
     is(jz(src, { optimize }).exports.f('missing'), 42, `O${optimize}: clean schema a stays correct when the dyn read misses`)
   }
-  // O0: no inlining to collapse call-site text, so a direct count is exact
-  // (O2/O3 fold this toy program's whole computation away at the wasm level —
-  // downstream of and irrelevant to the shadow DECISION itself, which the
-  // value checks above already confirm holds at every optimize level).
+  // O0: no inlining to collapse call-site text, so a direct count is exact.
   const wat = compile(src, { optimize: 0, wat: true })
-  is((wat.match(/\(call \$__dyn_set/g) || []).length, 1,
-    'exactly one __dyn_set call site: b\'s construction mirrors bOnly; a\'s construction and later write do not')
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 0,
+    'no __dyn_set call site: neither construction mirrors a field, and a\'s later dot write is a plain slot store')
 
-  // for-in is the load-bearing read: its own codegen (module/collection.js
-  // `for-in`) walks ONLY the off-16 props sidecar, no schema-table fallback —
-  // a missing mirror enumerates ZERO fields, not merely dispatches slower.
+  // for-in (prepare's `__keys_ro` lowering, the Object.keys scaffold) walks
+  // the schema then the sidecar: every field enumerates without a mirror.
   const enumSrc = `export let f = (k) => {
     let b = { bOnly: 2, bTwo: 3 }
     let touched = b[k]
@@ -342,10 +354,9 @@ test('dyn-reach: a dyn-touched schema keeps its mirror; an untouched sibling sch
   for (const optimize of [0, 2, 3])
     is(jz(enumSrc, { optimize }).exports.f('bOnly'), 'bOnly,bTwo,|2', `O${optimize}: for-in over the dyn-reached schema enumerates every field`)
 
-  // The historical corruption class (emit-assign.js SHADOW CONTRACT comment:
-  // "this silently dropped `p.then = closure`..."): once a schema IS
-  // shadowed, a LATER plain dot-write must ALSO update the mirror, or a
-  // subsequent dynamic read returns the stale construction-time value.
+  // The historical corruption class (a stale construction-time sidecar copy
+  // masked a later plain dot-write: "this silently dropped `p.then =
+  // closure`..."): a dynamic read after a dot write sees the slot's value.
   const syncSrc = `export let f = (k) => {
     let b = { bOnly: 2 }
     let before = b[k]
@@ -357,14 +368,15 @@ test('dyn-reach: a dyn-touched schema keeps its mirror; an untouched sibling sch
     is(jz(syncSrc, { optimize }).exports.f('bOnly'), '2|99', `O${optimize}: a plain dot-write after construction stays visible to a later dynamic read`)
 })
 
-test('dyn-reach: an unresolvable dyn-key receiver fails closed — every schema keeps its mirror', () => {
+test('dyn-reach: an unresolvable dyn-key receiver fails closed to ALL, and still no schema mirrors', () => {
   // `o` is a raw, untyped parameter: sidOf(o) cannot resolve and o's kind
   // isn't provably non-OBJECT (KEYED_EXEMPT_VALS) either, so dynPointsTo
   // becomes the 'ALL' top sentinel — schemaDynReach then answers true for
   // EVERY sid, including a's, which `o[k]` never itself touches by name.
   // `a` must escape (returned) to rule out an unrelated, orthogonal
   // optimization (SRoA flat-object locals, src/compile/emit-assign.js) from
-  // pre-empting the shadow question entirely.
+  // pre-empting the question entirely: a real heap object under ALL reach
+  // is built from its slots alone.
   const src = `export let f = (o, k) => {
     let a = { aOnly: 1 }
     let touched = o[k]
@@ -375,8 +387,8 @@ test('dyn-reach: an unresolvable dyn-key receiver fails closed — every schema 
     is(jz(src, { optimize }).exports.f(0, 'x').aOnly, 1, `O${optimize}: value correctness holds under the ALL-sentinel fallback`)
 
   const wat = compile(src, { optimize: 0, wat: true })
-  is((wat.match(/\(call \$__dyn_set/g) || []).length, 2,
-    'a shadows at both construction and its later write despite never itself appearing in a [] or for-in — the fail-closed ALL sentinel')
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 0,
+    'under the ALL sentinel a still mirrors nothing: its construction stores slots, its later write is a slot store')
 })
 
 // union points-to (dyn-reach slice 2, .work/archive/dyn-reach-slice.md's own NEXT):
@@ -387,15 +399,13 @@ test('dyn-reach: an unresolvable dyn-key receiver fails closed — every schema 
 // the param's OWN call sites actually pass instead — a `{}`-literal argument
 // resolves via objLiteralSchemaId, a bare-name argument that is itself the
 // caller's own parameter recurses; anything else unions that param to 'ALL'.
-test('dyn-reach: union points-to — a polymorphic param dyn-shadows exactly its 2 call-site schemas; a third untouched schema keeps no mirror', () => {
+test('dyn-reach: union points-to — a polymorphic param reaches exactly its 2 call-site schemas; every schema reads through its slots', () => {
   // dispatch's `node` param has no single sid: callA passes a {tag,val}
   // literal, callB passes a DIFFERENT {tag,other} literal — two distinct
   // schemas, neither a single-sid answer. `c` is a third, sibling schema
   // never itself a [] read/for-in receiver anywhere — it must escape
   // (returned whole, not just a field) so it's a REAL heap object regardless
-  // of any unrelated flat-local optimization, making its zero __dyn_set
-  // contribution a meaningful proof that the union is scoped to {A, B}, not
-  // a coincidence of it never existing to shadow in the first place.
+  // of any unrelated flat-local optimization.
   const src = `
     function dispatch(node, k) { return node[k] | 0 }
     function callA(k) { return dispatch({tag: 1, val: 10}, k) }
@@ -415,8 +425,8 @@ test('dyn-reach: union points-to — a polymorphic param dyn-shadows exactly its
   // O0: no inlining to collapse call-site text, so a direct count is exact
   // (mirrors the fail-closed pin above).
   const wat = compile(src, { optimize: 0, wat: true })
-  is((wat.match(/\(call \$__dyn_set/g) || []).length, 4,
-    "exactly 4 __dyn_set calls: 2 fields x 2 reached schemas (A, B) — c (a 3rd, escaping-but-untouched sibling schema) contributes zero")
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 0,
+    'no __dyn_set call: the reached schemas A and B read node[k] through the schema arm, c is untouched')
 })
 
 test('dyn-reach: union points-to — an unresolvable call-site argument degrades that param to ALL (fail closed)', () => {
@@ -425,8 +435,9 @@ test('dyn-reach: union points-to — an unresolvable call-site argument degrades
   // resolveParamUnion resolves (a `{}` literal argument; a bare name that is
   // itself the CALLER's own parameter). dispatch2's `node` param unions to
   // 'ALL': every schema in the program — including `c`, never itself a []
-  // read/for-in receiver — keeps its mirror, exactly the pre-existing
-  // fail-closed behavior the previous test pins for a raw untyped param.
+  // read/for-in receiver — is reachable, exactly the pre-existing
+  // fail-closed behavior the previous test pins for a raw untyped param; the
+  // values resolve through the slots either way.
   const src = `
     function dispatch2(node, k) { return node[k] | 0 }
     function callA(k) { return dispatch2({tag: 1, val: 10}, k) }
@@ -443,8 +454,94 @@ test('dyn-reach: union points-to — an unresolvable call-site argument degrades
     is(jz(src, { optimize }).exports.f(2, 'third').cOnly, 31, `O${optimize}: the unresolvable call site's own schema still resolves correctly under the ALL fallback`)
   }
   const wat = compile(src, { optimize: 0, wat: true })
-  is((wat.match(/\(call \$__dyn_set/g) || []).length, 6,
-    "every schema shadows once ANY call site is unresolvable: schema A (2 fields x 1 site) + x's schema (2 fields x 1 site) + c (1 field x 2 sites — construction AND its later plain write, mirror-sync) = 6")
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 0,
+    'no __dyn_set call under ALL: schema A, x\'s schema and c are built from their slots, c\'s later plain write is a slot store')
+})
+
+// A literal is built from its slots alone, so its sidecar is installed on
+// demand by the first computed-key write of a key outside the schema
+// (__dyn_set, module/collection.js), whichever route the object took to get
+// there. Each case is the JS oracle's own answer: the read of a schema key
+// after a computed write, the read of the added key, and the enumeration
+// order afterwards (schema keys in declaration order, then added keys in
+// insertion order).
+test('dyn-keys: a computed write reaches a slot-built literal through every route', () => {
+  const SRC = `
+    const mk = (v) => ({ x: v, y: v + 1 })
+    const write = (o, k, v) => { o[k] = v; return o }
+    class P { constructor(v) { this.x = v; this.y = v + 1 } }
+    const probe = (o) => { let ks = ''; for (const k in o) ks += k + ':' + o[k] + ','; return ks }
+    export const direct = (k, v) => { const o = { x: 1, y: 2 }; o[k] = v; return probe(o) + '|' + o.x + '|' + o[k] }
+    export const viaCall = (k, v) => { const o = write(mk(10), k, v); return probe(o) + '|' + o.x + '|' + o[k] }
+    export const viaArray = (k, v) => { const a = [mk(1), mk(2)]; a[1][k] = v; return probe(a[1]) + '|' + probe(a[0]) }
+    export const viaClosure = (k, v) => { const o = mk(5); const set = () => { o[k] = v }; set(); return probe(o) + '|' + o.y }
+    export const viaClass = (k, v) => { const p = new P(7); p[k] = v; return probe(p) + '|' + p.x + '|' + p[k] }
+    export const viaAssign = (k, v) => { const o = Object.assign({ x: 0, y: 0 }, { x: 3 }); o[k] = v; return probe(o) + '|' + o.x }
+    export const twice = (k, k2, v) => { const o = mk(1); o[k] = v; o[k2] = v + 1; o.x = 9; return probe(o) + '|' + Object.keys(o).length }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { direct, viaCall, viaArray, viaClosure, viaClass, viaAssign, twice }')()
+  const calls = [
+    ['direct', ['x', 5]], ['direct', ['z', 5]],
+    ['viaCall', ['y', 6]], ['viaCall', ['added', 6]],
+    ['viaArray', ['x', 8]], ['viaArray', ['w', 8]],
+    ['viaClosure', ['y', 4]], ['viaClosure', ['q', 4]],
+    ['viaClass', ['x', 2]], ['viaClass', ['extra', 2]],
+    ['viaAssign', ['y', 1]], ['viaAssign', ['n', 1]],
+    ['twice', ['a', 'b', 1]], ['twice', ['x', 'b', 1]], ['twice', ['b', 'a', 1]],
+  ]
+  for (const optimize of [0, 2, 3]) {
+    const ex = jz(SRC, { optimize }).exports
+    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+  }
+})
+
+// The deleted-slot mask (layout.js) marks a slot; the slot is the field's only
+// home, so a plain slot store makes the field present again whether the store
+// is static (`o.a = v`, which touches no mask) or dynamic (`o[k] = v`, which
+// also clears the bit): a marked slot is deleted while it holds undefined. The
+// probes take the runtime chain (`has`/`count` see two shapes); the write in
+// `rewritten*` is the static slot store of a known-schema local. (A rewritten
+// field enumerates in slot order, JS appends it: the mask commit's open, so
+// the count is pinned, not the order.)
+test('in: a deleted field written again through a static dot write is present', () => {
+  const SRC = `const has = (o, k) => k in o
+  const count = (o) => { let n = 0; for (const k in o) n++; return n }
+  export const other = () => (has({ c: 3 }, 'c') ? 1 : 0) + count({ c: 3 })
+  export const rewritten = (k, v) => { const o = { a: 1, b: 2 }; delete o[k]; o.a = v; return (has(o, 'a') ? 1 : 0) + (has(o, k) ? 2 : 0) + (o[k] === v ? 4 : 0) + count(o) * 8 }
+  export const rewrittenDyn = (k, q, v) => { const o = { a: 1, b: 2 }; delete o[k]; o[q] = v; return (has(o, 'a') ? 1 : 0) + (has(o, k) ? 2 : 0) + count(o) * 8 }`
+  const oracle = Function(SRC.replaceAll('export ', '') + ';return { other, rewritten, rewrittenDyn }')()
+  const calls = [['other', []], ['rewritten', ['a', 5]], ['rewritten', ['b', 5]],
+    ['rewrittenDyn', ['a', 'a', 5]], ['rewrittenDyn', ['a', 'a', undefined]], ['rewrittenDyn', ['b', 'a', 5]]]
+  for (const optimize of [0, 1, 2]) {
+    const ex = jz(SRC, { optimize }).exports
+    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+  }
+})
+
+// The read-side reach (collectSlotWriteHazards' dynPointsTo) names a receiver
+// sidOf cannot by the summary's kind per site, and classes a numeric key: a
+// number addresses a schema slot only through its canonical-integer string,
+// so `node[1]` on a parameter of unknown kind (the AST walker's shape) reaches
+// the integer-named schemas alone. What the reach still gates: a constant
+// literal's shared static instance. A string key on an unknown receiver
+// reaches every schema (the fail-closed ALL).
+test('dyn-reach: a numeric key on an unknown receiver reaches only integer-named schemas', () => {
+  const lits = `export const mk = () => ({ x: 1, y: 2 })\nexport const mk1 = () => ({ 1: 10, 2: 20 })\n`
+  const cases = [
+    ['numeric literal key', `export const first = (node) => node[1]`, false, true],
+    ['numeric counter key', `export const scan = (src) => { let n = 0; for (let i = 0; i < src.length; i++) if (src[i] === 40) n++; return n }`, false, true],
+    ['array receiver', `const T = [1, 2, 3]\nexport const at = (i) => T[i]`, false, false],
+    ['string key', `export const get = (o, k) => o[k]`, true, true],
+  ]
+  for (const [name, fn, mkAllocs, mk1Allocs] of cases) {
+    const src = lits + fn
+    const wat = compile(src, { optimize: 0, wat: true })
+    const body = (f) => { const i = wat.indexOf(`(func $${f}\n`); return wat.slice(i, wat.indexOf('\n  (func ', i + 1)) }
+    is(/__alloc_hdr/.test(body('mk')), mkAllocs, `${name}: {x, y} ${mkAllocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
+    is(/__alloc_hdr/.test(body('mk1')), mk1Allocs, `${name}: {1, 2} ${mk1Allocs ? 'allocates per evaluation' : 'is the shared static instance'}`)
+    const ex = jz(src, { optimize: 0 }).exports
+    is(ex.mk().x + ex.mk().y, 3, `${name}: {x, y} reads`)
+    is(ex.mk1()[1] + ex.mk1()[2], 30, `${name}: {1, 2} reads`)
+  }
 })
 
 // audit P0 (1db8e55e revert, external bisection): the Map value-census .get()

@@ -302,7 +302,10 @@ const handlers = {
     if (Array.isArray(t) && t[0] === '[]' && t.length === 3) {
       const key = t[2]
       const isLiteralKey = Array.isArray(key) && key[0] == null && key.length === 2
-      if (!isLiteralKey) return ['delete', t[1], key]
+      if (!isLiteralKey) {
+        ctx.types.anyDelete = true
+        return ['delete', t[1], key]
+      }
     }
     err('delete not supported on a static key: object shape is fixed — use a computed key with a variable (`delete obj[k]`) if the key must vary at runtime')
   },
@@ -2291,7 +2294,12 @@ function prepDecl(op, ...inits) {
         // instanceof's tier-2 fold and module/object.js's spread/Object.assign
         // source-schema check both only ever see the literal-call-shaped case.
         bindDeclSchema(declName, ctx.schema.errorSid(normed[1]))
-      } else censusUnknownInitDecl(declName)
+      }
+      // Any other initializer: no shape claim. An empty `{}` is still the
+      // name's own mint (its layout is decided later: a dictionary, a box,
+      // the merged schema the literal adopts at construction), not a foreign
+      // object — censusUnknownInitDecl's `ownLiteral`.
+      else censusUnknownInitDecl(declName, Array.isArray(normed) && normed[0] === '{}' && normed.length === 1)
       // Module-scope variable → WASM global (mark as user-declared). Skipped
       // for a captured loop-local (isLoopLocal): it already minted a fresh
       // local above and must stay one — see loopLocalNames' declaration.

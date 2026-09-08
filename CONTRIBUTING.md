@@ -11,14 +11,15 @@ node bench/bench.mjs  # run benchmarks
 
 ### Local watr integration checkpoint
 
-This checkout currently requires sibling `../watr` at
-`deb62e4` (`A write after a block that never falls through is conditional in coalesceLocals`, on `03e7b70`). `package.json` and the
-lockfile consume it explicitly; `.npmrc` installs a copy, keeping self-build
-module paths under `node_modules/watr`. Check the sibling revision before
-`npm install`; npm does not refresh the copy for a same-version change, so
-remove `node_modules/watr` first. The proposed watr 5.11.0 release is not
-published. Replace the local dependency with the released version and
-regenerate the lockfile before distributing JZ.
+The watr safety fixes are in GitHub release `v5.10.2` (`6614120`); npm
+publication is separate. The early local-propagation migration still needs
+schema-annotation transport verified before integration.
+`package.json` and the lockfile consume sibling `../watr` explicitly;
+`.npmrc` installs a copy, keeping self-build paths under `node_modules/watr`.
+Check the sibling revision before installing: npm does not refresh a copy
+for same-version source changes. Refresh the complete package only when no
+builds are using it. Replace the local dependency with a published npm version
+and regenerate the lockfile before distributing JZ.
 See [PLAN.md](PLAN.md) for the red gates and integration evidence.
 
 ## Code layout

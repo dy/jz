@@ -16,6 +16,7 @@ import { analyzeBody } from '../analyze.js'
 import { withValueOverlay } from '../flow-state.js'
 import { collectBodyElemSids } from './shared.js'
 import { isExported } from '../func-exports.js'
+import { K, tagOf, paramOf, hasTag, UNKNOWN } from '../../summary/index.js'
 
 // ————————————————————————————— slot-write hazards —————————————————————————————
 // The slot censuses (slotIntCertain here, slotTypes/slotTypedCtors in
@@ -39,7 +40,7 @@ import { isExported } from '../func-exports.js'
 const _numericName = (s) => /^(0|[1-9][0-9]*)$/.test(String(s))
 const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.SET, VAL.STRING])
 /** Program-wide slot-write hazard scan → `{ pointsTo, dynPointsTo, props,
- *  numeric, kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the
+ *  numeric, dynNumeric, kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the
  *  census readers' belt checks. `pointsTo` (product-lattice design .work/archive/lattice-design.md §1.3/§5) is one field replacing what used to be a
  *  separate `hz.all: boolean`/`hz.sids: Set` pair: `Set<SchemaId>` for every
  *  narrowed write, or the literal string `'ALL'` — an ABSTRACT top sentinel
@@ -67,22 +68,16 @@ const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.
  *  precision, so this channel exists to give READS the same precision,
  *  through the identical sidOf/addPointsTo-shape/markPointsToAll-shape/
  *  KEYED_EXEMPT_VALS machinery). Consumed by module/schema.js's
- *  schemaDynReach, in turn by src/ir.js's needsDynShadow: a schema's
- *  construction-time props-sidecar mirror is only needed for sids this set
- *  names (or when the set is 'ALL') — the mirror exists SPECIFICALLY so a
- *  dyn-key READ elsewhere finds the field, so a schema no READ can ever
- *  reach needs no mirror. `for-in` is a REAL (not merely conservative) READ
- *  dependency here, not just a stand-in for "some read exists": its own
- *  codegen (module/collection.js `for-in`) walks ONLY the off-16 props
- *  sidecar — a zero/absent sidecar iterates ZERO times, no schema-table
- *  fallback — so under-marking a for-in receiver's sid silently drops every
- *  field of every instance from enumeration, not merely slower dispatch. */
+ *  schemaDynReach, in turn by src/ir.js's needsDynShadow: a schema this set
+ *  names (or every schema when the set is 'ALL') may be reached by a
+ *  computed-key access, which keeps its constant literals off the shared
+ *  static instance and its slot carriers wide. */
 export function collectSlotWriteHazards(ast, opts) {
   const pf = getFactStore().programFacts
   const late = !!opts?.paramReps
   if (pf.hazard && pf.hazard.gen === pf.gen && pf.hazard.late === late)
     return (ctx.schema.slotWriteHazards = pf.hazard.hz)
-  const hz = { pointsTo: new Set(), dynPointsTo: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
+  const hz = { pointsTo: new Set(), dynPointsTo: new Set(), props: new Set(), numeric: false, dynNumeric: false, kindSafeSids: new Map() }
   // pointsTo mutators: 'ALL' absorbs (once TOP, stays TOP — a later addSid is
   // a no-op, matching the old hz.all sticky-poison shape); every setter below
   // goes through these two instead of touching pointsTo directly.
@@ -210,6 +205,31 @@ export function collectSlotWriteHazards(ast, opts) {
     return true
   }
   let curSids = null, curParamVts = null, curParamIntCertain = null, curParamIdx = null, curFuncName = null
+  // The summary's answer for a `[]` READ / for-in receiver sidOf and kindOf
+  // could not name (late only: the summary is built before this pass,
+  // plan/index.js): a receiver whose kind set has no OBJECT tag — an array,
+  // a typed array, a string, a dictionary, a closure, or a bottom no call
+  // reaches — can never be a schema instance; one of exactly one schema
+  // marks that schema. The same kinds refineDynKeys (narrow/dyn-keys.js)
+  // trusts to drop anyDynKey outright, here per site. Returns true iff the
+  // receiver is settled.
+  const summary = late ? ctx.summary : null
+  const summaryReach = (obj) => {
+    if (!summary) return false
+    const k = summary.kindOfExpr(obj)
+    if (!hasTag(k, K.OBJECT)) return true
+    if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) { addDynPointsTo(paramOf(k)); return true }
+    return false
+  }
+  // A key that is a number can address a schema slot only through the
+  // canonical-integer string it converts to (`o[1]` reads the field "1"), so
+  // a numeric read on an unnamed receiver reaches the integer-named schemas
+  // alone — hz.dynNumeric, the twin of keyedWrite's hz.numeric below, read by
+  // schemaDynReach (module/schema.js). The AST walker's `node[1]` on a
+  // parameter of unknown kind is this shape.
+  const numericKey = (key) => valTypeOf(key) === VAL.NUMBER ||
+    (typeof key === 'string' && (repOf(key)?.intCertain === true || curParamIntCertain?.has(key))) ||
+    (summary != null && tagOf(summary.kindOfExpr(key)) === K.NUMBER)
   const sidOf = (obj) => {
     // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver chain-resolves
     // through slotObjSids (module/schema.js's chainSid — shared walker, see
@@ -276,7 +296,8 @@ export function collectSlotWriteHazards(ast, opts) {
     if (sid != null) { addDynPointsTo(sid); return }
     const vt = kindOf(obj)
     if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
-    if (tryParamUnion(obj)) return
+    if (summaryReach(obj) || tryParamUnion(obj)) return
+    if (numericKey(key)) { hz.dynNumeric = true; return }
     markDynPointsToAll()
   }
   // dynPointsTo feed for `for-in obj` — a REAL read dependency (see this
@@ -287,7 +308,7 @@ export function collectSlotWriteHazards(ast, opts) {
     if (sid != null) { addDynPointsTo(sid); return }
     const vt = kindOf(obj)
     if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
-    if (tryParamUnion(obj)) return
+    if (summaryReach(obj) || tryParamUnion(obj)) return
     markDynPointsToAll()
   }
   // Member targets buried in a destructuring pattern — written with values the

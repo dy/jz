@@ -54,10 +54,14 @@ export function bindAssignSchema(name, sid, bind = true) {
 // A BINDING whose value source the assignment consensus never sees — explicit
 // non-literal decl initializer (`let o = mk()`, `= [...spread]`), params,
 // catch params, destructure targets. Under BindingId totality this is a plain
-// per-binding fact: sources disagree, so any literal-shape claim dies.
-export function censusUnknownInitDecl(name) {
+// per-binding fact: sources disagree, so any literal-shape claim dies. Such a
+// name's objects are minted elsewhere (ctx.schema.unknownInit: no plan step
+// gives it a merged or boxed layout), except an empty `{}` initializer
+// (`ownLiteral`), whose construction adopts the layout the plan decides.
+export function censusUnknownInitDecl(name, ownLiteral = false) {
   if (typeof name !== 'string') return
   declInitUnknown.add(name)
+  if (!ownLiteral) ctx.schema.unknownInit?.add(name)
   if (ctx.schema.vars.has(name)) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
 }
 // Consensus setter for literal-shape BINDINGS (`const x = {…}` at any scope,
@@ -86,14 +90,20 @@ export function conditionalSpreadGroupPrepare(node) {
   return props.map(p => p[1])
 }
 
-/** Merge source schemas into target via Object.assign for compile-time schema inference. */
+/** Merge source schemas into target via Object.assign for compile-time schema
+ *  inference. The merged schema is the layout the target's own literal adopts
+ *  at construction (module/object.js honors it), so only a binding minted by
+ *  its own literal can take it: a parameter, a call result or a destructure
+ *  target (ctx.schema.unknownInit) holds objects minted elsewhere, and a slot
+ *  copy by a schema they do not carry lands past their fields. Such a target
+ *  keeps no schema and the assign takes the dynamic path. */
 export function inferAssignSchema(callNode) {
   // After prep, args may be comma-grouped: ['()', callee, [',', target, s1, s2]]
   let assignArgs = callNode.slice(2)
   if (assignArgs.length === 1 && Array.isArray(assignArgs[0]) && assignArgs[0][0] === ',')
     assignArgs = assignArgs[0].slice(1)
   const [target, ...sources] = assignArgs
-  if (typeof target !== 'string') return
+  if (typeof target !== 'string' || ctx.schema.unknownInit?.has(target)) return
   const existingId = ctx.schema.vars.get(target)
   const merged = existingId != null ? [...ctx.schema.list[existingId]] : []
   for (const src of sources) {

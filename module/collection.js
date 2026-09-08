@@ -302,7 +302,7 @@ export default (ctx) => {
     __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
-    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux'],
+    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
     __str_arr_idx: ['__str_byteLen', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
   })
@@ -1428,23 +1428,24 @@ export default (ctx) => {
                            (i32.eqz (i32.and (call $__ptr_aux ${objExpr}) (i32.const 8))))
            (i32.or (i32.eq ${typeExpr} (i32.const ${PTR.SET}))
                    (i32.eq ${typeExpr} (i32.const ${PTR.MAP}))))))`
-  const schemaKeyEq = (storedKey, userKey) => ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
-    ? `(if (result i32) (i64.eq ${storedKey} ${userKey})
-        (then (i32.const 1))
-        (else ${ctx.features.sso
-          ? `(if (result i32) (i64.ne (i64.and (i64.or ${storedKey} ${userKey}) (i64.const ${SSO_BIT_I64})) (i64.const 0))
-            (then (i32.const 0))
-            (else (call $__str_eq ${storedKey} ${userKey})))`
-          : `(call $__str_eq ${storedKey} ${userKey})`}))`
-    : `(i64.eq ${storedKey} ${userKey})`
-  // A deleted schema field keeps undefined in its slot (every static read of
-  // the slot is JS's `o.a` after `delete`) and its presence in the object's
-  // header: the OBJECT `len` word, unused otherwise (`__alloc_hdr(0, cap)`,
-  // `__len` answers 0 for an OBJECT without reading it), is a deleted-slot mask
-  // (deletedSlotWat). A presence probe (`miss` given) reads a marked slot as a
-  // miss, as the sidecar reads its tombstone; an unmarked undefined slot is a
-  // present field, `'a' in {a: undefined}`.
-  const buildObjectSchemaArm = (miss = null) => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
+  // A schema key matches by CONTENT: the schema table holds the interned
+  // literal, the user's key may be built at runtime (a slice, a concat, a
+  // host string, a JSON-parsed key), and the slot is the field's only home
+  // (see the invariant at buildObjectSchemaSetArm below). __str_eq's own
+  // loop-free prefix decides identity and the SSO reject before any byte
+  // walk, and every build that reaches this arm links it (the sidecar probe).
+  const schemaKeyEq = (storedKey, userKey) => `(call $__str_eq ${storedKey} ${userKey})`
+  // The schema arm of a dynamic read, FIRST for an OBJECT receiver: a schema
+  // field lives in its slot only (buildObjectSchemaSetArm's invariant), so a
+  // read of a schema key is the slot and never probes a sidecar. A deleted
+  // field keeps undefined in its slot (every static read of the slot is JS's
+  // `o.a` after `delete`) and its absence in the object's header: the OBJECT
+  // `len` word, unused otherwise (`__alloc_hdr(0, cap)`, `__len` answers 0
+  // for an OBJECT without reading it), is a deleted-slot mask (layout.js
+  // deletedSlotWat). The presence probe (`presence`) reads a marked slot as a
+  // miss and any other slot, undefined included, as present: `'a' in {a:
+  // undefined}`.
+  const buildObjectSchemaArm = (presence = false) => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
         (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
@@ -1459,11 +1460,11 @@ export default (ctx) => {
             (block $kdone (loop $kloop
               (br_if $kdone (i32.ge_s (local.get $idx) (local.get $nkeys)))
               (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
-                (then ${miss == null
+                (then ${!presence
                   ? '(return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))'
                   : `(local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
                      (local.set $dmask ${deletedMaskWat('$off')})
-                     (return (select ${miss} (local.get $val) ${deletedSlotWat('$dmask', '$idx', '$val')}))`}))
+                     (return (select (i64.const ${TOMB_NAN}) (local.get $val) ${deletedSlotWat('$dmask', '$idx', '$val')}))`}))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
   const buildObjectSchemaLocals = (presence = false) => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
@@ -1475,10 +1476,16 @@ export default (ctx) => {
   const buildObjectSchemaSetLocals = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
     ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32) (local $idx i32)'
     : ''
+  // THE INVARIANT: a schema field lives in its slot only; the sidecar (and the
+  // global __dyn_props table for a durable receiver) holds only keys outside
+  // the schema. A dynamic write whose key names a field stores the slot and
+  // returns, so no sidecar ever carries a stale copy of a field: the dot
+  // write is the plain slot store, the dynamic read finds the field through
+  // the schema arm above, enumeration walks the schema then the sidecar with
+  // nothing to dedup, and a literal's construction mirrors nothing (the
+  // former per-field __dyn_set mirror was 2,006,398 sidecar hashes and 39.5M
+  // __dyn_set calls on the compiler's own graph, ~250 MB of its peak).
   const buildObjectSchemaSetArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
-    ;; If a dynamic write targets an existing fixed-shape field, update the
-    ;; payload slot as well as the dynamic sidecar below. Otherwise bracket
-    ;; writes and later dot reads can diverge.
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                  (i32.ne (global.get $__schema_tbl) (i32.const 0)))
       (then
@@ -1496,7 +1503,7 @@ export default (ctx) => {
               (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
               ;; a deleted field written again is present (its deleted bit, layout.js)
               ${markDeletedSlotWat('$off', '$idx', false)}
-              (br $schemaSetDone)))
+              (return (local.get $val))))
           (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
           (br $schemaSetLoop)))))` : ''
 
@@ -1544,19 +1551,23 @@ export default (ctx) => {
   // The lookup chain, written once. `__dyn_get_t_h` answers a read (a miss is
   // undefined); `__dyn_get_t_hm` answers presence for `k in o` (a miss is
   // TOMB_NAN, never a stored value), so a present null or undefined field is
-  // present. Each miss return is `${miss}`; the durable sidecar probe takes the
-  // lookup whose own miss matches (`__hash_get_local_h` / `_hm`).
+  // present. An OBJECT's schema arm comes first (buildObjectSchemaArm: the
+  // slot is a schema field's only home); the probes below serve the keys
+  // outside the schema. Each miss return is `${miss}`; the durable sidecar
+  // probe takes the lookup whose own miss matches (`__hash_get_local_h` /
+  // `_hm`).
   const dynGetBody = (name, missNan, sidecarGet) => {
+    const presence = missNan !== UNDEF_NAN
     const miss = `(i64.const ${missNan})`
     // err_prop reads undefined for a key it does not decode: the presence probe
     // reports that as a miss.
-    const errProp = missNan === UNDEF_NAN ? errPropArm()
+    const errProp = !presence ? errPropArm()
       : `(block (result i64) (local.set $val ${errPropArm()})
           (select (i64.const ${TOMB_NAN}) (local.get $val) (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))))`
     return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    ${buildObjectSchemaLocals(missNan !== UNDEF_NAN)}
+    ${buildObjectSchemaLocals(presence)}
     ;; Real-number receiver, f===f since pointers are NaN-boxed, has no props: bail
     ;; before treating its bits as a heap offset -- a number's own dot/bracket
     ;; read stays undefined, not OOB. err_prop below decodes .message/.name for
@@ -1588,6 +1599,7 @@ export default (ctx) => {
     (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
       (then (return ${miss})))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${buildObjectSchemaArm(presence)}
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
     ;; global __dyn_props hash on the function table index (negative — can't collide
     ;; with real heap/data offsets). Closures *with* env keep their unique env ptr.
@@ -1694,16 +1706,6 @@ export default (ctx) => {
                   (then
                     (local.set $val (call $__hash_get_local_hm (local.get $props) (local.get $key) (local.get $h)))
                     (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val))))))))))
-        ;; Miss on both global and sidecar: an OBJECT still needs the
-        ;; schema-slot arm before giving up — a schema-poisoned variable
-        ;; (one variable bound to two different object shapes) resolves its
-        ;; field via the runtime schemaId lookup, not via any dyn-props
-        ;; path. A durable such object has no dyn props at all, so both
-        ;; checks above always miss for it and this must still run before
-        ;; concluding UNDEF. Self-contained here (not a fallthrough into the
-        ;; block below) so this arm's control flow never depends on the
-        ;; ephemeral-only header arms or their shared global-fallback code.
-        ${buildObjectSchemaArm(missNan === UNDEF_NAN ? null : miss)}
         (return ${miss})))
     (block $dynDone
       (block $haveProps
@@ -1800,7 +1802,7 @@ export default (ctx) => {
         (if (i32.ge_u (local.get $slot) (local.get $pend)) (then (local.set $slot (local.get $poff))))
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
         (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
-        (br $hprobe))))${buildObjectSchemaArm(missNan === UNDEF_NAN ? null : miss)}
+        (br $hprobe))))
     ${miss})`
   }
   ctx.core.stdlib['__dyn_get_t_h'] = () => dynGetBody('__dyn_get_t_h', UNDEF_NAN, '__hash_get_local_h')
@@ -2248,7 +2250,7 @@ export default (ctx) => {
         (local.set $idx (i32.const 0))
         (block $schemaDelDone (loop $schemaDelLoop
           (br_if $schemaDelDone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-          (if (call $__str_eq (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3)))) (local.get $key))
+          (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
             (then
               (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
               ${markDeletedSlotWat('$off', '$idx', true)}
@@ -2448,7 +2450,7 @@ export default (ctx) => {
       compareCost += ctx.features.sso && ssoEncode(String(prop)) ? 1 : 3
       if (compareCost > IN_SCHEMA_COMPARE_BUDGET) break
     }
-    const schemaClosed = schemaBound && compareCost <= IN_SCHEMA_COMPARE_BUDGET &&
+    const schemaClosed = !ctx.types.anyDelete && schemaBound && compareCost <= IN_SCHEMA_COMPARE_BUDGET &&
       ctx.types.nameEscapes != null && ctx.types.dynWriteVars != null &&
       ctx.types.literalWriteKeys != null && !ctx.types.nameEscapes.has(obj) &&
       !ctx.types.dynWriteVars.has(obj) && !hasOutOfSchemaWrite
@@ -2488,7 +2490,7 @@ export default (ctx) => {
         return typed(['i32.const', 1], 'i32')
 
       const schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
-      if (schemaIdx >= 0)
+      if (!ctx.types.anyDelete && schemaIdx >= 0)
         return typed(['i32.const', 1], 'i32')
       // A schema MISS does not prove absence: an OBJECT can carry off-schema
       // dynamic props (`o.z = …` → __dyn_set's propsPtr), and under the self-compile

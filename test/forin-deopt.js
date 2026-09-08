@@ -144,12 +144,12 @@ test('for-in enum cache: mutations between hot dict enumerations stay correct', 
 })
 
 test('for-in enum cache: shadow-mirrored schema object (computed reads) stays correct', () => {
-  // Computed reads (o[s]) shadow-mirror the schema into the sidecar — the
-  // jessie parse.comment shape. Enumeration must dedup mirrors once, then hit.
+  // Computed reads (o[s]) of a schema object read its slots (the jessie
+  // parse.comment shape); enumeration reads the schema, then the empty sidecar.
   diff(`export let run=(n)=>{
     let o={x:1,y:2}
     let ks=['x','y'], s=0
-    for(let i=0;i<2;i++) s+=o[ks[i]]     // computed reads → shadow mirror
+    for(let i=0;i<2;i++) s+=o[ks[i]]     // computed reads of schema fields
     let r=''
     for(let j=0;j<n;j++) { r=''; for(let k in o) r+=k }
     return r+s

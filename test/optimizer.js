@@ -13,7 +13,7 @@ import test from 'tst'
 import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onKernel } from './_matrix.js'
-import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES, propagateSingleUse } from '../src/optimize/index.js'
+import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
 import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
@@ -315,7 +315,7 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   ok(/select/.test(geoWat), 'sid computed branch-free (select over tag test)')
   ok(/br_table/.test(geoWat), 'slot-conflicting prop still dispatches via br_table')
   ok(!/br_if[^\n]*\n?[^\n]*call \$__ptr_type/.test(geoWat), 'no per-read tag-guard call in the dispatches')
-  ok(/local\.set \$s\s*\(f64\.load/.test(geoWat), 'proven discriminant read collapses to a bare slot load')
+  ok(/local\.(?:set|tee) \$s\s*\(f64\.load/.test(geoWat), 'proven discriminant read collapses to a bare slot load')
   const mkRowsJs = () => {
     const rows = []
     for (let i = 0; i < 9; i++) {
@@ -2086,8 +2086,8 @@ test('inliner: expr-bodied arrow with arg-forwarding candidate', () => {
 //   promoted   → `(local $NAME i32)`, i32.load with 4-byte stride, no $__arr_idx_known
 //   unchanged  → `(local $NAME f64)`, $__arr_idx_known or 8-byte stride
 
-const compileMain = (src) => {
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+const compileMain = (src, passes = {}) => {
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, ...passes } })
   return wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
 }
 
@@ -2171,7 +2171,8 @@ test('promoteIntArrayLiterals: .push disqualifies (length mutation)', () => {
       return xs.length
     }
   `
-  const body = compileMain(src)
+  // Isolate the storage decision from subsequent removal of its carrier local.
+  const body = compileMain(src, { propagateLocals: false })
   ok(/\(local \$xs f64\)/.test(body), '.push needs growable ARRAY storage; promotion must skip')
   const { main } = run(src)
   is(main(), 4)
@@ -2184,7 +2185,7 @@ test('promoteIntArrayLiterals: Array.isArray disqualifies (typed arrays return f
       return Array.isArray(xs) ? xs.length : -1
     }
   `
-  const body = compileMain(src)
+  const body = compileMain(src, { propagateLocals: false })
   ok(/\(local \$xs f64\)/.test(body), 'Array.isArray would flip true→false under promotion')
   const { main } = run(src)
   is(main(), 3)
@@ -2218,7 +2219,7 @@ test('promoteIntArrayLiterals: bare-name escape disqualifies', () => {
       return sumArr(xs)
     }
   `
-  const body = compileMain(src)
+  const body = compileMain(src, { propagateLocals: false })
   ok(/\(local \$xs f64\)/.test(body), 'escape to callee with unknown receiver shape disqualifies')
   const { main } = run(src)
   is(main(), 6)
@@ -2444,7 +2445,7 @@ test('promoteIntArrayLiterals: hole disqualifies', () => {
       return xs.length
     }
   `
-  const body = compileMain(src)
+  const body = compileMain(src, { propagateLocals: false })
   ok(/\(local \$xs f64\)/.test(body), 'holes break dense int contract; disqualify')
   const { main } = run(src)
   is(main(), 3)
@@ -3711,27 +3712,94 @@ test('int narrowing: bounded typed-array element products use i32.mul (faithful)
   }
 })
 
-test('propagateSingleUse: folds a single-def/single-use pure temp into its use (own-optimizer "propagate")', () => {
-  // jz emits short-lived address/index temps watr's optimizer folds away; this is the jz-side pass.
-  // A pure single-use temp must disappear (local + set + get gone), bit-exact.
-  const localCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local /g) || []).length
-  const src = `export let f = (a, i) => { let t = (i + 1) * 4; return a[t] }`
-  // isolate propagateSingleUse: foldSetToTee also forwards single-use temps, so hold it off in both
-  const on = localCount(src, { level: 2, watr: false, foldSetToTee: false })
-  const off = localCount(src, { level: 2, watr: false, propagateSingleUse: false, foldSetToTee: false })
-  ok(on < off, `temp folded: ${off} locals → ${on}`)
+test('propagateLocals: forwards single-use temps and tees the first of multiple uses', () => {
+  // jz emits short-lived address/index temps; the shared pass (watr/optimize
+  // `propagate`) forwards a pure single-use temp into its use and sinks a
+  // multi-use single-def into a tee at its first use. Structure at `watr: false`,
+  // where this early invocation is the only propagation.
+  const wat = (src, opt) => {
+    const fn = findFunc(parseWat(compile(src, { wat: true, optimize: opt })), '$f')
+    ok(fn, 'inspect the user function, not runtime helper locals')
+    return JSON.stringify(fn)
+  }
+  const count = (w, re) => (w.match(re) || []).length
+  const temp = `export let f = (a, i) => { let t = (i + 1) * 4; return a[t] }`
+  const on = wat(temp, { level: 2, watr: false }), off = wat(temp, { level: 2, watr: false, propagateLocals: false })
+  ok(count(on, /\["local",/g) < count(off, /\["local",/g), 'the user temp is forwarded')
+  const multi = `export let f = (a, i) => { let p = a[i] * a[i]; return p + p * 2 }`
+  const onM = wat(multi, { level: 2, watr: false }), offM = wat(multi, { level: 2, watr: false, propagateLocals: false })
+  ok(count(onM, /\["local.get",/g) < count(offM, /\["local.get",/g), 'the user function loses a get')
+  ok(/\["local.tee",/.test(onM), 'the user function emits a local.tee')
 
-  // bit-exact with the pass on vs off across shapes (incl. the no-RHS catch-payload edge: `local.set
-  // $e` with the value on the stack must NOT be treated as a movable temp), and the vectorizer is
-  // untouched (the pass runs AFTER it and skips v128 functions).
+  // Compare to JS, not just another configuration of the compiler. Each call
+  // gets fresh input buffers: one execution must not prepare the next oracle.
+  const cloneArgs = args => args.map(x => ArrayBuffer.isView(x) ? x.slice() : x)
   for (const [s, args] of [
-    [`export let f = (a, n) => { let acc = 0; for (let i = 0; i < n; i++) { let k = i * 3 + 1; acc = (acc + k) | 0 } return acc | 0 }`, [[7]]],
+    [`export let f = (a, n) => { let acc = 0; for (let i = 0; i < n; i++) { let k = i * 3 + 1; acc = (acc + k) | 0 } return acc | 0 }`, [[0, 0], [0, 1], [0, 7]]],
     [`export let f = () => { try { throw "err" } catch (e) { return e.length } }`, [[]]],
-    [`export let f = (buf, n) => { let s = 0; for (let i = 0; i < n; i++) s += buf[i] * 2; return s }`, [[new Float64Array([1, 2, 3, 4]), 4]]],
+    [`export let f = (buf, n) => { let s = 0; for (let i = 0; i < n; i++) s += buf[i] * 2; return s }`, [[new Float64Array(0), 0], [new Float64Array([1]), 1], [new Float64Array([1, 2, 3, 4]), 4]]],
+    [`export let f = (n) => { let b = new Float64Array(n); return b.length }`, [[0], [1], [5]]],
+    [`export let f = (a, c) => { let p = a[0] + a[1]; let r = p; if (c) r = p * 2; return r }`, [[new Float64Array([3, 4]), 0], [new Float64Array([3, 4]), 1]]],
+    [`export let f = (a) => { let v = a[0]; a[0] = 99; return v + a[0] }`, [[new Float64Array([7])]]],
+    [`export let f = (a, n) => { let k = a[0] * 2; let s = 0; for (let i = 0; i < n; i++) s += k; return s }`, [[new Float64Array([5]), 0], [new Float64Array([5]), 1], [new Float64Array([5]), 3]]],
+    [`export let f = (a, d) => { let q = (100 / d) | 0; a[0] = 7; return q + a[0] }`, [[new Int32Array([0]), 0], [new Int32Array([0]), 5]]],
   ]) {
-    const onF = jz(s, { optimize: { level: 2, watr: false } }).exports.f
-    const offF = jz(s, { optimize: { level: 2, watr: false, propagateSingleUse: false } }).exports.f
-    for (const a of args) is(onF(...a), offF(...a), `propagateSingleUse on===off ${JSON.stringify(a)}`)
+    const js = Function(s.replace('export ', '') + '; return f')()
+    for (const level of [{ level: 2, watr: false }, { level: 'fast' }, { level: 2 }, { level: 'speed' }]) {
+      const onF = jz(s, { optimize: level }).exports.f
+      const offF = jz(s, { optimize: { ...level, propagateLocals: false } }).exports.f
+      for (const a of args) {
+        const expectedArgs = cloneArgs(a), onArgs = cloneArgs(a), offArgs = cloneArgs(a)
+        const expected = js(...expectedArgs)
+        const actual = onF(...onArgs), disabled = offF(...offArgs)
+        is(actual, expected, `shared propagation: ${JSON.stringify(level)}`)
+        is(disabled, expected, `early propagation disabled: ${JSON.stringify(level)}`)
+        is(onArgs, expectedArgs, 'enabled propagation preserves writes to input buffers')
+        is(offArgs, expectedArgs, 'disabled propagation preserves writes to input buffers')
+      }
+    }
+  }
+})
+
+test('propagateLocals: abrupt values preserve operand order and state before recovery', () => {
+  const src = `let trace = 0; const b = new Float64Array([7]);
+    const left = () => { trace = trace * 10 + 1; return 100n }
+    const right = d => { trace = trace * 10 + 2; return BigInt(d) }
+    export function f(d) { trace = 0; b[0] = 7; const v = left() / right(d);
+      b[0] = 99; trace = trace * 10 + 3; return v + BigInt(b[0]) }
+    export const state = () => String(b[0]) + ':' + trace`
+  const observe = (f, arg) => {
+    try { return ['value', f(arg)] }
+    catch (e) { return ['throw', e.name] }
+  }
+  for (const optimize of [{ level: 'fast' }, { level: 'fast', propagateLocals: false },
+    { level: 2, watr: false }, { level: 2 }, { level: 3 }]) {
+    const js = Function(src.replaceAll('export ', '') + ';return {f,state}')()
+    const wasm = jz(src, { optimize }).exports
+    const args = ['4', '4', '0', 'bad', '4']
+    // Capture each state before recovery, even when its result is already wrong.
+    const actual = args.map(arg => [observe(wasm.f, arg), wasm.state()])
+    const expected = args.map(arg => [observe(js.f, arg), js.state()])
+    is(actual, expected, `${JSON.stringify(optimize)}: repeat, zero divisor, invalid BigInt, recovery`)
+  }
+})
+
+test('propagateLocals: schema metadata survives static, dynamic, nullable and thrown objects', () => {
+  const sources = [
+    'const o = {a: 7, b: undefined, c: null}; export const f = () => o',
+    'export const f = n => ({a: n, b: undefined, c: null})',
+    'export const f = n => n ? {a: n} : null',
+    ...['Error', 'TypeError', 'RangeError'].map(name => `export function f() { throw new ${name}("message") }`),
+  ]
+  const observe = (f, n) => {
+    try { return ['value', f(n)] }
+    catch (e) { return ['throw', e.name, e.message] }
+  }
+  for (const src of sources) for (const optimize of ['fast', {level: 2, watr: false}, 2, 3]) {
+    const js = Function(src.replace('export ', '') + ';return f')()
+    const wasm = jz(src, { optimize }).exports.f
+    is([0, 1, 1, 0].map(n => observe(wasm, n)), [0, 1, 1, 0].map(n => observe(js, n)),
+      `${JSON.stringify(optimize)}: ${src}`)
   }
 })
 
@@ -3770,30 +3838,6 @@ test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const expone
   }
   is(dump(), dump('speed'), 'default-tier lift lowering (exp_v(c·log_v x)) is bit-identical to the speed-tier emit lowering')
   is(dump({ level: 2, crPow: true }), dump({ level: 'speed', crPow: true }), 'pow_fold_v (lift) is bit-identical to pow_fold (emit)')
-})
-
-test('foldSetToTee: sinks a single-def RHS into its first use as a tee (simplify-locals watr leaves)', () => {
-  const getCount = (src, opt) => (compile(src, { wat: true, optimize: opt }).match(/\(local\.get /g) || []).length
-  // multi-use single-def: the standalone set becomes a tee at the first use, dropping a get
-  const src = `export let f = (a, i) => { let p = a[i] * a[i]; return p + p * 2 }`
-  const on = getCount(src, { level: 2, watr: false })
-  const off = getCount(src, { level: 2, watr: false, foldSetToTee: false })
-  ok(on < off, `tee fold drops a get: ${off} → ${on}`)
-  ok(/\(local\.tee /.test(compile(src, { wat: true, optimize: { level: 2, watr: false } })), 'emits a local.tee')
-
-  // correctness: bit-exact on/off across the shapes a naive sink would miscompile —
-  // a call's side effect must stay unconditional; a load must NOT cross a store to the
-  // same buffer; an RHS must not be sunk into a loop body (re-eval/re-effect).
-  for (const [s, args] of [
-    [`export let f = (n) => { let b = new Float64Array(n); return b.length }`, [[5]]],                                   // effectful single-use forward
-    [`export let f = (a, c) => { let p = a[0] + a[1]; let r = p; if (c) r = p * 2; return r }`, [[new Float64Array([3, 4]), 0], [new Float64Array([3, 4]), 1]]], // multi-use, conditional later use
-    [`export let f = (a) => { let v = a[0]; a[0] = 99; return v + a[0] }`, [[new Float64Array([7])]]],                   // load must not cross the store (→ 106, not 198)
-    [`export let f = (a, n) => { let k = a[0] * 2; let s = 0; for (let i = 0; i < n; i++) s += k; return s }`, [[new Float64Array([5]), 3]]], // RHS not sunk into loop
-  ]) {
-    const onF = jz(s, { optimize: { level: 2, watr: false } }).exports.f
-    const offF = jz(s, { optimize: { level: 2, watr: false, foldSetToTee: false } }).exports.f
-    for (const a of args) is(onF(...a), offF(...a), `foldSetToTee on===off ${JSON.stringify(a)}`)
-  }
 })
 
 // Mirror index in the versioning guard: `inp[N−k]` (symmetric fill — FFT

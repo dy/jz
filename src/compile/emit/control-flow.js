@@ -192,6 +192,7 @@ function keysRoSrc(node) {
 // a string literal, so `o[k]` folds to a static schema slot — no keys array, no
 // per-element dynamic get. Falls back (returns null) to the pooled loop otherwise.
 function unrollForIn(init, cond, step, body) {
+  if (ctx.types.anyDelete) return null
   if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(init[1]) || init[1][0] !== '=') return null
   const ksVar = init[1][1]
   const src = keysRoSrc(init[1][2])
