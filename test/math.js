@@ -198,6 +198,24 @@ test('Math.cos', async () => {
   ok(Number.isNaN(await evaluate('Math.cos(-Infinity)')))
 })
 
+test('Math trig: reduced-interval precision and cancellation', () => {
+  const { s, c, low } = jz(`
+    export const s = x => Math.sin(x)
+    export const c = x => Math.cos(x)
+    export const low = x => 1 - Math.cos(x)
+  `).exports
+  let sinError = 0, cosError = 0
+  for (let i = -1024; i <= 1024; i++) {
+    const x = i * Math.PI / 2048
+    sinError = Math.max(sinError, Math.abs(s(x) - Math.sin(x)))
+    cosError = Math.max(cosError, Math.abs(c(x) - Math.cos(x)))
+  }
+  ok(sinError < 1e-11, `sin max absolute error ${sinError}`)
+  ok(cosError < 1e-11, `cos max absolute error ${cosError}`)
+  for (const x of [0.001, 0.01, 0.17, 0.3])
+    ok(Math.abs(low(x) / (1 - Math.cos(x)) - 1) < 1e-9, `1 - cos(${x}) keeps its significant digits`)
+})
+
 test('Math.tan', async () => {
   almost(await evaluate('Math.tan(0)'), Math.tan(0), 1e-6)
   almost(await evaluate('Math.tan(Math.PI / 4)'), Math.tan(Math.PI / 4), 1e-6)

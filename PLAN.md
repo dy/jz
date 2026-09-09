@@ -33,6 +33,10 @@ for this fixture, not a compiler-wide ranking or real-time guarantee. The
 Porffor adapter retains its shared arena until the final instance closes;
 concurrent audio threads and within-block automation are unvalidated.
 
+The offline Web Audio fixture now matches Node's 16-bit PCM checksum after
+repeated one-second, 44.1 kHz stereo renders. The discrepancy came from shared
+trig approximation precision; the fixture source is unchanged.
+
 Compiler selection belongs to `@audio/compile-vst`'s build options, not atom
 metadata or the host. The implemented fixture accepts `--compiler=jz|porffor`;
 the general package is still planned. Both chains must pass the same contract.
@@ -58,7 +62,11 @@ the start preserves indices; changed layouts use the ordinary encoder. Compiler
 artifacts explicitly target the JS host, independently of the test matrix.
 Fixed scalar builtin callbacks normalize to ordinary functions during prepare,
 using signatures that both compiler hosts can read. Their separate WAT closure
-emitter is removed. JZ retains lowering-specific optimization and representation proofs.
+emitter is removed. Compile-time math folding and scalar/SIMD emission share
+the trig/exp2 coefficient table; reduced-interval trig precision is regression-gated.
+Constant folding covers imported module initializers as well as entry statements
+and function bodies, so analysis receives normalized constants throughout the graph.
+JZ retains lowering-specific optimization and representation proofs.
 Static data and shared string pools now stay in Uint8Array chunks from their
 producers through relocation and WAT escaping. Binary serialization no longer
 depends on JavaScript string character semantics.

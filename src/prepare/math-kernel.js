@@ -25,6 +25,8 @@
  * @module prepare/math-kernel
  */
 
+import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C } from '../../module/math/trig-tables.js'
+
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
 const _dv = new DataView(_buf)
@@ -61,14 +63,6 @@ function horner(cs, v) {
   return acc
 }
 
-// Range-reduction constants — the EXACT decimal strings module/math.js embeds
-// (native toString's shortest round-trip repr of Math.PI etc.); JS numeric
-// literal parsing is correctly-rounded like WAT float parsing, so the same
-// string reproduces the identical f64 bits in both legs.
-const PI = 3.141592653589793, INV_PI = 0.3183098861837907, HALF_PI = 1.5707963267948966
-const SIN_C = [1, -0.16666660296130772, 0.008333091744946387, -0.00019811771757028443, 0.000002611054662215034]
-const COS_C = [1, -0.4999993043717576, 0.04166402742354027, -0.0013856638518363177, 0.00002321737177898552]
-const EXP2_C = [1, 0.6931472000619209, 0.24022650999918949, 0.05550340682450019, 0.009618048870444599, 0.0013395279077191057, 0.00015463102004723134]
 const EXPM1_COEF = [1, 1 / 2, 1 / 6, 1 / 24, 1 / 120, 1 / 720, 1 / 5040, 1 / 40320]
 
 function sinCore(x) {
