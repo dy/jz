@@ -509,16 +509,17 @@ for (const id of Object.keys(SPEED)) {   // curated v8/as/native/size table (the
     `${ratioCell(SIZE[id].as, sz.jz, sz.as).padEnd(11)}  ${slack.padStart(5)}`)
 }
 
+const validTiming = r => !!r && !r.failed && Number.isFinite(r.medianUs) && r.medianUs > 0
 const geomean = xs => xs.length ? Math.exp(xs.reduce((a, b) => a + Math.log(b), 0) / xs.length) : null
 const geoSpeed = tid => geomean(Object.keys(SPEED)
-  .map(id => runs[id]).filter(r => r?.jz && r?.[tid] && r.jz.checksum === r[tid].checksum)
+  .map(id => runs[id]).filter(r => validTiming(r?.jz) && validTiming(r?.[tid]) && r.jz.checksum === r[tid].checksum)
   .map(r => r.jz.medianUs / r[tid].medianUs))
 // Native-parity geomean is scoped to the cases that CLAIM parity (NATIVE keys).
 // bytebeat/blur are embarrassingly-parallel kernels native auto-vectorizes — jz
 // beats the JS field on them but doesn't claim native parity there, so they're
 // out of the guarantee (still shown per-case in the table and on the page).
 const geoNative = () => geomean(Object.keys(NATIVE)
-  .filter(id => NATIVE_TOL[NATIVE[id]] && runs[id]?.jz && runs[id]?.nat && runs[id].jz.checksum === runs[id].nat.checksum)
+  .filter(id => NATIVE_TOL[NATIVE[id]] && validTiming(runs[id]?.jz) && validTiming(runs[id]?.nat) && runs[id].jz.checksum === runs[id].nat.checksum)
   .map(id => runs[id].jz.medianUs / runs[id].nat.medianUs))
 // Size geomean runs over the FULL bench corpus scripts/bench-size.mjs
 // discovers (every case with a jz AND a target artifact), not just the
@@ -543,7 +544,8 @@ for (const [id, claims] of Object.entries(SPEED)) {
     if (tid === 'as' && !ascAvailable) continue
     test(`bench: speed ${id} jz ${claim} vs ${tid}`, () => {
       const r = runs[id]
-      ok(r?.jz && r?.[tid], `missing data: jz=${!!r?.jz} ${tid}=${!!r?.[tid]}`)
+      ok(validTiming(r?.jz), `${id}: JZ timing unavailable: ${r?.jz?.reason ?? "missing or invalid timing"}`)
+      ok(validTiming(r?.[tid]), `${id}: ${tid} timing unavailable: ${r?.[tid]?.reason ?? "missing or invalid timing"}`)
       ok(r.jz.checksum === r[tid].checksum, `${id}: checksum mismatch jz=${r.jz.checksum} ${tid}=${r[tid].checksum} — pin should be 'diff'`)
       const ratio = r.jz.medianUs / r[tid].medianUs
       const limit = SPEED_TOL[claim]
@@ -648,7 +650,8 @@ if (natAvailable && !process.env.CI) {
     if (!NATIVE_TOL[claim]) continue
     test(`bench: native ${id} jz ${claim} vs C`, () => {
       const r = runs[id]
-      ok(r?.jz && r?.nat, `missing data: jz=${!!r?.jz} nat=${!!r?.nat}`)
+      ok(validTiming(r?.jz), `${id}: JZ timing unavailable: ${r?.jz?.reason ?? "missing or invalid timing"}`)
+      ok(validTiming(r?.nat), `${id}: native timing unavailable: ${r?.nat?.reason ?? "missing or invalid timing"}`)
       ok(r.jz.checksum === r.nat.checksum, `${id}: checksum mismatch jz=${r.jz.checksum} nat=${r.nat.checksum}`)
       const ratio = r.jz.medianUs / r.nat.medianUs
       ok(ratio <= NATIVE_TOL[claim], `${id}: jz ${(r.jz.medianUs / 1000).toFixed(2)}ms / C ${(r.nat.medianUs / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${claim} limit ${NATIVE_TOL[claim]}×`)

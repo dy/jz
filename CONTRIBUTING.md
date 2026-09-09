@@ -5,7 +5,7 @@
 ```sh
 git clone https://github.com/dy/jz.git && cd jz
 npm install
-npm test              # 2800+ tests
+npm test              # core suite
 node bench/bench.mjs  # run benchmarks
 ```
 
@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `c144e7b`.
+`package.json` and the lockfile pin the public watr source archive at `3f89641`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -34,6 +34,24 @@ The summary's declaration tables own numeric binding IDs, local to that summary.
 Kind and incoming-argument facts are indexed arrays; solver and read-only queries
 reuse the same IDs. Scope resolution still uses names, but reading a resolved
 binding needs no compound string key or second hash lookup.
+Flow-sensitive assignment and refinement facts use those same IDs in sparse
+collections, reset per function; branch rollback stores IDs as well. Dense
+arrays for these sparse facts increased allocation without improving throughput.
+
+LICM extraction is shared through watr's `hoistInvariants`: traversal, private-local
+checks, structural deduplication and temporary typing have one owner. JZ supplies
+per-loop invariance and speculation-safety proofs for its helper calls and memory
+representations, plus profitability policy. Watr's standalone proof remains
+conservative about memory and calls. Proofs are invocation-local callbacks over
+Wasm instructions, never properties attached to instruction arrays. JZ still calls
+the shared engine before and after address rewriting; watr calls it after inlining.
+Those distinct maturity points remain necessary for current lowering patterns.
+JZ uses watr's instruction-effect classifier for every memory-write family;
+unknown write targets block alias-dependent motion. Buffer origins follow
+single-definition locals and closed scalar recurrences; other origins remain
+unknown. Allocating
+helpers cannot be speculated before zero-trip loops or crossed by allocator-global
+reads.
 
 Historical `.work/` citations below refer to retired evidence, recoverable using
 [.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.

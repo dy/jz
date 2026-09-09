@@ -794,8 +794,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const key = keyOf(n)
       if (key === null) { if (funcByName.has(n)) { escapeId(n); return kind(K.CLOSURE) } return ANY }  // a name from outside the program
       // A binding this walk models is bottom until the fixpoint reaches its assignments.
-      const k = (post.has(n) ? post.get(n) : pre.has(n) ? incoming[key] : kinds[key]) ?? K.NONE
-      const mask = refined.get(n)
+      const k = (post.get(key) ?? (pre.has(key) ? incoming[key] : kinds[key])) ?? K.NONE
+      const mask = refined.get(key)
       return mask === undefined ? k : refine(k, mask)
     }
     if (!Array.isArray(n)) return ANY
@@ -933,10 +933,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else if (logical) v = merge(expr(target), expr(value))
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
     if (typeof target === 'string') {
-      pre.delete(target); refined.delete(target)
-      // A straight-line assignment is the value the reads after it see; one on a path is not.
-      if (branch === 0 && current !== null && keyOf(target) !== null) post.set(target, v); else post.delete(target)
-      const key = keyOf(target); if (key !== null) raise(kinds, key, v); return v
+      const key = keyOf(target)
+      if (key !== null) {
+        pre.delete(key); refined.delete(key)
+        // A straight-line assignment is the value the reads after it see; one on a path is not.
+        if (branch === 0 && current !== null) post.set(key, v); else post.delete(key)
+        raise(kinds, key, v)
+      }
+      return v
     }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
@@ -1233,12 +1237,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // of them: a straight-line read sees the incoming kind. A loop that assigns a
   // parameter ends the region at its head (a read may follow the previous
   // iteration's store); a closure's body sees the join (it runs whenever).
-  const pre = new Set()
+  const pre = new Set()     // binding ids before their first reassignment
   // The bindings a straight-line assignment of the function's own body gave a
   // value (`x = +x` at entry; `s = String(s)`): the reads after it see that
   // kind alone. An assignment on a path (a branch, a loop body, an arm) ends
   // the region, as does a loop that assigns the name, at its head.
-  const post = new Map()
+  const post = new Map()    // binding id → straight-line assigned kind
   let branch = 0            // the depth of paths (branches, loop bodies, arms) the walk is in
   // The names a subtree assigns (`x = …`, `x += …`, a `let x = …`): structural, listed once per node.
   const assignsIn = (n, out) => {
@@ -1248,7 +1252,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const assigned = new Map()   // loop or closure node → the names it assigns
   const assignedIn = (n) => { let l = assigned.get(n); if (!l) { const out = new Set(); assignsIn(n, out); assigned.set(n, l = [...out]) } return l }
-  const loopAssigns = (n) => { for (const name of assignedIn(n)) { pre.delete(name); refined.delete(name); post.delete(name) } }
+  const loopAssigns = (n) => {
+    for (const name of assignedIn(n)) {
+      const key = keyOf(name)
+      if (key !== null) { pre.delete(key); refined.delete(key); post.delete(key) }
+    }
+  }
   // Refinement: the tags a path proves a name's kind within. A condition proves
   // them when true (`x`, `x != null` and `x !== undefined`: no nullish tag;
   // `typeof x === 'bigint'`: that tag; an `&&` of these) or when false (`!x`,
@@ -1258,16 +1267,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // ends it at its head; a closure's body starts without any. A proof is
   // pushed on one stack and unwound to the mark taken before it, restoring
   // the prior masks in reverse.
-  const refined = new Map()   // name → the tag bits its kind is read within
-  const rNames = [], rPriors = []
+  const refined = new Map() // binding id → the tag bits its kind is read within
+  const rKeys = [], rPriors = []
   let rtop = 0
   const refineName = (name, mask) => {
-    const prior = refined.get(name)
-    if (rtop === rNames.length) { rNames.push(name); rPriors.push(prior) } else { rNames[rtop] = name; rPriors[rtop] = prior }
+    const key = keyOf(name)
+    if (key === null) return
+    const prior = refined.get(key)
+    if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
     rtop++
-    refined.set(name, (prior ?? TAGS) & mask)
+    refined.set(key, (prior ?? TAGS) & mask)
   }
-  const unwind = (mark) => { while (rtop > mark) { rtop--; const prior = rPriors[rtop]; if (prior === undefined) refined.delete(rNames[rtop]); else refined.set(rNames[rtop], prior) } }
+  const unwind = (mark) => { while (rtop > mark) { rtop--; const key = rKeys[rtop], prior = rPriors[rtop]; if (prior === undefined) refined.delete(key); else refined.set(key, prior) } }
   const refine = (k, mask) => { const r = k & (mask | UNKNOWN); return (r & TAGS) === 0 ? 0 : r }
   const NOT_NULLISH = TAGS & ~NULL_BITS
   const TYPEOF_TAGS = {
@@ -1332,12 +1343,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { if (pre.size) pre.clear(); if (refined.size) refined.clear(); if (post.size) post.clear(); branch = 0; rtop = 0 }
+  const reset = () => { pre.clear(); refined.clear(); post.clear(); branch = 0; rtop = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()
     if (defaults) for (const p of defaultNamesOf(defaults)) bindParam(keyIn(key, p), expr(defaults[p]))
-    if (params) for (const p of reassignedIn(body, params)) pre.add(p)
+    if (params) for (const p of reassignedIn(body, params)) { const id = keyIn(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
       stmt(body)
       // A body that can fall through returns undefined.

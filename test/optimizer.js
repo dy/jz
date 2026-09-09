@@ -10,7 +10,7 @@
  *     coercion in the body since the param type is known to be NUMBER.
  */
 import test from 'tst'
-import { almost, is, ok } from 'tst/assert.js'
+import { almost, is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { onKernel } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
@@ -19,6 +19,8 @@ import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
+import encodeWat from 'watr/compile'
+import { hoistInvariantLoop } from '../src/optimize/licm.js'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -32,6 +34,134 @@ const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isA
 // call count is vacuous-0 for hoist pins and false-0 for keep pins.
 const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
 const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
+
+
+test('LICM effects: every memory writer blocks mutable helper reads', () => {
+  const writers = [
+    '(i32.store8 (i32.const 0) (i32.const 1))',
+    '(i32.store16 (i32.const 0) (i32.const 1))',
+    '(i32.store offset=0 (i32.const 0) (i32.const 1))',
+    '(i64.store (i32.const 0) (i64.const 1))',
+    '(i64.store8 (i32.const 0) (i64.const 1))',
+    '(i64.store16 (i32.const 0) (i64.const 1))',
+    '(i64.store32 (i32.const 0) (i64.const 1))',
+    '(f32.store (i32.const 0) (f32.reinterpret_i32 (i32.const 1)))',
+    '(f64.store (i32.const 0) (f64.reinterpret_i64 (i64.const 1)))',
+    '(v128.store (i32.const 0) (v128.const i32x4 1 0 0 0))',
+    '(memory.fill (i32.const 0) (i32.const 1) (i32.const 1))',
+    '(memory.copy (i32.const 0) (i32.const 8) (i32.const 1))',
+    '(memory.init $bytes (i32.const 0) (i32.const 0) (i32.const 1))',
+    '(i32.atomic.store8 (i32.const 0) (i32.const 1))',
+    '(drop (i32.atomic.rmw8.add_u (i32.const 0) (i32.const 1)))',
+  ]
+  for (const writer of writers) {
+    const ast = parseWat(`(module (memory 1 1 shared) (data (i32.const 8) "\\01") (data $bytes "\\01")
+      (func $__typed_idx (param f64) (param i32) (result f64)
+        (f64.convert_i32_u (i32.load8_u (i32.const 0))))
+      (func $f (export "f") (param $n i32) (result f64) (local $i i32) (local $sum f64)
+        (block $exit (loop $loop
+          (br_if $exit (i32.ge_u (local.get $i) (local.get $n)))
+          ${writer}
+          (local.set $sum (f64.add (local.get $sum) (call $__typed_idx (f64.const 0) (i32.const 0))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $loop)))
+        (local.get $sum)))`)
+    const run = () => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+    const before = run()
+    hoistInvariantLoop(findFunc(ast, '$f'))
+    const after = run()
+    for (const n of [0, 1, 2]) is(after(n), before(n), writer + ': n=' + n)
+  }
+})
+
+test('LICM effects: an unknown store target blocks a distinct-base load', () => {
+  const ast = parseWat(`(module (memory 1)
+    (func $f (export "f") (param $src i32) (result i32) (local $i i32) (local $sum i32)
+      (loop $loop
+        (i32.store8 (i32.const 0) (i32.const 1))
+        (local.set $sum (i32.add (local.get $sum) (i32.load (local.get $src))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br_if $loop (i32.lt_u (local.get $i) (i32.const 2))))
+      (local.get $sum)))`)
+  const fn = findFunc(ast, '$f')
+  fn.distinctParams = new Set(['$src'])
+  hoistInvariantLoop(fn)
+  const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+  is(f(0), 2, 'a disjoint-parameter proof says nothing about a constant store address')
+})
+
+test('LICM effects: a store through a local with multiple origins may alias either buffer', () => {
+  for (const [other, read, yes, no] of [['(local.get $dst)', '$src', 2, 0], ['(i32.const 32)', '$dst', 0, 2]]) {
+    const ast = parseWat(`(module (memory 1)
+      (func $f (export "f") (param $src i32) (param $dst i32) (param $choose i32) (result i32)
+        (local $p i32) (local $i i32) (local $sum i32)
+        (loop $loop
+          (if (local.get $choose)
+            (then (local.set $p (local.get $src)))
+            (else (local.set $p ${other})))
+          (i32.store8 (local.get $p) (i32.const 1))
+          (local.set $sum (i32.add (local.get $sum) (i32.load (local.get ${read}))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br_if $loop (i32.lt_u (local.get $i) (i32.const 2))))
+        (local.get $sum)))`)
+    const fn = findFunc(ast, '$f')
+    fn.distinctParams = new Set(['$src', '$dst'])
+    hoistInvariantLoop(fn)
+    const bytes = encodeWat(ast)
+    const run = choose => new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports.f(0, 32, choose)
+    is(run(1), yes)
+    is(run(0), no)
+  }
+})
+
+test('LICM effects: a local observed after a zero-trip loop must retain its value', () => {
+  const ast = parseWat(`(module
+    (func $f (export "f") (param $n i32) (param $x f64) (result i32) (local $t i32)
+      (block $exit (loop $L
+        (br_if $exit (i32.eqz (local.get $n)))
+        (drop (local.tee $t (i32.trunc_sat_f64_s (local.get $x))))
+        (br $exit)))
+      (local.get $t)))`)
+  hoistInvariantLoop(findFunc(ast, '$f'))
+  const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+  is(f(0, 7), 0)
+  is(f(1, 7), 7)
+})
+
+test('LICM effects: string indexing may allocate and must not run on a zero-trip loop', () => {
+  const ast = parseWat(`(module
+    ;; Model __char_unit's exhausted allocator for a non-ASCII UTF-16 unit.
+    (func $__str_idx (param i64) (param i32) (result f64) (unreachable))
+    (func $f (export "f") (param $n i32) (result f64) (local $i i32) (local $sum f64)
+      (block $exit (loop $loop
+        (br_if $exit (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $sum (f64.add (local.get $sum) (call $__str_idx (i64.const 0) (i32.const 0))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+      (local.get $sum)))`)
+  hoistInvariantLoop(findFunc(ast, '$f'))
+  const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+  is(f(0), 0, 'the allocator is never entered')
+  throws(() => f(1), 'an executed allocation still traps')
+})
+
+test('LICM effects: non-mutating allocation still changes allocator globals', () => {
+  const ast = parseWat(`(module (global $heap (mut i32) (i32.const 0))
+    (func $__str_concat (param f64) (param f64) (result f64)
+      (global.set $heap (i32.add (global.get $heap) (i32.const 1)))
+      (f64.const 0))
+    (func $f (export "f") (result i32) (local $i i32) (local $sum i32)
+      (loop $loop
+        (drop (call $__str_concat (f64.const 0) (f64.const 0)))
+        (local.set $sum (i32.add (local.get $sum)
+          (i32.trunc_sat_f64_s (f64.convert_i32_s (global.get $heap)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br_if $loop (i32.lt_u (local.get $i) (i32.const 2))))
+      (local.get $sum)))`)
+  hoistInvariantLoop(findFunc(ast, '$f'))
+  const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+  is(f(), 3, 'the global is read after each allocation')
+})
 
 test('LICM pure calls: invariant transcendental / substr search hoist out of the loop', () => {
   // V8's wasm tier treats every call as opaque and recomputes it each iteration; jz proves

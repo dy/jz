@@ -661,33 +661,11 @@ export function cloneNode(node) {
   return node.map(cloneNode)
 }
 
-/** Structural equality via JSON. AST nodes are JSON-serializable except i64.const
- *  BigInt payloads (NaN-box prefixes — dcbb433 routes pointer offsets through boxed
- *  forms); the replacer stringifies those as `<n>n` (cf. formatErrorNode in ctx.js). */
-// Replacer for structural node-equality / dedup keys. JSON.stringify is the fast
-// path, but it silently collapses values it can't round-trip: bigint throws, and —
-// the subtle one — Infinity / -Infinity / NaN ALL stringify to `null` while -0
-// stringifies to `0`. Two nodes differing ONLY in such a constant then serialize
-// identically and compare equal — an unsound merge (SLP packs `[Inf,-Inf]` as one
-// splat lane; CSE/LICM dedups distinct invariants). Tag each so it round-trips with
-// Object.is semantics.
-// Recursive keyer, NOT JSON.stringify with a replacer: the kernel's stringify
-// silently dropped the replacer, so in-kernel nodeEqual collapsed the very
-// constants the tagging exists to distinguish (a latent unsound SLP merge,
-// host≠kernel). A plain walk behaves identically on both sides.
-export function stableNodeKey(v) {
-  if (Array.isArray(v)) { let s = '['; for (let i = 0; i < v.length; i++) s += (i ? ',' : '') + stableNodeKey(v[i]); return s + ']' }
-  if (typeof v === 'bigint') return `${v}n`
-  // Number.isNaN, not `v !== v`: `v` is a generic AST-leaf value here (the whole
-  // point of this function), so in-kernel its kind is ambiguous and `!==` takes
-  // jz's own bit-equality dispatch — a sign-set qNaN (x86 wasm arithmetic's
-  // uncanonicalized 0/0 etc.) then reads bit-equal to itself and this guard misses
-  // it (same root cause/fix as emitNum in ir.js — see that comment). Native no-op.
-  if (typeof v === 'number' && (Number.isNaN(v) || v === Infinity || v === -Infinity || Object.is(v, -0)))
-    return Number.isNaN(v) ? '#NaN' : v === Infinity ? '#Inf' : v === -Infinity ? '#-Inf' : '#-0'
-  if (typeof v === 'string') return JSON.stringify(v)
-  return String(v)  // numbers, booleans, null, undefined — all distinct spellings
-}
+// Share exact literal keys with watr's LICM. The recursive key distinguishes
+// BigInt, NaN, infinities and signed zero on both the host and self-hosted compiler;
+// JSON.stringify alone (or its unsupported in-kernel replacer) cannot do that.
+export { structuralKey as stableNodeKey } from 'watr/optimize'
+import { structuralKey as stableNodeKey } from 'watr/optimize'
 export function nodeEqual(a, b) {
   return stableNodeKey(a) === stableNodeKey(b)
 }

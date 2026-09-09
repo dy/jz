@@ -388,6 +388,24 @@ test('summary: a parameter read before its reassignment has its incoming kind', 
   is(clos.exports.f(1), 10)
 })
 
+test('summary: flow facts unwind across branches and reset across functions', () => {
+  const src = `
+    const first = (x, flag) => {
+      if (typeof x === 'string') {
+        if (flag) x = x.length;
+        else x = x + '!';
+      } else x = x + 2;
+      return x;
+    };
+    const second = (x) => { x = String(x); return x.length };
+    export const run = (flag) => [first('abc', flag), first(5, flag), second(12)];
+  `
+  const f = jz(src).exports.run
+  is(f(0), ['abc!', 7, 2])
+  is(f(1), [3, 7, 2])
+  is(f(0), ['abc!', 7, 2], 'a later call retains neither branch refinement nor assignment fact')
+})
+
 test('summary: a binding is keyed by its function; a specialized variant has its own kinds', () => {
   _compileInProcess(`const sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
     export const f = () => sum(new Float32Array(4)) + sum(new Float64Array(4))`)

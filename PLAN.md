@@ -7,8 +7,10 @@ bounded callback work and reliable installation are the release outcome.
 ## Release gates
 
 - **Functional verification:** the full default/O0/O3/WASI matrix passes
-  (4,468/4,468/4,468/4,465 tests, one skip per leg), as do self-compilation,
-  hosted closure regressions and type checks.
+  (4,472/4,472/4,474/4,472 tests, one skip per leg). The final default run,
+  including the last LICM regression, passes 4,475 tests with one skip.
+  Self-hosted correctness passes 32 tests; recursive self-compilation, hosted closure regressions and
+  public type checks pass. Self-compile timing remains a separate failing gate.
 - **Conformance:** function reflection consistently rejects on the known builtin
   and Promise paths. Property descriptors remain a documented limitation; the
   generated array-spread test now has the same classification as its call/new
@@ -23,9 +25,13 @@ bounded callback work and reliable installation are the release outcome.
 - **Speed/evidence:** committed benchmark results predate the current compiler.
   Refresh complete rival coverage after fixes, on a machine within the existing
   load/swap limits. A loaded development run cannot certify leadership. The
-  current self-compile timing gate still fails: best warm geomean 1.333×
-  against 1.03×, fresh 1.140× against 0.99×. The development machine has heavy swap use;
-  do not treat this run as release evidence or relax the caps.
+  current self-compile timing gate still fails: best warm geomean 1.338×
+  against 1.03×, fresh 1.110× against 0.99×. The development machine has heavy
+  swap use;
+  do not treat this run as release evidence or relax the caps. The development
+  benchmark run passes 239 gates and fails 27: runtime/size gaps, missing TinyGo
+  coverage, stale native-lowering evidence, and two examples below strict wins.
+  Failed timing commands now fail explicitly instead of producing NaN ratios.
 - **Compatibility:** rebuild downstream Wasm with matching compiler and interop
   revisions. Replace the pinned watr archive with an npm release containing its
   required fixes when available. The rebuilt Watr encoder passes 352 core
@@ -40,29 +46,44 @@ Detailed ownership and conventions are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Runtime method alternatives now share block-callback lowering, avoiding repeated
 closure bodies and nested closures without a new cache or ambient state.
-The summary's declarations now own numeric binding IDs. Kind and incoming facts
-use indexed arrays; duplicate binding-key and cross-scope query tables are gone.
-The declaration census includes closures in parameter defaults, so their bindings
-and captured scopes exist before the fixpoint rather than appearing during it.
-A paired before/after run on mat4, fft, biquad, sort, crc32 and mandelbrot shows
-2.6% lower warm compile time at O0 (20 warmups, 40 alternating pairs per case), with
-identical output bytes. The compiler is 15,371,698 bytes: 1,016 fewer from this
-change, 52,066 fewer than the UTF-16 baseline. Recursive self-compilation completes
-in 57.6 seconds and produces a working 14,870,647-byte compiler. This is development evidence,
-not certification of the remaining performance claims.
+The summary's declarations own numeric binding IDs. Kind and incoming facts
+use indexed arrays; flow-sensitive assignment and refinement facts use sparse
+numeric-keyed collections with per-function reset and branch rollback. Dense
+arrays for the sparse facts added allocation without a measurable speed gain,
+so they were not retained. The declaration census includes default-parameter
+closures before the fixpoint. The latest six-case paired comparison preserves
+output bytes and shows no meaningful throughput change from this consolidation.
 
-The next loop consolidation should give generic LICM one owner in watr and
-express any needed helper effects/alias proofs as generic Wasm facts, inferred
-from Wasm bodies where possible; watr should not consume JavaScript metadata.
-Today JZ's LICM
-contains those contracts and runs before and after address rewriting; watr's
-LICM handles pure arithmetic after inlining. They are not interchangeable.
-Migrate with zero-trip/trap/alias tests and corpus measurements before deleting
-an invocation or pass. Vectorizers should share loop shape, address and effect
-analysis; retain distinct loop and adjacent-scalar packing strategies. Replacing
-all recognizers or adding a new semantic IR is not a prerequisite for v1.
+Generic LICM extraction now has one owner in watr (`3f89641`): traversal,
+private-local checks, exact literal deduplication, typing and temporary insertion.
+JZ supplies invocation-local language/representation proofs and profitability
+policy; watr's standalone policy remains conservative about loads and calls.
+The shared engine neither reads nor stamps JZ metadata. Both JZ maturity points
+and watr's post-inline invocation use the same engine. Loop vectorization and
+SLP remain distinct.
+
+JZ now reuses watr's memory-write classifier. Narrow, floating, 64-bit, SIMD,
+bulk and atomic writes block mutable helper reads; unknown targets block
+alias-dependent motion. Buffer-origin analysis follows single-definition locals
+and closed scalar recurrences; other origins remain unknown. Allocation blocks speculative string
+indexing and motion of allocator-global reads.
+Executable regressions cover these effects, zero-trip loops, signed-zero
+constants, shared AST ancestors, and temporaries read outside the loop.
+
+The compiler is 15,374,562 bytes, 2,864 more than the preceding revision; the
+consolidation and correctness fixes do not establish a size or speed win.
+Recursive self-compilation produces a working 14,873,980-byte compiler.
+Measurements were made on a loaded development machine and are not release
+certification. A six-case profile still attributes about 21% of samples to string hashing,
+equality and dynamic property reads. Follow measured lookup/lowering costs;
+a new semantic IR or wholesale vectorizer rewrite is not a v1 prerequisite.
 
 ## Remaining semantic/lifetime work
+
+- A concurrent focused review reports three host-boundary defects: overlapping
+  odd-size standalone allocations, detached views during recursive marshalling,
+  and host writes that violate inferred field representations. These remain
+  separate v1 blockers; the LICM effect defect from that review is fixed here.
 
 - DataView identity and view bounds are preserved, but `.length` and numeric
   property access still take typed-array fallbacks instead of returning undefined.
