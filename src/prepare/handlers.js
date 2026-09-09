@@ -425,6 +425,8 @@ const handlers = {
       // into the module-global vars map (see bindAssignSchema).
       bindAssignSchema(plhs, objLiteralSid(prhs), false)
     }
+    // Match the resolved import identity: prep has already renamed the
+    // bundled helper, so comparing against its source spelling misses it.
     // promiseRecvNames/withResolversRecvNames (see their own declaration,
     // near funcValueNames) — the REASSIGNMENT sibling of the decl-time check
     // above (`typeof declName === 'string' && normed[0] === '()' …`): a
@@ -434,8 +436,8 @@ const handlers = {
     // never fires for it, so `p.then.length` (test262 Promise/prototype/
     // then/S25.4.5.3_A1.1_T2.js) needs this hop too.
     if (typeof plhs === 'string' && Array.isArray(prhs) && prhs[0] === '()') {
-      if (prhs[1] === '__p_exec') promiseRecvNames.add(plhs)
-      else if (prhs[1] === '__p_withResolvers') withResolversRecvNames.add(plhs)
+      if (prhs[1] === ctx.scope.chain.__p_exec) promiseRecvNames.add(plhs)
+      else if (prhs[1] === ctx.scope.chain.__p_withResolvers) withResolversRecvNames.add(plhs)
     }
     return ['=', plhs, prhs]
   },
@@ -1509,22 +1511,16 @@ const handlers = {
       if (emitArity(ctx.core.emit[key], key) > 0) includeForCallableValue()
       return key
     }
-    // `Namespace.method.length`/`.name` — the OUTER `.` here has a receiver
-    // that's ITSELF a `.` node resolving to a builtin function (`Array.isArray`,
-    // `Math.sqrt`, …); same function-object-reflection gap as the bound-name
-    // case above, just reached through a namespace member instead of a local.
-    // Confirmed live: `Array.isArray.length` reads `undefined`, not `1`.
-    // NS_CTORS name check (static, module-load-order-independent) rather than
-    // an `emitArity(ctx.core.emit[...])` probe: a builtin static method
-    // reached ONLY through property reflection (never actually CALLED, as
-    // here) hasn't necessarily triggered that method's owning module include
-    // yet, so its emit-table entry may not exist AT THIS POINT even though
-    // the call would resolve fine once reached — the arity probe would
-    // silently miss exactly the shape being guarded against.
+    // Resolve plain namespaces and their aliases as well as constructors.
+    // Constants such as Math.PI are values, so their properties remain ordinary reads.
     if ((prop === 'length' || prop === 'name') && Array.isArray(obj) && obj[0] === '.' &&
-        typeof obj[1] === 'string' && typeof obj[2] === 'string' && NS_CTORS.has(obj[1]) &&
-        !shadowsBuiltin(obj[1]) && !(scopes.length && isDeclared(obj[1])))
-      err(`.${prop} is not supported on a function value — jz compiles builtins straight to WASM funcs with no reflectable metadata object; jz has no general function-object reflection`)
+        typeof obj[1] === 'string' && typeof obj[2] === 'string' && !shadowsBuiltin(obj[1])) {
+      const ns = namespaceModOf(obj[1])
+      if (ns) includeModule(ns)
+      if (NS_CTORS.has(obj[1]) && !(scopes.length && isDeclared(obj[1])) ||
+          ns && emitArity(ctx.core.emit[ns + '.' + obj[2]], ns + '.' + obj[2]) > 0)
+        err(`.${prop} is not supported on a function value — jz has no general function-object reflection`)
+    }
     // Source module namespace: import * as X → X.prop resolved to mangled name
     if (typeof obj === 'string' && ctx.module.namespaces?.[obj]) {
       const mangled = ctx.module.namespaces[obj].get(prop)
@@ -2198,8 +2194,8 @@ function prepDecl(op, ...inits) {
       // (`new Promise(fn)` → __p_exec(fn), `Promise.withResolvers()` →
       // __p_withResolvers()), not the pre-transform source spelling.
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '()') {
-        if (normed[1] === '__p_exec') promiseRecvNames.add(declName)
-        else if (normed[1] === '__p_withResolvers') withResolversRecvNames.add(declName)
+        if (normed[1] === ctx.scope.chain.__p_exec) promiseRecvNames.add(declName)
+        else if (normed[1] === ctx.scope.chain.__p_withResolvers) withResolversRecvNames.add(declName)
       }
       // The mutation census (indexed/.length/mutating-method anywhere, raw
       // names) gates every ARRAY-fact bind: execution can reach the mutation

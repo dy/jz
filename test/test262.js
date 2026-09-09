@@ -656,7 +656,7 @@ function shouldSkipBase(content, rel = '') {
   if (/\/types\/reference\/8\.7\.2-[34567]-s\.js$/.test(rel)) return 'property descriptor (writable/accessor) semantics outside current jz scope'
   // for-in / object-spread tests that mutate descriptors via Object.defineProperty mid-iteration.
   if (rel.endsWith('/statements/for-in/order-after-define-property.js')) return 'Object.defineProperty descriptor semantics outside current jz scope'
-  if (/\/expressions\/(new|call)\/spread-obj-skip-non-enumerable\.js$/.test(rel)) return 'non-enumerable property descriptor semantics outside current jz scope'
+  if (/\/expressions\/(array|new|call)\/spread-obj-skip-non-enumerable\.js$/.test(rel)) return 'non-enumerable property descriptor semantics outside current jz scope'
   // Large Unicode identifier-start stress files — recursive parser blows the JS stack on the biggest tables.
   if (/\/identifiers\/start-unicode-(5\.2\.0|7\.0\.0|8\.0\.0|9\.0\.0|1[0357]\.0\.0|16\.0\.0)(-escaped)?\.js$/.test(rel)) return 'large unicode identifier table parser stack outside current jz scope'
   // Runtime ReferenceError on unresolved bare identifiers — `assert.throws(ReferenceError, …undeclared…)`.

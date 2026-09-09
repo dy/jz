@@ -536,7 +536,7 @@ const validateLexicalSource = (src, strict) => {
           forGroup[P_FOR_INOF] = word
           if (letReference && strict) fail("'let' cannot be a for-in assignment target in strict mode")
           if (letReference) decl = forGroup[P_FOR_DECL] = false
-          if ((decl === 'let' || decl === 'const') &&
+          if ((decl === 'let' || decl === 'const' || decl === 'var' && word === 'of') &&
               (forGroup[P_FOR_COMMAS] || forGroup[P_FOR_INIT]))
             fail('for-in/of lexical declaration must have one uninitialized binding')
         } else {
@@ -946,7 +946,8 @@ const visitPatternInitializers = (pattern, cx, visit) => {
   if (!isNode(pattern)) return
   const op = pattern[0]
   if (op === '=') {
-    visit(pattern[2], cx)
+    if (typeof pattern[2] === 'string') checkIdentifierRef(pattern[2], cx)
+    else visit(pattern[2], cx)
     visitPatternInitializers(pattern[1], cx, visit)
     return
   }
@@ -1557,8 +1558,7 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
         (node[1][0] == null && typeof node[1][1] === 'number' && !Number.isFinite(node[1][1]))
       )
       if (!specialIdentifier && !isAssignmentTarget(node[1], op === '=')) fail(`invalid assignment target for '${op}'`)
-      if (typeof node[1] === 'string' && ALWAYS_RESERVED.has(decodeIdentifier(node[1])))
-        fail(`reserved word '${decodeIdentifier(node[1])}' cannot be assigned`)
+      if (typeof node[1] === 'string') checkBindingName(node[1], cx)
       if (typeof node[1] === 'string' && cx.strict && (node[1] === 'eval' || node[1] === 'arguments'))
         fail(`cannot assign to '${node[1]}' in strict mode`)
       if (op === '=' && isNode(node[1]) && node[1].length === 2 &&
@@ -1722,14 +1722,32 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
     }
 
     if (op === 'get' || op === 'set') {
-      const params = paramsOf(node[2]), names = []
-      for (const p of params) names.push(...checkPattern(p, { ...cx, unique: false }))
-      if (op === 'get' && names.length) fail('getter must have no parameters')
-      if (op === 'set' && names.length !== 1) fail('setter must have exactly one parameter')
-      const body = node[3]
-      validateScopeNames(body, cx, 'function', names)
-      walk(body, { ...cx, functionDepth: cx.functionDepth + 1, loop: 0, switchDepth: 0, labels: new Map() }, true)
+      const params = paramsOf(node[2]), names = [], body = node[3]
+      const ownStrict = isUseStrict(body), strict = cx.strict || ownStrict
+      if (ownStrict && !isSimpleParams(params)) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict) validateStrictDirectivePrologue(source, functionBodyOpen(source, node))
+      const fnCx = { ...cx, strict, async: false, generator: false,
+        functionDepth: cx.functionDepth + 1, loop: 0, switchDepth: 0, labels: new Map() }
+      for (const p of params) {
+        names.push(...checkPattern(p, { ...fnCx, unique: false }))
+        visitPatternInitializers(p, fnCx, walk)
+      }
+      if (op === 'get' && params.length) fail('getter must have no parameters')
+      if (op === 'set' && params.length !== 1) fail('setter must have exactly one parameter')
+      validateScopeNames(body, fnCx, 'function', names)
+      walk(body, fnCx, true)
       return
+    }
+
+    // Jessie can backtrack an invalid resource declaration to `await using`
+    // followed by an adjacent identifier statement. A line break permits ASI;
+    // a same-line binding does not. Preserve `await using` as an identifier read.
+    if (op === 'await' && node[1] === 'using' && typeof node.loc === 'number') {
+      const keyword = nextSourceToken(source, node.loc + 5)
+      const binding = nextSourceToken(source, keyword + 5)
+      if (source.slice(keyword, keyword + 5) === 'using' &&
+          !previousSourceToken(source, binding)[1] && isIdentCode(source.charCodeAt(binding)))
+        fail('await using declaration requires initialized identifier bindings')
     }
 
     if (op === 'using' || op === 'await' && isNode(node[1]) && node[1][0] === 'using') {

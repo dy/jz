@@ -98,6 +98,27 @@ test('early errors: scopes, parameters, targets, and control flow reject before 
     is(jz('export let g = () => { let s=0; for (const x of [1,2]) s+=x; return s }').exports.g(), 3)
 })
 
+test('early errors: accessor strictness and async binding syntax survive unused code', () => {
+    rejects('void { get x() { "use strict"; public = 42 } }', 'strict mode')
+    rejects('"use strict"; void { set x(v) { public = v } }', 'strict mode')
+    rejects('void { set x(eval) { "use strict" } }', 'strict mode')
+    rejects('void { set x({v}) { "use strict" } }', 'non-simple parameters')
+    rejects('async function f(x = await) {}', 'await')
+    rejects('class C { async f(x = await) {} }', 'await')
+    rejects('async function f() {\n await using x;\n }', 'initialized identifier')
+    rejects('async function f() {\n await using x = null, [] = null;\n }', 'initialized identifier')
+    rejects('async function f() { for await (var [x] = 1 of []) {} }', 'uninitialized binding')
+
+    for (const src of [
+        'void { get x() { public = 42 } }',
+        'void { set x({v}) {} }',
+        'async function f() { let using = 1; await using; }',
+        'async function f() { let using = 1, x = 2; await using\nx; }',
+        'async function f() { for await (var [x] of []) {} }',
+        'for (var x = 1 in {}) {}',
+    ]) ok(Array.isArray(parse(src)), `valid counterpart: ${src}`)
+})
+
 test('early errors: nested spread commas do not masquerade as a trailing rest parameter', () => {
     is(jz('export let f = (x = [...[]]) => x.length').exports.f(), 0,
       'empty spread without a trailing comma stays valid')

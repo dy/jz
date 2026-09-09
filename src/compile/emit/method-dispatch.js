@@ -380,6 +380,15 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
   const typedEmitter = ctx.core.emit[typedKey]
   const genEmitter = ctx.core.emit[genKey]
   if (!vt && (strEmitter || typedEmitter)) {
+    // Block-bodied callbacks require closures in every arm. Lower each source
+    // callback once, then reuse its construction expression on the mutually
+    // exclusive paths. Re-emitting the AST minted a whole body (including its
+    // nested closures) per arm. Expression arrows stay available for inlining.
+    if (parsed.normal.some(arg => Array.isArray(arg) && arg[0] === '=>' && arg[2]?.[0] === '{}')) {
+      parsed = { ...parsed, normal: parsed.normal.map(arg =>
+        Array.isArray(arg) && arg[0] === '=>' && arg[2]?.[0] === '{}' ? emit(arg) : arg) }
+      callMethod = (recv, emitter) => emitMethodCallSpread(recv, emitter, parsed, method)
+    }
     const t = `${T}rt${freshId(ctx)}`, tt = `${T}rtt${freshId(ctx)}`
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
     // A string/typed/array method is only valid on a NaN-boxed pointer. `f64.eq(t,t)`

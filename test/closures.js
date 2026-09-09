@@ -27,6 +27,36 @@ const throws = (code, match, msg) => {
   ok(error && error.message.includes(match), `${msg}: expected "${match}", got "${error?.message}"`)
 }
 
+test('function reflection rejects resolved Promise helpers and namespace aliases', () => {
+  for (const decl of ['let', 'const', 'var']) {
+    throws(`${decl} p = new Promise(() => {}); export let f = () => p.then.length`,
+      'not supported on a function value', `${decl} Promise method`)
+    throws(`${decl} p = Promise.withResolvers(); export let f = () => p.resolve.name`,
+      'not supported on a function value', `${decl} resolver`)
+  }
+  for (const expr of ['Math.max.length', 'Math.min.name', 'M.max.length']) {
+    throws(`const M = Math; export let f = () => ${expr}`,
+      'not supported on a function value', expr)
+  }
+  is(run('export let f = () => { const Math = { max: { length: 3 } }; return Math.max.length }').f(), 3)
+  is(run('export let f = () => Math.PI.length').f(), undefined)
+})
+
+test('dynamic method arms share a block callback body and its nested closures', () => {
+  const src = `const apply = a => {
+    let n = 0
+    a.forEach(x => { const add = () => x + 1; n += add() })
+    return n
+  }
+  export let f = flag => apply(flag ? new Float64Array([1, 2, 3]) : [4, 5])`
+  const ex = run(src)
+  is(ex.f(0), 11, 'array arm')
+  is(ex.f(1), 9, 'typed arm')
+  is(ex.f(0), 11, 'captures reset on another call')
+  is([...wat(src).matchAll(/\(func \$[^\s]*closure\d+\s/g)].length, 2,
+    'one callback body and one nested body, shared across dispatch arms')
+})
+
 // === Basic closure (capture outer variable) ===
 
 test('closure: capture param', () => {

@@ -1,6 +1,6 @@
-/** Fixed scalar intrinsic signatures. Available in both compiler hosts without
- *  reflecting on JavaScript handler functions. Variadic intrinsics need their
- *  own argument lowering and are not described by a fixed parameter count. */
+/** Intrinsic emit-handler arities, available in both compiler hosts without
+ *  function reflection. For variadic handlers this is the fixed prefix, just
+ *  like Function.length; their emitters still lower all supplied arguments. */
 export const INTRINSIC_ARITY = {
   'Array.isArray': 1,
   'Number.isFinite': 1, 'Number.isNaN': 1, 'Number.isInteger': 1, 'Number.isSafeInteger': 1,
@@ -11,4 +11,5 @@ export const INTRINSIC_ARITY = {
   'math.log2': 1, 'math.round': 1, 'math.sign': 1, 'math.sin': 1, 'math.sinh': 1,
   'math.sqrt': 1, 'math.tan': 1, 'math.tanh': 1, 'math.trunc': 1,
   'math.atan2': 2, 'math.imul': 2, 'math.pow': 2,
+  'math.min': 2, 'math.max': 2,
 }
