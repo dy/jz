@@ -1002,7 +1002,6 @@ const EXPECTED_FAIL_FILES = new Map([
   // fix/wrong-values-2: Object.keys on a function receiver is the SAME
   // function-object-reflection gap — module/object.js's emitKeysGeneric now
   // rejects a VAL.CLOSURE receiver ("not supported") → skip, no entry needed.
-  ['built-ins/Object/fromEntries/supports-symbols.js', '[REJECT] Object.fromEntries Symbol keys — out of scope (Symbol usage rejects upstream, confirmed)'],
   // Promise — jz promises are fixed-shape values adopted STRUCTURALLY
   // (`__p === 1` → subscribe), not via a dynamic `.then` lookup, so overriding
   // `.then` on a native promise is not observed (documented divergence).

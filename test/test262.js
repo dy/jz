@@ -1165,8 +1165,6 @@ const EXPECTED_FAIL_FILES = new Map([
   // for-await grammar edges (2026-07-13, wired with async generators):
   ['test/language/statements/for-await-of/head-lhs-async.js',
     '[REJECT] `async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge); compile-time reject'],
-  ['test/language/statements/for-await-of/let-identifier-with-newline.js',
-    '[REJECT] `let` as an ASI-split identifier after a for-await body — sloppy-mode let-identifier grammar edge; compile-time reject (jzify duplicate-hoist diagnostic)'],
   // async-generator divergences: job ordering is per-drain-cycle (README
   // "Generators and async... Jobs drain at host boundaries"), and
   // destructuring / yield* abrupt-completion semantics are approximations of
