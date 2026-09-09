@@ -83,6 +83,12 @@ destructuring assignment expressions preserve their RHS identity and effects.
 Generator and async exception paths share one finalizer state; normal completion,
 rejection and catch exceptions converge there, and finalizer return/throw overrides
 the pending exception.
+Parameter initialization now shares one lowering across ordinary functions and
+generator factories. In iterator-producing programs, array parameters pull lazily,
+interleave defaults and close on early completion. Uncaught generator exceptions
+close the machine, including machines without source-level try/catch.
+Subscript 10.7.3 restores ASI state when speculative method parsing backtracks;
+JZ requires that published patch, including its multiplication-after-semicolon fix.
 
 ## Release gates
 
@@ -92,8 +98,11 @@ the pending exception.
   decoding still need a consistent UTF-8 contract; the fromCharCode > 255
   regression remains open. Resolve surrogate handling and escape decoding together;
   changing a single assertion does not establish a consistent string contract.
-- Conformance still exposes array-pattern iterator acquisition/step errors,
-  property enumerability and function reflection. Preserve semantics or clearly
+- Conformance still exposes property enumerability and function reflection.
+  Iterator parameter acquisition/step errors are corrected; declaration and
+  assignment patterns still use indexed lowering. DataView also shares its
+  runtime tag/aux with Int8Array views, so dynamic iterable classification cannot
+  distinguish them yet. Preserve semantics or clearly
   reject unsupported operations; do not add failure-ledger entries to hide them.
 - The warm Map/property failure came from counting duplicate and cancelled
   durable-slot log entries toward a fixed limit. The log now reuses them;

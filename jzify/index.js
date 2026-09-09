@@ -19,6 +19,7 @@ import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
+import { lowerIteratorParams } from './iterator-params.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS } from '../src/ast.js'
 
 const names = createNames()
@@ -166,7 +167,8 @@ const buildBuiltinScopes = root => {
   visit(root, program, true)
   return map
 }
-const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
+const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names,
+  params => iterProto.on ? lowerIteratorParams(params, names.genTemp) : [params, []])
 
 let lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses, transformSwitch
 let transform, transformScope
@@ -195,7 +197,7 @@ const generatorNames = new Set()
 // programs without iterator producers compile byte-identically.
 const iterProto = { on: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
 const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
@@ -239,7 +241,7 @@ function canonSymbols(node) {
     // access: ['[]', obj, Symbol.X] → ['.', obj, '@@X']
     if (!shadowsJzifyBuiltin('Symbol') && op === '[]' && node.length === 3) {
       for (const [k, prop] of Object.entries(WELL_KNOWN))
-        if (isSymbolWellKnown(node[2], k)) { node[0] = '.'; node[2] = prop }
+        if (isSymbolWellKnown(node[2], k)) { node[0] = '.'; node[2] = prop; if (prop === '@@iterator') iterProto.on = true }
     }
     for (let i = 1; i < node.length; i++) canonSymbols(node[i])
     return node

@@ -33,6 +33,7 @@ const TESTS = [
   'buffer',
   'workers',
   'generators',
+  'iterator-params',
   'async',
   'regex',
   'simd',

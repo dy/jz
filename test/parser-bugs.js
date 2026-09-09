@@ -4,6 +4,13 @@ import { is, ok } from 'tst/assert.js'
 import { isDestructurePat } from '../jzify/hoist-vars.js'
 import { parse } from '../src/parse.js'
 
+test('multiplication after a semicolon preserves parser ASI state', () => {
+    for (const gap of ['', ' ', '\n']) {
+        const src = `export let f = r => { const q = 1;${gap}const r2 = r*r; return r2 + q }`;
+        is(jz(src).exports.f(5), 26);
+    }
+});
+
 test('bracketless nested conditionals', () => {
     let src = `
         export let f = (a, b) => {

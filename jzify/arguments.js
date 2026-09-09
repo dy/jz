@@ -131,8 +131,12 @@ function prependParamDecls(decl, body) {
 }
 
 /** @param {ReturnType<import('./names.js').createNames>} names */
-export function createArgumentsLowering(names) {
-  function lowerArguments(params, body) {
+export function createArgumentsLowering(names, lowerPatterns = params => [params, []]) {
+  // Generators consume the initializer list in their factory, outside the
+  // suspended body. Ordinary functions prepend the same list to their body.
+  function lowerArguments(params, body, split = false) {
+    const finish = (p, b, init) => split ? [p, b, init]
+      : [p, init.length ? prependParamDecls(init.length === 1 ? init[0] : [';', ...init], b) : b]
     // Sloppy simple parameter lists may repeat a name. ECMAScript binds the
     // LAST slot; earlier slots are still ABI positions but are unreachable by
     // name. Rename only those earlier duplicates to fresh ignored bindings so
@@ -158,12 +162,14 @@ export function createArgumentsLowering(names) {
     // `arguments`-unsupported guard never sees the name. (test262 13_A15_T3.)
     if (paramsBindArguments(params)) {
       const fresh = names.arg()
-      return lowerArguments(renameArguments(params, fresh), renameArguments(body, fresh))
+      return lowerArguments(renameArguments(params, fresh), renameArguments(body, fresh), split)
     }
     if (bindsArguments(body)) body = stripArgumentsVarDecl(body)
+    const lowered = lowerPatterns(params), init = lowered[1]
+    params = lowered[0]
     const paramsNeedLowering = paramList(params).some(isDestructurePat)
-    const usesArgsObj = usesArguments(params) || usesArguments(body)
-    if (!paramsNeedLowering && !usesArgsObj) return [params, body]
+    const usesArgsObj = usesArguments(params) || usesArguments(body) || init.some(usesArguments)
+    if (!paramsNeedLowering && !usesArgsObj) return finish(params, body, init)
     const name = names.arg()
     const decls = []
     for (const [idx, param] of paramList(params).entries()) {
@@ -182,7 +188,9 @@ export function createArgumentsLowering(names) {
       decls.push(['=', param, ['[]', name, [null, idx]]])
     }
     const renamed = usesArgsObj ? renameArguments(body, name) : body
-    return [['()', ['...', name]], decls.length ? prependParamDecls(['let', ...decls], renamed) : renamed]
+    const initializers = decls.length ? [['let', ...decls]] : []
+    for (const st of init) initializers.push(usesArgsObj ? renameArguments(st, name) : st)
+    return finish(['()', ['...', name]], renamed, initializers)
   }
 
   let transformRef = null

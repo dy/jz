@@ -1165,40 +1165,12 @@ const EXPECTED_FAIL_FILES = new Map([
   // for-await grammar edges (2026-07-13, wired with async generators):
   ['test/language/statements/for-await-of/head-lhs-async.js',
     '[REJECT] `async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge); compile-time reject'],
-  // async-generator divergences: job ordering is per-drain-cycle (README
-  // "Generators and async... Jobs drain at host boundaries"), and
-  // destructuring / yield* abrupt-completion semantics are approximations of
-  // that same state-machine lowering — every file below LOUDLY fails (an
-  // exception/timeout propagates; none compute a silently-plausible value),
-  // so [DIALECT] by extension of the documented state-machine-lowering bullet.
+  // Job ordering is per drain cycle (the documented host-boundary model).
+  // Iterator binding and generator abrupt-completion cases now pass.
   ['test/language/statements/async-generator/return-undefined-implicit-and-explicit.js',
     '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
   ['test/language/expressions/await/for-await-of-interleaved.js',
     '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
-  ['test/language/statements/async-generator/dstr/ary-ptrn-elision-step-err.js',
-    '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)'],
-  ['test/language/statements/async-generator/dstr/dflt-ary-ptrn-elision-step-err.js',
-    '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)'],
-  ['test/language/statements/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
-    '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)'],
-  ['test/language/statements/async-generator/yield-star-expr-abrupt.js',
-    '[DIALECT] yield* abrupt GetIterator semantics — outside the async-generator v1 (loud failure, not a silent value)'],
-  ['test/language/statements/async-generator/yield-star-getiter-sync-returns-abrupt.js',
-    '[DIALECT] yield* abrupt GetIterator semantics — outside the async-generator v1 (loud failure, not a silent value)'],
-  ...[
-    'test/language/expressions/async-generator/dstr/ary-ptrn-elision-step-err.js',
-    'test/language/expressions/async-generator/dstr/dflt-ary-ptrn-elision-step-err.js',
-    'test/language/expressions/async-generator/dstr/named-dflt-ary-ptrn-elision-step-err.js',
-    'test/language/expressions/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
-    'test/language/expressions/async-generator/dstr/named-ary-ptrn-elision-step-err.js',
-    'test/language/expressions/async-generator/dstr/named-ary-ptrn-rest-id-iter-step-err.js',
-  ].map(f => [f, '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)']),
-  ...[
-    'test/language/expressions/async-generator/named-yield-star-expr-abrupt.js',
-    'test/language/expressions/async-generator/named-yield-star-getiter-sync-returns-abrupt.js',
-    'test/language/expressions/async-generator/yield-star-expr-abrupt.js',
-    'test/language/expressions/async-generator/yield-star-getiter-sync-returns-abrupt.js',
-  ].map(f => [f, '[DIALECT] yield* abrupt GetIterator semantics — outside the async-generator v1 (loud failure, not a silent value)']),
   // Ambiguous BOOL∪NUMBER merge assigned to a binding — REJECTS (was silently
   // wrong). See BOOL_CARRIER's own doc comment, point 4.
   ...[

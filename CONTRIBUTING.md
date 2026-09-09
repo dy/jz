@@ -90,6 +90,11 @@ Function-local layouts belong in `localReps`, carried by the function plan.
 Do not publish inferred local or parameter schemas in `ctx.schema.vars`:
 specialized variants reuse source binding names but can require different layouts.
 
+Parameter initialization is owned by `jzify/arguments.js`. Ordinary functions
+prepend its initializers to the body; generator factories run the same list
+before creating the suspended machine. Iterator array parameters use lazy pulls
+and close on early completion. Keep parameter effects outside the state machine.
+
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
 ## Adding a stdlib method

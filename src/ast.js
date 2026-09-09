@@ -579,6 +579,8 @@ export const collectParamName = (r, out) => {
   if (!Array.isArray(r)) return
   if (r[0] === '=' && typeof r[1] === 'string') { out.add(r[1]); return }
   if (r[0] === '...' && typeof r[1] === 'string') { out.add(r[1]); return }
+  if (r[0] === ':') { collectParamName(r[2], out); return }
+  if (r[0] === '...' && Array.isArray(r[1])) { collectParamName(r[1], out); return }
   if (r[0] === '=' && Array.isArray(r[1])) { collectParamName(r[1], out); return }
   if (r[0] === '[]' || r[0] === '{}' || r[0] === ',')
     for (let i = 1; i < r.length; i++) collectParamName(r[i], out)
