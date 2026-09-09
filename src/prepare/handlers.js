@@ -2783,7 +2783,8 @@ function prepareModule(specifier, source) {
         node[2] = walk(node[2], collectParamNames(extractParams(node[1]), new Set(skip)))
         return node
       }
-      for (let j = 0; j < node.length; j++) node[j] = walk(node[j], skip)
+      // The head is an AST operator, never a binding (e.g. ['bool', 1]).
+      for (let j = 1; j < node.length; j++) node[j] = walk(node[j], skip)
       return node
     }
     for (let i = savedFuncCount; i < ctx.funcs.list.length; i++) {

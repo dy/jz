@@ -5,6 +5,19 @@ import { onWasi, adaptI64 } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 
+test('module renaming preserves AST operators that share a binding name', () => {
+  const modules = { m: `
+    const bool = x => x
+    export const flag = bool(true)
+    export const f = x => bool(x) === true
+  ` }
+  for (const optimize of [0, 1, 2, 3, 'fast']) {
+    const { exports: e } = jz('import { f, flag } from "m"; export const run = x => f(x) && flag', { modules, optimize })
+    is(e.run(true), true)
+    is(e.run(false), false)
+  }
+})
+
 // Helper: compile and run
 function run(code) {
   const wasm = compile(code)
