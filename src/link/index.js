@@ -1,8 +1,7 @@
 /**
  * Link: the assembled module goes onto the IR tape, the body and
  * whole-module passes run, and the module comes back as WAT arrays for
- * watr. Bodies first: the fold, loop rotation, the condition chains and the
- * boolean canonicalization, then the low-word mask fold and the arena
+ * watr. Bodies first: the fold and loop rotation, then the low-word mask fold and the arena
  * rewind. Then the module's shape: dead functions and globals go
  * (treeshake), the custom sections the interop layer reads describe what
  * survived, the throw runtime goes when nothing can catch. Then the
@@ -25,8 +24,6 @@ import { orderFuncs } from './order.js'
 import { stripLocalRenameSuffixes } from './rename-locals.js'
 import { funcs } from '../optimize/fn.js'
 import { rotateLoops } from '../optimize/rotate-loops.js'
-import { chainConditions } from '../optimize/cond-chains.js'
-import { simplifyBoolContexts } from '../optimize/bool-contexts.js'
 import { fold } from '../optimize/fold.js'
 import { foldLowWordMasks } from '../optimize/low-word-mask.js'
 import { arenaRewind } from '../optimize/arena-rewind.js'
@@ -45,14 +42,10 @@ export function link(module, facts) {
   resetTape()
   const root = fromWat(module)
   if (DBG) check(root, 'after decode')
-  // The fold first; rotation before the chains, so a fused back edge's `&&` test chains too;
-  // the canonicalization last, so its back edges and the promoted globals' `i32.ne(x, 0)`
-  // conditions get cleaned.
+  // Fold before rotation; watr subsequently simplifies the resulting conditions.
   for (const f of funcs(root)) {
     if (!cfg || cfg.fusedRewrite !== false) fold(f)
     if (cfg && cfg.rotateLoops === true) rotateLoops(f)
-    if (!cfg || cfg.chainConditions !== false) chainConditions(f)
-    if (!cfg || cfg.fusedRewrite !== false) simplifyBoolContexts(f)
   }
   if (DBG) check(root, 'after the body passes')
   if (!cfg || cfg.fusedRewrite !== false) foldLowWordMasks(root)

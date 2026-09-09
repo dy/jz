@@ -4945,7 +4945,7 @@ test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def b
   ok(!/local\.tee[\s\S]{0,40}f64\.neg/.test(fn), 'no tee-guarded NaN-canon wrapper survives around f64.neg')
 })
 
-// `&&`/`||` in a condition position lower to branch chains (optimize/cond-chains.js):
+// watr lowers `&&`/`||` in a condition position to branch chains:
 // one conditional branch per operand, no value diamond, no phi. The short-circuit
 // order and count of evaluations are those of the diamond, so side effects in the
 // operands land exactly once and only when reached.
@@ -4970,5 +4970,5 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   ok(!/\(if\s*\(result i32\)\s*\(local\.tee/.test(body), 'no value diamond in the function')
   ok(body.includes('$__cc'), 'the jump chain is present')
   const ref = (x) => { let e = {}; new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e); return e.f(x) }
-  for (const O of [0, 2, 3, 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
+  for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
 })

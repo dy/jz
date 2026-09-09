@@ -19,8 +19,6 @@ import { sortLocalsByUse } from '../src/optimize/sort-locals.js'
 import { foldLowWordMasks } from '../src/optimize/low-word-mask.js'
 import { fold } from '../src/optimize/fold.js'
 import { rotateLoops } from '../src/optimize/rotate-loops.js'
-import { chainConditions } from '../src/optimize/cond-chains.js'
-import { simplifyBoolContexts } from '../src/optimize/bool-contexts.js'
 import { funcs } from '../src/optimize/fn.js'
 import { T as MARK } from '../src/ast.js'
 
@@ -309,8 +307,7 @@ test('low-word mask fold on the tape', () => {
   ok(same(out[1][4], m[1][4]), 'a narrower mask stays')
 })
 
-// The body passes on the tape (src/optimize: fold, rotate-loops, cond-chains,
-// bool-contexts): each takes a function and rewrites it in place.
+// The remaining body passes on the tape (fold and loop rotation) rewrite functions in place.
 const body = (mod, pass) => { resetTape(); const root = fromWat(mod); for (const f of funcs(root)) pass(f); is(verify(root), null); return toWat(root) }
 const fn = (...stmts) => ['module', ['func', '$f', ['param', '$x', 'i32'], ['param', '$d', 'f64'], ['result', 'i32'], ['local', '$t', 'f64'], ['local', '$u', 'f64'], ...stmts]]
 const INF = ['f64.const', Infinity]
@@ -342,20 +339,4 @@ test('rotate loops on the tape: the top test becomes a guard and a fused back ed
   ok(same(body(fn(loop(['f64.lt', ['local.get', '$d'], ['f64.const', 1]])), rotateLoops)[1][7][4][3][2], ['i32.eqz', ['f64.lt', ['local.get', '$d'], ['f64.const', 1]]]), 'an f64 compare wraps: NaN')
   const cont = fn(['block', '$brk', ['loop', '$l', ['br_if', '$brk', cond], ['br_if', '$l', ['local.get', '$x']], ['br', '$l']]])
   ok(same(body(cont, rotateLoops), cont), 'a branch to the loop label keeps the top test')
-})
-
-test('condition chains on the tape: a diamond in a condition becomes branches, its temp goes', () => {
-  const and = ['if', ['result', 'i32'], ['local.tee', '$c', ['local.get', '$x']], ['then', ['local.get', '$y']], ['else', ['local.get', '$c']]]
-  const mod = ['module', ['func', '$f', ['param', '$x', 'i32'], ['param', '$y', 'i32'], ['local', '$c', 'i32'], ['if', and, ['then', ['call', '$g']]]]]
-  ok(same(body(mod, chainConditions), ['module', ['func', '$f', ['param', '$x', 'i32'], ['param', '$y', 'i32'], ['block', '$__cc0', ['br_if', '$__cc0', ['i32.eqz', ['local.get', '$x']]], ['br_if', '$__cc0', ['i32.eqz', ['local.get', '$y']]], ['call', '$g']]]]), 'A && B: jump-if-false per operand, the tee\'s local dropped')
-  const or = ['if', ['result', 'i32'], ['local.tee', '$c', ['local.get', '$x']], ['then', ['local.get', '$c']], ['else', ['local.get', '$y']]]
-  const br = ['module', ['func', '$f', ['param', '$x', 'i32'], ['param', '$y', 'i32'], ['local', '$c', 'i32'], ['block', '$out', ['br_if', '$out', or], ['call', '$g']]]]
-  ok(same(body(br, chainConditions), ['module', ['func', '$f', ['param', '$x', 'i32'], ['param', '$y', 'i32'], ['block', '$out', ['br_if', '$out', ['local.get', '$x']], ['br_if', '$out', ['local.get', '$y']], ['call', '$g']]]]), 'A || B in a br_if: jump-if-true per operand')
-  const kept = ['module', ['func', '$f', ['param', '$x', 'i32'], ['param', '$y', 'i32'], ['local', '$c', 'i32'], ['if', and, ['then', ['call', '$g']]], ['drop', ['local.get', '$c']]]]
-  ok(same(body(kept, chainConditions)[1][5], ['block', '$__cc0', ['br_if', '$__cc0', ['i32.eqz', ['local.tee', '$c', ['local.get', '$x']]]], ['br_if', '$__cc0', ['i32.eqz', ['local.get', '$y']]], ['call', '$g']]), 'a temp read elsewhere keeps its tee')
-})
-
-test('bool contexts on the tape: `x != 0` and a double eqz strip at a condition, not at a value', () => {
-  const mod = fn(['if', ['i32.ne', ['local.get', '$x'], ['i32.const', 0]], ['then', ['nop']]], ['br_if', '$b', ['i32.eqz', ['i32.eqz', ['local.get', '$x']]]], ['i32.ne', ['local.get', '$x'], ['i32.const', 0]])
-  ok(same(body(mod, simplifyBoolContexts), fn(['if', ['local.get', '$x'], ['then', ['nop']]], ['br_if', '$b', ['local.get', '$x']], ['i32.ne', ['local.get', '$x'], ['i32.const', 0]])))
 })

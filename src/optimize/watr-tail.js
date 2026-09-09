@@ -12,7 +12,7 @@
  *
  * @module optimize/watr-tail
  */
-import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, localReuse } from 'watr/optimize'
+import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, localReuse, bool, conditions } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
@@ -124,6 +124,8 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // while caller-level constant propagation and hot-call removal become live.
   if (boundaryPins.length) watrOpts.pin = [...watrOpts.pin, ...boundaryPins]
   if (cfg.propagateLocals === false && watrOpts.propagate === undefined) watrOpts.propagate = false
+  if (watrOpts.conditions === undefined) watrOpts.conditions = cfg.chainConditions !== false
+  if (watrOpts.bool === undefined) watrOpts.bool = cfg.fusedRewrite !== false
   return watrOpts
 }
 
@@ -449,8 +451,9 @@ export function watrTail(module, cfg, {
   // Fast mode uses the same passes without the full module fixpoint.
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts))
     : time('watCleanup', () => {
+      if (cfg.chainConditions !== false) conditions(legalized)
       const locals = cfg.propagateLocals !== false ? localReuse(mergeLocals(propagate(legalized))) : legalized
-      return cfg.fusedRewrite !== false ? mergeBlocks(vacuum(locals)) : locals
+      return cfg.fusedRewrite !== false ? mergeBlocks(vacuum(bool(locals))) : locals
     })
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')

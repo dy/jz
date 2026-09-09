@@ -3,8 +3,8 @@
  * (fusedRewrite/walkRewrite — the generic rewrite walker), the branchless
  * select conversions (boolConvertToSelect, if→select inside walkRewrite),
  * and the late ptr_offset inliner (inlinePtrOffsetFastPass) + its
- * v128-memarg twin (foldV128Memargs). Loop rotation and the boolean-context
- * canonicalization run on the tape (rotate-loops.js, bool-contexts.js).
+ * v128-memarg twin (foldV128Memargs). Loop rotation runs on the tape;
+ * condition canonicalization belongs to watr.
  *
  * @module optimize/peephole
  */
