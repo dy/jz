@@ -892,7 +892,7 @@ test('trampoline arity: closure ABI widens to a table-resident function arity', 
 test('builtin as first-class value: Array.isArray callback (self-compile kernel shape)', () => {
   // watr's optimizer passes the bare builtin to .filter (`kids.filter(Array.isArray)`),
   // so the self-compile kernel must compile it — builtinFunctionValue mints a
-  // uniform-ABI table entry for it (FIRST_CLASS_BUILTIN_BODY, emit.js).
+  // ordinary lifted wrapper for it (prepare/entry.js).
   const { run } = runHost(`
     export let run = (z) => {
       let xs = [[1,2], 3, [4], 's', 7]
@@ -1920,4 +1920,14 @@ test('a property arrow dissolves its literal array local like a lifted function'
     const lit = { rgb: (h) => { const out = [0, 0, 0]; return out[0] + h } }
     export let f = (h) => hcl.rgb(h) * 10 + lit.rgb(h)`)
   is(exports.f(2), 22)
+})
+
+test('scalar builtin callbacks retain predicate types and binary parameter counts', () => {
+  const src = `export let predicates = () => [true, '1', NaN, Infinity, 2, 2.5].map(Number.isFinite).join()
+    export let integers = () => [true, '1', NaN, 2, 2.5].map(Number.isInteger).join()
+    export let powers = () => [2, 3, 4].map(Math.pow).join()
+    export let absolute = () => [-2, 0, 3].map(Math.abs).join()`
+  const js = Function(src.replaceAll('export let ', 'let ') + '; return {predicates, integers, powers, absolute}')()
+  const ex = jz(src).exports
+  for (const key of Object.keys(js)) is(ex[key](), js[key](), key)
 })

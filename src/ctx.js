@@ -14,6 +14,7 @@
 import { makeAbi } from './abi/index.js'
 import { createActiveFunction, isInactiveFunction } from './compile/active-function.js'
 import { HOT_PASSES } from './passes.js'
+import { INTRINSIC_ARITY } from './builtin-signatures.js'
 export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR, followForwardingWat } from '../layout.js'
 
 // === Carrier layout ===
@@ -153,8 +154,9 @@ export const emitter = (deps, fn) => {
 }
 
 /** Logical arity of an emit handler: wrapped handlers (emitter/call/method/dual)
- *  carry it as `.argc`; bare ones expose it as the function's own `.length`. */
-export const emitArity = (h) => h?.argc ?? h?.length
+ *  carry it as `.argc`; bare ones expose it as the function's own `.length`.
+ *  Fixed intrinsic signatures take precedence so kernel compilation needs no reflection. */
+export const emitArity = (h, name) => (name ? INTRINSIC_ARITY[name] : undefined) ?? h?.argc ?? h?.length
 
 /** THE guarded write for the structured stdlib-registration dialects —
  *  reg()/wat()/bind() (src/bridge.js) and registerGetter() below. Throws

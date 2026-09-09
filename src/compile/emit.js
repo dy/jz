@@ -46,6 +46,5 @@
  */
 
 export { emit, toBool, emitIdentitySafe, emitVoid, emitBlockBody, emitBoolStr, emitIndex, resolveClosureTableParamLattice } from './emit/dispatch.js'
-export { FIRST_CLASS_BUILTIN_NAMES } from './emit/first-class.js'
 export { buildArrayWithSpreads } from './emit/call-args.js'
 export { emitter } from './emit/index.js'

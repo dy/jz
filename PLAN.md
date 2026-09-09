@@ -56,7 +56,9 @@ tape implementations and linker sweeps are removed.
 Snapshot initialization reuses the probe's encoded function bodies when removing
 the start preserves indices; changed layouts use the ordinary encoder. Compiler
 artifacts explicitly target the JS host, independently of the test matrix.
-JZ retains lowering-specific optimization and representation proofs.
+Fixed scalar builtin callbacks normalize to ordinary functions during prepare,
+using signatures that both compiler hosts can read. Their separate WAT closure
+emitter is removed. JZ retains lowering-specific optimization and representation proofs.
 Static data and shared string pools now stay in Uint8Array chunks from their
 producers through relocation and WAT escaping. Binary serialization no longer
 depends on JavaScript string character semantics.

@@ -1509,7 +1509,7 @@ const handlers = {
     if (mod) {
       includeModule(mod)
       const key = mod + '.' + prop
-      if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
+      if (emitArity(ctx.core.emit[key], key) > 0) includeForCallableValue()
       return key
     }
     // `Namespace.method.length`/`.name` — the OUTER `.` here has a receiver
@@ -1657,9 +1657,9 @@ function staticTypeofString(x) {
   // Spec §13.5.3: unresolvable bare ref → 'undefined'.
   if (isUnresolvableBareIdent(x)) return 'undefined'
   // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
-  if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && emitArity(ctx.core.emit?.[x]) > 0) return 'function'
+  if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && emitArity(ctx.core.emit?.[x], x) > 0) return 'function'
   const px = prep(x)
-  if (typeof px === 'string' && px.includes('.') && emitArity(ctx.core.emit?.[px]) > 0) return 'function'
+  if (typeof px === 'string' && px.includes('.') && emitArity(ctx.core.emit?.[px], px) > 0) return 'function'
   return null
 }
 function resolveTypeof(node) {
@@ -1866,20 +1866,20 @@ function registerBuiltinAlias(name, key) {
     // got a closure — NaN (the window-function taylor memo died on A = …/PI).
     // Return false: the caller falls through to an ordinary global declaration
     // whose init emits the constant.
-    if ((emitArity(ctx.core.emit[key]) || 0) === 0) return false
+    if ((emitArity(ctx.core.emit[key], key) || 0) === 0) return false
     // An alias carries no runtime storage, but an EXPORT needs some — synthesize
     // the wrapping function the old error told users to write by hand
     // (`export let { sin, cos } = Math` — window-function's util.js — must just
     // work). Arity from the emitter; in-module calls direct-call the wrapper,
     // which inlines back to the builtin under watr.
-    const arity = Math.max(1, emitArity(ctx.core.emit[key]) || 1)
+    const arity = Math.max(1, emitArity(ctx.core.emit[key], key) || 1)
     const params = Array.from({ length: arity }, (_, i) => `${T}ba${i}`)
     const paramsNode = params.length === 1 ? params[0] : [',', ...params]
     const wrapped = prep(['=>', paramsNode, ['()', key, params.length === 1 ? params[0] : [',', ...params]]])
     if (defFunc(name, wrapped)) return true
     err(`'${name}' aliases builtin '${key}' and cannot be exported directly — export a wrapping function instead`)
   }
-  if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
+  if (emitArity(ctx.core.emit[key], key) > 0) includeForCallableValue()
   if (prepState.depth === 0) {
     ctx.scope.chain[name] = key
   } else {

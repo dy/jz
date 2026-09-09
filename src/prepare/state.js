@@ -235,7 +235,7 @@ export const NS_CTORS = new Set(['Number', 'String', 'Boolean', 'BigInt', 'Objec
 //     general shape behind the `const alias = fn` fast path above).
 //   - a bare non-call reference falls through to the SAME first-class-value /
 //     constant-fold path a literal `Math.sin` reference hits at emit time
-//     (`builtinFunctionValue` / arity-0 constant fold) — succeeds or fails
+//     (ordinary function lowering / arity-0 constant fold) — succeeds or fails
 //     identically to the dotted form; never silently wrong.
 // Exports and reassignment are rejected with a clear error (see `registerBuiltinAlias`
 // and the reassignment guard in the main `prep()` dispatch) rather than

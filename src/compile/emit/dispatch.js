@@ -6,7 +6,7 @@
 
 import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, JZ_UNDEF, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
-import { DBG_INVARIANTS, PTR, ctx, err, inc, setLinkDemand } from '../../ctx.js'
+import { DBG_INVARIANTS, PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
@@ -24,7 +24,6 @@ import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
 } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
-import { FIRST_CLASS_BUILTIN_BODY, FIRST_CLASS_UNARY_MATH, builtinFunctionValue } from './first-class.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectCondOK } from './shared.js'
 import { K, core as summaryCore, tagOf as summaryTagOf } from '../../summary/kind.js'
 
@@ -1627,7 +1626,7 @@ export function emit(node, expect) {
         }
       }
       // ctx.closure.mint (not a bare table.push) — same funcIdx-alignment
-      // reason as builtinFunctionValue above. A top-level function used as
+      // reason as other function values. A top-level function used as
       // a bare value has no captures (its real params are forwarded inline
       // by the trampoline body, not carried via an env block), so the
       // default {len:0, cellMask:0} meta is correct here too.
@@ -1637,22 +1636,13 @@ export function emit(node, expect) {
       return ir
     }
     // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision.
-    // Two flavors of entry: arity-0 handlers are constants (e.g. `math.PI` →
-    // emits `f64.const PI`) and can be invoked directly here; arity-≥1 handlers
-    // expect the surrounding call node, so bare-name use of them is a
-    // first-class-value reference — wrap as a closure. The flavor test is
-    // STRUCTURAL membership in the first-class tables, NOT `handler.length`:
-    // function arity reads are unsupported in jz output semantics, so when the
-    // compiler itself runs self-compiled, `.length` is undefined and an
-    // arity-based test routed every first-class builtin into the niladic
-    // handler() — an empty-IR internal error (`({sqrt} = Math)` in-kernel).
-    // `handler.length` remains only as the fallback that preserves the
-    // friendly "cannot be used as first-class value" error natively for
-    // callable builtins NOT in the tables.
+    // Callable values were normalized to ordinary functions during prepare.
+    // Niladic value emitters (Math.PI and other constants) remain bare names.
     if (node.includes('.') && ctx.core.emit[node]) {
       const handler = ctx.core.emit[node]
-      const isCallable = FIRST_CLASS_UNARY_MATH[node] != null || FIRST_CLASS_BUILTIN_BODY[node] != null || handler.length > 0
-      return isCallable ? builtinFunctionValue(node) : handler()
+      if (emitArity(handler, node) > 0)
+        err(`Builtin function '${node}' cannot be used as a first-class value here — wrap the call in an arrow`)
+      return handler()
     }
     // Auto-import known host globals (WebAssembly, globalThis, etc.). Emit only
     // records the usage; the `(import "env" … (global … i64))` node is drained

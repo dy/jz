@@ -33,7 +33,6 @@
 
 import { ctx, emitArity } from '../ctx.js'
 import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeModule } from '../autoload.js'
-import { FIRST_CLASS_BUILTIN_NAMES } from '../compile/emit.js'
 import { T, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
 import { prep } from './handlers.js'
@@ -46,20 +45,20 @@ import { prepState, resetPrepState } from './state.js'
 
 
 // A builtin function referenced as a value (`xs.every(Number.isFinite)`,
-// `arr.map(Math.round)`) that has no hand-written closure form becomes a
+// `arr.map(Math.round)`) becomes a
 // top-level arrow of the builtin's arity, lifted like any user function, so
 // the closure machinery carries it. Callee positions and property keys are
 // not values. The wrapper is minted once per builtin.
 const wrapBuiltinValues = (ast) => {
   const wrappers = new Map()
   const inits = []
-  const isBuiltinValue = (s) => typeof s === 'string' && s.includes('.') && !FIRST_CLASS_BUILTIN_NAMES.has(s)
-    && ctx.core.emit[s] != null && emitArity(ctx.core.emit[s]) > 0 && !ctx.funcs.names.has(s)
+  const isBuiltinValue = (s) => typeof s === 'string' && s.includes('.')
+    && ctx.core.emit[s] != null && emitArity(ctx.core.emit[s], s) > 0 && !ctx.funcs.names.has(s)
   const wrapperFor = (name) => {
     let w = wrappers.get(name)
     if (w) return w
     w = `${T}bw${wrappers.size}_${name.replace(/\W/g, '_')}`
-    const n = emitArity(ctx.core.emit[name])
+    const n = emitArity(ctx.core.emit[name], name)
     const params = Array.from({ length: n }, (_, i) => `${T}a${i}`)
     const args = params.length === 1 ? params[0] : [',', ...params]
     const decl = prep(['const', ['=', w, ['=>', ['()', args], ['()', name, args]]]])
@@ -131,10 +130,10 @@ export default function prepare(node) {
   if (!ctx.module.modules.fn) {
     const funcNames = new Set(ctx.funcs.list.map(f => f.name))
     // A bare reference is a first-class function VALUE if it names either a user
-    // function or a builtin `builtinFunctionValue` can mint a closure-table entry
+    // function (including a normalized builtin wrapper) needs a closure-table entry
     // for (e.g. `xs.filter(Array.isArray)` — prep collapses the member access to
     // the string "Array.isArray" before this scan runs, same shape as a user name).
-    const isFuncValueName = a => funcNames.has(a) || FIRST_CLASS_BUILTIN_NAMES.has(a)
+    const isFuncValueName = a => funcNames.has(a)
     const visit = (n) => {
       if (!Array.isArray(n)) return false
       const op = n[0]
