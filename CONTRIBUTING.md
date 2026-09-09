@@ -11,7 +11,7 @@ node bench/bench.mjs  # run benchmarks
 
 ### Shared watr optimizer
 
-`package.json` and the lockfile pin the public watr source archive at `cdc631a`.
+`package.json` and the lockfile pin the public watr source archive at `3397784`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -19,6 +19,8 @@ and integrity hash keep CI reproducible.
 
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The duplicate JZ implementations and cleanup sweep are removed.
+Guarded scalar updates are converted to selects in watr using Wasm types,
+after JZ lowers the original branches with their settled representation facts.
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 

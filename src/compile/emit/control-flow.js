@@ -20,8 +20,6 @@ import {
 import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
-import { matchVoidLocalStore } from './comparisons.js'
-import { isSideEffectFree } from './shared.js'
 import { emit, emitVoid, toBool } from './dispatch.js'
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
@@ -328,21 +326,6 @@ export const controlFlowOps = {
       if (truthy) return emitVoid(then)
       if (els != null) return emitVoid(els)
       return null
-    }
-    // If-conversion (speed tier): `if (cond) x = <cheap pure value>` (no else) → `x = cond ? value
-    // : x`, which lowers to a branchless `select`. Removes the data-dependent branch (and its
-    // misprediction) from min/max/clamp reductions — e.g. levenshtein's `if (ins < m) m = ins`,
-    // ~27% faster — and from heapsort's child pick `if (a[c] < a[c+1]) c++`, the canonical
-    // unpredictable compare that costs jz on x86 (Cranelift/V8-x64 keep the branch; Binaryen, which
-    // AS uses, selects it). The condition is evaluated exactly once whether we branch or select, so
-    // it need only be SIDE-EFFECT-FREE (loads allowed — sort's `a[c] < a[c+1]`); only the assigned
-    // VALUE is evaluated unconditionally, hence must be a cheap, trap-free pure expr. `x++`/`x--`
-    // are admitted as `x = x ± 1`. The already-emitted condition `ce` is reused (`__emitted`), so a
-    // load-bearing condition is not emitted twice.
-    if (els == null && ctx.transform.optimize?.boolConvertToSelect && isSideEffectFree(cond)) {
-      const asg = Array.isArray(then) && then[0] === ';' && then.length === 2 ? then[1] : then
-      const sel = matchVoidLocalStore(asg)
-      if (sel) return emitVoid(['=', sel.lhs, ['?:', ['__emitted', ce], sel.val, sel.lhs]])
     }
     const c = ce.type === 'i32' ? ce : toBoolFromEmitted(ce)
     // Flow-sensitive type refinement: narrow types within each branch based on the guard.

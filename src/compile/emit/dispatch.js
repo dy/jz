@@ -1516,10 +1516,6 @@ export function emit(node, expect) {
     if (node.loc != null) ctx.error.loc = node.loc
   }
   if (node == null) return null
-  // Pre-emitted IR passthrough: `['__emitted', ir]` returns `ir` untouched. Lets a caller that
-  // already emitted a subtree (e.g. the `if` handler's condition) splice it into an AST-shaped
-  // re-emit (a `?:` for if→select conversion) without emitting it a second time.
-  if (Array.isArray(node) && node[0] === '__emitted') return node[1]
   // Boolean literals carry VAL.BOOL for type observation (valTypeOf reads the
   // AST), but their working representation is the plain number 0/1 — identical
   // codegen to the pre-carrier `[, 1]`/`[, 0]` folding, so no perf is paid.

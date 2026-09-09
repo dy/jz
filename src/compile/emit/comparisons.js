@@ -19,7 +19,7 @@ import { BIGINT_REP_RAW, bigintRepBits, bigintRepIsClosed, representationActiveM
 import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { emitInstanceof } from './instanceof.js'
-import { REF_EQ_KINDS, foldOperandPure, isLit1, stringOps } from './shared.js'
+import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
 
 
 // Sign+exponent mask isolating "negative NaN or -Infinity" — used only after an
@@ -474,52 +474,6 @@ const i32TopBitClear = (n) => {
 const i32EqSound = (pa, pb) => pa.sign === pb.sign ||
   i32TopBitClear((pa.sign === 'u' ? pa : pb).src)
 
-// A memory-free, trap-free, side-effect-free expression — safe to evaluate UNCONDITIONALLY (as a
-// `select` arm does) and cheap enough that doing so never loses to a branch. Locals/consts and
-// arithmetic/bitwise/compare/logical over them. Excludes loads (`[]`, may read OOB when the guard
-// was protecting the access), calls, `.`/`?.` (dispatch), `/` `%` (int trap on 0), assignments.
-const CHEAP_PURE_OPS = new Set(['+', '-', '*', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>', '~',
-  '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '!', '?:'])
-const isCheapPureVal = (n) => {
-  if (typeof n === 'string' || typeof n === 'number') return true
-  if (!Array.isArray(n)) return false
-  if (n[0] == null) return true                              // boxed literal [, v]
-  if (n[0] === 'local.get') return true
-  if (CHEAP_PURE_OPS.has(n[0])) {
-    // A reference read is cheap; arithmetic on it may coerce or throw.
-    for (let i = 1; i < n.length; i++) {
-      const kind = valTypeOf(n[i])
-      if ((kind !== VAL.NUMBER && kind !== VAL.BOOL) || !isCheapPureVal(n[i])) return false
-    }
-    return true
-  }
-  return false
-}
-
-// A void statement whose whole effect is `x = <cheap pure value>` for a simple local `x` — the
-// shape if→select can lower to `x = cond ? value : x`. Recognizes the plain assignment plus the
-// increment forms `++x`/`--x` and their postfix lowerings `(++x) - 1` / `(--x) + 1` (prepare turns
-// `x++` in statement position into the latter; the discarded ∓1 is dead in void context, so the
-// net effect is the increment). Returns `{ lhs, val }` or null.
-export function matchVoidLocalStore(s) {
-  if (!Array.isArray(s)) return null
-  const lhs = typeof s[1] === 'string' ? s[1] : Array.isArray(s[1]) ? s[1][1] : null
-  const kind = typeof lhs === 'string' && valTypeOf(lhs)
-  // Synthetic joins have no representation plan: retain a proven carrier,
-  // including pointer copies, but never synthesize BigInt materialization.
-  if (!kind || kind === VAL.BIGINT || hasAmbiguousBoolMerge(lhs)) return null
-  if (s[0] === '=' && typeof s[1] === 'string' && valTypeOf(s[2]) === kind && isCheapPureVal(s[2])) return { lhs: s[1], val: s[2] }
-  if (kind !== VAL.NUMBER) return null
-  if ((s[0] === '++' || s[0] === '--') && typeof s[1] === 'string')
-    return { lhs: s[1], val: [s[0] === '++' ? '+' : '-', s[1], [, 1]] }
-  // postfix: `x++` → `(++x) - 1`, `x--` → `(--x) + 1`
-  if ((s[0] === '-' || s[0] === '+') && isLit1(s[2]) && Array.isArray(s[1])
-      && (s[1][0] === '++' || s[1][0] === '--') && typeof s[1][1] === 'string') {
-    const inc = s[1][0] === '++'
-    if ((inc && s[0] === '-') || (!inc && s[0] === '+')) return { lhs: s[1][1], val: [inc ? '+' : '-', s[1][1], [, 1]] }
-  }
-  return null
-}
 function effectFoldSeq(operands, constIR) {
   const stmts = []
   for (const o of operands) if (o != null && !foldOperandPure(o)) stmts.push(['drop', emit(o)])

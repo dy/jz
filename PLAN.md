@@ -20,14 +20,7 @@ and installs reliably. Compiler architecture serves that result.
    Gain is stateless: next use a filter or the existing compressor to exercise
    exact frame counts, variable blocks, persistent state and instance teardown.
    Keep the same source and JS oracle for both compiler chains.
-3. **Remove late AST rewrites that bypass settled facts.** The O3
-   `if (condition) value |= bigint` regression came from emitter-time
-   if-to-select rewriting losing the boxed result's representation plan.
-   The immediate fix requires compatible proven kinds and numeric arithmetic
-   operands. The next deletion is to let watr's existing `ifset` own this conversion, extending
-   its numeric-local handling only as needed to retain current speed tests.
-   Do not add another analysis pass to repair synthetic emitter ASTs.
-4. **Make ownership explicit where it fails.** Keep compiler-specific memory
+3. **Make ownership explicit where it fails.** Keep compiler-specific memory
    layouts behind the existing DSP adapter. Establish setup/process/disposal
    ownership and bounded callback allocation before generalizing compile-vst.
    For JZ itself, measure warm compiler allocation and reset behavior before
@@ -55,7 +48,9 @@ The slot-kind census, local value trackers, Map/dictionary alias traces and
 repeated parameter-kind joins are removed. Literal tuple positions and
 container constructor contents live in summary cells, with mutation and
 escape invalidation. Generic local propagation and merging now run in watr
-after linking; the duplicate JZ local passes and cleanup sweep are removed.
+after linking. Guarded scalar updates become selects there too, using Wasm
+local types, without synthesizing conditional ASTs after representation planning.
+The duplicate local passes, update matcher and cleanup sweep are removed.
 JZ retains lowering-specific optimization and representation proofs.
 
 ## Release gates
