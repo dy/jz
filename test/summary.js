@@ -143,10 +143,10 @@ test('summary: dynamic literals analyze callbacks after spreads and computed key
         if (name === 'ok') name = 'yes'
         return JSON.stringify(name)
       } }
-      export const run = () => table.f(['()', 'ok'])`
-    const expected = Function(src.replace('export const run', 'const run') + '; return run()')()
+      export const probe = () => table.f(['()', 'ok'])`
+    const expected = Function(src.replace('export const probe', 'const probe') + '; return probe()')()
     for (const optimize of [0, 2, 3])
-      is(jz(src, { optimize }).exports.run(), expected, `${first}, O${optimize}`)
+      is(jz(src, { optimize }).exports.probe(), expected, `${first}, O${optimize}`)
   }
 })
 
