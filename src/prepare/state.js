@@ -10,7 +10,6 @@
  * @module prepare/state
  */
 
-import { JZ_NULL, JZ_UNDEF } from '../ast.js'
 import { ctx, registerResetHook } from '../ctx.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
@@ -159,13 +158,12 @@ registerResetHook(resetPrepState)
 
 export const freshPrepareId = () => ctx.names.prepare++
 
-// Named constants → numeric literals. The JZ_NULL/JZ_UNDEF atom sentinels live
-// in ast.js — shared with emit without crossing the prepare↔compile boundary.
+// Named constants → literal values. Null and undefined keep their JS values.
 // Prototype-less (Object.create(null)): a plain `{}` inherits Object.prototype in V8, so
 // `'valueOf' in CONSTANTS` / `CONSTANTS['toString']` would hit an inherited method and
 // mis-resolve a user identifier named like an Object method (jz.js-only — kernel objects
 // are already prototype-less). Same reason on F64_CONSTANTS / GLOBALS / REJECT_IDENTS.
-export const CONSTANTS = Object.assign(Object.create(null), { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_UNDEF })
+export const CONSTANTS = Object.assign(Object.create(null), { 'true': true, 'false': false, 'null': null, 'undefined': undefined })
 // NaN/Infinity stay as special f64 values in emit()
 export const F64_CONSTANTS = Object.assign(Object.create(null), { 'NaN': NaN, 'Infinity': Infinity })
 

@@ -99,8 +99,21 @@ VT['{}'] = (args) => {
   return null
 }
 
+// A nullish comparison against a settled, present kind has one reachable arm.
+// Use that fact before choosing a carrier or rejecting an identity join. The
+// comparison emitter still evaluates the operand, preserving its effects.
+const conditionValue = node => {
+  const literal = literalTruthiness(node)
+  if (literal != null || !Array.isArray(node)) return literal
+  const op = node[0]
+  if (op !== '===' && op !== '!==' && op !== '==' && op !== '!=') return null
+  const other = nullishArm(node[1]) ? node[2] : nullishArm(node[2]) ? node[1] : null
+  if (other == null || !ctx.summary?.at(ctx.func.current).valOfExpr(other)) return null
+  return op === '!==' || op === '!='
+}
+
 VT['?:'] = (args) => {
-  const truthy = literalTruthiness(args[0])
+  const truthy = conditionValue(args[0])
   if (truthy != null) return valTypeOf(truthy ? args[1] : args[2])
   const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
   if (ta && ta === tb) return ta
@@ -185,7 +198,7 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   const op = node[0]
   if (op === '?:') {
     const cond = node[1], a = node[2], b = node[3]
-    const truthy = literalTruthiness(cond)
+    const truthy = conditionValue(cond)
     if (truthy != null) return hasAmbiguousBoolMerge(truthy ? a : b, vt)
     const ta = vt(a), tb = vt(b)
     if (ta === VAL.BOOL && tb === VAL.NUMBER) return true

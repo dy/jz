@@ -284,7 +284,7 @@ export function summaryQueries(facts) {
       classCallee: (recv, name) => { const r = kindOfExpr(recv); if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null; const fn = classMember(r, name); return fn && !memberMayBeOwn(name) ? fn : null },
       // valOf deliberately declines nullable kinds; payload queries do not.
       valOfExpr: e => valOf(kindOfExpr(e)),
-      mayBeNullishExpr: e => isNullable(kindOfExpr(e)),
+      mayBeNullishExpr: e => { const k = kindOfExpr(e); return hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) },
       typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
       typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && paramOf(k) !== UNKNOWN ? ctorFromElemAux(paramOf(k)) : null },
     }

@@ -934,11 +934,8 @@ test('closure-unbox: no reinterpret/wrap_i64 roundtrip in inlined closure call',
     '$f contains wrap_i64(reinterpret_f64 …) — rebox roundtrip survived')
 })
 
-// IIFE arrow whose body is a sparse-array literal. subscript/jessie emits the
-// JZ_NULL Symbol sentinel for the leading hole. When the IIFE callee is an
-// arrow expression, callee dispatch indexed `ctx.core.emit[callee]` which
-// stringified the array node and hit the sentinel: "Cannot convert a Symbol
-// value to a string". The lookup now requires `typeof callee === 'string'`.
+// Compound callees must not be coerced to emitter-table keys. This sparse-array
+// IIFE exercises the ordinary closure path; only string callees name emitters.
 
 test('IIFE arrow returning sparse array literal materializes holes as undefined', () => {
   const { f } = runHost(`export let f = () => (p => [, ''])([1])`)

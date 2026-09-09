@@ -68,7 +68,10 @@ The Wasm adapter forwards allocator export options through the shared session se
 Local schema facts stay in each function's representation plan. Specialized
 variants retain source binding names, so publishing their layouts in the global
 schema map was unsound. Analysis visits every dynamic literal initializer and
-keeps boolean/pointer logical joins distinct.
+keeps boolean/pointer logical joins distinct. Prepared null and undefined are
+ordinary literal values, so the summary sees their presence without private
+symbol sentinels. Strict undefined checks retain the possibility of null;
+destructuring assignment expressions preserve their RHS identity and effects.
 Generator and async exception paths share one finalizer state; normal completion,
 rejection and catch exceptions converge there, and finalizer return/throw overrides
 the pending exception.

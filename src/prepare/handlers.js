@@ -17,7 +17,7 @@
  */
 
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
-import { JZ_UNDEF, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, walkAst } from '../ast.js'
+import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, walkAst } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -310,7 +310,7 @@ const handlers = {
     err('delete not supported on a static key: object shape is fixed — use a computed key with a variable (`delete obj[k]`) if the key must vary at runtime')
   },
   'in'(key, obj) { return ['in', prep(key), prep(obj)] },
-  'label'(name, body) { return ['label', name, prep(body)] },
+  'label'(name, body) { return ['label', name, prepStatement(body)] },
 
   // Destructuring assignment: [a, ...b] = expr or {x, y} = expr
   '='(lhs, rhs) {
@@ -331,9 +331,6 @@ const handlers = {
         }
       }
 
-      const scalar = scalarArrayDestruct(lhs, rhs)
-      if (scalar) return scalar
-
       const normed = prep(rhs)
       const tmp = `${T}d${freshPrepareId()}`
       const decls = [['=', tmp, normed]]
@@ -342,7 +339,7 @@ const handlers = {
         ctx.schema.vars.set(tmp, ctx.schema.vars.get(normed))
       const stmts = []
       expandDestruct(lhs, tmp, stmts, decls)
-      return prep([';', ['let', ...decls], ...stmts])
+      return prep([',', ['let', ...decls], ...stmts, tmp])
     }
     // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop.
     // A property can be reassigned — esbuild/jessie wrapper-composition does
@@ -709,7 +706,7 @@ const handlers = {
   // Statements
   ';': (...stmts) => {
     preRegisterBuiltinAliases(stmts)
-    return [';', ...truncateUnreachable(stmts.map(prep).filter(x => x != null).map(dropDeadPostfix).map(foldConstIf).filter(x => x != null))]
+    return [';', ...truncateUnreachable(stmts.map(prepStatement).filter(x => x != null).map(dropDeadPostfix).map(foldConstIf).filter(x => x != null))]
   },
   'let': (...inits) => prepDecl('let', ...inits),
   'const': (...inits) => prepDecl('const', ...inits),
@@ -722,8 +719,8 @@ const handlers = {
   // re-registers on top).
   'if': (cond, then, els) => {
     const c = prep(stripBoolNot(cond))
-    pushScope(); prescanBlockDecls(then); const t = dropDeadPostfix(prep(then)); popScope()
-    if (els != null) { pushScope(); prescanBlockDecls(els); const e = dropDeadPostfix(prep(els)); popScope(); return ['if', c, t, e] }
+    pushScope(); prescanBlockDecls(then); const t = dropDeadPostfix(prepStatement(then)); popScope()
+    if (els != null) { pushScope(); prescanBlockDecls(els); const e = dropDeadPostfix(prepStatement(els)); popScope(); return ['if', c, t, e] }
     return ['if', c, t]
   },
   'while': (cond, body) => {
@@ -732,7 +729,7 @@ const handlers = {
     // See loopLocalNames' declaration — a module-scope while body's own
     // captured let/const needs the same per-iteration (not global) treatment
     // a for-loop's body gets above.
-    const b = withLoopLocalNames(body, () => { prescanBlockDecls(body); return dropDeadPostfix(prep(body)) })
+    const b = withLoopLocalNames(body, () => { prescanBlockDecls(body); return dropDeadPostfix(prepStatement(body)) })
     popScope()
     return ['while', c, b]
   },
@@ -1352,7 +1349,7 @@ const handlers = {
           }
         }
       }
-      r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? dropDeadPostfix(prep(step)) : null, dropDeadPostfix(prep(body))]
+      r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? dropDeadPostfix(prepStatement(step)) : null, dropDeadPostfix(prepStatement(body))]
       if (addedLoopLocals) for (const nm of addedLoopLocals) loopLocalNames.delete(nm)
     } else if (Array.isArray(head) && head[0] === 'of') {
       // for (let x of arr) → hoist arr (if non-trivial) and arr.length once, iterate by index.
@@ -1456,7 +1453,7 @@ const handlers = {
       // as a null or bare-condition head instead of the canonical
       // `[';', init, cond, step]` tuple. Normalize them before emit so they
       // remain ordinary for-loops, not malformed two-slot nodes.
-      r = ['for', null, head == null ? null : prep(head), null, prep(body)]
+      r = ['for', null, head == null ? null : prep(head), null, prepStatement(body)]
     }
     popScope()
     return r
@@ -1694,6 +1691,17 @@ function prepStrictEq(op, a, b) {
   return [op, prep(r[1]), prep(r[2])]        // keep strict op; prep operands only
 }
 
+// An ignored assignment can scalarize a tuple; a value-position assignment
+// must retain and return the original RHS object.
+function prepStatement(node) {
+  const stmt = ungroup(node)
+  if (Array.isArray(stmt) && stmt[0] === '=') {
+    const scalar = scalarArrayDestruct(stmt[1], stmt[2])
+    if (scalar) return scalar
+  }
+  return prep(node)
+}
+
 function scalarArrayDestruct(pattern, rhs) {
   const targets = simpleArrayPatternItems(pattern)
   const values = arrayLiteralItems(rhs)
@@ -1737,7 +1745,7 @@ function pushPatternAssign(target, valueExpr, out, decls = null) {
     const tmp = `${T}d${freshPrepareId()}`
     if (decls) decls.push(['=', tmp, valueExpr])
     else out.push(['=', tmp, valueExpr])
-    pushPatternAssign(target[1], ['?:', ['===', tmp, [, JZ_UNDEF]], prep(target[2]), tmp], out, decls)
+    pushPatternAssign(target[1], ['?:', ['===', tmp, [, undefined]], prep(target[2]), tmp], out, decls)
     return
   }
 
@@ -1772,7 +1780,7 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
       // it here skips a provably out-of-range read — which both avoids the runtime
       // access and dodges an optimizer miscompile of the destructuring-temp shape.
       if (srcLen != null && j >= srcLen) {
-        pushPatternAssign(item, [, JZ_UNDEF], out, decls)
+        pushPatternAssign(item, [, undefined], out, decls)
         continue
       }
 

@@ -1284,8 +1284,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       return
     }
-    if ((op === '!=' || op === '!==') && typeof c[1] === 'string' && isNullishRef(c[2])) { if (when) refineName(c[1], NOT_NULLISH) }
-    else if ((op === '==' || op === '===') && typeof c[1] === 'string' && isNullishRef(c[2])) { if (!when) refineName(c[1], NOT_NULLISH) }
+    if (typeof c[1] !== 'string' || !isNullishRef(c[2])) return
+    // A strict comparison excludes only one sentinel. NULLISH includes both,
+    // so its other member must survive (as with the typeof inverse above).
+    if (op === '!=' && when || op === '==' && !when) refineName(c[1], NOT_NULLISH)
   }
   /** The statement leaves its list: a return, throw, break or continue; a block ending in one; an
    *  `if` both of whose branches do; a `try` whose block and every catch do (or whose finally does). */

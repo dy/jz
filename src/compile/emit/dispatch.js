@@ -5,7 +5,7 @@
  */
 
 import { STR_HCACHE_BIT } from '../../../layout.js'
-import { ASSIGN_OPS, JZ_UNDEF, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
+import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { DBG_INVARIANTS, PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1520,8 +1520,6 @@ export function emit(node, expect) {
   // codegen to the pre-carrier `[, 1]`/`[, 0]` folding, so no perf is paid.
   if (node === true) return emitNum(1)
   if (node === false) return emitNum(0)
-  if (typeof node === 'symbol') // JZ_NULL / JZ_UNDEF sentinels → null / undefined NaN
-    return node === JZ_UNDEF ? undefExpr() : nullExpr()
   if (typeof node === 'bigint') {
     // Truncate to 64 bits — `BigInt.asUintN(64, …)` semantics, same as the
     // explicit mask `node & 0xFFFFFFFFFFFFFFFFn`. Decimal form (vs. the prior

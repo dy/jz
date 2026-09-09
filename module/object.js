@@ -14,7 +14,7 @@ import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
-import { isReassigned, MUTATE_OPS, some, JZ_UNDEF, isBrand } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS, some, isBrand } from '../src/ast.js'
 import { staticObjectProps } from '../src/static.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR } from '../layout.js'
@@ -705,7 +705,7 @@ export default (ctx) => {
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['local.set', `$${kt}`, asF64(emit(key))],
       ['local.set', `$${d}`, asF64(emit(desc))],
-      ['if', emit(['||', ['!==', ['.', d, 'get'], JZ_UNDEF], ['!==', ['.', d, 'set'], JZ_UNDEF]]),
+      ['if', emit(['||', ['!==', ['.', d, 'get'], [, undefined]], ['!==', ['.', d, 'set'], [, undefined]]]),
         ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ACCESSOR_DESCRIPTOR]]], ['throw', '$__jz_err', ['f64.const', ERR.ACCESSOR_DESCRIPTOR]]]],
       // a descriptor without `value` leaves the property as it is
       ['if', asI32(emit(['in', ['str', 'value'], d])),
@@ -722,8 +722,8 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${o}`, asF64(emit(obj))],
       ['local.set', `$${k}`, asF64(emit(key))],
-      asF64(emit(['?:', ['===', ['[]', o, k], JZ_UNDEF],
-        JZ_UNDEF,
+      asF64(emit(['?:', ['===', ['[]', o, k], [, undefined]],
+        [, undefined],
         ['{}', [',', [':', 'value', ['[]', o, k]], [':', 'writable', ['bool', 1]], [':', 'enumerable', ['bool', 1]], [':', 'configurable', ['bool', 1]]]]]))], 'f64')
   }
 

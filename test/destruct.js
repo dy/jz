@@ -612,6 +612,29 @@ test('destruct: defaults fire only on undefined, never null', () => {
   is(run(`export let f = () => { let v, h, o, k = 0; for ([v = 1, h = 2, o = 3] of [[9, , ]]) k = v * 100 + h * 10 + o; return k }`).f(), 923)
 })
 
+test('destruct: assignment expressions return their RHS and keep default identities', () => {
+  is(run(`export const f = () => {
+    let a, b, calls = 0
+    const source = [1, 2]
+    const get = () => { calls++; return source }
+    const result = ([a, b] = get())
+    return JSON.stringify([result === source, a, b, calls])
+  }`).f(), '[true,1,2,1]')
+  is(run(`export const f = () => {
+    let a = 1, b = 2
+    const result = ([a, b] = [b, a])
+    return JSON.stringify([result, a, b])
+  }`).f(), '[[2,1],2,1]')
+  is(run(`export const f = () => {
+    let flag1 = false, flag2 = false, x, y, result
+    const source = { y: 1 }
+    result = { x: x = flag1 = true, y: y = flag2 = true } = source
+    return JSON.stringify([x, flag1, y, flag2, result === source])
+  }`).f(), '[true,true,1,false,true]')
+  is(run(`const defaulted = x => { const y = x === undefined ? 3 : x; return y === null }
+    export const f = () => JSON.stringify([defaulted(null), defaulted(undefined), defaulted(2)])`).f(), '[true,false,false]')
+})
+
 test('destruct: numeric keys in object patterns are index reads', () => {
   is(run(`export let f = () => { let { 0: v, length: z } = [7, 8]; return v * 10 + z }`).f(), 72)
   is(run(`let g = ([...{ 0: v, 1: w, length: z }]) => v * 100 + w * 10 + z; export let f = () => g([7, 8])`).f(), 782)
