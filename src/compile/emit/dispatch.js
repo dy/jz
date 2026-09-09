@@ -293,7 +293,7 @@ export function emitCallArgs(argNodes, params, func) {
 
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
  *  each leaf ONCE to an i64 string box (left-to-right — JS ToString order),
- *  measure each with __str_byteLen, allocate the [hash=0][len][bytes]
+ *  measure each with __str_length, allocate the [hash=0][len][bytes]
  *  HCACHE header once, and __str_copy each leaf at its cumulative offset.
  *  Replaces the pairwise lowering's per-`+` alloc + triangular prefix
  *  re-copy. Self-accumulation (`line = line + …`) keeps the head pairwise:
@@ -336,7 +336,7 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   if (asBuf) inc('__alloc')
   else inc('__alloc', '__mkptr', '__sso_norm')
   // LITERAL ASCII leaves (the serializer separators — ',', '\n', 'k=' …) carry
-  // their bytes and length at compile time: no box/len temps, no __str_byteLen,
+  // their bytes and length at compile time: no box/len temps, no __str_length,
   // no __str_copy — the length const-folds into the total and the bytes store
   // directly at the cursor (grouped 4/2/1-wide; watr folds the const totals).
   // Profiled on strbuild: copy+len calls on 1-6 byte parts were 38.7% of a row.
@@ -358,7 +358,7 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
     // i32-PROVEN leaf (exactly toStrI64's __i32_to_str class): keep the raw value,
     // not a temp string — __ilen joins the total and __itoa_s renders the digits
     // directly at the cursor. Drops the per-number __i32_to_str (alloc+itoa+mkstr),
-    // __str_byteLen and __str_copy — the whole temp-string round trip.
+    // __str_length and __str_copy — the whole temp-string round trip.
     if ((vt === VAL.NUMBER || vt == null) && v.type === 'i32' && v.ptrKind == null) {
       inc('__ilen', '__itoa_s')
       nT[k] = tempI32('cn')
@@ -366,13 +366,13 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
       seq.push(['local.set', `$${lT[k]}`, ['call', '$__ilen', ['local.get', `$${nT[k]}`]]])
       return
     }
-    inc('__str_byteLen', '__str_copy')
+    inc('__str_length', '__str_copy')
     bT[k] = tempI64('cc')
     seq.push(['local.set', `$${bT[k]}`,
       vt === VAL.STRING ? ['i64.reinterpret_f64', asF64(v)] :
       vt === VAL.BOOL ? ['i64.reinterpret_f64', emitBoolStr(n)] :
       toStrI64(n, v)])   // OBJECT (compile-time ToPrimitive), NUMBER, unknown
-    seq.push(['local.set', `$${lT[k]}`, ['call', '$__str_byteLen', ['local.get', `$${bT[k]}`]]])
+    seq.push(['local.set', `$${lT[k]}`, ['call', '$__str_length', ['local.get', `$${bT[k]}`]]])
   })
   const totalIR = () => {
     let t = ['i32.const', litTotal]
@@ -386,11 +386,11 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   let lenT = null
   if (asBuf) {
     lenT = tempI32('cbl')
-    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', totalIR()]])
+    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.shl', totalIR(), ['i32.const', 1]]]])
     seq.push(['local.set', `$${lenT}`, totalIR()])
     seq.push(['local.set', `$${curT}`, ['local.get', `$${offT}`]])
   } else {
-    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], totalIR()]]])
+    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', totalIR(), ['i32.const', 1]]]]])
     seq.push(['i32.store', ['local.get', `$${offT}`], ['i32.const', 0]])                       // lazy hash cell
     seq.push(['i32.store', 'offset=4', ['local.get', `$${offT}`], totalIR()])                  // len
     seq.push(['local.set', `$${offT}`, ['i32.add', ['local.get', `$${offT}`], ['i32.const', 8]]])
@@ -399,32 +399,26 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   leaves.forEach((n, k) => {
     if (lits[k] != null) {
       const s = lits[k]
-      let j = 0    // grouped little-endian stores: 4-byte words, 2-byte tail, then 1
-      const at = (o) => o ? [`offset=${o}`, ['local.get', `$${curT}`]] : [['local.get', `$${curT}`]]
-      for (; j + 4 <= s.length; j += 4)
-        seq.push(['i32.store', ...at(j), ['i32.const',
-          (s.charCodeAt(j) | (s.charCodeAt(j + 1) << 8) | (s.charCodeAt(j + 2) << 16) | (s.charCodeAt(j + 3) << 24)) | 0]])
-      if (j + 2 <= s.length) {
-        seq.push(['i32.store16', ...at(j), ['i32.const', s.charCodeAt(j) | (s.charCodeAt(j + 1) << 8)]])
-        j += 2
-      }
-      if (j < s.length)
-        seq.push(['i32.store8', ...at(j), ['i32.const', s.charCodeAt(j)]])
+      let j = 0
+      const at = (o) => o ? [`offset=${o * 2}`, ['local.get', `$${curT}`]] : [['local.get', `$${curT}`]]
+      for (; j + 2 <= s.length; j += 2)
+        seq.push(['i32.store', ...at(j), ['i32.const', (s.charCodeAt(j) | (s.charCodeAt(j + 1) << 16)) | 0]])
+      if (j < s.length) seq.push(['i32.store16', ...at(j), ['i32.const', s.charCodeAt(j)]])
       if (k < leaves.length - 1)
-        seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.const', s.length]]])
+        seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.const', s.length * 2]]])
       return
     }
     if (nT[k] != null) {
       // digits render at the cursor; the returned byte count (== $lT) advances it
       seq.push(k < leaves.length - 1
         ? ['local.set', `$${curT}`, ['i32.add',
-            ['call', '$__itoa_s', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]], ['local.get', `$${curT}`]]]
+            ['i32.shl', ['call', '$__itoa_s', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]], ['i32.const', 1]], ['local.get', `$${curT}`]]]
         : ['drop', ['call', '$__itoa_s', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]]])
       return
     }
     seq.push(['call', '$__str_copy', ['local.get', `$${bT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
     if (k < leaves.length - 1)
-      seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]]])
+      seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.shl', ['local.get', `$${lT[k]}`], ['i32.const', 1]]]])
   })
   // asBuf: return the raw (buf, len) locals directly — no value to box, the
   // statements above already did everything the caller needs.

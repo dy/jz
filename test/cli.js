@@ -124,14 +124,15 @@ test('cli: compile default output name', () => {
   unlinkSync(output)
 })
 
-test('cli: supplies import.meta.url for entry file', () => {
+test('cli: supplies import.meta.url for entry file', async () => {
   const input = join(tmp, 'meta.js')
-  const output = join(tmp, 'meta.wat')
+  const output = join(tmp, 'meta.wasm')
   writeFileSync(input, 'export let f = () => import.meta.url')
-  cli(input, '--wat', '-o', output)
+  cli(input, '-o', output)
 
-  const wat = readFileSync(output, 'utf8')
-  ok(wat.includes(pathToFileURL(input).href), 'WAT contains entry file URL')
+  const { instantiate } = await import('../interop.js')
+  const mod = instantiate(readFileSync(output))
+  is(mod.memory.read(mod.exports.f()), pathToFileURL(input).href, 'compiled entry file URL')
 
   unlinkSync(output)
 })

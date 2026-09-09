@@ -599,7 +599,7 @@ test('WASI: wasmer native', () => {
 })
 
 // === fs — file IO over WASI preopens (module/fs.js) ===
-// fs.read(path) → string (raw UTF-8 bytes, binary-lossless), fs.write(path, s).
+// fs.read(path) → decoded UTF-8 text, fs.write(path, s) → UTF-8 bytes.
 // Paths resolve against the first preopen (fd 3); errno throws as a number.
 test('fs: read + write round-trip under node:wasi preopens', async () => {
   const { WASI } = await import('node:wasi')
@@ -608,8 +608,10 @@ test('fs: read + write round-trip under node:wasi preopens', async () => {
   const { join } = await import('node:path')
   const dir = mkdtempSync(join(tmpdir(), 'jz-fs-'))
   wf(join(dir, 'data.txt'), 'hello wasi files')
+  wf(join(dir, 'Ā.txt'), '\uFEFFĀ😀')
   const wasm = compile(`
     export let f = () => fs.read("data.txt")
+    export let unicode = () => {let s=fs.read("Ā.txt");fs.write("😀.txt",s);return s}
     export let w = () => { fs.write("out.txt", "len:" + fs.read("data.txt").length) }
     export let missing = () => { try { fs.read("nope.txt"); return -1 } catch (e) { return e } }`,
     { host: 'wasi' })
@@ -619,6 +621,8 @@ test('fs: read + write round-trip under node:wasi preopens', async () => {
   const { memory } = await import('../interop.js')
   const mem = memory({ exports: inst.exports })
   is(mem.read(inst.exports.f()), 'hello wasi files')
+  is(mem.read(inst.exports.unicode()), '\uFEFFĀ😀')
+  is(readFileSync(join(dir, '😀.txt'), 'utf8'), '\uFEFFĀ😀')
   inst.exports.w()
   is(readFileSync(join(dir, 'out.txt'), 'utf8'), 'len:16')
   is(mem.read(inst.exports.missing()), 44)   // WASI errno 44 = NOENT

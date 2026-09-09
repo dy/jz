@@ -14,6 +14,7 @@ import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
+import { stringBytes } from '../src/string-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
@@ -34,7 +35,7 @@ import { ERR } from '../err-codes.js'
 // char pays a real call plus a redundant SSO/view/bounds dispatch every step.
 // A non-SSO string (the common case: source slices, heap strings) keeps its
 // bytes contiguous at `$v & 0xFFFFFFFF` (`$sbase`); the read collapses to one
-// `i32.load8_u`. The SSO test is loop-invariant — V8 hoists it — and the SSO
+// `i32.load16_u`. The SSO test is loop-invariant — V8 hoists it — and the SSO
 // arm still routes through `__char_at` (its bytes are packed in the pointer).
 // Callers MUST declare `$sbase i32`, set it once after `$v` is final and a
 // confirmed string, and only pass indices proven `< $len` (`__char_at` would
@@ -51,15 +52,15 @@ const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64
 const reverseBytesWat = (buf = '$buf', i = '$i', j = '$j', tmp = '$tmp') =>
   `(block $rev (loop $revl
       (br_if $rev (i32.ge_s (local.get ${i}) (local.get ${j})))
-      (local.set ${tmp} (i32.load8_u (i32.add (local.get ${buf}) (local.get ${i}))))
-      (i32.store8 (i32.add (local.get ${buf}) (local.get ${i})) (i32.load8_u (i32.add (local.get ${buf}) (local.get ${j}))))
-      (i32.store8 (i32.add (local.get ${buf}) (local.get ${j})) (local.get ${tmp}))
+      (local.set ${tmp} (i32.load16_u (i32.add (local.get ${buf}) (i32.shl (local.get ${i}) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get ${buf}) (i32.shl (local.get ${i}) (i32.const 1))) (i32.load16_u (i32.add (local.get ${buf}) (i32.shl (local.get ${j}) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get ${buf}) (i32.shl (local.get ${j}) (i32.const 1))) (local.get ${tmp}))
       (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
       (local.set ${j} (i32.sub (local.get ${j}) (i32.const 1)))
       (br $revl)))`
 const chAt = idx => `(if (result i32)
         (i64.eqz (i64.and (local.get $v) (i64.const ${SSO_BIT_I64})))
-        (then (i32.load8_u (i32.add (local.get $sbase) ${idx})))
+        (then (i32.load16_u (i32.add (local.get $sbase) (i32.shl ${idx} (i32.const 1)))))
         (else (call $__char_at (local.get $v) ${idx})))`
 
 // chAt for reads NOT dominated by a `$i < $len` guard. `i32.and` does not
@@ -409,15 +410,15 @@ export default (ctx) => {
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
     __radix_str: ['__mkstr'],
     __num_radix: ['__ftoa', '__mkstr'],
-    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux'],
+    __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
-    __str_to_bigint: ['__char_at', '__str_byteLen'],
+    __str_to_bigint: ['__char_at', '__str_length'],
     __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset'],
     __bigint_eq_num: [],
     __bigint_eq_str: ['__str_to_bigint'],
     __bigint_eq: ['__bigint_eq_num', '__bigint_eq_str', '__ptr_type', '__ptr_offset'],
-    __parseInt: ['__char_at', '__str_byteLen', '__skipws', '__to_str'],
-    __parseFloat: ['__char_at', '__str_byteLen', '__pow10', '__dec_to_f64', '__to_str', '__skipws'],
+    __parseInt: ['__char_at', '__str_length', '__skipws', '__to_str'],
+    __parseFloat: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws'],
   })
 
 
@@ -456,12 +457,11 @@ export default (ctx) => {
   ctx.core.stdlib['__itoa'] = `(func $__itoa (param $val i32) (param $buf i32) (result i32)
     (local $len i32) (local $i i32) (local $j i32) (local $tmp i32)
     (if (i32.eqz (local.get $val))
-      (then (i32.store8 (local.get $buf) (i32.const 48)) (return (i32.const 1))))
+      (then (i32.store16 (local.get $buf) (i32.const 48)) (return (i32.const 1))))
     (local.set $tmp (local.get $val))
     (block $d (loop $l
       (br_if $d (i32.eqz (local.get $tmp)))
-      (i32.store8 (i32.add (local.get $buf) (local.get $len))
-        (i32.add (i32.const 48) (i32.rem_u (local.get $tmp) (i32.const 10))))
+      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))) (i32.add (i32.const 48) (i32.rem_u (local.get $tmp) (i32.const 10))))
       (local.set $tmp (i32.div_u (local.get $tmp) (i32.const 10)))
       (local.set $len (i32.add (local.get $len) (i32.const 1)))
       (br $l)))
@@ -500,10 +500,10 @@ export default (ctx) => {
   ctx.core.stdlib['__itoa_s'] = `(func $__itoa_s (param $val i32) (param $buf i32) (result i32)
     (if (i32.lt_s (local.get $val) (i32.const 0))
       (then
-        (i32.store8 (local.get $buf) (i32.const 45))   ;; '-'
+        (i32.store16 (local.get $buf) (i32.const 45))   ;; '-'
         ;; magnitude as unsigned: negate via 0 - val (INT_MIN maps to itself, __itoa reads unsigned)
         (return (i32.add
-          (call $__itoa (i32.sub (i32.const 0) (local.get $val)) (i32.add (local.get $buf) (i32.const 1)))
+          (call $__itoa (i32.sub (i32.const 0) (local.get $val)) (i32.add (local.get $buf) (i32.const 2)))
           (i32.const 1)))))
     (call $__itoa (local.get $val) (local.get $buf)))`
 
@@ -514,7 +514,7 @@ export default (ctx) => {
   // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
   ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
     (local $buf i32)
-    (local.set $buf (call $__alloc (i32.const 12)))
+    (local.set $buf (call $__alloc (i32.const 24)))
     (call $__mkstr (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))`
 
   // __radix_str(val: i64, radix: i32) → f64 (NaN-boxed string)
@@ -524,23 +524,22 @@ export default (ctx) => {
   ctx.core.stdlib['__radix_str'] = `(func $__radix_str (param $val i64) (param $radix i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32) (local $mag i64) (local $r i64)
     (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32)
-    (local.set $buf (call $__alloc (i32.const 72)))
+    (local.set $buf (call $__alloc (i32.const 144)))
     (local.set $r (i64.extend_i32_s (local.get $radix)))
     (if (i64.eqz (local.get $val))
-      (then (i32.store8 (local.get $buf) (i32.const 48)) (return (call $__mkstr (local.get $buf) (i32.const 1)))))
+      (then (i32.store16 (local.get $buf) (i32.const 48)) (return (call $__mkstr (local.get $buf) (i32.const 1)))))
     (local.set $mag (local.get $val))
     (if (i64.lt_s (local.get $val) (i64.const 0))
       (then (local.set $neg (i32.const 1)) (local.set $mag (i64.sub (i64.const 0) (local.get $val)))))
     (block $mb (loop $ml
       (br_if $mb (i64.eqz (local.get $mag)))
       (local.set $dg (i32.wrap_i64 (i64.rem_u (local.get $mag) (local.get $r))))
-      (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-        (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
+      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
       (local.set $mag (i64.div_u (local.get $mag) (local.get $r)))
       (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
       (br $ml)))
     (if (local.get $neg)
-      (then (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
+      (then (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 45))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
     (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
     ${reverseBytesWat()}
@@ -564,7 +563,7 @@ export default (ctx) => {
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.NUMBER_RADIX}))) (throw $__jz_err (f64.const ${ERR.NUMBER_RADIX}))))
     (if (i32.or (f64.ne (local.get $val) (local.get $val)) (f64.eq (f64.abs (local.get $val)) (f64.const inf)))
       (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
-    (local.set $buf (call $__alloc (i32.const 180)))
+    (local.set $buf (call $__alloc (i32.const 360)))
     (local.set $r (i64.extend_i32_s (local.get $radix)))
     (local.set $rf (f64.convert_i32_s (local.get $radix)))
     (if (f64.lt (local.get $val) (f64.const 0))
@@ -573,39 +572,37 @@ export default (ctx) => {
     (local.set $frac (f64.sub (local.get $val) (local.get $int)))
     (local.set $iv (i64.trunc_sat_f64_u (local.get $int)))
     (if (i64.eqz (local.get $iv))
-      (then (i32.store8 (local.get $buf) (i32.const 48)) (local.set $pos (i32.const 1)))
+      (then (i32.store16 (local.get $buf) (i32.const 48)) (local.set $pos (i32.const 1)))
       (else
         (block $ib (loop $il
           (br_if $ib (i64.eqz (local.get $iv)))
           (local.set $dg (i32.wrap_i64 (i64.rem_u (local.get $iv) (local.get $r))))
-          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-            (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
           (local.set $iv (i64.div_u (local.get $iv) (local.get $r)))
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (br $il)))))
     (if (local.get $neg)
-      (then (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
+      (then (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 45))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
     (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
     (block $rb (loop $rl
       (br_if $rb (i32.ge_s (local.get $i) (local.get $j)))
-      (local.set $tmp (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
-      (i32.store8 (i32.add (local.get $buf) (local.get $i)) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
-      (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $tmp))
+      (local.set $tmp (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1))) (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1))) (local.get $tmp))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (local.set $j (i32.sub (local.get $j) (i32.const 1)))
       (br $rl)))
     (if (f64.gt (local.get $frac) (f64.const 0))
       (then
-        (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 46))
+        (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 46))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
         (block $fb (loop $fl
           (br_if $fb (f64.le (local.get $frac) (f64.const 0)))
           (br_if $fb (i32.ge_s (local.get $fn) (i32.const 100)))
           (local.set $frac (f64.mul (local.get $frac) (local.get $rf)))
           (local.set $dg (i32.trunc_f64_s (f64.floor (local.get $frac))))
-          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-            (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (select (i32.add (local.get $dg) (i32.const 48)) (i32.add (local.get $dg) (i32.const 87)) (i32.lt_s (local.get $dg) (i32.const 10))))
           (local.set $frac (f64.sub (local.get $frac) (f64.floor (local.get $frac))))
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (local.set $fn (i32.add (local.get $fn) (i32.const 1)))
@@ -634,7 +631,7 @@ export default (ctx) => {
           (loop $pk
             (if (i32.lt_u (local.get $i) (local.get $len))
               (then
-                (local.set $b (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
+                (local.set $b (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1)))))
                 (br_if $heap (i32.ge_u (local.get $b) (i32.const 0x80)))
                 ;; 7-bit ASCII SSO: char i at payload bit i*7; len at payload bits 42-44.
                 (local.set $packed (i64.or (local.get $packed)
@@ -646,10 +643,10 @@ export default (ctx) => {
               (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
               (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 42)))
             (local.get $packed)))))))
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 1)))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (memory.copy (local.get $off) (local.get $buf) (local.get $len))
+    (memory.copy (local.get $off) (local.get $buf) (i32.shl (local.get $len) (i32.const 1)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // __ftoa(val: f64, prec: i32, mode: i32) → f64 (NaN-boxed string)
@@ -669,14 +666,14 @@ export default (ctx) => {
     ;; the rest of this function serves mode 1 (toFixed/toPrecision) only.
     (if (i32.eqz (local.get $mode))
       (then (return (call $__ftoa_shortest (local.get $val)))))
-    (local.set $buf (call $__alloc (i32.const 40)))
+    (local.set $buf (call $__alloc (i32.const 80)))
     ;; Sign
     (if (f64.lt (local.get $val) (f64.const 0))
       (then (local.set $neg (i32.const 1)) (local.set $val (f64.neg (local.get $val)))))
     (if (i32.and (f64.eq (local.get $val) (f64.const 0)) (local.get $neg))
       (then (local.set $neg (i32.const 0))))
     (if (local.get $neg)
-      (then (i32.store8 (local.get $buf) (i32.const 45))
+      (then (i32.store16 (local.get $buf) (i32.const 45))
         (local.set $pos (i32.const 1))))
     ;; Round and scale to integer: scaled = nearest(val * 10^prec).
     ;; NOTE: toFixed/toPrecision round ties-to-even here (f64.nearest), which differs from
@@ -711,8 +708,7 @@ export default (ctx) => {
         (local.set $ilen (local.get $pos))
         (block $ld (loop $ll
           (br_if $ld (f64.lt (local.get $abs) (f64.const 1)))
-          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-            (i32.add (i32.const 48) (i32.trunc_f64_u (f64.max (f64.const 0) (f64.min (f64.const 9)
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.add (i32.const 48) (i32.trunc_f64_u (f64.max (f64.const 0) (f64.min (f64.const 9)
               (f64.nearest (f64.sub (local.get $abs)
                 (f64.mul (f64.trunc (f64.div (local.get $abs) (f64.const 10))) (f64.const 10)))))))))
           (local.set $abs (f64.trunc (f64.div (local.get $abs) (f64.const 10))))
@@ -722,28 +718,26 @@ export default (ctx) => {
         (local.set $i (local.get $ilen)) (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
         (block $rd (loop $rl
           (br_if $rd (i32.ge_s (local.get $i) (local.get $j)))
-          (local.set $int (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
-          (i32.store8 (i32.add (local.get $buf) (local.get $i))
-            (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
-          (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $int))
+          (local.set $int (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1)))))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1))) (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1)))))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1))) (local.get $int))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (local.set $j (i32.sub (local.get $j) (i32.const 1)))
           (br $rl)))
         (return (call $__mkstr (local.get $buf) (local.get $pos)))))
     ;; Write integer part
-    (local.set $ilen (call $__itoa (local.get $int) (i32.add (local.get $buf) (local.get $pos))))
+    (local.set $ilen (call $__itoa (local.get $int) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1)))))
     (local.set $pos (i32.add (local.get $pos) (local.get $ilen)))
     ;; Write fractional part: extract digits from $frac by dividing by 10^(prec-1), 10^(prec-2), ...
     (if (i32.gt_s (local.get $prec) (i32.const 0))
       (then
-        (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 46))
+        (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 46))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
         (local.set $i (i32.sub (local.get $prec) (i32.const 1)))
         (block $fd (loop $fl
           (br_if $fd (i32.lt_s (local.get $i) (i32.const 0)))
           (local.set $j (i32.div_u (local.get $frac) (i32.trunc_f64_u (call $__pow10 (local.get $i)))))
-          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-            (i32.add (i32.const 48) (i32.rem_u (local.get $j) (i32.const 10))))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.add (i32.const 48) (i32.rem_u (local.get $j) (i32.const 10))))
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (local.set $i (i32.sub (local.get $i) (i32.const 1)))
           (br $fl)))))
@@ -765,14 +759,14 @@ export default (ctx) => {
     ;; "float unrepresentable in integer range" — e.g. 7.5e-151 normalizes to
     ;; 7.5 and 7.5*10^9 already overflows an unsigned i32.
     (if (i32.gt_s (local.get $prec) (i32.const 8)) (then (local.set $prec (i32.const 8))))
-    (local.set $buf (call $__alloc (i32.const 32)))
+    (local.set $buf (call $__alloc (i32.const 64)))
     ;; Sign
     (if (f64.lt (local.get $val) (f64.const 0))
       (then (local.set $neg (i32.const 1)) (local.set $val (f64.neg (local.get $val)))))
     (if (i32.and (f64.eq (local.get $val) (f64.const 0)) (local.get $neg))
       (then (local.set $neg (i32.const 0))))
     (if (local.get $neg)
-      (then (i32.store8 (local.get $buf) (i32.const 45))
+      (then (i32.store16 (local.get $buf) (i32.const 45))
         (local.set $pos (i32.const 1))))
     ;; Normalize: 1 <= val < 10
     (if (f64.gt (local.get $val) (f64.const 0))
@@ -796,18 +790,17 @@ export default (ctx) => {
         (local.set $mantissa (f64.div (local.get $mantissa) (f64.const 10)))
         (local.set $exp (i32.add (local.get $exp) (i32.const 1)))))
     ;; Write mantissa digits via itoa
-    (local.set $len (call $__itoa (i32.trunc_f64_u (local.get $mantissa)) (i32.add (local.get $buf) (local.get $pos))))
+    (local.set $len (call $__itoa (i32.trunc_f64_u (local.get $mantissa)) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1)))))
     ;; Insert '.' after first digit
     (if (i32.gt_s (local.get $prec) (i32.const 0))
       (then
         (local.set $i (local.get $len))
         (block $md (loop $ml
           (br_if $md (i32.le_s (local.get $i) (i32.const 1)))
-          (i32.store8 (i32.add (local.get $buf) (i32.add (local.get $pos) (local.get $i)))
-            (i32.load8_u (i32.add (local.get $buf) (i32.add (local.get $pos) (i32.sub (local.get $i) (i32.const 1))))))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (i32.add (local.get $pos) (local.get $i)) (i32.const 1))) (i32.load16_u (i32.add (local.get $buf) (i32.shl (i32.add (local.get $pos) (i32.sub (local.get $i) (i32.const 1))) (i32.const 1)))))
           (local.set $i (i32.sub (local.get $i) (i32.const 1)))
           (br $ml)))
-        (i32.store8 (i32.add (local.get $buf) (i32.add (local.get $pos) (i32.const 1))) (i32.const 46))
+        (i32.store16 (i32.add (local.get $buf) (i32.shl (i32.add (local.get $pos) (i32.const 1)) (i32.const 1))) (i32.const 46))
         (local.set $pos (i32.add (local.get $pos) (i32.add (local.get $len) (i32.const 1)))))
       (else (local.set $pos (i32.add (local.get $pos) (local.get $len)))))
     ;; Shortest form: drop trailing zeros (and a bare '.') from the mantissa.
@@ -815,21 +808,21 @@ export default (ctx) => {
     (if (i32.and (local.get $strip) (i32.gt_s (local.get $prec) (i32.const 0)))
       (then
         (block $sz (loop $szl
-          (br_if $sz (i32.ne (i32.load8_u (i32.sub (i32.add (local.get $buf) (local.get $pos)) (i32.const 1))) (i32.const 48)))
+          (br_if $sz (i32.ne (i32.load16_u (i32.sub (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.shl (i32.const 1) (i32.const 1)))) (i32.const 48)))
           (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
           (br $szl)))
-        (if (i32.eq (i32.load8_u (i32.sub (i32.add (local.get $buf) (local.get $pos)) (i32.const 1))) (i32.const 46))
+        (if (i32.eq (i32.load16_u (i32.sub (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.shl (i32.const 1) (i32.const 1)))) (i32.const 46))
           (then (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))))))
     ;; Write 'e', sign, exponent
-    (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 101))
+    (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 101))
     (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
     (if (i32.lt_s (local.get $exp) (i32.const 0))
-      (then (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
+      (then (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 45))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
         (local.set $exp (i32.sub (i32.const 0) (local.get $exp))))
-      (else (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 43))
+      (else (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 43))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
-    (local.set $pos (i32.add (local.get $pos) (call $__itoa (local.get $exp) (i32.add (local.get $buf) (local.get $pos)))))
+    (local.set $pos (i32.add (local.get $pos) (call $__itoa (local.get $exp) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))))))
     (call $__mkstr (local.get $buf) (local.get $pos)))`
 
   // __static_str(id: i32) → f64 — create heap string from data segment
@@ -843,17 +836,17 @@ export default (ctx) => {
     (local $src i32) (local $len i32)
     (local.set $src (i32.const 0)) (local.set $len (i32.const 0))
     (if (i32.eqz (local.get $id))                   (then (local.set $len (i32.const 3))))
-    (if (i32.eq (local.get $id) (i32.const 1)) (then (local.set $src (i32.const 3))  (local.set $len (i32.const 8))))
-    (if (i32.eq (local.get $id) (i32.const 2)) (then (local.set $src (i32.const 11)) (local.set $len (i32.const 9))))
-    (if (i32.eq (local.get $id) (i32.const 3)) (then (local.set $src (i32.const 20)) (local.set $len (i32.const 4))))
-    (if (i32.eq (local.get $id) (i32.const 4)) (then (local.set $src (i32.const 24)) (local.set $len (i32.const 5))))
-    (if (i32.eq (local.get $id) (i32.const 5)) (then (local.set $src (i32.const 29)) (local.set $len (i32.const 4))))
-    (if (i32.eq (local.get $id) (i32.const 6)) (then (local.set $src (i32.const 33)) (local.set $len (i32.const 9))))
-    (if (i32.eq (local.get $id) (i32.const 7)) (then (local.set $src (i32.const 42)) (local.set $len (i32.const 7))))
-    (if (i32.eq (local.get $id) (i32.const 8)) (then (local.set $src (i32.const 49)) (local.set $len (i32.const 8))))
-    (if (i32.eq (local.get $id) (i32.const 9)) (then (local.set $src (i32.const 57)) (local.set $len (i32.const 2))))
-    (if (i32.eq (local.get $id) (i32.const 10)) (then (local.set $src (i32.const 59)) (local.set $len (i32.const 9))))
-    (if (i32.eq (local.get $id) (i32.const 11)) (then (local.set $src (i32.const 68)) (local.set $len (i32.const 9))))
+    (if (i32.eq (local.get $id) (i32.const 1)) (then (local.set $src (i32.const 6))  (local.set $len (i32.const 8))))
+    (if (i32.eq (local.get $id) (i32.const 2)) (then (local.set $src (i32.const 22)) (local.set $len (i32.const 9))))
+    (if (i32.eq (local.get $id) (i32.const 3)) (then (local.set $src (i32.const 40)) (local.set $len (i32.const 4))))
+    (if (i32.eq (local.get $id) (i32.const 4)) (then (local.set $src (i32.const 48)) (local.set $len (i32.const 5))))
+    (if (i32.eq (local.get $id) (i32.const 5)) (then (local.set $src (i32.const 58)) (local.set $len (i32.const 4))))
+    (if (i32.eq (local.get $id) (i32.const 6)) (then (local.set $src (i32.const 66)) (local.set $len (i32.const 9))))
+    (if (i32.eq (local.get $id) (i32.const 7)) (then (local.set $src (i32.const 84)) (local.set $len (i32.const 7))))
+    (if (i32.eq (local.get $id) (i32.const 8)) (then (local.set $src (i32.const 98)) (local.set $len (i32.const 8))))
+    (if (i32.eq (local.get $id) (i32.const 9)) (then (local.set $src (i32.const 114)) (local.set $len (i32.const 2))))
+    (if (i32.eq (local.get $id) (i32.const 10)) (then (local.set $src (i32.const 118)) (local.set $len (i32.const 9))))
+    (if (i32.eq (local.get $id) (i32.const 11)) (then (local.set $src (i32.const 136)) (local.set $len (i32.const 9))))
     (call $__mkstr ${ctx.memory.shared ? '(i32.add (global.get $__staticBase) (local.get $src))' : '(local.get $src)'} (local.get $len)))`
   }
 
@@ -862,7 +855,7 @@ export default (ctx) => {
   // 9=ok 10=not-equal 11=timed-out (Atomics.wait results, module/atomics.js)
   // Padded to 16 so stripping the prefix keeps every later alignment.
   const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]oknot-equaltimed-out'
-  dataPush(new TextEncoder().encode(staticStr))
+  dataPush(stringBytes(staticStr))
   dataAlign(16)
   ctx.runtime.staticDataLen = dataLen()
 
@@ -1019,16 +1012,16 @@ export default (ctx) => {
     (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
     (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
     (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
-    (local.set $buf (call $__alloc (i32.const 96)))
+    (local.set $buf (call $__alloc (i32.const 192)))
     (local.set $scr (i32.add (local.get $buf) (i32.const 64)))
     (if (f64.eq (local.get $val) (f64.const 0))
       (then
-        (i32.store8 (local.get $buf) (i32.const 48))
+        (i32.store16 (local.get $buf) (i32.const 48))
         (return (call $__mkstr (local.get $buf) (i32.const 1)))))
     (local.set $bits (i64.reinterpret_f64 (local.get $val)))
     (if (i64.lt_s (local.get $bits) (i64.const 0))
       (then
-        (i32.store8 (local.get $buf) (i32.const 45))
+        (i32.store16 (local.get $buf) (i32.const 45))
         (local.set $pos (i32.const 1))))
     (local.set $ieeeM (i64.and (local.get $bits) (i64.const 0xFFFFFFFFFFFFF)))
     (local.set $ieeeE (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7FF))))
@@ -1160,8 +1153,7 @@ export default (ctx) => {
     (local.set $t (local.get $out))
     (block $dd (loop $dl
       (local.set $h0 (i64.div_u (local.get $t) (i64.const 10)))
-      (i32.store8 (i32.add (local.get $scr) (local.get $olen))
-        (i32.add (i32.const 48) (i32.wrap_i64 (i64.sub (local.get $t) (i64.mul (local.get $h0) (i64.const 10))))))
+      (i32.store16 (i32.add (local.get $scr) (i32.shl (local.get $olen) (i32.const 1))) (i32.add (i32.const 48) (i32.wrap_i64 (i64.sub (local.get $t) (i64.mul (local.get $h0) (i64.const 10))))))
       (local.set $olen (i32.add (local.get $olen) (i32.const 1)))
       (local.set $t (local.get $h0))
       (br_if $dd (i64.eqz (local.get $t)))
@@ -1173,14 +1165,13 @@ export default (ctx) => {
         (local.set $i (i32.const 0))
         (block $b1d (loop $b1l
           (br_if $b1d (i32.ge_s (local.get $i) (local.get $olen)))
-          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-            (i32.load8_u (i32.add (local.get $scr) (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)))))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.load16_u (i32.add (local.get $scr) (i32.shl (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)) (i32.const 1)))))
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $b1l)))
         (block $z1d (loop $z1l
           (br_if $z1d (i32.ge_s (local.get $i) (local.get $n)))
-          (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 48))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 48))
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $z1l))))
@@ -1191,60 +1182,56 @@ export default (ctx) => {
             (br_if $b2d (i32.ge_s (local.get $i) (local.get $olen)))
             (if (i32.eq (local.get $i) (local.get $n))
               (then
-                (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 46))
+                (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 46))
                 (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
-            (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-              (i32.load8_u (i32.add (local.get $scr) (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)))))
+            (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.load16_u (i32.add (local.get $scr) (i32.shl (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)) (i32.const 1)))))
             (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
             (local.set $i (i32.add (local.get $i) (i32.const 1)))
             (br $b2l))))
         (else (if (i32.and (i32.gt_s (local.get $n) (i32.const -6)) (i32.le_s (local.get $n) (i32.const 0)))
           (then
-            (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 48))
-            (i32.store8 (i32.add (local.get $buf) (i32.add (local.get $pos) (i32.const 1))) (i32.const 46))
+            (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 48))
+            (i32.store16 (i32.add (local.get $buf) (i32.shl (i32.add (local.get $pos) (i32.const 1)) (i32.const 1))) (i32.const 46))
             (local.set $pos (i32.add (local.get $pos) (i32.const 2)))
             (local.set $i (i32.const 0))
             (block $z3d (loop $z3l
               (br_if $z3d (i32.ge_s (local.get $i) (i32.sub (i32.const 0) (local.get $n))))
-              (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 48))
+              (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 48))
               (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
               (br $z3l)))
             (local.set $i (i32.const 0))
             (block $b3d (loop $b3l
               (br_if $b3d (i32.ge_s (local.get $i) (local.get $olen)))
-              (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-                (i32.load8_u (i32.add (local.get $scr) (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)))))
+              (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.load16_u (i32.add (local.get $scr) (i32.shl (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)) (i32.const 1)))))
               (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
               (br $b3l))))
           (else
-            (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-              (i32.load8_u (i32.add (local.get $scr) (i32.sub (local.get $olen) (i32.const 1)))))
+            (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.load16_u (i32.add (local.get $scr) (i32.shl (i32.sub (local.get $olen) (i32.const 1)) (i32.const 1)))))
             (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
             (if (i32.gt_s (local.get $olen) (i32.const 1))
               (then
-                (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 46))
+                (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 46))
                 (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
                 (local.set $i (i32.const 1))
                 (block $b4d (loop $b4l
                   (br_if $b4d (i32.ge_s (local.get $i) (local.get $olen)))
-                  (i32.store8 (i32.add (local.get $buf) (local.get $pos))
-                    (i32.load8_u (i32.add (local.get $scr) (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)))))
+                  (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.load16_u (i32.add (local.get $scr) (i32.shl (i32.sub (i32.sub (local.get $olen) (i32.const 1)) (local.get $i)) (i32.const 1)))))
                   (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
                   (local.set $i (i32.add (local.get $i) (i32.const 1)))
                   (br $b4l)))))
-            (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 101))
+            (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 101))
             (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
             (local.set $n (i32.sub (local.get $n) (i32.const 1)))
             (if (i32.lt_s (local.get $n) (i32.const 0))
               (then
-                (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
+                (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 45))
                 (local.set $n (i32.sub (i32.const 0) (local.get $n))))
-              (else (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 43))))
+              (else (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 43))))
             (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
             (local.set $pos (i32.add (local.get $pos)
-              (call $__itoa (local.get $n) (i32.add (local.get $buf) (local.get $pos)))))))))))
+              (call $__itoa (local.get $n) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))))))))))))
     (call $__mkstr (local.get $buf) (local.get $pos)))`
 
 
@@ -1409,8 +1396,8 @@ export default (ctx) => {
     (if (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
       (then (return (f64.const nan))))
     (local.set $off (call $__ptr_offset (local.get $str)))
-    (local.set $len (call $__str_byteLen (local.get $str)))
-    ;; Skip StrWhiteSpace (UTF-8-decoded: NBSP, LS/PS, Zs — not just ASCII).
+    (local.set $len (call $__str_length (local.get $str)))
+    ;; Skip StrWhiteSpace (UTF-16 units: NBSP, LS/PS, Zs — not just ASCII).
     (local.set $i (call $__skipws (local.get $str) (i32.const 0) (local.get $len)))
     ;; Sign
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
@@ -1501,35 +1488,14 @@ export default (ctx) => {
             (i32.or (i32.eq (local.get $c) (i32.const 0x202f)) (i32.eq (local.get $c) (i32.const 0x205f)))
             (i32.or (i32.eq (local.get $c) (i32.const 0x3000)) (i32.eq (local.get $c) (i32.const 0xfeff))))))))`
 
-  // __skipws(v, i, len) → i32 — advance the byte index i past any run of
-  // StrWhiteSpace. Strings are UTF-8, so each step decodes one scalar: every
-  // whitespace code point is ≤ U+FEFF (≤ 3 bytes), and a 4-byte lead is never
-  // whitespace, so it (and any non-space scalar) ends the run.
+  // Every ECMAScript whitespace character occupies one UTF-16 unit.
   ctx.core.stdlib['__skipws'] = `(func $__skipws (param $v i64) (param $i i32) (param $len i32) (result i32)
-    (local $b i32) (local $cp i32) (local $n i32) (local $sbase i32)
+    (local $sbase i32)
     ${SBASE_INIT}
     (block $done (loop $l
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $b ${chAt('(local.get $i)')})
-      (if (i32.lt_u (local.get $b) (i32.const 0x80))
-        (then (local.set $cp (local.get $b)) (local.set $n (i32.const 1)))
-        (else (if (i32.lt_u (local.get $b) (i32.const 0xe0))
-          (then
-            (local.set $n (i32.const 2))
-            (local.set $cp (i32.or
-              (i32.shl (i32.and (local.get $b) (i32.const 0x1f)) (i32.const 6))
-              (i32.and (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 0x3f)))))
-          (else (if (i32.lt_u (local.get $b) (i32.const 0xf0))
-            (then
-              (local.set $n (i32.const 3))
-              (local.set $cp (i32.or (i32.or
-                (i32.shl (i32.and (local.get $b) (i32.const 0x0f)) (i32.const 12))
-                (i32.shl (i32.and (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 0x3f)) (i32.const 6)))
-                (i32.and (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 2))) (i32.const 0x3f)))))
-            (else (return (local.get $i))))))))
-      (br_if $done (i32.eqz (call $__strws (local.get $cp))))
-      (local.set $i (i32.add (local.get $i) (local.get $n)))
-      (br $l)))
+      (br_if $done (i32.eqz (call $__strws ${chAt('(local.get $i)')})))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
     (local.get $i))`
 
   ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v i64) (result f64)
@@ -1566,7 +1532,7 @@ export default (ctx) => {
         (local.set $t (call $__ptr_type (local.get $v)))
         (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
           (then (return (f64.const nan))))))
-    (local.set $len (call $__str_byteLen (local.get $v)))
+    (local.set $len (call $__str_length (local.get $v)))
     ${SBASE_INIT}
     ;; Trim leading whitespace. An empty / all-whitespace string is +0.
     (local.set $i (call $__skipws (local.get $v) (i32.const 0) (local.get $len)))
@@ -1676,7 +1642,7 @@ export default (ctx) => {
     (local $len i32) (local $i i32) (local $end i32) (local $c i32)
     (local $neg i32) (local $sign i32) (local $radix i32) (local $digit i32)
     (local $seen i32) (local $result i64)
-    (local.set $len (call $__str_byteLen (local.get $v)))
+    (local.set $len (call $__str_length (local.get $v)))
     (local.set $end (local.get $len))
     ;; Trim leading whitespace (any byte <= 32).
     (block $ws (loop $wsl
@@ -1834,9 +1800,9 @@ export default (ctx) => {
         (local.set $t (call $__ptr_type (local.get $v)))
         (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
           (then (return (f64.const nan))))))
-    (local.set $len (call $__str_byteLen (local.get $v)))
+    (local.set $len (call $__str_length (local.get $v)))
     ${SBASE_INIT}
-    ;; Skip leading StrWhiteSpace (UTF-8-decoded: NBSP, LS/PS, Zs — not just ASCII).
+    ;; Skip leading StrWhiteSpace (UTF-16 units: NBSP, LS/PS, Zs — not just ASCII).
     (local.set $i (call $__skipws (local.get $v) (i32.const 0) (local.get $len)))
     ;; Sign.
     (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 45))

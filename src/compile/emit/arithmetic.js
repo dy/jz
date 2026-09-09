@@ -230,10 +230,10 @@ export const arithmeticOps = {
       // Fused append-byte: `buf += s[i]` skips 1-char SSO construction + generic concat dispatch
       // when rhs is a string-index. The byte flows straight from __char_at into memory and bump-
       // EXTENDS the heap-top lhs — so only when proven self-accumulating (else it mutates a live s).
-      if (selfAccum && Array.isArray(b) && b[0] === '[]' && ctx.core.stdlib['__str_append_byte'] && ctx.core.stdlib['__char_at']) {
+      if (selfAccum && Array.isArray(b) && b[0] === '[]' && ctx.core.stdlib['__str_append_unit'] && ctx.core.stdlib['__char_at']) {
         if (valTypeOf(b[1]) === VAL.STRING) {
-          inc('__str_append_byte', '__char_at')
-          return typed(['call', '$__str_append_byte',
+          inc('__str_append_unit', '__char_at')
+          return typed(['call', '$__str_append_unit',
             asI64(emit(a)),
             ctx.abi.string.ops.charCodeAt(asF64(emit(b[1])), asI32(emit(b[2])), ctx),
           ], 'f64')

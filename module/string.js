@@ -6,7 +6,7 @@
  *   bit set:   inline ≤6 ASCII chars packed in the payload (no memory),
  *              length at payload bits 42-44.
  *
- * INVARIANT (load-bearing): every producer normalizes a ≤6-byte all-ASCII result
+ * INVARIANT (load-bearing): every producer normalizes a ≤6-unit all-ASCII result
  * to SSO — literals, slices, concat, append, case, pad, repeat, number/JSON/URI
  * formatting, byte decode, host marshaling (interop.js). Consequence: two strings
  * where exactly one is SSO can never be content-equal, so `__str_eq` decides any
@@ -29,9 +29,11 @@ import { ctx, inc, PTR, LAYOUT, err, declGlobal, setLinkDemand } from '../src/ct
 import { dataAlign, dataPush, dataLen, strPoolPush, strPoolLen } from '../src/static-data.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 import { ERR } from '../err-codes.js'
+import { stringBytes, stringHash } from '../src/string-data.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { registerUri } from './string/uri.js'
 import { registerBase64 } from './string/base64.js'
+import { registerEncoding } from './string/encoding.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 const SLICE_BIT_I64 = sliceBitI64Hex()
@@ -74,7 +76,7 @@ const ssoLenWat = (ptr) => `(i32.wrap_i64 (i64.and (i64.shr_u ${ptr} (i64.const 
 // WAT: length (i32) from an already-extracted aux (i32 expr).
 const ssoLenFromAux = (aux) => `(i32.and (i32.shr_u ${aux} (i32.const ${SSO_LEN_SHIFT})) (i32.const 7))`
 
-// WAT (no-locals expression): byte length of a heap STRING given its raw $-local
+// WAT (no-locals expression): unit length of a heap STRING given its raw $-local
 // names for the offset and the i64 ptr. A view (SLICE_BIT) carries its length in
 // aux[12:0]; an own heap string reads the i32 header at off-4. Callers must have
 // already excluded SSO. Used inline by the hot char/eq helpers so a slice never
@@ -90,10 +92,10 @@ const heapLenExpr = (ptrLocal, offLocal) => `(if (result i32)
 
 
 
-// SSO-pack a ≤4-byte slice straight from the source bytes (both SSO and
+// SSO-pack a ≤6-unit slice straight from the source units (both SSO and
 // memory-backed parents) — no allocation, and equal short tokens become
 // bit-equal (SSO content IS the bits). Bails to the caller's heap path on a
-// non-ASCII byte (SSO is ASCII-only). Locals: $sb scratch byte, $sp packed.
+// non-ASCII unit (SSO is ASCII-only). Locals: $sb scratch unit, $sp packed.
 const sliceSsoPackWat = () => `
     (if (i32.le_u (local.get $nlen) (i32.const ${MAX_SSO}))
       (then (block $heap8
@@ -107,7 +109,7 @@ const sliceSsoPackWat = () => `
             (then
               (local.set $sb (if (result i32) (local.get $isSso)
                 (then ${ssoCharWat('(local.get $ptr)', '(i32.add (local.get $start) (local.get $i))')})
-                (else (i32.load8_u (i32.add (i32.add (local.get $srcOff) (local.get $start)) (local.get $i))))))
+                (else (i32.load16_u (i32.add (i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1))) (i32.shl (local.get $i) (i32.const 1)))))))
               (br_if $heap8 (i32.ge_u (local.get $sb) (i32.const 0x80)))
               (local.set $sp64 (i64.or (local.get $sp64)
                 (i64.shl (i64.extend_i32_u (local.get $sb)) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7)))))
@@ -133,7 +135,7 @@ const internProbeWat = (ipExpr, guard = '(i32.const 1)') => ctx.scope.globals.ha
         (block $hd (loop $hl
           (br_if $hd (i32.ge_u (local.get $j) (local.get $nlen)))
           (local.set $h (i32.mul
-            (i32.xor (local.get $h) (i32.load8_u (i32.add (local.get $ip) (local.get $j))))
+            (i32.xor (local.get $h) (i32.load16_u (i32.add (local.get $ip) (i32.shl (local.get $j) (i32.const 1)))))
             (i32.const 0x01000193)))
           (local.set $j (i32.add (local.get $j) (i32.const 1)))
           (br $hl)))
@@ -151,8 +153,8 @@ const internProbeWat = (ipExpr, guard = '(i32.const 1)') => ctx.scope.globals.ha
             (block $vd (loop $vl
               (br_if $vd (i32.ge_u (local.get $k) (local.get $nlen)))
               (br_if $nextI (i32.ne
-                (i32.load8_u (i32.add (local.get $ip) (local.get $k)))
-                (i32.load8_u (i32.add (local.get $cand) (local.get $k)))))
+                (i32.load16_u (i32.add (local.get $ip) (i32.shl (local.get $k) (i32.const 1))))
+                (i32.load16_u (i32.add (local.get $cand) (i32.shl (local.get $k) (i32.const 1))))))
               (local.set $k (i32.add (local.get $k) (i32.const 1)))
               (br $vl)))
             (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_INTERN_BIT}) (local.get $cand))))
@@ -164,67 +166,67 @@ export default (ctx) => {
   // Size tier: the runtime walks link their plain bodies (see `__str_eq`).
   const lean = !!ctx.transform.optimize?.leanRuntime
   deps({
-    __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
-    __str_concat_raw: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
-    __str_concat_fresh: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
-    __str_concat_raw_fresh: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
-    __str_concat_raw_long: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
-    __str_concat_raw_fresh_long: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
-    __str_append_byte: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_concat: ['__to_str', '__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_concat_raw: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_concat_fresh: ['__to_str', '__str_length', '__alloc', '__mkptr', '__str_copy'],
+    __str_concat_raw_fresh: ['__str_length', '__alloc', '__mkptr', '__str_copy'],
+    __str_concat_raw_long: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_concat_raw_fresh_long: ['__str_length', '__alloc', '__mkptr', '__str_copy'],
+    __str_append_unit: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
     // __str_slice/_view are FUNCTION templates: resolveIncludes' auto-dep scan realizes the
     // factory (v()) to discover body calls, but that realization DIVERGES under self-compile
     // (jz.wasm) — so a body-called helper not also listed here is dropped from the kernel
     // ("Unknown func $__clamp_idx" on `str.slice`). FN templates must declare body deps
     // manually; pinned by test/self-compile-includes.js.
-    __str_slice: ['__str_byteLen', '__alloc', '__clamp_idx', '__mkptr'],
-    __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice', '__clamp_idx'],
-    __str_indexof: ['__str_byteLen'],
-    __str_lastindexof: ['__str_byteLen'],
+    __str_slice: ['__str_length', '__alloc', '__clamp_idx', '__mkptr'],
+    __str_slice_view: ['__str_length', '__mkptr', '__str_slice', '__clamp_idx'],
+    __str_indexof: ['__str_length'],
+    __str_lastindexof: ['__str_length'],
     __wrap1: ['__alloc', '__mkptr'],
     __str_substring: ['__str_slice'],
-    __str_startswith: ['__str_byteLen'],
-    __str_endswith: ['__str_byteLen'],
-    __str_case: ['__str_byteLen', '__alloc'],
-    __str_trim: ['__str_slice', '__str_byteLen', '__char_at'],
-    __str_trimStart: ['__str_slice', '__str_byteLen', '__char_at'],
-    __str_trimEnd: ['__str_slice', '__str_byteLen', '__char_at'],
-    __str_repeat: ['__str_byteLen', '__str_copy', '__alloc', '__sso_norm'],
+    __str_startswith: ['__str_length'],
+    __str_endswith: ['__str_length'],
+    __str_case: ['__str_length', '__alloc'],
+    __str_trim: ['__str_slice', '__str_length', '__char_at', '__strws'],
+    __str_trimStart: ['__str_slice', '__str_length', '__char_at', '__strws'],
+    __str_trimEnd: ['__str_slice', '__str_length', '__char_at', '__strws'],
+    __str_repeat: ['__str_length', '__str_copy', '__alloc', '__sso_norm'],
     __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
-    __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc_hdr'],
-    __str_idx: ['__char1byte'],
+    __str_split: ['__str_slice', '__str_length', '__char_at', '__alloc_hdr'],
+    __str_idx: ['__char_unit'],
     __sso_norm: [],
-    __bytes_decode: ['__typed_data', '__len', '__alloc', '__mkptr', '__sso_norm'],
-    __str_eq: lean ? ['__char_at', '__str_byteLen'] : ['__str_eq_cold'],
-    __str_eq_cold: ['__char_at', '__str_byteLen'],
-    __str_cmp: ['__char_at', '__str_byteLen'],
-    __str_range_eq: ['__char_at', '__str_byteLen'],
-    __str_substring_eq: ['__str_byteLen', '__str_range_eq'],
-    __str_slice_eq: ['__str_byteLen', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-compile auto-scan unreliable — test/self-compile-includes.js)
-    __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
-    __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset', '__mkptr'],  // FN template: __mkptr body-called, must be manual (self-compile auto-scan diverges)
-    __str_encode: ['__str_byteLen', '__str_copy'],
-    __encodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
-    __decodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__uri_hex', '__sso_norm'],
-    __encodeURI: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
-    __decodeURI: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__uri_hex', '__sso_norm'],
+    __bytes_decode: ['__typed_data', '__byte_length', '__ptr_type', '__utf8_decode'],
+    __str_eq: lean ? ['__char_at', '__str_length'] : ['__str_eq_cold'],
+    __str_eq_cold: ['__char_at', '__str_length'],
+    __str_cmp: ['__char_at', '__str_length'],
+    __str_range_eq: ['__char_at', '__str_length'],
+    __str_substring_eq: ['__str_length', '__str_range_eq'],
+    __str_slice_eq: ['__str_length', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-compile auto-scan unreliable — test/self-compile-includes.js)
+    __str_pad: ['__str_length', '__str_copy', '__alloc'],
+    __str_join: ['__str_concat', '__to_str', '__str_length', '__len', '__ptr_offset', '__mkptr'],  // FN template: __mkptr body-called, must be manual (self-compile auto-scan diverges)
+    __str_encode: ['__str_length', '__alloc_hdr_n', '__utf8_encode', '__mkptr'],
+    __encodeURIComponent: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
+    __decodeURIComponent: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__uri_hex', '__sso_norm'],
+    __encodeURI: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
+    __decodeURI: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__uri_hex', '__sso_norm'],
     __uri_hex: [],
     // base64/hex codec family (Uint8Array.fromBase64/toBase64/…, atob/btoa)
     __b64_enc: ['__alloc', '__mkptr', '__sso_norm'],
-    __b64_dec_raw: ['__str_byteLen', '__char_at'],
-    __btoa: ['__to_str', '__str_byteLen', '__str_copy', '__alloc', '__b64_enc'],
-    __atob: ['__to_str', '__str_byteLen', '__alloc', '__b64_dec_raw', '__mkptr', '__sso_norm'],
-    __b64_from: ['__to_str', '__str_byteLen', '__alloc', '__b64_dec_raw', '__mkptr'],
+    __b64_dec_raw: ['__str_length', '__char_at'],
+    __btoa: ['__to_str', '__str_length', '__char_at', '__alloc', '__b64_enc'],
+    __atob: ['__to_str', '__str_length', '__alloc', '__b64_dec_raw', '__mkptr', '__sso_norm'],
+    __b64_from: ['__to_str', '__str_length', '__alloc', '__b64_dec_raw', '__mkptr'],
     __b64_set: ['__b64_dec_raw', '__u8_data', '__len'],
     __hex_enc: ['__alloc', '__mkptr', '__sso_norm'],
-    __hex_dec_raw: ['__str_byteLen', '__char_at', '__uri_hex'],
-    __hex_from: ['__to_str', '__str_byteLen', '__alloc', '__hex_dec_raw', '__mkptr'],
+    __hex_dec_raw: ['__str_length', '__char_at', '__uri_hex'],
+    __hex_from: ['__to_str', '__str_length', '__alloc', '__hex_dec_raw', '__mkptr'],
     __hex_set: ['__hex_dec_raw', '__u8_data', '__len'],
     __u8_data: ['__ptr_type', '__ptr_aux', '__typed_data'],
-    __str_encode_into: ['__str_byteLen', '__char_at', '__str_copy', '__len', '__typed_data', '__ptr_type', '__ptr_aux'],
+    __str_encode_into: ['__utf8_encode', '__byte_length', '__typed_data', '__ptr_type', '__ptr_aux'],
     __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
-    __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
+    __str_length: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
 
   // String *runtime* construction (concat/slice/split/`String(n)`/shared-memory
@@ -249,11 +251,11 @@ export default (ctx) => {
       if (sso) return mkPtrIR(PTR.STRING, sso.aux, sso.offset)
     }
     // Falls through to the static-data path below ONLY when ssoEncode returned null
-    // (>6 bytes or non-ASCII) — so an interned static NEVER carries ≤6-ASCII content,
-    // and its cached hash (below) stays byte-FNV without needing the SSO mix
+    // (>6 units or non-ASCII) — so an interned static NEVER carries ≤6-ASCII content,
+    // and its cached hash (below) stays unit-FNV without needing the SSO mix
     // (__str_hash's SSO branch, module/collection.js, never sees an interned pointer).
-    const bytes = new TextEncoder().encode(str)
-    const len = bytes.length
+    const bytes = stringBytes(str)
+    const len = str.length
     if (!ctx.memory.shared) {
       // Own memory: place in static data segment (no runtime allocation).
       // Under internStrings the layout is [hash u32][len u32][bytes] and the
@@ -266,19 +268,16 @@ export default (ctx) => {
       const aux = interned ? STR_INTERN_BIT : 0
       const prior = ctx.runtime.dataDedup.get(str)
       if (prior !== undefined) return mkPtrIR(PTR.STRING, aux, prior + hdr)
-      // Build the length/hash header and UTF-8 payload in one byte record.
+      // Build the length/hash header and UTF-16LE payload in one byte record.
       dataAlign(4)
       const offset = dataLen()
-      const chunk = new Uint8Array(hdr + len), view = new DataView(chunk.buffer)
+      const chunk = new Uint8Array(hdr + bytes.length), view = new DataView(chunk.buffer)
       if (interned) {
-        // byte-FNV + clamp — must equal __str_hash's output exactly (it hashes
-        // UTF-8 bytes, then clamps ≤1 → +2 for the empty/tombstone sentinels).
-        // Always the byte-FNV branch, never the SSO mix: this string is here
+        // unit-FNV + clamp — must equal __str_hash's output exactly (it hashes
+        // UTF-16 units, then clamps ≤1 → +2 for the empty/tombstone sentinels).
+        // Always the unit-FNV branch, never the SSO mix: this string is here
         // because ssoEncode rejected it (see the guard above).
-        let h = 0x811c9dc5 | 0
-        for (let i = 0; i < len; i++) h = Math.imul(h ^ bytes[i], 0x01000193) | 0
-        if (h <= 1) h = (h + 2) | 0
-        h = h >>> 0
+        const h = stringHash(str)
         view.setUint32(0, h, true)
       }
       view.setUint32(hdr - 4, len, true)
@@ -297,7 +296,7 @@ export default (ctx) => {
     }
     let off = ctx.runtime.strPoolDedup.get(str)
     if (off === undefined) {
-      const record = new Uint8Array(4 + len)
+      const record = new Uint8Array(4 + bytes.length)
       new DataView(record.buffer).setUint32(0, len, true)
       record.set(bytes, 4)
       off = strPoolPush(record) + 4
@@ -314,9 +313,7 @@ export default (ctx) => {
     ${ssoCharWat('(local.get $ptr)', '(local.get $i)')})`)
 
   wat('__str_char', `(func $__str_char (param $ptr i64) (param $i i32) (result i32)
-    (i32.load8_u (i32.add
-      (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
-      (local.get $i))))`)
+    (i32.load16_u (i32.add (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))) (i32.shl (local.get $i) (i32.const 1)))))`)
 
   // Hot (~37M calls in watr self-compile, ~40k/scan in tokenizer bench). Caller
   // guarantees $ptr is a STRING; SSO bit picks inline-byte-extract vs heap memory
@@ -364,10 +361,7 @@ export default (ctx) => {
                       (i32.const 4))))))))
           (then (i32.const 0))
           (else
-            (i32.load8_u
-              (i32.add
-                (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
-                (local.get $i)))))))))`)
+            (i32.load16_u (i32.add (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))) (i32.shl (local.get $i) (i32.const 1))))))))))`)
 
   wat('__str_idx', `(func $__str_idx (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $len i32) (local $isSso i32)
@@ -400,8 +394,8 @@ export default (ctx) => {
               (i64.const ${ptrNanHex(PTR.STRING, ssoAux(1))})
               (i64.extend_i32_u ${ssoCharWat('(local.get $ptr)', '(local.get $i)')}))))
           ;; Heap source: the byte may be ≥0x80 (non-ASCII), which can't be a 7-bit SSO,
-          ;; so __char1byte routes those to a heap 1-byte string.
-          (else (call $__char1byte (i32.load8_u (i32.add (local.get $off) (local.get $i)))))))))`)
+          ;; so __char_unit routes those to a heap one-unit string.
+          (else (call $__char_unit (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))))`)
 
   // Hot: ~53M calls in watr self-compile. Bit-eq covers identity. SSO/SSO with !bit-eq
   // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs
@@ -414,7 +408,7 @@ export default (ctx) => {
   // split; a body containing a loop is excluded from V8's inliner.
   // Size tier (`leanRuntime`): the same decision as the tiered pair below in one
   // loop-free prelude plus the byte walk through the encoding-agnostic accessors
-  // the cold path already links (`__str_byteLen`, `__char_at`). No hot/cold
+  // the cold path already links (`__str_length`, `__char_at`). No hot/cold
   // split, no canonical-interned arm, no 4-byte chunking: a third of the bytes.
   wat('__str_eq', () => lean ? `(func $__str_eq (param $a i64) (param $b i64) (result i32)
     (local $len i32) (local $i i32)
@@ -427,8 +421,8 @@ export default (ctx) => {
     ;; both SSO ⇒ bit-ne already decided content-ne
     (if (i64.ne (i64.and (i64.and (local.get $a) (local.get $b)) (i64.const ${SSO_BIT_I64})) (i64.const 0))
       (then (return (i32.const 0))))`}
-    (local.set $len (call $__str_byteLen (local.get $a)))
-    (if (i32.ne (local.get $len) (call $__str_byteLen (local.get $b)))
+    (local.set $len (call $__str_length (local.get $a)))
+    (if (i32.ne (local.get $len) (call $__str_length (local.get $b)))
       (then (return (i32.const 0))))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
@@ -511,6 +505,7 @@ export default (ctx) => {
         (local.set $lenB ${heapLenExpr('$b', '$offB')})
         (if (i32.ne (local.get $len) (local.get $lenB))
           (then (return (i32.const 0))))
+        (local.set $len (i32.shl (local.get $len) (i32.const 1)))
         (local.set $lenB (i32.and (local.get $len) (i32.const -4)))
         (block $d4 (loop $l4
           (br_if $d4 (i32.ge_s (local.get $i) (local.get $lenB)))
@@ -530,9 +525,9 @@ export default (ctx) => {
           (br $lh)))
         (return (i32.const 1))))
     ;; Mixed (SSO×heap) or anything else: compute len per side then per-byte via __char_at.
-    ;; __str_byteLen handles SSO, slice (SLICE_BIT) and own-heap encodings uniformly.
-    (local.set $len (call $__str_byteLen (local.get $a)))
-    (local.set $lenB (call $__str_byteLen (local.get $b)))
+    ;; __str_length handles SSO, slice (SLICE_BIT) and own-heap encodings uniformly.
+    (local.set $len (call $__str_length (local.get $a)))
+    (local.set $lenB (call $__str_length (local.get $b)))
     (if (i32.ne (local.get $len) (local.get $lenB))
       (then (return (i32.const 0))))
     (block $dm (loop $lm
@@ -544,21 +539,15 @@ export default (ctx) => {
       (br $lm)))
     (i32.const 1))`)
 
-  // Three-way byte-wise compare: -1 if a < b, 0 if equal, +1 if a > b. Returns
-  // i32 so callers can `i32.lt_s 0`, `i32.gt_s 0`, etc. without coercion.
-  // Comparison is unsigned (i32.load8_u via __char_at) — matches JS spec for
-  // ASCII; for non-ASCII it's a UTF-8 byte order, which collates the same as
-  // codepoint order for code points < 0x80 and well-formed strings. NOT locale-
-  // aware: this is the byte-wise variant suitable for sort-stability use cases,
-  // not human-language collation.
+  // Unsigned UTF-16 unit comparison, matching JavaScript's relational order.
   wat('__str_cmp', `(func $__str_cmp (param $a i64) (param $b i64) (result i32)
     (local $lenA i32) (local $lenB i32) (local $minLen i32) (local $i i32)
     (local $ca i32) (local $cb i32)
     ;; Bit-equal pointers (including same SSO inline form) ⇒ identical strings.
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 0))))
-    (local.set $lenA (call $__str_byteLen (local.get $a)))
-    (local.set $lenB (call $__str_byteLen (local.get $b)))
+    (local.set $lenA (call $__str_length (local.get $a)))
+    (local.set $lenB (call $__str_length (local.get $b)))
     (local.set $minLen (select (local.get $lenA) (local.get $lenB)
       (i32.lt_s (local.get $lenA) (local.get $lenB))))
     (block $done (loop $next
@@ -574,9 +563,9 @@ export default (ctx) => {
     (if (i32.gt_s (local.get $lenA) (local.get $lenB)) (then (return (i32.const 1))))
     (i32.const 0))`)
 
-  // === WAT: unified byte length (SSO → aux low bits, heap → header) ===
+  // === WAT: unified code-unit length (SSO → aux low bits, heap → header) ===
 
-  wat('__str_byteLen', `(func $__str_byteLen (param $ptr i64) (result i32)
+  wat('__str_length', `(func $__str_length (param $ptr i64) (result i32)
     (local $t i32) (local $off i32) (local $aux i32)
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (if (result i32) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
@@ -605,7 +594,7 @@ export default (ctx) => {
     (local $len i32) (local $nlen i32) (local $off i32) (local $i i32)
     (local $srcOff i32) (local $isSso i32) (local $sb i32) (local $sp i32) (local $sp64 i64)
     (local $ip i32) (local $h i32) (local $j i32) (local $slot i32) (local $cand i32) (local $k i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
     (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
     (if (i32.ge_s (local.get $start) (local.get $end))
@@ -613,7 +602,7 @@ export default (ctx) => {
     (local.set $nlen (i32.sub (local.get $end) (local.get $start)))
     ${sliceSsoPackWat()}
     ${internProbeWat('(i32.add (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ' + LAYOUT.OFFSET_MASK + '))) (local.get $start))', '(i32.eqz (local.get $isSso))')}
-    (local.set $off (call $__alloc (i32.add (i32.const 8) (local.get $nlen))))
+    (local.set $off (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $nlen) (i32.const 1)))))
     (i32.store (local.get $off) (i32.const 0))
     (i32.store offset=4 (local.get $off) (local.get $nlen))
     (local.set $off (i32.add (local.get $off) (i32.const 8)))
@@ -625,14 +614,13 @@ export default (ctx) => {
       (then
         (block $done (loop $loop
           (br_if $done (i32.ge_s (local.get $i) (local.get $nlen)))
-          (i32.store8 (i32.add (local.get $off) (local.get $i))
-            (i32.and (i32.shr_u (local.get $srcOff)
+          (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (i32.and (i32.shr_u (local.get $srcOff)
               (i32.shl (i32.add (local.get $start) (local.get $i)) (i32.const 3)))
               (i32.const 0xFF)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $loop))))
       (else
-        (memory.copy (local.get $off) (i32.add (local.get $srcOff) (local.get $start)) (local.get $nlen))))
+        (memory.copy (local.get $off) (i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1))) (i32.shl (local.get $nlen) (i32.const 1)))))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`)
 
   // No-copy slice: returns a VIEW into the receiver's buffer instead of copying
@@ -646,7 +634,7 @@ export default (ctx) => {
   wat('__str_slice_view', () => `(func $__str_slice_view (param $ptr i64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $nlen i32) (local $srcOff i32) (local $tag i32)
     (local $ip i32) (local $h i32) (local $j i32) (local $slot i32) (local $cand i32) (local $k i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
     (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
     (if (i32.ge_s (local.get $start) (local.get $end))
@@ -665,17 +653,17 @@ export default (ctx) => {
           (i32.le_u (local.get $nlen) (i32.const ${LAYOUT.SLICE_LEN_MASK})))
       (then
         (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
-        ${internProbeWat('(i32.add (local.get $srcOff) (local.get $start))')}
+        ${internProbeWat('(i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1)))')}
         (return (call $__mkptr
           (i32.const ${PTR.STRING})
           (i32.or (i32.const ${LAYOUT.SLICE_BIT}) (local.get $nlen))
-          (i32.add (local.get $srcOff) (local.get $start))))))
+          (i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1)))))))
     ;; Fallback: copy (SSO parent, or slice too long for the aux length field).
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`)
 
   wat('__str_substring', `(func $__str_substring (param $ptr i64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $tmp i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (if (i32.lt_s (local.get $start) (i32.const 0))
       (then (local.set $start (i32.const 0))))
     (if (i32.lt_s (local.get $end) (i32.const 0))
@@ -718,7 +706,7 @@ export default (ctx) => {
     (local.set $n (i32.sub (local.get $end) (local.get $start)))
     (if (i32.lt_s (local.get $n) (i32.const 0))
       (then (local.set $n (i32.const 0))))
-    (if (i32.ne (local.get $n) (call $__str_byteLen (local.get $other)))
+    (if (i32.ne (local.get $n) (call $__str_length (local.get $other)))
       (then (return (i32.const 0))))
     (block $done (loop $next
       (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
@@ -733,7 +721,7 @@ export default (ctx) => {
   // Clamp mirrors __str_substring (negatives floor to 0, swap when start>end).
   wat('__str_substring_eq', `(func $__str_substring_eq (param $ptr i64) (param $start i32) (param $end i32) (param $other i64) (result i32)
     (local $len i32) (local $tmp i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (if (i32.lt_s (local.get $start) (i32.const 0))
       (then (local.set $start (i32.const 0))))
     (if (i32.lt_s (local.get $end) (i32.const 0))
@@ -753,19 +741,19 @@ export default (ctx) => {
   // floors a negative span to an empty match).
   wat('__str_slice_eq', `(func $__str_slice_eq (param $ptr i64) (param $start i32) (param $end i32) (param $other i64) (result i32)
     (local $len i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
     (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
     (call $__str_range_eq (local.get $ptr) (local.get $start) (local.get $end) (local.get $other)))`)
 
   // Hoist SSO/heap dispatch for hay and ndl out of the inner byte loop. Inner
-  // loop becomes (load8_u OR sso byte-extract) per side — no per-byte calls.
+  // loop becomes (load16_u OR sso unit-extract) per side — no per-byte calls.
   // Needle byte j, SSO-aware (packed-bits extract vs heap load) — lets the SIMD
   // haystack scan serve SSO needles too (the common short "," / "://" needle),
   // not just heap×heap. `$nsso` is loop-invariant so the branch predicts away.
   const nByte = (j) => `(if (result i32) (local.get $nsso)
     (then ${ssoCharWat('(local.get $ndl)', j)})
-    (else (i32.load8_u (i32.add (local.get $noff) ${j}))))`
+    (else (i32.load16_u (i32.add (local.get $noff) (i32.shl ${j} (i32.const 1))))))`
   wat('__str_indexof', `(func $__str_indexof (param $hay i64) (param $ndl i64) (param $from i32) (result i32)
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hoff i32) (local $noff i32)
@@ -773,8 +761,8 @@ export default (ctx) => {
     (local $splat v128) (local $mask i32) (local $scanEnd i32)
     ;; The search value is ToString'd at the call site (searchArg) per 21.1.3.9 step 4 —
     ;; a known-string needle passes raw, so this helper carries no float-pulling __to_str.
-    (local.set $hlen (call $__str_byteLen (local.get $hay)))
-    (local.set $nlen (call $__str_byteLen (local.get $ndl)))
+    (local.set $hlen (call $__str_length (local.get $hay)))
+    (local.set $nlen (call $__str_length (local.get $ndl)))
     ;; Empty needle matches at clamp(from, 0, hlen) — per 21.1.3.9 step 6 (Min(Max(pos,0),len)).
     (if (i32.eqz (local.get $nlen))
       (then (return (select
@@ -792,7 +780,7 @@ export default (ctx) => {
       (i32.const ${LAYOUT.SSO_BIT})))
     (local.set $i (if (result i32) (i32.gt_s (local.get $from) (i32.const 0)) (then (local.get $from)) (else (i32.const 0))))
     ;; Single-byte needle (the common s.indexOf('/') / s.includes(' ')): scan for one byte without
-    ;; the per-position match/j/k bookkeeping. Heap haystack gets a branchless load8_u loop (no
+    ;; the per-position match/j/k bookkeeping. Heap haystack gets a branchless load16_u loop (no
     ;; per-byte SSO test); a 16-wide SIMD scan here would only add splat/window setup that short
     ;; strings — the bulk of single-char searches — never amortize, so the scalar scan stays.
     (if (i32.eq (local.get $nlen) (i32.const 1))
@@ -802,7 +790,7 @@ export default (ctx) => {
           (then
             (block $sd (loop $ss
               (br_if $sd (i32.ge_s (local.get $i) (local.get $hlen)))
-              (if (i32.eq (i32.load8_u (i32.add (local.get $hoff) (local.get $i))) (local.get $nb))
+              (if (i32.eq (i32.load16_u (i32.add (local.get $hoff) (i32.shl (local.get $i) (i32.const 1)))) (local.get $nb))
                 (then (return (local.get $i))))
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
               (br $ss)))
@@ -816,7 +804,7 @@ export default (ctx) => {
               (br $ss2)))
             (return (i32.const -1))))))
     ;; Multi-byte needle, HEAP haystack (needle SSO or heap): a SIMD first-byte memchr — broadcast
-    ;; needle[0] across 16 lanes, i8x16.eq a 16-byte haystack window, and read the match-bitmask.
+    ;; needle[0] across 16 lanes, i16x8.eq a 16-byte haystack window, and read the match-bitmask.
     ;; Only positions whose first byte matches reach the branchless verify; the rare match (V8's own
     ;; StringIndexOf is SIMD here) is what the scalar path lost on. The SIMD load only touches the
     ;; haystack, so an SSO needle (the common short "," / "://" / "TARGET") rides this path too —
@@ -827,11 +815,11 @@ export default (ctx) => {
       (then
         (local.set $nb ${nByte('(i32.const 0)')})
         (local.set $scanEnd (i32.sub (local.get $hlen) (local.get $nlen)))
-        (local.set $splat (i8x16.splat (local.get $nb)))
+        (local.set $splat (i16x8.splat (local.get $nb)))
         (block $vd (loop $vo
-          (br_if $vd (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (i32.const 16))))
-          (local.set $mask (i8x16.bitmask
-            (i8x16.eq (v128.load (i32.add (local.get $hoff) (local.get $i))) (local.get $splat))))
+          (br_if $vd (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (i32.const 8))))
+          (local.set $mask (i16x8.bitmask
+            (i16x8.eq (v128.load (i32.add (local.get $hoff) (i32.shl (local.get $i) (i32.const 1)))) (local.get $splat))))
           (block $bd (loop $bo
             (br_if $bd (i32.eqz (local.get $mask)))
             (local.set $k (i32.add (local.get $i) (i32.ctz (local.get $mask))))   ;; candidate start
@@ -840,7 +828,7 @@ export default (ctx) => {
             (local.set $j (i32.const 1))
             (block $mn (loop $mi
               (br_if $mn (i32.ge_s (local.get $j) (local.get $nlen)))
-              (if (i32.ne (i32.load8_u (i32.add (i32.add (local.get $hoff) (local.get $k)) (local.get $j)))
+              (if (i32.ne (i32.load16_u (i32.add (i32.add (local.get $hoff) (i32.shl (local.get $k) (i32.const 1))) (i32.shl (local.get $j) (i32.const 1))))
                           ${nByte('(local.get $j)')})
                 (then (local.set $match (i32.const 0)) (br $mn)))
               (local.set $j (i32.add (local.get $j) (i32.const 1)))
@@ -848,18 +836,18 @@ export default (ctx) => {
             (if (local.get $match) (then (return (local.get $k))))
             (local.set $mask (i32.and (local.get $mask) (i32.sub (local.get $mask) (i32.const 1))))  ;; clear lowest match
             (br $bo)))
-          (local.set $i (i32.add (local.get $i) (i32.const 16)))
+          (local.set $i (i32.add (local.get $i) (i32.const 8)))
           (br $vo)))
         ;; scalar tail: positions [i, scanEnd] the SIMD window couldn't cover
         (block $md (loop $mo
           (br_if $md (i32.gt_s (local.get $i) (local.get $scanEnd)))
-          (if (i32.eq (i32.load8_u (i32.add (local.get $hoff) (local.get $i))) (local.get $nb))
+          (if (i32.eq (i32.load16_u (i32.add (local.get $hoff) (i32.shl (local.get $i) (i32.const 1)))) (local.get $nb))
             (then
               (local.set $match (i32.const 1))
               (local.set $j (i32.const 1))
               (block $mn2 (loop $mi2
                 (br_if $mn2 (i32.ge_s (local.get $j) (local.get $nlen)))
-                (if (i32.ne (i32.load8_u (i32.add (i32.add (local.get $hoff) (local.get $i)) (local.get $j)))
+                (if (i32.ne (i32.load16_u (i32.add (i32.add (local.get $hoff) (i32.shl (local.get $i) (i32.const 1))) (i32.shl (local.get $j) (i32.const 1))))
                             ${nByte('(local.get $j)')})
                   (then (local.set $match (i32.const 0)) (br $mn2)))
                 (local.set $j (i32.add (local.get $j) (i32.const 1)))
@@ -877,10 +865,10 @@ export default (ctx) => {
         (local.set $k (i32.add (local.get $i) (local.get $j)))
         (local.set $hb (if (result i32) (local.get $hsso)
           (then ${ssoCharWat('(local.get $hay)', '(local.get $k)')})
-          (else (i32.load8_u (i32.add (local.get $hoff) (local.get $k))))))
+          (else (i32.load16_u (i32.add (local.get $hoff) (i32.shl (local.get $k) (i32.const 1)))))))
         (local.set $nb (if (result i32) (local.get $nsso)
           (then ${ssoCharWat('(local.get $ndl)', '(local.get $j)')})
-          (else (i32.load8_u (i32.add (local.get $noff) (local.get $j))))))
+          (else (i32.load16_u (i32.add (local.get $noff) (i32.shl (local.get $j) (i32.const 1)))))))
         (if (i32.ne (local.get $hb) (local.get $nb))
           (then (local.set $match (i32.const 0)) (br $nomatch)))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
@@ -899,8 +887,8 @@ export default (ctx) => {
     (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
     ;; The search value is ToString'd at the call site (searchArg) per 21.1.3.10 step 4.
-    (local.set $hlen (call $__str_byteLen (local.get $hay)))
-    (local.set $nlen (call $__str_byteLen (local.get $ndl)))
+    (local.set $hlen (call $__str_length (local.get $hay)))
+    (local.set $nlen (call $__str_length (local.get $ndl)))
     ;; Empty needle always matches at the clamp(from,0,hlen) position
     (if (i32.eqz (local.get $nlen))
       (then (return (select
@@ -929,10 +917,10 @@ export default (ctx) => {
         (local.set $k (i32.add (local.get $i) (local.get $j)))
         (local.set $hb (if (result i32) (local.get $hsso)
           (then ${ssoCharWat('(local.get $hay)', '(local.get $k)')})
-          (else (i32.load8_u (i32.add (local.get $hoff) (local.get $k))))))
+          (else (i32.load16_u (i32.add (local.get $hoff) (i32.shl (local.get $k) (i32.const 1)))))))
         (local.set $nb (if (result i32) (local.get $nsso)
           (then ${ssoCharWat('(local.get $ndl)', '(local.get $j)')})
-          (else (i32.load8_u (i32.add (local.get $noff) (local.get $j))))))
+          (else (i32.load16_u (i32.add (local.get $noff) (i32.shl (local.get $j) (i32.const 1)))))))
         (if (i32.ne (local.get $hb) (local.get $nb))
           (then (local.set $match (i32.const 0)) (br $nomatch)))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
@@ -946,8 +934,8 @@ export default (ctx) => {
   wat('__str_startswith', `(func $__str_startswith (param $str i64) (param $pfx i64) (result i32)
     (local $plen i32) (local $i i32)
     (local $soff i32) (local $poff i32) (local $ssso i32) (local $psso i32)
-    (local.set $plen (call $__str_byteLen (local.get $pfx)))
-    (if (i32.gt_s (local.get $plen) (call $__str_byteLen (local.get $str)))
+    (local.set $plen (call $__str_length (local.get $pfx)))
+    (if (i32.gt_s (local.get $plen) (call $__str_length (local.get $str)))
       (then (return (i32.const 0))))
     (local.set $soff (i32.wrap_i64 (i64.and (local.get $str) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $poff (i32.wrap_i64 (i64.and (local.get $pfx) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -962,10 +950,10 @@ export default (ctx) => {
       (if (i32.ne
             (if (result i32) (local.get $ssso)
               (then ${ssoCharWat('(local.get $str)', '(local.get $i)')})
-              (else (i32.load8_u (i32.add (local.get $soff) (local.get $i)))))
+              (else (i32.load16_u (i32.add (local.get $soff) (i32.shl (local.get $i) (i32.const 1))))))
             (if (result i32) (local.get $psso)
               (then ${ssoCharWat('(local.get $pfx)', '(local.get $i)')})
-              (else (i32.load8_u (i32.add (local.get $poff) (local.get $i))))))
+              (else (i32.load16_u (i32.add (local.get $poff) (i32.shl (local.get $i) (i32.const 1)))))))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
@@ -974,8 +962,8 @@ export default (ctx) => {
   wat('__str_endswith', `(func $__str_endswith (param $str i64) (param $sfx i64) (result i32)
     (local $slen i32) (local $flen i32) (local $off i32) (local $i i32) (local $k i32)
     (local $soff i32) (local $foff i32) (local $ssso i32) (local $fsso i32)
-    (local.set $slen (call $__str_byteLen (local.get $str)))
-    (local.set $flen (call $__str_byteLen (local.get $sfx)))
+    (local.set $slen (call $__str_length (local.get $str)))
+    (local.set $flen (call $__str_length (local.get $sfx)))
     (if (i32.gt_s (local.get $flen) (local.get $slen))
       (then (return (i32.const 0))))
     (local.set $off (i32.sub (local.get $slen) (local.get $flen)))
@@ -993,10 +981,10 @@ export default (ctx) => {
       (if (i32.ne
             (if (result i32) (local.get $ssso)
               (then ${ssoCharWat('(local.get $str)', '(local.get $k)')})
-              (else (i32.load8_u (i32.add (local.get $soff) (local.get $k)))))
+              (else (i32.load16_u (i32.add (local.get $soff) (i32.shl (local.get $k) (i32.const 1))))))
             (if (result i32) (local.get $fsso)
               (then ${ssoCharWat('(local.get $sfx)', '(local.get $i)')})
-              (else (i32.load8_u (i32.add (local.get $foff) (local.get $i))))))
+              (else (i32.load16_u (i32.add (local.get $foff) (i32.shl (local.get $i) (i32.const 1)))))))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
@@ -1006,7 +994,7 @@ export default (ctx) => {
   wat('__str_case', `(func $__str_case (param $ptr i64) (param $lo i32) (param $hi i32) (param $delta i32) (result f64)
     (local $len i32) (local $off i32) (local $i i32) (local $c i32)
     (local $srcOff i32) (local $sp64 i64)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
     ;; SSO in ⇒ SSO out: case-map the 7-bit lanes in registers (no allocation);
@@ -1028,55 +1016,55 @@ export default (ctx) => {
             (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
             (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 42)))
           (local.get $sp64))))))
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 1)))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
     (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (block $dh (loop $lh
       (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (i32.load8_u (i32.add (local.get $srcOff) (local.get $i))))
+      (local.set $c (i32.load16_u (i32.add (local.get $srcOff) (i32.shl (local.get $i) (i32.const 1)))))
       (if (i32.and (i32.ge_u (local.get $c) (local.get $lo)) (i32.le_u (local.get $c) (local.get $hi)))
         (then (local.set $c (i32.add (local.get $c) (local.get $delta)))))
-      (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
+      (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (local.get $c))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lh)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
 
   wat('__str_trim', `(func $__str_trim (param $ptr i64) (result f64)
     (local $len i32) (local $start i32) (local $end i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $start (i32.const 0))
     (local.set $end (local.get $len))
     (block $d1 (loop $l1
       (br_if $d1 (i32.ge_s (local.get $start) (local.get $end)))
-      (br_if $d1 (i32.gt_u (call $__char_at (local.get $ptr) (local.get $start)) (i32.const 32)))
+      (br_if $d1 (i32.eqz (call $__strws (call $__char_at (local.get $ptr) (local.get $start)))))
       (local.set $start (i32.add (local.get $start) (i32.const 1)))
       (br $l1)))
     (block $d2 (loop $l2
       (br_if $d2 (i32.le_s (local.get $end) (local.get $start)))
-      (br_if $d2 (i32.gt_u (call $__char_at (local.get $ptr) (i32.sub (local.get $end) (i32.const 1))) (i32.const 32)))
+      (br_if $d2 (i32.eqz (call $__strws (call $__char_at (local.get $ptr) (i32.sub (local.get $end) (i32.const 1))))))
       (local.set $end (i32.sub (local.get $end) (i32.const 1)))
       (br $l2)))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`)
 
   wat('__str_trimStart', `(func $__str_trimStart (param $ptr i64) (result f64)
     (local $len i32) (local $start i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $start (i32.const 0))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $start) (local.get $len)))
-      (br_if $done (i32.gt_u (call $__char_at (local.get $ptr) (local.get $start)) (i32.const 32)))
+      (br_if $done (i32.eqz (call $__strws (call $__char_at (local.get $ptr) (local.get $start)))))
       (local.set $start (i32.add (local.get $start) (i32.const 1)))
       (br $loop)))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $len)))`)
 
   wat('__str_trimEnd', `(func $__str_trimEnd (param $ptr i64) (result f64)
     (local $len i32) (local $end i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $end (local.get $len))
     (block $done (loop $loop
       (br_if $done (i32.le_s (local.get $end) (i32.const 0)))
-      (br_if $done (i32.gt_u (call $__char_at (local.get $ptr) (i32.sub (local.get $end) (i32.const 1))) (i32.const 32)))
+      (br_if $done (i32.eqz (call $__strws (call $__char_at (local.get $ptr) (i32.sub (local.get $end) (i32.const 1))))))
       (local.set $end (i32.sub (local.get $end) (i32.const 1)))
       (br $loop)))
     (call $__str_slice (local.get $ptr) (i32.const 0) (local.get $end)))`)
@@ -1085,21 +1073,18 @@ export default (ctx) => {
   // each subsequent repetition (single bulk op vs len byte stores per copy).
   wat('__str_repeat', `(func $__str_repeat (param $ptr i64) (param $n i32) (result f64)
     (local $len i32) (local $total i32) (local $off i32) (local $i i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (if (i32.or (i32.eqz (local.get $n)) (i32.eqz (local.get $len)))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
     (local.set $total (i32.mul (local.get $len) (local.get $n)))
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $total) (i32.const 1)))))
     (i32.store (local.get $off) (local.get $total))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
     (call $__str_copy (local.get $ptr) (local.get $off) (local.get $len))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
-      (memory.copy
-        (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $len)))
-        (local.get $off)
-        (local.get $len))
+      (memory.copy (i32.add (local.get $off) (i32.shl (i32.mul (local.get $i) (local.get $len)) (i32.const 1))) (local.get $off) (i32.shl (local.get $len) (i32.const 1)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
     ;; short ASCII result → SSO (invariant); the heap copy stays as arena garbage
@@ -1152,14 +1137,12 @@ export default (ctx) => {
         (loop $ssocp
           (if (i32.lt_u (local.get $w) (local.get $len))
             (then
-              (i32.store8 (i32.add (local.get $dst) (local.get $w)) ${ssoCharWat('(local.get $src)', '(local.get $w)')})
+              (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $w) (i32.const 1))) ${ssoCharWat('(local.get $src)', '(local.get $w)')})
               (local.set $w (i32.add (local.get $w) (i32.const 1)))
               (br $ssocp)))))
       (else
         ;; Heap STRING: memory.copy directly from string data
-        (memory.copy (local.get $dst)
-          (i32.wrap_i64 (i64.and (local.get $src) (i64.const ${LAYOUT.OFFSET_MASK})))
-          (local.get $len)))))`)
+        (memory.copy (local.get $dst) (i32.wrap_i64 (i64.and (local.get $src) (i64.const ${LAYOUT.OFFSET_MASK}))) (i32.shl (local.get $len) (i32.const 1))))))`)
 
   // Bump-extend fast path: when `a` is a heap STRING sitting at the top of the
   // bump allocator, extend its allocation in place instead of copying. Mutates
@@ -1211,10 +1194,10 @@ export default (ctx) => {
               (local.set $kc (if (result i32) (i32.lt_u (local.get $ki) (local.get $alen))
                 (then (if (result i32) (i64.ne (i64.and (local.get $a) (i64.const ${SSO_BIT_I64})) (i64.const 0))
                   (then ${ssoCharWat('(local.get $a)', '(local.get $ki)')})
-                  (else (i32.load8_u (i32.add (local.get $kao) (local.get $ki))))))
+                  (else (i32.load16_u (i32.add (local.get $kao) (i32.shl (local.get $ki) (i32.const 1)))))))
                 (else (if (result i32) (i64.ne (i64.and (local.get $b) (i64.const ${SSO_BIT_I64})) (i64.const 0))
                   (then ${ssoCharWat('(local.get $b)', '(i32.sub (local.get $ki) (local.get $alen))')})
-                  (else (i32.load8_u (i32.add (local.get $kbo) (i32.sub (local.get $ki) (local.get $alen)))))))))
+                  (else (i32.load16_u (i32.add (local.get $kbo) (i32.shl (i32.sub (local.get $ki) (local.get $alen)) (i32.const 1)))))))))
               (br_if $kspill (i32.ge_u (local.get $kc) (i32.const 0x80)))
               (local.set $ksp (i64.or (local.get $ksp)
                 (i64.shl (i64.extend_i32_u (local.get $kc)) (i64.mul (i64.extend_i32_u (local.get $ki)) (i64.const 7)))))
@@ -1238,14 +1221,14 @@ export default (ctx) => {
               (i64.eqz (i64.and (local.get $a) (i64.const ${SSO_BIT_I64})))
               (i64.eqz (i64.and (local.get $a) (i64.const ${SLICE_BIT_I64})))))
           (i32.eq
-            (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 7)) (i32.const -8))
+            (i32.and (i32.add (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1))) (i32.const 7)) (i32.const -8))
             (global.get $__heap)))
       (then
         (local.set $newHeap
-          (i32.and (i32.add (i32.add (local.get $aoff) (local.get $total)) (i32.const 7)) (i32.const -8)))
+          (i32.and (i32.add (i32.add (local.get $aoff) (i32.shl (local.get $total) (i32.const 1))) (i32.const 7)) (i32.const -8)))
         (call $__memgrow (local.get $newHeap))
         (call $__str_copy (local.get $b)
-          (i32.add (local.get $aoff) (local.get $alen))
+          (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1)))
           (local.get $blen))
         (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (local.get $total))
         ;; bytes changed in place — drop the cached hash (cell exists iff HCACHE bit)
@@ -1259,21 +1242,21 @@ export default (ctx) => {
   // (which never bump-extend at all — emit routes a NON-self-accumulating `t = s + x`
   // here so it can't mutate the live `s` the way the heap-top extend would).
   // [hash=0 u32][len u32][bytes] + STR_HCACHE_BIT: __str_hash fills the hash cell on
-  // first hash so repeated keying of a built string skips the byte-FNV walk.
+  // first hash so repeated keying of a built string skips the unit-FNV walk.
   const allocCopyTail = `
-    (local.set $off (call $__alloc (i32.add (i32.const 8) (local.get $total))))
+    (local.set $off (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $total) (i32.const 1)))))
     (i32.store (local.get $off) (i32.const 0))
     (i32.store offset=4 (local.get $off) (local.get $total))
     (local.set $off (i32.add (local.get $off) (i32.const 8)))
     (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
-    (call $__str_copy (local.get $b) (i32.add (local.get $off) (local.get $alen)) (local.get $blen))
+    (call $__str_copy (local.get $b) (i32.add (local.get $off) (i32.shl (local.get $alen) (i32.const 1))) (local.get $blen))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`
 
   // Fused single-byte append: `buf += str[i]` lowers to this when both sides are
   // VAL.STRING and the rhs is a string-index. Skips __str_idx's 1-char SSO
   // construction and __str_concat's type-dispatch — byte goes directly from
   // __char_at to memory. Bump-extends in place when `a` is at heap top.
-  wat('__str_append_byte', `(func $__str_append_byte (param $a i64) (param $byte i32) (result f64)
+  wat('__str_append_unit', `(func $__str_append_unit (param $a i64) (param $byte i32) (result f64)
     (local $ta i32) (local $aoff i32) (local $alen i32)
     (local $newHeap i32) (local $off i32) (local $total i32)
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
@@ -1290,13 +1273,13 @@ export default (ctx) => {
       (then
         (local.set $alen (i32.load (i32.sub (local.get $aoff) (i32.const 4))))
         (if (i32.eq
-              (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 7)) (i32.const -8))
+              (i32.and (i32.add (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1))) (i32.const 7)) (i32.const -8))
               (global.get $__heap))
           (then
             (local.set $newHeap
-              (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 8)) (i32.const -8)))
+              (i32.and (i32.add (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1))) (i32.const 8)) (i32.const -8)))
             (call $__memgrow (local.get $newHeap))
-            (i32.store8 (i32.add (local.get $aoff) (local.get $alen)) (local.get $byte))
+            (i32.store16 (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1))) (local.get $byte))
             (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (i32.add (local.get $alen) (i32.const 1)))
             ;; bytes changed in place — drop the cached hash (cell exists iff HCACHE bit)
             (if (i64.ne (i64.and (local.get $a) (i64.const ${HCACHE_BIT_I64})) (i64.const 0))
@@ -1327,14 +1310,14 @@ export default (ctx) => {
                 (i64.and (local.get $a) (i64.const ${SSO_CHAR_MASK}))
                 (i64.shl (i64.extend_i32_u (local.get $byte)) (i64.extend_i32_u (i32.mul (local.get $alen) (i32.const 7))))))))))))
     ;; Slow path: allocate new heap STRING with original bytes + 1 new byte
-    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $alen (call $__str_length (local.get $a)))
     (local.set $total (i32.add (local.get $alen) (i32.const 1)))
-    (local.set $off (call $__alloc (i32.add (i32.const 8) (local.get $total))))
+    (local.set $off (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $total) (i32.const 1)))))
     (i32.store (local.get $off) (i32.const 0))
     (i32.store offset=4 (local.get $off) (local.get $total))
     (local.set $off (i32.add (local.get $off) (i32.const 8)))
     (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
-    (i32.store8 (i32.add (local.get $off) (local.get $alen)) (local.get $byte))
+    (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $alen) (i32.const 1))) (local.get $byte))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`)
 
   // __str_concat / __str_concat_raw bump-EXTEND `a` in place when it is the heap-top own string
@@ -1348,8 +1331,8 @@ export default (ctx) => {
     ;; Coerce operands to strings if needed
     (local.set $a (call $__to_str (local.get $a)))
     (local.set $b (call $__to_str (local.get $b)))
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_length (local.get $a)))
+    (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
@@ -1361,8 +1344,8 @@ export default (ctx) => {
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $ta i32) (local $aoff i32) (local $newHeap i32)
     (local $ki i32) (local $kc i32) (local $ksp i64) (local $kao i32) (local $kbo i32)
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_length (local.get $a)))
+    (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
@@ -1378,8 +1361,8 @@ export default (ctx) => {
     (local $ki i32) (local $kc i32) (local $ksp i64) (local $kao i32) (local $kbo i32)
     (local.set $a (call $__to_str (local.get $a)))
     (local.set $b (call $__to_str (local.get $b)))
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_length (local.get $a)))
+    (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
@@ -1389,8 +1372,8 @@ export default (ctx) => {
   wat('__str_concat_raw_fresh', `(func $__str_concat_raw_fresh (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $ki i32) (local $kc i32) (local $ksp i64) (local $kao i32) (local $kbo i32)
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_length (local.get $a)))
+    (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
@@ -1415,15 +1398,15 @@ export default (ctx) => {
   wat('__str_concat_raw_long', `(func $__str_concat_raw_long (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $ta i32) (local $aoff i32) (local $newHeap i32)
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_length (local.get $a)))
+    (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     ${concatFast}${allocCopyTail}`)
 
   wat('__str_concat_raw_fresh_long', `(func $__str_concat_raw_fresh_long (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_length (local.get $a)))
+    (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))${allocCopyTail}`)
 
   wat('__str_replace', `(func $__str_replace (param $str i64) (param $search i64) (param $repl i64) (result f64)
@@ -1432,17 +1415,17 @@ export default (ctx) => {
     (if (result f64) (i32.lt_s (local.get $idx) (i32.const 0))
       (then (f64.reinterpret_i64 (local.get $str)))
       (else
-        (local.set $slen (call $__str_byteLen (local.get $search)))
+        (local.set $slen (call $__str_length (local.get $search)))
         (call $__str_concat
           (i64.reinterpret_f64 (call $__str_concat
             (i64.reinterpret_f64 (call $__str_slice (local.get $str) (i32.const 0) (local.get $idx)))
             (local.get $repl)))
           (i64.reinterpret_f64 (call $__str_slice (local.get $str) (i32.add (local.get $idx) (local.get $slen))
-            (call $__str_byteLen (local.get $str))))))))`)
+            (call $__str_length (local.get $str))))))))`)
 
   wat('__str_replaceall', `(func $__str_replaceall (param $str i64) (param $search i64) (param $repl i64) (result f64)
     (local $idx i32) (local $slen i32) (local $pos i32) (local $result i64)
-    (local.set $slen (call $__str_byteLen (local.get $search)))
+    (local.set $slen (call $__str_length (local.get $search)))
     (local.set $result (local.get $str))
     (local.set $pos (i32.const 0))
     (block $done (loop $next
@@ -1453,8 +1436,8 @@ export default (ctx) => {
           (i64.reinterpret_f64 (call $__str_slice (local.get $result) (i32.const 0) (local.get $idx)))
           (local.get $repl)))
         (i64.reinterpret_f64 (call $__str_slice (local.get $result) (i32.add (local.get $idx) (local.get $slen))
-          (call $__str_byteLen (local.get $result)))))))
-      (local.set $pos (i32.add (local.get $idx) (call $__str_byteLen (local.get $repl))))
+          (call $__str_length (local.get $result)))))))
+      (local.set $pos (i32.add (local.get $idx) (call $__str_length (local.get $repl))))
       (br $next)))
     (f64.reinterpret_i64 (local.get $result)))`)
 
@@ -1463,12 +1446,26 @@ export default (ctx) => {
   // most N elements; the (N+1)th and later pieces are DISCARDED (not appended
   // as a remainder). Empty separator: split into individual byte-chars, up to
   // $limit chars ("abc".split("") → ["a","b","c"], "".split("") → []).
+  // Materialize the String iterator: one element per code point, preserving lone surrogates.
+  wat('__str_points', `(func $__str_points (param $s i64) (result f64)
+    (local $len i32) (local $i i32) (local $n i32) (local $cp i32) (local $a i32)
+    (local.set $len (call $__str_length (local.get $s)))
+    (local.set $a (call $__alloc_hdr (i32.const 0) (local.get $len)))
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (local.set $cp (i32.trunc_f64_u (call $__codepoint_at (local.get $s) (local.get $i))))
+      (f64.store (i32.add (local.get $a) (i32.shl (local.get $n) (i32.const 3))) (call $__codepoint_string (local.get $cp)))
+      (local.set $i (i32.add (local.get $i) (select (i32.const 2) (i32.const 1) (i32.gt_u (local.get $cp) (i32.const 65535)))))
+      (local.set $n (i32.add (local.get $n) (i32.const 1))) (br $next)))
+    (i32.store (i32.sub (local.get $a) (i32.const 8)) (local.get $n))
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $a)))`)
+
   wat('__str_split', `(func $__str_split (param $str i64) (param $sep i64) (param $limit i32) (result f64)
     (local $slen i32) (local $plen i32) (local $count i32)
     (local $i i32) (local $j i32) (local $match i32)
     (local $arr i32) (local $piece_start i32) (local $piece_idx i32) (local $hitlim i32)
-    (local.set $slen (call $__str_byteLen (local.get $str)))
-    (local.set $plen (call $__str_byteLen (local.get $sep)))
+    (local.set $slen (call $__str_length (local.get $str)))
+    (local.set $plen (call $__str_length (local.get $sep)))
     ;; limit=0 → empty array
     ;; NOTE: allocation goes through the canonical __alloc_hdr (16-byte
     ;; header: propsPtr@-16, len@-8, cap@-4), NOT a hand-rolled (i32.const
@@ -1618,17 +1615,17 @@ export default (ctx) => {
     (local $slen i32) (local $plen i32) (local $fill i32) (local $off i32) (local $i i32)
     (local $str_off i32) (local $pad_off i32)
     (local $pbits i64) (local $poff i32) (local $psso i32) (local $sp64 i64) (local $sb i32)
-    (local.set $slen (call $__str_byteLen (local.get $str)))
+    (local.set $slen (call $__str_length (local.get $str)))
     (if (i32.ge_s (local.get $slen) (local.get $target))
       (then (return (f64.reinterpret_i64 (local.get $str)))))
-    (local.set $plen (call $__str_byteLen (local.get $pad)))
+    (local.set $plen (call $__str_length (local.get $pad)))
     (local.set $fill (i32.sub (local.get $target) (local.get $slen)))
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $target))))
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $target) (i32.const 1)))))
     (i32.store (local.get $off) (local.get $target))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
     (local.set $str_off (select (local.get $fill) (i32.const 0) (local.get $before)))
     (local.set $pad_off (select (i32.const 0) (local.get $slen) (local.get $before)))
-    (call $__str_copy (local.get $str) (i32.add (local.get $off) (local.get $str_off)) (local.get $slen))
+    (call $__str_copy (local.get $str) (i32.add (local.get $off) (i32.shl (local.get $str_off) (i32.const 1))) (local.get $slen))
     (local.set $pbits (local.get $pad))
     (local.set $poff (i32.wrap_i64 (i64.and (local.get $pbits) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $psso (i32.and
@@ -1636,12 +1633,9 @@ export default (ctx) => {
       (i32.const ${LAYOUT.SSO_BIT})))
     (block $d2 (loop $l2
       (br_if $d2 (i32.ge_s (local.get $i) (local.get $fill)))
-      (i32.store8 (i32.add (local.get $off) (i32.add (local.get $pad_off) (local.get $i)))
-        (if (result i32) (local.get $psso)
-          (then (i32.and
-            (i32.shr_u (local.get $poff) (i32.shl (i32.rem_u (local.get $i) (local.get $plen)) (i32.const 3)))
-            (i32.const 0xFF)))
-          (else (i32.load8_u (i32.add (local.get $poff) (i32.rem_u (local.get $i) (local.get $plen)))))))
+      (i32.store16 (i32.add (local.get $off) (i32.shl (i32.add (local.get $pad_off) (local.get $i)) (i32.const 1))) (if (result i32) (local.get $psso)
+          (then ${ssoCharWat('(local.get $pad)', '(i32.rem_u (local.get $i) (local.get $plen))')})
+          (else (i32.load16_u (i32.add (local.get $poff) (i32.shl (i32.rem_u (local.get $i) (local.get $plen)) (i32.const 1)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
     ${!ctx.memory.shared ? `
@@ -1655,7 +1649,7 @@ export default (ctx) => {
           (loop $pk
             (if (i32.lt_u (local.get $i) (local.get $target))
               (then
-                (local.set $sb (i32.load8_u (i32.add (local.get $off) (local.get $i))))
+                (local.set $sb (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))
                 (br_if $heap (i32.ge_u (local.get $sb) (i32.const 0x80)))
                 (local.set $sp64 (i64.or (local.get $sp64)
                   (i64.shl (i64.extend_i32_u (local.get $sb)) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7)))))
@@ -1669,7 +1663,7 @@ export default (ctx) => {
             (local.get $sp64)))))))` : ''}
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`)
 
-  // Base helpers (__sso_char/__str_char/__char_at/__str_byteLen) are referenced
+  // Base helpers (__sso_char/__str_char/__char_at/__str_length) are referenced
   // from other helpers' WAT bodies and from emit sites; their `stdlibDeps`
   // entries pull them transitively when actually used. No unconditional inc.
 
@@ -1682,12 +1676,7 @@ export default (ctx) => {
   // the receiver type can't be statically inferred (e.g. a callback param).
   bind('.string:toString', (str) => asF64(emit(str)))
   bind('.string:valueOf', (str) => asF64(emit(str)))
-  // String.prototype.normalize — identity: every normalization form (NFC/NFD/
-  // NFKC/NFKD) is the identity on ASCII, and jz strings are UTF-8 bytes with
-  // ASCII-only case/space semantics (README divergences). No Unicode tables.
-  // The form argument is ignored (a bogus form's RangeError needs the same
-  // tables to justify checking — out of scope with them). Generic twin
-  // ToString-coerces an untyped receiver (spec step 1), like .toString.
+  // Normalization is an identity operation; Unicode normalization tables are not shipped.
   bind('.string:normalize', (str) => asF64(emit(str)))
   bind('.normalize', (val) => {
     inc('__to_str')
@@ -1720,7 +1709,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', `$${fn}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]], startIR,
-        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
+        ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
   bind('.string:slice', sliceEmitter('__str_slice'))
   bind('.string:slice#view', sliceEmitter('__str_slice_view'))
@@ -1805,11 +1794,11 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32Sat(emit(start)),
-        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
+        ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   })
 
   // .substr(start, length) — Annex B / legacy. Equivalent to substring(start, start+length).
-  // __str_substring clamps end to byteLen and start/end to [0, byteLen], so negative
+  // __str_substring clamps start/end to the string length, so negative
   // values are floored to 0 (matches v8 for length<0 → empty; for start<0 spec wants
   // max(0, len+start), which we don't implement — rare in practice). `start`/`length`
   // saturate (asI32Sat, see .substring above) — the one remaining gap is `start+length`
@@ -1832,7 +1821,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32Sat(emit(start)),
-        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
+        ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   })
 
   // Search args go through ToString per spec — coerce non-string-typed args
@@ -1888,7 +1877,7 @@ export default (ctx) => {
   bind('.replace', (str, search, repl) => {
     if (valTypeOf(repl) === VAL.CLOSURE) {
       if (!ctx.closure?.call) err('.replace(search, fn): no closure runtime available for the callback form')
-      inc('__str_indexof', '__str_slice', '__str_concat', '__str_byteLen', '__to_str')
+      inc('__str_indexof', '__str_slice', '__str_concat', '__str_length', '__to_str')
       const s = temp('rps'), q = temp('rpq'), fnL = temp('rpf')
       const idx = tempI32('rpi'), mlen = tempI32('rpm')
       const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
@@ -1903,12 +1892,12 @@ export default (ctx) => {
       const head = typed(['call', '$__str_slice', sI64(), ['i32.const', 0], ['local.get', `$${idx}`]], 'f64')
       const tail = typed(['call', '$__str_slice', sI64(),
         ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]],
-        ['call', '$__str_byteLen', sI64()]], 'f64')
+        ['call', '$__str_length', sI64()]], 'f64')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
         ['local.set', `$${q}`, asF64(emit(search))],
         ['local.set', `$${fnL}`, asF64(emit(repl))],
-        ['local.set', `$${mlen}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
+        ['local.set', `$${mlen}`, ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
         ['local.set', `$${idx}`, ['call', '$__str_indexof', sI64(), ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
         ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
           ['then', ['local.get', `$${s}`]],
@@ -1947,13 +1936,7 @@ export default (ctx) => {
   bind('.padStart', padMethod(1))
   bind('.padEnd', padMethod(0))
 
-  // Byte-wise variant of String.prototype.localeCompare. Returns -1/0/1 from
-  // an unsigned byte-by-byte compare with shorter-string-sorts-first tiebreak.
-  // NOT locale-aware: real localeCompare is ICU-driven (CLDR collation, case
-  // folding, accent ordering). For ASCII inputs the byte-wise result matches
-  // the spec exactly; for non-ASCII it follows UTF-8 byte order, which is
-  // codepoint order for well-formed strings — close enough for sort-stability
-  // use cases, wrong for human-language collation.
+  // Code-unit ordering only; locale-aware collation tables are not shipped.
   bind('.localeCompare', method('__str_cmp', 'II', 'i32'))
 
   bind('.string:concat', (str, ...others) => {
@@ -1975,7 +1958,7 @@ export default (ctx) => {
     inc('__alloc', '__mkptr', '__sso_norm')
 
     // LITERAL ASCII parts (the serializer separators: ',', '\n', 'x=' …) carry their
-    // bytes and length at compile time: no value temp, no __str_byteLen call, no
+    // bytes and length at compile time: no value temp, no __str_length call, no
     // __str_copy call — the length const-folds into the total and the bytes store
     // directly at dst (grouped 4/2/1-wide). Profiled on strbuild: the copy+len
     // calls on 1-6 byte parts were 38.7% of the row — pure call overhead.
@@ -2006,7 +1989,7 @@ export default (ctx) => {
       // i32-PROVEN part (exactly toStrI64's __i32_to_str class): keep the raw value,
       // not a temp string — __ilen joins the total and __itoa_s renders the digits
       // directly at dst. Drops the per-number __i32_to_str (alloc+itoa+mkstr),
-      // __str_byteLen and __str_copy — the whole temp-string round trip.
+      // __str_length and __str_copy — the whole temp-string round trip.
       if ((vt === VAL.NUMBER || vt == null) && v.type === 'i32' && v.ptrKind == null) {
         inc('__ilen', '__itoa_s')
         nums[i] = tempI32('sn')
@@ -2014,45 +1997,40 @@ export default (ctx) => {
         ir.push(['local.set', `$${lens[i]}`, ['call', '$__ilen', ['local.get', `$${nums[i]}`]]])
         continue
       }
-      inc('__str_byteLen', '__str_copy')
+      inc('__str_length', '__str_copy')
       vals[i] = temp('s')
       ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', partStrI64(parts[i], v)]])
-      ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
+      ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
     }
     ir.push(['local.set', `$${total}`, ['i32.const', litTotal]])
     for (const len of lens) if (len != null)
       ir.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['local.get', `$${len}`]]])
     const alloc = [
-      ['local.set', `$${off}`, ['call', '$__alloc', ['i32.add', ['i32.const', 4], ['local.get', `$${total}`]]]],
+      ['local.set', `$${off}`, ['call', '$__alloc', ['i32.add', ['i32.const', 4], ['i32.shl', ['local.get', `$${total}`], ['i32.const', 1]]]]],
       ['i32.store', ['local.get', `$${off}`], ['local.get', `$${total}`]],
       ['local.set', `$${off}`, ['i32.add', ['local.get', `$${off}`], ['i32.const', 4]]],
       ['local.set', `$${dst}`, ['local.get', `$${off}`]],
     ]
-    const dstAt = (k) => k ? ['i32.add', ['local.get', `$${dst}`], ['i32.const', k]] : ['local.get', `$${dst}`]
+    const dstAt = (k) => k ? ['i32.add', ['local.get', `$${dst}`], ['i32.const', k * 2]] : ['local.get', `$${dst}`]
     for (let i = 0; i < parts.length; i++) {
       if (lits[i] != null) {
         const s = lits[i]
-        let k = 0    // grouped little-endian stores: 4-byte words, 2-byte tail, then 1
-        for (; k + 4 <= s.length; k += 4)
+        let k = 0
+        for (; k + 2 <= s.length; k += 2)
           alloc.push(['i32.store', dstAt(k), ['i32.const',
-            (s.charCodeAt(k) | (s.charCodeAt(k + 1) << 8) | (s.charCodeAt(k + 2) << 16) | (s.charCodeAt(k + 3) << 24)) | 0]])
-        if (k + 2 <= s.length) {
-          alloc.push(['i32.store16', dstAt(k), ['i32.const', s.charCodeAt(k) | (s.charCodeAt(k + 1) << 8)]])
-          k += 2
-        }
-        if (k < s.length)
-          alloc.push(['i32.store8', dstAt(k), ['i32.const', s.charCodeAt(k)]])
-        alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['i32.const', s.length]]])
+            (s.charCodeAt(k) | (s.charCodeAt(k + 1) << 16)) | 0]])
+        if (k < s.length) alloc.push(['i32.store16', dstAt(k), ['i32.const', s.charCodeAt(k)]])
+        alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['i32.const', s.length * 2]]])
         continue
       }
       if (nums[i] != null) {
         // digits render at dst; the returned byte count (== $lens[i]) advances it
         alloc.push(['local.set', `$${dst}`, ['i32.add',
-          ['call', '$__itoa_s', ['local.get', `$${nums[i]}`], ['local.get', `$${dst}`]], ['local.get', `$${dst}`]]])
+          ['i32.shl', ['call', '$__itoa_s', ['local.get', `$${nums[i]}`], ['local.get', `$${dst}`]], ['i32.const', 1]], ['local.get', `$${dst}`]]])
         continue
       }
       alloc.push(['call', '$__str_copy', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]], ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]])
-      alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]]])
+      alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['i32.shl', ['local.get', `$${lens[i]}`], ['i32.const', 1]]]])
     }
     // ≤6-ASCII template results (`\`$\${n}\`` name-building) must SSO-normalize —
     // the module invariant; a leaked short heap string breaks bare-i64.eq ===.
@@ -2073,14 +2051,14 @@ export default (ctx) => {
   // out-of-range index, which would wrap to a bogus `"\x00"` string (charAt → "",
   // at → undefined). `sLocal` is the receiver as an f64 local.
   const charAtOr = (sLocal, iLocal, lenIR, oobIR) => (
-    inc('__char1byte'),
+    inc('__char_unit'),
     ['if', ['result', 'f64'],
       ['i32.and',
         ['i32.ge_s', ['local.get', iLocal], ['i32.const', 0]],
         ['i32.lt_s', ['local.get', iLocal], lenIR]],
-      // __char_at yields a raw byte (≥0x80 for non-ASCII heap strings) → __char1byte
+      // __char_at yields a code unit (≥0x80 for non-ASCII heap strings) → __char_unit
       // builds an SSO byte when ASCII, else a heap 1-byte string.
-      ['then', ['call', '$__char1byte',
+      ['then', ['call', '$__char_unit',
         ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', sLocal]], ['local.get', iLocal]]]],
       ['else', oobIR]])
   const emptyStr = mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
@@ -2088,16 +2066,16 @@ export default (ctx) => {
   // .charAt(i) → 1-char string at index i, or "" when out of range (JS spec: no
   // negative-index wraparound — a negative or >=length index yields "").
   bind('.charAt', (str, idx) => {
-    inc('__char_at', '__str_byteLen')
+    inc('__char_at', '__str_length')
     const s = temp('cs'), i = tempI32('ci')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${i}`, asI32(emit(idx))],
       charAtOr(`$${s}`, `$${i}`,
-        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], emptyStr)], 'f64')
+        ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], emptyStr)], 'f64')
   })
 
-  // .charCodeAt(i) → the UTF-8 byte at `i`, or NaN
+  // .charCodeAt(i) → the UTF-16 unit at `i`, or NaN
   // when `i` is out of range (`i < 0 || i >= length`). Result is f64 because
   // NaN is not representable as i32 — an i32 `0` sentinel for OOB silently
   // miscompiles any reader that distinguishes 0 from NaN, e.g. the parser hot
@@ -2107,40 +2085,27 @@ export default (ctx) => {
   bind('.charCodeAt', (str, idx) =>
     typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32Sat(toNumF64(idx, emit(idx))), ctx, true), 'f64'))
 
-  // Indices remain byte offsets. Decode one Unicode scalar at a leading byte;
-  // malformed/truncated UTF-8 and continuation-byte positions yield U+FFFD.
+  // Read one code point at a unit index; isolated surrogates remain unchanged.
   wat('__codepoint_at', `(func $__codepoint_at (param $s i64) (param $i i32) (result f64)
-    (local $len i32) (local $c i32) (local $cp i32) (local $n i32) (local $min i32) (local $j i32)
-    (local.set $len (call $__str_byteLen (local.get $s)))
+    (local $len i32) (local $a i32) (local $b i32)
+    (local.set $len (call $__str_length (local.get $s)))
     (if (i32.ge_u (local.get $i) (local.get $len)) (then (return (f64.const nan:${UNDEF_NAN}))))
-    (local.set $c (call $__char_at (local.get $s) (local.get $i)))
-    (if (i32.lt_u (local.get $c) (i32.const 128)) (then (return (f64.convert_i32_u (local.get $c)))))
-    (if (i32.lt_u (i32.sub (local.get $c) (i32.const 194)) (i32.const 30))
-      (then (local.set $n (i32.const 2)) (local.set $min (i32.const 128)) (local.set $cp (i32.and (local.get $c) (i32.const 31)))))
-    (if (i32.eq (i32.and (local.get $c) (i32.const 240)) (i32.const 224))
-      (then (local.set $n (i32.const 3)) (local.set $min (i32.const 2048)) (local.set $cp (i32.and (local.get $c) (i32.const 15)))))
-    (if (i32.lt_u (i32.sub (local.get $c) (i32.const 240)) (i32.const 5))
-      (then (local.set $n (i32.const 4)) (local.set $min (i32.const 65536)) (local.set $cp (i32.and (local.get $c) (i32.const 7)))))
-    (if (i32.or (i32.eqz (local.get $n)) (i32.gt_u (local.get $n) (i32.sub (local.get $len) (local.get $i))))
-      (then (return (f64.const 65533))))
-    (local.set $j (i32.const 1))
-    (loop $next
-      (local.set $c (call $__char_at (local.get $s) (i32.add (local.get $i) (local.get $j))))
-      (if (i32.ne (i32.and (local.get $c) (i32.const 192)) (i32.const 128)) (then (return (f64.const 65533))))
-      (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $c) (i32.const 63))))
-      (local.set $j (i32.add (local.get $j) (i32.const 1)))
-      (br_if $next (i32.lt_u (local.get $j) (local.get $n))))
-    (if (i32.or (i32.lt_u (local.get $cp) (local.get $min))
-          (i32.or (i32.gt_u (local.get $cp) (i32.const 1114111))
-            (i32.lt_u (i32.sub (local.get $cp) (i32.const 55296)) (i32.const 2048))))
-      (then (return (f64.const 65533))))
-    (f64.convert_i32_u (local.get $cp)))`)
+    (local.set $a (call $__char_at (local.get $s) (local.get $i)))
+    (if (i32.and (i32.lt_u (i32.sub (local.get $a) (i32.const 55296)) (i32.const 1024))
+          (i32.lt_u (i32.add (local.get $i) (i32.const 1)) (local.get $len)))
+      (then
+        (local.set $b (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1))))
+        (if (i32.lt_u (i32.sub (local.get $b) (i32.const 56320)) (i32.const 1024))
+          (then (return (f64.convert_i32_u (i32.add (i32.const 65536)
+            (i32.add (i32.shl (i32.sub (local.get $a) (i32.const 55296)) (i32.const 10))
+                     (i32.sub (local.get $b) (i32.const 56320))))))))))
+    (f64.convert_i32_u (local.get $a)))`)
   bind('.codePointAt', (str, idx) => {
     inc('__codepoint_at')
     return typed(['call', '$__codepoint_at', asI64(emit(str)), asI32Sat(toNumF64(idx, emit(idx)))], 'f64')
   })
 
-  // String.fromCharCode(code) → 1-char SSO string
+  // One code unit, packed only when ASCII.
   bind('String', (value) => {
     if (value === undefined) return emit(['str', ''])
     // Ambiguous BOOL∪NUMBER merge (.work/archive/todo.md §deletion-sweep, MECHANISM A
@@ -2172,15 +2137,15 @@ export default (ctx) => {
 
   // 1-byte string from a raw byte: SSO when ASCII (<0x80, fits the 7-bit codec),
   // else a heap 1-byte string (the 7-bit SSO can't represent bytes ≥0x80).
-  wat('__char1byte', `(func $__char1byte (param $b i32) (result f64)
+  wat('__char_unit', `(func $__char_unit (param $b i32) (result f64)
     (local $off i32)
-    (local.set $b (i32.and (local.get $b) (i32.const 0xFF)))
+    (local.set $b (i32.and (local.get $b) (i32.const 65535)))
     (if (result f64) (i32.lt_u (local.get $b) (i32.const 0x80))
       (then (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (local.get $b)))
       (else
         (local.set $off (call $__alloc (i32.const 8)))
         (i32.store (local.get $off) (i32.const 1))
-        (i32.store8 (i32.add (local.get $off) (i32.const 4)) (local.get $b))
+        (i32.store16 offset=4 (local.get $off) (local.get $b))
         (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))))`)
 
   // Normalize a fresh plain-heap STRING to SSO when its content is ≤${MAX_SSO} ASCII
@@ -2208,7 +2173,7 @@ export default (ctx) => {
     (block $spill
       (block $d (loop $l
         (br_if $d (i32.ge_u (local.get $i) (local.get $len)))
-        (local.set $c (i32.load8_u (i32.add (local.get $off) (local.get $i))))
+        (local.set $c (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))
         (br_if $spill (i32.ge_u (local.get $c) (i32.const 0x80)))
         (local.set $sp (i64.or (local.get $sp)
           (i64.shl (i64.extend_i32_u (local.get $c)) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7)))))
@@ -2235,43 +2200,29 @@ export default (ctx) => {
     (if (f64.lt (local.get $x) (f64.const 0)) (then (local.set $v (i32.sub (i32.const 0) (local.get $v)))))
     (i32.and (local.get $v) (i32.const 65535)))`)
 
-  // Construct UTF-8 from UTF-16 input units. Pair adjacent surrogates before
-  // encoding; isolated surrogates become U+FFFD, as at the host boundary.
+  // Evaluate arguments first, then coerce from left to right. UTF-16 units
+  // are retained exactly; code points above the BMP emit a surrogate pair.
   const fromCodes = (codes, charCodes) => {
     if (!codes.length) return emit(['str', ''])
-    inc('__utf8_char')
+    const make = charCodes ? '__char_unit' : '__codepoint_string'
+    const convert = charCodes ? '__to_uint16' : '__codePoint_value'
+    inc(make, convert)
     if (!charCodes) ctx.runtime.throws = true
-    inc(charCodes ? '__to_uint16' : '__codePoint_value')
-    const unit = (node, ir) => charCodes
-      ? ['call', '$__to_uint16', toNumF64(node, ir)]
-      : ['call', '$__codePoint_value', toNumF64(node, ir)]
-    if (codes.length === 1) return typed(['call', '$__utf8_char', unit(codes[0], emit(codes[0]))], 'f64')
+    const one = (node, ir) => ['call', `$${make}`, ['call', `$${convert}`, toNumF64(node, ir)]]
+    if (codes.length === 1) return typed(one(codes[0], emit(codes[0])), 'f64')
     inc('__str_concat_raw')
-    const out = temp('chars'), raw = codes.map(() => temp('cu')), units = codes.map(() => tempI32('cu'))
-    const get = i => ['local.get', `$${units[i]}`]
+    const raw = codes.map(() => temp('cu'))
     const body = codes.map((node, i) => ['local.set', `$${raw[i]}`, asF64(emit(node))])
-    for (let i = 0; i < codes.length; i++) body.push(['local.set', `$${units[i]}`,
-      unit(codes[i], typed(['local.get', `$${raw[i]}`], 'f64'))])
-    body.push(['local.set', `$${out}`, asF64(emit(['str', '']))])
-    for (let i = 0; i < codes.length; i++) {
-      if (i + 1 < codes.length) body.push(['if', ['i32.and',
-        ['i32.lt_u', ['i32.sub', get(i), ['i32.const', 55296]], ['i32.const', 1024]],
-        ['i32.lt_u', ['i32.sub', get(i + 1), ['i32.const', 56320]], ['i32.const', 1024]]], ['then',
-        ['local.set', `$${units[i]}`, ['i32.add', ['i32.const', 65536], ['i32.add',
-          ['i32.shl', ['i32.sub', get(i), ['i32.const', 55296]], ['i32.const', 10]],
-          ['i32.sub', get(i + 1), ['i32.const', 56320]]]]],
-        ['local.set', `$${units[i + 1]}`, ['i32.const', -1]]]])
-      body.push(['if', ['i32.ge_s', get(i), ['i32.const', 0]], ['then',
-        ['local.set', `$${out}`, ['call', '$__str_concat_raw',
-          ['i64.reinterpret_f64', ['local.get', `$${out}`]],
-          ['i64.reinterpret_f64', ['call', '$__utf8_char', get(i)]]]]]])
-    }
-    return typed(['block', ['result', 'f64'], ...body, ['local.get', `$${out}`]], 'f64')
+    let value = one(codes[0], typed(['local.get', `$${raw[0]}`], 'f64'))
+    for (let i = 1; i < codes.length; i++) value = ['call', '$__str_concat_raw',
+      ['i64.reinterpret_f64', value],
+      ['i64.reinterpret_f64', one(codes[i], typed(['local.get', `$${raw[i]}`], 'f64'))]]
+    return typed(['block', ['result', 'f64'], ...body, value], 'f64')
   }
   bind('String.fromCharCode', (...codes) => fromCodes(codes, true))
   bind('String.fromCodePoint', (...codes) => fromCodes(codes, false))
 
-  // String.fromCodePoint(cp) → UTF-8 encoded string for one code point.
+  // String.fromCodePoint(cp) → one unit or a surrogate pair.
   // Param is f64 (already ToNumber-coerced); throws RangeError ($__jz_err) when
   // the value is not an integer in [0, 0x10FFFF] (22.1.2.2 step 5.d).
   wat('__codePoint_value', `(func $__codePoint_value (param $cpf f64) (result i32)
@@ -2283,58 +2234,27 @@ export default (ctx) => {
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.FROM_CODE_POINT_RANGE}))) (throw $__jz_err (f64.const ${ERR.FROM_CODE_POINT_RANGE}))))
     (i32.trunc_sat_f64_s (local.get $cpf)))`)
 
-  wat('__utf8_char', `(func $__utf8_char (param $cp i32) (result f64)
+  wat('__codepoint_string', `(func $__codepoint_string (param $cp i32) (result f64)
     (local $off i32)
-    (if (i32.lt_u (i32.sub (local.get $cp) (i32.const 0xD800)) (i32.const 0x800))
-      (then (local.set $cp (i32.const 0xFFFD))))
-    ;; ASCII: 1 byte SSO
-    (if (i32.lt_u (local.get $cp) (i32.const 128))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (local.get $cp)))))
-    ;; multi-byte (cp ≥ 0x80): UTF-8 bytes are ≥0x80 → can't be 7-bit ASCII SSO, so
-    ;; build a heap STRING (len header at $off, bytes at $off+4). Over-alloc to 8 so the
-    ;; i32.store of the packed bytes never runs past the buffer; the len word bounds reads.
-    ;; 2-byte: 0x80-0x7FF
-    (if (i32.lt_u (local.get $cp) (i32.const 0x800))
-      (then
-        (local.set $off (call $__alloc (i32.const 8)))
-        (i32.store (local.get $off) (i32.const 2))
-        (i32.store (i32.add (local.get $off) (i32.const 4))
-          (i32.or
-            (i32.or (i32.const 0xC0) (i32.shr_u (local.get $cp) (i32.const 6)))
-            (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 8))))
-        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))))
-    ;; 3-byte: 0x800-0xFFFF
-    (if (i32.lt_u (local.get $cp) (i32.const 0x10000))
-      (then
-        (local.set $off (call $__alloc (i32.const 8)))
-        (i32.store (local.get $off) (i32.const 3))
-        (i32.store (i32.add (local.get $off) (i32.const 4))
-          (i32.or (i32.or
-            (i32.or (i32.const 0xE0) (i32.shr_u (local.get $cp) (i32.const 12)))
-            (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 8)))
-            (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 16))))
-        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))))
-    ;; 4-byte: 0x10000-0x10FFFF
+    (if (i32.lt_u (local.get $cp) (i32.const 65536))
+      (then (return (call $__char_unit (local.get $cp)))))
     (local.set $off (call $__alloc (i32.const 8)))
-    (i32.store (local.get $off) (i32.const 4))
-    (i32.store (i32.add (local.get $off) (i32.const 4))
-      (i32.or (i32.or (i32.or
-        (i32.or (i32.const 0xF0) (i32.shr_u (local.get $cp) (i32.const 18)))
-        (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 12)) (i32.const 0x3F))) (i32.const 8)))
-        (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 16)))
-        (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 24))))
-    (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4)))))`)
+    (i32.store (local.get $off) (i32.const 2))
+    (local.set $cp (i32.sub (local.get $cp) (i32.const 65536)))
+    (i32.store16 offset=4 (local.get $off) (i32.add (i32.const 55296) (i32.shr_u (local.get $cp) (i32.const 10))))
+    (i32.store16 offset=6 (local.get $off) (i32.add (i32.const 56320) (i32.and (local.get $cp) (i32.const 1023))))
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))`)
 
   registerUri()
 
   // .at(i) → 1-char string at index i with negative-index support, or undefined
   // when out of range (JS spec: `i += length` for negative, then OOB → undefined).
   bind('.string:at', (str, idx) => {
-    inc('__char_at', '__str_byteLen')
+    inc('__char_at', '__str_length')
     const t = tempI32('at'), s = temp('as'), len = tempI32('al')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
-      ['local.set', `$${len}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ['local.set', `$${len}`, ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
       // ToIntegerOrInfinity position arg (22.1.3.1 step 3) — asI32Sat, not asI32: an
       // Infinity index must saturate to INT32_MAX (charAtOr's `t<len` check then correctly
       // rejects it) instead of asI32's wrap-to -1 (treated as a valid negative index,
@@ -2376,7 +2296,7 @@ export default (ctx) => {
             ['i64.reinterpret_f64',
               ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
                 ['local.get', `$${idx}`],
-                ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
+                ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
   })
 
   // __wrap1(val: i64) → f64 — create 1-element array [val]
@@ -2388,116 +2308,7 @@ export default (ctx) => {
     (i64.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $val))
     (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $ptr) (i32.const 8))))`)
 
-  // TextEncoder() / TextDecoder() → dummy values (methods do the work)
-  // UTF-8 is the only encoding jz ships (encoding tables are the same
-  // multi-KB cost Intl was refused for) — any other label would silently
-  // decode UTF-8, so reject it at compile time.
-  const decoderLabel = (label) => {
-    if (label == null) return  // no arg (a no-arg call pads a null slot)
-    const lit = Array.isArray(label) && label[0] === 'str' ? String(label[1]).trim().toLowerCase() : null
-    if (lit == null) err(`TextDecoder label must be a literal string — jz resolves encodings at compile time`)
-    else if (lit !== 'utf-8' && lit !== 'utf8' && lit !== 'unicode-1-1-utf-8')
-      err(`TextDecoder: only 'utf-8' is supported — other encodings need tables jz doesn't ship`)
-  }
-  // A chained receiver (`new TextDecoder(l).decode(x)`) is never emitted — the
-  // methods ignore the dummy value — so validate the label at the receiver too.
-  const decoderRecvCheck = (node) => {
-    if (Array.isArray(node) && node[0] === '()' && node[1] === 'TextDecoder') decoderLabel(node[2])
-  }
-  bind('TextEncoder', () => typed(['f64.const', 1], 'f64'))
-  bind('TextDecoder', (label) => {
-    decoderLabel(label)
-    return typed(['f64.const', 2], 'f64')
-  })
-
-  // .encode(str) → Uint8Array of string's UTF-8 bytes
-  // Copies bytes from string (SSO or heap) into a new Uint8Array
-  wat('__str_encode', `(func $__str_encode (param $str i64) (result f64)
-    (local $len i32) (local $dst i32)
-    (local.set $len (call $__str_byteLen (local.get $str)))
-    (local.set $dst (call $__alloc (i32.add (i32.const 8) (local.get $len))))
-    (i32.store (local.get $dst) (local.get $len))
-    (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $len))
-    (local.set $dst (i32.add (local.get $dst) (i32.const 8)))
-    (call $__str_copy (local.get $str) (local.get $dst) (local.get $len))
-    (call $__mkptr (i32.const 3) (i32.const 1) (local.get $dst)))`)
-
-  bind('.encode', (obj, str) => {
-    inc('__str_encode')
-    // .encode() yields a runtime PTR.TYPED/u8 array (see __mkptr above). Downstream
-    // indexing/spread dispatch through __typed_idx, whose element-unaware fallback
-    // (f64.load, stride 8) is only valid when no typed array can flow in. Enabling
-    // the feature pulls the element-aware variant — same invariant `.length` follows.
-    setLinkDemand('typedarray')
-    return typed(['call', '$__str_encode', asI64(emit(str))], 'f64')
-  })
-
-  // .decode(uint8arr) → string from byte data
-  wat('__bytes_decode', `(func $__bytes_decode (param $arr i64) (result f64)
-    (local $off i32) (local $len i32) (local $dst i32)
-    ;; __typed_data, not __ptr_offset — a VIEW's offset is its descriptor, and
-    ;; decoding it read the descriptor bytes as text (silent garbage)
-    (local.set $off (call $__typed_data (local.get $arr)))
-    (local.set $len (call $__len (local.get $arr)))
-    (local.set $dst (call $__alloc (i32.add (i32.const 4) (local.get $len))))
-    (i32.store (local.get $dst) (local.get $len))
-    (local.set $dst (i32.add (local.get $dst) (i32.const 4)))
-    (memory.copy (local.get $dst) (local.get $off) (local.get $len))
-    ;; short ASCII decode → SSO (invariant)
-    (if (i32.le_u (local.get $len) (i32.const ${MAX_SSO}))
-      (then (return (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $dst))))))
-    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $dst)))`)
-
-  bind('.decode', (obj, arr) => {
-    decoderRecvCheck(obj)
-    inc('__bytes_decode')
-    return typed(['call', '$__bytes_decode', asI64(emit(arr))], 'f64')
-  })
-
-  // .encodeInto(str, u8) → { read, written }. jz strings are UTF-8 bytes, so
-  // read counts bytes (== written), not UTF-16 units — same divergence class as
-  // `"中".length`. Never splits a multi-byte sequence: a truncated copy backs
-  // off past continuation bytes to the previous boundary (spec: whole code
-  // points only). Result is a dictionary object (HASH) — a one-shot small
-  // record, not a hot-path value.
-  wat('__str_encode_into', `(func $__str_encode_into (param $s i64) (param $dst i64) (result i32)
-    (local $slen i32) (local $n i32)
-    ;; receiver must be a Uint8Array — anything else is a TypeError in JS
-    (if (i32.or
-          (i32.ne (call $__ptr_type (local.get $dst)) (i32.const ${PTR.TYPED}))
-          (i32.ne (i32.and (call $__ptr_aux (local.get $dst)) (i32.const 7)) (i32.const 1)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ENCODE_INTO_RECEIVER}))) (throw $__jz_err (f64.const ${ERR.ENCODE_INTO_RECEIVER}))))
-    (local.set $slen (call $__str_byteLen (local.get $s)))
-    (local.set $n (call $__len (local.get $dst)))
-    (if (i32.ge_s (local.get $n) (local.get $slen))
-      (then (local.set $n (local.get $slen)))
-      (else ;; truncated: back off to a UTF-8 boundary (exclude the split sequence)
-        (block $b (loop $l
-          (br_if $b (i32.eqz (local.get $n)))
-          (br_if $b (i32.ne
-            (i32.and (call $__char_at (local.get $s) (local.get $n)) (i32.const 0xC0))
-            (i32.const 0x80)))
-          (local.set $n (i32.sub (local.get $n) (i32.const 1)))
-          (br $l)))))
-    (call $__str_copy (local.get $s) (call $__typed_data (local.get $dst)) (local.get $n))
-    (local.get $n))`)
-
-  bind('.encodeInto', (obj, str, dst) => {
-    ctx.runtime.throws = true
-    setLinkDemand('typedarray')
-    inc('__str_encode_into', '__hash_new', '__hash_set')
-    const n = tempI32('ein'), h = temp('eih')
-    const hI64 = ['i64.reinterpret_f64', ['local.get', `$${h}`]]
-    const nVal = ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${n}`]]]
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${n}`, ['call', '$__str_encode_into', asI64(emit(str)), asI64(emit(dst))]],
-      ['local.set', `$${h}`, ['call', '$__hash_new']],
-      ['local.set', `$${h}`, ['f64.reinterpret_i64',
-        ['call', '$__hash_set', hI64, asI64(emit(['str', 'read'])), nVal]]],
-      ['local.set', `$${h}`, ['f64.reinterpret_i64',
-        ['call', '$__hash_set', hI64, asI64(emit(['str', 'written'])), nVal]]],
-      ['local.get', `$${h}`]], 'f64')
-  })
+  registerEncoding()
 
   registerBase64()
 }

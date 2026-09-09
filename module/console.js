@@ -64,8 +64,8 @@ const setupWasi = (ctx) => {
     __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_int', '__write_byte', '__static_str'],
     __write_num: ['__ftoa', '__write_str'],
     __write_int: ['__itoa', '__mkstr', '__write_str'],
-    __write_str: ['__sso_char', '__str_len'],
-    __read_stdin: ['__mkstr'],
+    __write_str: ['__utf8_encode', '__str_length'],
+    __read_stdin: ['__utf8_decode'],
   })
 
   const needFdWrite = () => hostImport('wasi_snapshot_preview1', 'fd_write',
@@ -75,27 +75,14 @@ const setupWasi = (ctx) => {
     ['func', '$__fd_read', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
   ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr i64)
-    (local $iov i32) (local $aux i32) (local $len i32) (local $off i32) (local $buf i32)
+    (local $iov i32) (local $cap i32) (local $buf i32) (local $n i32)
     (local.set $iov (call $__alloc (i32.const 12)))
-    (local.set $aux (call $__ptr_aux (local.get $ptr)))
-    (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
-      (then
-        (local.set $len (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))
-        (local.set $buf (call $__alloc (local.get $len)))
-        (local.set $off (i32.const 0))
-        (block $done (loop $loop
-          (br_if $done (i32.ge_s (local.get $off) (local.get $len)))
-          (i32.store8 (i32.add (local.get $buf) (local.get $off))
-            (call $__sso_char (local.get $ptr) (local.get $off)))
-          (local.set $off (i32.add (local.get $off) (i32.const 1)))
-          (br $loop)))
-        (i32.store (local.get $iov) (local.get $buf))
-        (i32.store (i32.add (local.get $iov) (i32.const 4)) (local.get $len)))
-      (else
-        (i32.store (local.get $iov) (call $__ptr_offset (local.get $ptr)))
-        (i32.store (i32.add (local.get $iov) (i32.const 4)) (call $__str_len (local.get $ptr)))))
-    (drop (call $__fd_write (local.get $fd) (local.get $iov) (i32.const 1)
-      (i32.add (local.get $iov) (i32.const 8)))))`
+    (local.set $cap (i32.mul (call $__str_length (local.get $ptr)) (i32.const 3)))
+    (local.set $buf (call $__alloc (local.get $cap)))
+    (local.set $n (i32.wrap_i64 (i64.shr_u (call $__utf8_encode (local.get $ptr) (local.get $buf) (local.get $cap)) (i64.const 32))))
+    (i32.store (local.get $iov) (local.get $buf))
+    (i32.store offset=4 (local.get $iov) (local.get $n))
+    (drop (call $__fd_write (local.get $fd) (local.get $iov) (i32.const 1) (i32.add (local.get $iov) (i32.const 8)))))`
 
   ctx.core.stdlib['__write_byte'] = `(func $__write_byte (param $fd i32) (param $byte i32)
     (local $iov i32)
@@ -110,7 +97,7 @@ const setupWasi = (ctx) => {
     (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
   ctx.core.stdlib['__write_int'] = `(func $__write_int (param $fd i32) (param $val f64)
     (local $buf i32)
-    (local.set $buf (call $__alloc (i32.const 12)))
+    (local.set $buf (call $__alloc (i32.const 24)))
     (call $__write_str (local.get $fd)
       (i64.reinterpret_f64 (call $__mkstr (local.get $buf) (call $__itoa (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf))))))`
   ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val i64)
@@ -159,7 +146,7 @@ const setupWasi = (ctx) => {
       (br_if $eof (i32.eqz (local.get $n)))
       (local.set $total (i32.add (local.get $total) (local.get $n)))
       (br $read)))
-    (call $__mkstr (local.get $buf) (local.get $total)))`,
+    (call $__utf8_decode (local.get $buf) (local.get $total) (i32.const 1)))`,
     emit: () => {
       needFdRead()
       return typed(['call', '$__read_stdin'], 'f64')

@@ -108,7 +108,7 @@ export default (ctx) => {
     __park_write_u32: [],
     __park_write_f64: [],
     __park_write_i64: [],
-    __park_write_str: ['__str_byteLen', '__str_copy'],
+    __park_write_str: ['__str_length', '__str_copy'],
     __park_finish: [],
     __park_read_u8: [],
     __park_read_u32: [],
@@ -695,11 +695,11 @@ export default (ctx) => {
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_write_str'] = `(func $__park_write_str (param $s i64) (result f64)
       (local $len i32) (local $dst i32)
-      (local.set $len (call $__str_byteLen (local.get $s)))
+      (local.set $len (call $__str_length (local.get $s)))
       (local.set $dst (i32.add (global.get $__park_cursor) (i32.const 4)))
       (i32.store (global.get $__park_cursor) (local.get $len))
       (call $__str_copy (local.get $s) (local.get $dst) (local.get $len))
-      (global.set $__park_cursor (i32.add (local.get $dst) (local.get $len)))
+      (global.set $__park_cursor (i32.add (local.get $dst) (i32.shl (local.get $len) (i32.const 1))))
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_finish'] = `(func $__park_finish (result f64)
       (if (i32.or
@@ -731,12 +731,12 @@ export default (ctx) => {
       (local $len i32) (local $src i32) (local $ptr i32)
       (local.set $len (i32.load (global.get $__park_read)))
       (local.set $src (i32.add (global.get $__park_read) (i32.const 4)))
-      (global.set $__park_read (i32.add (local.get $src) (local.get $len)))
-      (local.set $ptr (call $__alloc (i32.add (local.get $len) (i32.const 8))))
+      (global.set $__park_read (i32.add (local.get $src) (i32.shl (local.get $len) (i32.const 1))))
+      (local.set $ptr (call $__alloc (i32.add (i32.shl (local.get $len) (i32.const 1)) (i32.const 8))))
       (i32.store (local.get $ptr) (i32.const 0))
       (i32.store offset=4 (local.get $ptr) (local.get $len))
       (local.set $ptr (i32.add (local.get $ptr) (i32.const 8)))
-      (memory.copy (local.get $ptr) (local.get $src) (local.get $len))
+      (memory.copy (local.get $ptr) (local.get $src) (i32.shl (local.get $len) (i32.const 1)))
       (call $__sso_norm
         (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $ptr))))`
     ctx.core.stdlib['__park_rewind'] = `(func $__park_rewind (result f64)
@@ -956,7 +956,7 @@ export default (ctx) => {
           (else (i32.load (i32.sub (local.get $off) (i32.const 4))))))
       (else (i32.const 0))))`
 
-  // String length (UTF-8 byte count). Heap: [-4:len(i32)][chars...]; SSO (7-bit codec):
+  // String length (UTF-16 code-unit count). Heap: [-4:len(i32)][chars...]; SSO (7-bit codec):
   // len at aux bits 10-12 (= payload bits 42-44). See module/string.js codec.
   ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr i64) (result i32)
     (local $off i32) (local $aux i32)
@@ -965,6 +965,8 @@ export default (ctx) => {
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
       (then (return (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))))
+    (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_BIT}))
+      (then (return (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_LEN_MASK})))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32) (i32.ge_u (local.get $off) (i32.const 4))
       (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -1176,7 +1178,7 @@ export default (ctx) => {
     // without a `.type` tag, so coerce defensively to f64.
     if (vt === VAL.STRING) {
       const f64Va = va?.type === 'f64' ? va : typed(va, 'f64')
-      return typed(['f64.convert_i32_s', ctx.abi.string.ops.byteLen(f64Va, ctx)], 'f64')
+      return typed(['f64.convert_i32_s', ctx.abi.string.ops.length(f64Va, ctx)], 'f64')
     }
     // A closed ARRAY|TYPED union has no ordinary property arm and can keep
     // the lean length helper. `notString` alone is insufficient: OBJECT/HASH/
@@ -1921,7 +1923,7 @@ export default (ctx) => {
     const getter = prop + ACCESSOR_GET
     // a class's getter is a function of the receiver (class-dispatch.js);
     // any other receiver keeps the slot paths below
-    const cls = classAccessor(obj, getter, [], (recv) => slotAccessorRead(recv, getter, prop) ?? emit(['.raw', recv, prop]))
+    const cls = classAccessor(obj, getter, [], (recv) => slotAccessorRead(recv, getter, prop) ?? emit(['__raw_prop', recv, prop]))
     if (cls !== undefined) return cls
     return slotAccessorRead(obj, getter, prop)
   }
@@ -1940,10 +1942,10 @@ export default (ctx) => {
     const pre = []
     if (typeof obj !== 'string') { recv = temp('acc'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
     const node = emit(['?:', ['===', ['typeof', ['.', recv, getter]], ['str', 'function']],
-      ['()', ['.', recv, getter]], ['.raw', recv, prop]])
+      ['()', ['.', recv, getter]], ['__raw_prop', recv, prop]])
     return pre.length ? typed(['block', ['result', 'f64'], ...pre, asF64(node)], 'f64') : node
   }
-  ctx.core.emit['.raw'] = (obj, prop) => dotRead(obj, prop, true)
+  ctx.core.emit['__raw_prop'] = (obj, prop) => dotRead(obj, prop, true)
   ctx.core.emit['.'] = (obj, prop) => dotRead(obj, prop, false)
   const dotRead = (obj, prop, raw) => {
     // A rest slot view's length is its argument count (compile/rest-view.js).
@@ -1972,7 +1974,7 @@ export default (ctx) => {
 
     // String-buffer SRoA: `line.length` where `line` dissolved into raw
     // (buf, len) locals (src/compile/emit.js tryConcatBufferDecl) — the total
-    // was computed once at construction; no __str_byteLen re-decode.
+    // was computed once at construction; no __str_length re-decode.
     if (prop === 'length' && typeof obj === 'string') {
       const bufR = ctx.func.concatBufs?.get(obj)
       if (bufR) return typed(['f64.convert_i32_s', ['local.get', `$${bufR.len}`]], 'f64')
@@ -2031,11 +2033,9 @@ export default (ctx) => {
           return typed(['f64.convert_i32_s', lenI32], 'f64')
         }
       }
-      // String literal: fold to its UTF-8 byte length. jz strings are stored as
-      // UTF-8 and __str_byteLen returns byte count, so this matches the runtime
-      // semantics. Skips the call + NaN-unbox round-trip entirely.
+      // A literal's JavaScript length is its UTF-16 unit count.
       if (Array.isArray(obj) && (obj[0] === 'str' || obj[0] == null) && typeof obj[1] === 'string') {
-        return typed(['f64.const', new TextEncoder().encode(obj[1]).length], 'f64')
+        return typed(['f64.const', obj[1].length], 'f64')
       }
       // structInline Array<S>: the header `len` counts physical 8-byte cells
       // (K per element, ⌈K/2⌉ when packed i32), so the JS array length is

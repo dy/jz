@@ -23,8 +23,7 @@ export const registerBase64 = () => {
 
   // put one 6-bit value ($v pre-masked) as a base64 char at $out+$j
   const b64put = (bits) => `(local.set $v (i32.and ${bits} (i32.const 63)))
-      (i32.store8 (i32.add (local.get $out) (local.get $j))
-        (select (i32.add (local.get $v) (i32.const 65))
+      (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (select (i32.add (local.get $v) (i32.const 65))
           (select (i32.add (local.get $v) (i32.const 71))
             (select (i32.add (local.get $v) (i32.const -4))
               (select (select (i32.const 45) (i32.const 43) (local.get $url))
@@ -44,7 +43,7 @@ export const registerBase64 = () => {
     (if (local.get $rem)
       (then (local.set $outLen (i32.add (local.get $outLen)
         (select (i32.const 4) (i32.add (local.get $rem) (i32.const 1)) (local.get $pad))))))
-    (local.set $base (call $__alloc (i32.add (i32.const 4) (local.get $outLen))))
+    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $outLen) (i32.const 1)))))
     (local.set $out (i32.add (local.get $base) (i32.const 4)))
     (block $gdone (loop $gloop
       (br_if $gdone (i32.ge_u (local.get $i) (local.get $g3)))
@@ -64,8 +63,8 @@ export const registerBase64 = () => {
         ${b64put('(i32.shr_u (local.get $w) (i32.const 18))')}
         ${b64put('(i32.shr_u (local.get $w) (i32.const 12))')}
         (if (local.get $pad) (then
-          (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 61))
-          (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1))) (i32.const 61))
+          (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 61))
+          (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 1)) (i32.const 1))) (i32.const 61))
           (local.set $j (i32.add (local.get $j) (i32.const 2)))))))
     (if (i32.eq (local.get $rem) (i32.const 2))
       (then
@@ -76,7 +75,7 @@ export const registerBase64 = () => {
         ${b64put('(i32.shr_u (local.get $w) (i32.const 12))')}
         ${b64put('(i32.shr_u (local.get $w) (i32.const 6))')}
         (if (local.get $pad) (then
-          (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 61))
+          (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 61))
           (local.set $j (i32.add (local.get $j) (i32.const 1)))))))
     (i32.store (local.get $base) (local.get $j))
     (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $out))))`)
@@ -89,7 +88,7 @@ export const registerBase64 = () => {
     (local $slen i32) (local $i i32) (local $c i32) (local $v i32)
     (local $acc i32) (local $cnt i32) (local $pads i32) (local $done i32)
     (local $mark i32) (local $written i32) (local $stopped i32) (local $n i32)
-    (local.set $slen (call $__str_byteLen (local.get $s)))
+    (local.set $slen (call $__str_length (local.get $s)))
     (block $stop (loop $loop
       (br_if $stop (i32.ge_s (local.get $i) (local.get $slen)))
       (local.set $c (call $__char_at (local.get $s) (local.get $i)))
@@ -195,19 +194,33 @@ export const registerBase64 = () => {
     (call $__typed_data (local.get $ptr)))`)
 
   wat('__btoa', `(func $__btoa (param $v i64) (result f64)
-    (local $s i64) (local $len i32) (local $buf i32)
+    (local $s i64) (local $len i32) (local $buf i32) (local $i i32) (local $c i32)
     (local.set $s (call $__to_str (local.get $v)))
-    (local.set $len (call $__str_byteLen (local.get $s)))
+    (local.set $len (call $__str_length (local.get $s)))
     (local.set $buf (call $__alloc (local.get $len)))
-    (call $__str_copy (local.get $s) (local.get $buf) (local.get $len))
+    (block $done (loop $copy
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $s) (local.get $i)))
+      (if (i32.gt_u (local.get $c) (i32.const 255))
+        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BTOA_CHARACTER}))) (throw $__jz_err (f64.const ${ERR.BTOA_CHARACTER}))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $i)) (local.get $c))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $copy)))
     (call $__b64_enc (local.get $buf) (local.get $len) (i32.const 0) (i32.const 1)))`)
 
   wat('__atob', `(func $__atob (param $v i64) (result f64)
-    (local $s i64) (local $max i32) (local $base i32) (local $rw i64)
+    (local $s i64) (local $max i32) (local $base i32) (local $rw i64) (local $i i32) (local $dst i32)
     (local.set $s (call $__to_str (local.get $v)))
-    (local.set $max (i32.add (i32.mul (i32.add (i32.shr_u (call $__str_byteLen (local.get $s)) (i32.const 2)) (i32.const 1)) (i32.const 3)) (i32.const 3)))
-    (local.set $base (call $__alloc (i32.add (i32.const 4) (local.get $max))))
+    (local.set $max (i32.add (i32.mul (i32.add (i32.shr_u (call $__str_length (local.get $s)) (i32.const 2)) (i32.const 1)) (i32.const 3)) (i32.const 3)))
+    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $max) (i32.const 1)))))
     (local.set $rw (call $__b64_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 4)) (i32.const 2147483647) (i32.const 0)))
+    (local.set $i (i32.wrap_i64 (local.get $rw)))
+    (local.set $dst (i32.add (local.get $base) (i32.const 4)))
+    ;; Expand backwards so decoded bytes and UTF-16 output share one allocation.
+    (block $done (loop $expand
+      (br_if $done (i32.eqz (local.get $i)))
+      (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+      (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 1)))
+        (i32.load8_u (i32.add (local.get $dst) (local.get $i)))) (br $expand)))
     (i32.store (local.get $base) (i32.wrap_i64 (local.get $rw)))
     (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $base) (i32.const 4)))))`)
 
@@ -223,7 +236,7 @@ export const registerBase64 = () => {
   wat('__b64_from', `(func $__b64_from (param $v i64) (param $url i32) (result f64)
     (local $s i64) (local $max i32) (local $base i32) (local $rw i64) (local $n i32)
     (local.set $s (call $__to_str (local.get $v)))
-    (local.set $max (i32.add (i32.mul (i32.add (i32.shr_u (call $__str_byteLen (local.get $s)) (i32.const 2)) (i32.const 1)) (i32.const 3)) (i32.const 3)))
+    (local.set $max (i32.add (i32.mul (i32.add (i32.shr_u (call $__str_length (local.get $s)) (i32.const 2)) (i32.const 1)) (i32.const 3)) (i32.const 3)))
     (local.set $base (call $__alloc (i32.add (i32.const 16) (local.get $max))))
     (i64.store (local.get $base) (i64.const 0))
     (local.set $rw (call $__b64_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 16)) (i32.const 2147483647) (local.get $url)))
@@ -240,17 +253,15 @@ export const registerBase64 = () => {
 
   wat('__hex_enc', `(func $__hex_enc (param $src i32) (param $len i32) (result f64)
     (local $base i32) (local $out i32) (local $i i32) (local $b i32) (local $n i32)
-    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 1)))))
+    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 2)))))
     (local.set $out (i32.add (local.get $base) (i32.const 4)))
     (block $d (loop $l
       (br_if $d (i32.ge_u (local.get $i) (local.get $len)))
       (local.set $b (i32.load8_u (i32.add (local.get $src) (local.get $i))))
       (local.set $n (i32.shr_u (local.get $b) (i32.const 4)))
-      (i32.store8 (i32.add (local.get $out) (i32.shl (local.get $i) (i32.const 1)))
-        (select (i32.add (local.get $n) (i32.const 87)) (i32.add (local.get $n) (i32.const 48)) (i32.gt_u (local.get $n) (i32.const 9))))
+      (i32.store16 (i32.add (local.get $out) (i32.shl (i32.shl (local.get $i) (i32.const 1)) (i32.const 1))) (select (i32.add (local.get $n) (i32.const 87)) (i32.add (local.get $n) (i32.const 48)) (i32.gt_u (local.get $n) (i32.const 9))))
       (local.set $n (i32.and (local.get $b) (i32.const 15)))
-      (i32.store8 (i32.add (i32.add (local.get $out) (i32.shl (local.get $i) (i32.const 1))) (i32.const 1))
-        (select (i32.add (local.get $n) (i32.const 87)) (i32.add (local.get $n) (i32.const 48)) (i32.gt_u (local.get $n) (i32.const 9))))
+      (i32.store16 (i32.add (i32.add (local.get $out) (i32.shl (i32.shl (local.get $i) (i32.const 1)) (i32.const 1))) (i32.shl (i32.const 1) (i32.const 1))) (select (i32.add (local.get $n) (i32.const 87)) (i32.add (local.get $n) (i32.const 48)) (i32.gt_u (local.get $n) (i32.const 9))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (i32.store (local.get $base) (i32.shl (local.get $len) (i32.const 1)))
@@ -260,7 +271,7 @@ export const registerBase64 = () => {
   // or a non-hex char throw. Stops at $cap whole bytes (setFromHex).
   wat('__hex_dec_raw', `(func $__hex_dec_raw (param $s i64) (param $dst i32) (param $cap i32) (result i64)
     (local $slen i32) (local $i i32) (local $hi i32) (local $lo i32) (local $written i32)
-    (local.set $slen (call $__str_byteLen (local.get $s)))
+    (local.set $slen (call $__str_length (local.get $s)))
     (if (i32.and (local.get $slen) (i32.const 1)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.HEX_ODD_LENGTH}))) (throw $__jz_err (f64.const ${ERR.HEX_ODD_LENGTH}))))
     (block $stop (loop $l
       (br_if $stop (i32.ge_s (local.get $i) (local.get $slen)))
@@ -284,7 +295,7 @@ export const registerBase64 = () => {
   wat('__hex_from', `(func $__hex_from (param $v i64) (result f64)
     (local $s i64) (local $base i32) (local $rw i64) (local $n i32)
     (local.set $s (call $__to_str (local.get $v)))
-    (local.set $base (call $__alloc (i32.add (i32.const 16) (i32.shr_u (call $__str_byteLen (local.get $s)) (i32.const 1)))))
+    (local.set $base (call $__alloc (i32.add (i32.const 16) (i32.shr_u (call $__str_length (local.get $s)) (i32.const 1)))))
     (i64.store (local.get $base) (i64.const 0))
     (local.set $rw (call $__hex_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 16)) (i32.const 2147483647)))
     (local.set $n (i32.wrap_i64 (local.get $rw)))
@@ -297,10 +308,9 @@ export const registerBase64 = () => {
       (call $__u8_data (local.get $dst))
       (call $__len (local.get $dst))))`)
 
-  // btoa(s): base64 of the string's bytes. jz strings ARE bytes, so every char
-  // qualifies — JS's InvalidCharacterError for >0xFF code units cannot arise;
-  // non-ASCII text encodes its UTF-8 bytes (documented byte-string divergence).
+  // btoa consumes Latin-1 code units; characters above 255 are invalid.
   bind('btoa', (value) => {
+    ctx.runtime.throws = true
     inc('__btoa')
     return typed(['call', '$__btoa',
       value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))], 'f64')

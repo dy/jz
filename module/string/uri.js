@@ -46,28 +46,45 @@ export const registerUri = () => {
 
   const uriEncodeKernel = (name, keepReserved) => `(func $${name} (param $val i64) (result f64)
     (local $str i64) (local $slen i32) (local $base i32) (local $out i32)
-    (local $i i32) (local $j i32) (local $c i32) (local $hi i32) (local $lo i32)
+    (local $bytes i32) (local $units i32) (local $next i32) (local $i i32) (local $j i32) (local $c i32) (local $hi i32) (local $lo i32)
     (local.set $str (call $__to_str (local.get $val)))
-    (local.set $slen (call $__str_byteLen (local.get $str)))
+    (local.set $slen (call $__str_length (local.get $str)))
     (if (i32.eqz (local.get $slen))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.mul (local.get $slen) (i32.const 3)))))
+    ;; URI encoding rejects isolated surrogates; TextEncoder replaces them.
+    (local.set $units (local.get $slen))
+    (block $valid (loop $check
+      (br_if $valid (i32.ge_u (local.get $i) (local.get $units)))
+      (local.set $c (call $__char_at (local.get $str) (local.get $i)))
+      (if (i32.eq (i32.and (local.get $c) (i32.const 0xF800)) (i32.const 0xD800))
+        (then
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (local.set $next (call $__char_at (local.get $str) (local.get $i)))
+          (if (i32.or (i32.or (i32.ge_u (local.get $c) (i32.const 0xDC00))
+                (i32.ge_u (local.get $i) (local.get $units)))
+                (i32.ne (i32.and (local.get $next) (i32.const 0xFC00)) (i32.const 0xDC00)))
+            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CODEPOINT})))
+              (throw $__jz_err (f64.const ${ERR.URI_BAD_CODEPOINT}))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $check)))
+    (local.set $bytes (call $__alloc (i32.mul (local.get $units) (i32.const 3))))
+    (local.set $slen (i32.wrap_i64 (i64.shr_u
+      (call $__utf8_encode (local.get $str) (local.get $bytes) (i32.mul (local.get $units) (i32.const 3))) (i64.const 32))))
+    (local.set $i (i32.const 0))
+    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.mul (local.get $slen) (i32.const 6)))))
     (local.set $out (i32.add (local.get $base) (i32.const 4)))
     (block $done (loop $loop
       (br_if $done (i32.ge_u (local.get $i) (local.get $slen)))
-      (local.set $c (call $__char_at (local.get $str) (local.get $i)))
+      (local.set $c (i32.load8_u (i32.add (local.get $bytes) (local.get $i))))
       (if ${keepReserved ? `(i32.or ${uriSafeTest} ${uriReservedTest})` : uriSafeTest}
         (then
-          (i32.store8 (i32.add (local.get $out) (local.get $j)) (local.get $c))
+          (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (local.get $c))
           (local.set $j (i32.add (local.get $j) (i32.const 1))))
         (else
           (local.set $hi (i32.shr_u (local.get $c) (i32.const 4)))
           (local.set $lo (i32.and (local.get $c) (i32.const 15)))
-          (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 37))
-          (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1)))
-            (i32.add (local.get $hi) (select (i32.const 55) (i32.const 48) (i32.gt_u (local.get $hi) (i32.const 9)))))
-          (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 2)))
-            (i32.add (local.get $lo) (select (i32.const 55) (i32.const 48) (i32.gt_u (local.get $lo) (i32.const 9)))))
+          (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 37))
+          (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 1)) (i32.const 1))) (i32.add (local.get $hi) (select (i32.const 55) (i32.const 48) (i32.gt_u (local.get $hi) (i32.const 9)))))
+          (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 2)) (i32.const 1))) (i32.add (local.get $lo) (select (i32.const 55) (i32.const 48) (i32.gt_u (local.get $lo) (i32.const 9)))))
           (local.set $j (i32.add (local.get $j) (i32.const 3)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
@@ -78,7 +95,8 @@ export const registerUri = () => {
   wat('__encodeURI', uriEncodeKernel('__encodeURI', true))
 
   const uriEncodeBind = (kernel) => (value) => {
-    inc(kernel)
+    ctx.runtime.throws = true
+    inc(kernel, '__utf8_encode')
     // ToPrimitive on an OBJECT argument needs a dynamic valueOf/toString call
     // jz's stdlib coercion layer doesn't have (see module/number.js's
     // rejectObjectArg for the same class, in the same words) — confirmed live:
@@ -106,11 +124,9 @@ export const registerUri = () => {
   // `%`, the two hex chars are validated, and $c < 128 for every reserved code —
   // copy the ORIGINAL triplet (case-preserving per spec) and skip the store.
   const uriKeepReserved = `(if ${uriReservedTest} (then
-            (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (i32.const 37))
-            (i32.store8 (i32.add (local.get $dst) (i32.add (local.get $outLen) (i32.const 1)))
-              (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1))))
-            (i32.store8 (i32.add (local.get $dst) (i32.add (local.get $outLen) (i32.const 2)))
-              (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2))))
+            (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $outLen) (i32.const 1))) (i32.const 37))
+            (i32.store16 (i32.add (local.get $dst) (i32.shl (i32.add (local.get $outLen) (i32.const 1)) (i32.const 1))) (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1))))
+            (i32.store16 (i32.add (local.get $dst) (i32.shl (i32.add (local.get $outLen) (i32.const 2)) (i32.const 1))) (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2))))
             (local.set $outLen (i32.add (local.get $outLen) (i32.const 3)))
             (local.set $stored (i32.const 1))))`
 
@@ -120,8 +136,8 @@ export const registerUri = () => {
     (local $c i32) (local $hi i32) (local $lo i32)
     (local $b i32) (local $n i32) (local $j i32) (local $cp i32) (local $min i32) (local $stored i32)
     (local.set $s (call $__to_str (local.get $v)))
-    (local.set $len (call $__str_byteLen (local.get $s)))
-    (local.set $base (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+    (local.set $len (call $__str_length (local.get $s)))
+    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 1)))))
     (local.set $dst (i32.add (local.get $base) (i32.const 4)))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
@@ -156,8 +172,7 @@ export const registerUri = () => {
                       (local.set $cp (i32.and (local.get $c) (i32.const 0x07)))
                       (local.set $min (i32.const 0x10000)))
                     (else (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_LEAD_BYTE}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_LEAD_BYTE}))))))))
-              (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $c))
-              (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
+
               (local.set $j (i32.const 1))
               (block $seqDone (loop $seq
                 (br_if $seqDone (i32.ge_s (local.get $j) (local.get $n)))
@@ -173,8 +188,7 @@ export const registerUri = () => {
                 (if (i32.or (i32.lt_u (local.get $b) (i32.const 0x80)) (i32.gt_u (local.get $b) (i32.const 0xBF)))
                   (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CONT_BYTE}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CONT_BYTE}))))
                 (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $b) (i32.const 0x3F))))
-                (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $b))
-                (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
+
                 (local.set $i (i32.add (local.get $i) (i32.const 3)))
                 (local.set $j (i32.add (local.get $j) (i32.const 1)))
                 (br $seq)))
@@ -182,12 +196,20 @@ export const registerUri = () => {
                     (i32.or (i32.lt_u (local.get $cp) (local.get $min)) (i32.gt_u (local.get $cp) (i32.const 0x10FFFF)))
                     (i32.and (i32.ge_u (local.get $cp) (i32.const 0xD800)) (i32.le_u (local.get $cp) (i32.const 0xDFFF))))
                 (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CODEPOINT}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CODEPOINT}))))
+              (if (i32.gt_u (local.get $cp) (i32.const 0xFFFF))
+                (then
+                  (local.set $cp (i32.sub (local.get $cp) (i32.const 0x10000)))
+                  (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $outLen) (i32.const 1))) (i32.or (i32.const 0xD800) (i32.shr_u (local.get $cp) (i32.const 10))))
+                  (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
+                  (local.set $cp (i32.or (i32.const 0xDC00) (i32.and (local.get $cp) (i32.const 0x3FF))))))
+              (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $outLen) (i32.const 1))) (local.get $cp))
+              (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
               (local.set $stored (i32.const 1)))))
         (else
           (local.set $i (i32.add (local.get $i) (i32.const 1)))))
       (if (i32.eqz (local.get $stored))
         (then
-          (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $c))
+          (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $outLen) (i32.const 1))) (local.get $c))
           (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))))
       (br $loop)))
     (i32.store (local.get $base) (local.get $outLen))

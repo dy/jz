@@ -646,14 +646,14 @@ function coerceRest(node, v, vt) {
  *  buildErrorObject) — the nameEmpty arm only fires if a caught Error's `.name`
  *  was reassigned to `''` after construction. */
 function errToStringIR(off) {
-  inc('__str_byteLen', '__str_concat_fresh')
+  inc('__str_length', '__str_concat_fresh')
   const tm = tempI64('emsg'), tn = tempI64('ename')
   const ml = tempI32('emlen'), nl = tempI32('enlen')
   return typed(['block', ['result', 'i64'],
     ['local.set', `$${tm}`, ctx.abi.object.ops.loadBits(cloneIR(off), 0)],
     ['local.set', `$${tn}`, ctx.abi.object.ops.loadBits(cloneIR(off), 1)],
-    ['local.set', `$${ml}`, ['call', '$__str_byteLen', ['local.get', `$${tm}`]]],
-    ['local.set', `$${nl}`, ['call', '$__str_byteLen', ['local.get', `$${tn}`]]],
+    ['local.set', `$${ml}`, ['call', '$__str_length', ['local.get', `$${tm}`]]],
+    ['local.set', `$${nl}`, ['call', '$__str_length', ['local.get', `$${tn}`]]],
     ['if', ['result', 'i64'],
       ['i32.eqz', ['local.get', `$${ml}`]],
       ['then', ['if', ['result', 'i64'],

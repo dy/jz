@@ -115,7 +115,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   }
   // A sized built-in property on a statically-known receiver (`.length` on
   // STRING/ARRAY/TYPED, `.size` on SET/MAP, `.byteLength`/`.byteOffset` on
-  // TYPED/BUFFER) returns i32 directly (`__len`/`__str_byteLen` return i32).
+  // TYPED/BUFFER) returns i32 directly (`__len`/`__str_length` return i32).
   // Keeping it i32 lets analyzeBody keep the counter local i32, eliminating the
   // per-iteration `f64.convert_i32_s` widen and matching `arr[i]`/`i*k` truncs.
   // The membership lives in one place — `propValType` (src/kind-traits.js).

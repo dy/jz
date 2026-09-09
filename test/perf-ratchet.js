@@ -29,6 +29,14 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // all other 1657 function bodies unchanged. The baseline includes this required
 // bookkeeping; it counts runtime loops as well as the program's hot loops.
 
+// UTF-16 ABI (2026-09-09): remeasured against dbba8566 with unchanged seeds.
+// Delta by category: buf +165, nest +374, slice +1360, ring +1320,
+// condref +1402. Changed bodies are __mkstr/__to_str/__str_copy/__str_concat,
+// __itoa, __str_hash, and their inlined paths in f$exp/__hash_set_local.
+// The inlined unit loads/stores add byte-address scaling; heap hashing shrinks.
+// Pure int/float/mixed/cond/fgather totals are unchanged. This structural
+// baseline includes string runtime work; timing and binary-size gates do not move.
+
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
 const loopBodyOps = (wat) => {
   let count = 0

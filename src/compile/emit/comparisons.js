@@ -156,7 +156,7 @@ function stringLiteral(node) {
 
 // Index expressions where peepholing `s[k] === 'X'` to char-byte compare is
 // semantics-preserving: must produce a non-negative *integer* at run time so
-// `__str_byteLen u> k` bounds-checks the same range JS would. Out-of-range
+// `__str_length u> k` bounds-checks the same range JS would. Out-of-range
 // (negative or ≥ len) falls into the `else 0` arm — matches `undefined === 'X'`.
 function intIndexIR(key) {
   const lit = nonNegIntLiteral(key)
@@ -200,7 +200,7 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   if (vt === VAL.STRING && lit.length > 1) return effectFoldSeq([obj], emitNum(negate ? 1 : 0))
 
   // Single-char literal: compare byte directly, skipping __str_idx allocation.
-  if (lit.length !== 1 || !ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
+  if (lit.length !== 1 || !ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_length']) return null
 
   // Stash the index in a local when it isn't a constant — bounds + load both reference it.
   const isConstIdx = Array.isArray(idxIR) && idxIR[0] === 'i32.const'
@@ -212,9 +212,9 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   }
 
   const ptr = temp('sc')
-  inc('__str_byteLen', '__char_at')
+  inc('__str_length', '__char_at')
   const charEq = ['if', ['result', 'i32'],
-    ['i32.gt_u', ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], idxRefIR],
+    ['i32.gt_u', ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], idxRefIR],
     ['then', ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxRefIR], ['i32.const', lit.charCodeAt(0)]]],
     ['else', ['i32.const', 0]]]
 
@@ -261,7 +261,7 @@ function emitSubstringEqCmp(a, b, negate = false) {
   if (!info) return null
   const { recv, method, args } = info
   if (args.length > 2) return null
-  if (!ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
+  if (!ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_length']) return null
 
   // The receiver must be a string. `substr`/`substring` name string-only methods,
   // so an unknown receiver is safe — the normal `.substr`/`.substring` emitter
@@ -570,7 +570,7 @@ function emitLooseEq(a, b, negate, strict) {
   // or a nullish sentinel (UNDEF_NAN from an unproven OOB/absent-key read,
   // rarely NULL_NAN from a nullish-literal producer) — never a string/
   // object/bigint — so it needs none of __eq's string-content/pointer-kind
-  // dispatch (what pulls __str_eq/__is_str_key/__char_at/__str_byteLen into
+  // dispatch (what pulls __str_eq/__is_str_key/__char_at/__str_length into
   // a module with no string at all, e.g. a pure Uint8Array match loop:
   // `src[j+len] === src[ip+len]` — bisected live to this exact gap,
   // .work/archive/todo.md "lz/glyfparse __eq bloat"). f64.eq alone is unsound only

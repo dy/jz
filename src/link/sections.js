@@ -16,7 +16,9 @@ const encStr = (out, s) => { const b = utf8.encode(s); varint(out, b.length); fo
 const encProp = (out, p) => {
   if (p === null) out.push(0)
   else if (Array.isArray(p)) { out.push(1); encProp(out, p[1]) }
-  else { out.push(2); encStr(out, p) }
+  // JSON escaping preserves lone surrogates over the UTF-8 metadata boundary.
+  // Length framing already delimits the string, so omit JSON's outer quotes.
+  else { out.push(3); encStr(out, JSON.stringify(p).slice(1, -1)) }
 }
 
 export function schemaSections(root, { schemas, namedUses, errorSids }) {

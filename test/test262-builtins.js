@@ -785,17 +785,6 @@ const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/Iterator/prototype/join/', '[REJECT] Iterator.prototype.join — not implemented (unregistered-stdlib guard rejects)'],
 ]
 const EXPECTED_FAIL_FILES = new Map([
-  // RegExp exec full-Unicode indices use UTF-16 code units in ECMAScript;
-  // JZ's documented UTF-8 byte-string dialect intentionally differs. Files
-  // that write lastIndex are not listed: proven regex writes now reject.
-  ['built-ins/RegExp/prototype/exec/u-captured-value.js', '[DIALECT] RegExp /u capture indexing follows JZ UTF-8 byte strings, not UTF-16 code units'],
-  ['built-ins/RegExp/prototype/exec/u-lastindex-value.js', '[DIALECT] RegExp /u lastIndex follows JZ UTF-8 byte strings, not UTF-16 code units'],
-  // RegExp.escape — jz strings are UTF-8 bytes: the spec's \\uXXXX escaping of
-  // astral/whitespace/lineterminator code points cannot arise byte-wise (non-ASCII
-  // bytes are never regex-special and pass through).
-  ['built-ins/RegExp/escape/escaped-lineterminator.js', '[DIALECT] RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings; README: Strings are UTF-8 bytes, not UTF-16)'],
-  ['built-ins/RegExp/escape/escaped-surrogates.js', '[DIALECT] RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings; README: Strings are UTF-8 bytes, not UTF-16)'],
-  ['built-ins/RegExp/escape/escaped-whitespace.js', '[DIALECT] RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings; README: Strings are UTF-8 bytes, not UTF-16)'],
   // Array.of.call(CustomCtor, …) — this-constructor protocol on builtins
   ['built-ins/Array/of/return-a-custom-instance.js', '[REJECT] builtin .call with custom this-constructor — out of scope (confirmed: rejects "`this` not supported")'],
   // fix/wrong-values-2: JSON.parse/parseInt/parseFloat/encodeURIComponent/

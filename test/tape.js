@@ -247,7 +247,7 @@ test('link: the schema section lists only surviving schemas, by tag or by named 
   const facts = { schemas: [['a'], [null, ['t', 'b']], ['c']], namedUses: [{ sid: 2, funcName: 'mk' }, { sid: 0, funcName: 'gone' }], errorSids: [[1, 'RangeError'], [0, 'TypeError']] }
   const [out] = onTape(m, root => schemaSections(root, facts))
   const schema = out.find(n => n[0] === '@custom' && n[1] === '"jz:schema"')[2]
-  is(schema.join(','), [3, 1, 2, 1, 48, 2, 0, 1, 2, 1, 98, 1, 2, 1, 99].join(','), 'schema 0 shrinks to its id, 1 is tagged, 2 is used by name')
+  is(schema.join(','), [3, 1, 3, 1, 48, 2, 0, 1, 3, 1, 98, 1, 3, 1, 99].join(','), 'schema 0 shrinks to its id, 1 is tagged, 2 is used by name')
   is(out.find(n => n[0] === '@custom' && n[1] === '"jz:errcls"')[2].join(','), [1, 1, 10, 82, 97, 110, 103, 101, 69, 114, 114, 111, 114].join(','), 'only the surviving error class')
 })
 

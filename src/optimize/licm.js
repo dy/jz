@@ -57,7 +57,7 @@ const CMP_MANTISSA = new Set([
 // only loop-body producer is the in-place replace-store's re-boxed result, which
 // otherwise pinned the loop's `__ptr_offset(arr)` base resolution in-body (the
 // immutable-update kernel paid the full forwarding+bounds dance per iteration).
-const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num', '$__to_str', '$__str_byteLen', '$__mkptr'])
+const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num', '$__to_str', '$__str_length', '$__mkptr'])
 
 // Read-only HEAP-MEMORY calls: like SAFE_OFFSET_CALLS but they read element
 // storage that a direct f64.store/i32.store in the loop could alias. Safe to
@@ -82,13 +82,13 @@ const READONLY_MEM_CALLS = new Set(['$__typed_idx', '$__str_idx'])
 // iteration. (Math.random is INLINED — it mutates a global PRNG seed, never a
 // `$math.` call — but exclude it by name defensively; $__str_eq_cold is the cold
 // half of __str_eq, equally pure.) $__length stays OUT: it is polymorphic over
-// MUTABLE arrays (push changes it), so it isn't arg-pure. $__str_byteLen is IN:
+// MUTABLE arrays (push changes it), so it isn't arg-pure. $__str_length is IN:
 // its operand is a string (immutable), and the one in-place length mutator —
 // the heap-top bump-extend twins (module/string.js) — is only emitted where the
 // OLD string value is provably dead, so a live, loop-invariant operand's length
 // cannot change under the loop (`for (j = 0; j < line.length; j++)` hoists to
 // one call instead of one per character — the strbuild row-scan shape).
-const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key', '$__str_byteLen'])
+const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key', '$__str_length'])
 const isPureFnCall = (callee) =>
   typeof callee === 'string' &&
   ((callee.startsWith('$math.') && !callee.startsWith('$math.random')) || PURE_CALL_I32.has(callee))

@@ -344,7 +344,7 @@ test('template literal: fused concat returns string and skips concat helper', ()
 test('fused concat: literal ASCII parts store inline — no per-separator copy or length call', () => {
   // The serializer shape (`i + ',' + name + '\n'`): literal parts carry their bytes
   // and length at compile time, so only the DYNAMIC parts pay a __str_copy +
-  // __str_byteLen. Profiled on strbuild: the tiny-part copy/len calls were 38.7%
+  // __str_length. Profiled on strbuild: the tiny-part copy/len calls were 38.7%
   // of a row; inlining them was -15% on the bench with an exact checksum.
   const src = `export let f = (i, v) => i + ', ' + v + '!\\n'`
   const r = jz(src, { optimize: { level: 2, watr: false } })
@@ -352,7 +352,7 @@ test('fused concat: literal ASCII parts store inline — no per-separator copy o
   const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
   const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 1))
   is((fn.match(/call \$__str_copy/g) || []).length, 2, 'copies only for the 2 dynamic parts')
-  is((fn.match(/call \$__str_byteLen/g) || []).length, 2, 'lengths only for the 2 dynamic parts')
+  is((fn.match(/call \$__str_length/g) || []).length, 2, 'lengths only for the 2 dynamic parts')
   // template path shares the machinery
   const twat = compile('export let f = (x) => `[${x}]`', { wat: true, optimize: { level: 2, watr: false } })
   const tfn = twat.slice(twat.indexOf('(func $f'), twat.indexOf('\n  (func ', twat.indexOf('(func $f') + 1))
@@ -623,7 +623,7 @@ test('string: literal startsWith/endsWith', () => {
 
 test('string: startsWith/endsWith coerce non-string args via ToString', () => {
   // Per spec, the search arg goes through ToString. Without coercion, a numeric
-  // arg's __str_byteLen reads as 0, the suffix loop runs zero iterations, and
+  // arg's __str_length reads as 0, the suffix loop runs zero iterations, and
   // the function falls through to "match" — `"100".endsWith(99)` would lie.
   is(run(`export let f = () => "100".endsWith(99) ? 1 : 0`).f(), 0)
   is(run(`export let f = () => "199".endsWith(99) ? 1 : 0`).f(), 1)
@@ -1106,13 +1106,13 @@ test('str-eq spec: lowering avoids __eq, numeric === keeps its fast path', () =>
   ok(!/\$__str_eq|\$__is_str_key/.test(numEq), 'numeric === stays off the string path')
 })
 
-test('indexOf substr: SIMD first-byte memchr is emitted + matches V8 over edge cases', () => {
-  // The multi-byte heap-haystack path broadcasts needle[0] and reads an i8x16.eq bitmask —
+test('indexOf substr: SIMD first-unit memchr is emitted + matches V8 over edge cases', () => {
+  // The multi-byte heap-haystack path broadcasts needle[0] and reads an i16x8.eq bitmask —
   // a scan-bound substr search dropped from 5.7× slower than V8 to ~1.4×. The SIMD window only
   // touches the HAYSTACK, so a SHORT (SSO, ≤6B) needle — the common ","/"://"/"TARGET" — rides it
   // too (its bytes fetched SSO-aware), not just heap×heap; that closed an 11×→1.4× gap.
   const wat = compile(`export let f = (h, n) => h.indexOf(n)`, { wat: true })
-  ok(/i8x16\.bitmask/.test(wat) && /i8x16\.eq/.test(wat), '__str_indexof carries the SIMD first-byte scan')
+  ok(/i16x8\.bitmask/.test(wat) && /i16x8\.eq/.test(wat), '__str_indexof carries the SIMD first-unit scan')
 
   const { f, g, e } = jz(`
     export let f = (h, n) => h.indexOf(n)
@@ -1122,7 +1122,7 @@ test('indexOf substr: SIMD first-byte memchr is emitted + matches V8 over edge c
   // long heap haystack (>16B, multiple SIMD windows), match near the end, with a SHORT SSO needle
   const hay = 'xabcdefgh'.repeat(28) + 'TARGET_q'   // 260 B heap; "TARGET" is a 6-byte SSO needle
   for (const ndl of ['TARGET', 'T', 'ARGE', '_q', 'xa', 'zzz']) is(f(hay, ndl), hay.indexOf(ndl), `SSO needle ${JSON.stringify(ndl)} over long heap`)
-  // first-byte collisions + false candidates within a chunk: 'ab' over an 'ab'-dense string
+  // first-unit collisions + false candidates within a chunk: 'ab' over an 'ab'-dense string
   const dense = 'abababab abab abXab ababYabZ ab!'
   for (const q of ['ab', 'abX', 'abYab', 'abZ', 'ab!', 'qq', '']) is(f(dense, q), dense.indexOf(q), `dense indexOf ${JSON.stringify(q)}`)
   // from-offset clamping incl. negative + past-end, and empty-needle clamp (spec step 6)
@@ -1220,10 +1220,10 @@ test('SSO hash mix: clamp (h<=1 -> h+=2) holds for both JS and WAT by constructi
 })
 
 // String.prototype.normalize — identity (all normalization forms are identity on
-// ASCII; jz strings are UTF-8 bytes, no Unicode tables — README divergences).
+// ASCII; Unicode case tables remain unsupported — README divergences).
 // Was a compile crash: the autoload tuple lacked the fallback's array dep.
 test('strings: normalize is identity (typed + generic receivers)', () => {
-  is(run(`export let f = () => "héllo".normalize().length`).f(), 6)      // utf-8 bytes
+  is(run(`export let f = () => "héllo".normalize().length`).f(), 5)
   is(run(`export let f = () => "abc".normalize("NFD") === "abc" ? 1 : 0`).f(), 1)
   is(run(`export let f = (s) => s.normalize().length`).f !== undefined, true)
 })
@@ -1261,36 +1261,33 @@ test('string +: operands evaluate in source order around a known side', () => {
   is(g(), '1y')
 })
 
-test('UTF-8 constructors encode Unicode units and scalar values', () => {
+test('UTF-16 constructors preserve code units and scalar values', () => {
   const e = run(`
     export let unit = x => String.fromCharCode(x)
     export let point = x => String.fromCodePoint(x)
     export let pair = (a,b) => String.fromCharCode(a,b)
     export let points = (a,b) => String.fromCodePoint(a,b)
   `)
-  const normalize = s => new TextDecoder().decode(new TextEncoder().encode(s))
   for (const n of [0,65,127,128,255,256,2047,2048,55295,55296,56319,56320,57343,57344,65535,65536,-1,NaN,Infinity,3.9,4294967552,2**63+2048,-(2**63+2048),2**64+4096,2**68,Number.MAX_VALUE])
-    is(e.unit(n), normalize(String.fromCharCode(n)), `unit ${n}`)
+    is(e.unit(n), String.fromCharCode(n), `unit ${n}`)
   for (const n of [0,127,128,2047,2048,55296,65535,65536,0x1D800,0x1F600,0x10FFFF])
-    is(e.point(n), normalize(String.fromCodePoint(n)), `point ${n}`)
+    is(e.point(n), String.fromCodePoint(n), `point ${n}`)
   for (const [a,b] of [[0xD83D,0xDE00],[0xD800,65],[65,0xDC00],[0xD800,0xD800],[0xDC00,0xDC00]]) {
-    is(e.pair(a,b), normalize(String.fromCharCode(a,b)))
-    is(e.points(a,b), normalize(String.fromCodePoint(a,b)))
+    is(e.pair(a,b), String.fromCharCode(a,b))
+    is(e.points(a,b), String.fromCodePoint(a,b))
   }
 })
 
-test('UTF-8 string positions are bytes and codePointAt decodes scalars', () => {
-  const e = run(`export let byte = (s,i) => s.charCodeAt(i); export let point = (s,i) => s.codePointAt(i); export let len = s => s.length`)
-  const s = 'AĀ中😀𝠀', bytes = new TextEncoder().encode(s)
-  is(e.len(s), bytes.length)
-  for (let i=0;i<bytes.length;i++) is(e.byte(s,i), bytes[i])
-  let offset = 0
-  for (const ch of s) { is(e.point(s,offset),ch.codePointAt(0)); offset += new TextEncoder().encode(ch).length }
-  for (const i of [-1,bytes.length,Infinity,4294967296]) { is(e.point(s,i),undefined); is(Number.isNaN(e.byte(s,i)),true) }
-  is(e.point(s,2),0xFFFD, 'continuation byte is not a scalar boundary')
+test('UTF-16 positions and codePointAt match JavaScript', () => {
+  const e = run(`export let unit = (s,i) => s.charCodeAt(i); export let point = (s,i) => s.codePointAt(i); export let len = s => s.length`)
+  for (const s of ['AĀ中😀𝠀', '\uD800a\uDC00', '\uFFFF', '']) {
+    is(e.len(s), s.length)
+    for (let i = 0; i < s.length; i++) { is(e.unit(s,i), s.charCodeAt(i)); is(e.point(s,i), s.codePointAt(i)) }
+    for (const i of [-1,s.length,Infinity,4294967296]) { is(e.point(s,i),undefined); is(Number.isNaN(e.unit(s,i)),true) }
+  }
 })
 
-test('UTF-8 construction evaluates arguments before numeric coercion', () => {
+test('UTF-16 construction evaluates arguments before numeric coercion', () => {
   for (const method of ['fromCharCode','fromCodePoint']) {
     const src = `export let f = () => {
       let log = ''; let a = { valueOf: () => { log += 'a'; return 0xD83D } };
@@ -1299,4 +1296,154 @@ test('UTF-8 construction evaluates arguments before numeric coercion', () => {
     }`
     is(run(src).f(), Function(src.replace('export ','')+';return f()')())
   }
+})
+
+
+test('UTF-16 strings preserve host values, slices, padding and lookup data', () => {
+  const e = run(`
+    export let echo = s => s
+    export let slice = (s,a,b) => s.slice(a,b)
+    export let pad = (s,n,p) => s.padStart(n,p)
+    export let beat = t => "\\u0100\\u0200".charCodeAt(t & 1)
+    export let eq = (a,b) => a === b
+    export let less = (a,b) => a < b
+    export let lookup = (a,b) => { let m = new Map(); m.set(a,1); m.set(b,2); return m.get(a)*10+m.get(b) }
+  `)
+  for (const s of ['Ā😀\uD800\uDC00\uDFFF', 'abcdef', '\uFFFF', '']) {
+    is(e.echo(s), s)
+    for (let i = 0; i <= s.length; i++) is(e.slice(s,i,i+1), s.slice(i,i+1))
+  }
+  for (const p of ['abcdef','ab','Ā😀']) is(e.pad('x',13,p),'x'.padStart(13,p))
+  is(e.beat(0),256); is(e.beat(1),512)
+  for (const [a,b] of [['Ā','\0'],['abcdefĀ','abcdef\0'],['\uE000','𐀀']]) {
+    is(e.eq(a,b),a===b); is(e.less(a,b),a<b); is(e.lookup(a,b),12)
+  }
+})
+
+test('UTF-8 boundary codecs match JavaScript and respect whole scalar capacity', () => {
+  const e = run(`
+    export let encode = s => new TextEncoder().encode(s)
+    export let decode = b => new TextDecoder().decode(b)
+    export let into = (s,n) => { let b = new Uint8Array(n); let r = new TextEncoder().encodeInto(s,b); return [r.read,r.written,...b] }
+    export let uri = s => encodeURIComponent(s)
+    export let unuri = s => decodeURIComponent(s)
+    export let json = s => JSON.stringify(s)
+    export let parse = s => JSON.parse(s)
+    export let base = s => btoa(s)
+    export let unbase = s => atob(s)
+  `)
+  for (const s of ['abc','Ā中😀','\uD800','\uDC00x','\uFEFFa']) {
+    is([...e.encode(s)], [...new TextEncoder().encode(s)])
+    for (let n=0;n<12;n++) { const b = new Uint8Array(n), r = new TextEncoder().encodeInto(s,b); is(e.into(s,n),[r.read,r.written,...b]) }
+    is(e.json(s),JSON.stringify(s)); is(e.parse(JSON.stringify(s)),s)
+  }
+  for (const bytes of [[239,187,191,65],[224,128,128],[240,159],[240,159,65],[237,160,128],[244,144,128,128],[255,65]]) {
+    const b = new Uint8Array(bytes); is(e.decode(b),new TextDecoder().decode(b))
+  }
+  for (const s of ['Ā😀 a','\uFFFF','abc']) { is(e.uri(s),encodeURIComponent(s)); is(e.unuri(encodeURIComponent(s)),s) }
+  throws(() => e.uri('\uD800'), /./)
+  is(e.base('ÿ\0A'),btoa('ÿ\0A')); is(e.unbase(btoa('ÿ\0A')),'ÿ\0A')
+  throws(() => e.base('Ā'), /./)
+})
+
+
+test('UTF-16 string iteration uses code points, indexing and split use code units', () => {
+  const e = run(`
+    export let spread = s => [...s]
+    export let from = s => Array.from(s,(c,i)=>c+i)
+    export let loop = s => { let a=[]; for(let c of s) a.push(c); return a }
+    export let split = s => s.split('')
+  `)
+  for (const s of ['A😀\uD800','Ā𝠀z','abcdef','']) {
+    is(e.spread(s),[...s]); is(e.loop(s),[...s]); is(e.from(s),Array.from(s,(c,i)=>c+i)); is(e.split(s),s.split(''))
+  }
+  is(run(`export let f=()=>new TextEncoder().encode(undefined).length`).f(),0)
+})
+
+
+test('UTF-16 regex positions, Unicode atoms and escapes', () => {
+  for (const pattern of ['/./u','/[😀]/u','/\\u{1F600}/u','/\\uD83D\\uDE00/u','/😀+a/u','/.*a/u']) {
+    const src = `export let f=s=>${pattern}.exec(s)[0]`
+    const f = run(src).f, ref = Function(`return s=>${pattern}.exec(s)[0]`)()
+    is(f('😀😀a'),ref('😀😀a'))
+  }
+  is(run(`export let f=()=>/\\uDF06/u.exec('\\uD834\\uDF06')===null`).f(),true)
+  const escape = run(`export let f=s=>RegExp.escape(s)`).f
+  for(const [s, expected] of [['\uD800','\\ud800'],['😀','😀'],['\u00A0\u2028\uFEFF','\\xa0\\u2028\\ufeff'],['abc','\\x61bc']]) is(escape(s),expected)
+})
+
+test('UTF-8 decoding options and receiver checks', () => {
+  const e = run(`
+    export let decode = b => new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(b)
+    export let replace = b => new TextDecoder().decode(b)
+    export let into = b => new TextEncoder().encodeInto('a',b)
+  `)
+  is(e.decode(new Uint8Array([239,187,191,65])),'\uFEFFA')
+  throws(()=>e.decode(new Uint8Array([255])),/valid UTF-8/)
+  throws(()=>e.replace('abc'),/ArrayBuffer or view/)
+  throws(()=>run(`export let f=()=>new TextEncoder().encodeInto('a',new Uint8ClampedArray(2))`).f(),/Uint8Array/)
+  is(e.replace(undefined),'')
+  const src = `export let f=()=>{let b={raw:s=>s};return b.raw('abc')}`
+  is(run(src).f(),'abc')
+})
+
+
+test('UTF-16 whitespace and URLSearchParams use explicit text encoding', () => {
+  const e = run(`
+    export let num = s => Number(s)
+    export let trim = s => s.trim()
+    export let ws = s => /\\s/.test(s)
+    export let url = s => { let p = new URLSearchParams(s); return p.get('Ā') + '|' + p.toString() }
+  `)
+  for(const ws of ['\u00A0','\u1680','\u2028','\u202F','\uFEFF']) {is(e.num(ws+'42'+ws),42);is(e.trim(ws+'Ā'+ws),'Ā');is(e.ws(ws),true)}
+  for(const s of ['Ā=😀','%C4%80=%F0%9F%98%80','Ā=\uFEFFx']) {const p=new URLSearchParams(s);is(e.url(s),p.get('Ā')+'|'+p.toString())}
+})
+
+
+test('UTF-16 zero-width regex progress respects code points', () => {
+  const e = run(`
+    export let split = s => s.split(/(?:)/u)
+    export let separators = s => s.split(/a*/u)
+    export let matches = s => [...s.matchAll(/(?:)/gu)].length
+    export let replace = s => s.replace(/(?:)/gu,'x')
+    export let callback = s => s.replace(/(?:)/gu,()=> 'x')
+    export let last = s => {let r=/(?:)/gu;r.exec(s);return r.lastIndex}
+  `)
+  for (const s of ['', '😀', 'a😀a', 'Ā😀z', '\uD800']) {
+    is(e.split(s), s.split(/(?:)/u)); is(e.separators(s), s.split(/a*/u))
+    is(e.matches(s), [...s.matchAll(/(?:)/gu)].length)
+    is(e.replace(s), s.replace(/(?:)/gu,'x')); is(e.callback(s), s.replace(/(?:)/gu,()=> 'x'))
+    is(e.last(s), 0)
+  }
+})
+
+test('Text codecs evaluate receivers and arguments once, in order', () => {
+  const e = run(`
+    export let encode = () => {
+      let n=0, a=new Uint8Array(1)
+      let x=(n=n*10+1,new TextEncoder()).encodeInto((n=n*10+2,'a'),(n=n*10+3,a))
+      return n+x.written
+    }
+    export let decode = () => {
+      let n=0, a=new Uint8Array([65])
+      let s=(n=n*10+1,new TextDecoder()).decode((n=n*10+2,a))
+      return n+s
+    }
+  `)
+  is(e.encode(),124); is(e.decode(),'12A')
+})
+
+
+test('UTF-16 object keys survive UTF-8 schema metadata', () => {
+  const keys = ['\uD800','\uDC00','\uFFFD','\uFEFFx','😀','Ā','"\\\n']
+  const fields = keys.map((key,i)=>`[${JSON.stringify(key)}]:${i+1}`).join(',')
+  const m=jz(`
+    export let f=()=>({${fields}})
+    export let g=o=>o["\\uD800"]
+    export let dictionary=x=>{let o={};o[String.fromCharCode(x)]=42;return o["\\uD800"]}
+    export let map=x=>{let m=new Map();m.set(String.fromCharCode(x),42);return m.get("\\uD800")}
+  `), e=m.exports
+  is(e.f(),Object.fromEntries(keys.map((key,i)=>[key,i+1])))
+  is(m.memory.read(m.instance.exports.g(m.memory.Hash({'\uD800':42}))),42)
+  is(e.dictionary(0xD800),42); is(e.map(0xD800),42)
 })

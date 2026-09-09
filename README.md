@@ -199,16 +199,9 @@ not supported
 - **Math.** Basic operations are IEEE-exact. Transcendentals use JZ's own kernels
   and may differ from the host library in their last bits. `Math.sumPrecise`
   accumulates exactly and rounds once.
-- **Strings.** Strings are UTF-8 bytes, not UTF-16. Length, indexing, slicing,
-  search, and regular-expression positions count bytes. `charCodeAt` reads a
-  byte; `codePointAt` decodes a Unicode scalar at a byte offset (U+FFFD for an
-  invalid sequence, `undefined` out of bounds). `fromCharCode` converts UTF-16
-  units to UTF-8, combining adjacent surrogate pairs; `fromCodePoint` encodes
-  Unicode values. Isolated surrogates become U+FFFD, including at the host
-  boundary and in source literals. Byte slices can split encoded characters.
-  Case conversion is
-  ASCII-only; Unicode property classes, normalization, and locale tables are
-  unsupported.
+- **Strings.** Case conversion is ASCII-only; Unicode property classes,
+  normalization, and locale tables are unsupported. `TextDecoder` supports UTF-8
+  with `fatal` and `ignoreBOM`; streaming and other encodings are unsupported.
 - **Objects.** Literal fields have fixed slots; computed keys use hash storage.
   Class and literal `get`/`set` accessors are methods with property syntax,
   resolved statically on a known shape. Live prototype chains, property

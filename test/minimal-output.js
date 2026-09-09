@@ -491,8 +491,8 @@ test('minimal: nullish-receiver TypeError message strings appear exactly when th
   const src = "export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }"
   for (const O of [0, 2]) {
     const w = wat(src, O)
-    ok(w.includes('TypeError'), `@O${O}: the constructed TypeError's class name string is present`)
-    ok(w.includes('Cannot read properties of undefined'), `@O${O}: the read-family message string is present`)
+    ok(w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: the constructed TypeError's class name string is present`)
+    ok(w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the read-family message string is present`)
   }
 })
 
@@ -528,8 +528,8 @@ test('minimal: dead opaque-.length throw path leaves neither the TypeError schem
   }`
   for (const O of [0, 2, 3]) {
     const w = wat(src, O)
-    ok(!w.includes('TypeError'), `@O${O}: rows is provably always an array — the TypeError class name string must not leak`)
-    ok(!w.includes('Cannot read properties of undefined'), `@O${O}: the never-reached throw's message string must not leak`)
+    ok(!w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: rows is provably always an array — the TypeError class name string must not leak`)
+    ok(!w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the never-reached throw's message string must not leak`)
   }
 })
 
@@ -541,8 +541,8 @@ test('minimal: live opaque-.length throw path keeps both strings and throws a re
   }`
   for (const O of [0, 2, 3]) {
     const w = wat(src, O)
-    ok(w.includes('TypeError'), `@O${O}: obj can be undefined at runtime — the TypeError class name string must survive`)
-    ok(w.includes('Cannot read properties of undefined'), `@O${O}: the reachable throw's message string must survive`)
+    ok(w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: obj can be undefined at runtime — the TypeError class name string must survive`)
+    ok(w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the reachable throw's message string must survive`)
   }
   // skip is already false here (the early return above covers WASI/kernel, whose
   // command wrapping / self-hosted pipeline this default-JS-host instantiate call

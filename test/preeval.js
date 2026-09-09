@@ -210,12 +210,14 @@ test('guard: closure capture of an outer non-constant is untouched', () => {
   is(run('export let f = (n) => { let g = () => n + 1; return g() }').f(41), 42)
 })
 
-test('guard: string ops on non-ASCII source are left unfolded (documented UTF-8/UTF-16 boundary)', () => {
-  // jz strings are UTF-8 internally: .length is a BYTE count, not JS's UTF-16 code-unit
-  // count — "héllo".length is 5 in JS but 6 here (é is 2 UTF-8 bytes). Folding via a host
-  // ASCII-blind .length would have silently baked in the WRONG (JS-shaped) constant; the
-  // ASCII guard leaves it to the (correct) runtime path instead.
-  is(run('export let f = () => "héllo".length').f(), run('export let f = (s) => s.length').f('héllo'))
+test('fold-fires: Unicode string operations agree with runtime UTF-16 units', () => {
+  for (const [expr, expected] of [
+    ['"héllo".length', 5], ['"😀".length', 2], ['"Ā😀".slice(1,2)', '\uD83D'],
+    ['"Ā" + "😀"', 'Ā😀'], ['"😀z".indexOf("z")', 2], ['"😀" < "\uE000"', true]
+  ]) is(run(`export let f=()=>${expr}`).f(), expected)
+  const src = 'export let f=()=>"😀".length'
+  if (!onKernel()) ok(!compile(src, {wat:true, optimize:false}).includes('call $__str_length'))
+  is(run('export let f=()=>"é".toUpperCase()').f(), 'é', 'case folding retains the runtime ASCII-only contract')
 })
 
 test('guard: mixed number+string concat is not compile-time folded (self-compile __ftoa fidelity)', () => {

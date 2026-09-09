@@ -97,6 +97,6 @@ deploy (`node bench/bench.mjs --emit-web`) and serves from the Pages artifact.
 ## Semantics check
 
 Valid jz is valid JS — run the same source under Node and diff results to catch
-miscompiles, minding the [documented divergences](README.md#faq) (f64 numbers, UTF-8
-strings, no GC, etc.). `--wat` (or `compile(src, { wat: true })`) shows emitted WAT;
+miscompiles, minding the [documented divergences](README.md#faq) (f64 numbers,
+no GC, etc.). `--wat` (or `compile(src, { wat: true })`) shows emitted WAT;
 grep `v128` to confirm vectorization, `__dyn_get`/`__ext_call` for dynamic fallbacks.

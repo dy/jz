@@ -50,7 +50,7 @@ const SAMPLES = [
   ['unicode-escapes', String.raw`export let main = () => "\xff\u0100\uD83D\uDE00\u{1F600}"`, 'ÿĀ😀😀'],
   ['unicode-template', 'export let main = () => `\\u{D83D}\\uDE00`', '😀'],
   ['unicode-construction', 'export let main = () => String.fromCharCode(256, 0xD83D, 0xDE00) + String.fromCodePoint(0x1D800)', 'Ā😀𝠀'],
-  ['unicode-byte-offset', 'export let main = () => "Ā😀".codePointAt(2)', 128512],
+  ['unicode-unit-offset', 'export let main = () => "Ā😀".codePointAt(1)', 128512],
   ['typed-view-iterator', 'function* marker() {} function g([x]) { return x } export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); d.setUint8(1, 23); return g(new Int8Array(b, 1, 2)) }', 23],
   ['dataview-identity', 'export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); return (d instanceof DataView ? 1 : 0) + (d instanceof Int8Array ? 2 : 0) }', 1],
   ['arithmetic',  'export let main = () => 3 + 4 * 5', 23],

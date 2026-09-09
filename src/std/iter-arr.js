@@ -17,7 +17,10 @@ export let __it_arr = (v) => {
     return a
   }
   let a = [], n = v.length
-  for (let i = 0; i < n; i++) a.push(v[i])
+  for (let i = 0; i < n; i++) {
+    if (typeof v === 'string') { let cp = v.codePointAt(i); a.push(String.fromCodePoint(cp)); if (cp > 65535) i++ }
+    else a.push(v[i])
+  }
   return a
 }
 `

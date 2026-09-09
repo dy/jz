@@ -6,7 +6,7 @@
  * (staticValue, staticStringExpr, constNum in prepare/index.js) with one pass
  * that also folds: numeric arithmetic chains (with optional rational/extended
  * precision — see Rational below), comparisons/equality, `%`/bitwise ops,
- * ASCII string methods, pure `Math.*` calls (bit-exact vs jz's own kernel via
+ * string methods, pure `Math.*` calls (bit-exact vs jz's own kernel via
  * math-kernel.js, NOT host Math — see that module), dead `if`/`while(false)`
  * branches, and zero-arg pure function calls (which subsumes IIFE collapse:
  * lift-iife.js already turns `(() => EXPR)()` into a 0-param top-level
@@ -24,7 +24,7 @@
  *     recursing entirely in EvalResult space (never rebuilds AST nodes
  *     mid-chain) — this is what lets a numeric chain carry an exact Rational
  *     all the way to the final `+`/`-`/`*`/`/`  and round only once. Also
- *     resolves Math.* calls, ASCII string methods, and — recursively, with a
+ *     resolves Math.* calls, string methods, and — recursively, with a
  *     cycle guard — zero-arg calls to other functions.
  *
  *   foldNode(node, env, state) -> node
@@ -67,12 +67,9 @@
  *     env (no outer capture) and bails on anything but a `let`/`const` chain
  *     ending in one `return` — any other statement shape (if/for/throw/...)
  *     is conservatively left unfolded.
- *   - String folding is ASCII-only (jz strings are UTF-8 internally; a
- *     non-ASCII `.length`/`.slice` could disagree with host JS's UTF-16
- *     view — see README divergences) and mixed string+number `+` is
- *     deliberately NOT folded (self-compile's __ftoa is a 9-significant-digit
- *     dtoa, host `String(number)` is shortest-round-trip — folding could
- *     bake a MORE precise string than the unfolded kernel would produce).
+ *   - String folding uses the same UTF-16 units on both hosts. Case conversion
+ *     remains ASCII-only. Mixed string+number `+` is deliberately not folded:
+ *     the kernel formatter and host shortest-round-trip formatting can differ.
  *   - `Math.pow`/`**` folds via the exact 3-way split emit.js's own
  *     constant-arg fast path already uses (math-kernel.js `pow`) — zero new
  *     divergence from today's compiled output.
@@ -384,7 +381,7 @@ function foldUnary(op, a) {
 function foldBinary(op, a, b, rationalOn) {
   if (op === '+') {
     if (a.t === 'str' && b.t === 'str')
-      return (isAsciiSafe(a.v) && isAsciiSafe(b.v)) ? strResult('' + a.v + b.v) : null
+      return strResult('' + a.v + b.v)
     if (a.t === 'str' || b.t === 'str') return null   // mixed string+number: see module doc
     const L = toNumResult(a), R = toNumResult(b)
     return (L && R) ? foldNumAdd(L, R, rationalOn) : null
@@ -399,7 +396,6 @@ function foldBinary(op, a, b, rationalOn) {
     return op === '-' || op === '*' || op === '/' ? foldNumBinary(op, L, R, rationalOn) : numResult(plainNumOp(op, L.v, R.v))
   }
   if (CMP_OPS.has(op)) {
-    if ((a.t === 'str' && !isAsciiSafe(a.v)) || (b.t === 'str' && !isAsciiSafe(b.v))) return null
     switch (op) {
       case '<': return boolResult(toJSValue(a) < toJSValue(b))
       case '>': return boolResult(toJSValue(a) > toJSValue(b))
@@ -494,8 +490,8 @@ function evalStringMethod(name, s, args) {
   // charAt's `args[0]?.v ?? 0` silently folded to 0 without crashing, either way ignoring
   // the argument's real runtime value.
   const isNumOrAbsent = (a) => a === undefined || (a !== null && a.t === 'num')
-  if (name === 'toUpperCase' && args.length === 0) return strResult(s.toUpperCase())
-  if (name === 'toLowerCase' && args.length === 0) return strResult(s.toLowerCase())
+  if (name === 'toUpperCase' && args.length === 0 && isAsciiSafe(s)) return strResult(s.toUpperCase())
+  if (name === 'toLowerCase' && args.length === 0 && isAsciiSafe(s)) return strResult(s.toLowerCase())
   if (name === 'trim' && args.length === 0) return strResult(s.trim())
   if (name === 'slice' && args.length <= 2 && args.every(isNumOrAbsent)) {
     // Explicit arity dispatch, not `s.slice(args[0]?.v, args[1]?.v)`: an omitted
@@ -511,7 +507,7 @@ function evalStringMethod(name, s, args) {
     const r = args.length === 0 ? s.slice()
       : args.length === 1 ? s.slice(args[0].v)
       : s.slice(args[0].v, args[1].v)
-    return isAsciiSafe(r) ? strResult(r) : null
+    return strResult(r)
   }
   if (name === 'charAt' && args.length <= 1 && isNumOrAbsent(args[0])) return strResult(s.charAt(args[0]?.v ?? 0))
   // Same isNumOrAbsent guard as slice/charAt above, applied to the position
@@ -524,7 +520,7 @@ function evalStringMethod(name, s, args) {
   // never reaching the real emitter's own correct object-ToPrimitive path —
   // spec truth is 2). isNumOrAbsent(args[1]) makes this fold bail (return
   // null) instead, falling through to the runtime posIndex()/toNumF64() path.
-  if (name === 'indexOf' && args.length >= 1 && args.length <= 2 && args[0]?.t === 'str' && isAsciiSafe(args[0].v) && isNumOrAbsent(args[1]))
+  if (name === 'indexOf' && args.length >= 1 && args.length <= 2 && args[0]?.t === 'str' && isNumOrAbsent(args[1]))
     return numResult(s.indexOf(args[0].v, args[1]?.v))
   return null
 }
@@ -606,7 +602,7 @@ function evalConst(node, env, state) {
     if (node[1] === 'Math' && typeof node[2] === 'string' && MATH_CONST[node[2]] !== undefined) return numResult(MATH_CONST[node[2]])
     if (node[1] === 'Number' && typeof node[2] === 'string' && NUMBER_CONST[node[2]] !== undefined) return numResult(NUMBER_CONST[node[2]])
     const recv = evalConst(node[1], env, state)
-    if (recv && recv.t === 'str' && node[2] === 'length' && isAsciiSafe(recv.v)) return numResult(recv.v.length)
+    if (recv && recv.t === 'str' && node[2] === 'length') return numResult(recv.v.length)
     return null
   }
   if (op === '()') return evalCallConst(node, env, state)
@@ -630,7 +626,7 @@ function evalCallConst(node, env, state) {
   }
   if (Array.isArray(callee) && callee[0] === '.' && typeof callee[2] === 'string') {
     const recv = evalConst(callee[1], env, state)
-    if (!recv || recv.t !== 'str' || !isAsciiSafe(recv.v)) return null
+    if (!recv || recv.t !== 'str') return null
     return evalStringMethod(callee[2], recv.v, args.map(a => evalConst(a, env, state)))
   }
   if (typeof callee === 'string' && (node.length < 3 || node[2] == null)) {

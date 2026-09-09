@@ -804,7 +804,7 @@ function classSetterStore(obj, prop, val) {
   // JS order: the receiver, then the value; the expression's value stays `v`
   const rT = temp('acc')
   // the fallback store is a value here whatever the statement expects; the void form is applied below
-  const store = classAccessor(obj, prop + ACCESSOR_SET, [vT], (recv) => { ctx.func._expect = null; return accessorStore(recv, prop, vT) ?? emit(['=', ['.raw', recv, prop], vT]) }, rT)
+  const store = classAccessor(obj, prop + ACCESSOR_SET, [vT], (recv) => { ctx.func._expect = null; return accessorStore(recv, prop, vT) ?? emit(['=', ['__raw_prop', recv, prop], vT]) }, rT)
   if (store === undefined) return undefined
   const pre = [['local.set', `$${rT}`, asF64(emit(obj))], ['local.set', `$${vT}`, asF64(emit(val))]]
   if (void_) return typed(['block', ...pre, ['drop', asF64(store)]], 'void')
@@ -833,7 +833,7 @@ function accessorStore(obj, prop, val) {
   pre.push(['local.set', `$${vT}`, asF64(emit(val))])
   const call = ['()', ['.', recv, setter], vT]
   const body = known ? call
-    : ['?:', ['===', ['typeof', ['.', recv, setter]], ['str', 'function']], call, ['=', ['.raw', recv, prop], vT]]
+    : ['?:', ['===', ['typeof', ['.', recv, setter]], ['str', 'function']], call, ['=', ['__raw_prop', recv, prop], vT]]
   if (void_) return typed(['block', ...pre, ['drop', asF64(emit(body))]], 'void')
   return typed(['block', ['result', 'f64'], ...pre, ['drop', asF64(emit(body))], ['local.get', `$${vT}`]], 'f64')
 }

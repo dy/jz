@@ -20,6 +20,7 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { dataLen } from '../src/static-data.js'
+import { stringHash } from '../src/string-data.js'
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { ERR, ERR_INFO } from '../err-codes.js'
@@ -87,25 +88,12 @@ const ssoMix = (lo, hi) => {
   return clampHash(h) >>> 0
 }
 
-// Byte-FNV-1a over UTF-8-ish bytes (charCodeAt & 0xFF — ASCII-only callers guarantee
-// codepoint < 0x80, so this equals the byte value). Heap strings (>6 bytes or non-ASCII)
-// keep this; __str_hash's heap branch and buildInternTable's static-intern prehash both
-// compute the identical function — see module/string.js bind('str') and internProbeWat.
-const byteFnv = (str) => {
-  let h = 0x811c9dc5 | 0
-  for (let i = 0; i < str.length; i++) h = Math.imul(h ^ (str.charCodeAt(i) & 0xFF), 0x01000193) | 0
-  return clampHash(h)
-}
-
-// Compile-time hash for an ASCII string LITERAL — must equal __str_hash's runtime
-// result for the same content: ≤6-ASCII strings are ALWAYS SSO (module/string.js header
-// invariant), so they use the new ssoMix; longer/non-ASCII strings stay on heap and use
-// byte-FNV. Callers (litKeyHash below, module/core.js, module/array.js, module/json.js)
-// pass ASCII content — non-ASCII goes through the runtime __str_hash path instead.
+// Literal and runtime hashes share the UTF-16 unit contract. Short ASCII
+// literals use the packed-string mix; every heap string uses unit FNV-1a.
 export function strHashLiteral(str) {
   const sso = ssoEncode(str)
   if (sso) return ssoMix(sso.offset | 0, sso.aux & 0x1FFF)
-  return byteFnv(str)
+  return stringHash(str) | 0
 }
 
 const HASH_BUF = new ArrayBuffer(8)
@@ -125,19 +113,11 @@ function numConstLiteral(expr) {
   return null
 }
 
-// Compile-time probe hash for a LITERAL collection/property key, else null. A numeric
-// constant → numHashLiteral; an ASCII string literal → strHashLiteral. The string case is
-// ASCII-only on purpose: strHashLiteral's byte-FNV branch folds `charCodeAt(i) & 0xFF`,
-// which equals __str_hash / __map_hash (FNV-1a over the UTF-8 bytes) ONLY for code points
-// < 0x80 — a non-ASCII literal would fold a different hash than its stored key and silently
-// miss, so it falls back to the runtime hash. (The ≤6-ASCII branch uses the SSO mix instead —
-// still ASCII-only, since ssoEncode itself rejects non-ASCII and returns null.) Lets
-// `m.get("if")` / `m.has("x")` skip the per-access __map_hash call.
-const ASCII_KEY = /^[\x00-\x7f]*$/
+// Compile-time probe hash for a literal collection/property key, else null.
 const litKeyHash = (key) => {
   const num = numConstLiteral(key)
   if (num != null) return numHashLiteral(num)
-  if (isLiteralStr(key) && ASCII_KEY.test(key[1])) return strHashLiteral(key[1])
+  if (isLiteralStr(key)) return strHashLiteral(key[1])
   return null
 }
 
@@ -281,8 +261,8 @@ export default (ctx) => {
     // spliced `(call $__err_prop …)` once it's actually in the realized text —
     // this explicit edge is the same belt-and-suspenders precedent as the
     // other conditional entries in this table (e.g. __dyn_get_any_t below).
-    __dyn_get_t_h: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_byteLen', '__ptr_aux', ...errPropDep()],
-    __dyn_get_t_hm: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_byteLen', '__ptr_aux', ...errPropDep()],
+    __dyn_get_t_h: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...errPropDep()],
+    __dyn_get_t_hm: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...errPropDep()],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
@@ -303,7 +283,7 @@ export default (ctx) => {
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
     __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
-    __str_arr_idx: ['__str_byteLen', '__char_at'],
+    __str_arr_idx: ['__str_length', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
   })
 
@@ -1129,12 +1109,12 @@ export default (ctx) => {
       (else
         (local.set $h (i32.const 0x811c9dc5))
         (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
-          (then (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+          (then (local.set $len (call $__str_length (local.get $s)))))
         (block $dh (loop $lh
           (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
             (i32.xor (local.get $h)
-              (i32.load8_u (i32.add (local.get $off) (local.get $i))))
+              (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))
             (i32.const 0x01000193)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $lh)))))
@@ -1171,23 +1151,22 @@ export default (ctx) => {
             (if (local.get $h) (then (return (local.get $h))))
             (local.set $h (i32.const 0x811c9dc5))))
         (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
-          (then (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+          (then (local.set $len (call $__str_length (local.get $s)))))
         ;; 4-byte unrolled FNV-1a: each iter loads i32, mixes 4 bytes (little-endian) sequentially.
         (local.set $lenA (i32.and (local.get $len) (i32.const -4)))
         (block $d4 (loop $l4
           (br_if $d4 (i32.ge_s (local.get $i) (local.get $lenA)))
-          (local.set $w (i32.load (i32.add (local.get $off) (local.get $i))))
-          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (local.get $w) (i32.const 0xFF))) (i32.const 0x01000193)))
-          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (i32.shr_u (local.get $w) (i32.const 8)) (i32.const 0xFF))) (i32.const 0x01000193)))
-          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (i32.shr_u (local.get $w) (i32.const 16)) (i32.const 0xFF))) (i32.const 0x01000193)))
-          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.shr_u (local.get $w) (i32.const 24))) (i32.const 0x01000193)))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.load16_u offset=0 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))) (i32.const 0x01000193)))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.load16_u offset=2 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))) (i32.const 0x01000193)))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.load16_u offset=4 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))) (i32.const 0x01000193)))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.load16_u offset=6 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))) (i32.const 0x01000193)))
           (local.set $i (i32.add (local.get $i) (i32.const 4)))
           (br $l4)))
         (block $dh (loop $lh
           (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
             (i32.xor (local.get $h)
-              (i32.load8_u (i32.add (local.get $off) (local.get $i))))
+              (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))
             (i32.const 0x01000193)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $lh)))))
@@ -1512,10 +1491,10 @@ export default (ctx) => {
   // string on an ARRAY receiver addresses the ELEMENT ('1' ≡ 1), so every
   // string-keyed dyn entry must classify before probing the props sidecar.
   // __char_at returns the true byte (0 only past the REAL length, which
-  // $__str_byteLen bounds first), so embedded-NUL keys can't false-match.
+  // $__str_length bounds first), so embedded-NUL keys can't false-match.
   ctx.core.stdlib['__str_arr_idx'] = `(func $__str_arr_idx (param $key i64) (result i32)
     (local $len i32) (local $i i32) (local $c i32) (local $n i64)
-    (local.set $len (call $__str_byteLen (local.get $key)))
+    (local.set $len (call $__str_length (local.get $key)))
     (if (i32.or (i32.eqz (local.get $len)) (i32.gt_u (local.get $len) (i32.const 10)))
       (then (return (i32.const -1))))
     (if (i32.and (i32.eq (call $__char_at (local.get $key) (i32.const 0)) (i32.const 48))
@@ -1574,7 +1553,7 @@ export default (ctx) => {
     ;; a caught internal error code; every other key still reads undefined.
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
       (then (return ${errProp})))
-    ;; STRING receiver + 'length' key → aux/byte length directly. Strings are
+    ;; STRING receiver + 'length' key → code-unit length directly. Strings are
     ;; primitives — they can never carry dyn props, yet an SSO string's packed
     ;; chars LOOK like a tiny durable heap offset, so \`op.length\` in a parser
     ;; loop (jessie: 1.96M reads/run, ~30% of runtime, causally measured by
@@ -1589,7 +1568,7 @@ export default (ctx) => {
                  (i32.eq (local.get $h) (i32.const ${strHashLiteral('length')})))
       (then
         (if (call $__str_eq (local.get $key) (i64.const ${LENGTH_SSO_I64}))
-          (then (return (i64.reinterpret_f64 (f64.convert_i32_s (call $__str_byteLen (local.get $obj)))))))))
+          (then (return (i64.reinterpret_f64 (f64.convert_i32_s (call $__str_length (local.get $obj)))))))))
     ;; STRING receivers END here: strings are primitives — no dyn props, no
     ;; sidecar, no global-table entries (writes below drop, JS semantics), so
     ;; the probe chain can never produce a value. Method-name lookups on
@@ -1628,7 +1607,7 @@ export default (ctx) => {
         (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
               (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
               (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
-              (else (i32.load8_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10)))
+              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10)))
           (then
             (local.set $idx (call $__str_arr_idx (local.get $key)))
             (if (i32.ge_s (local.get $idx) (i32.const 0))
@@ -2074,7 +2053,7 @@ export default (ctx) => {
                 ;; first-char digit reject — see __dyn_get_t_h's net
                 (if (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
               (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
-              (else (i32.load8_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))
+              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))
                   (then
                     (local.set $kidx (call $__str_arr_idx (local.get $key)))
                     (if (i32.ge_s (local.get $kidx) (i32.const 0))
@@ -2299,7 +2278,7 @@ export default (ctx) => {
             (local.set $delidx (i32.const -1))
             (if (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
               (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
-              (else (i32.load8_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))
+              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))
               (then (local.set $delidx (call $__str_arr_idx (local.get $key)))))
             (if (i32.ge_s (local.get $delidx) (i32.const 0))
               (then
@@ -2541,7 +2520,7 @@ export default (ctx) => {
       ['i32.eq', typeVal, ['i32.const', PTR.OBJECT]],
       ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]
 
-    inc('__ptr_type', '__len', '__str_byteLen', '__hash_has', '__is_str_key', '__to_str', '__dyn_has')
+    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_str', '__dyn_has')
     if (ctx.linkDemand.external) inc('__ext_has')
     const dynHas = () => ['call', '$__dyn_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]
 
@@ -2559,7 +2538,7 @@ export default (ctx) => {
           ['i32.ge_s', idxVal, ['i32.const', 0]]]],
         ['then',
           ['if', isStringLike,
-            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__str_byteLen', ['i64.reinterpret_f64', objVal]]]]]],
+            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__str_length', ['i64.reinterpret_f64', objVal]]]]]],
           ['if', isArrayLike,
             ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__len', ['i64.reinterpret_f64', objVal]]]]]]]],
 
@@ -2596,8 +2575,10 @@ export default (ctx) => {
   // / `.length` dispatch stays statically typed.
   ctx.core.emit['__iter_arr'] = (src) => {
     const vt = valTypeOf(src)
-    if (vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.TYPED || vt === VAL.BUFFER)
+    if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.BUFFER)
       return asF64(emit(src))
+    const stringPoints = ir => { ctx.module.include('string'); inc('__str_points'); return ['call', '$__str_points', ['i64.reinterpret_f64', ir]] }
+    if (vt === VAL.STRING) return typed(stringPoints(asF64(emit(src))), 'f64')
     const t = temp('iter')
     const bind = ['local.set', `$${t}`, asF64(emit(src))]
     if (vt === VAL.SET) return typed(['block', ['result', 'f64'], bind, collKeysFromTemp(t, SET_ENTRY)], 'f64')
@@ -2618,7 +2599,8 @@ export default (ctx) => {
         ['then', collKeysFromTemp(t, SET_ENTRY)],
         ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.MAP]],
           ['then', collEntriesFromTemp(t, MAP_ENTRY)],
-          ['else', ['local.get', `$${t}`]]]]]], 'f64')
+          ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.STRING]],
+            ['then', stringPoints(['local.get', `$${t}`])], ['else', ['local.get', `$${t}`]]]]]]]], 'f64')
   }
 
   // Constructor-tolerant iterable normalization: ES's Set/Map CONSTRUCTORS

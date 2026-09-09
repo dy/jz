@@ -111,13 +111,13 @@ export const arrayFromEmit = (src, mapFn) => {
   // Array.from(string) → array of single-char strings. The generic __arr_from
   // path memory-copies f64 slots and is invalid for byte-backed strings.
   if (sourceVt === VAL.STRING) {
-    inc('__str_idx', '__str_len')
-    const s = temp('sfs'), len = tempI32('sfl'), i = tempI32('sfi')
+    inc('__codepoint_at', '__codepoint_string', '__str_len')
+    const s = temp('sfs'), len = tempI32('sfl'), i = tempI32('sfi'), pos = tempI32('sfp'), cp = tempI32('sfcp')
     const srcIR = asF64(emit(src))
     const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'sfr' })
-    const ch = typed(['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]], 'f64')
+    const ch = typed(['call', '$__codepoint_string', ['local.get', `$${cp}`]], 'f64')
     const item = cb ? cb.stored([ch, idxArg(cb, i)]) : ch
     const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
@@ -126,11 +126,15 @@ export const arrayFromEmit = (src, mapFn) => {
       ['local.set', `$${len}`, ['call', '$__str_len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
       out.init,
       ['local.set', `$${i}`, ['i32.const', 0]],
+      ['local.set', `$${pos}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], lenIR]],
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${pos}`], lenIR]],
+        ['local.set', `$${cp}`, ['i32.trunc_f64_u', ['call', '$__codepoint_at', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${pos}`]]]],
         elemStore(out.local, i, asF64(item)),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['select', ['i32.const', 2], ['i32.const', 1], ['i32.gt_u', ['local.get', `$${cp}`], ['i32.const', 65535]]]]],
         ['br', `$loop${id}`]]],
+      ['i32.store', ['i32.sub', ['local.get', `$${out.local}`], ['i32.const', 8]], ['local.get', `$${i}`]],
       out.ptr], 'f64')
   }
 
@@ -177,7 +181,7 @@ export const arrayFromEmit = (src, mapFn) => {
   const checkExternalIterable = sourceVt == null && ctx.transform.targetProfile.envImports
   if (checkExternalIterable) { setLinkDemand('external'); inc('__ext_has_iterator') }
   setLinkDemand('typedarray')
-  inc('__length.value', '__ptr_type', '__typed_idx', '__str_idx', '__dyn_get_any_t', '__to_num')
+  inc('__str_points', '__length.value', '__ptr_type', '__typed_idx', '__str_idx', '__dyn_get_any_t', '__to_num')
 
   const s = temp('afsrc'), t = tempI32('aft'), rawLen = temp('afrawlen')
   const num = temp('afnum'), len = tempI32('aflen'), i = tempI32('afi')
@@ -206,6 +210,9 @@ export const arrayFromEmit = (src, mapFn) => {
     ['local.set', `$${s}`, srcIR],
     ...callbackSetup(cb),
     ['local.set', `$${t}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+    ['if', ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.STRING]], ['then',
+      ['local.set', `$${s}`, ['call', '$__str_points', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ['local.set', `$${t}`, ['i32.const', PTR.ARRAY]]]],
     ...(checkExternalIterable ? [[
       'if', ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.EXTERNAL]],
       ['then', ['if',

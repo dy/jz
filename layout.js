@@ -170,15 +170,15 @@ export const atomNanHex = atomId => i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(atom
  *  CANONICAL interned string — the static-pool copy (or an intern-table hit
  *  resolving to it). Two canonicals are bit-equal iff content-equal, so
  *  __str_eq answers unequal canonicals without touching bytes, and interned
- *  statics carry a cached FNV hash at offset-8 ([hash u32][len u32][bytes])
+ *  statics carry a cached FNV hash at offset-8 ([hash u32][unit length u32][UTF-16LE units])
  *  that __str_hash loads instead of re-hashing. Inert elsewhere: slice-length
  *  bits are only read under SLICE_BIT, SSO length under SSO_BIT, and plain-
  *  heap consumers read the len header at -4 regardless of aux. */
 export const STR_INTERN_BIT = 0x1
 
 /** STRING aux bit 1 on a PLAIN-HEAP string (SSO and SLICE clear): the string was
- *  allocated with an [hash u32][len u32][bytes] header where the hash cell is a
- *  LAZY cache — seeded 0 (byte-FNV clamps to ≥2, so 0 is unambiguous "uncomputed"),
+ *  allocated with an [hash u32][unit length u32][UTF-16LE units] header where the hash cell is a
+ *  LAZY cache — seeded 0 (unit-FNV clamps to ≥2, so 0 is unambiguous "uncomputed"),
  *  filled by __str_hash on first hash. Sound because heap strings never relocate
  *  and die with their arena; the two in-place mutators (concat/append bump-extend
  *  of a heap-top accumulator) zero the cell when they change the bytes. Unlike

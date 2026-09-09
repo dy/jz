@@ -125,7 +125,8 @@ function stageSpreadSource(expr) {
   ctx.func.locals.set(local, 'f64')
   ctx.func.locals.set(lenLocal, 'i32')
   const n = multiCount(expr)
-  const srcExpr = !n && ctx.module.modules.collection ? ['()', '__iter_arr', expr] : expr
+  if (!n) ctx.module.include('collection')
+  const srcExpr = !n ? ['()', '__iter_arr', expr] : expr
   const val = n ? undefined : valTypeOf(srcExpr)
   const srcI64 = () => ['i64.reinterpret_f64', ['local.get', `$${local}`]]
   const lenIR = val === VAL.STRING

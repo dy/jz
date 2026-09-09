@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 Subscript is pinned to public source revision `0f65c86` for surrogate-pair
-escape decoding during UTF-8 self-hosting, on top of the 10.7.3 parser fixes.
+escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
 `package.json` and the lockfile pin the public watr source archive at `c144e7b`.
@@ -86,6 +86,12 @@ Current pipeline: `source → parse (subscript/jessie) → jzify (default-on; st
 
 The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
 
+Strings store UTF-16LE code units; lengths and positions count units, while
+allocation sizes and addresses count bytes. Short ASCII strings retain the
+six-unit SSO representation. UTF-8 encoding belongs to byte APIs and Wasm text
+metadata; host string marshalling preserves lone surrogates. Schema property
+names use JSON escaping inside UTF-8 metadata to preserve every code unit.
+
 Static data uses owned `Uint8Array` chunks (`src/static-data.js`). Producers write
 bytes directly; relocation adjusts those bytes, and only WAT escaping converts
 them to text. Never use `String.fromCharCode` as a binary serialization layer.
@@ -147,7 +153,7 @@ gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scat
 
 - **Don't contort compiler source for microbenchmarks.** Readability wins in `src/`; optimize compiler time and retained memory only from measured, general evidence. Output speed and size remain the primary product budgets.
 - **JZ source is JavaScript source.** Supported programs must parse and run as standard JavaScript. Parser acceptance of an ECMAScript early-error-invalid program is a bug/temporary hole, never a language extension or compatibility promise.
-- **A finite speed dialect, not an open-ended escape hatch.** Compiled output follows the machine semantics explicitly listed under [“What differs from JS?”](README.md#what-differs-from-js): i32/i64 wrapping, unchecked typed-array access, UTF-8 positions, and the other enumerated cases. Outside that list, preserve JavaScript answers, exceptions, evaluation order, and effects or reject. “A native compiler could do it” is not sufficient authority for a new divergence: update the public contract and add cross-tier exact tests before landing one. Never trade away a meaningful result's f64 accuracy (no mantissa trimming or arbitrary precision loss).
+- **A finite speed dialect, not an open-ended escape hatch.** Compiled output follows the machine semantics explicitly listed under [“What differs from JS?”](README.md#what-differs-from-js): i32/i64 wrapping, unchecked typed-array access, and the other enumerated cases. Outside that list, preserve JavaScript answers, exceptions, evaluation order, and effects or reject. “A native compiler could do it” is not sufficient authority for a new divergence: update the public contract and add cross-tier exact tests before landing one. Never trade away a meaningful result's f64 accuracy (no mantissa trimming or arbitrary precision loss).
 - **Minimal surface.** Every feature must justify its weight. If it can be a library, it should be.
 - **No external runtime and no GC.** Needed JZ runtime operations are linked into the module; unused operations are omitted.
 

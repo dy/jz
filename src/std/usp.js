@@ -6,8 +6,7 @@
  * application/x-www-form-urlencoded escaping on toString (space→'+', only
  * [A-Za-z0-9*-._] bare, UTF-8 bytes %XX'd). Divergences (documented):
  * keys()/values()/entries() return arrays (iterable with for-of, not live
- * iterators), sort() compares UTF-8 bytes (spec: UTF-16 units, differs only
- * past ASCII), and the object is not itself iterable: iterate `.entries()`.
+ * iterators), and the object is not itself iterable: iterate `.entries()`.
  *
  * @module std/usp
  */
@@ -24,28 +23,30 @@ export let __usp_lt = (a, b) => {
   return a.length < b.length
 }
 export let __usp_dec = (s) => {
-  let n = s.length
+  let bytes = new TextEncoder().encode(s)
+  let n = bytes.length
   let buf = new Uint8Array(n)
   let j = 0
   for (let i = 0; i < n; i++) {
-    let c = s.charCodeAt(i)
+    let c = bytes[i]
     if (c === 43) { buf[j] = 32; j = j + 1 }
     else if (c === 37 && i + 2 < n) {
-      let h = __usp_hex(s.charCodeAt(i + 1))
-      let l = __usp_hex(s.charCodeAt(i + 2))
+      let h = __usp_hex(bytes[i + 1])
+      let l = __usp_hex(bytes[i + 2])
       if (h >= 0 && l >= 0) { buf[j] = h * 16 + l; j = j + 1; i = i + 2 }
       else { buf[j] = c; j = j + 1 }
     } else { buf[j] = c; j = j + 1 }
   }
-  return new TextDecoder().decode(buf.slice(0, j))
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(buf.slice(0, j))
 }
 export let __usp_esc = (s) => {
   let out = ''
-  let n = s.length
+  let bytes = new TextEncoder().encode(s)
+  let n = bytes.length
   for (let i = 0; i < n; i++) {
-    let c = s.charCodeAt(i)
+    let c = bytes[i]
     if (c === 32) out = out + '+'
-    else if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 42 || c === 45 || c === 46 || c === 95) out = out + s[i]
+    else if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 42 || c === 45 || c === 46 || c === 95) out = out + String.fromCharCode(c)
     else {
       let h = c >> 4
       let l = c & 15

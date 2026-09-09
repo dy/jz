@@ -9,7 +9,7 @@
  *
  * Carriers:
  *   - `sso`         default. NaN-boxed STRING pointer (PTR.STRING=4) with
- *                   Small-String-Optimization for ≤4 ASCII chars packed inline
+ *                   Small-String-Optimization for ≤6 ASCII chars packed inline
  *                   in the aux+offset fields.
  *   - `jsstring`    architectural scaffold. Native JS strings via JS String
  *                   Builtins (`wasm:js-string` imports); externref slot. Empty
@@ -88,8 +88,15 @@ const allocLocalI32 = (ctx, tag) => {
 }
 
 
+// Heap views keep their unit length in aux; owned strings keep it at offset-4.
+const heapLength = (ptr, off) => ['if', ['result', 'i32'],
+  ['i64.ne', ['i64.and', ptr, ['i64.const', `0x${(BigInt(LAYOUT.SLICE_BIT) << 32n).toString(16)}`]], ['i64.const', 0]],
+  ['then', ['i32.and', ['i32.wrap_i64', ['i64.shr_u', ptr, ['i64.const', 32]]], ['i32.const', LAYOUT.SLICE_LEN_MASK]]],
+  ['else', ['if', ['result', 'i32'], ['i32.lt_u', off, ['i32.const', 4]],
+    ['then', ['i32.const', 0]], ['else', ['i32.load', ['i32.sub', off, ['i32.const', 4]]]]]]]
+
 /** Per-use cheap form of `charCodeAt` against a pre-decomposed param receiver
- *  (shape 1): a bounds check plus a 2-arm SSO/heap byte select reading the four
+ *  (shape 1): a bounds check plus a 2-arm SSO/heap unit select reading the four
  *  i32 decode locals in `dec`. The index is referenced three times, so a
  *  side-effecting `iI32` is spilled to a scratch local first — leaves are safe
  *  to duplicate. `oobNan` picks the OOB contract / result type exactly as in
@@ -101,9 +108,9 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
   const ssoByteExpr = ['i32.wrap_i64', ['i64.and',
     ['i64.shr_u', ['local.get', `$${dec.ptr64}`], ['i64.mul', ['i64.extend_i32_u', idx], ['i64.const', 7]]],
     ['i64.const', '0x7f']]]
-  const heapByteExpr = ['i32.load8_u', ['i32.add', ['local.get', `$${dec.loadbase}`], idx]]
+  const heapByteExpr = ['i32.load16_u', ['i32.add', ['local.get', `$${dec.loadbase}`], ['i32.shl', idx, ['i32.const', 1]]]]
   // Both arms are trap-free: the prologue routes an SSO receiver's speculative
-  // heap load to memory[0 + idx], and an in-bounds SSO idx is at most 6. Speed
+  // heap load to memory[0 + 2*idx], and an in-bounds SSO idx is at most 6. Speed
   // tier in a compact graph uses a select that unswitchStringRepLoop can fold
   // out of the loop. Other tiers/large graphs keep the predictable branch —
   // evaluating both arms without the unswitch regresses the self-compile parser.
@@ -131,7 +138,7 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
  *  shape of `charCodeAt`. Decodes the f64 NaN-box once per call into three i32
  *  scratch locals (`base`, `len`, `sso`) recorded in `dec`. Per-iter
  *  `charCodeAt` then collapses to a length compare + 2-arm select; the load
- *  from `(base + i)` stays memory-safe when SSO because the inner select
+ *  from `(base + 2*i)` stays memory-safe when SSO because the inner select
  *  reroutes the address to 0 (always-valid memory[0]).
  *
  *  Returns an array of IR statements suitable for splicing between the boxed-
@@ -155,10 +162,7 @@ export function emitCharDecompPrologue(dec) {
   const ssoLen = ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ptr, ['i64.const', 42]], ['i64.const', 7]]]
   // Heap length is `i32.load(off - 4)`; guard against off<4 (corrupt/non-string
   // payload) so the load doesn't trap on a wrapped-negative address.
-  const heapLen = ['if', ['result', 'i32'],
-    ['i32.lt_u', off, ['i32.const', 4]],
-    ['then', ['i32.const', 0]],
-    ['else', ['i32.load', ['i32.sub', off, ['i32.const', 4]]]]]
+  const heapLen = heapLength(ptr, off)
   return [
     ['if',
       ssoTest,
@@ -205,11 +209,11 @@ export const sso = {
   slotTypes: ['f64'],
 
   ops: {
-    /** Byte length. Receiver: f64 slot carrier. Returns i32 — caller widens
+    /** Code-unit length. Receiver: f64 slot carrier. Returns i32 — caller widens
      *  to f64 if it needs JS-spec `.length` semantics. */
-    byteLen: (sF64, ctx) => {
-      ctx.core.includes.add('__str_byteLen')
-      return ['call', '$__str_byteLen', ssoI64(sF64)]
+    length: (sF64, ctx) => {
+      ctx.core.includes.add('__str_length')
+      return ['call', '$__str_length', ssoI64(sF64)]
     },
 
     /** Char code at index i. Receiver: f64 slot carrier; index: i32. The
@@ -225,16 +229,16 @@ export const sso = {
      *     extraction, and heap-length load to a function-entry prologue. The
      *     prologue writes three i32 locals — `$<p>$ccbase`, `$<p>$cclen`,
      *     `$<p>$ccsso` — once per call. Every `charCodeAt` in the body collapses
-     *     to a length compare + a 2-arm select between the two byte
-     *     formulations: `(off >> (i*8)) & 0xFF` for the SSO 4-byte packed form
-     *     and `i32.load8_u (base + i)` for the heap form. Memory safety of the
+     *     to a length compare + a 2-arm select between the two unit
+     *     formulations: `(payload >> (i*7)) & 0x7F` for the SSO packed form
+     *     and `i32.load16_u (base + 2*i)` for the heap form. Memory safety of the
      *     load when the string is actually SSO is preserved by feeding the load
-     *     address through `select(0, base+i, sso)` — for SSO strings the load
-     *     reads byte 0 of linear memory (always valid in wasm), and the outer
+     *     address through `select(0, base+2*i, sso)` — for SSO strings the load
+     *     reads unit 0 of linear memory (always valid in wasm), and the outer
      *     select discards the garbage. Tokenizer-shape loops go from ~13
      *     instructions per char (5 of them loop-invariant but un-LICM'd by V8
      *     because of the surrounding `if/else`) to 4: `local.get`, `i32.ge_u`,
-     *     `i32.add`, `i32.load8_u`. Closes the AS gap on the tokenizer pin.
+     *     `i32.add`, `i32.load16_u`. Closes the AS gap on the tokenizer pin.
      *
      *  2. **Generic inline fallback** — when the receiver is some other
      *     expression (member access, call result, ternary on f64 strings, etc.)
@@ -288,9 +292,9 @@ export const sso = {
             const base = `${name}$ccbase`
             const len = `${name}$cclen`
             const sso = `${name}$ccsso`
-            // `loadbase` is the address used for the per-iter `load8_u`: equal
+            // `loadbase` is the address used for the per-iter `load16_u`: equal
             // to `base` when heap (real string data) and 0 when SSO (memory[0]
-            // is always valid; the loaded byte is garbage but the outer select
+            // is always valid; the loaded unit is ignored but the outer select
             // discards it). Pre-computing it in the prologue removes a
             // per-iter `select` and lets V8 fold the add into the load.
             const loadbase = `${name}$ccldb`
@@ -385,8 +389,8 @@ export const sso = {
         ['i32.ge_u', getIdx(), ssoLen],
         ['then', mkOob()],
         ['else', widen(ssoByte)]]
-      const heapLen = ['i32.load', ['i32.sub', offExpr(), ['i32.const', 4]]]
-      const heapByte = ['i32.load8_u', ['i32.add', offExpr(), getIdx()]]
+      const heapLen = heapLength(getPtr(), offExpr())
+      const heapByte = ['i32.load16_u', ['i32.add', offExpr(), ['i32.shl', getIdx(), ['i32.const', 1]]]]
       const heapBranch = ['if', ['result', rt],
         ['i32.lt_u', offExpr(), ['i32.const', 4]],
         ['then', mkOob()],
@@ -433,7 +437,7 @@ export const sso = {
           ['else', ['call', '$__str_eq', ['local.get', `$${ta}`], ['local.get', `$${tb}`]]]]]
     },
 
-    /** Three-way byte compare. Both args: f64 slot carriers. Returns i32 ∈ {-1, 0, 1}. */
+    /** Three-way code-unit compare. Both args: f64 slot carriers. Returns i32 ∈ {-1, 0, 1}. */
     cmp: (aF64, bF64, ctx) => {
       ctx.core.includes.add('__str_cmp')
       return ['call', '$__str_cmp', ssoI64(aF64), ssoI64(bF64)]
@@ -535,7 +539,7 @@ export const sso = {
 //      each known string. Or build at runtime with `fromCharCodeArray`.
 //
 //   6. **Mutating fast paths.** Heap-string optimizations like
-//      `__str_append_byte` (mutate in place when lhs is heap-top) don't
+//      `__str_append_unit` (mutate in place when lhs is heap-top) don't
 //      translate — engine strings are immutable. These paths must gate off
 //      under jsstring (`if (slotTypes[0] === 'f64') …`) or be removed from
 //      the carrier's surface entirely.
@@ -574,9 +578,9 @@ export const jsstring = {
   // Each op registers its builtin import via `ctx.core.jsstring.add(name)`;
   // `compile.js` drains the set into `(import "wasm:js-string" …)` nodes.
   ops: {
-    /** Byte length. Receiver: externref. Returns i32 — caller widens to f64
+    /** Code-unit length. Receiver: externref. Returns i32 — caller widens to f64
      *  if it needs JS-spec `.length` (a number for the JS-visible export). */
-    byteLen: (sExt, ctx) => {
+    length: (sExt, ctx) => {
       ctx.core.jsstring.add('length')
       return ['call', '$__jss_length', sExt]
     },

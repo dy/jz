@@ -28,10 +28,9 @@ import { wasi, attachTimers } from './wasi.js'
 import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX } from './layout.js'
 import { ERR_INFO } from './err-codes.js'
 
-// Stateless + reusable — one instance avoids a per-call allocation on the hot
-// string read/write paths (mem.String / mem.read STRING).
+// UTF-8 codecs for Wasm metadata. String values use lossless UTF-16 marshalling.
 const TEXT_ENC = new TextEncoder()
-const TEXT_DEC = new TextDecoder()
+const TEXT_DEC = new TextDecoder('utf-8', { ignoreBOM: true })
 
 // ── WASI linking ────────────────────────────────────────────────────────────
 
@@ -94,7 +93,7 @@ const customSection = (mod, name) => {
 }
 
 const sectionReader = (bytes) => {
-  const td = new TextDecoder()
+  const td = TEXT_DEC
   let i = 0
   return {
     pos: () => i,
@@ -322,8 +321,8 @@ export const memory = (src) => {
 
   // Read schemas from module custom section, merge into memory.schemas. Schema
   // entries are { type, payload } where type=0 means null (computed/missing
-  // key), type=1 means nested [null, name] (synthetic shape), else a UTF-8
-  // length-prefixed property name. Section format is varint-prefixed list,
+  // key), type=1 means nested [null, name] (synthetic shape), type=3 is a
+  // UTF-8 JSON-escaped property name (without outer quotes); type=2 is legacy text. Section format is varint-prefixed list,
   // POSITIONAL (entry index === compile-time schema id — compile/index.js's
   // jz:schema writer comment).
   //
@@ -357,7 +356,8 @@ export const memory = (src) => {
       const t = r.u8()
       if (t === 0) return null
       if (t === 1) return [null, dec()]
-      return r.str(r.varint())
+      const name = r.str(r.varint())
+      return t === 3 ? JSON.parse('"' + name + '"') : name
     }
     const nS = r.varint(), newSchemas = []
     for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
@@ -405,11 +405,10 @@ export const memory = (src) => {
       p |= BigInt(str.length) << 42n
       return ptr(4, Number(p >> 32n) | LAYOUT.SSO_BIT, Number(p & 0xFFFFFFFFn))  // STRING + SSO_BIT
     }
-    const enc = TEXT_ENC.encode(str)
-    const n = enc.length, raw = alloc(4 + n), m = dv()
+    const n = str.length, raw = alloc(4 + n * 2), m = dv()
     m.setInt32(raw, n, true)
     const off = raw + 4
-    enc.forEach((b, i) => m.setUint8(off + i, b))
+    for (let i = 0; i < n; i++) m.setUint16(off + i * 2, str.charCodeAt(i), true)
     return ptr(4, 0, off)
   }
 
@@ -484,7 +483,7 @@ export const memory = (src) => {
   // natively with stable identity. The External reflection path decodes/re-marshals
   // per access, so nested container mutation (`params.P[i][j] = …`) lands on
   // marshaling copies and silently vanishes — a params-bag must be a real hash.
-  // Hash twins of module/collection.js (clampHash / ssoMix / byteFnv) — MUST agree
+  // Hash twins of module/collection.js (clampHash / ssoMix / unitFnv) — MUST agree
   // with __str_hash or wasm probes start at the wrong home slot and miss.
   const clampHash = (h) => (h <= 1 ? (h + 2) | 0 : h)
   const jzStrHash = (box) => {
@@ -500,7 +499,7 @@ export const memory = (src) => {
     const off = Number(b & 0xFFFFFFFFn), m = dv()
     const len = m.getInt32(off - 4, true)
     let h = 0x811c9dc5 | 0
-    for (let i = 0; i < len; i++) h = Math.imul(h ^ m.getUint8(off + i), 0x01000193) | 0
+    for (let i = 0; i < len; i++) h = Math.imul(h ^ m.getUint16(off + i * 2, true), 0x01000193) | 0
     return clampHash(h) >>> 0
   }
   mem.Hash = function(obj) {
@@ -610,8 +609,14 @@ export const memory = (src) => {
     }
     if (t === 4) {  // STRING (aux SSO_BIT = inline, else heap)
       if (a & LAYOUT.SSO_BIT) return decodeSSO(p)
-      const len = m.getInt32(off - 4, true)
-      return TEXT_DEC.decode(new Uint8Array(mem.buffer, off, len))
+      const len = a & LAYOUT.SLICE_BIT ? a & LAYOUT.SLICE_LEN_MASK : m.getUint32(off - 4, true)
+      const chunks = []
+      for (let i = 0; i < len; i += 4096) {
+        const n = Math.min(4096, len - i), units = new Array(n)
+        for (let j = 0; j < n; j++) units[j] = m.getUint16(off + (i + j) * 2, true)
+        chunks.push(String.fromCharCode(...units))
+      }
+      return chunks.join('')
     }
     // A boxed BigInt's 8-byte payload is the raw two's-complement i64.
     if (t === 5) return m.getBigInt64(off, true)  // BIGINT
@@ -748,7 +753,7 @@ export const wrap = (memSrc, inst, state) => {
   const restFuncs = new Map()
   const mod = inst ? memSrc : memSrc.module || memSrc
   const realInst = inst || memSrc.instance || memSrc
-  const td = new TextDecoder()
+  const td = TEXT_DEC
   const restBytes = customSection(mod, 'jz:rest')
   if (restBytes) {
     try {

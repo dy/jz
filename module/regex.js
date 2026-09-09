@@ -14,6 +14,17 @@ import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal, registerResetHo
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 
+const fullUnicode = flags => flags.includes('u') || flags.includes('v')
+const nextIndex = (str, index, unicode) => {
+  if (unicode) inc('__codepoint_at')
+  return ['i32.add', index, unicode
+    ? ['select', ['i32.const', 2], ['i32.const', 1], ['f64.gt', ['call', '$__codepoint_at', str, index], ['f64.const', 65535]]]
+    : ['i32.const', 1]]
+}
+const nextIndexWat = (index, unicode) => `(i32.add ${index} ${unicode
+  ? `(select (i32.const 2) (i32.const 1) (f64.gt (call $__codepoint_at (local.get $str) ${index}) (f64.const 65535)))`
+  : '(i32.const 1)'})`
+
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
 // strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
 // Captures read from globals $__re_g${i}_start / _end. -1 → undefined.
@@ -87,7 +98,7 @@ const PIPE = 124, STAR = 42, PLUS = 43, QUEST = 63, DOT = 46,
   LBRACE = 123, RBRACE = 125, CARET = 94, DOLLAR = 36,
   BSLASH = 92, DASH = 45, COLON = 58, EQUAL = 61, EXCL = 33, LT = 60, GT = 62
 
-let src, idx, groupNum, groupNames
+let src, idx, groupNum, groupNames, unicode
 
 // Reset choreography: parseRegex() already resets this state at its own entry
 // (below) — required intra-compile, since one program can contain many regex
@@ -96,7 +107,7 @@ let src, idx, groupNum, groupNames
 // session-boundary reset costs nothing and means a stale parse left mid-pattern
 // by a thrown SyntaxError in a PRIOR compile can never be read by code that
 // inspects this state before the next parseRegex() call runs.
-const resetRegexParseState = () => { src = undefined; idx = 0; groupNum = 0; groupNames = [] }
+const resetRegexParseState = () => { src = undefined; idx = 0; groupNum = 0; groupNames = []; unicode = false }
 registerResetHook(resetRegexParseState)
 
 const cur = () => src.charCodeAt(idx),
@@ -105,9 +116,14 @@ const cur = () => src.charCodeAt(idx),
   eof = () => idx >= src.length,
   perr = msg => { throw SyntaxError(`Regex: ${msg} at ${idx}`) }
 
+const readChar = () => {
+  const n = unicode && src.codePointAt(idx) > 65535 ? 2 : 1
+  const text = src.slice(idx, idx + n); idx += n; return text
+}
+
 /** Parse regex pattern → AST */
 export const parseRegex = (pattern, flags = '') => {
-  src = pattern; idx = 0; groupNum = 0; groupNames = []
+  src = pattern; idx = 0; groupNum = 0; groupNames = []; unicode = flags.includes('u') || flags.includes('v')
   let ast = parseAlt()
   if (!eof()) perr('Unexpected ' + peek())
   if (typeof ast === 'string') ast = ['seq', ast]
@@ -193,7 +209,7 @@ const parseAtom = () => {
   if (c === LBRACK) return parseClass()
   if (c === LPAREN) return parseGroup()
   if (c === BSLASH) return parseEscape()
-  return skip()
+  return readChar()
 }
 
 const parseClass = () => {
@@ -216,7 +232,7 @@ const parseClassChar = () => {
     if (c === 'p' || c === 'P') perr('Unicode property escape \\p{…}/\\P{…} not supported (no Unicode property tables shipped) — use an explicit character class instead')
     return parseEscapeChar()
   }
-  return skip()
+  return readChar()
 }
 
 const parseEscape = () => {
@@ -242,7 +258,22 @@ const parseEscapeChar = () => {
   if (c === 't') return '\t'
   if (c === '0') return '\0'
   if (c === 'x') { const h = src.slice(idx, idx + 2); idx += 2; return String.fromCharCode(parseInt(h, 16)) }
-  if (c === 'u') { const h = src.slice(idx, idx + 4); idx += 4; return String.fromCharCode(parseInt(h, 16)) }
+  if (c === 'u') {
+    if (unicode && cur() === LBRACE) {
+      skip(); const start = idx
+      while (!eof() && cur() !== RBRACE) skip()
+      const cp = parseInt(src.slice(start,idx),16)
+      if (cur() !== RBRACE || !(cp >= 0 && cp <= 0x10FFFF)) perr('Invalid Unicode escape')
+      skip(); return String.fromCodePoint(cp)
+    }
+    const h = src.slice(idx, idx + 4); idx += 4
+    const unit = parseInt(h,16)
+    if (unicode && unit >= 0xD800 && unit <= 0xDBFF && src.slice(idx,idx+2) === '\\u') {
+      const low = parseInt(src.slice(idx+2,idx+6),16)
+      if (low >= 0xDC00 && low <= 0xDFFF) { idx += 6; return String.fromCharCode(unit,low) }
+    }
+    return String.fromCharCode(unit)
+  }
   return c
 }
 
@@ -307,12 +338,24 @@ const parseGroupName = () => {
 const CHAR_CLASS_WAT = {
   d: '(i32.and (i32.ge_u (local.get $char) (i32.const 48)) (i32.le_u (local.get $char) (i32.const 57)))',
   w: '(i32.or (i32.or (i32.and (i32.ge_u (local.get $char) (i32.const 97)) (i32.le_u (local.get $char) (i32.const 122))) (i32.and (i32.ge_u (local.get $char) (i32.const 65)) (i32.le_u (local.get $char) (i32.const 90)))) (i32.or (i32.and (i32.ge_u (local.get $char) (i32.const 48)) (i32.le_u (local.get $char) (i32.const 57))) (i32.eq (local.get $char) (i32.const 95))))',
-  // SP(32) TAB(9) LF(10) CR(13) VT(11) FF(12); NBSP/Unicode-Zs are multibyte under UTF-8 — out of scope
-  s: '(i32.or (i32.or (i32.or (i32.eq (local.get $char) (i32.const 32)) (i32.eq (local.get $char) (i32.const 9))) (i32.or (i32.eq (local.get $char) (i32.const 10)) (i32.eq (local.get $char) (i32.const 13)))) (i32.or (i32.eq (local.get $char) (i32.const 11)) (i32.eq (local.get $char) (i32.const 12))))'
+  s: '(call $__strws (local.get $char))'
 }
 
 // 8-bit char load at $str + $pos
-const LOAD_CHAR = '(local.set $char (i32.load8_u (i32.add (local.get $str) (local.get $pos))))'
+const LOAD_CHAR = '(local.set $char (i32.load16_u (i32.add (local.get $str) (i32.shl (local.get $pos) (i32.const 1)))))'
+
+const loadChar = c => LOAD_CHAR + (c.unicode ? `
+    (local.set $width (i32.const 1))
+    (if (i32.and (i32.lt_u (i32.sub (local.get $char) (i32.const 0xD800)) (i32.const 1024))
+          (i32.lt_u (i32.add (local.get $pos) (i32.const 1)) (local.get $len)))
+      (then
+        (local.set $low (i32.load16_u offset=2 (i32.add (local.get $str) (i32.shl (local.get $pos) (i32.const 1)))))
+        (if (i32.lt_u (i32.sub (local.get $low) (i32.const 0xDC00)) (i32.const 1024))
+          (then (local.set $width (i32.const 2))
+            (local.set $char (i32.add (i32.const 65536) (i32.add
+              (i32.shl (i32.sub (local.get $char) (i32.const 0xD800)) (i32.const 10))
+              (i32.sub (local.get $low) (i32.const 0xDC00)))))))))` : '')
+const advanceChar = c => `(local.set $pos (i32.add (local.get $pos) ${c.unicode ? '(local.get $width)' : '(i32.const 1)'}))`
 
 /**
  * Compile regex AST → WAT matching function.
@@ -324,10 +367,10 @@ export const compileRegex = (ast, name = 'regex_match') => {
   const flags = ast.flags || ''
   const ignoreCase = flags.includes('i'), dotAll = flags.includes('s')
 
-  const locals = ['$pos i32', '$save i32', '$char i32', '$match i32']
+  const locals = ['$pos i32', '$save i32', '$char i32', '$match i32', '$width i32', '$low i32']
   for (let i = 1; i <= groups; i++) locals.push(`$g${i}_start i32`, `$g${i}_end i32`)
 
-  const rctx = { ignoreCase, dotAll, groups, labelId: 0, code: [], failLabel: null }
+  const rctx = { ignoreCase, dotAll, unicode: flags.includes('u') || flags.includes('v'), groups, labelId: 0, code: [], failLabel: null }
   rctx.code.push('(local.set $pos (local.get $start))')
   // Init capture locals to -1 (unmatched / undefined)
   for (let i = 1; i <= groups; i++) {
@@ -414,7 +457,16 @@ const compileGreedyBacktrack = (quant, rest, c) => {
   c.code.push(`(br ${btEnd})`)
   c.code.push(')') // end btFail block
   // Rest failed — restore pos and give back one match (backtrack by pattern width)
-  c.code.push(`(local.set $pos (i32.sub (local.get ${btSave}) (i32.const ${patternMinLen(node)})))`)
+  if (c.unicode) {
+    c.code.push(`(local.set $pos (local.get ${btSave}))`)
+    for (let i = 0; i < patternMinLen(node); i++) c.code.push(`
+      (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+      (if (i32.gt_s (local.get $pos) (i32.const 0)) (then
+        (if (i32.and
+              (i32.eq (i32.and (i32.load16_u (i32.add (local.get $str) (i32.shl (local.get $pos) (i32.const 1)))) (i32.const 0xFC00)) (i32.const 0xDC00))
+              (i32.eq (i32.and (i32.load16_u (i32.add (local.get $str) (i32.shl (i32.sub (local.get $pos) (i32.const 1)) (i32.const 1)))) (i32.const 0xFC00)) (i32.const 0xD800)))
+          (then (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))))))`)
+  } else c.code.push(`(local.set $pos (i32.sub (local.get ${btSave}) (i32.const ${patternMinLen(node)})))`)
   c.code.push(`(br ${btLoop})`)
   c.code.push(')') // end loop
   c.code.push(')') // end block
@@ -531,9 +583,9 @@ const emitFail = c => {
 }
 
 const compileLiteral = (ch, c) => {
-  const code = ch.charCodeAt(0)
+  const code = c.unicode ? ch.codePointAt(0) : ch.charCodeAt(0)
   c.code.push('(if (i32.ge_u (local.get $pos) (local.get $len))'); emitFail(c); c.code.push(')')
-  c.code.push(LOAD_CHAR)
+  c.code.push(loadChar(c))
   if (c.ignoreCase && ((code >= 65 && code <= 90) || (code >= 97 && code <= 122))) {
     const lo = code | 32, hi = lo - 32
     c.code.push(`(if (i32.and (i32.ne (local.get $char) (i32.const ${lo})) (i32.ne (local.get $char) (i32.const ${hi})))`)
@@ -541,7 +593,7 @@ const compileLiteral = (ch, c) => {
     c.code.push(`(if (i32.ne (local.get $char) (i32.const ${code}))`)
   }
   emitFail(c); c.code.push(')')
-  c.code.push('(local.set $pos (i32.add (local.get $pos) (i32.const 1)))')
+  c.code.push(advanceChar(c))
 }
 
 /** Capture group ids contained in a subpattern. Quantifier/alternation attempts
@@ -640,7 +692,7 @@ const compileRepeatN = (node, min, max, greedy, c) => {
 
 const compileClassItem = (item, c) => {
   if (typeof item === 'string') {
-    const code = item.charCodeAt(0)
+    const code = c.unicode ? item.codePointAt(0) : item.charCodeAt(0)
     if (c.ignoreCase && ((code >= 65 && code <= 90) || (code >= 97 && code <= 122))) {
       const lo = code | 32, hi = lo - 32
       return `(i32.or (i32.eq (local.get $char) (i32.const ${lo})) (i32.eq (local.get $char) (i32.const ${hi})))`
@@ -649,7 +701,7 @@ const compileClassItem = (item, c) => {
   }
   if (Array.isArray(item)) {
     if (item[0] === '-') {
-      const lo = item[1].charCodeAt(0), hi = item[2].charCodeAt(0)
+      const lo = (c.unicode ? item[1].codePointAt(0) : item[1].charCodeAt(0)), hi = (c.unicode ? item[2].codePointAt(0) : item[2].charCodeAt(0))
       if (c.ignoreCase && lo >= 65 && hi <= 122) {
         const loL = lo | 32, loU = lo & ~32, hiL = hi | 32, hiU = hi & ~32
         return `(i32.or (i32.and (i32.ge_u (local.get $char) (i32.const ${loL})) (i32.le_u (local.get $char) (i32.const ${hiL}))) (i32.and (i32.ge_u (local.get $char) (i32.const ${loU})) (i32.le_u (local.get $char) (i32.const ${hiU}))))`
@@ -665,30 +717,30 @@ const compileClassItem = (item, c) => {
 
 const compileClassN = (items, negated, c) => {
   c.code.push('(if (i32.ge_u (local.get $pos) (local.get $len))'); emitFail(c); c.code.push(')')
-  c.code.push(LOAD_CHAR)
+  c.code.push(loadChar(c))
   const tests = items.map(i => compileClassItem(i, c)).filter(Boolean)
   const condition = tests.length === 1 ? tests[0] : tests.reduce((a, b) => `(i32.or ${a} ${b})`)
   const check = negated ? `(i32.eqz ${condition})` : condition
   c.code.push(`(if (i32.eqz ${check})`); emitFail(c); c.code.push(')')
-  c.code.push('(local.set $pos (i32.add (local.get $pos) (i32.const 1)))')
+  c.code.push(advanceChar(c))
 }
 
 const compileCharClassN = (cls, negated, c) => {
   c.code.push('(if (i32.ge_u (local.get $pos) (local.get $len))'); emitFail(c); c.code.push(')')
-  c.code.push(LOAD_CHAR)
+  c.code.push(loadChar(c))
   const condition = CHAR_CLASS_WAT[cls]
   const check = negated ? condition : `(i32.eqz ${condition})`
   c.code.push(`(if ${check}`); emitFail(c); c.code.push(')')
-  c.code.push('(local.set $pos (i32.add (local.get $pos) (i32.const 1)))')
+  c.code.push(advanceChar(c))
 }
 
 const compileDot = c => {
   c.code.push('(if (i32.ge_u (local.get $pos) (local.get $len))'); emitFail(c); c.code.push(')')
+  if (c.unicode || !c.dotAll) c.code.push(loadChar(c))
   if (!c.dotAll) {
-    c.code.push(LOAD_CHAR)
-    c.code.push('(if (i32.eq (local.get $char) (i32.const 10))'); emitFail(c); c.code.push(')')
+    c.code.push('(if (i32.or (i32.or (i32.eq (local.get $char) (i32.const 10)) (i32.eq (local.get $char) (i32.const 13))) (i32.or (i32.eq (local.get $char) (i32.const 8232)) (i32.eq (local.get $char) (i32.const 8233))))'); emitFail(c); c.code.push(')')
   }
-  c.code.push('(local.set $pos (i32.add (local.get $pos) (i32.const 1)))')
+  c.code.push(advanceChar(c))
 }
 
 const compileAnchorStart = c => {
@@ -745,7 +797,7 @@ const compileWordBoundary = (negated, c) => {
   c.code.push('(local.set $match (i32.const 0))')
   c.code.push('(if (i32.gt_u (local.get $pos) (i32.const 0))')
   c.code.push('(then')
-  c.code.push('(local.set $char (i32.load8_u (i32.add (local.get $str) (i32.sub (local.get $pos) (i32.const 1)))))')
+  c.code.push('(local.set $char (i32.load16_u (i32.add (local.get $str) (i32.shl (i32.sub (local.get $pos) (i32.const 1)) (i32.const 1)))))')
   c.code.push(`(local.set $match ${isWord})`)
   c.code.push('))')
   c.code.push('(local.set $save (local.get $match))')
@@ -770,8 +822,8 @@ const compileBackref = (n, c) => {
   c.code.push(`(block ${endL}`); c.code.push(`(loop ${loopL}`)
   c.code.push(`(br_if ${endL} (i32.ge_u (local.get ${iL}) (local.get ${eL})))`)
   c.code.push('(if (i32.ge_u (local.get $pos) (local.get $len))'); emitFail(c); c.code.push(')')
-  c.code.push(`(local.set $char (i32.load8_u (i32.add (local.get $str) (local.get ${iL}))))`)
-  c.code.push(`(local.set $save (i32.load8_u (i32.add (local.get $str) (local.get $pos))))`)
+  c.code.push(`(local.set $char (i32.load16_u (i32.add (local.get $str) (i32.shl (local.get ${iL}) (i32.const 1)))))`)
+  c.code.push(`(local.set $save (i32.load16_u (i32.add (local.get $str) (i32.shl (local.get $pos) (i32.const 1)))))`)
   if (c.ignoreCase) {
     c.code.push('(if (i32.and (i32.ne (i32.or (local.get $char) (i32.const 32)) (i32.or (local.get $save) (i32.const 32))) (i32.or (i32.lt_u (local.get $char) (i32.const 65)) (i32.gt_u (local.get $char) (i32.const 122))))')
   } else {
@@ -807,12 +859,12 @@ const patternMinLen = node => {
 
 export default (ctx) => {
   deps({
-    __str_to_buf: ['__str_byteLen', '__char_at'],
-    __regexp_escape: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
+    __str_to_buf: ['__str_length', '__char_at'],
+    __regexp_escape: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
   })
 
   // RegExp.escape (ES2025) — escape a string for literal use inside a pattern.
-  // Spec sets, as jz UTF-8 byte tests (non-ASCII bytes are never regex-special
+  // Spec character sets.
   // and pass through; the spec's astral/whitespace \u-escapes don't arise in a
   // byte-wise engine): SyntaxCharacter+`/` get a backslash; t/n/v/f/r their
   // control escape; other punctuators + space `\xHH` (lowercase); an ASCII
@@ -822,26 +874,24 @@ export default (ctx) => {
   const eqAny = (codes) => or(codes.map(n => `(i32.eq (local.get $c) (i32.const ${n}))`))
   const SYNTAX = [94, 36, 92, 46, 42, 43, 63, 40, 41, 91, 93, 123, 125, 124, 47]  // ^$\.*+?()[]{}| /
   const CTRL = [[9, 116], [10, 110], [11, 118], [12, 102], [13, 114]]              // \t \n \v \f \r
-  const HEXED = [44, 45, 61, 60, 62, 35, 38, 33, 37, 58, 59, 64, 126, 39, 96, 34, 32]  // ,-=<>#&!%:;@~'`" SP
+  const HEXED = [44, 45, 61, 60, 62, 35, 38, 33, 37, 58, 59, 64, 126, 39, 96, 34, 32, 160]  // ,-=<>#&!%:;@~'`" SP
   const alnum = `(i32.or (i32.or
       (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
       (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 122))))
       (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57))))`
   // \xHH writer (lowercase hex): "\\x" + hi + lo
   const hexOut = `
-        (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 92))
-        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1))) (i32.const 120))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 92))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 1)) (i32.const 1))) (i32.const 120))
         (local.set $hi (i32.shr_u (local.get $c) (i32.const 4)))
         (local.set $lo (i32.and (local.get $c) (i32.const 15)))
-        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 2)))
-          (i32.add (local.get $hi) (select (i32.const 87) (i32.const 48) (i32.gt_u (local.get $hi) (i32.const 9)))))
-        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 3)))
-          (i32.add (local.get $lo) (select (i32.const 87) (i32.const 48) (i32.gt_u (local.get $lo) (i32.const 9)))))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 2)) (i32.const 1))) (i32.add (local.get $hi) (select (i32.const 87) (i32.const 48) (i32.gt_u (local.get $hi) (i32.const 9)))))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 3)) (i32.const 1))) (i32.add (local.get $lo) (select (i32.const 87) (i32.const 48) (i32.gt_u (local.get $lo) (i32.const 9)))))
         (local.set $j (i32.add (local.get $j) (i32.const 4)))`
   const ctrlArms = CTRL.map(([code, esc]) => `
     (if (i32.eq (local.get $c) (i32.const ${code})) (then
-        (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 92))
-        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1))) (i32.const ${esc}))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 92))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 1)) (i32.const 1))) (i32.const ${esc}))
         (local.set $j (i32.add (local.get $j) (i32.const 2)))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $loop)))`).join('')
@@ -849,10 +899,10 @@ export default (ctx) => {
   (local $str i64) (local $slen i32) (local $base i32) (local $out i32)
   (local $i i32) (local $j i32) (local $c i32) (local $hi i32) (local $lo i32)
   (local.set $str (call $__to_str (local.get $val)))
-  (local.set $slen (call $__str_byteLen (local.get $str)))
+  (local.set $slen (call $__str_length (local.get $str)))
   (if (i32.eqz (local.get $slen))
     (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-  (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.mul (local.get $slen) (i32.const 4)))))
+  (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.mul (local.get $slen) (i32.const 12)))))
   (local.set $out (i32.add (local.get $base) (i32.const 4)))
   (block $done (loop $loop
     (br_if $done (i32.ge_u (local.get $i) (local.get $slen)))
@@ -864,8 +914,8 @@ export default (ctx) => {
         (br $loop)))
     ;; syntax chars + '/' → backslash-prefixed
     (if ${eqAny(SYNTAX)} (then
-        (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 92))
-        (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1))) (local.get $c))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 92))
+        (i32.store16 (i32.add (local.get $out) (i32.shl (i32.add (local.get $j) (i32.const 1)) (i32.const 1))) (local.get $c))
         (local.set $j (i32.add (local.get $j) (i32.const 2)))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $loop)))
@@ -875,8 +925,30 @@ export default (ctx) => {
         ${hexOut}
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $loop)))
+    ;; Unicode whitespace and isolated surrogates require \\uXXXX escapes.
+    (if (i32.eq (i32.and (local.get $c) (i32.const 0xFC00)) (i32.const 0xD800))
+      (then
+        (if (i32.and (i32.lt_u (i32.add (local.get $i) (i32.const 1)) (local.get $slen))
+              (i32.eq (i32.and (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 0xFC00)) (i32.const 0xDC00)))
+          (then
+            (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (local.get $c))
+            (i32.store16 offset=2 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1)))
+              (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))))
+            (local.set $i (i32.add (local.get $i) (i32.const 2)))
+            (local.set $j (i32.add (local.get $j) (i32.const 2))) (br $loop)))))
+    (if (i32.or (i32.eq (i32.and (local.get $c) (i32.const 0xF800)) (i32.const 0xD800))
+          (i32.or (i32.lt_u (i32.sub (local.get $c) (i32.const 0x2000)) (i32.const 11))
+            ${eqAny([0xA0,0x1680,0x2028,0x2029,0x202F,0x205F,0x3000,0xFEFF])}))
+      (then
+        (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 92))
+        (i32.store16 offset=2 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (i32.const 117))
+        ${[12,8,4,0].map((shift,k) => `(local.set $lo (i32.and (i32.shr_u (local.get $c) (i32.const ${shift})) (i32.const 15)))
+        (i32.store16 offset=${4+k*2} (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1)))
+          (i32.add (local.get $lo) (select (i32.const 87) (i32.const 48) (i32.gt_u (local.get $lo) (i32.const 9)))))`).join('\n')}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (local.set $j (i32.add (local.get $j) (i32.const 6))) (br $loop)))
     ;; passthrough
-    (i32.store8 (i32.add (local.get $out) (local.get $j)) (local.get $c))
+    (i32.store16 (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 1))) (local.get $c))
     (local.set $j (i32.add (local.get $j) (i32.const 1)))
     (local.set $i (i32.add (local.get $i) (i32.const 1)))
     (br $loop)))
@@ -900,13 +972,12 @@ export default (ctx) => {
       (then (return (call $__ptr_offset (local.get $ptr)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (local.set $len (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))
-    (local.set $buf (call $__alloc (local.get $len)))
+    (local.set $buf (call $__alloc (i32.shl (local.get $len) (i32.const 1))))
     (local.set $i (i32.const 0))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
       ;; 7-bit ASCII SSO: char i at payload bit i*7 (read from the full i64 ptr; chars 4-5 span aux).
-      (i32.store8 (i32.add (local.get $buf) (local.get $i))
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7))) (i64.const 0x7f))))
+      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1))) (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7))) (i64.const 0x7f))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))
     (local.get $buf))`
@@ -938,7 +1009,7 @@ export default (ctx) => {
       ? `(func $${searchName} (param $str i64) (result i32 i32)
       (local $off i32) (local $len i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
-      (local.set $len (call $__str_byteLen (local.get $str)))
+      (local.set $len (call $__str_length (local.get $str)))
       (local.set $result (call $${funcName} (local.get $off) (local.get $len) (i32.const 0)))
       (if (i32.ge_s (local.get $result) (i32.const 0))
         (then (return (i32.const 0) (local.get $result))))
@@ -946,14 +1017,16 @@ export default (ctx) => {
       : `(func $${searchName} (param $str i64) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
-      (local.set $len (call $__str_byteLen (local.get $str)))
+      (local.set $len (call $__str_length (local.get $str)))
       (local.set $pos (i32.const 0))
       (block $done (loop $next
         (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
         (local.set $result (call $${funcName} (local.get $off) (local.get $len) (local.get $pos)))
         (if (i32.ge_s (local.get $result) (i32.const 0))
           (then (return (local.get $pos) (local.get $result))))
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (local.set $pos (i32.add (local.get $pos) ${flags?.includes('u') || flags?.includes('v')
+          ? '(select (i32.const 2) (i32.const 1) (f64.gt (call $__codepoint_at (local.get $str) (local.get $pos)) (f64.const 65535)))'
+          : '(i32.const 1)'}))
         (br $next)))
       (i32.const -1) (i32.const -1))`
 
@@ -964,7 +1037,7 @@ export default (ctx) => {
       ? `(func $${searchFromName} (param $str i64) (param $fromPos i32) (result i32 i32)
       (local $off i32) (local $len i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
-      (local.set $len (call $__str_byteLen (local.get $str)))
+      (local.set $len (call $__str_length (local.get $str)))
       (if (i32.gt_s (local.get $fromPos) (local.get $len))
         (then (return (i32.const -1) (i32.const -1))))
       (local.set $result (call $${funcName} (local.get $off) (local.get $len) (local.get $fromPos)))
@@ -974,14 +1047,16 @@ export default (ctx) => {
       : `(func $${searchFromName} (param $str i64) (param $fromPos i32) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
-      (local.set $len (call $__str_byteLen (local.get $str)))
+      (local.set $len (call $__str_length (local.get $str)))
       (local.set $pos (local.get $fromPos))
       (block $done (loop $next
         (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
         (local.set $result (call $${funcName} (local.get $off) (local.get $len) (local.get $pos)))
         (if (i32.ge_s (local.get $result) (i32.const 0))
           (then (return (local.get $pos) (local.get $result))))
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (local.set $pos (i32.add (local.get $pos) ${flags?.includes('u') || flags?.includes('v')
+          ? '(select (i32.const 2) (i32.const 1) (f64.gt (call $__codepoint_at (local.get $str) (local.get $pos)) (f64.const 65535)))'
+          : '(i32.const 1)'}))
         (br $next)))
       (i32.const -1) (i32.const -1))`
 
@@ -1054,13 +1129,9 @@ export default (ctx) => {
         ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
           // no match — reset lastIndex, return null
           ['then', ['global.set', liGlobal, ['i32.const', 0]], nullIR],
-          // match — advance lastIndex past match end (bump by 1 for zero-length)
+          // lastIndex is the end of the match, including a zero-length match.
           ['else',
-            ['global.set', liGlobal,
-              ['select',
-                ['i32.add', ['local.get', `$${me}`], ['i32.const', 1]],
-                ['local.get', `$${me}`],
-                ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
+            ['global.set', liGlobal, ['local.get', `$${me}`]],
             buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
     }
     return typed(['block', ['result', 'f64'],
@@ -1149,7 +1220,7 @@ export default (ctx) => {
     const id = resolveRegex(search)
     if (id == null) {
       // Fall back to string match
-      inc('__str_indexof', '__str_slice', '__wrap1', '__str_byteLen')
+      inc('__str_indexof', '__str_slice', '__wrap1', '__str_length')
       const s = temp('ms'), q = temp('mq'), idx = tempI32('mi')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
@@ -1162,7 +1233,7 @@ export default (ctx) => {
               ['i64.reinterpret_f64',
                 ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
                   ['local.get', `$${idx}`],
-                  ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
+                  ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
     }
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
@@ -1195,7 +1266,7 @@ export default (ctx) => {
       if (isFn) {
         // String search + callback: replace the FIRST occurrence (spec: a string
         // search matches once). Mirror string.js `.replace`'s callback path.
-        inc('__str_indexof', '__str_slice', '__str_concat', '__str_byteLen', '__to_str')
+        inc('__str_indexof', '__str_slice', '__str_concat', '__str_length', '__to_str')
         const s = temp('rps'), q = temp('rpq'), fnL = temp('rpf'), idx = tempI32('rpi'), mlen = tempI32('rpm')
         const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
         const match = typed(['call', '$__str_slice', sI64(), ['local.get', `$${idx}`],
@@ -1204,7 +1275,7 @@ export default (ctx) => {
           ['local.set', `$${s}`, asF64(emit(str))],
           ['local.set', `$${q}`, asF64(emit(search))],
           ['local.set', `$${fnL}`, asF64(emit(repl))],
-          ['local.set', `$${mlen}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
+          ['local.set', `$${mlen}`, ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
           ['local.set', `$${idx}`, ['call', '$__str_indexof', sI64(), ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
           ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
             ['then', ['local.get', `$${s}`]],
@@ -1216,13 +1287,13 @@ export default (ctx) => {
                   typed(['local.get', `$${s}`], 'f64')])], 'f64')),
               asI64(typed(['call', '$__str_slice', sI64(),
                 ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]],
-                ['call', '$__str_byteLen', sI64()]], 'f64'))], 'f64')]]], 'f64')
+                ['call', '$__str_length', sI64()]], 'f64'))], 'f64')]]], 'f64')
       }
       // Fall back to string replace
       inc('__str_replace')
       return typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
     }
-    inc('__str_slice', '__str_concat', '__str_byteLen')
+    inc('__str_slice', '__str_concat', '__str_length')
     // Regex + callback: walk matches in IR (a WAT helper can't call a closure).
     // One unified loop covers /g (all matches) and non-/g (break after the first).
     if (isFn) {
@@ -1249,21 +1320,21 @@ export default (ctx) => {
       const step = [
         ['local.set', `$${res}`, ['call', `$__regex_${id}`, ['local.get', `$${off}`], ['local.get', `$${len}`], ['local.get', `$${pos}`]]],
         ['if', ['i32.lt_s', ['local.get', `$${res}`], ['i32.const', 0]],
-          ['then', ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]], ['br', '$next']]],
+          ['then', ['local.set', `$${pos}`, nextIndex(sI64(), ['local.get', `$${pos}`], fullUnicode(flagsOf(search)))], ['br', '$next']]],
         ['local.set', `$${ms}`, ['local.get', `$${pos}`]],
         ['local.set', `$${me}`, ['local.get', `$${res}`]],
         ['local.set', `$${acc}`, ['call', '$__str_concat', accI64(), asI64(slice(['local.get', `$${pe}`], ['local.get', `$${ms}`]))]],
         ['local.set', `$${acc}`, ['call', '$__str_concat', accI64(), callbackRepl(fnL, matchStr, cbExtra)]],
         ['local.set', `$${pe}`, ['local.get', `$${me}`]],
         ...(global ? [] : [['br', '$done']]),
-        ['local.set', `$${pos}`, ['select', ['i32.add', ['local.get', `$${me}`], ['i32.const', 1]], ['local.get', `$${me}`], ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
+        ['local.set', `$${pos}`, ['select', nextIndex(sI64(), ['local.get', `$${me}`], fullUnicode(flagsOf(search))), ['local.get', `$${me}`], ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
         ['br', '$next'],
       ]
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
         ['local.set', `$${fnL}`, asF64(emit(repl))],
         ['local.set', `$${off}`, ['call', '$__str_to_buf', sI64()]],
-        ['local.set', `$${len}`, ['call', '$__str_byteLen', sI64()]],
+        ['local.set', `$${len}`, ['call', '$__str_length', sI64()]],
         ['local.set', `$${pe}`, ['i32.const', 0]],
         ['local.set', `$${pos}`, ['i32.const', 0]],
         ['local.set', `$${acc}`, slice(['i32.const', 0], ['i32.const', 0])],
@@ -1282,7 +1353,7 @@ export default (ctx) => {
           (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
           (local $mstart i32) (local $mend i32) (local $prevEnd i32) (local $acc f64)
           (local.set $off (call $__str_to_buf (local.get $str)))
-          (local.set $len (call $__str_byteLen (local.get $str)))
+          (local.set $len (call $__str_length (local.get $str)))
           (local.set $prevEnd (i32.const 0))
           (local.set $pos (i32.const 0))
           (local.set $acc (call $__str_slice (local.get $str) (i32.const 0) (i32.const 0)))
@@ -1290,14 +1361,14 @@ export default (ctx) => {
             (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
             (local.set $result (call $__regex_${id} (local.get $off) (local.get $len) (local.get $pos)))
             (if (i32.lt_s (local.get $result) (i32.const 0))
-              (then (local.set $pos (i32.add (local.get $pos) (i32.const 1))) (br $next)))
+              (then (local.set $pos ${nextIndexWat('(local.get $pos)', fullUnicode(flagsOf(search)))}) (br $next)))
             (local.set $mstart (local.get $pos))
             (local.set $mend (local.get $result))
             (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
               (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $mstart)))))
             (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc)) (local.get $repl)))
             (local.set $prevEnd (local.get $mend))
-            (local.set $pos (select (i32.add (local.get $mend) (i32.const 1)) (local.get $mend) (i32.eq (local.get $mstart) (local.get $mend))))
+            (local.set $pos (select ${nextIndexWat('(local.get $mend)', fullUnicode(flagsOf(search)))} (local.get $mend) (i32.eq (local.get $mstart) (local.get $mend))))
             (br $next)))
           (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
             (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $len)))))`
@@ -1319,7 +1390,7 @@ export default (ctx) => {
               ['i64.reinterpret_f64', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i32.const', 0], ['local.get', `$${ms}`]]],
               ['i64.reinterpret_f64', ['local.get', `$${r}`]]]],
             ['i64.reinterpret_f64', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${me}`],
-              ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]]], 'f64')
+              ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]]], 'f64')
   }
 
   // str.matchAll(/re/g) → array of match arrays (each like exec's result: full
@@ -1334,9 +1405,9 @@ export default (ctx) => {
     if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
-    inc('__str_to_buf', '__str_byteLen', '__alloc_hdr', '__mkptr', `__regex_${id}`)
+    inc('__str_to_buf', '__str_length', '__alloc_hdr', '__mkptr', `__regex_${id}`)
     const s = temp('mas'), outArr = tempI32('mao')
-    return matchAllImpl(asF64(emit(str)), id, nGroups, groupNames, s, outArr)
+    return matchAllImpl(asF64(emit(str)), id, nGroups, groupNames, s, outArr, fullUnicode(flagsOf(search)))
   }
   // Generic twin (unknown receiver): ES String.prototype.matchAll ToString-
   // coerces its receiver, so route through the coercion into the same scan.
@@ -1352,11 +1423,11 @@ export default (ctx) => {
     if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
-    inc('__str_to_buf', '__str_byteLen', '__alloc_hdr', '__mkptr', `__regex_${id}`)
+    inc('__str_to_buf', '__str_length', '__alloc_hdr', '__mkptr', `__regex_${id}`)
     const s = temp('mas'), outArr = tempI32('mao')
-    return matchAllImpl(typed(['f64.reinterpret_i64', toStrI64(null, asF64(emit(str)))], 'f64'), id, nGroups, groupNames, s, outArr)
+    return matchAllImpl(typed(['f64.reinterpret_i64', toStrI64(null, asF64(emit(str)))], 'f64'), id, nGroups, groupNames, s, outArr, fullUnicode(flagsOf(search)))
   }
-  function matchAllImpl(recvIR, id, nGroups, groupNames, s, outArr) {
+  function matchAllImpl(recvIR, id, nGroups, groupNames, s, outArr, unicode) {
     const off = tempI32('maof'), len = tempI32('maln'), pos = tempI32('maps')
     const res = tempI32('mars'), cnt = tempI32('macn'), wi = tempI32('mawi')
     const ms = tempI32('mams'), me = tempI32('mame')
@@ -1368,11 +1439,11 @@ export default (ctx) => {
       ['br_if', '$d', ['i32.gt_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
       ['local.set', `$${res}`, ['call', `$__regex_${id}`, ['local.get', `$${off}`], ['local.get', `$${len}`], ['local.get', `$${pos}`]]],
       ['if', ['i32.lt_s', ['local.get', `$${res}`], ['i32.const', 0]],
-        ['then', ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]], ['br', '$n']]],
+        ['then', ['local.set', `$${pos}`, nextIndex(sI64(), ['local.get', `$${pos}`], unicode)], ['br', '$n']]],
       ['local.set', `$${ms}`, ['local.get', `$${pos}`]],
       ['local.set', `$${me}`, ['local.get', `$${res}`]],
       ...body,
-      ['local.set', `$${pos}`, ['select', ['i32.add', ['local.get', `$${me}`], ['i32.const', 1]], ['local.get', `$${me}`], ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
+      ['local.set', `$${pos}`, ['select', nextIndex(sI64(), ['local.get', `$${me}`], unicode), ['local.get', `$${me}`], ['i32.eq', ['local.get', `$${ms}`], ['local.get', `$${me}`]]]],
       ['br', '$n']]]
     // Re-running the matcher in the fill pass repopulates the $__re_g* capture
     // globals just before buildMatchArr reads them — correct per-match captures.
@@ -1380,7 +1451,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, recvIR],
       ['local.set', `$${off}`, ['call', '$__str_to_buf', sI64()]],
-      ['local.set', `$${len}`, ['call', '$__str_byteLen', sI64()]],
+      ['local.set', `$${len}`, ['call', '$__str_length', sI64()]],
       ['local.set', `$${cnt}`, ['i32.const', 0]],
       ['local.set', `$${pos}`, ['i32.const', 0]],
       scan([['local.set', `$${cnt}`, ['i32.add', ['local.get', `$${cnt}`], ['i32.const', 1]]]]),
@@ -1437,7 +1508,7 @@ export default (ctx) => {
         (local $arrOff i32) (local $count i32) (local $cap i32)
         (local $newArr i32)
         (local.set $off (call $__str_to_buf (local.get $str)))
-        (local.set $len (call $__str_byteLen (local.get $str)))
+        (local.set $len (call $__str_length (local.get $str)))
         ;; Alloc result array via the canonical header allocator (NOT a
         ;; hand-rolled (i32.const 8)+cap*8 alloc) — __dyn_get_t_h's ARRAY
         ;; branch unconditionally reads the propsPtr word at off-16 for
@@ -1456,13 +1527,21 @@ export default (ctx) => {
         (local.set $prevEnd (i32.const 0))
         (local.set $count (i32.const 0))
         (local.set $pos (i32.const 0))
+        (if (i32.eqz (local.get $len))
+          (then (if (i32.eqz (call $__regex_${id} (local.get $off) (local.get $len) (i32.const 0)))
+            (then (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $arrOff)))))))
         (block $done (loop $next
-          (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
+          (br_if $done (i32.ge_s (local.get $pos) (local.get $len)))
           (local.set $result (call $__regex_${id} (local.get $off) (local.get $len) (local.get $pos)))
           (if (i32.lt_s (local.get $result) (i32.const 0))
             (then
               ;; No match at this position — advance and try next
-              (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+              (local.set $pos ${nextIndexWat('(local.get $pos)', fullUnicode(flagsOf(sep)))})
+              (br $next)))
+          ;; Empty matches at the previous boundary produce no segment.
+          (if (i32.eq (local.get $result) (local.get $prevEnd))
+            (then
+              (local.set $pos ${nextIndexWat('(local.get $pos)', fullUnicode(flagsOf(sep)))})
               (br $next)))
           ;; Found match at $pos..$result — slice prevEnd..pos into array
           (local.set $mstart (local.get $pos))
@@ -1483,7 +1562,7 @@ export default (ctx) => {
           (local.set $count (i32.add (local.get $count) (i32.const 1)))
           (local.set $prevEnd (local.get $mend))
           ;; Advance past match (at least 1 to avoid infinite loop on zero-length match)
-          (local.set $pos (select (i32.add (local.get $mend) (i32.const 1)) (local.get $mend) (i32.eq (local.get $mstart) (local.get $mend))))
+          (local.set $pos (select ${nextIndexWat('(local.get $mend)', fullUnicode(flagsOf(sep)))} (local.get $mend) (i32.eq (local.get $mstart) (local.get $mend))))
           (br $next)))
         ;; Final segment: prevEnd..len — grow if needed
         (if (i32.ge_u (local.get $count) (local.get $cap))

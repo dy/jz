@@ -1,3 +1,4 @@
+import { stringBytes } from '../src/string-data.js'
 /**
  * JSON module — JSON.stringify and JSON.parse.
  *
@@ -180,7 +181,7 @@ function hashCapFor(n) {
 export default (ctx) => {
   deps({
     __stringify: ['__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
-    __json_setgap: ['__alloc', '__ptr_type', '__str_byteLen', '__char_at'],
+    __json_setgap: ['__alloc', '__ptr_type', '__str_length', '__char_at'],
     __json_omit: ['__ptr_type', '__ptr_aux'],
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
@@ -198,10 +199,10 @@ export default (ctx) => {
     // next stage; without the explicit edge they ride the auto-dep scan, which
     // silently yields nothing under self-compile (test/self-compile-includes.js).
     __jput_num: ['__ftoa', '__jput_str'],
-    __jput_str: ['__char_at', '__str_byteLen', '__jput'],
-    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
+    __jput_str: ['__char_at', '__str_length', '__jput'],
+    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_length'],
     __jp_val: ['__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
-    __jp_str: ['__sso_char', '__char_at', '__str_byteLen', '__hex4', '__ishex', '__utf8_enc', '__sso_norm'],
+    __jp_str: ['__sso_char', '__char_at', '__str_length', '__hex4', '__ishex', '__sso_norm'],
     __hex4: ['__hex1'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
@@ -290,10 +291,10 @@ export default (ctx) => {
     (if (i32.ge_s (global.get $__jpos) (global.get $__jcap))
       (then
         (global.set $__jcap (i32.shl (i32.add (global.get $__jcap) (i32.const 1)) (i32.const 1)))
-        (local.set $new (call $__alloc (global.get $__jcap)))
-        (memory.copy (local.get $new) (global.get $__jbuf) (global.get $__jpos))
+        (local.set $new (call $__alloc (i32.shl (global.get $__jcap) (i32.const 1))))
+        (memory.copy (local.get $new) (global.get $__jbuf) (i32.shl (global.get $__jpos) (i32.const 1)))
         (global.set $__jbuf (local.get $new))))
-    (i32.store8 (i32.add (global.get $__jbuf) (global.get $__jpos)) (local.get $b))
+    (i32.store16 (i32.add (global.get $__jbuf) (i32.shl (global.get $__jpos) (i32.const 1))) (local.get $b))
     (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1))))`
 
   // __jindent — emit a newline followed by $__jdepth copies of the gap string.
@@ -308,7 +309,7 @@ export default (ctx) => {
       (local.set $j (i32.const 0))
       (block $d2 (loop $l2
         (br_if $d2 (i32.ge_s (local.get $j) (global.get $__jgaplen)))
-        (call $__jput (i32.load8_u (i32.add (global.get $__jgap) (local.get $j))))
+        (call $__jput (i32.load16_u (i32.add (global.get $__jgap) (i32.shl (local.get $j) (i32.const 1)))))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
         (br $l2)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -327,10 +328,10 @@ export default (ctx) => {
         (local.set $n (i32.trunc_sat_f64_s (local.get $f)))
         (if (i32.gt_s (local.get $n) (i32.const 10)) (then (local.set $n (i32.const 10))))
         (if (i32.lt_s (local.get $n) (i32.const 1)) (then (return)))
-        (local.set $g (call $__alloc (local.get $n)))
+        (local.set $g (call $__alloc (i32.shl (local.get $n) (i32.const 1))))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
-          (i32.store8 (i32.add (local.get $g) (local.get $i)) (i32.const 32))
+          (i32.store16 (i32.add (local.get $g) (i32.shl (local.get $i) (i32.const 1))) (i32.const 32))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l)))
         (global.set $__jgap (local.get $g))
@@ -338,14 +339,13 @@ export default (ctx) => {
         (return)))
     (if (i32.eq (call $__ptr_type (local.get $sp)) (i32.const ${PTR.STRING}))
       (then
-        (local.set $n (call $__str_byteLen (local.get $sp)))
+        (local.set $n (call $__str_length (local.get $sp)))
         (if (i32.gt_s (local.get $n) (i32.const 10)) (then (local.set $n (i32.const 10))))
         (if (i32.eqz (local.get $n)) (then (return)))
-        (local.set $g (call $__alloc (local.get $n)))
+        (local.set $g (call $__alloc (i32.shl (local.get $n) (i32.const 1))))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
-          (i32.store8 (i32.add (local.get $g) (local.get $i))
-            (call $__char_at (local.get $sp) (local.get $i)))
+          (i32.store16 (i32.add (local.get $g) (i32.shl (local.get $i) (i32.const 1))) (call $__char_at (local.get $sp) (local.get $i)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l)))
         (global.set $__jgap (local.get $g))
@@ -356,11 +356,25 @@ export default (ctx) => {
   // five with short forms (\b \t \n \f \r) plus \uXXXX for the rest.
   ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr i64)
     (local $len i32) (local $i i32) (local $ch i32) (local $n i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $i (i32.const 0))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $ch (call $__char_at (local.get $ptr) (local.get $i)))
+      (if (i32.eq (i32.and (local.get $ch) (i32.const 0xF800)) (i32.const 0xD800))
+        (then
+          (if (i32.and (i32.lt_u (local.get $ch) (i32.const 0xDC00))
+                (i32.and (i32.lt_u (i32.add (local.get $i) (i32.const 1)) (local.get $len))
+                  (i32.eq (i32.and (call $__char_at (local.get $ptr) (i32.add (local.get $i) (i32.const 1))) (i32.const 0xFC00)) (i32.const 0xDC00))))
+            (then
+              (call $__jput (local.get $ch))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (call $__jput (call $__char_at (local.get $ptr) (local.get $i))))
+            (else
+              (call $__jput (i32.const 92)) (call $__jput (i32.const 117))
+              ${[12, 8, 4, 0].map(shift => `(local.set $n (i32.and (i32.shr_u (local.get $ch) (i32.const ${shift})) (i32.const 15)))
+              (call $__jput (i32.add (local.get $n) (select (i32.const 87) (i32.const 48) (i32.ge_u (local.get $n) (i32.const 10)))))`).join('\n')}))
+          (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
       ;; Escape special JSON chars
       (if (i32.lt_u (local.get $ch) (i32.const 32))
         (then
@@ -768,7 +782,7 @@ export default (ctx) => {
     (if (call $__json_omit (local.get $val)) (then (return ${UNDEF_WAT})))
     ;; Reset output buffer + cycle stack
     (global.set $__jsp (i32.const 0))
-    (global.set $__jbuf (call $__alloc (i32.const 256)))
+    (global.set $__jbuf (call $__alloc (i32.const 512)))
     (global.set $__jpos (i32.const 0))
     (global.set $__jcap (i32.const 256))
     (call $__json_setgap (local.get $space))
@@ -807,12 +821,8 @@ export default (ctx) => {
   declGlobal('__schema_next', 'i32')
   declGlobal('__schema_cache', 'i32')
 
-  // Sentinel-driven peek: __jp copies input to a scratch buffer with 0xFF bytes
-  // appended past the end. i32.load8_s sign-extends, so the sentinel reads as -1
-  // — exactly the EOF value all callers already test for. Inlined into every
-  // parser body via PEEK/ADV string templates; the per-char function-call
-  // overhead (~50 calls/char in well-formed JSON) was the dominant cost.
-  const PEEK = `(i32.load8_s (i32.add (global.get $__jpstr) (global.get $__jppos)))`
+  // UTF-16 has no spare sentinel value: check unit bounds before peeking.
+  const PEEK = `(if (result i32) (i32.lt_u (global.get $__jppos) (global.get $__jplen)) (then (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (global.get $__jppos) (i32.const 1))))) (else (i32.const -1)))`
   const ADV = (n) => `(global.set $__jppos (i32.add (global.get $__jppos) (i32.const ${n})))`
 
   // Whitespace skip — inlined at every call site as a tight loop. Compact
@@ -858,39 +868,18 @@ export default (ctx) => {
 
   // All four bytes at the current parse position are hex digits.
   const HEX4_VALID = `(i32.and
-    (i32.and (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (global.get $__jppos))))
-             (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 1))))))
-    (i32.and (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 2)))))
-             (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 3)))))))`
+    (i32.and (call $__ishex (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (global.get $__jppos) (i32.const 1)))))
+             (call $__ishex (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (i32.add (global.get $__jppos) (i32.const 1)) (i32.const 1))))))
+    (i32.and (call $__ishex (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (i32.add (global.get $__jppos) (i32.const 2)) (i32.const 1)))))
+             (call $__ishex (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (i32.add (global.get $__jppos) (i32.const 3)) (i32.const 1)))))))`
 
   // Read 4 hex bytes at absolute address $p → 16-bit value.
   ctx.core.stdlib['__hex4'] = `(func $__hex4 (param $p i32) (result i32)
     (i32.or (i32.or (i32.or
-      (i32.shl (call $__hex1 (i32.load8_u (local.get $p))) (i32.const 12))
-      (i32.shl (call $__hex1 (i32.load8_u (i32.add (local.get $p) (i32.const 1)))) (i32.const 8)))
-      (i32.shl (call $__hex1 (i32.load8_u (i32.add (local.get $p) (i32.const 2)))) (i32.const 4)))
-      (call $__hex1 (i32.load8_u (i32.add (local.get $p) (i32.const 3))))))`
-
-  // Encode code point $cp as UTF-8 at $off; returns bytes written (1-4).
-  ctx.core.stdlib['__utf8_enc'] = `(func $__utf8_enc (param $off i32) (param $cp i32) (result i32)
-    (if (i32.lt_u (local.get $cp) (i32.const 0x80))
-      (then (i32.store8 (local.get $off) (local.get $cp)) (return (i32.const 1))))
-    (if (i32.lt_u (local.get $cp) (i32.const 0x800))
-      (then
-        (i32.store8 (local.get $off) (i32.or (i32.const 0xC0) (i32.shr_u (local.get $cp) (i32.const 6))))
-        (i32.store8 (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))))
-        (return (i32.const 2))))
-    (if (i32.lt_u (local.get $cp) (i32.const 0x10000))
-      (then
-        (i32.store8 (local.get $off) (i32.or (i32.const 0xE0) (i32.shr_u (local.get $cp) (i32.const 12))))
-        (i32.store8 (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))))
-        (i32.store8 (i32.add (local.get $off) (i32.const 2)) (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))))
-        (return (i32.const 3))))
-    (i32.store8 (local.get $off) (i32.or (i32.const 0xF0) (i32.shr_u (local.get $cp) (i32.const 18))))
-    (i32.store8 (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 12)) (i32.const 0x3F))))
-    (i32.store8 (i32.add (local.get $off) (i32.const 2)) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))))
-    (i32.store8 (i32.add (local.get $off) (i32.const 3)) (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))))
-    (i32.const 4))`
+      (i32.shl (call $__hex1 (i32.load16_u (local.get $p))) (i32.const 12))
+      (i32.shl (call $__hex1 (i32.load16_u (i32.add (local.get $p) (i32.shl (i32.const 1) (i32.const 1))))) (i32.const 8)))
+      (i32.shl (call $__hex1 (i32.load16_u (i32.add (local.get $p) (i32.shl (i32.const 2) (i32.const 1))))) (i32.const 4)))
+      (call $__hex1 (i32.load16_u (i32.add (local.get $p) (i32.shl (i32.const 3) (i32.const 1)))))))`
 
   ctx.core.stdlib['__jp_str'] = `(func $__jp_str (result f64)
     (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32) (local $simple i32) (local $sso i32) (local $h i32) (local $cp i32)
@@ -904,8 +893,8 @@ export default (ctx) => {
       ;; Unescaped control char (U+0000..U+001F) is not a valid JSONStringCharacter.
       (if (i32.lt_u (local.get $ch) (i32.const 32))
         (then (global.set $__jp_err (i32.const 1)) (br $d)))
-      ;; Mark non-simple: escape (\\=92) or non-ASCII (load8_s gives <0 for byte≥128).
-      (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.lt_s (local.get $ch) (i32.const 0)))
+      ;; Only ASCII, unescaped strings qualify for the inline SSO fast path.
+      (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.gt_u (local.get $ch) (i32.const 127)))
         (then (local.set $simple (i32.const 0))))
       (if (i32.eq (local.get $ch) (i32.const 92))
         (then
@@ -945,13 +934,13 @@ export default (ctx) => {
     ;; 5-6 char ASCII results route through __sso_norm (string-module invariant).
     (if (local.get $simple)
       (then
-        (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+        (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 1)))))
         (local.set $off (i32.add (local.get $off) (i32.const 4)))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $len))
-        (memory.copy (local.get $off) (i32.add (global.get $__jpstr) (local.get $start)) (local.get $len))
+        (memory.copy (local.get $off) (i32.add (global.get $__jpstr) (i32.shl (local.get $start) (i32.const 1))) (i32.shl (local.get $len) (i32.const 1)))
         (return (call $__sso_norm (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off))))))
     ;; Copy chars to new string (handles escapes inline)
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 1)))))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
     (local.set $i (i32.const 0))
     (global.set $__jppos (local.get $start))  ;; rewind to re-scan
@@ -968,23 +957,10 @@ export default (ctx) => {
           (if (i32.eq (local.get $ch) (i32.const 117))  ;; \\uXXXX
             (then
               (if (i32.eqz ${HEX4_VALID}) (then (global.set $__jp_err (i32.const 1))))
-              (local.set $cp (call $__hex4 (i32.add (global.get $__jpstr) (global.get $__jppos))))
+              (local.set $cp (call $__hex4 (i32.add (global.get $__jpstr) (i32.shl (global.get $__jppos) (i32.const 1)))))
               ${ADV(4)}
-              ;; High surrogate immediately followed by \\uXXXX low surrogate → combine.
-              (if (i32.and
-                    (i32.eq (i32.and (local.get $cp) (i32.const 0xFC00)) (i32.const 0xD800))
-                    (i32.and (i32.eq ${PEEK} (i32.const 92))
-                             (i32.eq (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 1)))) (i32.const 117))))
-                (then
-                  ${ADV(2)}
-                  (if (i32.eqz ${HEX4_VALID}) (then (global.set $__jp_err (i32.const 1))))
-                  (local.set $i (call $__hex4 (i32.add (global.get $__jpstr) (global.get $__jppos))))
-                  ${ADV(4)}
-                  (local.set $cp (i32.add (i32.const 0x10000)
-                    (i32.or (i32.shl (i32.and (local.get $cp) (i32.const 0x3FF)) (i32.const 10))
-                            (i32.and (local.get $i) (i32.const 0x3FF)))))))
-              (local.set $len (i32.add (local.get $len)
-                (call $__utf8_enc (i32.add (local.get $off) (local.get $len)) (local.get $cp))))
+              (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $len) (i32.const 1))) (local.get $cp))
+              (local.set $len (i32.add (local.get $len) (i32.const 1)))
               (br $l2))
             (else
               ;; Decode simple escape: n→10 t→9 r→13 b→8 f→12, else literal char.
@@ -994,7 +970,7 @@ export default (ctx) => {
               (if (i32.eq (local.get $ch) (i32.const 98))  (then (local.set $ch (i32.const 8))))
               (if (i32.eq (local.get $ch) (i32.const 102)) (then (local.set $ch (i32.const 12)))))))
         (else ${ADV(1)}))
-      (i32.store8 (i32.add (local.get $off) (local.get $len)) (local.get $ch))
+      (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $len) (i32.const 1))) (local.get $ch))
       (local.set $len (i32.add (local.get $len) (i32.const 1)))
       (br $l2)))
     ${ADV(1)}  ;; skip closing "
@@ -1250,7 +1226,7 @@ export default (ctx) => {
     // is already matched by the caller's `ch` switch, so compare offsets 1..len-1.
     let acc = ''
     for (let i = 1; i < word.length; i++) {
-      const t = `(i32.eq (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const ${i})))) (i32.const ${word.charCodeAt(i)}))`
+      const t = `(i32.eq (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (i32.add (global.get $__jppos) (i32.const ${i})) (i32.const 1)))) (i32.const ${word.charCodeAt(i)}))`
       acc = acc ? `(i32.and ${acc} ${t})` : t
     }
     return acc
@@ -1316,19 +1292,9 @@ export default (ctx) => {
     const fail = `(return (call $__jp (local.get $str)))`
     const expect = (byte) => `(if (i32.ne ${PEEK} (i32.const ${byte})) (then ${fail}))
     ${ADV(1)}`
-    // SWAR text match: a known ≥2-byte ASCII run (schema keys, null/true/false)
-    // compares as 8/4/2/1-byte chunks against packed little-endian constants —
-    // one load + compare + branch per CHUNK instead of per character, and ONE
-    // pos advance. In-bounds by construction: the entry allocates len+8 and
-    // stores an 8-byte 0xFF sentinel, so any chunk starting inside the text
-    // ends within the buffer, and a chunk overlapping the sentinel simply
-    // fails the compare (0xFF matches no ASCII) into the generic-reparse fail,
-    // exactly like the per-byte path. ASCII-only (a multi-byte char's UTF-8
-    // bytes would need encoding here) — non-ASCII keys keep per-byte expects.
+    // Compare known UTF-16LE text in 8/4/2-byte chunks after a unit bounds check.
     const expectText = (text) => {
-      const bytes = [...text].map(c => c.charCodeAt(0))
-      if (bytes.length < 2 || bytes.some(b => b > 127))
-        return [...text].map(c => expect(c.charCodeAt(0))).join('\n    ')
+      const bytes = stringBytes(text)
       // Two packers, deliberately: the 8-byte chunk is a genuine 64-bit value and
       // needs BigInt (fed to i64Hex, which formats it as a WAT hex literal STRING —
       // never round-trips through Number()). The ≤4-byte chunks fit a plain i32
@@ -1354,7 +1320,7 @@ export default (ctx) => {
       const le = (arr) => { let a = 0n; for (let k = 0; k < arr.length; k++) a = a | (BigInt(arr[k]) << BigInt(8 * k)); return a }
       const leNum = (arr) => arr.reduce((a, b, k) => a | (b << (8 * k)), 0)
       const at = (i) => (i ? `offset=${i} ` : '') + '(local.get $kp)'
-      const out = [`(local.set $kp (i32.add (global.get $__jpstr) (global.get $__jppos)))`]
+      const out = [`(if (i32.gt_u (i32.add (global.get $__jppos) (i32.const ${text.length})) (global.get $__jplen)) (then ${fail}))`, `(local.set $kp (i32.add (global.get $__jpstr) (i32.shl (global.get $__jppos) (i32.const 1))))`]
       let i = 0
       for (; bytes.length - i >= 8; i += 8)
         // BigInt(...) wraps le()'s already-BigInt return (no-op at runtime) so
@@ -1371,7 +1337,7 @@ export default (ctx) => {
       }
       if (i < bytes.length)
         out.push(`(if (i32.ne (i32.load8_u ${at(i)}) (i32.const ${bytes[i]})) (then ${fail}))`)
-      out.push(ADV(bytes.length))
+      out.push(ADV(text.length))
       return out.join('\n    ')
     }
     // Forward-declared with `let` (assigned below) so `parse` captures a boxed
@@ -1492,25 +1458,24 @@ export default (ctx) => {
     const localDecls = [...locals].map(([n, t]) => `    (local $${n} ${t})`).join('\n')
     ctx.core.stdlib[name] = `(func $${name} (param $str i64) (result f64)
 ${localDecls}
-    (local.set $len (call $__str_byteLen (local.get $str)))
-    (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
-    (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
+    (local.set $len (call $__str_length (local.get $str)))
+    (local.set $buf (call $__alloc (i32.add (i32.shl (local.get $len) (i32.const 1)) (i32.const 8))))
+    (i64.store (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))) (i64.const -1))
     (if (i32.and (call $__ptr_aux (local.get $str)) (i32.const ${LAYOUT.SSO_BIT}))
       (then
         (local.set $i (i32.const 0))
         (block $sd (loop $sl
           (br_if $sd (i32.ge_s (local.get $i) (local.get $len)))
-          (i32.store8 (i32.add (local.get $buf) (local.get $i))
-            (call $__sso_char (local.get $str) (local.get $i)))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1))) (call $__sso_char (local.get $str) (local.get $i)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $sl))))
       (else
-        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (local.get $len))))
+        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (i32.shl (local.get $len) (i32.const 1)))))
     (global.set $__jpstr (local.get $buf))
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))
     ${body})`
-    ctx.core.stdlibDeps[name] = ['__jp', '__jp_num', '__jp_str', '__str_byteLen', '__alloc', '__ptr_aux', '__sso_char', '__ptr_offset', '__alloc_hdr', '__mkptr']
+    ctx.core.stdlibDeps[name] = ['__jp', '__jp_num', '__jp_str', '__str_length', '__alloc', '__ptr_aux', '__sso_char', '__ptr_offset', '__alloc_hdr', '__mkptr']
     ctx.runtime.jsonShapeParsers.set(sig, name)
     return name
   }
@@ -1530,22 +1495,21 @@ ${localDecls}
   // not unallocated memory.
   ctx.core.stdlib['__jp'] = `(func $__jp (param $str i64) (result f64)
     (local $len i32) (local $buf i32) (local $i i32) (local $r f64)
-    (local.set $len (call $__str_byteLen (local.get $str)))
-    (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
+    (local.set $len (call $__str_length (local.get $str)))
+    (local.set $buf (call $__alloc (i32.add (i32.shl (local.get $len) (i32.const 1)) (i32.const 8))))
     ;; Pre-fill 8 sentinel bytes at end (writes overlapping a 64-bit slot).
-    (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
+    (i64.store (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))) (i64.const -1))
     ;; SSO: byte-by-byte via __sso_char; heap STRING: bulk memcpy from string offset.
     (if (i32.and (call $__ptr_aux (local.get $str)) (i32.const ${LAYOUT.SSO_BIT}))
       (then
         (local.set $i (i32.const 0))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-          (i32.store8 (i32.add (local.get $buf) (local.get $i))
-            (call $__sso_char (local.get $str) (local.get $i)))
+          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1))) (call $__sso_char (local.get $str) (local.get $i)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l))))
       (else
-        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (local.get $len))))
+        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (i32.shl (local.get $len) (i32.const 1)))))
     (global.set $__jpstr (local.get $buf))
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))

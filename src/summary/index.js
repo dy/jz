@@ -363,7 +363,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // an array, a typed array, a string or a buffer iterates as itself, a Set or a Map as
       // an array it materializes, an iterable of unknown kind as the runtime resolves it;
       // `__keys_ro` is `for…in`'s key list.
-      if (callee === '__iter_arr') { const t = n ? tagOf(ks[base]) : K.NONE; return t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.BUFFER ? ks[base] : t === K.MAP || t === K.SET ? kind(K.ARRAY) : t === K.NONE ? K.NONE : ANY }
+      if (callee === '__iter_arr') { const t = n ? tagOf(ks[base]) : K.NONE; return t === K.ARRAY || t === K.TYPED || t === K.BUFFER ? ks[base] : t === K.MAP || t === K.SET || t === K.STRING ? kind(K.ARRAY) : t === K.NONE ? K.NONE : ANY }
       if (callee === '__keys_ro') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {

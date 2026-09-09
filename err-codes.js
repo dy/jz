@@ -113,6 +113,9 @@ export const ERR = {
   BASE64_INVALID_CHAR: 314,    // fromBase64 — char outside the base64/base64url alphabet
   BASE64_UNTERMINATED_PAD: 315, // fromBase64 — EOF with an unterminated padding run
   BASE64_LEFTOVER_CHAR: 316,   // fromBase64 — EOF with exactly one leftover quantum char
+  TEXT_DECODE_INPUT: 321,     // TextDecoder input is not a BufferSource
+  TEXT_DECODE: 320,           // TextDecoder fatal UTF-8 decoding error
+  BTOA_CHARACTER: 319,        // btoa — code unit outside the Latin-1 byte range
   HEX_ODD_LENGTH: 317,         // fromHex/setFromHex — odd-length input
   HEX_INVALID_DIGIT: 318,      // fromHex/setFromHex — non-hex character
 }
@@ -120,6 +123,9 @@ export const ERR = {
 /** code → { name, message }. `name` is the ECMAScript error class this site
  *  models (used by interop.js's decodeThrown to build a real host Error). */
 export const ERR_INFO = {
+  [ERR.TEXT_DECODE_INPUT]: { name: 'TypeError', message: 'TextDecoder input must be an ArrayBuffer or view' },
+  [ERR.TEXT_DECODE]: { name: 'TypeError', message: 'The encoded data is not valid UTF-8' },
+  [ERR.BTOA_CHARACTER]: { name: 'InvalidCharacterError', message: 'The string contains a character outside the Latin-1 range' },
   [ERR.TO_PRIMITIVE]: { name: 'TypeError', message: 'Cannot convert object to primitive value' },
   [ERR.ARRAY_FROM_MAPFN]: { name: 'TypeError', message: 'Array.from: mapFn is not a function' },
   [ERR.GROUP_BY_CALLBACK]: { name: 'TypeError', message: 'groupBy callback is not a function' },

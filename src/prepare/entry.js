@@ -52,7 +52,7 @@ import { prepState, resetPrepState } from './state.js'
 const wrapBuiltinValues = (ast) => {
   const wrappers = new Map()
   const inits = []
-  const isBuiltinValue = (s) => typeof s === 'string' && s.includes('.')
+  const isBuiltinValue = (s) => typeof s === 'string' && s.indexOf('.') > 0
     && ctx.core.emit[s] != null && emitArity(ctx.core.emit[s], s) > 0 && !ctx.funcs.names.has(s)
   const wrapperFor = (name) => {
     let w = wrappers.get(name)
@@ -67,7 +67,7 @@ const wrapBuiltinValues = (ast) => {
     return w
   }
   const visit = (n) => {
-    if (!Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '`') return
+    if (!Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '`' || n[0] === '//') return
     const op = n[0]
     for (let i = 1; i < n.length; i++) {
       const child = n[i]

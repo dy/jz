@@ -512,8 +512,6 @@ function shouldSkipBase(content, rel = '') {
   // small-lowering gap (.work/archive/todo.md, extension-surface archive).
   if (rel.includes('put-prop-ref') || rel.includes('/for-of/head-lhs-member') || rel.includes('/for-of/head-lhs-cover'))
     return 'member-expression for-of/destructure target outside current lowering (recorded)'
-  // for-of over astral code points walks UTF-8 bytes (documented string model).
-  if (rel.includes('/for-of/string-astral')) return 'UTF-8 byte iteration (documented string model)'
   // Per-iteration lexical binding closure — the recorded for-head let-capture item.
   if (rel.includes('/for-of/scope-body-lex-close')) return 'per-iteration lexical closure (recorded let-capture plan item)'
   // catch-param patterns (`catch ({ x })`) and `var`-pattern for-of heads don't

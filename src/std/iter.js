@@ -21,6 +21,7 @@ export let __it_open = (v) => {
     w = { next: () => {
       if (i >= v.length) return { value: undefined, done: true }
       let value = v[i]; i++
+      if (typeof v === 'string') { let cp = v.codePointAt(i-1); if (cp > 65535) { value = String.fromCodePoint(cp); i++ } }
       return { value, done: false }
     } }
   } else if (typeof w.next !== 'function') throw new TypeError('value is not iterable')

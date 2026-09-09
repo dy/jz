@@ -1,4 +1,5 @@
 import { ctx, declGlobal } from '../ctx.js'
+import { stringHash } from '../string-data.js'
 import { dataAlign, dataPush, dataLen } from '../static-data.js'
 
 // Static-string intern index (the `internStrings` pass). Open-addressing table
@@ -16,7 +17,6 @@ export function buildInternTable() {
   const cfg = ctx.transform.optimize
   if (!cfg || cfg.internStrings === false) return
   if (ctx.memory.shared || !ctx.runtime.dataDedup?.size) return
-  const enc = new TextEncoder()
   const entries = []
   // buildStartFn's schema-table construction (the only reclaimSpans producer that
   // can have already run by this point — __throw_property_nullish/__err_prop's
@@ -33,11 +33,8 @@ export function buildInternTable() {
   const inReclaimSpan = (off) => (ctx.runtime.reclaimSpans || []).some(s => off >= s.start && off < s.end)
   for (const [str, off] of ctx.runtime.dataDedup) {
     if (inReclaimSpan(off)) continue
-    const b = enc.encode(str)
-    if (b.length < 5 || b.length > 32) continue
-    let h = 0x811c9dc5 | 0
-    for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193) | 0
-    if (h <= 1) h = (h + 2) | 0   // mirror __str_hash's empty/tombstone clamp
+    if (str.length < 5 || str.length > 32) continue
+    const h = stringHash(str)
     entries.push([h >>> 0, off + 8])
   }
   if (!entries.length) return

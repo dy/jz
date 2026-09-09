@@ -535,7 +535,7 @@ VT['()'] = (args) => {
   // becomes ARRAY and everything else keeps the source's own type.
   if (callee === '__iter_arr') {
     const t = valTypeOf(args[1])
-    return t === VAL.SET || t === VAL.MAP ? VAL.ARRAY : t
+    return t === VAL.SET || t === VAL.MAP || t === VAL.STRING ? VAL.ARRAY : t
   }
   // for-in's read-only key list (src/prepare) — always an Array of key strings.
   if (callee === '__keys_ro') return VAL.ARRAY

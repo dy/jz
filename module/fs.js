@@ -4,8 +4,7 @@
  * `fs.read(path)` → string, `fs.write(path, data)` → undefined. Synchronous by
  * construction — WASI preview1 IS synchronous, so no event-loop breach. Paths
  * resolve against the FIRST PREOPEN (fd 3, the wasi convention): run under
- * wasmtime/node:wasi with a preopened directory. jz strings are raw UTF-8
- * bytes, so read/write are binary-lossless (a byte is `s.charCodeAt(i)`).
+ * wasmtime/node:wasi with a preopened directory. Paths and file contents use UTF-8 at the WASI boundary.
  *
  * Failures throw the WASI errno as a number (e.g. 44 = NOENT) — jz errors are
  * values; catch and inspect. host:'js' rejects at compile with a wiring hint.
@@ -15,7 +14,7 @@
 
 import { typed, asI64 } from '../src/ir.js'
 import { emit, hostImport } from '../src/bridge.js'
-import { inc, err, LAYOUT } from '../src/ctx.js'
+import { inc, err } from '../src/ctx.js'
 
 const setupWasi = (ctx) => {
   const needPathOpen = () => hostImport('wasi_snapshot_preview1', 'path_open',
@@ -29,27 +28,13 @@ const setupWasi = (ctx) => {
   const needFilestat = () => hostImport('wasi_snapshot_preview1', 'fd_filestat_get',
     ['func', '$__fd_filestat_get', ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
-  // Stage a jz string's bytes into linear memory → packed (ptr<<32)|len in an
-  // i64 (SSO strings live in the box, heap strings in place — no copy).
+  // Encode text for WASI → packed (ptr<<32)|byteLength in an i64.
   ctx.core.stdlib['__fs_path'] = `(func $__fs_path (param $str i64) (result i64)
-    (local $aux i32) (local $len i32) (local $off i32) (local $buf i32)
-    (local.set $aux (call $__ptr_aux (local.get $str)))
-    (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
-      (then
-        (local.set $len (i32.and (i32.shr_u (local.get $aux) (i32.const 10)) (i32.const 7)))
-        (local.set $buf (call $__alloc (local.get $len)))
-        (local.set $off (i32.const 0))
-        (block $done (loop $loop
-          (br_if $done (i32.ge_s (local.get $off) (local.get $len)))
-          (i32.store8 (i32.add (local.get $buf) (local.get $off))
-            (call $__sso_char (local.get $str) (local.get $off)))
-          (local.set $off (i32.add (local.get $off) (i32.const 1)))
-          (br $loop))))
-      (else
-        (local.set $buf (call $__ptr_offset (local.get $str)))
-        (local.set $len (call $__str_len (local.get $str)))))
-    (i64.or (i64.shl (i64.extend_i32_u (local.get $buf)) (i64.const 32))
-      (i64.extend_i32_u (local.get $len))))`
+    (local $cap i32) (local $buf i32) (local $len i32)
+    (local.set $cap (i32.mul (call $__str_length (local.get $str)) (i32.const 3)))
+    (local.set $buf (call $__alloc (local.get $cap)))
+    (local.set $len (i32.wrap_i64 (i64.shr_u (call $__utf8_encode (local.get $str) (local.get $buf) (local.get $cap)) (i64.const 32))))
+    (i64.or (i64.shl (i64.extend_i32_u (local.get $buf)) (i64.const 32)) (i64.extend_i32_u (local.get $len))))`
 
   // read: path_open(preopen fd 3) → filestat size → exact alloc → read loop → string
   ctx.core.stdlib['__fs_read'] = `(func $__fs_read (param $path i64) (result f64)
@@ -87,7 +72,7 @@ const setupWasi = (ctx) => {
       (local.set $total (i32.add (local.get $total) (local.get $n)))
       (br $read)))
     (drop (call $__fd_close (local.get $fd)))
-    (call $__mkstr (local.get $buf) (local.get $total)))`
+    (call $__utf8_decode (local.get $buf) (local.get $total) (i32.const 1)))`
 
   // write: path_open CREAT|TRUNC → fd_write loop → close
   ctx.core.stdlib['__fs_write'] = `(func $__fs_write (param $path i64) (param $data i64)
@@ -124,12 +109,14 @@ const setupWasi = (ctx) => {
 
   ctx.core.emit['fs.read'] = (path) => {
     needPathOpen(); needFdRead(); needFdClose(); needFilestat()
-    inc('__fs_path'); inc('__fs_read')
+    ctx.module.include('string')
+    inc('__fs_path', '__utf8_encode', '__utf8_decode'); inc('__fs_read')
     return typed(['call', '$__fs_read', asI64(emit(path))], 'f64')
   }
   ctx.core.emit['fs.write'] = (path, data) => {
     needPathOpen(); needFdWrite(); needFdClose()
-    inc('__fs_path'); inc('__fs_write')
+    ctx.module.include('string')
+    inc('__fs_path', '__utf8_encode'); inc('__fs_write')
     return ['call', '$__fs_write', asI64(emit(path)), asI64(emit(data))]
   }
 }
