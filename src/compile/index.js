@@ -1,6 +1,6 @@
 import { jsonShapeStrings } from '../kind/shape.js'
 import { OPTF } from '../ctx.js'
-import { dataLen, dataString, strPoolLen, strPoolString } from '../static-data.js'
+import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
 /**
  * Compile prepared AST to WASM module (S-expression arrays for watr).
  *
@@ -734,8 +734,8 @@ export function assemble(ast, profiler) {
   const escBytes = (s) => {
     let esc = ''
     for (let i = 0; i < s.length; i++) {
-      const c = s.charCodeAt(i)
-      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += s[i]
+      const c = s[i]
+      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += String.fromCharCode(c)
       else esc += '\\' + c.toString(16).padStart(2, '0')
     }
     return esc
@@ -744,19 +744,19 @@ export function assemble(ast, profiler) {
   // segment (static typed storage's payload) ships as a gap between segments
   // at every optimize level, not only where watr's packer runs.
   if (dataLen() && !ctx.memory.shared) {
-    const data = dataString()
+    const data = dataBytes()
     const GAP = 32
     let at = 0
     while (at < data.length) {
       let end = at, zeros = 0
       for (let i = at; i < data.length; i++) {
-        if (data.charCodeAt(i) === 0) { if (++zeros === GAP) { end = i + 1 - GAP; break } }
+        if (data[i] === 0) { if (++zeros === GAP) { end = i + 1 - GAP; break } }
         else zeros = 0
         end = i + 1
       }
       if (end > at) sec.data.push(['data', ['i32.const', at], '"' + escBytes(data.slice(at, end)) + '"'])
       at = end
-      while (at < data.length && data.charCodeAt(at) === 0) at++
+      while (at < data.length && data[at] === 0) at++
     }
   }
   // Shared memory: no active segment at 0 (instances would collide) — ship the
@@ -766,7 +766,7 @@ export function assemble(ast, profiler) {
   // declared inits hold offsets WITHIN the region — see injectTable/strip).
   else if (dataLen() && ctx.memory.shared && ctx.scope.globals.has('__staticBase')) {
     const len = dataLen()
-    sec.data.push(['data', '$__staticData', '"' + escBytes(dataString()) + '"'])
+    sec.data.push(['data', '$__staticData', '"' + escBytes(dataBytes()) + '"'])
     const inits = [
       ['global.set', '$__staticBase', ['call', '$__alloc', ['i32.const', len]]],
       ['memory.init', '$__staticData', ['global.get', '$__staticBase'], ['i32.const', 0], ['i32.const', len]],
@@ -783,7 +783,7 @@ export function assemble(ast, profiler) {
   }
   // Passive segment for shared-memory string literals (copied via memory.init at runtime)
   if (strPoolLen())
-    sec.data.push(['data', '$__strPool', '"' + escBytes(strPoolString()) + '"'])
+    sec.data.push(['data', '$__strPool', '"' + escBytes(strPoolBytes()) + '"'])
 
   // Custom section: rest params for exported functions (JS-side wrapping).
   // Entry per JS-visible export name (not per internal func name) — host's

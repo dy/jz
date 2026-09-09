@@ -448,42 +448,36 @@ test('invariant: FunctionPlan transfers collections once and keeps projections d
 // .work/evidence.md §EXHAUSTIVE ATTRIBUTION). Offsets, alignment padding, and
 // the final joined bytes must be byte-equivalent to the old string form.
 test('invariant: static-data parts accumulator matches string-form bytes and offsets', async () => {
-  const { dataAlign, dataPush, dataLen, dataString, dataReset, pushStaticSlots } = await import('../src/static-data.js')
+  const { dataAlign, dataPush, dataLen, dataBytes, dataReset, pushStaticSlots, hexBytes } = await import('../src/static-data.js')
   const { ctx } = await import('../src/ctx.js')
   const savedParts = ctx.runtime.dataParts, savedLen = ctx.runtime.dataLen, savedSlots = ctx.runtime.staticPtrSlots
   try {
-    dataReset('')
+    dataReset(new Uint8Array(0))
     is(dataLen(), 0)
-    is(dataString(), '')
-    dataAlign(8)                       // aligning empty is a no-op
+    is([...dataBytes()], [])
+    dataAlign(8)
     is(dataLen(), 0)
-    // reference: the old string-form accumulation, run in parallel
-    let ref = ''
-    dataPush('abc'); ref += 'abc'
-    dataAlign(4); while (ref.length % 4 !== 0) ref += '\0'
+    const all = Uint8Array.from({ length: 256 }, (_, i) => i)
+    dataPush(all.slice(0, 129))
+    dataAlign(8)
+    const ref = [...all.slice(0, 129), ...new Array(7).fill(0)]
     is(dataLen(), ref.length)
-    dataPush('defgh'); ref += 'defgh'
-    dataAlign(8); while (ref.length % 8 !== 0) ref += '\0'
-    const off = dataLen()
-    is(off, ref.length)
-    is(dataString(), ref)
-    // dataString collapses but must not perturb subsequent appends
-    dataPush('Z'); ref += 'Z'
-    is(dataString(), ref)
+    is([...dataBytes()], ref)
+    dataPush(all.slice(129))
+    ref.push(...all.slice(129))
+    is([...dataBytes()], ref, 'joining then appending preserves every byte')
     is(dataLen(), ref.length)
-    // pushStaticSlots: 8-aligned start, LE u32-half encoding, NaN-boxed slot marking
     ctx.runtime.staticPtrSlots = []
-    dataAlign(8); while (ref.length % 8 !== 0) ref += '\0'
+    dataAlign(8)
+    while (ref.length % 8) ref.push(0)
     const slotOff = pushStaticSlots(['0x0011223344556677'])
     is(slotOff, ref.length)
-    const bytes = dataString().slice(slotOff, slotOff + 8)
-    // low half 0x44556677 LE first, then high half 0x00112233 LE
-    is([...bytes].map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join(''), '7766554433221100')
-    is(ctx.runtime.staticPtrSlots.length, 0, 'non-NaN-boxed slot not marked')
-    // dataReset replaces wholesale
-    dataReset('xy')
-    is(dataLen(), 2)
-    is(dataString(), 'xy')
+    is([...dataBytes().slice(slotOff, slotOff + 8)], [0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0])
+    is(ctx.runtime.staticPtrSlots.length, 0)
+    dataReset(dataBytes().slice(128, 137))
+    is(dataLen(), 9)
+    is([...dataBytes()], ref.slice(128, 137), 'slices retain byte offsets across zero padding')
+    is([...hexBytes('00807fFf')], [0, 128, 127, 255])
   } finally {
     ctx.runtime.dataParts = savedParts; ctx.runtime.dataLen = savedLen; ctx.runtime.staticPtrSlots = savedSlots
   }

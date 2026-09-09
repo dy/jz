@@ -232,12 +232,6 @@ export function pullStdlib(sec) {
   ctx.runtime.lazySpans = []
   const injectTable = (fn, global, bytes) => {
     if (!ctx.core.includes.has(fn) || !bytes) return false
-    // ctx.runtime.data is normally already a string by here because module/number.js's
-    // setup (which seeds the static NaN/Infinity/… stringify prefix) runs unconditionally —
-    // but ONLY for a program that pulls in something from number.js. A program reaching
-    // this via a module with no such dependency (e.g. module/math.js's CR-pow tables, needed
-    // by any `**`/Math.pow call, independent of number formatting) can hit pullStdlib with
-    // ctx.runtime.data still at its unset default — initialize defensively.
     const start = dataLen()
     dataAlign(8)
     // Shared memory: the table lands via memory.init at a runtime base, so the

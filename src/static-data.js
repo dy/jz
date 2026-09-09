@@ -1,92 +1,44 @@
-/**
- * Static data segment accumulator — parts-array representation.
- *
- * The segment used to live as one growing string (`ctx.runtime.data += chunk`).
- * A member-target `+=` is a shape the self-compile's selfAccum analysis cannot
- * claim (aliasing of a ctx field is unprovable), so in the kernel every append
- * fresh-copied the ENTIRE accumulated segment — O(segment) per append,
- * triangular in total. Measured as 100.00% of the jz×jz goal-gate wall
- * (.work/evidence.md §EXHAUSTIVE ATTRIBUTION: 64,243 fresh concats /
- * 3,128,053,048 bytes inside one emitFunc call). Native V8 hid the same cost
- * behind rope strings.
- *
- * Representation: `ctx.runtime.dataParts` (chunk strings, joined once at
- * serialization) + `ctx.runtime.dataLen` (total length, maintained on every
- * push — all offset arithmetic reads this instead of `.length`). Amortized
- * O(bytes) end to end, in the kernel and natively alike.
- *
- * The shared-memory string pool (`strPool`) gets the same treatment.
- */
-
+/** Static data and shared string pools contain bytes, never JS text. */
 import { ctx } from './ctx.js'
 import { LAYOUT } from '../layout.js'
 
-const PAD = '\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0'
-
-/** Pad the segment to an `align`-byte boundary (align ≤ 16). */
-export const dataAlign = (align) => {
-  const r = ctx.runtime
-  const pad = (align - (r.dataLen % align)) % align
-  if (pad) { r.dataParts.push(PAD.slice(0, pad)); r.dataLen += pad }
+const joinBytes = (parts, len) => {
+  if (parts.length === 1) return parts[0]
+  const bytes = new Uint8Array(len)
+  let off = 0
+  for (const part of parts) { bytes.set(part, off); off += part.length }
+  return bytes
 }
 
-/** Append one chunk; returns nothing (read `dataLen()` for offsets first). */
-export const dataPush = (chunk) => {
-  const r = ctx.runtime
-  r.dataParts.push(chunk)
-  r.dataLen += chunk.length
+/** Append-only chunks are owned by the accumulator after insertion. */
+export const dataPush = (bytes) => {
+  ctx.runtime.dataParts.push(bytes)
+  ctx.runtime.dataLen += bytes.length
 }
-
-/** Current segment length — the offset the next `dataPush` would land at. */
 export const dataLen = () => ctx.runtime.dataLen
-
-/** Join to a single string (collapsing parts so repeat calls stay cheap). */
-export const dataString = () => {
+export const dataAlign = (align) => {
+  const pad = (align - (dataLen() % align)) % align
+  if (pad) dataPush(new Uint8Array(pad))
+}
+export const dataBytes = () => {
   const r = ctx.runtime
-  if (r.dataParts.length > 1) r.dataParts = [r.dataParts.join('')]
-  return r.dataParts.length ? r.dataParts[0] : ''
+  const bytes = joinBytes(r.dataParts, r.dataLen)
+  r.dataParts = bytes.length ? [bytes] : []
+  return bytes
+}
+export const dataReset = (bytes) => {
+  ctx.runtime.dataParts = bytes.length ? [bytes] : []
+  ctx.runtime.dataLen = bytes.length
 }
 
-/** Replace the whole segment (assemble-time surgery: strip/reorder spans).
- *  `len`, when given, is the caller's OWN already-known correct byte count of
- *  `s` — used verbatim for both the emptiness check and `dataLen`, instead of
- *  re-deriving it from `s`'s own `.length`/truthiness. Both call sites
- *  (wat/assemble.js's stripDeadLazyTables and stripStaticDataPrefix) build `s`
- *  by slicing or concatenating the large (thousands of bytes, arbitrary
- *  binary content) self-hosted compiler-internal data-segment string down to
- *  a byte count they already computed arithmetically — re-deriving that same
- *  number from the RESULT's own `.length` was observed unreliable under
- *  self-compile specifically on this string shape (a `.slice()` result read
- *  back `.length === 0` while still testing truthy — a genuine non-empty
- *  string, confirmed by an independently-tracked byte count staying
- *  bit-identical native/kernel throughout; native/self-compile forensics,
- *  kernel-only data-segment truncation). Defaults to `s.length` so any future
- *  caller that omits `len` keeps the old (re-derive from `s`) behavior.
- *
- *  Re-audit follow-up (root-cause investigation, closes blocker 2): is the
- *  general primitive this sidesteps — module/string.js's compiled `.slice()`
- *  on a large, binary-content string — reachable/broken OUTSIDE this one
- *  self-hosted-bootstrap callsite? Swept as an ORDINARY compiled program (not
- *  the compiler's own internals): an 11-20KB 0..255-byte-cycle string (incl.
- *  NUL + every high byte), sliced across LAYOUT.SLICE_LEN_MASK's 8191-byte
- *  boundary, on both the no-copy view (SLICE_BIT, __str_slice_view) and
- *  copying (__str_slice) paths, including the ORIGINAL bug's own exact call
- *  shape (an inline non-let-bound `.slice()` result passed straight into a
- *  function that persists it past its own return — structurally
- *  `dataReset(dataString().slice(...))` again, at user-program scale) — on
- *  BOTH the native and kernel legs. Zero failures (test/kernel-oracle.js's
- *  'large-binary-slice-view'/'large-binary-slice-copy' AGREE rows are the
- *  landed regression pin; scratchpad sweep before that: 62 cases x
- *  {native,kernel} x sizes 256B-20KB, 0 failures). The general primitive is
- *  sound — this defaulted-`len` parameter stays as defense-in-depth for the
- *  two known call sites (a caller that already knows its own byte count
- *  should never re-derive it from a fresh allocation's `.length`, workaround
- *  or not), not because module/string.js's `.slice()` is known-broken
- *  elsewhere. */
-export const dataReset = (s, len = s.length) => {
-  const r = ctx.runtime
-  r.dataParts = len ? [s] : []
-  r.dataLen = len
+/** Decode static table literals directly to bytes. */
+export const hexBytes = (hex) => {
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < bytes.length; i++) {
+    const a = hex.charCodeAt(i * 2), b = hex.charCodeAt(i * 2 + 1)
+    bytes[i] = ((a & 15) + (a > 57 ? 9 : 0)) << 4 | (b & 15) + (b > 57 ? 9 : 0)
+  }
+  return bytes
 }
 
 /** Append `slots` ('0x'+16-hex bit strings) 8-byte aligned, return the raw
@@ -104,9 +56,7 @@ export function pushStaticSlots(slots, headerBytes = 0) {
     dv.setUint32(headerBytes + i * 8, parseInt(h.slice(10), 16) >>> 0, true)
     dv.setUint32(headerBytes + i * 8 + 4, parseInt(h.slice(2, 10), 16) >>> 0, true)
   }
-  let chunk = ''
-  for (let i = 0; i < u8.length; i++) chunk += String.fromCharCode(u8[i])
-  dataPush(chunk)
+  dataPush(u8)
   if (!ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = []
   for (let i = 0; i < slots.length; i++) {
     if ((parseInt(slots[i].slice(2, 6), 16) & 0xFFF8) === LAYOUT.NAN_PREFIX) {
@@ -116,19 +66,17 @@ export function pushStaticSlots(slots, headerBytes = 0) {
   return off
 }
 
-/** Shared-memory string pool: append one chunk, return its start offset. */
-export const strPoolPush = (chunk) => {
-  const r = ctx.runtime
-  const off = r.strPoolLen
-  r.strPoolParts.push(chunk)
-  r.strPoolLen += chunk.length
+/** Shared-memory string records use the same byte representation. */
+export const strPoolPush = (bytes) => {
+  const r = ctx.runtime, off = r.strPoolLen
+  r.strPoolParts.push(bytes)
+  r.strPoolLen += bytes.length
   return off
 }
-
 export const strPoolLen = () => ctx.runtime.strPoolLen
-
-export const strPoolString = () => {
+export const strPoolBytes = () => {
   const r = ctx.runtime
-  if (r.strPoolParts.length > 1) r.strPoolParts = [r.strPoolParts.join('')]
-  return r.strPoolParts.length ? r.strPoolParts[0] : ''
+  const bytes = joinBytes(r.strPoolParts, r.strPoolLen)
+  r.strPoolParts = bytes.length ? [bytes] : []
+  return bytes
 }

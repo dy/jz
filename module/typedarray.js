@@ -77,10 +77,8 @@ const staticStoragePtr = (aux, byteLen) => {
   const hdrOff = dataLen()
   const hdr = new Uint8Array(16), dv = new DataView(hdr.buffer)
   dv.setInt32(8, byteLen, true); dv.setInt32(12, byteLen, true)
-  let chunk = ''
-  for (let i = 0; i < 16; i++) chunk += String.fromCharCode(hdr[i])
-  dataPush(chunk)
-  dataPush('\0'.repeat(byteLen))
+  dataPush(hdr)
+  dataPush(new Uint8Array(byteLen))
   return mkPtrIR(PTR.TYPED, aux, ['i32.const', hdrOff + 16])
 }
 

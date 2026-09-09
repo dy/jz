@@ -54,9 +54,7 @@ export function staticArrayPtr(slots) {
   const len = slots.length
   const hdr = new Uint8Array(16); const dv = new DataView(hdr.buffer)
   dv.setInt32(8, len, true); dv.setInt32(12, len, true)  // off-8: len, off-4: cap (props word at 0..7 stays 0)
-  let hdrChunk = ''
-  for (let i = 0; i < 16; i++) hdrChunk += String.fromCharCode(hdr[i])
-  dataPush(hdrChunk)
+  dataPush(hdr)
   pushStaticSlots(slots)
   const ptr = mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
   // Compile-time identity for the static base/len read fold (see the saArr tag in

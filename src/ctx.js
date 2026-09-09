@@ -717,7 +717,7 @@ export function reset(proto, globals, bridge) {
     dataParts: [],
     dataLen: 0,
     dataDedup: new Map(),  // str → offset (dedup literal bytes in active data segment)
-    strPoolParts: [],      // shared-memory: accumulated raw bytes of string literals (no length prefix)
+    strPoolParts: [],      // shared-memory: byte records with length-prefixed UTF-8 literals
     strPoolLen: 0,
     strPoolInit: false,    // __strBase declared once on first pooled literal
     strPoolDedup: new Map(),  // str → offset in strPool

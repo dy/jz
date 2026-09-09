@@ -266,13 +266,10 @@ export default (ctx) => {
       const aux = interned ? STR_INTERN_BIT : 0
       const prior = ctx.runtime.dataDedup.get(str)
       if (prior !== undefined) return mkPtrIR(PTR.STRING, aux, prior + hdr)
-      // Build the record in a LOCAL chunk (selfAccum shape — the kernel
-      // bump-extends O(1) per append), then hand ONE chunk to the parts
-      // accumulator. See src/static-data.js's header for why the segment must
-      // never be grown by member-target `+=`.
+      // Build the length/hash header and UTF-8 payload in one byte record.
       dataAlign(4)
       const offset = dataLen()
-      let chunk = ''
+      const chunk = new Uint8Array(hdr + len), view = new DataView(chunk.buffer)
       if (interned) {
         // byte-FNV + clamp — must equal __str_hash's output exactly (it hashes
         // UTF-8 bytes, then clamps ≤1 → +2 for the empty/tombstone sentinels).
@@ -282,10 +279,10 @@ export default (ctx) => {
         for (let i = 0; i < len; i++) h = Math.imul(h ^ bytes[i], 0x01000193) | 0
         if (h <= 1) h = (h + 2) | 0
         h = h >>> 0
-        chunk += String.fromCharCode(h & 0xFF, (h >> 8) & 0xFF, (h >> 16) & 0xFF, (h >> 24) & 0xFF)
+        view.setUint32(0, h, true)
       }
-      chunk += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
-      for (let i = 0; i < len; i++) chunk += String.fromCharCode(bytes[i])
+      view.setUint32(hdr - 4, len, true)
+      chunk.set(bytes, hdr)
       dataPush(chunk)
       ctx.runtime.dataDedup.set(str, offset)
       return mkPtrIR(PTR.STRING, aux, offset + hdr)
@@ -300,14 +297,10 @@ export default (ctx) => {
     }
     let off = ctx.runtime.strPoolDedup.get(str)
     if (off === undefined) {
-      // Pack length header then UTF-8 bytes; offset points PAST the length (at
-      // the data). Chunk built in a local (selfAccum shape), pushed once — see
-      // src/static-data.js.
-      strPoolPush(String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF))
-      off = strPoolLen()
-      let chunk = ''
-      for (let i = 0; i < len; i++) chunk += String.fromCharCode(bytes[i])
-      strPoolPush(chunk)
+      const record = new Uint8Array(4 + len)
+      new DataView(record.buffer).setUint32(0, len, true)
+      record.set(bytes, 4)
+      off = strPoolPush(record) + 4
       ctx.runtime.strPoolDedup.set(str, off)
     }
     return mkPtrIR(PTR.STRING, 0, ['i32.add', ['global.get', '$__strBase'], ['i32.const', off]])

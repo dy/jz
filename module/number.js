@@ -13,7 +13,7 @@ import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
-import { dataPush, dataAlign, dataLen } from '../src/static-data.js'
+import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
@@ -390,17 +390,6 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
       (i64.or
         (i64.shl (i64.extend_i32_u (local.get $biased)) (i64.const 52))
         (local.get $mant52))))`
-
-// Hex → byte-string via char-array + one join. NOT `s += chr` in a loop: that
-// allocates Σ1..n ≈ n²/2 bytes of dead strings (54 MB for the 10.4 KB EL table),
-// and setup runs PER COMPILE inside the self-compile kernel — a warm no-_clear
-// instance exhausted its heap after ~70 compiles. join is linear: ~n boxes of
-// array + 1-char strings plus the result.
-const hexToBytes = (hex) => {
-  const chars = []
-  for (let i = 0; i < hex.length; i += 2) chars.push(String.fromCharCode(parseInt(hex.slice(i, i + 2), 16)))
-  return chars.join('')
-}
 
 export default (ctx) => {
   deps({
@@ -873,7 +862,7 @@ export default (ctx) => {
   // 9=ok 10=not-equal 11=timed-out (Atomics.wait results, module/atomics.js)
   // Padded to 16 so stripping the prefix keeps every later alignment.
   const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]oknot-equaltimed-out'
-  dataPush(staticStr)
+  dataPush(new TextEncoder().encode(staticStr))
   dataAlign(16)
   ctx.runtime.staticDataLen = dataLen()
 
@@ -889,7 +878,7 @@ export default (ctx) => {
   // Pre-decode the EL table bytes and stash in ctx.runtime.
   // src/compile/index.js appends elTable to ctx.runtime.data only when
   // __dec_to_f64 is actually pulled in via deps (lazy, keeps small modules clean).
-  ctx.runtime.elTable = hexToBytes(EL_TABLE_HEX)
+  ctx.runtime.elTable = hexBytes(EL_TABLE_HEX)
 
   // Register the stdlib function (no data appended here — see compile/index.js hook)
   ctx.core.stdlib['__dec_to_f64'] = DEC_TO_F64_WAT
@@ -912,7 +901,7 @@ export default (ctx) => {
   //   +656 POW5_INV_OFFSETS[22]        (u32 bitmaps, 2 bits per index)
   //   +744 POW5_OFFSETS[21]            (u32 bitmaps, 2 bits per index)
   const RYU_SEED_HEX = '01000000000000000000000000000020345065c05fc9a652bb13cbaec440c21806c8df7100d5a87cf56f0fda58fc27136e4756357d24206502c7e768e48ca41de9e60268d7cd39617977fcc2405bef16798cde43ffa751f991f3b278f5bdbe11e857e9d6e8bee87bb054ac8f848d751bea23a499e9f9d38bb7a3714061da3e15cee33ecb73f948088c97b427d51b7010a2bfefb9eb8532154db44db49bbb6f1996b6076cf8e7eead36d9b4f59135ae13222218af4e6a684d91daaa3d4f40741e9fbd9ee006a1c09857c2a7fda40e90170e7d497173e3208fb220d87605143b12853d7434811343b0ad297a5f27f4351c000000000000000000000000000000100000000000000000b9340332b7f4ad1410db1ab30892540e0d307d951447ba1a66088f4d26adc66df598bf85e2b74511ca96853d92bd1debfca11860dcef52163c92ae220bb8c1b4839d2d5b0562da1c304c7e8f4e8bb25b16f4529f8b56a512fbd4827643ed8af08fe7f9311565191850f19bd94a13eeb4284cf0a686c1251f035fc270cb9e4916e642889c44eb2014b0650836ad6ea58585f0ca14e2fd031a0b899979d5b13d09d8da973a35ebcf10ac363f5e73bb38cf3e6752fa44afba150100000000000000050000000000000019000000000000007d000000000000007102000000000000350c000000000000093d0000000000002d31010000000000e1f505000000000065cd1d0000000000f902950000000000dd0ee90200000000514a8d0e000000009573c24800000000e941cc6b010000008d49fd1a07000000c16ff28623000000c52ebca2b1000000d9e9ac2d780300003d9160e45811000031d6e275bc560000f52e6e4daeb10100c9ea268367780800ed95c28f055a2a00a1edccce1bc2d30025a4000a8bca220454455454455505040010041014044000000001405555154154040000440001000000004041000044504445505400555554556551004000400100000100050100115451515455550500154150000004401001040500000000000000000000000000000000000000000000004095596959555554551555555604051541105455404551554440455044505555450040004040044496655556554540455451411540559155555555405105010000'
-  ctx.runtime.ryuTable = hexToBytes(RYU_SEED_HEX)
+  ctx.runtime.ryuTable = hexBytes(RYU_SEED_HEX)
 
   // 64×64 → high 64 bits, via 32-bit limb products (wasm has no mul-high).
   ctx.core.stdlib['__ryu_mulhi'] = `(func $__ryu_mulhi (param $a i64) (param $b i64) (result i64)

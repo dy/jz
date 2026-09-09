@@ -82,6 +82,10 @@ Current pipeline: `source → parse (subscript/jessie) → jzify (default-on; st
 
 The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
 
+Static data uses owned `Uint8Array` chunks (`src/static-data.js`). Producers write
+bytes directly; relocation adjusts those bytes, and only WAT escaping converts
+them to text. Never use `String.fromCharCode` as a binary serialization layer.
+
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
 ## Adding a stdlib method

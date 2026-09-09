@@ -199,9 +199,7 @@ export default (ctx) => {
         const hdrOff = dataLen()
         const hdr = new Uint8Array(16); const hdv = new DataView(hdr.buffer)
         hdv.setInt32(12, ctx.abi.object.ops.allocSlots ? ctx.abi.object.ops.allocSlots(schema.length) : schema.length, true)
-        let hdrChunk = ''
-        for (let i = 0; i < 16; i++) hdrChunk += String.fromCharCode(hdr[i])
-        dataPush(hdrChunk)
+        dataPush(hdr)
         pushStaticSlots(orderedBits)
         return mkPtrIR(PTR.OBJECT, schemaId, hdrOff + 16)
       }
