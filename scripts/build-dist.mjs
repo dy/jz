@@ -127,6 +127,7 @@ if (spraeEntry) {
 const wasmOut = resolve(OUT, 'jz.wasm')
 const profile = resolveSelfCompileBuild()
 const wasm = compile(profile.graph.code, {
+  host: 'js',
   modules: profile.graph.modules,
   memory: profile.memory,
   optimize: profile.optimize,

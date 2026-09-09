@@ -11,6 +11,21 @@ import { targetProfileFor } from '../src/session.js'
 import { ctx } from '../src/ctx.js'
 import { legalizeForTarget } from '../src/optimize/watr-tail.js'
 
+test('unused timer names do not initialize an absent timer queue', () => {
+  for (const host of ['js', 'wasi']) for (const source of [
+    'function unused() { setTimeout(() => {}, 0) }; export let f = () => 42',
+    'const names = { setTimeout: 42 }; export let f = () => names.setTimeout',
+    'let __timer_queue = 42; export let f = () => __timer_queue',
+  ]) {
+    const bytes = compile(source, { host })
+    const module = new WebAssembly.Module(bytes)
+    ok(!WebAssembly.Module.imports(module).some(i => i.name === 'clock_time_get'), 'no unused timer import')
+    const { exports: e } = new WebAssembly.Instance(module)
+    e._initialize?.()
+    is(e.f(), 42)
+  }
+})
+
 // === TargetProfile (audit P1) ===
 // Pins the js/wasi policy objects src/session.js's beginSession derives from
 // `host` — the single place ~24 scattered `ctx.transform.host === 'wasi'`

@@ -659,30 +659,21 @@ const jzCompileInner = (code, opts = {}) => {
   // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and
   // runs exactly once. Re-running jz's leaf pipeline here dropped a reassigned-param local.tee and
   // corrupted divergent-escape SIMD. The proof repair above is the deliberately narrow exception.
-  // Pre-eval tier 3 — module-init snapshotting (src/snapshot.js): run __start once
-  // NOW, bake the post-init heap image + global values into the artifact, delete
-  // __start. Opt-in (optimize.snapshotInit); declined cleanly (dynamically-proven
-  // hermeticity) when init touches the host, loops forever, or memory is shared.
-  // Stays HERE (post-watr, post-repair), not grouped earlier with pre-watr passes: it calls
-  // watrCompile(optimized) to instantiate a real probe module, and the shape it must instantiate,
-  // decline-check, and bake IS the shipped shape — the fully watr-optimized, repair-hoisted module.
-  // `sec` inside src/wat/assemble.js optimizeModule (where the pre-watr repair copies live) is not
-  // an assembled module at all (bare {funcs, stdlib, start} arrays, no imports/exports/data
-  // sections) — watrCompile can't consume it, so snapshotInit has no earlier valid point to run at.
-  // Running it before watOptimize instead (module is valid there too) is possible but would change
-  // what watr's own fixpoint sees (baked constants vs a live __start) and shift output bytes for
-  // every snapshotInit-enabled compile — a real pipeline-order change, not a duplicate-work delete,
-  // and out of this increment's scope.
+  // Snapshot the final, optimized module: run hermetic init once, bake its
+  // globals/heap, and remove the spent start. With stable function indices the
+  // probe's encoded bodies become the final binary; otherwise the baked AST
+  // follows the ordinary encoder path. WAT output always uses that same AST.
+  let snapshot
   if (cfg.snapshotInit) {
-    const took = time('snapshotInit', () => snapshotInit(optimized, watrCompile))
-    if (!took && opts.warnings) warn('snapshot-declined', 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it')
+    snapshot = time('snapshotInit', () => snapshotInit(optimized, watrCompile, !opts.wat))
+    if (!snapshot && opts.warnings) warn('snapshot-declined', 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it')
   }
   try {
     if (opts.wat) {
       const wat = time('watrPrint', () => watrPrint(optimized))
       return opts.inspect ? { wat, inspect: inspectView().inspect } : wat
     }
-    const wasm = time('watrCompile', () => watrCompile(optimized))
+    const wasm = snapshot instanceof Uint8Array ? snapshot : time('watrCompile', () => watrCompile(optimized))
     let bytes = wasm
     // opts.names emits a wasm `name` custom section (symbols for profilers/
     // debuggers). opts.profile.names is the older spelling — still honored.

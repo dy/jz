@@ -35,23 +35,10 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // Speed-tier presets carry watr profile:'speed' by default now (outline/tailmerge/
 // rettail off — measured on the 22-case corpus: geomean 1.433→1.316, 22/22; +19%
 // kernel bytes, irrelevant for the compiler artifact). No special config needed.
-// Init snapshotting (pre-eval tier 3, src/snapshot.js): the kernel's module-init —
-// watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — runs once at BUILD
-// time and ships as pure data; __start is deleted. KEPT ON by default
-// (self-compile-memory campaign, .work/self-compile-memory.md, 2026-08-29):
-// snapshotInit's own probe (a full second watrCompile + instantiate + run of the
-// ~18 MB kernel, just to read back __start's post-init values) costs a measured
-// 90.6s / a transient +478.9MB RSS bump on the hosted build and has zero effect
-// on the in-wasm jz×jz ceiling either way (self.js's own compileSelf() never
-// calls snapshotInit). A first pass turned this off by default on that basis --
-// wrong: it trades a one-time BUILD cost for a per-INSTANTIATION cost every
-// hosted compiler instance pays afterward (kernel tests and self benchmarks;
-// dist/jz.wasm is not a web asset). That timing gates exclude instantiate()
-// from their timed region is a gap in what they measure, not evidence the cost
-// is free. Reverted. The actual fix worth landing is making the bake cheap
-// (avoid the second full encode: patch the already-encoded module's data/start
-// sections instead of re-running the whole pipeline) -- tracked, not yet landed.
-// JZ_SELF_COMPILE_SNAPSHOT=0 remains available for diagnostic A/B use.
+// Snapshot initialization once at build time. The final artifact reuses the
+// probe's encoded function bodies and bakes its heap/globals into declarations;
+// instantiation needs no table-building work. Snapshotting remains enabled.
+// JZ_SELF_COMPILE_SNAPSHOT=0 is available for diagnostic A/B use.
 // watrGuard:false — skip watr's size-revert guard (two full encodes of the
 // 6.6MB kernel ≈ 12s of the build, measured by CPU profile: instrSize/
 // localidx/codeItemSize self-time). The kernel is a controlled artifact
@@ -65,6 +52,7 @@ const profile = resolveSelfCompileBuild({
 })
 console.log('resolved self-compile graph…', Object.keys(profile.graph.modules).length, 'modules')
 const wasm = compile(profile.graph.code, {
+  host: 'js', // The compiler artifact's host is independent of the test matrix.
   modules: profile.graph.modules,
   memory: profile.memory,
   optimize: profile.optimize,

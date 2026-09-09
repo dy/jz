@@ -16,32 +16,11 @@
  *   per-pass object, or `false` to disable). Default 1: the compiler artifact
  *   keeps essential cleanup without spending its finite heap optimizing its
  *   own optimizer; user programs still receive their requested profile.
- * @param {boolean} [p.snapshot]  optimize.snapshotInit. Default true — KEPT ON
- *   (self-compile-memory campaign, .work/self-compile-memory.md, measured
- *   2026-08-29). snapshotInit's own probe (a full extra watrCompile() of the
- *   ~18 MB kernel, instantiated and run just to read back __start's post-init
- *   values) does cost 90.6 s and a transient +478.9 MB RSS bump on the ONE-TIME
- *   hosted build, and has zero effect on the in-wasm jz×jz recursive ceiling
- *   either way (scripts/self.js's compileSelf() never calls snapshotInit, so
- *   this flag only ever governs how dist/jz.wasm itself gets BUILT). A first
- *   pass turned this off by default on exactly that basis — wrong: it traded
- *   a one-time build cost for a per-INSTANTIATION cost every consumer of
- *   dist/jz.wasm pays forever after (the website REPL, every kernel test file,
- *   scripts/bench-self-compile.mjs — anyone who instantiates the kernel now
- *   re-runs __start's table-building/atom-interning/GLOBALS-registry work
- *   every time instead of paying for it once at build time). That every
- *   self-compile TIMING GATE happens to exclude instantiate() from its timed
- *   region (test/self-compile-perf.js, scripts/bench-self-compile.mjs — see
- *   their own header comments) is a gap in what those gates measure, not
- *   evidence the cost is actually free; optimizing to what a gate excludes
- *   instead of the real recurring cost was the mistake. Reverted — snapshot
- *   stays on by default. The engineering fix that's actually worth landing is
- *   making the bake itself cheap (avoid the SECOND full watrCompile: encode
- *   once, instantiate that exact binary, run __start, then patch the
- *   already-encoded module's data/start sections directly instead of
- *   re-running the whole optimizer+encoder pipeline) — tracked in
- *   .work/self-compile-memory.md, not yet landed here. `snapshot: false` /
- *   `JZ_SELF_COMPILE_SNAPSHOT=0` remains available for diagnostic A/B use.
+ * @param {boolean} [p.snapshot] optimize.snapshotInit. Default true: pay for
+ *   module initialization once at build time. The snapshot probe's encoded
+ *   function bodies are reused; only declarations and the captured heap are
+ *   encoded again. This changes build cost, not the hosted compiler's runtime
+ *   pipeline. `snapshot: false` / `JZ_SELF_COMPILE_SNAPSHOT=0` is diagnostic.
  * @param {boolean} [p.watrGuard] optimize.watrGuard. Default false (both
  *   builders already skip watr's size-revert guard on this controlled artifact).
  * @param {number} [p.arrayMinCap] Dynamic-array capacity floor for the compiler

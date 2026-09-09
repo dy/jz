@@ -21,10 +21,8 @@
  * over the module's own statics — Date/random/imports all live behind the env
  * boundary the stubs seal.
  *
- * The capture round-trips exact bits: f64 globals are read back through a
- * Float64Array view (a JS number preserves any payload as long as no
- * arithmetic touches it) and re-emitted as `nan:0x…` literals when NaN-boxed,
- * `-0`-aware decimal otherwise.
+ * The capture round-trips exact bits: getters reinterpret floats as integers
+ * before crossing the host boundary. NaN payloads and negative zero survive.
  *
  * Host-only by construction (needs WebAssembly instantiation of the probe):
  * the self-compile kernel never passes the flag; a typeof guard declines cleanly.
@@ -66,9 +64,9 @@ const f32BitsLit = (bits) => {
   return String(v)
 }
 
-/** Mutates `module` (the final watr AST) in place. Returns true if snapshotted,
- *  false if declined (module untouched). */
-export function snapshotInit(module, watrCompile) {
+/** Mutates `module` (the final watr AST) in place. Returns false if declined,
+ *  true if baked, or reusable binary output when `binary` is requested. */
+export function snapshotInit(module, watrCompile, binary = false) {
   if (typeof WebAssembly === 'undefined') return false
   if (!Array.isArray(module) || module[0] !== 'module') return false
 
@@ -81,6 +79,11 @@ export function snapshotInit(module, watrCompile) {
     : findNode(module, n => n[0] === 'func' && n.some(c => Array.isArray(c) && c[0] === 'export' && c[1] === '"_initialize"'))
   if (!startFn) return false                                       // nothing to snapshot
   const startName = startFn[1]
+  const funcs = findAll(module, n => n[0] === 'func')
+  // Removing a trailing, unreferenced start preserves every surviving function
+  // index and body. Reactor wrappers call it, so retain the AST path for those.
+  const reuseCode = binary && funcs[funcs.length - 1] === startFn &&
+    !funcs.some(f => f !== startFn && JSON.stringify(f).includes(JSON.stringify(startName)))
   const startText = JSON.stringify(startFn)
   if (startText.includes('__timer_loop')) return false             // non-returning start
 
@@ -119,9 +122,9 @@ export function snapshotInit(module, watrCompile) {
     getters.push(['func', ['export', `"__snapg${g[1]}"`], ['result', ty === 'f64' ? 'i64' : ty === 'f32' ? 'i32' : ty], body])
   }
   module.push(...getters)
-  let inst
+  let inst, bytes
   try {
-    const bytes = watrCompile(module)
+    bytes = watrCompile(module)
     const stubs = {}
     for (const imp of imports) {
       const fn = imp.find(c => Array.isArray(c) && c[0] === 'func')
@@ -206,5 +209,72 @@ export function snapshotInit(module, watrCompile) {
     }
   }
   for (const f of findAll(module, n => n[0] === 'func')) stripCalls(f)
-  return true
+  return reuseCode ? bakeBinary(module, bytes, watrCompile) : true
+}
+
+// Encode changed declarations/data with function signatures only; reuse the
+// already encoded bodies. Keeping the probe's type section also preserves type
+// indices embedded in those bodies (including implicit multi-value block types).
+// At most two unused getter signatures remain; all getter functions/exports go.
+function bakeBinary(module, probe, compile) {
+  const header = new Set(['type', 'export', 'param', 'result'])
+  const declarations = module.map(n => !Array.isArray(n) || n[0] !== 'func' ? n :
+    ['func', ...n.slice(1).filter((c, i) =>
+      (i === 0 && typeof c === 'string' && c.startsWith('$')) || (Array.isArray(c) && header.has(c[0]))), ['unreachable']])
+  const sections = bytes => {
+    const out = []
+    let p = 8
+    while (p < bytes.length) {
+      const start = p, id = bytes[p++], size = readU32(bytes, p)
+      p = size.end + size.value
+      out.push({ id, start, body: size.end, end: p })
+    }
+    return out
+  }
+  const original = sections(probe), patch = compile(declarations)
+  const code = original.find(s => s.id === 10), funcs = original.find(s => s.id === 3)
+  const nfunc = module.filter(n => Array.isArray(n) && n[0] === 'func').length
+  const first = readU32(probe, code.body).end
+  let end = first
+  for (let i = 0; i < nfunc; i++) {
+    const body = readU32(probe, end)
+    end = body.end + body.value
+  }
+  const count = u32(nfunc), size = u32(count.length + end - first)
+  const firstType = readU32(probe, funcs.body).end
+  let lastType = firstType
+  for (let i = 0; i < nfunc; i++) lastType = readU32(probe, lastType).end
+  const chunks = [patch.subarray(0, 8)]
+  const patched = sections(patch)
+  for (const s of patched) {
+    if (s.id === 1 || s.id === 2 || s.id === 4 || s.id === 13) {
+      const old = original.find(o => o.id === s.id)
+      chunks.push(probe.subarray(old.start, old.end))
+    }
+    else if (s.id === 3) chunks.push(new Uint8Array([3, ...u32(count.length + lastType - firstType), ...count]), probe.subarray(firstType, lastType))
+    else if (s.id === 10) {
+      if (original.some(o => o.id === 12) && !patched.some(o => o.id === 12)) {
+        const dataCount = u32(module.filter(n => Array.isArray(n) && n[0] === 'data').length)
+        chunks.push(new Uint8Array([12, ...u32(dataCount.length), ...dataCount]))
+      }
+      chunks.push(new Uint8Array([10, ...size, ...count]), probe.subarray(first, end))
+    }
+    else chunks.push(patch.subarray(s.start, s.end))
+  }
+  const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0))
+  let p = 0
+  for (const c of chunks) { bytes.set(c, p); p += c.length }
+  return bytes
+}
+
+function readU32(bytes, p) {
+  let value = 0, shift = 0, b
+  do { b = bytes[p++]; value += (b & 127) * 2 ** shift; shift += 7 } while (b & 128)
+  return { value, end: p }
+}
+
+function u32(n) {
+  const bytes = []
+  do { const b = n & 127; n >>>= 7; bytes.push(b | (n ? 128 : 0)) } while (n)
+  return bytes
 }

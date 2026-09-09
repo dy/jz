@@ -271,7 +271,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
       typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
   }
 
-  const wasiTimers = ctx.features.timers && ctx.transform.targetProfile.timerModel === 'blocking'
+  const wasiTimers = ctx.core.includes.has('__timer_init')
   if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || wasiTimers) {
     const initIR = normalizeEmittedIR(init)
     const startFn = ['func', '$__start']

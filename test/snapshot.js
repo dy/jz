@@ -7,8 +7,62 @@ import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { compile as compileWat } from 'watr'
 import { snapshotInit } from '../src/snapshot.js'
+import parse from 'watr/parse'
 
 const SNAP = { level: 2, snapshotInit: true }
+
+test('snapshot: reuse encoded bodies with imports, table calls, block types and exact global bits', () => {
+  const module = parse(`(module
+    (import "env" "host" (func $host (param i32) (result i32)))
+    (memory (export "memory") 1)
+    (data (i32.const 0) "abc")
+    (table 1 funcref) (elem (i32.const 0) $inc)
+    (global $__heap (mut i32) (i32.const 128))
+    (global $bits (mut f64) (f64.const 0))
+    (global $wide (mut i64) (i64.const 0))
+    (global $small (mut f32) (f32.const 0))
+    (func $inc (param i32) (result i32) (i32.add (local.get 0) (i32.const 1)))
+    (func $drop (export "drop") (data.drop 0))
+    (func $call (export "call") (param i32) (result i32)
+      (call $host (call_indirect (param i32) (result i32) (local.get 0) (i32.const 0))))
+    (func $multi (export "multi") (result i32)
+      (block (result i32 f64) (i32.load (i32.const 96)) (f64.const 0)) (drop))
+    (func $bitsOut (export "bits") (result i64) (i64.reinterpret_f64 (global.get $bits)))
+    (func $wideOut (export "wide") (result i64) (global.get $wide))
+    (func $smallOut (export "small") (result i32) (i32.reinterpret_f32 (global.get $small)))
+    (func $__start
+      (drop (memory.grow (i32.const 1)))
+      (global.set $__heap (i32.const 131072))
+      (global.set $bits (f64.reinterpret_i64 (i64.const 0xfff8000012345678)))
+      (global.set $small (f32.reinterpret_i32 (i32.const 0xffc12345)))
+      (global.set $wide (i64.const -9223372036854775807))
+      (i32.store (i32.const 96) (i32.const 42)))
+    (start $__start))`)
+  const encodes = []
+  const bytes = snapshotInit(module, ast => {
+    encodes.push(JSON.stringify(ast).includes('call_indirect'))
+    return compileWat(ast)
+  }, true)
+  ok(bytes instanceof Uint8Array, 'returns the baked binary')
+  is(encodes, [true, false], 'encode full function bodies once; the bake encodes declarations only')
+  const { exports: e } = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env: { host: x => x * 2 } })
+  is(e.call(20), 42, 'import and table function indices survived')
+  e.drop()
+  is(e.multi(), 42, 'implicit multi-value block type and memory image survived')
+  is(e.memory.buffer.byteLength, 131072, 'baked memory floor covers init growth')
+  is(e.bits(), BigInt.asIntN(64, 0xfff8000012345678n), 'f64 NaN payload is exact')
+  is(e.small() >>> 0, 0xffc12345, 'f32 NaN payload is exact')
+  is(e.wide(), -9223372036854775807n, 'i64 global is exact')
+  ok(!Object.keys(e).some(k => k.startsWith('__snapg')), 'probe exports removed')
+})
+
+test('snapshot: a non-trailing start keeps the ordinary encoder path', () => {
+  const module = parse(`(module (memory (export "memory") 1)
+    (func $__start (i32.store (i32.const 0) (i32.const 42))) (start $__start)
+    (func $f (export "f") (result i32) (i32.load (i32.const 0))))`)
+  is(snapshotInit(module, compileWat, true), true, 'changed function indices require encoding')
+  is(new WebAssembly.Instance(new WebAssembly.Module(compileWat(module))).exports.f(), 42)
+})
 
 test('snapshot: one full image replaces every split input data segment', () => {
   const module = ['module',

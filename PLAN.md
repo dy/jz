@@ -51,6 +51,9 @@ escape invalidation. Generic local propagation and merging now run in watr
 after linking. Guarded scalar updates become selects there too, using Wasm
 local types, without synthesizing conditional ASTs after representation planning.
 The duplicate local passes, update matcher and cleanup sweep are removed.
+Snapshot initialization reuses the probe's encoded function bodies when removing
+the start preserves indices; changed layouts use the ordinary encoder. Compiler
+artifacts explicitly target the JS host, independently of the test matrix.
 JZ retains lowering-specific optimization and representation proofs.
 
 ## Release gates
