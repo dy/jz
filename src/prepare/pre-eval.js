@@ -910,7 +910,7 @@ function foldFunctionBody(body, state) {
   return foldBlockLike(body, new Map(), state)
 }
 
-/** Run preEval over the prepared module AST + every ctx.funcs.list body (mutated in place —
+/** Run preEval over every module initializer and ctx.funcs.list body (mutated in place —
  *  the same funcInfo objects compile() reads). Single top-to-bottom pass; see module doc for
  *  why that's already a full fixpoint. */
 export function preEval(ast) {
@@ -922,6 +922,8 @@ export function preEval(ast) {
   const funcByName = new Map(ctx.funcs.list.map(f => [f.name, f]))
   const state = { rationalOn, funcByName, evaluating: new Set() }
   for (const f of ctx.funcs.list) f.body = foldFunctionBody(f.body, state)
+  for (let i = 0; i < ctx.module.moduleInits.length; i++)
+    ctx.module.moduleInits[i] = foldBlockLike(ctx.module.moduleInits[i], new Map(), state)
   if (ast == null) return ast
   return foldBlockLike(ast, new Map(), state)
 }

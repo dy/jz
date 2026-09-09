@@ -26,6 +26,16 @@ const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join(
 // pin the source's own functions, so the inliner is off (the speed tier splices callees).
 const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }); return ctx.summary }
 
+test('summary: imported constant initializers are folded before analysis', () => {
+  const source = `import { PI, EPSILON } from 'constants'; export const probe = x => x * PI + EPSILON`
+  const modules = { constants: 'export const PI = Math.PI, EPSILON = Number.EPSILON' }
+  _compileInProcess(source, { modules })
+  const view = ctx.summary.at('')
+  is(tagOf(view.kindOf('constants$PI')), K.NUMBER)
+  is(tagOf(view.kindOf('constants$EPSILON')), K.NUMBER)
+  is(jz(source, { modules }).exports.probe(2), 2 * Math.PI + Number.EPSILON)
+})
+
 test('summary: kinds flow through calls, fields and results; the host boundary is ANY', () => {
   summarize(`const mk = (n, g) => ({ buf: new Float32Array(n), gain: g })
     const proc = (o) => { const b = o.buf, k = o.gain; return b[0] * k }
