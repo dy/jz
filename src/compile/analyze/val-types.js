@@ -321,7 +321,7 @@ export function analyzeValTypes(body) {
         // from a LATER reassignment (`o = {x:1}`), that fact was decided with
         // MORE information than a bare `{}` decl carries — never overwrite it.
         if (!dict && emptyLit && merged == null && ctx.schema.register && !ctx.schema.poisoned?.has(a[1]))
-          ctx.schema.vars.set(a[1], ctx.schema.register([]))
+          updateRep(a[1], { schemaId: ctx.schema.register([]) })
         const vt = dict ? VAL.HASH : valTypeOf(a[2])
         const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
@@ -382,7 +382,6 @@ export function analyzeValTypes(body) {
           if (sh.val === VAL.OBJECT && sh.names && ctx.schema.register) {
             const sid = ctx.schema.register(sh.names)
             updateRep(a[1], { schemaId: sid })
-            ctx.schema.vars.set(a[1], sid)
           }
         }
         // `shapeOf` misses object literals with function-valued props; bind
@@ -495,17 +494,15 @@ export function analyzeValTypes(body) {
     const sid = ctx.schema.register(['__inner__', ...allProps])
     // Extern-write belt: source slot values copied in at emit, unseen by censuses.
     ctx.schema.externSlotSids?.add(sid)
-    ctx.schema.vars.set(target, sid)
     updateRep(target, { schemaId: sid })
   }
 
   // Register boxed schemas for local variables with property assignments
   if (ctx.func.localProps) {
     for (const [name, props] of ctx.func.localProps) {
-      if (ctx.schema.vars.has(name)) continue
+      if (ctx.schema.idOf(name) != null) continue
       const schema = ['__inner__', ...props]
       const sid = ctx.schema.register(schema)
-      ctx.schema.vars.set(name, sid)
       updateRep(name, { schemaId: sid })
     }
   }

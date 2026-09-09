@@ -86,6 +86,10 @@ Static data uses owned `Uint8Array` chunks (`src/static-data.js`). Producers wri
 bytes directly; relocation adjusts those bytes, and only WAT escaping converts
 them to text. Never use `String.fromCharCode` as a binary serialization layer.
 
+Function-local layouts belong in `localReps`, carried by the function plan.
+Do not publish inferred local or parameter schemas in `ctx.schema.vars`:
+specialized variants reuse source binding names but can require different layouts.
+
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
 ## Adding a stdlib method

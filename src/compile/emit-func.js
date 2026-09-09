@@ -174,7 +174,6 @@ export function emitFunc(func, functionPlan, programFacts) {
         }
       }
       if (r.schemaId != null && !reassigned && !exported && !ctx.schema.vars.has(pname)) {
-        ctx.schema.vars.set(pname, r.schemaId)
         updateRep(pname, { schemaId: r.schemaId })
       }
     }

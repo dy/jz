@@ -121,9 +121,8 @@ export function initSchema(ctx) {
     // exact layout. The guarded slow arm retains the ordinary dynamic path.
     const refined = ctx.func.refinements?.get(name)?.schemaId
     if (refined != null) return refined
-    // BindingId totality: names are binding-unique module-wide, so the shared
-    // store is a plain lookup (the old varsBarred belt guarded cross-function
-    // bare-name collisions, now unrepresentable).
+    // The shared map holds prepare/module layouts. Specialized variants keep
+    // the source's binding names, so inferred local layouts belong only in reps.
     return ctx.schema.poisoned?.has(name) ? undefined
       : repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
   }

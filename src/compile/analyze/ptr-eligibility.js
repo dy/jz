@@ -204,11 +204,10 @@ export function inheritPtrAliases(body, locals, boxed) {
         predicted.add(name)
         if (p.ptrAux != null) {
           updateRep(name, { ptrAux: p.ptrAux })
-          // OBJECT-only: aux IS the schemaId — mirror to schema.vars + rep so
-          // .prop slot resolution binds precisely. TYPED/CLOSURE aux carries
-          // other semantics (elem code / funcIdx). Poisoned names stay bare.
-          if (p.ptrKind === VAL.OBJECT && !ctx.schema.vars?.has(name) && !ctx.schema.poisoned?.has(name)) {
-            ctx.schema.vars.set(name, p.ptrAux)
+          // The alias belongs to this function's representation plan. Publishing
+          // it in schema.vars leaks a specialized variant's layout into the
+          // unspecialized body, whose identically named local may hold a dict.
+          if (p.ptrKind === VAL.OBJECT && !ctx.schema.poisoned?.has(name)) {
             updateRep(name, { schemaId: p.ptrAux })
           }
         }

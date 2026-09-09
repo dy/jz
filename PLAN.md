@@ -65,6 +65,10 @@ depends on JavaScript string character semantics.
 Compiler-state inspection explicitly uses the in-process entry; execution tests
 keep their selected compiler. Session reset no longer owns that test configuration.
 The Wasm adapter forwards allocator export options through the shared session setup.
+Local schema facts stay in each function's representation plan. Specialized
+variants retain source binding names, so publishing their layouts in the global
+schema map was unsound. Analysis visits every dynamic literal initializer and
+keeps boolean/pointer logical joins distinct.
 Generator and async exception paths share one finalizer state; normal completion,
 rejection and catch exceptions converge there, and finalizer return/throw overrides
 the pending exception.
