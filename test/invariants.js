@@ -322,7 +322,7 @@ test('architecture: typed emitters consume TypedStoragePlan, not live ctor maps'
   const files = [
     'module/array.js', 'module/typedarray.js',
     'src/compile/emit.js', 'src/compile/emit-assign.js',
-    'src/compile/emit/shared.js', 'src/compile/emit/i32-bounds.js', 'src/compile/emit/first-class.js',
+    'src/compile/emit/shared.js', 'src/compile/emit/i32-bounds.js',
     'src/compile/emit/dispatch.js', 'src/compile/emit/bigint.js', 'src/compile/emit/call-args.js',
     'src/compile/emit/method-dispatch.js', 'src/compile/emit/call.js', 'src/compile/emit/instanceof.js',
     'src/compile/emit/incdec.js', 'src/compile/emit/arithmetic.js', 'src/compile/emit/comparisons.js',

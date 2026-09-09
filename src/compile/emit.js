@@ -24,7 +24,6 @@
  * # Families (src/compile/emit/*.js)
  *   - shared.js          — cross-family helpers (Arithmetic + Bitwise + Logical + dispatch)
  *   - i32-bounds.js       — i32-overflow-safety proofs + the loop-guard-hull channel
- *   - first-class.js      — builtins-as-first-class-closure-values
  *   - dispatch.js         — the SCC-forced core: emit, emitDecl, toBool, emitIdentitySafe,
  *                           emitVoid, emitBlockBody, and everything only they call
  *   - bigint.js           — BigInt joint-domain dispatch
