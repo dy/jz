@@ -134,6 +134,22 @@ test('summary: two closures joined are a set; a call through the join calls each
     export const f = (i, v) => tbl[i & 1](v)`).exports.f(0, 'abc'), 3)
 })
 
+test('summary: dynamic literals analyze callbacks after spreads and computed keys', () => {
+  for (const first of ['...base', '[key]: 1']) {
+    const src = `const base = {}; const key = 'x'
+      const table = { ${first}, f(ctor) {
+        let name = ctor
+        while (Array.isArray(name) && name[0] === '()' && name.length === 2) name = name[1]
+        if (name === 'ok') name = 'yes'
+        return JSON.stringify(name)
+      } }
+      export const run = () => table.f(['()', 'ok'])`
+    const expected = Function(src.replace('export const run', 'const run') + '; return run()')()
+    for (const optimize of [0, 2, 3])
+      is(jz(src, { optimize }).exports.run(), expected, `${first}, O${optimize}`)
+  }
+})
+
 test('summary: stores join into the slot; a differing store or a computed write poisons it', () => {
   summarize(`const mk = () => ({ a: new Float32Array(4), b: new Float32Array(4), c: 1 })
     export const f = (k) => { const o = mk(); o.a = new Float32Array(8); o.b = new Float64Array(8); o[k] = 2; return o.a[0] + o.b[0] + o.c }`)

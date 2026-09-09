@@ -695,7 +695,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
     }
     const writes = [], names = [], init = definite.get(n)
-    let brand = null
+    let brand = null, dynamic = false
     const add = (name, value) => { if (!names.includes(name)) names.push(name); writes.push([name, value]) }
     for (let i = 1; i < n.length; i++) {
       const p = n[i]
@@ -707,18 +707,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const source = expr(p[1]), sourceSid = tagOf(source) === K.OBJECT ? paramOf(source) : UNKNOWN
         // Conditional insertion uses a dictionary even when every present
         // source has one schema: an absent key differs from an undefined slot.
-        if (p[1]?.[0] === '&&' || sourceSid === UNKNOWN || openSchemas.has(sourceSid) || !schemas[sourceSid]) {
+        if (p[1]?.[0] === '&&' || isNullable(source) || sourceSid === UNKNOWN || openSchemas.has(sourceSid) || !schemas[sourceSid]) {
           escape(source)
-          for (const [, v] of writes) escape(v)
-          return cellOf(n, K.HASH, ANY)
+          dynamic = true
+          continue
         }
         const sourceSlots = slots(sourceSid)
         for (let j = 0; j < schemas[sourceSid].length; j++) add(schemas[sourceSid][j], sourceSlots[j])
       } else {
         if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j]))
-        for (const [, v] of writes) escape(v)
-        return cellOf(n, K.HASH, ANY)
+        dynamic = true
       }
+    }
+    // An unresolved key/spread changes storage, not evaluation: later
+    // initializers still run, and their callbacks can escape through the dict.
+    if (dynamic) {
+      for (const [, v] of writes) escape(v)
+      return cellOf(n, K.HASH, ANY)
     }
     const sid = sidByKey.get(schemaKey(names, brand))
     if (sid === undefined) {

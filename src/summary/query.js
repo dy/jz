@@ -142,7 +142,7 @@ export function summaryQueries(facts) {
           else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') { if (isBrand(p[1])) brand = p[1]; else add(p[1]) }
           else if (Array.isArray(p) && p[0] === '...') {
             const source = kindOfExpr(p[1]), sid = tagOf(source) === K.OBJECT ? paramOf(source) : UNKNOWN
-            if (p[1]?.[0] === '&&' || sid === UNKNOWN || openSchemas.has(sid) || !schemas[sid]) return kind(K.HASH)
+            if (p[1]?.[0] === '&&' || isNullable(source) || sid === UNKNOWN || openSchemas.has(sid) || !schemas[sid]) return kind(K.HASH)
             for (const name of schemas[sid]) add(name)
           } else return kind(K.HASH)
         }
