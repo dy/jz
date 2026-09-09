@@ -43,6 +43,17 @@ test('bool: logical not surfaces as boolean', () => {
   is(run('export let f = (x) => !x')(5), false)
 })
 
+test('bool: stored logical guards preserve false beside pointer values', () => {
+  for (const value of ['[1]', '{ x: 1 }', 'new Map()']) {
+    const body = `const p = x > 0 && ${value}; return !p`
+    const expected = Function('x', body)
+    for (const optimize of [0, 2, 3]) {
+      const f = jz(`export let f = x => { ${body} }`, { optimize }).exports.f
+      for (const x of [-1, 0, 1]) is(f(x), expected(x), `${value}, ${x}, O${optimize}`)
+    }
+  }
+})
+
 test('bool: Boolean() surfaces as boolean', () => {
   is(run('export let f = () => Boolean(5)')(), true)
   is(run('export let f = () => Boolean(0)')(), false)

@@ -139,10 +139,8 @@ VT['?:'] = (args) => {
 }
 
 // Value-preserving logical: `&&`/`||` return one of their operands.
-// When both sides share a type, return it. When one side is boolean
-// (a condition/guard) and the other has a known non-boolean type,
-// return the non-boolean type — common in `condition && numericValue`
-// guard patterns where the falsey boolean is coerced to 0 in numeric context.
+// A boolean can share the numeric carrier, but cannot prove a pointer kind:
+// `false && array` is false, and must remain falsy when stored and read back.
 // `a && b` / `a || b` / `a ?? b` all yield one of the two operands, so the result
 // type is their common type (else unknown). Giving `??` a type — not just ||/&& —
 // lets `numA ?? numB` read NaN-safe (value-typed NUMBER → f64.eq) instead of routing
@@ -150,8 +148,7 @@ VT['?:'] = (args) => {
 VT['&&'] = VT['||'] = VT['??'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta && ta === tb) return ta
-  if (ta === VAL.BOOL && tb && tb !== VAL.BOOL) return tb
-  if (tb === VAL.BOOL && ta && ta !== VAL.BOOL) return ta
+  if (ta === VAL.BOOL && tb === VAL.NUMBER || tb === VAL.BOOL && ta === VAL.NUMBER) return VAL.NUMBER
   return null
 }
 
