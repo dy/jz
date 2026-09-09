@@ -52,6 +52,7 @@ function optimizeTail(module, cfg, facts = tailFacts(cfg)) {
 // cheap and callers may `_clear` in any pattern.
 function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   resetMarks()
+  const build = buildJSON ? JSON.parse(buildJSON) : null
   // Session lifecycle — the SAME beginSession native setupCtx runs
   // (src/session.js): ctx reset, every cache clear, watr name-uids, warnings,
   // strict/host/optimize normalization, post-reset invariants. Only the wasm-ABI
@@ -61,7 +62,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
     emitter, globals: GLOBALS,
     hooks: { emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
     optimize: optJSON ? JSON.parse(optJSON) : false,
-    strict: !!strict, host: host || undefined,
+    strict: !!strict, host: host || undefined, alloc: build?.alloc,
   })
   ctx.transform.jzify = jzify
   ctx.transform.parse = parse    // module bundling (prepareModule) parses imported sources — same injection native does
@@ -72,8 +73,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   // this compile actually received opts.modules; never inherit the compiler's
   // own build graph into a later user compile.
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
-  if (buildJSON) {
-    const build = JSON.parse(buildJSON)
+  if (build) {
     if (typeof build.memory === 'number') ctx.memory.pages = build.memory
     if (build.compactCollections) ctx.transform.compactCollections = true
   }
@@ -282,8 +282,8 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host, 
  * Lets the self-compile leg satisfy the `warningsFor()` tests faithfully.
  * @returns {string} JSON array of `{ code, message, ... }` entries
  */
-export function compileWarnings(source, strict, optJSON, modulesJSON, host, sourceType) {
-  setupSelf(strict, optJSON, modulesJSON, host)
+export function compileWarnings(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
+  setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
   const sink = { entries: [] }
   initWarnings(sink)
   optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize)
@@ -291,8 +291,8 @@ export function compileWarnings(source, strict, optJSON, modulesJSON, host, sour
   return JSON.stringify(sink.entries)
 }
 
-export function compileWat(source, strict, optJSON, modulesJSON, host, sourceType) {
-  setupSelf(strict, optJSON, modulesJSON, host)
+export function compileWat(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
+  setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
   return watrPrint(optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize))
 }
 

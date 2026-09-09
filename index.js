@@ -54,7 +54,7 @@ import { ctx, reset, err, warn, assertCtxInvariants, setLinkDemand } from './src
 import { inspectView } from './src/session-views.js'
 import prepare, { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
-import { beginSession, registerSessionResetHook } from './src/session.js'
+import { beginSession } from './src/session.js'
 import compile, { tailFacts } from './src/compile/index.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
 import { resolveOptimize } from './src/optimize/index.js'
@@ -417,14 +417,12 @@ jz.pool = async function pool(source, opts = {}) {
 // compiled to wasm by jz). null in production: one boolean check on a cold path.
 let compileTarget = null
 export const _setCompileTarget = (fn) => { compileTarget = fn }
-// Registered (not a bare beginSession call — session.js can't import index.js,
-// that would cycle) with session.js's session-only reset hooks (session survey
-// audit-#13 slice a): see that file's doc for why this is safe as a no-op-in-
-// practice fold into the single reset choreography rather than a live behavior
-// change (jz.compile below never reaches beginSession while compileTarget is set).
-registerSessionResetHook(() => { compileTarget = null })
-jz.compile = (code, opts = {}) => {
-  if (compileTarget) return compileTarget(code, opts)
+// Target selection is test configuration, not per-compilation state. Native
+// inspection must not clear it and silently reroute later kernel executions.
+jz.compile = (code, opts = {}) => compileTarget ? compileTarget(code, opts) : _compileInProcess(code, opts)
+
+/** In-process entry for tests that inspect ctx, profiles, or analysis snapshots. */
+export function _compileInProcess(code, opts = {}) {
   try {
     return jzCompileInner(code, opts)
   } catch (e) {
@@ -494,7 +492,7 @@ const setupCtx = (code, opts) => {
   }
   beginSession({
     emitter, globals: GLOBALS, hooks: { emit, flat, body, bool, idx, spread, emitIdentitySafe },
-    source: code, optimize: opts.optimize, warnings: opts.warnings, strict: opts.strict, host: opts.host,
+    source: code, optimize: opts.optimize, warnings: opts.warnings, strict: opts.strict, host: opts.host, alloc: opts.alloc,
   })
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
   else if (opts.memory) ctx.memory.shared = true
@@ -527,7 +525,6 @@ const setupCtx = (code, opts) => {
   if (!opts.strict) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.noEhAbort) ctx.transform.noEhAbort = true
-  if (opts.alloc === false) ctx.transform.alloc = false
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.helperCounters) ctx.transform.helperCounters = true
   if (opts.helperCallsites) ctx.transform.helperCallsites = opts.helperCallsites

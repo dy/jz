@@ -5,7 +5,7 @@
 // factory result, a class instance, a method closure over the instance.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import jz, { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
@@ -24,7 +24,7 @@ const kindOf = (fn, bare) => ctx.summary.at(fn).kindOf(binding(fn, bare))
 const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join())
 // The summary read after a compile is of the program the plan rewrote; these tests
 // pin the source's own functions, so the inliner is off (the speed tier splices callees).
-const summarize = (src) => { compile(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }); return ctx.summary }
+const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }); return ctx.summary }
 
 test('summary: kinds flow through calls, fields and results; the host boundary is ANY', () => {
   summarize(`const mk = (n, g) => ({ buf: new Float32Array(n), gain: g })
@@ -179,7 +179,7 @@ test('summary: delete, a host import, for-of, a binding read before its assignme
   is(tagOf(kindOf('later', 'v')), K.ANY, 'the deleted-from slot reaches later as ANY, joined with the literal')
   is(tagOf(kindOf('g', 'o')), K.OBJECT, 'a function declared after its caller binds through the fixpoint')
   is(tagOf(ctx.summary.resultOf('later')), K.NUMBER)
-  compile(`import { log } from 'host'\nconst mk = () => ({ a: new Float32Array(2) })\nexport const f = () => { const o = mk(); log(o); return o.a[0] }`,
+  _compileInProcess(`import { log } from 'host'\nconst mk = () => ({ a: new Float32Array(2) })\nexport const f = () => { const o = mk(); log(o); return o.a[0] }`,
     { imports: { host: { log: { params: 1 } } } })
   is(ctx.summary.fieldTypedCtor(sidOf(['a']), 'a'), 'new.Float32Array', 'an object passed to a host import keeps its field kinds (the boundary is a contract)')
 })
@@ -320,7 +320,7 @@ test('summary: a module global is the join of every store; the declaration\'s cl
     const mk = (k) => ({ x: new Float32Array(k), y: k })
     export const init = (w) => { W = w; mem = new Float64Array(W * 2) }
     export const at = (i) => mem[i] + P.x[0] + P.y + n`
-  compile(src)
+  _compileInProcess(src)
   is(ctx.scope.globalTypedElem.get('mem'), 'new.Float64Array'); ok(ctx.scope.globalReps.get('mem').nullable)
   is(ctx.scope.globalValTypes.get('W'), 'number', 'a host parameter every read of which converts is a number')
   is(ctx.schema.vars.get('P'), ctx.schema.list.findIndex(s => s.join() === 'x,y'))
@@ -332,7 +332,7 @@ test('summary: a numeric-compatible parameter arrives as a number (spec/boundary
   // `row += W` is a `+` operand, `xi < W` a compare against a number: W is a number and so is `w`.
   const src = `let W = 0, H = 0; export let resize = (w, h) => { W = w; H = h }
     export let area = () => { let row = 0, y = 0; while (y < H) { let x = 0; while (x < W) x++; row += W; y++ } return row }`
-  compile(src); is(ctx.scope.globalValTypes.get('W'), 'number')
+  _compileInProcess(src); is(ctx.scope.globalValTypes.get('W'), 'number')
   if (OPT_LEVEL === 2) ok(!/__to_str|__str_concat/.test(compile(src, { wat: true })), 'no string machinery')
   const m = jz(src); m.exports.resize(3, 4); is(m.exports.area(), 12)
   // A typed array's size: ToIndex of a number; a negative or heap-sized count traps, on both the
@@ -352,7 +352,7 @@ test('summary: a numeric-compatible parameter arrives as a number (spec/boundary
 
 test('summary: a parameter read before its reassignment has its incoming kind', () => {
   // subscript's parse: `cur = s` precedes `s = expr()`, so `cur` is the argument's string.
-  compile(`let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const run = () => parse('abc') + cur.length`)
+  _compileInProcess(`let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const run = () => parse('abc') + cur.length`)
   is(ctx.scope.globalValTypes.get('cur'), 'string')
   is(tagOf(kindOf('parse', 's')), K.ANY, 'the parameter itself joins its reassignment')
   // A loop that assigns the parameter, and a closure that does, end the region.
@@ -363,8 +363,7 @@ test('summary: a parameter read before its reassignment has its incoming kind', 
 })
 
 test('summary: a binding is keyed by its function; a specialized variant has its own kinds', () => {
-  if (onKernel()) return
-  compile(`const sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
+  _compileInProcess(`const sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
     export const f = () => sum(new Float32Array(4)) + sum(new Float64Array(4))`)
   const variants = ctx.funcs.list.filter(fn => fn.name.startsWith('sum$'))
   is(variants.length, 2, 'the bimorphic typed split made two variants')
@@ -380,7 +379,7 @@ test('summary: the parameter records take their value kinds from the summary (na
   const src = `const mk = () => ({ v: 1 })
     const takes = (o, t, rows, mixed, maybe, arr) => o.v + t[0] + rows[0].v + (mixed ? 1 : 0) + (maybe == null ? 0 : maybe.v) + arr.length
     export const run = (k) => { const rows = [mk(), mk()]; return takes(mk(), new Float32Array(2), rows, k ? 1 : true, k ? mk() : null, [1, 2]) + takes(mk(), new Float32Array(1), rows, 0, mk(), [3]) }`
-  const insp = compile(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
+  const insp = _compileInProcess(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
   const P = insp.functions.takes.callerReps, sid = sidOf(['v'])
   is(P[0].val, 'object'); is(P[0].schemaId, sid)
   is(P[1].val, 'typed'); is(P[1].typedCtor, 'new.Float32Array')
@@ -391,7 +390,7 @@ test('summary: the parameter records take their value kinds from the summary (na
   is(jz(src).exports.run(0), 9)
   // Nullish narrowing: a guard proves its name on the path it guards (`if (out) write(out)`,
   // `if (x == null) return`, `x && f(x)`), so the callee's parameter keeps the kind alone.
-  const guarded = compile(`const write = (buf, x) => { buf.push(x); return buf }
+  const guarded = _compileInProcess(`const write = (buf, x) => { buf.push(x); return buf }
     const relay = (buf, v, out) => { buf.push(v); if (out) write(out, v); return buf }
     const early = (o) => { if (o == null) return 0; return write(o, 1).length }
     const both = (o) => o && write(o, 2)
@@ -420,7 +419,7 @@ test('summary: the result kinds are the summary\'s (narrow/results.js seedResult
     const caught = (x) => { try { if (x) throw new TypeError('t') ; return x > 0 } catch (e) { return e instanceof TypeError } }
     const first = (a) => a[0]
     export const run = (n) => sum(plan(n).tw, n) + Number(norm(2) + norm(3n)) + (caught(1) ? 1 : 0) + first([7])`
-  const insp = compile(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
+  const insp = _compileInProcess(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
   const F = insp.functions
   is(F.plan.valResult, 'object', 'a map\'s value cell: get reads what set stored (with the miss as presence)')
   is(F.sum.callerReps[0].typedCtor, 'new.Float64Array', 'the plan\'s field reaches the kernel typed')

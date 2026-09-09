@@ -22,23 +22,6 @@ import { resolveOptimize } from './optimize/index.js'
 import { resetNameUids } from 'watr/optimize'
 
 /**
- * Session-only reset hooks — a NARROWER sibling of ctx.js's RESET_HOOKS
- * (registerResetHook), for state that must
- * survive a raw `reset()` call (ctx.js's own seam, used directly by
- * test/types.js-style harnesses) but SHOULD clear when a real session begins.
- * index.js's `compileTarget` test-injection override is the one caller: it is
- * a process-wide switch (`_setCompileTarget`, set once for a whole
- * `JZ_TEST_TARGET=jz.wasm` test run) that must NOT be touched by raw
- * ctx.js reset() calls interleaved with ordinary tests in the same run — but
- * IS safe to fold into beginSession() specifically, because jz.compile
- * short-circuits BEFORE calling beginSession() whenever compileTarget is set
- * (see index.js), so this hook is a structural no-op exactly when the
- * override is live, and a harmless no-op (already null) otherwise.
- */
-const SESSION_RESET_HOOKS = []
-export function registerSessionResetHook(fn) { SESSION_RESET_HOOKS.push(fn) }
-
-/**
  * TargetProfile: the output target's compile-policy, named and frozen
  * per target, replacing scattered `ctx.transform.host === 'wasi'` string checks
  * (23 read sites across compile/emit/module before this — one string comparison,
@@ -266,7 +249,7 @@ export function targetProfileFor(host) {
  * @param {boolean}[p.strict]   enforce the pure canonical subset
  * @param {string} [p.host]     output host ('js' | 'wasi' | 'native'), undefined = js
  */
-export function beginSession({ emitter, globals, hooks, source, optimize, warnings, strict, host }) {
+export function beginSession({ emitter, globals, hooks, source, optimize, warnings, strict, host, alloc }) {
   reset(emitter, globals, hooks)
   // Explicit-lifecycle caches — EVERY one, on BOTH pipelines. DOLLAR and the
   // stdlib parse cache are plain Maps rebuilt each compile: in-kernel a stale
@@ -283,12 +266,12 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   resetNameUids()
   if (source !== undefined) ctx.error.src = source
   initWarnings(warnings ?? null)
+  if (alloc === false) ctx.transform.alloc = false
   if (strict) ctx.transform.strict = true
   if (host) ctx.transform.host = host
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   ctx.transform.optimize = resolveOptimize(optimize)
   ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
-  for (const hook of SESSION_RESET_HOOKS) hook()
   assertCtxInvariants('post-reset')
   return ctx.transform.optimize
 }

@@ -60,6 +60,9 @@ JZ retains lowering-specific optimization and representation proofs.
 Static data and shared string pools now stay in Uint8Array chunks from their
 producers through relocation and WAT escaping. Binary serialization no longer
 depends on JavaScript string character semantics.
+Compiler-state inspection explicitly uses the in-process entry; execution tests
+keep their selected compiler. Session reset no longer owns that test configuration.
+The Wasm adapter forwards allocator export options through the shared session setup.
 Generator and async exception paths share one finalizer state; normal completion,
 rejection and catch exceptions converge there, and finalizer return/throw overrides
 the pending exception.

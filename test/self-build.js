@@ -170,7 +170,7 @@ test('self-build: kernel-target.js never builds or substitutes dist: the jz.wasm
     const mod = await import(${JSON.stringify(new URL('./kernel-target.js', import.meta.url).href)})
     ${body}
     console.log('named')
-  `], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, ...env } })
+  `], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, JZ_TEST_TARGET: '', JZ_KERNEL: '', ...env } })
   const missing = probe({ JZ_TEST_TARGET: 'jz.wasm' }, `assert.throws(() => mod.compileViaKernel('export let main = () => 1'), /jz.wasm missing: the jz.wasm leg consumes the built artifact by name/); assert.equal(spawns, 0, 'no build'); assert.equal(mod.kernelSource(), 'dist/jz.wasm')`)
   ok(missing.endsWith('named\n'))
   fixture(({ root }) => {

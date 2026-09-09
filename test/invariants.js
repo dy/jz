@@ -1086,3 +1086,29 @@ export let b = (x) => block(new Float32Array([x]), 48000, 1)[0]`, { modules, opt
   ok(Math.abs(exports.a(0.5) - Math.tanh(0.5)) < 1e-6)
   is(exports.b(4), 2)
 })
+
+test('invariant: in-process inspection preserves the selected execution compiler', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const script = `
+    import assert from 'node:assert/strict'
+    import jz, {compile, _compileInProcess, _setCompileTarget} from './index.js'
+    import {compileViaKernel} from './test/kernel-target.js'
+    assert.throws(() => compileViaKernel('', {inspect: true}), /in-process compiler/)
+    assert.throws(() => compileViaKernel('', {profile: {}}), /in-process compiler/)
+    const bytes = _compileInProcess('export let f = () => 42')
+    let calls = 0
+    _setCompileTarget(() => { calls++; return bytes })
+    const result = _compileInProcess('export let inspected = () => 1', {inspect: true})
+    assert.ok(result.inspect.functions.inspected)
+    assert.throws(() => _compileInProcess('export let f = () => unknownBinding'))
+    assert.equal(compile('target-only source'), bytes)
+    assert.equal(jz('target-only source').exports.f(), 42)
+    assert.equal(calls, 2)
+    _setCompileTarget(null)
+    assert.equal(jz('export let f = () => 7').exports.f(), 7)
+  `
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 30000,
+  })
+  is(r.status, 0, r.stderr || r.error?.message || 'inspection and execution keep their own compiler')
+})

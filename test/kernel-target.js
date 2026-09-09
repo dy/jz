@@ -13,7 +13,7 @@
 // (kernel-parity, kernel-oracle) gets a fresh private build through the shared
 // transaction (test/_self-build.js), never dist.
 //
-// Supported options (strict, optimize, modules, host, sourceType, warnings, WAT)
+// Supported options (strict, optimize, modules, host, sourceType, memory, alloc, warnings, WAT)
 // travel through scripts/self.js's compiler ABI. Native-only inspection hooks
 // do not reach the wasm compiler.
 import { readFileSync, existsSync } from 'node:fs'
@@ -93,6 +93,9 @@ const modulesJSONFor = (self, opts) =>
 // opts.host ('wasi' | 'js') → plain string over the ABI; 0 = native undefined default.
 const hostFor = (self, opts) => opts.host ? self.memory.String(opts.host) : 0
 const sourceTypeFor = (self, opts) => opts.sourceType ? self.memory.String(opts.sourceType) : 0
+const buildJSONFor = (self, opts) => opts.alloc == null && typeof opts.memory !== 'number' ? 0 : self.memory.String(JSON.stringify({
+  alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
+}))
 
 const optJSONFor = (self, opts) => {
   if (opts.optimize === false || opts.optimize === 0) return 0
@@ -103,13 +106,15 @@ const optJSONFor = (self, opts) => {
 }
 
 export const compileViaKernel = (code, opts = {}) => {
+  if (opts.inspect || opts.profile)
+    throw new Error('Analysis inspection and compiler profiles require the in-process compiler; the Wasm target does not expose host compiler state')
   // Compile-time advisories: the kernel runs the same advise passes and returns the
   // collected entries as JSON, which we splice into the caller's `warnings` sink.
   // Done on its own fresh instance, then we fall through to produce the bytes/WAT
   // (jz() compiles AND instantiates while reading advisories off the result).
   if (opts.warnings) {
     const w = instantiate(getSelfModule(), { memory: 8192 })
-    const entries = JSON.parse(w.memory.read(w.exports.compileWarnings(w.memory.String(code), opts.strict ? 1 : 0, optJSONFor(w, opts), modulesJSONFor(w, opts), hostFor(w, opts), sourceTypeFor(w, opts))))
+    const entries = JSON.parse(w.memory.read(w.exports.compileWarnings(w.memory.String(code), opts.strict ? 1 : 0, optJSONFor(w, opts), modulesJSONFor(w, opts), hostFor(w, opts), sourceTypeFor(w, opts), buildJSONFor(w, opts))))
     opts.warnings.entries ||= []
     opts.warnings.entries.push(...entries)
   }
@@ -128,7 +133,7 @@ export const compileViaKernel = (code, opts = {}) => {
     // verbatim: self.js's compileWat now runs the full index.js optimization tail
     // (watOptimize + the optimizeFunc 'post' pass), so the self-compile emits the same
     // WAT IR native does. Explicit optimize:false / 0 stays off.
-    const wat = self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts)))
+    const wat = self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts), buildJSONFor(self, opts)))
     reclaim()
     return wat
   }
@@ -141,7 +146,7 @@ export const compileViaKernel = (code, opts = {}) => {
   // through dist/jz.wasm — i64 VALUE CONTRACT, untyped-receiver number
   // methods, static-literal aliasing, both-worlds i64 folders), so the kernel
   // now runs its own optimizer by default, same as native.
-  const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts))
+  const out = self.exports.default(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts), sourceTypeFor(self, opts), buildJSONFor(self, opts))
   const bin = self.memory.read(out)
   // COPY out of the instance: memory.read returns a zero-copy VIEW into the wasm
   // memory (interop.js typed-array marshal), so returning it as-is pins the whole

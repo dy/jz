@@ -103,11 +103,8 @@ export const ctx = {
  *  alike) is the single choreography that drains the list, at the end of its
  *  own work — see session.js's docstring, "the ONE owner of per-compile
  *  lifecycle state." Plain array + for-of, no Proxy/getter machinery
- *  (self-compile subset). index.js's `compileTarget` test-injection override is
- *  deliberately NOT registered here: it is a process-wide switch that must
- *  survive the raw `reset()` calls test/types.js makes directly (unlike the
- *  other three, which are genuine per-compile working state) — see
- *  session.js's narrower `registerSessionResetHook` for that one. */
+ *  (self-compile subset). Process configuration such as the test compile
+ *  target has its own lifetime and does not register a reset hook. */
 const RESET_HOOKS = []
 export function registerResetHook(fn) { RESET_HOOKS.push(fn) }
 

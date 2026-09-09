@@ -136,12 +136,9 @@ export const withBigintStrict = (fn) => {
   finally { if (prev === undefined) delete process.env.JZ_BIGINT_STRICT; else process.env.JZ_BIGINT_STRICT = prev }
 }
 
-/** True under the self-compile kernel target (test:wasm, JZ_TEST_TARGET=jz.wasm), where
- *  jz.compile routes through the jz.wasm KERNEL — jz's own pipeline compiled to wasm by
- *  jz. The kernel takes a RAW parsed AST and owns reset+jzify+prepare+compile internally,
- *  so host-side options that shape compilation never reach it: optimize level (SIMD,
- *  dead-code/size pins), imports/modules/memory wiring, inspect/wat output. Tests that
- *  assert those — optimizer-output shape, emitted-WAT structure, host-bridge behaviour —
- *  cannot hold here (distinct from a genuine value miscompile, which is a real bug).
- *  Guard with `if (onKernel()) return`. */
+/** True when execution compiles through the Wasm kernel. The adapter forwards
+ *  supported compiler options (test/kernel-target.js). Tests that inspect ctx,
+ *  profiles, or analysis snapshots use _compileInProcess explicitly; their
+ *  execution checks can still use the selected target. Host-only imports and
+ *  runtime facilities need their own onKernel guard. */
 export const onKernel = () => process.env.JZ_TEST_TARGET === 'jz.wasm'

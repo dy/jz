@@ -2,7 +2,7 @@ import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { summarize, K, kind, join, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
 import { VAL } from '../src/reps.js'
-import { compile } from '../index.js'
+import { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { instantiate } from '../interop.js'
 import { execFileSync } from 'node:child_process'
@@ -424,9 +424,9 @@ test('summary containers: enum values and entry tuples feed numeric Map payloads
     const pack = (mask, flag) => mask | (flag ? 8 : 0)
     export const f = () => pack(7 & ~bit(tags.b), true)`
   for (const optimize of [0, 1, 2, 3]) {
-    const binary = compile(src, { optimize })
+    const binary = _compileInProcess(src, { optimize })
     is(ctx.summary.resultOf('bit'), kind(K.NUMBER), 'Map construction retains entry value kinds')
-    is(instantiate(binary).exports.f(), 13, `O${optimize}`)
+    is(instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f(), 13, `O${optimize}`)
   }
 })
 

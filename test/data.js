@@ -2,7 +2,7 @@
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import jz, { compile, _compileInProcess } from '../index.js'
 import { onWasi, onKernel, adaptI64 } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 
@@ -4730,7 +4730,7 @@ test('DictKindIndex: a non-constant (reassignable) source object: the read of a 
   // entries' array kind), the parameter carries the presence, and the read
   // returns undefined where JS would throw on `undefined[0]` (a divergence
   // of the absent-read class, .work/ledger-correctness.md 9).
-  const insp = compile(src, { optimize: false, wat: true, inspect: true }).inspect
+  const insp = _compileInProcess(src, { optimize: false, wat: true, inspect: true }).inspect
   ok(insp.functions.id.callerReps[1].mayBeUndefined, 'O0: the entry may be absent')
   is(jz(src, { optimize: false }).exports.main(), undefined)
 })
