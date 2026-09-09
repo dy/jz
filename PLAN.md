@@ -82,12 +82,19 @@ the pending exception.
   revision. Record baseline failures separately from regressions.
 - Compiler byte-string builders are removed. Public string construction and
   decoding still need a consistent UTF-8 contract; the fromCharCode > 255
-  regression remains open.
+  regression remains open. Resolve surrogate handling and escape decoding together;
+  changing a single assertion does not establish a consistent string contract.
+- Conformance still exposes array-pattern iterator acquisition/step errors,
+  property enumerability and function reflection. Preserve semantics or clearly
+  reject unsupported operations; do not add failure-ledger entries to hide them.
 - The warm Map/property failure came from counting duplicate and cancelled
   durable-slot log entries toward a fixed limit. The log now reuses them;
   retain the repeated-compile and reset tests as lifecycle gates.
 - Speed and size promises require measured evidence, including the DSP fixture.
-  Architecture changes alone do not establish real-time suitability.
+  Architecture changes alone do not establish real-time suitability. Refresh
+  benchmark and memory evidence after compiler changes, with complete rival
+  coverage and a machine inside the existing load/swap validity limits. The
+  committed evidence is currently stale and does not meet those requirements.
 - Replace the pinned watr source archive with an npm release when it contains
   the required fixes.
 
