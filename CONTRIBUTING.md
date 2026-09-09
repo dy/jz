@@ -30,6 +30,11 @@ fast tier; link no longer implements these generic body rewrites on the tape.
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
+The summary's declaration tables own numeric binding IDs, local to that summary.
+Kind and incoming-argument facts are indexed arrays; solver and read-only queries
+reuse the same IDs. Scope resolution still uses names, but reading a resolved
+binding needs no compound string key or second hash lookup.
+
 Historical `.work/` citations below refer to retired evidence, recoverable using
 [.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.
 

@@ -1,8 +1,7 @@
-// The summary's binding keys (`scope\0name`) and slot keys (`sid\0prop`) are
-// built once per pair inside one summarize() call (src/summary/index.js keyIn,
-// slotKey). The strings are the ones the reader (src/summary/query.js)
-// concatenates on its own, so every answer below reaches the solver's facts
-// through the reader's independent keys; the caches are the call's alone.
+// The summary's numeric binding ids and slot keys (`sid\0prop`) are
+// owned by the declaration and slot tables inside one summarize() call.
+// Solver and read-only queries reuse the same binding identities. No table
+// survives into another compilation.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'

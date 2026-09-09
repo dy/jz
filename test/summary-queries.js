@@ -26,6 +26,35 @@ function program() {
   return { summary, params }
 }
 
+test('summary queries: numeric demand keeps the first parameter separate from its module namesake', () => {
+  const summary = summarize(['const', ['=', 'value', lit('module')]], {
+    funcs: [{ name: 'scale', sig: { params: [{ name: 'value' }] }, body: ['*', 'value', lit(2)] }],
+    schemas: [], brandOf: () => null, imports: new Map(), exported: () => true,
+  })
+  is(summary.at('scale').numericDemand('value'), true)
+  is(summary.at('scale').kindOf('value'), kind(K.NUMBER))
+  is(summary.kindOf('value'), kind(K.STRING))
+  is(summary.at('scale').kindOf('missing'), K.NONE)
+  is(summary.at('scale').kindOfExpr('missing'), kind(K.ANY))
+})
+
+test('summary queries: default closures declare parameters and resolve their captured scope', () => {
+  const params = [',', 'x']
+  const fn = ['=>', params, ['*', 'x', 'n']]
+  for (const anonymous of [false, true]) {
+    const ast = [';', ['const', ['=', 'f', ['()', 'factory', lit(3)]]]]
+    const funcs = [{ name: 'main', sig: { params: [] }, body: ['()', 'f', lit(5)] }]
+    if (anonymous) ast.splice(1, 0, ['const', ['=', 'factory', ['=>', [',', 'n', ['=', 'fn', fn]], 'fn']]])
+    else funcs.push({ name: 'factory', sig: { params: [{ name: 'n' }, { name: 'fn' }] }, defaults: { fn }, body: 'fn' })
+    const summary = summarize(ast, {
+      funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: f => f.name === 'main',
+    })
+    is(summary.at(params).kindOf('x'), kind(K.NUMBER))
+    is(summary.at(params).kindOf('n'), kind(K.NUMBER))
+    is(summary.resultOf('main'), kind(K.NUMBER))
+  }
+})
+
 test('summary queries: a hypothetical reduction cannot bind callback parameters', () => {
   const { summary, params } = program(), callback = summary.at(params)
   is(callback.paramKindOf('acc'), kind(K.BIGINT))

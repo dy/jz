@@ -12,10 +12,9 @@ import {
 } from './kind.js'
 
 export function summaryQueries(facts) {
-  const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameScopes,
+  const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, cells, jsonKinds, unions,
     schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, openSchemas } = facts
-  const keyIn = (scope, name) => scope === '' ? name : scope + '\0' + name
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH) && paramOf(k) !== UNKNOWN
@@ -93,27 +92,26 @@ export function summaryQueries(facts) {
       if (key !== undefined) return key
       key = null
       for (let s = scope; ; s = parent.get(s) ?? '') {
-        if (declared.get(s)?.has(name)) { key = keyIn(s, name); break }
+        const found = declared.get(s)?.get(name)
+        if (found !== undefined) { key = found; break }
         if (s === '') break
       }
       keys.set(name, key)
       return key
     }
     // Unscoped analysis joins a binding's source and specialized variants.
-    const anywhere = new Map()   // name → its keys across scopes, listed once
     const keyOfAnywhere = name => {
       const key = keyOf(name)
       if (key !== null || scope !== '') return key
-      let keys = anywhere.get(name)
-      if (keys === undefined) { const ns = nameScopes.get(name); anywhere.set(name, keys = ns ? ns.map(s => keyIn(s, name)) : null) }
-      return keys
+      return nameKeys.get(name) ?? null
     }
-    const readKind = name => { const key = keyOfAnywhere(name); if (key === null) return K.NONE; if (typeof key === 'string') return canon(kinds.get(key) ?? K.NONE); let k = K.NONE; for (const kk of key) k = join(k, canon(kinds.get(kk) ?? K.NONE)); return k }
+    const readKey = key => { if (key === null) return K.NONE; if (typeof key === 'number') return canon(kinds[key] ?? K.NONE); let k = K.NONE; for (const kk of key) k = join(k, canon(kinds[kk] ?? K.NONE)); return k }
+    const readKind = name => readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
     const selectedExpr = (n, mask) => {
       const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
       if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
-      if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE) : ANY) : readKind(n) }
+      if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE) : ANY) : readKey(key) }
       if (typeof n === 'number') return NUMBER
       if (!Array.isArray(n)) return ANY
       const op = n[0]
@@ -180,7 +178,7 @@ export function summaryQueries(facts) {
         if (n[1].startsWith('new.') && TYPED_CTOR.test(n[1])) return builtinResult(n[1])
         const key = keyOf(n[1])
         if (key === null && funcNames.has(n[1])) return results.get(n[1]) ?? ANY
-        const k = key === null ? undefined : kinds.get(key)
+        const k = key === null ? undefined : kinds[key]
         if (k !== undefined) {
           if (tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN) return ANY
           let r = K.NONE
@@ -250,7 +248,7 @@ export function summaryQueries(facts) {
       if (typeof callee === 'string') {
         const key = keyOf(callee)
         if (key === null) return funcNames.has(callee) ? callee : null
-        ck = kinds.get(key) ?? K.NONE
+        ck = kinds[key] ?? K.NONE
       } else if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
         const r = kindOfExpr(callee[1]), name = callee[2], fn = classMember(r, name)
         if (fn) return memberMayBeOwn(name) ? null : fn
@@ -272,12 +270,12 @@ export function summaryQueries(facts) {
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? elemOf(k) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && paramOf(e) !== UNKNOWN ? paramOf(e) : null },
-      numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'string' ? isNumeric(key) : key.every(isNumeric)) },
+      numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'number' ? isNumeric(key) : key.every(isNumeric)) },
       numericStorage: name => { const key = keyOf(name), k = readKind(name); return key !== null && numeric.get(key) === 2 && tagOf(core(k)) === K.NUMBER && hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) },
       // The demand pass denied the binding a number: a read of it neither converts nor is compatible (a container store, a return), so its value keeps JS semantics for every kind the host may pass.
-      numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'string' ? denied(key) : key.some(denied)) },
+      numericDenied: name => { const key = keyOfAnywhere(name), denied = k => numeric.get(k) === false; return key !== null && (typeof key === 'number' ? denied(key) : key.some(denied)) },
       // Incoming arguments/defaults before any reassignment in the body.
-      paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : canon(incoming.get(key) ?? K.NONE) },
+      paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : canon(incoming[key] ?? K.NONE) },
       elemOfKind: elemOf,
       valOf: name => valOf(readKind(name)),
       // One non-nullish class receiver, with no possible own-member shadow.
