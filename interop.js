@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT } from './layout.js'
+import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX } from './layout.js'
 import { ERR_INFO } from './err-codes.js'
 
 // Stateless + reusable — one instance avoids a per-call allocation on the hot
@@ -447,7 +447,13 @@ export const memory = (src) => {
     }
     if (Array.isArray(v)) return mem.Array(v)
     if (v instanceof ArrayBuffer) return mem.Buffer(v)
-    if (v instanceof DataView) return mem.Buffer(v.buffer)
+    if (v instanceof DataView) {
+      const parent = offset(mem.Buffer(v.buffer)), off = alloc(16), m = dv()
+      m.setInt32(off, v.byteLength, true)
+      m.setInt32(off + 4, parent + v.byteOffset, true)
+      m.setInt32(off + 8, parent, true)
+      return ptr(3, DATA_VIEW_AUX, off)
+    }
     const typedName = v?.constructor?.name
     // An erased host slot has no source-level proof that downstream code uses
     // the BigInt element domain. Keep ordinary numeric TypedArrays zero-copy-
@@ -581,6 +587,7 @@ export const memory = (src) => {
       return out
     }
     if (t === 3) {  // TYPED
+      if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, m.getInt32(off + 4, true), m.getInt32(off, true))
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
       const Ctor = (a & 16) ? BigInt64Array

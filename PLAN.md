@@ -87,6 +87,10 @@ Parameter initialization now shares one lowering across ordinary functions and
 generator factories. In iterator-producing programs, array parameters pull lazily,
 interleave defaults and close on early completion. Uncaught generator exceptions
 close the machine, including machines without source-level try/catch.
+DataView has a distinct runtime discriminator while reusing the existing view
+descriptor. Host marshaling preserves its view extent and identity. Typed-array
+constructor summaries retain descriptor storage through calls and closures;
+array parameter iteration rejects DataView without rejecting typed-array views.
 Subscript 10.7.3 restores ASI state when speculative method parsing backtracks;
 JZ requires that published patch, including its multiplication-after-semicolon fix.
 
@@ -100,10 +104,9 @@ JZ requires that published patch, including its multiplication-after-semicolon f
   changing a single assertion does not establish a consistent string contract.
 - Conformance still exposes property enumerability and function reflection.
   Iterator parameter acquisition/step errors are corrected; declaration and
-  assignment patterns still use indexed lowering. DataView also shares its
-  runtime tag/aux with Int8Array views, so dynamic iterable classification cannot
-  distinguish them yet. Preserve semantics or clearly
-  reject unsupported operations; do not add failure-ledger entries to hide them.
+  assignment patterns still use indexed lowering. DataView identity and iterator
+  classification are fixed; `.length` and numeric property reads still incorrectly
+  use typed-array fallbacks (`4`/`0` on a four-byte view instead of undefined). Preserve semantics or clearly reject unsupported operations; do not add failure-ledger entries to hide them.
 - The warm Map/property failure came from counting duplicate and cancelled
   durable-slot log entries toward a fixed limit. The log now reuses them;
   retain the repeated-compile and reset tests as lifecycle gates.

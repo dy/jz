@@ -129,3 +129,15 @@ test('iterator parameters: renamed object bindings and nested rest patterns decl
   function g([{p: x}, ...[y]]) { return x + y }
   export let f = () => g(source);
 `))
+
+test('iterator parameters: DataView is not an indexed iterable', () => {
+  for (const ctor of ['DataView', 'Int8Array', 'Uint8Array']) same(`
+    function* marker() {}
+    function g([x]) { return x }
+    export let f = () => {
+      let b = new ArrayBuffer(4), bytes = new Uint8Array(b); bytes[1] = 23;
+      try { return g(new ${ctor}(b, 1, 2)) }
+      catch (e) { return e instanceof TypeError ? 'type error' : 'wrong error' }
+    }
+  `)
+})

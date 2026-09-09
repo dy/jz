@@ -22,7 +22,7 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int3
 // fallback) BEFORE prepare's sound handler ever sees the node — default mode
 // then never reaches the tag/schema/range machinery strict mode uses, so
 // `new TypeError(x) instanceof RangeError` wrongly answers `true` there.
-const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
+const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
 const groupedName = node => typeof node === 'string' ? node

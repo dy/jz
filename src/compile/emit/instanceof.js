@@ -6,7 +6,7 @@
 
 import { ERR_CLASS_NAMES } from '../../../err-codes.js'
 import {
-  OBJECT_SCHEMA_HI_MASK, TYPED_ELEM_NAMES, TYPED_ELEM_VIEW_FLAG, encodeTypedElemAux, objectSchemaGuardHex,
+  OBJECT_SCHEMA_HI_MASK, TYPED_ELEM_NAMES, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG, encodeTypedElemAux, objectSchemaGuardHex,
 } from '../../../layout.js'
 import { PTR, ctx, inc } from '../../ctx.js'
 import { asF64, emitNum, isPureIR, ptrTypeEq, temp, tempI32, typed } from '../../ir.js'
@@ -51,7 +51,7 @@ function emitTagInstanceof(a, rhs) {
 }
 
 /** TypedArray ctors (the 8 TYPED_ELEM_NAMES — see prepare's INSTANCEOF_ALLOW comment
- *  for why BigInt64Array/BigUint64Array/Float16Array/Uint8ClampedArray/DataView are
+ *  for why BigInt64Array/BigUint64Array/Float16Array/Uint8ClampedArray are
  *  excluded from RHS entirely, not just this arm). Static ctor name comes from either
  *  a literal `new X(...)` call node (prepare's runtime-ctor path always emits
  *  `['()', 'new.X', args]`) or a bound name's narrowed `typedCtor` rep field — both
@@ -72,7 +72,7 @@ function emitTypedInstanceof(a, rhs) {
   // element-type bits (which the 8-name allowlist keeps collision-free — see prepare's
   // comment) are load-bearing for identity.
   inc('__ptr_type', '__ptr_aux')
-  const elemCode = encodeTypedElemAux(rhs, false)
+  const elemCode = rhs === 'DataView' ? DATA_VIEW_FLAG : encodeTypedElemAux(rhs, false)
   // Compute `a` exactly ONCE into a local — the bits are read twice below (tag,
   // then aux), and re-embedding the same emitted subtree twice would both
   // duplicate any side effects AND re-run the underlying WAT computation at
@@ -161,6 +161,6 @@ function emitErrorInstanceof(a, rhs) {
 export function emitInstanceof(a, rhs) {
   if (isBrand(rhs)) return classInstanceof(a, rhs)
   if (rhs in INSTANCEOF_TAG) return emitTagInstanceof(a, rhs)
-  if (TYPED_ELEM_NAMES.includes(rhs)) return emitTypedInstanceof(a, rhs)
+  if (rhs === 'DataView' || TYPED_ELEM_NAMES.includes(rhs)) return emitTypedInstanceof(a, rhs)
   return emitErrorInstanceof(a, rhs)
 }

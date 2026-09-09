@@ -1318,8 +1318,8 @@ test('instanceof: compile-time fold — proven-kind LHS emits no runtime tag/aux
 // Loud rejection: jz has no prototype chain, so RHS support is a closed
 // allowlist — everything else is a compile-time error, not a silent guess.
 // Covers every excluded-with-evidence case from prepare's INSTANCEOF_ALLOW
-// comment (BigInt64Array/BigUint64Array collide at the aux level; DataView
-// collides with a VIEW Int8Array; WeakMap/WeakSet fold to Map/Set and are
+// comment (BigInt64Array/BigUint64Array collide at the aux level;
+// WeakMap/WeakSet fold to Map/Set and are
 // tag-indistinguishable from them) alongside the ordinary unsupported names.
 test('instanceof: unsupported RHS rejects loudly at compile time (jz has no prototype chain)', () => {
   const rejects = (code) => throws(code, 'instanceof', 'unsupported instanceof RHS should error', { strict: true })
@@ -1327,7 +1327,6 @@ test('instanceof: unsupported RHS rejects loudly at compile time (jz has no prot
   rejects(`export let f = (x) => x instanceof Function`)
   rejects(`export let f = (x) => x instanceof RegExp`)
   rejects(`export let f = (x) => x instanceof Promise`)
-  rejects(`export let f = (x) => x instanceof DataView`)
   rejects(`export let f = (x) => x instanceof BigInt64Array`)
   rejects(`export let f = (x) => x instanceof BigUint64Array`)
   rejects(`export let f = (x) => x instanceof WeakMap`)

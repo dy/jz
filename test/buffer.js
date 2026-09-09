@@ -58,7 +58,7 @@ test('JS ArrayBuffer → JZ — passed in, read byteLength', () => {
   is(exports.check(ab), 24)
 })
 
-test('JS DataView → JZ — unwraps underlying buffer', () => {
+test('JS DataView → JZ — retains view length', () => {
   const { exports } = jz(`export let check = (buf) => buf.byteLength`)
   const ab = new ArrayBuffer(12)
   const dv = new DataView(ab)
@@ -853,4 +853,43 @@ test('integer stores share one ToIntN semantic: ±Infinity → 0, out-of-range w
   is(e.dvBE(4e9), 4e9 | 0, 'big-endian path shares the semantic')
   is(e.f32Inf(Infinity), Infinity, 'f32 store keeps Inf')
   is(e.clampInf(Infinity), 255, 'ToUint8Clamp(Inf) = 255')
+})
+
+test('DataView identity survives erased values and host boundaries', () => {
+  for (const strict of [false, true]) {
+    const { exports: e } = jz(`
+      export let kind = x => (x instanceof DataView ? 1 : 0) + (x instanceof Int8Array ? 2 : 0) + (ArrayBuffer.isView(x) ? 4 : 0)
+      export let extent = x => x.byteOffset * 100 + x.byteLength
+      export let read = x => x.getUint8(0)
+      export let make = () => { let b = new ArrayBuffer(8); let d = new DataView(b, 2, 3); d.setUint8(0, 71); return d }
+      export let local = flag => { let b = new ArrayBuffer(8); let x = flag ? new DataView(b, 2, 3) : new Int8Array(b, 2, 3); return (x instanceof DataView ? 1 : 0) + (x instanceof Int8Array ? 2 : 0) }
+    `, { strict })
+    const b = new ArrayBuffer(8), d = new DataView(b, 2, 3)
+    d.setUint8(0, 63)
+    is(e.kind(d), 5)
+    is(e.kind(new Int8Array(b, 2, 3)), 6)
+    is(e.kind(b), 0)
+    is(e.extent(d), 203)
+    is(e.read(d), 63)
+    is(e.local(true), 1)
+    is(e.local(false), 2)
+    const out = e.make()
+    ok(out instanceof DataView)
+    is(out.byteLength, 3)
+    is(out.getUint8(0), 71)
+  }
+})
+
+test('typed-array descriptor provenance crosses calls and closures', () => {
+  for (const name of ['Int8Array', 'Int16Array', 'Int32Array', 'Float32Array', 'Float64Array']) {
+    const { exports: e } = jz(`
+      let read = a => () => a[0] + a[1] + a.length
+      let make = b => new ${name}(b, ${globalThis[name].BYTES_PER_ELEMENT}, 2)
+      export let main = () => {
+        let a = new ${name}([1, 7, 11, 19]);
+        return read(make(a.buffer))()
+      }
+    `)
+    is(e.main(), 20, name)
+  }
 })

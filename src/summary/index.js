@@ -345,7 +345,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof callee === 'string') {
       if (callee.startsWith('new.')) {
         const m = TYPED_CTOR.exec(callee)
-        if (m) { const aux = encodeTypedElemAux(m[1], !!m[2]); return kind(K.TYPED, aux == null ? UNKNOWN : aux) }
+        if (m) {
+          // The three-argument constructor stores a descriptor, not element
+          // bytes. Preserve that representation through calls and closures.
+          const aux = encodeTypedElemAux(m[1], !!m[2] || n >= 3)
+          return kind(K.TYPED, aux == null ? UNKNOWN : aux)
+        }
         if (callee === 'new.RegExp') return kind(K.REGEX)
         if (callee === 'new.ArrayBuffer' || callee === 'new.SharedArrayBuffer') return kind(K.BUFFER)
       }

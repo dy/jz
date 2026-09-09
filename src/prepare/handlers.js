@@ -1644,7 +1644,7 @@ const handlers = {
     if (name == null || shadowed || !INSTANCEOF_ALLOW.has(name))
       err(`instanceof: unsupported right-hand side (got ${JSON.stringify(rawName ?? rhs)}); ` +
           `jz has no prototype chain; instanceof works only for Array, Map, Set, ` +
-          `the TypedArray (${TYPED_ELEM_NAMES.join('/')}) and ArrayBuffer/SharedArrayBuffer constructors, and ` +
+          `the TypedArray (${TYPED_ELEM_NAMES.join('/')}) and ArrayBuffer/SharedArrayBuffer/DataView constructors, and ` +
           `Error/${ERR_CLASS_NAMES.slice(1).join('/')}`)
     return ['instanceof', prep(lhs), name]
   }

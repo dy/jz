@@ -10,7 +10,7 @@ export default `
 export let __it_open = (v) => {
   if (v == null) throw new TypeError('value is not iterable')
   let w = v
-  let indexed = Array.isArray(v) || ArrayBuffer.isView(v) || typeof v === 'string'
+  let indexed = Array.isArray(v) || (ArrayBuffer.isView(v) && !(v instanceof DataView)) || typeof v === 'string'
   let method = indexed ? undefined : w['@@iterator']
   if (method != null) {
     if (typeof method !== 'function') throw new TypeError('iterator method is not callable')

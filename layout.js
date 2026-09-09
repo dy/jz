@@ -96,6 +96,9 @@ export const TYPED_ELEM_VIEW_FLAG = 8
 export const TYPED_ELEM_BIGINT_FLAG = 16
 export const TYPED_ELEM_F16_FLAG = 32
 export const TYPED_ELEM_CLAMPED_FLAG = 64
+// DataView shares the view descriptor, but has no indexed elements.
+export const DATA_VIEW_FLAG = 128
+export const DATA_VIEW_AUX = DATA_VIEW_FLAG | TYPED_ELEM_VIEW_FLAG
 
 export const TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
   'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
@@ -125,6 +128,7 @@ export function typedElemAux(ctor) {
  *  arrays — Float64Array is canonical (read-side compares aux only). */
 export function ctorFromElemAux(aux) {
   if (aux == null) return null
+  if (aux & DATA_VIEW_FLAG) return null
   const isView = (aux & 8) !== 0
   const name = (aux & TYPED_ELEM_F16_FLAG) !== 0 ? 'Float16Array'
     : (aux & TYPED_ELEM_CLAMPED_FLAG) !== 0 ? 'Uint8ClampedArray'

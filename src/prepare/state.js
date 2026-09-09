@@ -37,12 +37,7 @@ export const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 //   - Float16Array / Uint8ClampedArray: not a collision (their extra flag bit IS unique),
 //     simply out of the shipped scope — omitted for symmetry with the two ctors above
 //     rather than partially widening TYPED_ELEM_NAMES.
-//   - DataView: layout.js encodes a DataView descriptor as PTR.TYPED with aux=
-//     TYPED_ELEM_VIEW_FLAG alone (base code 0) — bit-identical to a VIEW Int8Array
-//     (`new Int8Array(buffer)`, aux = TYPED_ELEM_CODE.Int8Array(0) | VIEW_FLAG). Same
-//     tag-indistinguishable reasoning; the design doc's table never listed DataView as
-//     supported RHS in the first place, so this is a confirmation, not a new cut.
-export const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
+export const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
 
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized by `resetPrepState()`,

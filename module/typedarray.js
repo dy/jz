@@ -16,7 +16,7 @@ import { valTypeOf } from '../src/kind.js'
 import { typedIdxProven, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, mayBeUndefined, repOf } from '../src/reps.js'
-import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
+import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_AUX, encodeTypedElemAux } from '../layout.js'
 import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -495,6 +495,7 @@ export default (ctx) => {
   // receiver variable was assigned, and ArrayBuffer.isView(dv) is now true.
   ctx.core.emit['new.DataView'] = (bufExpr, offExpr, lenExpr) => {
     setLinkDemand('typedarray')
+    setLinkDemand('typedView')
     const src = temp('dvs')
     const parentOff = tempI32('dvp')
     const off = tempI32('dvo')
@@ -512,7 +513,7 @@ export default (ctx) => {
         ['i32.add', ['local.get', `$${parentOff}`], ['local.get', `$${off}`]]],
       ['i32.store', ['i32.add', ['local.get', `$${dst}`], ['i32.const', 8]],
         ['local.get', `$${parentOff}`]],
-      mkPtrIR(PTR.TYPED, 8, ['local.get', `$${dst}`])], 'f64')
+      mkPtrIR(PTR.TYPED, DATA_VIEW_AUX, ['local.get', `$${dst}`])], 'f64')
   }
 
   // BigInt64Array(buffer) (bare form, legacy): coerce to same data, Float64Array-compatible storage.
