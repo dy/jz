@@ -11,6 +11,10 @@ node bench/bench.mjs  # run benchmarks
 
 ### Shared watr optimizer
 
+Subscript is pinned to public source revision `0f65c86` for surrogate-pair
+escape decoding during UTF-8 self-hosting, on top of the 10.7.3 parser fixes.
+Replace the archive pin with an npm release once it includes this fix.
+
 `package.json` and the lockfile pin the public watr source archive at `c144e7b`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm

@@ -2097,7 +2097,7 @@ export default (ctx) => {
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], emptyStr)], 'f64')
   })
 
-  // .charCodeAt(i) → JS-spec char code: the UTF-16 code unit at `i`, or NaN
+  // .charCodeAt(i) → the UTF-8 byte at `i`, or NaN
   // when `i` is out of range (`i < 0 || i >= length`). Result is f64 because
   // NaN is not representable as i32 — an i32 `0` sentinel for OOB silently
   // miscompiles any reader that distinguishes 0 from NaN, e.g. the parser hot
@@ -2105,17 +2105,40 @@ export default (ctx) => {
   // (`0 <= 32` is true, `NaN <= 32` is false). The narrower may re-narrow the
   // result to i32 where it can prove the index in-bounds.
   bind('.charCodeAt', (str, idx) =>
-    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx, true), 'f64'))
+    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32Sat(toNumF64(idx, emit(idx))), ctx, true), 'f64'))
 
-  // String.prototype.codePointAt(i) — byte-indexed.
-  // jz strings are UTF-8 byte-arrays; `i` is a byte offset, not a UTF-16 code-unit
-  // index. For ASCII inputs (U+0000..U+007F) the result is the exact Unicode code
-  // point. For multi-byte sequences the result is the value of the leading byte only
-  // (not a full code-point decode). Out-of-range → undefined (NaN-boxed). This is a
-  // documented byte-semantics limitation; it keeps the implementation allocation-free
-  // and consistent with jz's byte-indexed string model throughout.
-  bind('.codePointAt', (str, idx) =>
-    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx, true), 'f64'))
+  // Indices remain byte offsets. Decode one Unicode scalar at a leading byte;
+  // malformed/truncated UTF-8 and continuation-byte positions yield U+FFFD.
+  wat('__codepoint_at', `(func $__codepoint_at (param $s i64) (param $i i32) (result f64)
+    (local $len i32) (local $c i32) (local $cp i32) (local $n i32) (local $min i32) (local $j i32)
+    (local.set $len (call $__str_byteLen (local.get $s)))
+    (if (i32.ge_u (local.get $i) (local.get $len)) (then (return (f64.const nan:${UNDEF_NAN}))))
+    (local.set $c (call $__char_at (local.get $s) (local.get $i)))
+    (if (i32.lt_u (local.get $c) (i32.const 128)) (then (return (f64.convert_i32_u (local.get $c)))))
+    (if (i32.lt_u (i32.sub (local.get $c) (i32.const 194)) (i32.const 30))
+      (then (local.set $n (i32.const 2)) (local.set $min (i32.const 128)) (local.set $cp (i32.and (local.get $c) (i32.const 31)))))
+    (if (i32.eq (i32.and (local.get $c) (i32.const 240)) (i32.const 224))
+      (then (local.set $n (i32.const 3)) (local.set $min (i32.const 2048)) (local.set $cp (i32.and (local.get $c) (i32.const 15)))))
+    (if (i32.lt_u (i32.sub (local.get $c) (i32.const 240)) (i32.const 5))
+      (then (local.set $n (i32.const 4)) (local.set $min (i32.const 65536)) (local.set $cp (i32.and (local.get $c) (i32.const 7)))))
+    (if (i32.or (i32.eqz (local.get $n)) (i32.gt_u (local.get $n) (i32.sub (local.get $len) (local.get $i))))
+      (then (return (f64.const 65533))))
+    (local.set $j (i32.const 1))
+    (loop $next
+      (local.set $c (call $__char_at (local.get $s) (i32.add (local.get $i) (local.get $j))))
+      (if (i32.ne (i32.and (local.get $c) (i32.const 192)) (i32.const 128)) (then (return (f64.const 65533))))
+      (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $c) (i32.const 63))))
+      (local.set $j (i32.add (local.get $j) (i32.const 1)))
+      (br_if $next (i32.lt_u (local.get $j) (local.get $n))))
+    (if (i32.or (i32.lt_u (local.get $cp) (local.get $min))
+          (i32.or (i32.gt_u (local.get $cp) (i32.const 1114111))
+            (i32.lt_u (i32.sub (local.get $cp) (i32.const 55296)) (i32.const 2048))))
+      (then (return (f64.const 65533))))
+    (f64.convert_i32_u (local.get $cp)))`)
+  bind('.codePointAt', (str, idx) => {
+    inc('__codepoint_at')
+    return typed(['call', '$__codepoint_at', asI64(emit(str)), asI32Sat(toNumF64(idx, emit(idx)))], 'f64')
+  })
 
   // String.fromCharCode(code) → 1-char SSO string
   bind('String', (value) => {
@@ -2198,34 +2221,72 @@ export default (ctx) => {
         (local.get $sp)))))
     (local.get $s))`)
 
-  // String.fromCharCode(...codes) — variadic; each arg is ToUint16(ToNumber(code))
-  // → a 1-byte string, concatenated left to right (mirrors String.fromCodePoint).
-  bind('String.fromCharCode', (...codes) => {
-    if (codes.length === 0) return emit(['str', ''])
-    // ToUint16(ToNumber(code)): `toNumF64` performs ToPrimitive on an object
-    // argument, so a throwing valueOf/toString propagates per spec. A byte ≥0x80
-    // can't be a 7-bit-ASCII SSO, so __char1byte routes it to a heap 1-byte string.
-    const one = (node) => { inc('__char1byte'); return typed(['call', '$__char1byte', asI32(toNumF64(node, emit(node)))], 'f64') }
-    let r = one(codes[0])
-    for (let i = 1; i < codes.length; i++) {
-      inc('__str_concat_raw')
-      r = typed(['call', '$__str_concat_raw', asI64(r), asI64(one(codes[i]))], 'f64')
+  // ToUint16: at exponent >= 68 every finite f64 is a multiple of 65536.
+  // Between 63 and 67, recover the low bits from the significand instead of
+  // saturating an i64 conversion. NaN/infinities take the same zero arm.
+  wat('__to_uint16', `(func $__to_uint16 (param $x f64) (result i32)
+    (local $bits i64) (local $exp i32) (local $v i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
+    (local.set $exp (i32.and (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 52))) (i32.const 2047)))
+    (if (i32.ge_u (local.get $exp) (i32.const 1091)) (then (return (i32.const 0))))
+    (if (i32.lt_u (local.get $exp) (i32.const 1086))
+      (then (return (i32.and (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $x))) (i32.const 65535)))))
+    (local.set $v (i32.shl (i32.wrap_i64 (local.get $bits)) (i32.sub (local.get $exp) (i32.const 1075))))
+    (if (f64.lt (local.get $x) (f64.const 0)) (then (local.set $v (i32.sub (i32.const 0) (local.get $v)))))
+    (i32.and (local.get $v) (i32.const 65535)))`)
+
+  // Construct UTF-8 from UTF-16 input units. Pair adjacent surrogates before
+  // encoding; isolated surrogates become U+FFFD, as at the host boundary.
+  const fromCodes = (codes, charCodes) => {
+    if (!codes.length) return emit(['str', ''])
+    inc('__utf8_char')
+    if (!charCodes) ctx.runtime.throws = true
+    inc(charCodes ? '__to_uint16' : '__codePoint_value')
+    const unit = (node, ir) => charCodes
+      ? ['call', '$__to_uint16', toNumF64(node, ir)]
+      : ['call', '$__codePoint_value', toNumF64(node, ir)]
+    if (codes.length === 1) return typed(['call', '$__utf8_char', unit(codes[0], emit(codes[0]))], 'f64')
+    inc('__str_concat_raw')
+    const out = temp('chars'), raw = codes.map(() => temp('cu')), units = codes.map(() => tempI32('cu'))
+    const get = i => ['local.get', `$${units[i]}`]
+    const body = codes.map((node, i) => ['local.set', `$${raw[i]}`, asF64(emit(node))])
+    for (let i = 0; i < codes.length; i++) body.push(['local.set', `$${units[i]}`,
+      unit(codes[i], typed(['local.get', `$${raw[i]}`], 'f64'))])
+    body.push(['local.set', `$${out}`, asF64(emit(['str', '']))])
+    for (let i = 0; i < codes.length; i++) {
+      if (i + 1 < codes.length) body.push(['if', ['i32.and',
+        ['i32.lt_u', ['i32.sub', get(i), ['i32.const', 55296]], ['i32.const', 1024]],
+        ['i32.lt_u', ['i32.sub', get(i + 1), ['i32.const', 56320]], ['i32.const', 1024]]], ['then',
+        ['local.set', `$${units[i]}`, ['i32.add', ['i32.const', 65536], ['i32.add',
+          ['i32.shl', ['i32.sub', get(i), ['i32.const', 55296]], ['i32.const', 10]],
+          ['i32.sub', get(i + 1), ['i32.const', 56320]]]]],
+        ['local.set', `$${units[i + 1]}`, ['i32.const', -1]]]])
+      body.push(['if', ['i32.ge_s', get(i), ['i32.const', 0]], ['then',
+        ['local.set', `$${out}`, ['call', '$__str_concat_raw',
+          ['i64.reinterpret_f64', ['local.get', `$${out}`]],
+          ['i64.reinterpret_f64', ['call', '$__utf8_char', get(i)]]]]]])
     }
-    return r
-  })
+    return typed(['block', ['result', 'f64'], ...body, ['local.get', `$${out}`]], 'f64')
+  }
+  bind('String.fromCharCode', (...codes) => fromCodes(codes, true))
+  bind('String.fromCodePoint', (...codes) => fromCodes(codes, false))
 
   // String.fromCodePoint(cp) → UTF-8 encoded string for one code point.
   // Param is f64 (already ToNumber-coerced); throws RangeError ($__jz_err) when
   // the value is not an integer in [0, 0x10FFFF] (22.1.2.2 step 5.d).
-  wat('__fromCodePoint', `(func $__fromCodePoint (param $cpf f64) (result f64)
-    (local $cp i32) (local $off i32) (local $len i32)
+  wat('__codePoint_value', `(func $__codePoint_value (param $cpf f64) (result i32)
     (if (i32.or
           (i32.or
             (f64.ne (f64.trunc (local.get $cpf)) (local.get $cpf))
             (f64.lt (local.get $cpf) (f64.const 0)))
           (f64.gt (local.get $cpf) (f64.const 0x10FFFF)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.FROM_CODE_POINT_RANGE}))) (throw $__jz_err (f64.const ${ERR.FROM_CODE_POINT_RANGE}))))
-    (local.set $cp (i32.trunc_sat_f64_s (local.get $cpf)))
+    (i32.trunc_sat_f64_s (local.get $cpf)))`)
+
+  wat('__utf8_char', `(func $__utf8_char (param $cp i32) (result f64)
+    (local $off i32)
+    (if (i32.lt_u (i32.sub (local.get $cp) (i32.const 0xD800)) (i32.const 0x800))
+      (then (local.set $cp (i32.const 0xFFFD))))
     ;; ASCII: 1 byte SSO
     (if (i32.lt_u (local.get $cp) (i32.const 128))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (local.get $cp)))))
@@ -2263,22 +2324,6 @@ export default (ctx) => {
         (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 16)))
         (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 24))))
     (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4)))))`)
-
-  // String.fromCodePoint(...codePoints) — variadic; each arg is ToNumber-coerced
-  // then validated/encoded by __fromCodePoint, results concatenated left to right.
-  bind('String.fromCodePoint', (...codes) => {
-    if (codes.length === 0) return emit(['str', ''])
-    ctx.runtime.throws = true
-    inc('__fromCodePoint')
-    const one = (node) => typed(['call', '$__fromCodePoint',
-      toNumF64(node, emit(node))], 'f64')
-    let r = one(codes[0])
-    for (let i = 1; i < codes.length; i++) {
-      inc('__str_concat_raw')
-      r = typed(['call', '$__str_concat_raw', asI64(r), asI64(one(codes[i]))], 'f64')
-    }
-    return r
-  })
 
   registerUri()
 

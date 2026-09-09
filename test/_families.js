@@ -41,11 +41,9 @@ export const FAMILIES = [
     { name: 'typed map with a counting callback', src: `export let g = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i; let c = 0; const r = a.map(x => { c++; return x * 2 }); return r[n - 1] + c }`, calls: [['g', [4], 10], ['g', [0], NaN]] },
     { name: 'the receiver evaluates once', src: `let calls = 0\nconst arr = () => { calls++; return [3, 1, 2] }\nexport let f = () => { const s = arr().map(x => x + 1).reduce((a, b) => a + b, 0); return s * 10 + calls }`, calls: [['f', [], 91]] },
   ] },
-  { family: 'strings: escapes and code units', cases: [
-    { name: 'hex and unicode escapes equal their characters', src: `export let f = () => "\\xff" === "ÿ" ? 1 : 0\nexport let k = () => "\\uD83D\\uDE00" === "😀" ? 1 : 0\nexport let u = () => "\\u{1F600}" === "😀" ? 1 : 0`, calls: [['f', [], 1], ['k', [], 1], ['u', [], 1]],
-      red: { hosted: 'the kernel decodes \\xHH and \\uHHHH above 0x7f through String.fromCharCode (A receipt)' } },
-    { name: 'String.fromCharCode above 0xff', src: `export let h = () => String.fromCharCode(0x100).charCodeAt(0)\nexport let a = () => String.fromCharCode(65, 66)`, calls: [['h', [], 256], ['a', [], 'AB']],
-      red: { native: 'every level: the runtime writes one byte (0)' } },
+  { family: 'strings: Unicode construction and escapes', cases: [
+    { name: 'hex and unicode escapes equal their characters', src: `export let f = () => "\\xff" === "ÿ" ? 1 : 0\nexport let k = () => "\\uD83D\\uDE00" === "😀" ? 1 : 0\nexport let u = () => "\\u{1F600}" === "😀" ? 1 : 0`, calls: [['f', [], 1], ['k', [], 1], ['u', [], 1]] },
+    { name: 'String.fromCharCode above 0xff', src: `export let h = () => String.fromCharCode(0x100)\nexport let a = () => String.fromCharCode(65, 66)`, calls: [['h', [], 'Ā'], ['a', [], 'AB']] },
   ] },
   { family: 'error arms', cases: [
     { name: 'thrown classes and primitives', src: `export let f = (x) => { try { if (x === 1) throw new TypeError('t'); if (x === 2) throw 5; if (x === 3) throw 'str'; return 0 } catch (e) { return e instanceof TypeError ? 1 : typeof e === 'number' ? e : typeof e === 'string' ? e.length : -1 } }\nexport let g = (x) => { if (x) throw new RangeError('r'); return 1 }\nexport let h = (x) => { if (x) throw 42; return 1 }`,

@@ -1260,3 +1260,43 @@ test('string +: operands evaluate in source order around a known side', () => {
   is(f(), 4)
   is(g(), '1y')
 })
+
+test('UTF-8 constructors encode Unicode units and scalar values', () => {
+  const e = run(`
+    export let unit = x => String.fromCharCode(x)
+    export let point = x => String.fromCodePoint(x)
+    export let pair = (a,b) => String.fromCharCode(a,b)
+    export let points = (a,b) => String.fromCodePoint(a,b)
+  `)
+  const normalize = s => new TextDecoder().decode(new TextEncoder().encode(s))
+  for (const n of [0,65,127,128,255,256,2047,2048,55295,55296,56319,56320,57343,57344,65535,65536,-1,NaN,Infinity,3.9,4294967552,2**63+2048,-(2**63+2048),2**64+4096,2**68,Number.MAX_VALUE])
+    is(e.unit(n), normalize(String.fromCharCode(n)), `unit ${n}`)
+  for (const n of [0,127,128,2047,2048,55296,65535,65536,0x1D800,0x1F600,0x10FFFF])
+    is(e.point(n), normalize(String.fromCodePoint(n)), `point ${n}`)
+  for (const [a,b] of [[0xD83D,0xDE00],[0xD800,65],[65,0xDC00],[0xD800,0xD800],[0xDC00,0xDC00]]) {
+    is(e.pair(a,b), normalize(String.fromCharCode(a,b)))
+    is(e.points(a,b), normalize(String.fromCodePoint(a,b)))
+  }
+})
+
+test('UTF-8 string positions are bytes and codePointAt decodes scalars', () => {
+  const e = run(`export let byte = (s,i) => s.charCodeAt(i); export let point = (s,i) => s.codePointAt(i); export let len = s => s.length`)
+  const s = 'AĀ中😀𝠀', bytes = new TextEncoder().encode(s)
+  is(e.len(s), bytes.length)
+  for (let i=0;i<bytes.length;i++) is(e.byte(s,i), bytes[i])
+  let offset = 0
+  for (const ch of s) { is(e.point(s,offset),ch.codePointAt(0)); offset += new TextEncoder().encode(ch).length }
+  for (const i of [-1,bytes.length,Infinity,4294967296]) { is(e.point(s,i),undefined); is(Number.isNaN(e.byte(s,i)),true) }
+  is(e.point(s,2),0xFFFD, 'continuation byte is not a scalar boundary')
+})
+
+test('UTF-8 construction evaluates arguments before numeric coercion', () => {
+  for (const method of ['fromCharCode','fromCodePoint']) {
+    const src = `export let f = () => {
+      let log = ''; let a = { valueOf: () => { log += 'a'; return 0xD83D } };
+      let b = () => { log += 'b'; return 0xDE00 };
+      let s = String.${method}(a,b()); return s + '|' + log
+    }`
+    is(run(src).f(), Function(src.replace('export ','')+';return f()')())
+  }
+})

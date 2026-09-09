@@ -94,7 +94,7 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.7.3",
+    "subscript": "https://codeload.github.com/dy/subscript/tar.gz/0f65c867269c2dc9c26ac98a7bc91d26c327e9b1",
     "watr": "https://codeload.github.com/dy/watr/tar.gz/c144e7b07b8aad162574ce75ef430f2b70af4860"
   },
   "keywords": [

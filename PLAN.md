@@ -91,17 +91,20 @@ DataView has a distinct runtime discriminator while reusing the existing view
 descriptor. Host marshaling preserves its view extent and identity. Typed-array
 constructor summaries retain descriptor storage through calls and closures;
 array parameter iteration rejects DataView without rejecting typed-array views.
-Subscript 10.7.3 restores ASI state when speculative method parsing backtracks;
-JZ requires that published patch, including its multiplication-after-semicolon fix.
+Subscript 10.7.3 restores ASI state when speculative method parsing backtracks.
+The pinned public revision `0f65c86` also combines escaped surrogate pairs before
+UTF-8 encoding in the self-hosted parser. String constructors share one Unicode
+encoder, normalize isolated surrogates and preserve argument evaluation order.
+Positions remain byte-based; `codePointAt` decodes a scalar at that byte offset.
 
 ## Release gates
 
 - Run the core, matrix, conformance and self-hosting gates on the packaged
   revision. Record baseline failures separately from regressions.
-- Compiler byte-string builders are removed. Public string construction and
-  decoding still need a consistent UTF-8 contract; the fromCharCode > 255
-  regression remains open. Resolve surrogate handling and escape decoding together;
-  changing a single assertion does not establish a consistent string contract.
+- Compiler byte-string builders are removed. UTF-8 is the v1 string contract;
+  retain native/self-hosted coverage for constructors, escapes and byte positions.
+  Malformed TextDecoder input still needs normalization inside Wasm, rather than
+  relying on the host boundary to repair it.
 - Conformance still exposes property enumerability and function reflection.
   Iterator parameter acquisition/step errors are corrected; declaration and
   assignment patterns still use indexed lowering. DataView identity and iterator
@@ -115,6 +118,10 @@ JZ requires that published patch, including its multiplication-after-semicolon f
   benchmark and memory evidence after compiler changes, with complete rival
   coverage and a machine inside the existing load/swap validity limits. The
   committed evidence is currently stale and does not meet those requirements.
+  The UTF-8 fix leaves 58 of 60 measured binary sizes unchanged; wordcount grows
+  3,680→3,971 bytes and watr 308,914→308,946 bytes (300,000-byte cap).
+  Recover that encoding cost using proven input ranges; retain Unicode behavior
+  and the fixed benchmark sources.
 - Replace the pinned watr source archive with an npm release when it contains
   the required fixes.
 
