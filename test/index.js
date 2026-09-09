@@ -192,7 +192,9 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // peeled in powResolvePool — regex ctrl-char pattern escapes (→ manual scan),
   // startsWith positional arg dropped (→ slice-compare), obj[numVar] object
   // read (→ dense arrays for type/lastUse/regOf).
-const onKernelTarget = process.env.JZ_TEST_TARGET === 'jz.wasm'
+const target = process.env.JZ_TEST_TARGET
+if (target && target !== 'jz.wasm') throw new Error(`Unknown JZ_TEST_TARGET '${target}'; use jz.wasm and set JZ_KERNEL to the compiler file`)
+const onKernelTarget = target === 'jz.wasm'
 
 const selected = (argFilters.length
   ? TESTS.filter(name => argFilters.includes(name))
@@ -208,7 +210,7 @@ if (argFilters.length && selected.length !== argFilters.length) {
 // JZ_TEST_TARGET=jz.wasm — run the whole suite against the self-compiled jz.wasm
 // kernel instead of the in-process compiler. Set the target BEFORE importing any
 // test file (they import jz from ../index.js — the same module singleton).
-if (process.env.JZ_TEST_TARGET === 'jz.wasm') {
+if (onKernelTarget) {
   const [{ _setCompileTarget }, { compileViaKernel }] = await Promise.all([
     import('../index.js'), import('./kernel-target.js'),
   ])
