@@ -57,13 +57,20 @@ Snapshot initialization reuses the probe's encoded function bodies when removing
 the start preserves indices; changed layouts use the ordinary encoder. Compiler
 artifacts explicitly target the JS host, independently of the test matrix.
 JZ retains lowering-specific optimization and representation proofs.
+Static data and shared string pools now stay in Uint8Array chunks from their
+producers through relocation and WAT escaping. Binary serialization no longer
+depends on JavaScript string character semantics.
+Generator and async exception paths share one finalizer state; normal completion,
+rejection and catch exceptions converge there, and finalizer return/throw overrides
+the pending exception.
 
 ## Release gates
 
 - Run the core, matrix, conformance and self-hosting gates on the packaged
   revision. Record baseline failures separately from regressions.
-- String construction and byte-string builders need one consistent contract;
-  changing fromCharCode alone previously broke compiler builders.
+- Compiler byte-string builders are removed. Public string construction and
+  decoding still need a consistent UTF-8 contract; the fromCharCode > 255
+  regression remains open.
 - The warm Map/property failure came from counting duplicate and cancelled
   durable-slot log entries toward a fixed limit. The log now reuses them;
   retain the repeated-compile and reset tests as lifecycle gates.

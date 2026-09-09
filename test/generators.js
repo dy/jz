@@ -288,3 +288,23 @@ test('generators: shadowed locals rename apart before hoisting (sibling loops, i
   is(j(`function* g(n) { for (let i = 0; i < n; i++) yield i; for (let i = 0; i < n; i++) yield i * 10; let w = (e) => e + w.k; w.k = 5; yield w(1) } export let f = () => [...g(2)].join(',')`), '0,1,0,10,6')
   is(j(`function* g() { let s = 0; if (s === 0) { let i = 100; s += i } else { let i = 200; s += i } const fns = []; for (const i of [1, 2]) fns.push(() => i); for (let i = 0; i < 2; i++) s += fns[i](); const { i } = { i: 1000 }; yield s + i } export let f = () => [...g()][0]`), 100 + 3 + 1000)
 })
+
+test('generators: finally runs once on normal, injected and caught exceptions', () => {
+  for (const source of [
+    `let log = ''; function* g() { try { yield 1; log += 'B' } finally { log += 'F' } }
+     export function f() { const it = g(); it.next(); it.next(); return log }`,
+    `let log = ''; function* g() { try { yield 1 } finally { log += 'F' } }
+     export function f() { const it = g(); it.next(); try { it.throw('E') } catch(e) { log += e }; return log }`,
+    `let log = ''; function* g() { try { yield 1 } catch(e) { log += e; throw 'C' } finally { log += 'F' } }
+     export function f() { const it = g(); it.next(); try { it.throw('E') } catch(e) { log += e }; return log }`,
+    `function* g() { try { yield 1 } finally { return 42 } }
+     export function f() { const it = g(); it.next(); const r = it.throw('E'); return r.value + ':' + r.done }`,
+    `function bad() { throw 'R' } function* g() { try { try { yield 1 } finally { return bad() } } catch(e) { return e } }
+     export function f() { const it = g(); it.next(); return it.throw('E').value }`,
+    `let log = ''; function* g() { try { try { yield 1 } finally { log += 'I'; throw 'F' } } finally { log += 'O' } }
+     export function f() { const it = g(); it.next(); try { it.throw('E') } catch(e) { log += e }; return log }`,
+  ]) {
+    const expected = Function(source.replace('export ', '') + '; return f()')()
+    is(j(source), expected)
+  }
+})

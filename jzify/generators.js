@@ -372,7 +372,12 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
 
       // --- return ---
       if (op === 'return') {
-        const v = st[1] === undefined ? [null, undefined] : transform(st[1])
+        let v = st[1] === undefined ? [null, undefined] : transform(st[1])
+        if (curHandler >= 0 && st[1] !== undefined) {
+          // Evaluate while this state's exception handler is still active.
+          const value = genTemp('return'); locals.add(value)
+          stmtsOf(cur).push(['=', value, v]); v = value
+        }
         stmtsOf(cur).push(
           [';;set', -1],
           ['return', ['{}', [',', [':', 'value', v], [':', 'done', [null, true]]]]])
@@ -477,24 +482,41 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
         const finallyC = st.find((c, i) => i > 1 && Array.isArray(c) && c[0] === 'finally')
         if (finallyC && (hasYield(finallyC[1]) || hasReturn(st[1]) || (catchC && hasReturn(catchC[2])) || hasFreeJump(st[1]) || (catchC && hasFreeJump(catchC[2]))))
           err('generators v1: a `finally` that yields, or a return/break/continue leaving a try with a finally, is not supported yet across a yield')
-        if (!catchC) {   // try/finally only: run the finally after the body (no yield in it)
-          const bEnd = flattenList(blockStmts(st[1]), cur, loopCtx)
-          if (bEnd == null) return null
-          for (const f of blockStmts(finallyC[1])) stmtsOf(bEnd).push(transform(f))
-          return bEnd
-        }
-        const catchS = newState(), after = newState()   // outside the region
         const outer = curHandler
+        const after = newState()
+        const finS = finallyC ? newState() : after
+        const errorS = finallyC ? newState() : outer
+        let pending, error
+        if (finallyC) {
+          pending = genTemp('pending'); error = genTemp('error')
+          locals.add(pending); locals.add(error)
+          stmtsOf(errorS).push(['=', pending, [null, true]], ['=', error, S.ERR], ...gotoIR(finS))
+        }
+        const finish = end => {
+          if (end == null) return
+          if (finallyC) stmtsOf(end).push(['=', pending, [null, false]])
+          stmtsOf(end).push(...gotoIR(finS))
+        }
+        // Exceptions from the catch must also run the finalizer. Its own
+        // states belong to the outer region, so it cannot catch itself.
+        curHandler = errorS
+        const catchS = catchC ? newState() : errorS
         curHandler = catchS
         const bodyS = newState()
         stmtsOf(cur).push(...gotoIR(bodyS))
-        const bEnd = flattenList(blockStmts(st[1]), bodyS, loopCtx)
+        finish(flattenList(blockStmts(st[1]), bodyS, loopCtx))
+        if (catchC) {
+          curHandler = errorS
+          if (catchC[1] != null) { locals.add(catchC[1]); stmtsOf(catchS).push(['=', catchC[1], S.ERR]) }
+          finish(flattenList(blockStmts(catchC[2]), catchS, loopCtx))
+        }
         curHandler = outer
-        const fin = finallyC ? blockStmts(finallyC[1]).map(transform) : []
-        if (bEnd != null) stmtsOf(bEnd).push(...fin, ...gotoIR(after))
-        if (catchC[1] != null) { locals.add(catchC[1]); stmtsOf(catchS).push(['=', catchC[1], S.ERR]) }
-        const cEnd = flattenList(blockStmts(catchC[2]), catchS, loopCtx)
-        if (cEnd != null) stmtsOf(cEnd).push(...fin, ...gotoIR(after))
+        if (finallyC) {
+          // One finalizer for both paths. A return/throw here overrides the
+          // pending exception; falling through resumes it.
+          const end = flattenList(blockStmts(finallyC[1]), finS, loopCtx)
+          if (end != null) stmtsOf(end).push(['if', pending, ['throw', error]], ...gotoIR(after))
+        }
         return after
       }
       if (op === 'catch' || op === 'finally')

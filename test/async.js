@@ -241,3 +241,14 @@ test('async/generator bodies: block-nested function declaration is a named v1 re
   catch (e) { msg = e.message }
   ok(/generators v1: function declaration 'h' inside a decomposed/.test(msg), `named reject (got: ${msg.slice(0, 60)})`)
 })
+
+test('async: finally overrides rejection with return or throw', async () => {
+  if (onWasi() || onKernel()) return
+  is(await val(`async function g() { try { await Promise.reject('E') } finally { return 42 } }
+    export let f = () => g()`), 42)
+  is(await val(`async function g() { try { await Promise.reject('E') } finally { throw 'F' } }
+    export let f = () => g().catch(e => e)`), 'F')
+  is(await val(`let log = ''; async function g() {
+    try { await Promise.reject('E') } catch(e) { log += e; throw 'C' } finally { log += 'F' }
+  } export let f = () => g().catch(e => log + e)`), 'EFC')
+})
