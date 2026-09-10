@@ -127,9 +127,13 @@ function analyzeSimd(body, param) {
 
 // === SIMD + scalar WAT codegen (parameterized by type prefix) ===
 
+// A float constant as WAT text: String(-0) is '0', which would drop the sign
+// that `x * -0` / `x + -0` carry into every lane.
+const lit = (c) => Object.is(c, -0) ? '-0' : c
+
 /** Generate SIMD v128 op. p=prefix (f64x2/f32x4/i32x4), t=const type (f64/f32/i32). */
 const simdOp = (p, t) => (op, c) => {
-  const s = `(${p}.splat (${t}.const ${c}))`
+  const s = `(${p}.splat (${t}.const ${lit(c)}))`
   const ops = {
     mul: `${p}.mul (local.get $v) ${s}`, add: `${p}.add (local.get $v) ${s}`,
     sub: `${p}.sub (local.get $v) ${s}`, div: `${p}.div (local.get $v) ${s}`,
@@ -151,8 +155,8 @@ const simdOp = (p, t) => (op, c) => {
 const scalarOp = (t, v) => (op, c) => {
   const g = `(local.get $${v})`
   const ops = {
-    mul: `(${t}.mul ${g} (${t}.const ${c}))`, add: `(${t}.add ${g} (${t}.const ${c}))`,
-    sub: `(${t}.sub ${g} (${t}.const ${c}))`, div: `(${t}.div ${g} (${t}.const ${c}))`,
+    mul: `(${t}.mul ${g} (${t}.const ${lit(c)}))`, add: `(${t}.add ${g} (${t}.const ${lit(c)}))`,
+    sub: `(${t}.sub ${g} (${t}.const ${lit(c)}))`, div: `(${t}.div ${g} (${t}.const ${lit(c)}))`,
     neg: t === 'i32' ? `(i32.sub (i32.const 0) ${g})` : `(${t}.neg ${g})`,
     abs: t === 'i32' ? `(select (i32.sub (i32.const 0) ${g}) ${g} (i32.lt_s ${g} (i32.const 0)))` : `(${t}.abs ${g})`,
     sqrt: `(${t}.sqrt ${g})`, ceil: `(${t}.ceil ${g})`, floor: `(${t}.floor ${g})`,

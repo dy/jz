@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, coerceAtomsToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isUndef } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, coerceAtomsToNum, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isUndef } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS, isUndefinedLiteral } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -2175,9 +2175,15 @@ export default (ctx) => {
       const pattern = analyzeSimd(body, param)
 
       if (pattern) {
-        const id = freshId(ctx)
-        const funcName = `__simd_map_${id}`
-        const wat = genSimdMap(funcName, elemType, pattern)
+        // One helper per (element type, op, constant), named by content: identical
+        // maps anywhere in the module share it and different ones never collide.
+        // (A per-function id — freshId counts per EmitFrame — named two functions'
+        // first maps both `__simd_map_0`, and the later registration replaced the
+        // earlier body: `a.map(x => x & 1.5)` computed `x & 33` from a sibling.)
+        const c = pattern.val
+        const constKey = c === undefined ? '' : '_' + (Object.is(c, -0) ? 'n0' : String(c).replaceAll('-', 'n').replaceAll('.', 'p'))
+        const funcName = `__simd_map_${elemType}_${pattern.op}${constKey}`
+        const wat = ctx.core.stdlib[funcName] || genSimdMap(funcName, elemType, pattern)
         if (wat) {
           ctx.core.stdlib[funcName] = wat
           // __alloc_hdr_n: body-calls it directly (canonical 16-byte header
