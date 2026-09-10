@@ -37,7 +37,7 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 301,293 | 300,000 |
+   | Watr encoder | 301,426 | 300,000 |
    | FFT | 1,718 | 1,758 |
    | bezfit | 3,245 | 3,017 |
    | immutable | 1,481 | 1,481 |
@@ -49,7 +49,7 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    Equality is not a strict win. No benchmark sources or budgets changed.
    Against `b401fe2`, shapes shrinks 12 bytes and wordcount 26; the encoder grows
-   794 bytes. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
+   927 bytes. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
    scale 1,013→869, Uint8 clamp 1,213→1,055, matmul 25,561→25,407.
    Correct mixed-value comparison grows fib 18,694→18,894. These are binary
    sizes, not throughput claims; the size gate remains open.
@@ -68,6 +68,13 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    after/before geomean is 0.996× (effectively neutral); measured heap use rises
    672–848 bytes per compilation. These scoped measurements do not close the
    release memory or throughput evidence requirements.
+   The review follow-up fixes nullable callable dispatch: missing object/array
+   entries throw TypeError after argument evaluation, including spreads. The
+   shared closure-call boundary captures the callee before arguments and checks
+   callability after their effects. Generic, spread and member calls share it;
+   duplicate lowering is removed. Required checks add 133 encoder bytes. The
+   184-assertion regression covers empty tables/spreads, null, member replacement,
+   argument exceptions and A→A→failing B→A recovery at all tiers and under WASI.
 
 2. **Speed and evidence.** The stored reference fails leadership claims,
    including V8 losses on jessie and Watr, and is stale. Prior self-compile
@@ -99,6 +106,11 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    p={x:3}; return p.y` currently returns `0`, not `undefined`, including O0.
    Scalar replacement rejects differing field sets; this remaining defect is
    in the general record representation/read proof.
+   Also fix in-module error classification: a nullable local call's caught
+   error has `name === 'TypeError'` and reaches the host as TypeError, but
+   `e instanceof TypeError` can return false. This reproduces before the
+   nullable-dispatch review fix: `let f=flag?twice:null; try { f(4) }
+   catch(e) { return e instanceof TypeError }` (with `twice(x){return x*2}`).
 
 5. **Review handoff.** Complete the callable-reachability probe (exports,
    address-taken functions, init/default/optional/member/dispatch edges). Give

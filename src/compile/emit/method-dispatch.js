@@ -78,14 +78,18 @@ function tryFlatObjectMethod(callee, obj, method, parsed) {
   if (typeof obj === 'string' && ctx.closure.call) {
     const flat = ctx.func.flatObjects?.get(obj)
     const fi = flat ? flat.names.indexOf(method) : -1
-    if (fi >= 0) return ownMethodCall(typed(['local.get', `$${obj}#${fi}`], 'f64'), parsed)
+    if (fi >= 0) {
+      const kind = ctx.summary.kindOfExpr(callee)
+      return ownMethodCall(typed(['local.get', `$${obj}#${fi}`], 'f64'), parsed,
+        tagOf(kind) !== K.CLOSURE || isNullable(kind))
+    }
   }
 }
 
 /** Call the closure held in `propRead` as the method: a spread call passes its arguments as one array. */
-const ownMethodCall = (propRead, parsed) => parsed.hasSpread
-  ? ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
-  : ctx.closure.call(propRead, parsed.normal)
+const ownMethodCall = (propRead, parsed, check = false) => parsed.hasSpread
+  ? ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true, check)
+  : ctx.closure.call(propRead, parsed.normal, false, check)
 
 // 2. String-buffer SRoA: `line.charCodeAt(j)` where `line` was dissolved into
 // raw (buf, len) locals by tryConcatBufferDecl (emit.js, above) — a bare byte
@@ -557,7 +561,8 @@ function trySchemaClosureCall({ obj, method, parsed }) {
       // Whichever function the slot holds at runtime, its result crosses the
       // closure ABI in the boxed carrier: a closure's return edge boxes, a
       // named function's trampoline boxes a raw result (emit/dispatch.js).
-      return ctx.closure.call(propRead, callArgs, prebuilt)
+      const kind = ctx.summary.kindOfExpr(['.', obj, method])
+      return ctx.closure.call(propRead, callArgs, prebuilt, tagOf(kind) !== K.CLOSURE || isNullable(kind))
     }
   }
 }

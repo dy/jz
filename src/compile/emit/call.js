@@ -11,11 +11,11 @@ import {
 import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand } from '../../ctx.js'
 import { includeForArrayAccess } from '../../autoload.js'
 import {
-  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNullish, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, throwTypeErrorIR, typed, undefExpr,
+  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
-import { K, core, tagOf } from '../../summary/index.js'
+import { K, core, tagOf, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
@@ -298,102 +298,50 @@ function recordClosureTableCallSite(arrName, argNodes) {
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
  *  Uniform convention: fn.call packs all args into an array and trampolines. */
 function emitGenericClosureCall(callee, parsed) {
-  // Open callable values may be host functions as well as compiled closures.
-  // Share the existing external-call ABI; proven closures keep their direct path.
-  if (ctx.transform.targetProfile.envImports && valTypeOf(callee) !== VAL.CLOSURE
-      && tagOf(core(ctx.summary.kindOfExpr(callee))) !== K.CLOSURE) {
-    includeForArrayAccess()
-    inc('__ext_call', '__ptr_type')
-    setLinkDemand('external')
-    const ct = temp('callee'), recv = typed(['local.get', `$${ct}`], 'f64')
-    const setup = [['local.set', `$${ct}`, asF64(emit(callee))]]
-    let args, arrayIR
-    if (parsed.hasSpread) {
-      const at = temp('args')
-      setup.push(['local.set', `$${at}`, asF64(buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads)))])
-      arrayIR = typed(['local.get', `$${at}`], 'f64')
-      args = [arrayIR]
-    } else {
-      args = parsed.normal.map(a => {
-        const t = temp('arg')
-        setup.push(['local.set', `$${t}`, ctx.closure.argIR(a)])
-        return typed(['local.get', `$${t}`], 'f64')
-      })
-      const arr = allocPtr({ type: PTR.ARRAY, len: args.length, tag: 'args' })
-      arrayIR = ['block', ['result', 'f64'], arr.init,
-        ...args.map((a, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], a]), arr.ptr]
-    }
-    return typed(['block', ['result', 'f64'], ...setup,
-      ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
-        ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
-          ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
-        ['else', ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.CLOSURE),
-          ['then', ctx.closure.call(recv, args, parsed.hasSpread)],
-          ['else', throwTypeErrorIR('call')]]]]], 'f64')
-  }
-  const arrName = !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
+  const kind = ctx.summary.kindOfExpr(callee)
+  const open = valTypeOf(callee) !== VAL.CLOSURE && tagOf(core(kind)) !== K.CLOSURE
+  const nullable = censusMaybeUndefined(callee) ||
+    (tagOf(core(kind)) === K.CLOSURE && isNullable(kind))
+  const arrName = !open && !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
     ? callee[1] : null
   const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && arrName ? arrName : null
   if (arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
-  // `callee` is a genuinely dynamic expression here — every
-  // statically-resolved shape (known top-level function, direct non-escaping
-  // closure, method call) was already sifted off by the '()' dispatcher above
-  // this function, so its kind is unproven and it may be nullish at runtime
-  // (e.g. `m.get('missing')()`, a census-shaped dict/Map absent-key read).
-  // ctx.closure.call's call_indirect reads the nullish sentinel's aux bits as
-  // a function-table index unconditionally — an out-of-bounds wasm trap,
-  // uncatchable in-source ("table index out of bounds"). Real JS throws
-  // TypeError.
-  //
-  // A BARE-NAME callee (`typeof callee === 'string'`, e.g. `f(x)`) is emitted
-  // TWICE instead of hoisted through a shared temp — found live, not assumed
-  // safe: an intermediate `local.set $ct = (select const1 const2 cond); ...
-  // call_indirect(local.get $ct, ...)` hides the "closure value is a select
-  // of ≤2 known constants" shape from watr's own post-optimizer devirt pass
-  // (perf(wat) "devirt — call_indirect with known closure constants → guarded
-  // direct calls", commit 4c49c2ec) — that pass pattern-matches the select
-  // directly feeding the call_indirect operand's `local.set`, one level of
-  // indirection it does not trace through. `readVar` (ir.js) is pure for a
-  // bare name (`local.get`/`global.get`, no side effect, no shared node
-  // object between the two emissions — each `emit(callee)` call returns a
-  // fresh IR node), so evaluating it twice is exactly as safe as the
-  // single-eval case and costs nothing extra once optimized (V8/watr CSE the
-  // repeated load). A COMPOUND callee (`m.get(k)()`, `arr[i]()`) may carry a
-  // real side effect (the `.get` call itself) — hoisted through a temp,
-  // exactly as before; this shape was never the ternary-select-of-constants
-  // pattern the devirt pass targets, so hoisting it costs nothing there.
-  // Only a genuinely mayBeUndefined callee pays for the guard —
-  // same `censusMaybeUndefined` predicate as every other check in this
-  // design (tryRuntimePtrTypeFork's comment has the measured SIZE cost of
-  // gating on "unresolved kind" alone instead). A callee that is unresolved
-  // only because it's a PLAIN closure-holding parameter/local (never
-  // touched by census/dict machinery — e.g. `const pass = (g, x) => g(x)`)
-  // is unaffected, byte-for-byte, from before this task.
-  const mayBeUndef = censusMaybeUndefined(callee)
-  const pureCallee = typeof callee === 'string'
-  const guarded = (whenOk) => {
-    if (!mayBeUndef) return asF64(whenOk(asF64(emit(callee))))
-    if (pureCallee) return typed(['if', ['result', 'f64'],
-      isNullish(asF64(emit(callee))),
-      ['then', throwTypeErrorIR('call')],
-      ['else', asF64(whenOk(asF64(emit(callee))))]], 'f64')
-    const ct = temp('gcallee')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${ct}`, asF64(emit(callee))],
-      ['if', ['result', 'f64'],
-        isNullish(typed(['local.get', `$${ct}`], 'f64')),
-        ['then', throwTypeErrorIR('call')],
-        ['else', asF64(whenOk(typed(['local.get', `$${ct}`], 'f64')))]]], 'f64')
+  let ir
+  if (!open || !ctx.transform.targetProfile.envImports) {
+    const args = parsed.hasSpread
+      ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
+      : parsed.normal
+    ir = ctx.closure.call(asF64(emit(callee)), args, parsed.hasSpread, open || nullable)
+  } else {
+    includeForArrayAccess()
+    inc('__ext_call', '__ptr_type')
+    setLinkDemand('external')
+    // The host ABI shares evaluation with the compiled-call branch; only a
+    // host call materializes the inline arguments as a host-readable array.
+    const ct = temp('callee'), recv = typed(['local.get', `$${ct}`], 'f64')
+    const setup = [['local.set', `$${ct}`, asF64(emit(callee))]]
+    const values = parsed.hasSpread
+      ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
+      : parsed.normal
+    const args = values.map(value => {
+      const t = temp('arg')
+      setup.push(['local.set', `$${t}`, ctx.closure.argIR(value)])
+      return typed(['local.get', `$${t}`], 'f64')
+    })
+    let arrayIR = args[0]
+    if (!parsed.hasSpread) {
+      const arr = allocPtr({ type: PTR.ARRAY, len: args.length, tag: 'args' })
+      arrayIR = ['block', ['result', 'f64'], arr.init,
+        ...args.map((a, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], a]), arr.ptr]
+    }
+    ir = typed(['block', ['result', 'f64'], ...setup,
+      ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
+        ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+          ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
+        ['else', ctx.closure.call(recv, args, parsed.hasSpread, true)]]], 'f64')
   }
-  if (parsed.hasSpread) {
-    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-    const arrayIR = buildArrayWithSpreads(combined)
-    // Pass pre-built array as single already-emitted arg
-    return guarded(recv => ctx.closure.call(recv, [arrayIR], true))
-  }
-  const ir = guarded(recv => ctx.closure.call(recv, parsed.normal))
   return dvName ? tagFnArrayDispatch(ir, dvName) : ir
 }
 

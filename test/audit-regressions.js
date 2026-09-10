@@ -1,5 +1,5 @@
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onKernel } from './_matrix.js'
 
@@ -84,5 +84,35 @@ export function result(){const a=make();return a.length+count(a)}`
   for (const change of ['a.push(3)', 'a.pop()', 'a.length=0']) {
     const code=`function change(a){${change};return a.length} export function result(){const a=[1,2];return change(a)}`
     is(jz(code,{optimize}).exports.result(),change.includes('push')?3:change.includes('pop')?1:0)
+  }
+})
+
+test('audit: nullable calls evaluate arguments before throwing and recover', () => {
+  const prefix = 'let calls=0;function twice(x){return x*2}function tick(){calls++;return 4}function pick(){calls=calls*10+1;return twice}function mark(){calls=calls*10+2;return 4}'
+  const cases = [
+    ['const table={};return table[key](tick())', 'x', 'y', 101, 101],
+    ['const table=[];return table[key](tick())', 0, 1, 101, 101],
+    ['return pick()(...[mark()])+calls', 0, 1, 20, 20],
+    ['const o={f:key?twice:null};return o.f(tick())+calls', 1, 0, 9, 101],
+    ['const o={f:twice};return o.f(...[(o.f=x=>x+3,4)])', 0, 1, 8, 8],
+    ['const table={twice};return table[key](tick())+calls', 'twice', 'missing', 9, 101],
+    ['const table=[twice];return table[key](tick())+calls', 0, 1, 9, 101],
+    ['const table={twice};return table[key](...[tick()])+calls', 'twice', 'missing', 9, 101],
+    ['const table={twice};return table[key](...[])', 'twice', 'missing', NaN, 100],
+    ['let f=key?twice:null;return f((calls++,f=x=>x+3,4))+calls', 1, 0, 9, 101],
+    ['const table={twice};return table[key]((()=>{calls++;throw 7})())', 'twice', 'missing', 201, 201],
+  ]
+  for (const [body, good, bad, expected, failed] of cases) for (const optimize of tiers) {
+    const src = `${prefix}export function result(key){calls=0;try{${body}}catch(e){return e===7?200+calls:e.name==='TypeError'?100+calls:-1}}`
+    const { result } = jz(src, { optimize }).exports
+    is(result(good), expected, 'A: valid call or argument exception')
+    is(result(good), expected, 'A again: independent argument effects')
+    is(result(bad), failed, 'B: missing/null callee still evaluates arguments')
+    is(result(good), expected, 'A after B: recovery preserves behavior')
+  }
+  for (const optimize of tiers) {
+    const { result } = jz('function twice(x){return x*2}export function result(key){const table={twice};return table[key](4)}', { optimize }).exports
+    throws(() => result('missing'), TypeError, 'missing entry reaches the host as a TypeError')
+    is(result('twice'), 8, 'host error does not poison the next call')
   }
 })

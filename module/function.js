@@ -10,7 +10,7 @@
  * @module fn
  */
 
-import { typed, asF64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
+import { typed, asF64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, ptrTypeEq, throwTypeErrorIR } from '../src/ir.js'
 import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
@@ -324,70 +324,50 @@ export default (ctx) => {
     const action = representationClosureArgAction(ctx, a)
     return action === REP_EDGE_REJECT ? storedValue(a) : storedValuePlanned(a, action)
   }
-  ctx.closure.call = (closureExpr, args, prebuiltArray) => {
-    const t = temp('clos')
-
+  ctx.closure.call = (closureExpr, args, prebuiltArray, check = false) => {
+    const t = temp('clos'), recv = typed(['local.get', `$${t}`], 'f64')
+    // Every caller captures the callee before evaluating inline or spread args.
+    const setup = [['local.set', `$${t}`, asF64(closureExpr)]]
+    const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+    const slots = []
+    let argc
     if (prebuiltArray) {
-      // Spread path: decode array into inline slots. Slots beyond array len padded with UNDEF.
-      // The full args array offset is published in $__closure_spill so a rest-param
-      // callee can recover elements beyond width W (the W inline slots hold args[0..W-1];
-      // the rest reads args[W..argc-1] straight from the spill array). Unbounded arity.
+      // Publish the full argument array for rest parameters beyond inline width W.
       declGlobal('__closure_spill', 'i32')
-      const arrT = tempI32('sa')
-      const lenL = tempI32('sl')
-      const setup = [
-        ['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(args[0])]]],
-        ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],  // placeholder — set below
-      ]
-      // Rebuild setup properly since we need the array ptr before len call
-      setup.length = 0
-      const arrPtrF64 = temp('sp')
+      const arrT = tempI32('sa'), lenL = tempI32('sl'), arrPtrF64 = temp('sp')
       setup.push(['local.set', `$${arrPtrF64}`, asF64(args[0])])
       setup.push(['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrPtrF64}`]]]])
       setup.push(['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrPtrF64}`]]]])
-
-      const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
-      const slots = []
-      for (let i = 0; i < W; i++) {
-        slots.push(['if', ['result', 'f64'],
-          ['i32.gt_s', ['local.get', `$${lenL}`], ['i32.const', i]],
-          ['then', ['f64.load', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]]]],
-          ['else', UNDEF_LIT()]])
+      setup.push(['global.set', '$__closure_spill', ['local.get', `$${arrT}`]])
+      argc = ['local.get', `$${lenL}`]
+      for (let i = 0; i < W; i++) slots.push(['if', ['result', 'f64'],
+        ['i32.gt_s', argc, ['i32.const', i]],
+        ['then', ['f64.load', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]]]],
+        ['else', UNDEF_LIT()]])
+    } else {
+      const n = args.length
+      if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+      argc = ['i32.const', n]
+      for (let i = 0; i < n; i++) {
+        const arg = ctx.closure.argIR(args[i])
+        if (!check) slots.push(arg)
+        else {
+          const a = temp('carg')
+          setup.push(['local.set', `$${a}`, arg])
+          slots.push(['local.get', `$${a}`])
+        }
       }
-      return typed(['block', ['result', 'f64'],
-        ...setup,
-        ['local.set', `$${t}`, asF64(closureExpr)],
-        ['global.set', '$__closure_spill', ['local.get', `$${arrT}`]],
-        ['call_indirect', ['type', '$ftN'],
-          ['local.get', `$${t}`],
-          ['local.get', `$${lenL}`],
-          ...slots,
-          // Inline __ptr_aux for CLOSURE pointer: aux holds funcIdx.
-          ['i32.wrap_i64', ['i64.and',
-            ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
-            ['i64.const', LAYOUT.AUX_MASK]]]]], 'f64')
+      for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
     }
-
-    // Inline path: emit each arg, pad missing slots with UNDEF. Closure ABI slots
-    // are untyped boxed-value positions — a bool arg crosses as its atom box so
-    // the callee observes boolean identity (typeof/String/strict-eq); pre-emitted
-    // IR (has .type) has no AST node to consult and keeps the plain box.
-    const n = args.length
-    if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
-    const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
-    const slots = []
-    for (let i = 0; i < n; i++) slots.push(ctx.closure.argIR(args[i]))
-    for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
-
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(closureExpr)],
-      ['call_indirect', ['type', '$ftN'],
-        ['local.get', `$${t}`],
-        ['i32.const', n],
-        ...slots,
-        // Inline __ptr_aux for CLOSURE pointer: aux holds funcIdx.
-        ['i32.wrap_i64', ['i64.and',
-          ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
-          ['i64.const', LAYOUT.AUX_MASK]]]]], 'f64')
+    const call = ['call_indirect', ['type', '$ftN'], recv, argc, ...slots,
+      ['i32.wrap_i64', ['i64.and',
+        ['i64.shr_u', ['i64.reinterpret_f64', recv], ['i64.const', LAYOUT.AUX_SHIFT]],
+        ['i64.const', LAYOUT.AUX_MASK]]]]
+    // Unproven member slots need a check after argument effects. Other callers
+    // already established callability through analysis or runtime dispatch.
+    return typed(['block', ['result', 'f64'], ...setup, check
+      ? ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.CLOSURE),
+        ['then', call], ['else', throwTypeErrorIR('call')]]
+      : call], 'f64')
   }
 }

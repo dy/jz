@@ -152,7 +152,7 @@ test('summary queries: scoped views and schema metadata survive later activity',
 
 test('summary queries: A→A→B→A preserves bytes, retained facts, and earlier outputs', () => {
   if (onKernel()) return // this test inspects the native compiler's analysis
-  const A = 'export function make(){return {buf:new Float32Array(2),gain:3}} export function main(){return make().buf.length}'
+  const A = 'export function make(){return {buf:new Float32Array(2),gain:3}} const api={make}; export function main(){return api.make().buf.length}'
   const B = 'export function main(){return {other:41}.other+1}'
   const options = { optimize: { level: 2, sourceInline: false, inlineFns: false } }
   const a = compile(A, options), saved = ctx.summary
