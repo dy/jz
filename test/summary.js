@@ -173,14 +173,15 @@ test('summary: stores join into the slot; a differing store or a computed write 
   is(tagOf(ctx.summary.fieldKind(s2, 'b')), K.TYPED, 'still a typed array, of unknown element')
 })
 
-test('summary: a function used as a value, an unknown callee, and Object.assign lose what they touch', () => {
+test('summary: internal aliases retain identity; unknown calls and Object.assign lose what they touch', () => {
   summarize(`const g = (o) => o.a
     const h = (o) => o.a
     const mk = () => ({ a: 1 })
     export const f = (arr) => { const o = mk(); const fn = g; Object.assign(o, { a: 'x' }); return fn(o) + h(o) + arr.map(h).length }`)
   is(tagOf(kindOf('f', 'o')), K.OBJECT, 'the local keeps its shape')
   is(ctx.summary.fieldVal(sidOf(['a']), 'a'), null, 'Object.assign may store any kind into the object')
-  ok(ctx.summary.escaped.has('g') && ctx.summary.escaped.has('h'), 'both functions escape as values')
+  ok(!ctx.summary.escaped.has('g'), 'a local function alias stays internal')
+  ok(ctx.summary.escaped.has('h'), 'an unknown receiver may retain its callback')
 })
 
 test('summary: definite initialization excludes the declared undefined; a later read of an unassigned field keeps it', () => {
@@ -509,3 +510,28 @@ test('summary: a one-parameter arrow answers through its parameter name; a strin
   ok(ctx.summary.escaped.has('up'), 'a function handed to replace escapes: the summary does not model the call')
 })
 
+
+
+test('summary: named callable values share closure argument and result analysis', () => {
+  const builder = `function put(n,a=[]){if(n===0)return a;a.push(n);return put(n-1,a)}`
+  for (const use of ['put(n)', 'ops.put(n)', 'ops[key](n)']) {
+    const src = `${builder} export function count(n,key){const ops={put};return [...${use}].length}`
+    summarize(src)
+    ok(!ctx.summary.escaped.has('put'), 'internal namespace does not escape its function')
+    is(tagOf(ctx.summary.resultOf('put')), K.ARRAY, 'recursive default-array result survives a callable value')
+    for (const level of [0, 2, 3]) {
+      const { count } = jz(src, { optimize: { level, sourceInline: false } }).exports
+      is(count(0, 'put'), 0)
+      is(count(5, 'put'), 5)
+    }
+  }
+  const mixed = `function twice(x){return x*2}
+    export function result(n,key){const table={twice, plus:x=>x+3};return table[key](n)}`
+  for (const level of [0, 2, 3]) {
+    const { result } = jz(mixed, { optimize: { level, sourceInline: false } }).exports
+    is(result(4, 'twice'), 8)
+    is(result(4, 'plus'), 7)
+  }
+  summarize(`function identity(x){return x} export function get(){return {identity}}`)
+  ok(ctx.summary.escaped.has('identity'), 'a host-visible namespace opens its callable parameters')
+})

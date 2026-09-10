@@ -49,6 +49,11 @@ Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
 
+Named functions stored in internal objects or bindings retain their identities
+in the summary's existing closure sets. Calls through those values bind the same
+parameters and result facts as direct calls. Unknown uses and host exposure still
+open the facts; taking a function's address retains the boxed callable-value ABI.
+
 LICM extraction is shared through watr's `hoistInvariants`: traversal, private-local
 checks, structural deduplication and temporary typing have one owner. JZ supplies
 per-loop invariance and speculation-safety proofs for its helper calls and memory

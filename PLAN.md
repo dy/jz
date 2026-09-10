@@ -17,12 +17,12 @@ preserve the original value; Float32 maps retain f64 computation; standalone
 higher-order exports accept host callbacks through the existing call ABI.
 Bare f64 globals initialize to `undefined`, including when storage analysis has
 recorded their type; this keeps nullish closure initialization correct at O0.
-The full default suite passes 4,517 tests with one skip (63,676 assertions),
+The full default suite passes 4,518 tests with one skip (63,708 assertions),
 including six audit regressions with 383 assertions and all ten deterministic
 loop-work ratchets. Language/builtin conformance passes
 3,151/869 cases, and functional self-hosting passes 34 checks (296 assertions).
 The rebuilt Watr Wasm passes its full suite. The full O0/O3/WASI matrix also
-passes: 4,517/4,517/4,514 tests respectively, with one skip in each leg.
+passes: 4,518/4,518/4,515 tests respectively, with one skip in each leg.
 
 The stateful VST fixture in `@audio/compile` passes 12,438 checks with each
 compiler (JZ reverified on this optimizer; Porffor verified previously): variable blocks, live parameters, independent overlapping instances,
@@ -37,7 +37,7 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 301,361 | 300,000 |
+   | Watr encoder | 301,293 | 300,000 |
    | FFT | 1,718 | 1,758 |
    | bezfit | 3,245 | 3,017 |
    | immutable | 1,481 | 1,481 |
@@ -49,10 +49,24 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    Equality is not a strict win. No benchmark sources or budgets changed.
    Against `b401fe2`, shapes shrinks 12 bytes and wordcount 26; the encoder grows
-   862 bytes. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
+   794 bytes. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
    scale 1,013→869, Uint8 clamp 1,213→1,055, matmul 25,561→25,407.
    Correct mixed-value comparison grows fib 18,694→18,894. These are binary
    sizes, not throughput claims; the size gate remains open.
+
+   Named callable values now retain identity in the existing closure analysis.
+   A recursive array builder called through an internal object member shrinks
+   from 24,643 to 21,394 bytes at speed. On its 32-element O0 probe, pointer-type
+   checks fall 165→0 and dynamic property reads 32→0; allocation count remains
+   two. Its 25 summary tests pass 9,431 assertions; language/builtin conformance,
+   functional self-hosting and the rebuilt Watr Wasm suites also pass.
+   The encoder saves 68 bytes. Mixed-kind uses still lose callable identity,
+   so this does not eliminate all generic iterator handling in the encoder.
+   A direct before/after self-build comparison shrinks the compiler artifact
+   15,515,517→15,474,859 bytes. On the six warm compiler workloads, the paired
+   after/before geomean is 0.996× (effectively neutral); measured heap use rises
+   672–848 bytes per compilation. These scoped measurements do not close the
+   release memory or throughput evidence requirements.
 
 2. **Speed and evidence.** The stored reference fails leadership claims,
    including V8 losses on jessie and Watr, and is stale. Prior self-compile
@@ -61,6 +75,11 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    The audit validation also fails the warm self-compile gate (1.340× median
    against 1.03×); its functional bootstrap passes. Concurrent validation is
    insufficient evidence for any fresh-start performance improvement.
+   After callable consolidation, the standalone timing gate still fails:
+   warm 1.425×/1.452×/1.478×, fresh 1.227×. The complete benchmark gate passes
+   247 checks and fails 19: eight fastest-Wasm comparisons, native resample,
+   the stored native-lowering bands, six strict AS size comparisons, the
+   encoder cap, perf-fuzz and the example speed gate. No caps were changed.
    Repair the remaining codegen gaps, then refresh complete runtime, memory,
    native-lowering and rival evidence on a quiet machine. TinyGo 0.42 builds
    44 comparable cases with 43 matching checksums; classify the entity mismatch

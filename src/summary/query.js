@@ -13,7 +13,7 @@ import {
 
 export function summaryQueries(facts) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, cells, jsonKinds, unions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions,
     schemas, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, openSchemas } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
@@ -111,7 +111,7 @@ export function summaryQueries(facts) {
     const selectedExpr = (n, mask) => {
       const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
       if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
-      if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE) : ANY) : readKey(key) }
+      if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY) : readKey(key) }
       if (typeof n === 'number') return NUMBER
       if (!Array.isArray(n)) return ANY
       const op = n[0]

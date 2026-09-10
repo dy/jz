@@ -117,6 +117,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   let changed = false
 
   const escapeId = (id) => { if (!escaped.has(id)) { escaped.add(id); changed = true } }
+  // Members use existing scope keys: names for declared functions, numeric
+  // IDs for anonymous closures. Taking a function's address preserves its
+  // identity; only an unknown use opens its parameters.
   // Two closures joined are a closure set (a dispatch table's members, an
   // array of handlers): a call through the join calls each member. The
   // set's id is interned above SET_BASE; `membersOf` reads either form. A
@@ -126,9 +129,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const singles = []             // closure id → [id], the one-member list, allocated once
   const membersOf = (id) => id >= SET_BASE ? closureSets[id - SET_BASE] : singles[id] ?? (singles[id] = [id])
   const closureSet = (ids) => {
-    const key = ids.join(',')
+    const key = ids.length === 1 && typeof ids[0] === 'string' ? ids[0] : JSON.stringify(ids)
     let id = closureSetIds.get(key)
-    if (id === undefined) { id = SET_BASE + closureSets.length; closureSets.push(ids); closureSetIds.set(key, id) }
+    if (id === undefined) {
+      if (SET_BASE + closureSets.length >= UNKNOWN) { for (const member of ids) escapeId(member); return UNKNOWN }
+      id = SET_BASE + closureSets.length; closureSets.push(ids); closureSetIds.set(key, id)
+    }
     return id
   }
   const unions = new Map()       // `a * 65536 + b` → the union's id, computed once per pair
@@ -136,7 +142,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const pair = a * 65536 + b
     let id = unions.get(pair)
     if (id !== undefined) return id
-    const ids = [...new Set([...membersOf(a), ...membersOf(b)])].sort((x, y) => x - y)
+    const ids = [...new Set([...membersOf(a), ...membersOf(b)])].sort((x, y) => typeof x === typeof y ? (x < y ? -1 : x > y ? 1 : 0) : typeof x === 'number' ? -1 : 1)
     if (ids.length > SET_MAX || SET_BASE + closureSets.length >= UNKNOWN) { for (const id of ids) escapeId(id); id = UNKNOWN }
     else id = closureSet(ids)
     unions.set(pair, id); unions.set(b * 65536 + a, id)
@@ -313,7 +319,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (p === UNKNOWN) return
     if (t === K.CLOSURE) {
       for (const id of membersOf(p)) {
-        const body = closureBodies[id]
+        const body = typeof id === 'string' ? funcByName.get(id).body : closureBodies[id]
         if (seen.has(body)) continue
         seen.add(body)
         for (const key of captures.get(id) ?? []) retain(kinds[key] ?? K.NONE, seen)
@@ -444,11 +450,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     escapeObjectArgs(base, n)
     return ANY
   }
+  const callableParams = id => typeof id === 'string' ? paramNamesOf(funcByName.get(id)) : closureParams[id]
   /** Call a closure or each member of a closure set; the result is the join of theirs. */
   const callClosure = (param, base, n) => {
     let r = K.NONE
     for (const id of membersOf(param)) {
-      if (!escaped.has(id)) bind(id, closureParams[id], base, n, closureDefaults[id])
+      if (!escaped.has(id)) bind(id, callableParams(id), base, n, typeof id === 'string' ? funcByName.get(id).defaults : closureDefaults[id])
       r = merge(r, results.get(id) ?? K.NONE)
     }
     return r
@@ -835,7 +842,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'number') return NUMBER
     if (typeof n === 'string') {
       const key = keyOf(n)
-      if (key === null) { if (funcByName.has(n)) { escapeId(n); return kind(K.CLOSURE) } return ANY }  // a name from outside the program
+      if (key === null) return funcByName.has(n) ? kind(K.CLOSURE, closureSet([n])) : ANY  // a name from outside the program
       if (bindingScope[key] !== (current ?? MODULE)) {
         let keys = captures.get(current)
         if (!keys) captures.set(current, keys = new Set())
@@ -1437,7 +1444,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, cells, jsonKinds, closuresByBody, unions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions,
     schemas: schemas.map(props => props.slice()), methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, openSchemas, hostSchemas,
@@ -1576,13 +1583,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (ck !== undefined && tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN) {
         const members = membersOf(paramOf(ck))
         if (members.length === 1) {
-          const id = members[0], names = closureParams[id]
+          const id = members[0], names = callableParams(id)
           for (let i = 0; i < count; i++) { const name = i < names.length ? names[i] : null; if (!escaped.has(id) && name != null) useOf(argAt(as, i), FLOW, keyIn(id, name)); else demand(argAt(as, i)) }
           return
         }
         const ids = members.filter(id => !escaped.has(id))
         for (let i = 0; i < count; i++) {
-          const keys = ids.map(id => closureParams[id][i] != null ? keyIn(id, closureParams[id][i]) : null)
+          const keys = ids.map(id => callableParams(id)[i] != null ? keyIn(id, callableParams(id)[i]) : null)
           if (ids.length && keys.every(k => k !== null)) useOf(argAt(as, i), FLOW, keys); else demand(argAt(as, i))
         }
         return
@@ -1627,7 +1634,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (f.rest) raise(kinds, keyIn(f.name, f.rest), kind(K.ARRAY))
       if (escaped.has(f.name)) for (const p of f.sig.params) bindParam(keyIn(f.name, p.name), ANY)
       walkFunction(f.name, f.body, paramNamesOf(f), f.defaults)
-      if (exported(f)) escapeToHost(results.get(f.name) ?? K.NONE)
+      if (exported(f) || hostClosures.has(f.name)) escapeToHost(results.get(f.name) ?? K.NONE)
     }
     for (let id = 0; id < closureBodies.length; id++) {
       if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(keyIn(id, p), ANY)
@@ -1708,7 +1715,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const exportedNames = new Set(funcs.filter(exported).map(f => f.name))
   queryFacts.contracts = buildResultContracts({
     results, funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain, returns,
-    direct: name => !exportedNames.has(name) && !escaped.has(name) && !dispatcher.has(name),
+    direct: name => !exportedNames.has(name) && !escaped.has(name) && !closureSetIds.has(name) && !dispatcher.has(name),
   })
   return summaryQueries(queryFacts)
 }
