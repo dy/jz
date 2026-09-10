@@ -137,7 +137,7 @@ test('organic hash gating ON: JSON.parse pulls schema substrate', () => {
   // KERNEL DEBT (2026-07-21a, BindingId wave): the kernel compiles
   // `JSON.parse(stringParam)` to the undefined stub — literal-arg parse and
   // every other namespace work; the divergence is isolated to STRING-PARAM
-  // inference (same class as the preset-table skip in bool-identity.js).
+  // inference (same class as the preset-table skip in booleans.js).
   // Burn down with the string-param differential; do not widen this skip.
   if (onKernel()) return
   // JSON.parse builds OBJECT pointers via a runtime schema cache (__jp_obj

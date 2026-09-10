@@ -3,10 +3,8 @@ import { is, ok } from 'tst/assert.js'
 import { onWasi, onKernel } from './_matrix.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
+import { run, cases } from './util.js'
 
-function run(code, opts) {
-  return jz(code, opts).exports
-}
 
 const throws = (code, match, msg, opts) => {
   let error
@@ -96,44 +94,25 @@ test('const: inner let shadows outer const', () => {
 // Temp name hygiene — compiler internals don't collide with user names
 // ============================================================================
 
-test('hygiene: __d0 does not collide with destruct temp', () => {
-  is(run('export let f = () => { let __d0 = [9, 9]; let [a, b] = [1, 2]; return __d0[0] + a + b }').f(), 12)
-})
-
-test('hygiene: __d0 object destruct', () => {
-  is(run('export let f = () => { let __d0 = {x: 9}; let {x} = {x: 1}; return __d0.x + x }').f(), 10)
-})
-
-test('hygiene: __arr0 does not collide with array temp', () => {
-  is(run('export let f = () => { let __arr0 = 5; return [1][0] + __arr0 }').f(), 6)
-})
-
-test('hygiene: closure default array literal declares allocation temp', () => {
-  is(run('export let f = () => { let len = (value = []) => value.length; return len() }').f(), 0)
+test('hygiene', () => {
+  cases([
+    ['__d0 does not collide with destruct temp', '() => { let __d0 = [9, 9]; let [a, b] = [1, 2]; return __d0[0] + a + b }', 12],
+    ['__d0 object destruct', '() => { let __d0 = {x: 9}; let {x} = {x: 1}; return __d0.x + x }', 10],
+    ['__arr0 does not collide with array temp', '() => { let __arr0 = 5; return [1][0] + __arr0 }', 6],
+    ['closure default array literal declares allocation temp', '() => { let len = (value = []) => value.length; return len() }', 0],
+  ])
 })
 
 // ============================================================================
 // Block scoping — let/const are block-scoped
 // ============================================================================
 
-test('block scope: if shadow', () => {
-  is(run('export let f = () => { let x = 1; if (1) { let x = 2; x = 3 }; return x }').f(), 1)
-})
-
-test('block scope: for shadow', () => {
-  is(run('export let f = () => { let i = 99; for (let i = 0; i < 3; i++) {}; return i }').f(), 99)
-})
-
-test('block scope: while shadow', () => {
-  is(run('export let f = () => { let x = 5; let c = 0; while (c < 1) { let x = 99; c++ }; return x }').f(), 5)
-})
-
-test('block scope: nested if', () => {
-  is(run('export let f = () => { let x = 1; if (1) { let x = 2; if (1) { let x = 3 } }; return x }').f(), 1)
-})
-
-test('block scope: else shadow', () => {
-  is(run('export let f = (c) => { let x = 1; if (c) { let x = 10 } else { let x = 20; x = 30 }; return x }').f(0), 1)
+test('block scope', () => {
+  cases([
+    ['while shadow', '() => { let x = 5; let c = 0; while (c < 1) { let x = 99; c++ }; return x }', 5],
+    ['nested if', '() => { let x = 1; if (1) { let x = 2; if (1) { let x = 3 } }; return x }', 1],
+    ['else shadow', '(c) => { let x = 1; if (c) { let x = 10 } else { let x = 20; x = 30 }; return x }', 1, 0],
+  ])
 })
 
 test('block scope: same const name in sibling blocks resolves correctly', () => {
@@ -182,12 +161,11 @@ test('optimizer: *0 preserves side effects', () => {
 // Closure default params
 // ============================================================================
 
-test('closure: default param used', () => {
-  is(run('export let f = () => { let g = (x = 42) => x; return g() }').f(), 42)
-})
-
-test('closure: default param not used', () => {
-  is(run('export let f = () => { let g = (x = 42) => x; return g(9) }').f(), 9)
+test('closure', () => {
+  cases([
+    ['default param used', '() => { let g = (x = 42) => x; return g() }', 42],
+    ['default param not used', '() => { let g = (x = 42) => x; return g(9) }', 9],
+  ])
 })
 
 // ============================================================================
@@ -237,16 +215,12 @@ test('template: distinct functions with same name', () => {
 // Runtime .length safety
 // ============================================================================
 
-test('runtime: number.length returns undefined (no OOB)', () => {
-  is(jz('export let f = () => (1).length').exports.f(), undefined)
-})
-
-test('runtime: unknown number param .length returns undefined (no OOB)', () => {
-  is(jz('export let f = (x) => x.length').exports.f(1), undefined)
-})
-
-test('runtime: ternary reassignment does not keep stale array type', () => {
-  is(jz('export let f = () => { let b = []; b = (0 ? [] : 1); return b.length }').exports.f(), undefined)
+test('runtime', () => {
+  cases([
+    ['number.length returns undefined (no OOB)', '() => (1).length', undefined],
+    ['unknown number param .length returns undefined (no OOB)', '(x) => x.length', undefined, 1],
+    ['ternary reassignment does not keep stale array type', '() => { let b = []; b = (0 ? [] : 1); return b.length }', undefined],
+  ])
 })
 
 test('runtime: ternary mixing a pointer arm with a bool/number arm keeps the pointer boxed', () => {

@@ -2,13 +2,13 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import jz, { compile, instantiate } from '../index.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
 import { VAL } from '../src/reps.js'
 import { summarize } from '../src/summary/index.js'
 import { valTypeOf } from '../src/kind.js'
+import { oracle } from './util.js'
 
-const levels = [false, 1, 2, 3]
-const oracle = source => Function(source.replaceAll('export ', '') + ';return {f,state}')()
+const LEVELS = levels(false, 1, 2, 3)
 const observe = (f, args, wasm) => {
   try { return ['return', f(...args)] }
   catch (e) { return ['throw', wasm && e?.name === 'Error' && Object.hasOwn(e, 'thrown') ? e.thrown : e?.name ?? e] }
@@ -43,7 +43,7 @@ test(`sequence BigInt ${op}: local storage, exact bits, abrupt operands and reco
   const calls = [['6',0], ['0',0], ['-1',0], ['4611686018427387903',0],
     ['9221120245631025152',0], ['9221823924482867200',0],
     ['-9223372036854775808',0], ['6',1], ['6',0], ['6',2], ['6',0]]
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const actual = jz(source, {optimize}).exports
     for (const args of calls) {
       const want = observe(expected.f, args, false)
@@ -63,7 +63,7 @@ test(`typeof ${tail}, ${nested ? 'nested sequence' : 'direct producer'}: a known
   const source = `${prefix}
     export function f(input,stage){trace=0;return typeof (${operand})}`
   const expected = oracle(source)
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const actual = jz(source, {optimize}).exports
     for (const args of [['1',0], ['0',0], ['-1',0], ['bad',0], ['1',1], ['1',0], ['1',2], ['1',0]]) {
       is(observe(actual.f, args, true), observe(expected.f, args, false), `O${optimize || 0}: ${args}`)
@@ -78,7 +78,7 @@ test(`typeof comparisons: raw primitive sequences versus ${type}`, () => {
     const source = `${prefix} export function f(input,stage){trace=0;
       return typeof (mark(1,stage),${tail}) ${cmp} '${type}'}`
     const expected = oracle(source)
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const actual = jz(source, {optimize}).exports
       // Wide decimal strings exercise BigInt payloads. The Boolean-only
       // module needs no memory and accepts only inline strings at its ABI.
@@ -100,7 +100,7 @@ test('typeof object comparisons: null, absence and boxed primitives stay distinc
       values.set(3,true); values.set(4,undefined); values.set(5,'str'); values.set(6,0)
       export function f(index,stage){trace=0;return typeof (mark(1,stage),values.get(index)) ${cmp} 'object'}`
     const expected = oracle(source)
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const actual = jz(source, {optimize}).exports
       for (const args of [[0,0], [1,0], [2,0], [3,0], [4,0], [5,0], [6,0], [7,0], [0,1], [0,0]]) {
         is(observe(actual.f, args, true), observe(expected.f, args, false), `${cmp} O${optimize || 0}: ${args}`)
@@ -118,7 +118,7 @@ test(`nullable sequence results: ${consumer} keeps presence and producer readine
     const value = `(mark(1,stage),(mark(2,stage),choose?BigInt(input):${absent}))`
     const source = `${prefix} export function f(input,choose,stage){trace=0;return ${consumer.replace('VALUE',value)}}`
     const expected = oracle(source)
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const actual = jz(source, {optimize}).exports
       for (const args of [['6',true,0], ['9221823924482867200',true,0], ['bad',false,0],
         ['bad',true,0], ['bad',true,1], ['bad',true,2], ['6',true,0], ['6',false,0]]) {
@@ -134,7 +134,7 @@ test('typeof object comparisons: nullable host values are not all atoms or all o
     const source = `${prefix} export function f(input,stage){trace=0;
       return typeof (mark(1,stage),input) ${cmp} 'object'}`
     const expected = oracle(source)
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const actual = jz(source, {optimize}).exports
       for (const input of [null, undefined, false, true, 0, -0, NaN, 5e-324, 'str', null]) {
         is(observe(actual.f, [input,0], true), observe(expected.f, [input,0], false), `${cmp} O${optimize || 0}`)
@@ -152,7 +152,7 @@ for (const expr of ['Number((mark(1,stage),BigInt(input)))',
 test(`sequence consumers: ${expr}`, () => {
   const source = `${prefix} export function f(input,stage){trace=0;return ${expr}}`
   const expected = oracle(source)
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const actual = jz(source, {optimize}).exports
     for (const args of [['1',0], ['0',0], ['-1',0], ['bad',0], ['1',1], ['1',0]]) {
       is(observe(actual.f, args, true), observe(expected.f, args, false), `O${optimize || 0}: ${args}`)
@@ -163,7 +163,7 @@ test(`sequence consumers: ${expr}`, () => {
 
 if (!onWasi() && !onKernel()) test('sequence boundaries: empty decode, bare return and final source/binary byte', () => {
   const a = 'export function f(){}', b = 'export function f(){return (0,6n)}'
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const options = {optimize}, empty = compile('', options)
     ok(WebAssembly.validate(empty), 'smallest input compiles to a valid module')
     is(instantiate(empty).exports.f, undefined, 'zero-work module has no user entry')

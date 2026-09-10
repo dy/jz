@@ -4,12 +4,10 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import parseWat from 'watr/parse'
 import { resolveModuleGraph } from '../src/resolve.js'
-import { onKernel, withBigintStrict } from './_matrix.js'
+import { onKernel, withBigintStrict, levels } from './_matrix.js'
 import { i64Hex, ptrBits, PTR } from '../layout.js'
+import { run } from './util.js'
 
-function run(code, opts) {
-  return jz(code, opts).exports
-}
 
 // === Multi-value threshold ===
 
@@ -386,7 +384,7 @@ test('carrier: box/unbox roundtrip — -2^62 control (comfortably inside range)'
 // contract. No trap, correct value: the runtime tag check means a genuinely
 // boxed payload still dereferences (this IS a real box here), proving the
 // fix's replacement primitive is sound, not merely non-crashing.
-for (const optimize of [false, 2, 3]) {
+for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   const schemaSlotBig = (lit, expect) => {
     const { f } = run(`
@@ -440,7 +438,7 @@ for (const optimize of [false, 2, 3]) {
 // pinned so a future change (including any eventual merge of that
 // in-progress work) that reopens the divergence is caught immediately, and
 // readI64 hardened here regardless as the established, documented pattern.
-for (const optimize of [false, 2, 3]) {
+for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   test(`carrier: bare RAW local whose literal aliases PTR.BIGINT's own box prefix — toString(16), ${lbl}`, () => {
     const { hexOf } = run(`export let hexOf = () => { let n = 0x7ffa800000000000n; return n.toString(16) }`, { optimize })
@@ -674,7 +672,7 @@ test('nan-box: large offset', () => {
 // block the moment it loads — 77 bytes for the source below, confirmed by direct
 // instrumentation. The offset (1048576) is chosen to sit far past any plausible
 // static-data segment length, so a correct implementation must leave it untouched.
-for (const optimize of [false, 2, 3]) {
+for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   for (const ty of [1, 6]) {  // ARRAY, OBJECT — both were affected; ATOM (0) never is
     test(`nan-box: large offset survives non-empty static-data prefix (type=${ty}), ${lbl}`, () => {

@@ -6,8 +6,9 @@ import { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { instantiate } from '../interop.js'
 import { execFileSync } from 'node:child_process'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
 import { BRAND } from '../src/ast.js'
+import { oracle } from './util.js'
 
 const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
@@ -354,8 +355,8 @@ test('summary contract: the plan\'s result target is the contract\'s carrier, bo
 test('summary tuples: aliases, mutation and unions invalidate positional kinds', () => {
   for (const change of ["alias[0]='changed'", "alias.reverse()", "alias.shift()", "alias.length=0", "const k=n;delete alias[k]", "a=n?[false,2]:a", "alias['0']='changed'"]) {
     const source = `export const f=n=>{let a=[1,'x'];const alias=a;${change};return typeof a[0]}`
-    const js = Function(source.replace('export ', '') + ';return f')()
-    for (const optimize of [0, 2, 3]) {
+    const js = oracle(source).f
+    for (const optimize of levels(0, 2, 3)) {
       const f = instantiate(compile(source, {optimize})).exports.f
       for (const n of [0, 1]) is(f(n), js(n), `O${optimize}: ${change}, n=${n}`)
     }
@@ -371,8 +372,8 @@ test('summary storage: numeric locals preserve observable missing assignment res
     const assigned = (x = a[n])
     return [initial, assigned === undefined, Number.isNaN(x * 2)].join(',')
   }`
-  const js = Function(src.replace('export ', '') + ';return f')()
-  for (const optimize of [0, 1, 2, 3]) {
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
     const f = instantiate(compile(src, { optimize })).exports.f
     for (const n of [0, 1, 4]) is(f(n), js(n), `O${optimize}, length ${n}`)
   }
@@ -380,8 +381,8 @@ test('summary storage: numeric locals preserve observable missing assignment res
 
 test('summary entry: an explicit numeric prologue retains JavaScript coercion', () => {
   const src = 'export function f(x) { x = +x; if (x > 0) return x; return -x }'
-  const js = Function(src.replace('export ', '') + ';return f')()
-  for (const optimize of [0, 1, 2, 3]) {
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
     const f = instantiate(compile(src, { optimize })).exports.f
     for (const x of [undefined, null, true, false, '-3', 'bad', -0, 7])
       is(Object.is(f(x), js(x)), true, `O${optimize}, ${String(x)}`)
@@ -415,8 +416,8 @@ test('summary clones: record updates preserve fields across object and hash copi
     const b = update({presence: 'present', cleared: undefined})
     return [a, b, records.get('x').value, records.get('x').presence].join(',')
   }`
-  const expected = Function(src.replace('export ', '') + ';return f')()()
-  for (const optimize of [0, 1, 2, 3])
+  const expected = oracle(src).f()
+  for (const optimize of levels(0, 1, 2, 3))
     is(instantiate(compile(src, { optimize })).exports.f(), expected, `O${optimize}`)
 })
 
@@ -426,8 +427,8 @@ test('summary spreads: conditional keys retain dictionary representation', () =>
     const records = new Map([['f', make(flag)]])
     return [...records.values()].map(r => r.sig.params.length + (Object.keys(r).includes('extra') ? 10 : 0))[0]
   }`
-  const js = Function(src.replace('export ', '') + ';return f')()
-  for (const optimize of [0, 1, 2, 3]) {
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
     const f = instantiate(compile(src, { optimize })).exports.f
     for (const flag of [false, true]) is(f(flag), js(flag), `O${optimize}, ${flag}`)
   }
@@ -439,8 +440,8 @@ test('summary cells: numeric reseeding retains constructor contents before later
     m.set('later', {sig: 7})
     return typeof m.get('first') + ':' + (n * 2)
   }`
-  const js = Function(src.replace('export ', '') + ';return f')()
-  for (const optimize of [0, 1, 2, 3]) {
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
     const f = instantiate(compile(src, { optimize })).exports.f
     is(f(3), js(3), `O${optimize}`)
   }
@@ -452,7 +453,7 @@ test('summary containers: enum values and entry tuples feed numeric Map payloads
     const bit = name => bits.get(name) || 0
     const pack = (mask, flag) => mask | (flag ? 8 : 0)
     export const f = () => pack(7 & ~bit(tags.b), true)`
-  for (const optimize of [0, 1, 2, 3]) {
+  for (const optimize of levels(0, 1, 2, 3)) {
     const binary = _compileInProcess(src, { optimize })
     is(ctx.summary.resultOf('bit'), kind(K.NUMBER), 'Map construction retains entry value kinds')
     is(instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f(), 13, `O${optimize}`)
@@ -467,7 +468,7 @@ test('summary spreads: a schema does not exclude properties added through aliase
       b.inner = 2
       return [Object.keys(a).sort().join(','), Object.keys(c).sort().join(','), c.inner].join(';')
     }`
-  const js = Function(src.replace('export ', '') + ';return f')()
-  for (const optimize of [0, 1, 2, 3])
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3))
     is(instantiate(compile(src, { optimize })).exports.f(), js(), `O${optimize}`)
 })

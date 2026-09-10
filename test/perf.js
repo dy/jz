@@ -26,6 +26,23 @@ const PERF_GATE = process.env.JZ_PERF === '1'
 const pinFaster = (wasmTime, jsTime, factor = 1.2) => {
   if (PERF_GATE) ok(wasmTime < jsTime * factor, `WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * ${factor}`)
 }
+// Median of n single-run samples — robust to GC pauses and scheduler jitter where a
+// total-time bench at small n swings between runs.
+const median = (fn, n) => {
+  const xs = new Array(n)
+  for (let i = 0; i < n; i++) { const t = performance.now(); fn(); xs[i] = performance.now() - t }
+  xs.sort((a, b) => a - b)
+  return xs[n >> 1]
+}
+// Time jsFn against wasmFn and pin the ratio. Under the gate only: without JZ_PERF=1
+// nothing is timed, so the correctness checks above each pin are all the suite runs.
+const pin = (label, jsFn, wasmFn, n, factor = 1.2, sample = bench, warm = 0) => {
+  if (!PERF_GATE) return
+  for (let i = 0; i < warm; i++) { jsFn(); wasmFn() }
+  const jsTime = sample(jsFn, n), wasmTime = sample(wasmFn, n)
+  console.log(`  ${label} x${n}: JS ${jsTime.toFixed(2)}ms, WASM ${wasmTime.toFixed(2)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
+  pinFaster(wasmTime, jsTime, factor)
+}
 
 function functionNames(wasm) {
   const [section] = WebAssembly.Module.customSections(new WebAssembly.Module(wasm), 'name')
@@ -69,11 +86,7 @@ test('perf: fib(30) — WASM faster than JS', () => {
   is(fib(30), 832040)
   is(jsFib(30), 832040)
 
-  const N = 5
-  const jsTime = bench(() => jsFib(30), N)
-  const wasmTime = bench(() => fib(30), N)
-  console.log(`  fib(30) x${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`fib(30)`, () => jsFib(30), () => fib(30), 5)
 })
 test('perf: mandelbrot escape grid — WASM faster than JS', () => {
   if (onWasi()) return  // wasi: run-reserved void entry
@@ -133,11 +146,7 @@ test('perf: mandelbrot escape grid — WASM faster than JS', () => {
   }
   is(run(), jsRun())
 
-  const ITERS = 5
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  mandelbrot (${W}x${H}, max=${MAX}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`mandelbrot (${W}x${H}, max=${MAX})`, jsRun, run, 5)
 })
 test('perf: typed array sum — WASM competitive', () => {
   const { exports: { sum }, memory } = jz(`
@@ -158,11 +167,7 @@ test('perf: typed array sum — WASM competitive', () => {
   const got = sum(wasmArr)
   ok(Math.abs(got - expected) < 1e-6, `sum: ${got} ~ ${expected}`)
 
-  const ITERS = 500
-  const jsTime = bench(() => jsSum(data), ITERS)
-  const wasmTime = bench(() => sum(wasmArr), ITERS)
-  console.log(`  typed sum (${N}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`typed sum (${N})`, () => jsSum(data), () => sum(wasmArr), 500)
 })
 // === Bench-case pins ===
 // Each test mirrors a bench/<case> kernel. Allocations + work happen inside
@@ -236,11 +241,7 @@ test('perf: biquad cascade — WASM faster than JS', () => {
     return out[N - 1]
   }
 
-  const ITERS = 15
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  biquad (${N}x${S}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`biquad (${N}x${S})`, jsRun, run, 15)
 })
 test('perf: mat4 multiply — WASM faster than JS', () => {
   const ITERS_INNER = 20000
@@ -281,11 +282,7 @@ test('perf: mat4 multiply — WASM faster than JS', () => {
     return out[15]
   }
 
-  const ITERS = 10
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  mat4 x${ITERS_INNER} x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`mat4 x${ITERS_INNER}`, jsRun, run, 10)
 })
 test('perf: poly bimorphic sum — WASM faster than JS', () => {
   if (onWasi()) return  // wasi: run-reserved void entry
@@ -322,11 +319,7 @@ test('perf: poly bimorphic sum — WASM faster than JS', () => {
   }
   is(run(), jsRun())
 
-  const ITERS = 5
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  poly (${N}x${ROUNDS}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`poly (${N}x${ROUNDS})`, jsRun, run, 5)
 })
 test('perf: bitwise i32 chain — WASM faster than JS', () => {
   if (onWasi()) return  // wasi: run-reserved void entry
@@ -375,11 +368,7 @@ test('perf: bitwise i32 chain — WASM faster than JS', () => {
   }
   is(run(), jsRun())
 
-  const ITERS = 3
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  bitwise (${N}x${ROUNDS}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`bitwise (${N}x${ROUNDS})`, jsRun, run, 3)
 })
 test('perf: tokenizer scan — WASM faster than JS', () => {
   if (onWasi()) return  // wasi: run-reserved void entry
@@ -440,11 +429,7 @@ test('perf: tokenizer scan — WASM faster than JS', () => {
   }
   is(run(), jsRun())
 
-  const ITERS = 15
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  tokenizer (x${REPEAT}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`tokenizer (x${REPEAT})`, jsRun, run, 15)
 })
 test('perf: callback Array.map — WASM faster than JS', () => {
   if (onWasi()) return  // wasi: run-reserved void entry
@@ -473,11 +458,7 @@ test('perf: callback Array.map — WASM faster than JS', () => {
   }
   is(run(), jsRun())
 
-  const ITERS = 15
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  callback (${N}x${INNER}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`callback (${N}x${INNER})`, jsRun, run, 15)
 })
 test('perf: aos object rows — WASM faster than JS', () => {
   if (onWasi()) return  // wasi: run-reserved void entry
@@ -514,11 +495,7 @@ test('perf: aos object rows — WASM faster than JS', () => {
   }
   is(run(), jsRun())
 
-  const ITERS = 3
-  const jsTime = bench(jsRun, ITERS)
-  const wasmTime = bench(run, ITERS)
-  console.log(`  aos (${N}x${INNER}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`aos (${N}x${INNER})`, jsRun, run, 3)
 })
 // === Codegen quality assertions ===
 
@@ -1479,18 +1456,7 @@ test('perf: JSON.parse + walk — WASM faster than JS', () => {
   const BATCH = 5000
   const jsRun = () => { for (let i = 0; i < BATCH; i++) jsWalk() }
   const wasmRun = () => { for (let i = 0; i < BATCH; i++) walk() }
-  for (let i = 0; i < 5; i++) { jsRun(); wasmRun() }
-  const sample = (fn, n) => {
-    const xs = new Array(n)
-    for (let i = 0; i < n; i++) { const t = performance.now(); fn(); xs[i] = performance.now() - t }
-    xs.sort((a, b) => a - b)
-    return xs[n >> 1]
-  }
-  const N = 21
-  const jsTime = sample(jsRun, N)
-  const wasmTime = sample(wasmRun, N)
-  console.log(`  json walk x${BATCH} median of ${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.2)
+  pin(`json walk x${BATCH} median`, jsRun, wasmRun, 21, 1.2, median, 5)
 })
 test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   if (onWasi() || onKernel()) return  // wasi: host global WebAssembly; kernel: unoptimized self-compile wasm misses the perf bar
@@ -1583,21 +1549,7 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   is(a.length, b.length, 'watr: jz vs native compile binary length')
 
   // Warmup ~1200 wasm calls so TurboFan is tiered up before measurement.
-  for (let i = 0; i < 50; i++) { jsRun(); wasmRun() }
-
-  // Median of single-iter samples. N=30 keeps total runtime bounded while
-  // damping outliers from GC pauses / OS scheduling jitter.
-  const sample = (fn, n) => {
-    const xs = new Array(n)
-    for (let i = 0; i < n; i++) { const t = performance.now(); fn(); xs[i] = performance.now() - t }
-    xs.sort((a, b) => a - b)
-    return xs[n >> 1]
-  }
-  const N = 30
-  const jsTime = sample(jsRun, N)
-  const wasmTime = sample(wasmRun, N)
-  console.log(`  watr (3 corpora x${ITERS}) median of ${N}: JS ${jsTime.toFixed(2)}ms, WASM ${wasmTime.toFixed(2)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  pinFaster(wasmTime, jsTime, 1.5)
+  pin(`watr (3 corpora x${ITERS}) median`, jsRun, wasmRun, 30, 1.5, median, 50)
 })
 test('perf: spread + destructure', () => {
   // Four hot patterns where porffor's recent work targets parity. V8's JIT

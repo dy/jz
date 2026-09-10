@@ -142,3 +142,19 @@ export const withBigintStrict = (fn) => {
  *  execution checks can still use the selected target. Host-only imports and
  *  runtime facilities need their own onKernel guard. */
 export const onKernel = () => process.env.JZ_TEST_TARGET === 'jz.wasm'
+
+const SWEEP = process.env.JZ_TEST_SWEEP === '1'
+
+/** The level an `optimize` value resolves to (src/optimize/config.js LEVEL_PRESETS). */
+const levelOf = (o) => o === false || o === 0 ? 0 : o === true || o == null ? 2 : typeof o === 'object' ? levelOf(o.level) : o === 'speed' ? 3 : o === 'size' || o === 'fast' ? 2 : o
+
+/** The levels this leg owns: its own under JZ_TEST_OPTIMIZE; the plain default leg
+ *  also owns O1, which no CI leg runs (.github/workflows/test.yml). */
+const LEG_LEVELS = new Set(env == null ? (HOST === 'js' ? [2, 1] : [2]) : [OPT_LEVEL])
+
+/** The subset of `wanted` optimize values this leg runs. An in-test sweep
+ *  `for (const optimize of levels(false, 2, 3))` compiles once per leg — the matrix
+ *  (`npm run test:matrix`, CI's four legs) supplies the other levels — instead of
+ *  every level on every leg. JZ_TEST_SWEEP=1 runs the whole list in one process.
+ *  A leg whose level is not wanted runs nothing, like a belowOpt() guard. */
+export const levels = (...wanted) => SWEEP ? wanted : wanted.filter(o => LEG_LEVELS.has(levelOf(o)))

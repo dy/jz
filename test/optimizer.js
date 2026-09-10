@@ -12,7 +12,7 @@
 import test from 'tst'
 import { almost, is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
 import { compile } from '../index.js'
@@ -21,7 +21,7 @@ import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 
@@ -292,7 +292,7 @@ test('recursionUnroll: non-zero acc init fuses as += (shared-acc reset bug)', ()
     const sum = (n) => { if (!Array.isArray(n)) return n; let s = 0; for (let i = 0; i < n.length; i++) s += sum(n[i]); return s }
     export let f = (d) => cnt(['op', ['a', 'b'], ['c', 1], d ? [['x'], 'y'] : 'z'])
     export let g = () => sum([1, [2, 3], [4, [5, 6]]])`
-  for (const optimize of [false, 2, 3, 'speed']) {
+  for (const optimize of levels(false, 2, 3, 'speed')) {
     const { f, g } = jz(src, { optimize }).exports
     is(Number(f(0)), 9, `cnt flat tail optimize:${JSON.stringify(optimize)}`)
     is(Number(f(1)), 12, `cnt nested tail optimize:${JSON.stringify(optimize)}`)
@@ -828,7 +828,7 @@ test('inline: expression-position hoist preserves evaluation order of side effec
     export let f = () => { let s = { v: 99 }; return reveal(s) * 1000 + bump(s) }
     export let direct = () => { let s = { v: 99 }; return s.v * 1000 + bump(s) }
     export let global = () => g * 1000 + inc()`
-  for (const optimize of [2, 'speed']) {
+  for (const optimize of levels(2, 'speed')) {
     const e = jz(READ_FIRST, { optimize }).exports
     is(e.f(), 99100, `${optimize}: the read through an inlined accessor precedes the store`); is(e.direct(), 99100, `${optimize}: the member read precedes the store`); is(e.global(), 1002, `${optimize}: the global read precedes the store`)
   }
@@ -931,7 +931,7 @@ test('peephole: f64 multiply by two uses addition for cheap operands', () => {
 
 test('shared optimizer: eq-zero keeps dense-switch lowering and non-switch values across O0/O2/O3', () => {
   const ops = (fn, op) => count(fn, n => n[0] === op)
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     // The speed tier splices the hot leaf into chain's loop (its scrutinee
     // then rides a tee, which watr's chainTable does not lower); the shape
     // under test is the standalone function's, so keep it out of the inliner.
@@ -3043,7 +3043,7 @@ test('fusedRewrite: || sees boolean false through a boxed local as falsy', () =>
       return (d || 'end') + ''
     }
   `
-  for (const opt of [false, 1, 2, 3]) {
+  for (const opt of levels(false, 1, 2, 3)) {
     const r = run(src, { optimize: opt })
     is(r.go('no'), 'fb', `go falsy @opt ${opt}`)
     is(r.go('yes'), 'yes', `go truthy @opt ${opt}`)
@@ -3080,7 +3080,7 @@ test('dropEffects: dropped ternary-in-condition compiles (seed 192 regression)',
   // Regressed to "not enough arguments on the stack for drop" when dropEffects
   // recursed into an `if`'s arms (unbalancing the stack) instead of keeping the
   // control-flow value whole under a drop.
-  for (const opt of [2, 'speed']) {
+  for (const opt of levels(2, 'speed')) {
     const { main } = run(`export let main = () => {
       let r = 0
       if ((Math.ceil(1)) ? 0 : 0) { r = 1 } else { r = 2 }
@@ -3533,7 +3533,7 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
   {
     const src3 = new Uint8Array(N); for (let i = 0; i < N; i++) src3[i] = (i * 7 + 3) & 0xff
     let expect = 0; for (let i = 0; i < N; i++) expect += src3[i] > 0 ? 1 : 2
-    for (const O of [0, 'size', 'speed']) is(jz(condStep, { optimize: O }).exports.f(src3, new Uint8Array(4)), expect, `budgeted counter O${O}`)
+    for (const O of levels(0, 'size', 'speed')) is(jz(condStep, { optimize: O }).exports.f(src3, new Uint8Array(4)), expect, `budgeted counter O${O}`)
   }
 
   // Negative control 2: a write to `op` OUTSIDE the loop body — no fact.
@@ -3648,7 +3648,7 @@ test('forward-propagation: typed-array global swap must survive (double-buffer i
     export let getF = (i) => f[i]
     export let getG = (i) => g[i]
   `
-  for (const optimize of [null, 'size', 'speed']) {
+  for (const optimize of levels(null, 'size', 'speed')) {
     const { init, swap, getF, getG } = run(SRC, { optimize })
     init(); swap()
     is(getF(0), 99, `opt=${optimize}: f → old g (99)`)
@@ -3859,7 +3859,7 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
     [`export let f = (a, n) => { let k = a[0] * 2; let s = 0; for (let i = 0; i < n; i++) s += k; return s }`, [[new Float64Array([5]), 0], [new Float64Array([5]), 1], [new Float64Array([5]), 3]]],
     [`export let f = (a, d) => { let q = (100 / d) | 0; a[0] = 7; return q + a[0] }`, [[new Int32Array([0]), 0], [new Int32Array([0]), 5]]],
   ]) {
-    const js = Function(s.replace('export ', '') + '; return f')()
+    const js = oracle(s).f
     for (const level of [{ level: 2, watr: false }, { level: 'fast' }, { level: 2 }, { level: 'speed' }]) {
       const onF = jz(s, { optimize: level }).exports.f
       const offF = jz(s, { optimize: { ...level, propagateLocals: false } }).exports.f
@@ -3882,7 +3882,7 @@ test('propagateLocals: loads and persistent writes remain ordered across calls',
     export const state = () => b[0]`
   for (const optimize of ['fast', {level: 'fast', propagateLocals: false},
     {level: 2, watr: false}, 2, 3]) {
-    const js = Function(src.replaceAll('export ', '') + ';return {f,state}')()
+    const js = oracle(src)
     const wasm = jz(src, { optimize }).exports
     const observe = ex => [7, 7, 99, 0, -0, 7].map(n => [ex.f(n), ex.state()])
     is(observe(wasm), observe(js), `${JSON.stringify(optimize)}: A → A → B, zero and signed zero`)
@@ -3902,7 +3902,7 @@ test('propagateLocals: abrupt values preserve operand order and state before rec
   }
   for (const optimize of [{ level: 'fast' }, { level: 'fast', propagateLocals: false },
     { level: 2, watr: false }, { level: 2 }, { level: 3 }]) {
-    const js = Function(src.replaceAll('export ', '') + ';return {f,state}')()
+    const js = oracle(src)
     const wasm = jz(src, { optimize }).exports
     const args = ['4', '4', '0', 'bad', '4']
     // Capture each state before recovery, even when its result is already wrong.
@@ -3924,7 +3924,7 @@ for (const src of [
       try { return ['value', f(n)] }
       catch (e) { return ['throw', e.name, e.message] }
     }
-    const js = Function(src.replace('export ', '') + ';return f')()
+    const js = oracle(src).f
     const wasm = jz(src, { optimize }).exports.f
     is([0, 1, 1, 0].map(n => observe(wasm, n)), [0, 1, 1, 0].map(n => observe(js, n)),
       `${JSON.stringify(optimize)}: ${src}`)
@@ -4203,8 +4203,7 @@ export let main = () => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'every heapsort read/write proven — no undef arms')
-  const exportsJs = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  const exportsJs = oracle(src)
   is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'sorted checksum bit-matches JS')
 })
 
@@ -4230,8 +4229,7 @@ export let main = (g) => {
   // the miss arm folds to CANONICAL nan (toNumF64's checkedNumRead seam via
   // the += accumulator) — the checked arm itself must survive
   ok(/f64\.const nan/.test(m), 'growing bound: the read keeps its checked arm')
-  const exportsJs = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  const exportsJs = oracle(src)
   is(run(src, { optimize: 'speed' }).main(0), exportsJs.main(0), 'g=0 exact')
   ok(Number.isNaN(run(src, { optimize: 'speed' }).main(1)), 'g=1: OOB tail is NaN, matching JS (not raw reads, not undefined)')
 })
@@ -4260,8 +4258,7 @@ export let main = () => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
   ok((m.match(/i32\.lt_u/g) || []).length <= 1, 'codec accesses need no checks (only allocator growth may retain lt_u)')
-  const exportsJs = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  const exportsJs = oracle(src)
   is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'codec kernel stays exact')
 })
 
@@ -4281,8 +4278,7 @@ export let main = (i) => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
   is((m.match(/i32\.lt_u/g) || []).length, 3, 'one guard per RMW — no read+write pairs')
-  const exportsJs = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  const exportsJs = oracle(src)
   const wasm = run(src, { optimize: 'speed' }).main
   for (const i of [-1, 0, 2, 3, 4, 99]) is(wasm(i), exportsJs.main(i), `RMW i=${i} exact including OOB`)
 })
@@ -4343,8 +4339,7 @@ export let main = () => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'geometric-cursor reads proven via the alias-carried static len')
-  const exportsJs = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  const exportsJs = oracle(src)
   is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'value exact')
 })
 
@@ -4472,8 +4467,7 @@ test('monotone cursor budget proves mutually-exclusive codec reads', () => {
     'max branch advance × trip count fits the static input length')
   const short = src.replace('new Uint8Array(20)', 'new Uint8Array(15)')
   ok(/i32\.lt_u/.test(decWat(short)), 'insufficient capacity keeps each checked read')
-  const exportsJs = {}
-  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(exportsJs)
+  const exportsJs = oracle(src)
   is(run(src, { optimize: 'speed' }).f(), exportsJs.f(), 'budgeted post-increment reads stay exact')
 
   const rle = `const enc=(inp,out)=>{let op=0,run=0;for(let p=0;p<8;p++){const x=inp[p];if(x===0)run++;else{if(run>0){out[op++]=run;run=0}out[op++]=x;out[op++]=1}}return op}
@@ -4635,12 +4629,8 @@ export let main = () => {
   }
   return h
 }`
-  const truth = (() => {
-    const exports = {}
-    new Function('exports', src.replace(/export let (\w+) =/g, 'const $1 = exports.$1 ='))(exports)
-    return exports.main()
-  })()
-  for (const optimize of [false, 2, 'speed'])
+  const truth = oracle(src).main()
+  for (const optimize of levels(false, 2, 'speed'))
     is(run(src, { optimize }).main(), truth, `JS-exact (optimize:${optimize})`)
 })
 
@@ -4679,9 +4669,8 @@ export let run = (n, nStages) => {
   for (let i = 0; i < n; i++) t += out[i]
   return t
 }`
-  const jsExports = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(jsExports)
-  for (const optimize of [0, 2, 'speed']) {
+  const jsExports = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
     const r = run(src, { optimize }).run(64, 8)
     almost(r, jsExports.run(64, 8), 1e-9, `O${optimize}: cascade values JS-exact`)
   }
@@ -4735,8 +4724,7 @@ export let run = (n, len) => {
   const out = new Int32Array(n)
   return cursorScan(stream, out, n)
 }`
-  const jsExports = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(jsExports)
+  const jsExports = oracle(src)
   // n=20 → K=3, K0max=1: the guard needs entryR(0) + 3·20 + 1 < len, i.e.
   // len ≥ 62 to PASS. len=30 forces a REAL runtime OOB partway through (the
   // checked arm's exact semantics must survive); len=61 fails the (sound but
@@ -4745,7 +4733,7 @@ export let run = (n, len) => {
   // arm must still compute the identical answer either way.
   for (const [n, len] of [[20, 30], [20, 61], [20, 62], [20, 70], [0, 5], [1, 3]]) {
     const truth = jsExports.run(n, len)
-    for (const optimize of [0, 2, 'speed'])
+    for (const optimize of levels(0, 2, 'speed'))
       is(run(src, { optimize }).run(n, len), truth, `n=${n} len=${len} O${optimize}: exact (checked semantics through guard-fail preserved)`)
   }
   // Structural: the guarded fast arm's cursor reads are bare loads (no bounds
@@ -4795,9 +4783,8 @@ export let crc = (len) => {
   for (let i = 0; i < len; i++) c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
   return (c ^ -1) | 0
 }`
-  const jsExports = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(jsExports)
-  for (const optimize of [0, 2, 'speed'])
+  const jsExports = oracle(src)
+  for (const optimize of levels(0, 2, 'speed'))
     for (const n of [0, 1, 63, 64])
       is(run(src, { optimize }).crc(n), jsExports.crc(n), `O${optimize} n=${n}: crc exact (tail + pair arms)`)
   // Structural: at speed, the paired main loop carries TWO chained table
@@ -4833,7 +4820,7 @@ export let main = () => {
   return s
 }`
   // JS: a[0]+a[2]+a[4] + a[6] = 10+30+50+70 = 160 (broken CSE read a[0] in the tail → 100)
-  for (const optimize of [0, 2, 'speed'])
+  for (const optimize of levels(0, 2, 'speed'))
     is(run(src, { optimize }).main(), 160, `O${optimize}: no cross-loop CSE of a[i]`)
 })
 
@@ -4869,7 +4856,7 @@ export let f = (p) => {
   return di + fr
 }`
   const jsF = (p) => { const r = p & 0x1ffff; const t = r < 0x10000 ? r : 0x20000 - r; const d = 96 * 65536 + t * 2000; const di = (d / 65536) | 0; return di + (d - di * 65536) / 65536.0 }
-  for (const optimize of [0, 2, 'speed']) {
+  for (const optimize of levels(0, 2, 'speed')) {
     const { f } = run(src, { optimize })
     for (const p of [0, 1, 0xffff, 0x10000, 0x1ffff, 0x20000, -1, -123456, 2147483647])
       is(f(p), jsF(p), `O${optimize} p=${p}: q16 split exact`)
@@ -4888,7 +4875,7 @@ test('sign-bit mask yields no non-negative hull (x & 0x80000000 can be negative)
   // EXCEED i32 under such masks are outside the i32 contract — the fuzzer's
   // "i32 contract exceeded" exclusion — so only in-range results are pinned.)
   const src = `export let f = (x) => ((x & 0x80000000) / 65536) | 0`
-  for (const optimize of [0, 2, 'speed']) {
+  for (const optimize of levels(0, 2, 'speed')) {
     const { f } = run(src, { optimize })
     for (const x of [-1, 0x80000000, -2147483648, 5, 0])
       is(f(x), ((x & 0x80000000) / 65536) | 0, `O${optimize} x=${x}: sign-bit mask divide`)
@@ -4920,13 +4907,13 @@ test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary ke
   // NaN-canon guard so the arms are pure AND cheap).
   const divCascade = `export const f = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2`
   const jsDiv = (t) => t < 100 ? t / 3 : t < 200 ? t / 5 : t < 300 ? t / 7 : t * 2
-  for (const optimize of [2, 3, 'speed']) {
+  for (const optimize of levels(2, 3, 'speed')) {
     const tree = parse(divCascade, optimize)
     const fn = findFunc(tree, '$f')
     is(count(fn, n => n[0] === 'select'), 0, `O${JSON.stringify(optimize)}: div-bearing cascade never selects`)
     ok(count(fn, n => n[0] === 'if') >= 1, `O${JSON.stringify(optimize)}: div-bearing cascade compiles as if/else`)
   }
-  for (const optimize of [false, 2, 3, 'speed']) {
+  for (const optimize of levels(false, 2, 3, 'speed')) {
     const { f } = run(divCascade, { optimize })
     for (const t of [50, 150, 250, 350]) is(f(t), jsDiv(t), `O${JSON.stringify(optimize)} t=${t}: div cascade exact`)
   }
@@ -4935,12 +4922,12 @@ test('select-gate cost veto: div-bearing ternary stays if/else, cheap ternary ke
     const grad = (h, x) => { const hh = h | 0; const xx = x + 0.0; return (hh & 1) === 0 ? xx : -xx }
     export const f = (h, x, scale) => { const s = scale + 0.0; return grad(h, x) * s }`
   const jsGrad = (h, x, scale) => (((h | 0) & 1) === 0 ? x : -x) * scale
-  for (const optimize of [2, 3, 'speed']) {
+  for (const optimize of levels(2, 3, 'speed')) {
     const tree = parse(gradient, optimize)
     const fn = findFunc(tree, '$f')
     ok(count(fn, n => n[0] === 'select') >= 1, `O${JSON.stringify(optimize)}: cheap sign-flip ternary keeps select`)
   }
-  for (const optimize of [false, 2, 3, 'speed']) {
+  for (const optimize of levels(false, 2, 3, 'speed')) {
     const { f } = run(gradient, { optimize })
     for (const [h, x, scale] of [[0, 3, 2], [1, 3, 2], [2, -5.5, 1.5], [3, 7, -2]])
       is(f(h, x, scale), jsGrad(h, x, scale), `O${JSON.stringify(optimize)} h=${h}: gradient select exact`)
@@ -4979,7 +4966,7 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
   // here). Scope the check to the function's own top-level return expression — that's the
   // one node the select-gate veto actually governs (outer ternary → if/else, not select).
   const topExpr = (fn) => { const last = fn[fn.length - 1]; return Array.isArray(last) && last[0] === 'return' ? last[1] : last }
-  for (const optimize of [2, 3, 'speed']) {
+  for (const optimize of levels(2, 3, 'speed')) {
     const tree = parse(pickChild, optimize)
     const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
     const top = topExpr(fn)
@@ -4988,7 +4975,7 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
     ok(Array.isArray(top) && (top[0] === 'if' || top[0] === 'block'), `O${JSON.stringify(optimize)}: nested-if load-bearing flag never selects`)
     ok(count(fn, n => n[0] === 'if' || n[0] === 'br_if') >= 1, `O${JSON.stringify(optimize)}: compiles as branches`)
   }
-  for (const optimize of [false, 2, 3, 'speed']) {
+  for (const optimize of levels(false, 2, 3, 'speed')) {
     const { f } = run(pickChild, { optimize })
     for (const [n, child] of [[8, 0], [8, 1], [8, 2], [8, 3], [8, 6], [8, 7], [5, 3], [1, 0]])
       is(f(n, child), jsPick(n, child), `O${JSON.stringify(optimize)} n=${n} child=${child}: pick-larger-child exact`)
@@ -4999,12 +4986,12 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
   // chains in general (which either collapse to i32.and upstream or never touch memory).
   const plainFlag = `export const f = (x, y, z) => (x > 0 && y < 10) ? z + 1.0 : z - 1.0`
   const jsPlain = (x, y, z) => (x > 0 && y < 10) ? z + 1.0 : z - 1.0
-  for (const optimize of [2, 3, 'speed']) {
+  for (const optimize of levels(2, 3, 'speed')) {
     const tree = parse(plainFlag, optimize)
     const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
     ok(count(fn, n => n[0] === 'select') >= 1, `O${JSON.stringify(optimize)}: plain-compare flag keeps select`)
   }
-  for (const optimize of [false, 2, 3, 'speed']) {
+  for (const optimize of levels(false, 2, 3, 'speed')) {
     const { f } = run(plainFlag, { optimize })
     for (const [x, y, z] of [[1, 5, 2], [-1, 5, 2], [1, 20, 2], [-1, 20, 2]])
       is(f(x, y, z), jsPlain(x, y, z), `O${JSON.stringify(optimize)}: plain-flag select exact`)
@@ -5044,7 +5031,7 @@ test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def b
     return r === 0 ? q : r === 1 ? -q : r === 2 ? q * 2 : -q
   }
   const jsRender = (env) => { let acc = 0; for (let ph = 0; ph < 200; ph++) acc += jsTrig(ph) * env; return acc }
-  for (const optimize of [false, 2, 3, 'speed']) {
+  for (const optimize of levels(false, 2, 3, 'speed')) {
     const { render } = run(src, { optimize })
     is(render(2.5), jsRender(2.5), `O${JSON.stringify(optimize)}: hoisted-call-temp ternary exact`)
     is(render(-1.75), jsRender(-1.75), `O${JSON.stringify(optimize)}: hoisted-call-temp ternary exact (neg env)`)
@@ -5081,6 +5068,6 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   const body = w.slice(w.indexOf('(func $f'))
   ok(!/\(if\s*\(result i32\)\s*\(local\.tee/.test(body), 'no value diamond in the function')
   ok(body.includes('$__cc'), 'the jump chain is present')
-  const ref = (x) => { let e = {}; new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e); return e.f(x) }
+  const ref = oracle(src).f
   for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
 })

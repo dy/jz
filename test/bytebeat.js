@@ -9,10 +9,8 @@
 import test from 'tst'
 import { is, almost } from 'tst/assert.js'
 import jz from '../index.js'
+import { run } from './util.js'
 
-function run(code, opts) {
-  return jz(code, opts).exports
-}
 
 function jsBaseline(fnSrc, tRange) {
   const out = new Float64Array(tRange)

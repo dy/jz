@@ -2,50 +2,30 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { run } from './util.js'
+import { run, cases } from './util.js'
 
 // === JSON.stringify ===
 
-test('JSON.stringify: number', () => {
-  is(run(`export let f = () => JSON.stringify(42).length`).f(), 2)
-})
-
-test('JSON.stringify: string', () => {
-  is(run(`export let f = () => JSON.stringify("hi").length`).f(), 4)
-})
-
-test('JSON.stringify: array', () => {
-  is(run(`export let f = () => JSON.stringify([1,2,3]).length`).f(), 7)
-})
-
-test('JSON.stringify: NaN → null', () => {
-  is(run(`export let f = () => JSON.stringify(0/0).length`).f(), 4)
-})
-
-test('JSON.stringify: Infinity → null', () => {
-  is(run(`export let f = () => JSON.stringify(1/0).length`).f(), 4)
-})
-
-test('JSON.stringify: nested', () => {
-  is(run(`export let f = () => JSON.stringify([[1],[2]]).length`).f(), 9)
-})
-
-test('JSON.stringify: empty array', () => {
-  is(run(`export let f = () => JSON.stringify([]).length`).f(), 2)
+test('JSON.stringify', () => {
+  cases([
+    ['number', `() => JSON.stringify(42).length`, 2],
+    ['string', `() => JSON.stringify("hi").length`, 4],
+    ['array', `() => JSON.stringify([1,2,3]).length`, 7],
+    ['NaN → null', `() => JSON.stringify(0/0).length`, 4],
+    ['Infinity → null', `() => JSON.stringify(1/0).length`, 4],
+    ['nested', `() => JSON.stringify([[1],[2]]).length`, 9],
+    ['empty array', `() => JSON.stringify([]).length`, 2],
+  ])
 })
 
 // === JSON.parse ===
 
-test('JSON.parse: number', () => {
-  is(run(`export let f = () => JSON.parse("42")`).f(), 42)
-})
-
-test('JSON.parse: runtime number argument parses after ToString coercion', () => {
-  is(run(`export let f = value => JSON.parse(value)`).f(42), 42)
-})
-
-test('JSON.parse: runtime boolean argument parses after ToString coercion', () => {
-  is(run(`export let f = value => JSON.stringify(JSON.parse(value < 2))`).f(1), 'true')
+test('JSON.parse', () => {
+  cases([
+    ['number', `() => JSON.parse("42")`, 42],
+    ['runtime number argument parses after ToString coercion', `value => JSON.parse(value)`, 42, 42],
+    ['runtime boolean argument parses after ToString coercion', `value => JSON.stringify(JSON.parse(value < 2))`, 'true', 1],
+  ])
 })
 
 test('JSON.parse: undefined argument throws SyntaxError (ToString → "undefined")', () => {
@@ -55,45 +35,34 @@ test('JSON.parse: undefined argument throws SyntaxError (ToString → "undefined
   ok(run(`export let g = () => JSON.parse(null)`).g() === null, 'null still parses (ToString(null) = "null")')
 })
 
-test('JSON.parse: negative float', () => {
-  is(run(`export let f = () => JSON.parse("-3.14")`).f(), -3.14)
-})
-
-test('JSON.parse: true', () => {
-  // Must return boolean true, not numeric 1 — matches JS behaviour.
-  is(run(`export let f = () => JSON.parse("true")`).f(), true)
+test('JSON.parse', () => {
+  cases([
+    ['negative float', `() => JSON.parse("-3.14")`, -3.14],
+    // Must return boolean true, not numeric 1 — matches JS behaviour.
+    ['true', `() => JSON.parse("true")`, true],
+  ])
 })
 
 test('JSON.parse: null', () => {
   ok(run(`export let f = () => JSON.parse("null")`).f() === null)
 })
 
-test('JSON.parse: array length', () => {
-  is(run(`export let f = () => JSON.parse("[1,2,3]").length`).f(), 3)
-})
-
-test('JSON.parse: array element', () => {
-  is(run(`export let f = () => JSON.parse("[10,20,30]")[1]`).f(), 20)
-})
-
-test('JSON.parse: string length', () => {
-  is(run('export let f = () => JSON.parse(\'\"hello\"\').length').f(), 5)
-})
-
-test('JSON.parse: string with escape sequences decodes to correct length', () => {
-  // Escapes in the non-simple path (>4 byte output) must count toward $len so
-  // the alloc fits the decoded body. A raw escape (\") forwards to the same
-  // literal byte; the decoded string is "abc\"def" → 8 bytes.
-  is(run(`export let f = () => JSON.parse('"abc\\\\"def"').length`).f(), 7)
-  // \n and \" mixed; decoded length is 5 ("a\nb\"c" → a, NL, b, ", c).
-  is(run(`export let f = () => JSON.parse('"a\\\\nb\\\\"c"').length`).f(), 5)
-})
-
-test('JSON.parse: object value with escape', () => {
-  // Reproduces the bug surface: object value strings with escapes were
-  // silently corrupting the heap because the second-scan decode wrote past
-  // the under-sized alloc.
-  is(run(`export let f = () => JSON.parse('{"k":"a\\\\"b"}').k.length`).f(), 3)
+test('JSON.parse', () => {
+  cases([
+    ['array length', `() => JSON.parse("[1,2,3]").length`, 3],
+    ['array element', `() => JSON.parse("[10,20,30]")[1]`, 20],
+    ['string length', '() => JSON.parse(\'\"hello\"\').length', 5],
+    // Escapes in the non-simple path (>4 byte output) must count toward $len so
+    // the alloc fits the decoded body. A raw escape (\") forwards to the same
+    // literal byte; the decoded string is "abc\"def" → 8 bytes.
+    ['string with escape sequences decodes to correct length', `() => JSON.parse('"abc\\\\"def"').length`, 7],
+    // \n and \" mixed; decoded length is 5 ("a\nb\"c" → a, NL, b, ", c).
+    ['string with escape sequences decodes to correct length', `() => JSON.parse('"a\\\\nb\\\\"c"').length`, 5],
+    // Reproduces the bug surface: object value strings with escapes were
+    // silently corrupting the heap because the second-scan decode wrote past
+    // the under-sized alloc.
+    ['object value with escape', `() => JSON.parse('{"k":"a\\\\"b"}').k.length`, 3],
+  ])
 })
 
 test('JSON.parse: \\uXXXX escapes decode to UTF-8', () => {
@@ -107,18 +76,13 @@ test('JSON.parse: \\uXXXX escapes decode to UTF-8', () => {
   is(run(`export let f = () => JSON.parse('{"a\\\\u0041":7}').aA`).f(), 7)
 })
 
-test('JSON.parse: nested array', () => {
-  is(run(`export let f = () => JSON.parse("[[1,2],[3]]")[0][1]`).f(), 2)
-})
-
-test('JSON.parse: roundtrip', () => {
-  is(run(`export let f = () => JSON.stringify(JSON.parse("[1,2,3]")).length`).f(), 7)
-})
-
-// === JSON.parse objects (HASH type) ===
-
-test('JSON.parse: object dot access', () => {
-  is(run(`export let f = () => { let o = JSON.parse('{"x":42}'); return o.x }`).f(), 42)
+test('JSON.parse', () => {
+  cases([
+    ['nested array', `() => JSON.parse("[[1,2],[3]]")[0][1]`, 2],
+    ['roundtrip', `() => JSON.stringify(JSON.parse("[1,2,3]")).length`, 7],
+    // === JSON.parse objects (HASH type) ===
+    ['object dot access', `() => { let o = JSON.parse('{"x":42}'); return o.x }`, 42],
+  ])
 })
 
 test('JSON.parse: static object dot access uses fixed-slot OBJECT load', () => {
@@ -242,23 +206,16 @@ test('JSON.parse: mixed-order literal sources stay generic', () => {
   is(run(src).f(1), 10)
 })
 
-test('JSON.parse: object multiple keys', () => {
-  is(run(`export let f = () => { let o = JSON.parse('{"a":10,"b":20}'); return o.a + o.b }`).f(), 30)
-})
-
-test('JSON.parse: nested object', () => {
-  is(run(`export let f = () => { let o = JSON.parse('{"a":{"b":99}}'); return o.a.b }`).f(), 99)
-})
-
-test('JSON.parse: array of objects', () => {
-  is(run(`export let f = () => { let a = JSON.parse('[{"x":1},{"x":2}]'); return a[0].x + a[1].x }`).f(), 3)
-})
-
-test('JSON.parse: many keys (grow)', () => {
-  is(run(`export let f = () => {
+test('JSON.parse', () => {
+  cases([
+    ['object multiple keys', `() => { let o = JSON.parse('{"a":10,"b":20}'); return o.a + o.b }`, 30],
+    ['nested object', `() => { let o = JSON.parse('{"a":{"b":99}}'); return o.a.b }`, 99],
+    ['array of objects', `() => { let a = JSON.parse('[{"x":1},{"x":2}]'); return a[0].x + a[1].x }`, 3],
+    ['many keys (grow)', `() => {
     let o = JSON.parse('{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9}')
     return o.a + o.i
-  }`).f(), 10)
+  }`, 10],
+  ])
 })
 
 test('JSON.parse: repeated escaped runtime object keys reuse schema entries by decoded text', () => {
@@ -298,28 +255,21 @@ test('JSON.parse: missing key returns nullish', () => {
   ok(v === null || v === undefined)
 })
 
-test('JSON.parse: string value access', () => {
-  is(run(`export let f = () => { let o = JSON.parse('{"name":"jz"}'); return o.name.length }`).f(), 2)
-})
-
-test('JSON.parse: write property', () => {
-  is(run(`export let f = () => { let o = JSON.parse('{"x":1}'); o.x = 99; return o.x }`).f(), 99)
-})
-
-test('JSON.parse: add new property', () => {
-  is(run(`export let f = () => { let o = JSON.parse('{"x":1}'); o.y = 2; return o.x + o.y }`).f(), 3)
-})
-
-// HASH bracket-read with non-literal key — local string var, function param,
-// or any expression resolving to a runtime string. Routes through
-// __hash_get_local; the hash code is computed at call time rather than
-// baked in as it is for literal keys.
-test('JSON.parse: HASH bracket with local string var', () => {
-  is(run(`export let f = () => {
+test('JSON.parse', () => {
+  cases([
+    ['string value access', `() => { let o = JSON.parse('{"name":"jz"}'); return o.name.length }`, 2],
+    ['write property', `() => { let o = JSON.parse('{"x":1}'); o.x = 99; return o.x }`, 99],
+    ['add new property', `() => { let o = JSON.parse('{"x":1}'); o.y = 2; return o.x + o.y }`, 3],
+    // HASH bracket-read with non-literal key — local string var, function param,
+    // or any expression resolving to a runtime string. Routes through
+    // __hash_get_local; the hash code is computed at call time rather than
+    // baked in as it is for literal keys.
+    ['HASH bracket with local string var', `() => {
     let o = JSON.parse('{"a":1,"b":2,"c":3}')
     let k = "b"
     return o[k]
-  }`).f(), 2)
+  }`, 2],
+  ])
 })
 
 test('JSON.parse: HASH bracket with param key', () => {
@@ -342,37 +292,26 @@ test('JSON.parse: HASH bracket misses return undefined', () => {
 
 // === JSON.stringify: objects ===
 
-test('JSON.stringify: schema object', () => {
-  const { f } = run(`export let f = () => {
+test('JSON.stringify: objects', () => {
+  cases([
+    ['schema object', `() => {
     let o = { x: 1, y: 2 }
     return JSON.stringify(o)
-  }`)
-  is(f(), '{"x":1,"y":2}')
-})
-
-test('JSON.stringify: nested object', () => {
-  const { f } = run(`export let f = () => {
+  }`, '{"x":1,"y":2}'],
+    ['nested object', `() => {
     let inner = { a: 10 }
     let outer = { b: inner }
     return JSON.stringify(outer)
-  }`)
-  is(f(), '{"b":{"a":10}}')
-})
-
-test('JSON.stringify: object with string value', () => {
-  const { f } = run(`export let f = () => {
+  }`, '{"b":{"a":10}}'],
+    ['object with string value', `() => {
     let o = { name: "jz" }
     return JSON.stringify(o)
-  }`)
-  is(f(), '{"name":"jz"}')
-})
-
-test('JSON.stringify: object in array', () => {
-  const { f } = run(`export let f = () => {
+  }`, '{"name":"jz"}'],
+    ['object in array', `() => {
     let a = [{ x: 1 }, { x: 2 }]
     return JSON.stringify(a)
-  }`)
-  is(f(), '[{"x":1},{"x":2}]')
+  }`, '[{"x":1},{"x":2}]'],
+  ])
 })
 
 test('JSON.stringify: parsed input does not make grown pushed object array look circular', () => {
@@ -406,27 +345,19 @@ test('JSON.stringify: HASH roundtrip', () => {
   is(parsed.b, 2)
 })
 
-test('JSON.stringify: empty object', () => {
-  const { f } = run(`export let f = () => {
+test('JSON.stringify: objects', () => {
+  cases([
+    ['empty object', `export let f = () => {
     let o = JSON.parse('{}')
     return JSON.stringify(o)
-  }`)
-  is(f(), '{}')
-})
-
-test('JSON.stringify: assigned object boolean property serializes as boolean', () => {
-  const { f } = run(`export let f = () => {
+  }`, '{}'],
+    ['assigned object boolean property serializes as boolean', `() => {
     let body = {}
     body.enabled = true
     body.selected = false
     return JSON.stringify(body)
-  }`)
-
-  is(f(), '{"enabled":true,"selected":false}')
-})
-
-test('JSON.stringify: assigned empty-object properties preserve nested body string', () => {
-  const { f } = run(`export let f = () => {
+  }`, '{"enabled":true,"selected":false}'],
+    ['assigned empty-object properties preserve nested body string', `() => {
     let input = { browser_ip: "1.2.3.4", cart_hash: "abc", extra_data: "x", is_bopis: true, mode: "test" }
     let body = {}
     if (input?.browser_ip) body.browser_ip = input.browser_ip
@@ -435,9 +366,8 @@ test('JSON.stringify: assigned empty-object properties preserve nested body stri
     body.is_bopis = input.is_bopis ? true : false
     if (input.mode) body.mode = input.mode
     return JSON.stringify({ request: { body: JSON.stringify(body) } })
-  }`)
-
-  is(f(), '{"request":{"body":"{\\"browser_ip\\":\\"1.2.3.4\\",\\"cart_hash\\":\\"abc\\",\\"extra_data\\":\\"x\\",\\"is_bopis\\":true,\\"mode\\":\\"test\\"}"}}')
+  }`, '{"request":{"body":"{\\"browser_ip\\":\\"1.2.3.4\\",\\"cart_hash\\":\\"abc\\",\\"extra_data\\":\\"x\\",\\"is_bopis\\":true,\\"mode\\":\\"test\\"}"}}'],
+  ])
 })
 
 test('JSON runtime schemas: late closure parse does not overwrite compile-time stringify schemas', () => {
@@ -485,40 +415,26 @@ test('JSON.parse: loose equality coerces numeric strings against numbers', () =>
 
 // === Boolean identity (regression: parser emitted numeric 1/0 instead of atoms) ===
 
-test('JSON.parse: false is real boolean', () => {
-  // typeof must be 'boolean', not 'number'. Before fix: returned 0.
-  is(run(`export let f = () => JSON.parse("false")`).f(), false)
+test('JSON.parse', () => {
+  cases([
+    // typeof must be 'boolean', not 'number'. Before fix: returned 0.
+    ['false is real boolean', `() => JSON.parse("false")`, false],
+    ['typeof true is "boolean"', `() => typeof JSON.parse("true")`, 'boolean'],
+    ['typeof false is "boolean"', `() => typeof JSON.parse("false")`, 'boolean'],
+    // Before fix stringify produced '[null,null]' for boolean atoms it didn't recognise.
+    ['[true,false] roundtrip via stringify', `() => JSON.stringify(JSON.parse("[true,false]"))`, '[true,false]'],
+    ['boolean in object roundtrips', `() => JSON.stringify(JSON.parse('{"ok":true,"skip":false}'))`, '{"ok":true,"skip":false}'],
+    // Boolean atoms are correctly falsy (false) and truthy (true) in conditionals.
+    ['boolean value is falsy/truthy', `() => JSON.parse("true") ? 1 : 0`, 1],
+    ['boolean value is falsy/truthy', `() => JSON.parse("false") ? 1 : 0`, 0],
+  ])
 })
 
-test('JSON.parse: typeof true is "boolean"', () => {
-  is(run(`export let f = () => typeof JSON.parse("true")`).f(), 'boolean')
-})
-
-test('JSON.parse: typeof false is "boolean"', () => {
-  is(run(`export let f = () => typeof JSON.parse("false")`).f(), 'boolean')
-})
-
-test('JSON.parse: [true,false] roundtrip via stringify', () => {
-  // Before fix stringify produced '[null,null]' for boolean atoms it didn't recognise.
-  is(run(`export let f = () => JSON.stringify(JSON.parse("[true,false]"))`).f(), '[true,false]')
-})
-
-test('JSON.parse: boolean in object roundtrips', () => {
-  is(run(`export let f = () => JSON.stringify(JSON.parse('{"ok":true,"skip":false}'))`).f(), '{"ok":true,"skip":false}')
-})
-
-test('JSON.parse: boolean value is falsy/truthy', () => {
-  // Boolean atoms are correctly falsy (false) and truthy (true) in conditionals.
-  is(run(`export let f = () => JSON.parse("true") ? 1 : 0`).f(), 1)
-  is(run(`export let f = () => JSON.parse("false") ? 1 : 0`).f(), 0)
-})
-
-test('JSON.stringify: true still serialises as "true"', () => {
-  is(run(`export let f = () => JSON.stringify(true)`).f(), 'true')
-})
-
-test('JSON.stringify: false still serialises as "false"', () => {
-  is(run(`export let f = () => JSON.stringify(false)`).f(), 'false')
+test('JSON.stringify', () => {
+  cases([
+    ['true still serialises as "true"', `() => JSON.stringify(true)`, 'true'],
+    ['false still serialises as "false"', `() => JSON.stringify(false)`, 'false'],
+  ])
 })
 
 // audit-#8 P0-4 (2026-08-03): a BOOL∪NUMBER ambiguous merge (valTypeOf

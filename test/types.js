@@ -16,12 +16,10 @@ import { T } from '../src/ast.js'
 import { summarize, K, kind } from '../src/summary/index.js'
 import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined, censusShapedNode } from '../src/kind.js'
 import { PRESENCE, contractVal } from '../src/summary/index.js'
+import { cases, run } from './util.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
-function run(code, opts) {
-  return jz(code, opts).exports
-}
 
 // jz()-based — needed by slot/typed-narrow tests that use full host wiring.
 const runHost = (code) => jz(code).exports
@@ -41,50 +39,27 @@ const countCalls = (text, fn) =>
 
 // === Integer preservation ===
 
-test('type: 1 + 2 stays i32 internally', () => {
-  is(run('export let f = () => 1 + 2').f(), 3)
-})
-
-test('type: 1.0 + 2.0 is f64', () => {
-  is(run('export let f = () => 1.0 + 2.0').f(), 3)
-})
-
-test('type: mixed i32 + f64 promotes', () => {
-  is(run('export let f = () => 1 + 2.5').f(), 3.5)
-})
-
-test('type: division always f64', () => {
-  is(run('export let f = () => 10 / 3').f(), 10 / 3)
-})
-
-test('type: i32 chain', () => {
-  is(run('export let f = (a, b) => a * 2 + b * 3').f(4, 5), 23)
-})
-
-test('type: local preserves i32', () => {
-  is(run('export let f = () => { let x = 5; let y = 3; return x + y }').f(), 8)
-})
-
-test('type: local widens to f64', () => {
-  is(run('export let f = () => { let x = 5; x = 2.5; return x }').f(), 2.5)
+test('type', () => {
+  cases([
+    ['1 + 2 stays i32 internally', '() => 1 + 2', 3],
+    ['1.0 + 2.0 is f64', '() => 1.0 + 2.0', 3],
+    ['mixed i32 + f64 promotes', '() => 1 + 2.5', 3.5],
+    ['division always f64', '() => 10 / 3', 10 / 3],
+    ['i32 chain', '(a, b) => a * 2 + b * 3', 23, 4, 5],
+    ['local preserves i32', '() => { let x = 5; let y = 3; return x + y }', 8],
+    ['local widens to f64', '() => { let x = 5; x = 2.5; return x }', 2.5],
+  ])
 })
 
 // === Bitwise operators ===
 
-test('bitwise: &', () => {
-  is(run('export let f = (a, b) => a & b').f(0xFF, 0x0F), 0x0F)
-})
-
-test('bitwise: |', () => {
-  is(run('export let f = (a, b) => a | b').f(0xF0, 0x0F), 0xFF)
-})
-
-test('bitwise: ^', () => {
-  is(run('export let f = (a, b) => a ^ b').f(0xFF, 0x0F), 0xF0)
-})
-
-test('bitwise: ~', () => {
-  is(run('export let f = (a) => ~a').f(0), -1)
+test('bitwise: & / | / ^ / ~', () => {
+  cases([
+    ['&', '(a, b) => a & b', 0x0F, 0xFF, 0x0F],
+    ['|', '(a, b) => a | b', 0xFF, 0xF0, 0x0F],
+    ['^', '(a, b) => a ^ b', 0xF0, 0xFF, 0x0F],
+    ['~', '(a) => ~a', -1, 0],
+  ])
 })
 
 test('bitwise: ~~x truncates to int32 (double-xor folded away)', () => {
@@ -97,20 +72,13 @@ test('bitwise: ~~x truncates to int32 (double-xor folded away)', () => {
   is((wat.match(/i32\.xor/g) || []).length, 0)
 })
 
-test('bitwise: <<', () => {
-  is(run('export let f = (a, b) => a << b').f(1, 8), 256)
-})
-
-test('bitwise: >>', () => {
-  is(run('export let f = (a, b) => a >> b').f(256, 4), 16)
-})
-
-test('bitwise: >>>', () => {
-  is(run('export let f = (a, b) => a >>> b').f(256, 4), 16)
-})
-
-test('bitwise: floatbeat t >> 8 & 255', () => {
-  is(run('export let f = (t) => t >> 8 & 255').f(0x1234), 0x12)
+test('bitwise: << / >> / >>> / floatbeat', () => {
+  cases([
+    ['<<', '(a, b) => a << b', 256, 1, 8],
+    ['>>', '(a, b) => a >> b', 16, 256, 4],
+    ['>>>', '(a, b) => a >>> b', 16, 256, 4],
+    ['floatbeat t >> 8 & 255', '(t) => t >> 8 & 255', 0x12, 0x1234],
+  ])
 })
 
 // === ToInt32 string coercion (ECMA-262 7.1.6) ===
@@ -202,32 +170,29 @@ test('constant: Number.NaN', () => {
   ok(isNaN(run('export let f = () => Number.NaN').f()))
 })
 
-test('constant: Infinity', () => {
-  is(run('export let f = () => Infinity').f(), Infinity)
-})
-
-test('constant: true/false in condition', () => {
-  is(run('export let f = () => { if (true) return 1; return 0 }').f(), 1)
-  is(run('export let f = () => { if (false) return 1; return 0 }').f(), 0)
+test('constant: Infinity / true-false in condition', () => {
+  cases([
+    ['Infinity', '() => Infinity', Infinity],
+    ['true in condition', '() => { if (true) return 1; return 0 }', 1],
+    ['false in condition', '() => { if (false) return 1; return 0 }', 0],
+  ])
 })
 
 test('comparison result in bitwise', () => {
-  is(run('export let f = (a, b) => (a > b) & 1').f(5, 3), 1)
-  is(run('export let f = (a, b) => (a > b) & 1').f(1, 3), 0)
+  cases([
+    ['5 > 3', '(a, b) => (a > b) & 1', 1, 5, 3],
+    ['1 > 3', '(a, b) => (a > b) & 1', 0, 1, 3],
+  ])
 })
 
 // === Nullish coalescing ===
 
-test('??: returns left if truthy', () => {
-  is(run('export let f = (a, b) => a ?? b').f(5, 10), 5)
-})
-
-test('??: 0 is NOT nullish (returns 0)', () => {
-  is(run('export let f = (a, b) => a ?? b').f(0, 10), 0)
-})
-
-test('??: null IS nullish (returns right)', () => {
-  is(run('export let f = () => null ?? 42').f(), 42)
+test('??: truthy / zero / null', () => {
+  cases([
+    ['returns left if truthy', '(a, b) => a ?? b', 5, 5, 10],
+    ['0 is NOT nullish (returns 0)', '(a, b) => a ?? b', 0, 0, 10],
+    ['null IS nullish (returns right)', '() => null ?? 42', 42],
+  ])
 })
 
 // === void ===

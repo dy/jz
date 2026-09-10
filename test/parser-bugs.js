@@ -3,6 +3,7 @@ import jz, { compile } from '../index.js'
 import { is, ok } from 'tst/assert.js'
 import { isDestructurePat } from '../jzify/hoist-vars.js'
 import { parse } from '../src/parse.js'
+import { levels } from './_matrix.js'
 
 test('multiplication after a semicolon preserves parser ASI state', () => {
     for (const gap of ['', ' ', '\n']) {
@@ -199,7 +200,7 @@ test('unparenthesized unary base of ** rejected (PARSE-2, ES2016 §13.6)', () =>
 test('i32 param narrow excludes body-mutated params', () => {
     // All-i32 callsites narrowed `a` to i32 while `a += 1` emitted through the
     // f64 assign path → wasm validation error (local.set type clash).
-    for (const optimize of [false, true]) {
+    for (const optimize of levels(false, true)) {
         is(jz('let g = (a) => { a += 1; return a }\nexport let main = () => g(1)', { optimize }).exports.main(), 2)
         is(jz('let g = (a) => { for (let i = 0; i < 3; i++) a += i; return a }\nexport let main = () => g(1)', { optimize }).exports.main(), 4)
     }
@@ -210,7 +211,7 @@ test('default-param closures are not double-prepped (for-init decl inside)', () 
     // re-entering the 2-ary handler shifted init/cond/step into the wrong slots.
     const src = `const mk = (ops, fn = (a) => { for (let i = 0, d; (d = ops[i++]); ) { if (d === a) return i } return 0 }) => fn
 export let main = () => mk([3,4,5])(4)`
-    for (const optimize of [false, true]) is(jz(src, { optimize }).exports.main(), 2)
+    for (const optimize of levels(false, true)) is(jz(src, { optimize }).exports.main(), 2)
 })
 
 test('comma sequence carries the last value\'s ptrKind', () => {
@@ -218,7 +219,7 @@ test('comma sequence carries the last value\'s ptrKind', () => {
     // emitter dropped ptrKind/ptrAux (same class the ternary tagPtr fixed).
     const src = `const mk = (k) => { const fn = (x) => x + k; return (fn.a = 1, fn.b = 2, fn) }
 export let main = () => mk(5)(2)`
-    for (const optimize of [false, true]) is(jz(src, { optimize }).exports.main(), 7)
+    for (const optimize of levels(false, true)) is(jz(src, { optimize }).exports.main(), 7)
     is(jz('const mk = (k) => { let o = { v: k }; return (o.a = 1, o.b = 2, o) }\nexport let main = () => mk(5).v').exports.main(), 5)
 })
 
@@ -238,7 +239,7 @@ test('own prop shadows array builtin on unknown receiver (d.map)', () => {
     // Array.prototype.map — subscript's descriptor mapper is literally `map`.
     const src = `const find = (ops) => { const d = ops[0]; return d.map(1) }
 export let main = () => find([{ op: 'a', map: (x) => x + 41 }])`
-    for (const optimize of [false, true]) is(jz(src, { optimize }).exports.main(), 42)
+    for (const optimize of levels(false, true)) is(jz(src, { optimize }).exports.main(), 42)
     // real arrays keep the builtin
     is(jz('const f = (a) => a.map((x) => x * 2)\nexport let main = () => f([1,2,3])[2]').exports.main(), 6)
 })
@@ -385,7 +386,7 @@ test('?.() on a statically-lifted func-prop direct-calls (dead-write-drop pair)'
     const src = `const p = (s) => s
 p.step = (x) => x * 2
 export let main = () => p.step?.(21)`
-    for (const optimize of [false, true]) is(jz(src, { optimize }).exports.main(), 42)
+    for (const optimize of levels(false, true)) is(jz(src, { optimize }).exports.main(), 42)
     // nullish/unknown shapes keep short-circuiting
     is(jz('const p = (s) => s\nexport let main = () => p.nope?.(1) === undefined ? 1 : 0').exports.main(), 1)
     is(jz('let f = null\nexport let main = () => f?.() === undefined ? 1 : 0').exports.main(), 1)
@@ -439,7 +440,7 @@ let mark = (e) => { hitFlag = 1 }
 export let check = () => hitFlag
 let cmp = (a, b, m) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) throw m }
 export let go = () => { (async () => 42)().then((v) => { mark() }, mark); return 1 }`
-    for (const optimize of [false, 1, true]) {
+    for (const optimize of levels(false, 1, true)) {
         const inst = jz(SRC, { optimize })
         inst.exports.go()
         is(inst.exports.check(), 1, `optimize:${optimize}`)
@@ -547,7 +548,7 @@ test('pointer-ABI params: body-reassigned params stay boxed (reassigned-param ki
     const src2 = `
         let scale = (a) => { if (a.length === 0) a = new Float64Array(1); return a[0] * 2 }
         export let f = () => { let t = new Float64Array([21]); return scale(t) }`
-    for (const optimize of [false, true]) is(jz(src2, { optimize }).exports.f(), 42)
+    for (const optimize of levels(false, true)) is(jz(src2, { optimize }).exports.f(), 42)
 })
 
 // ── test262 negative-parse residual closures (fix/parser-residuals) ────────

@@ -6,6 +6,7 @@
 // __iter_arr's unknown-receiver arm (module/collection.js).
 import test, { is } from 'tst'
 import { run } from './util.js'
+import { levels } from './_matrix.js'
 
 test('for-of over nullish throws (catchable), iterables unaffected', async () => {
   const SRC = `
@@ -21,7 +22,7 @@ test('for-of over nullish throws (catchable), iterables unaffected', async () =>
     for (const x of s) n += x
     return n
   }`
-  for (const optimize of [false, 2]) {
+  for (const optimize of levels(false, 2)) {
     const m = await run(SRC, { memory: 256, optimize })
     is(m.probe(1), 'sum:6', `optimize:${optimize} array iterates`)
     is(m.probe(0), 'threw', `optimize:${optimize} undefined throws`)
@@ -59,7 +60,7 @@ test('for-of over an iterable of unknown kind resolves it at runtime (a host typ
   const utf8 = new TextEncoder()
   export const bytes = (s) => { const out = []; for (const x of utf8.encode(s)) out.push(x); return out[0] * 1000 + out[1] }
   export const colls = () => { const out = []; for (const x of new Set([3, 4])) out.push(x); for (const [k, v] of new Map([[1, 2]])) out.push(k * 10 + v); return out[0] * 1000 + out[1] * 100 + out[2] }`
-  for (const optimize of [false, 2]) {
+  for (const optimize of levels(false, 2)) {
     const m = await run(SRC, { optimize })
     is(m.bytes('ab'), 97098, `optimize:${optimize} the encoder's bytes iterate as bytes`)
     is(m.colls(), 3412, `optimize:${optimize} a Set and a Map iterate as arrays`)

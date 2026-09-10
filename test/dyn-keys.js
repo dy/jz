@@ -6,7 +6,8 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel, withBigintStrict } from './_matrix.js'
+import { onKernel, withBigintStrict, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
@@ -15,8 +16,8 @@ test('Map value analysis follows aliases and calls without leaking between compi
     const src = `const m = new Map(); const alias = m;
       const put = (target, value) => target.set('x', value);
       export const f = n => { if (n) put(alias, ${value}); else m.delete('x'); return m.get('x') }`
-    const js = Function(src.replace('export ', '') + ';return f')()
-    for (const optimize of [0, 2, 3]) {
+    const js = oracle(src).f
+    for (const optimize of levels(0, 2, 3)) {
       const f = jz(src, {optimize}).exports.f
       for (const n of [0, 1, 1, 0, 1]) is(f(n), js(n), `${value}: O${optimize}, n=${n}`)
     }
@@ -41,7 +42,7 @@ test('dyn-keys: deletion invalidates static presence and enumeration through ali
       return ['a' in o, Object.hasOwn(o, 'a'), Object.keys(o).length,
         Object.values(o).length, Object.entries(o).length, keys.includes('a'), o.a]`
     const expected = Function(src)()
-    for (const optimize of [0, 2, 3]) {
+    for (const optimize of levels(0, 2, 3)) {
       const f = jz('export let f = () => {' + src + '}', {optimize}).exports.f
       is(f(), expected, `O${optimize}: ${rewrite || 'deleted'}`)
       is(f(), expected, 'a fresh invocation does not inherit object mutations')
@@ -169,7 +170,7 @@ test('in: a closed schema answers dynamic membership structurally, without __dyn
     let o = { nil: null, undef: undefined, errorClasses: null, '1': undefined, undefined: null }
     return k in o
   }`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const f = jz(src, { optimize }).exports.f
     is(f('nil'), true, `O${optimize}: null-valued field is present`)
     is(f('undef'), true, `O${optimize}: undefined-valued field is present`)
@@ -201,7 +202,7 @@ test('in: the closed-schema key expression is evaluated once before ToPropertyKe
     let present = key() in o
     return calls * 10 + present
   }`
-  for (const optimize of [0, 2, 3])
+  for (const optimize of levels(0, 2, 3))
     is(jz(src, { optimize }).exports.f(), 11, `O${optimize}: one key call, then numeric ToPropertyKey`)
 })
 
@@ -218,7 +219,7 @@ test('in: open, aliased, deleted, and large schemas retain runtime membership di
   ]
   for (const [name, body, key, expected] of cases) {
     const src = `export let f = (k) => { ${body} }`
-    for (const optimize of [0, 2, 3])
+    for (const optimize of levels(0, 2, 3))
       is(jz(src, { optimize }).exports.f(key), expected, `O${optimize}: ${name}`)
     ok(compile(src, { optimize: 3, wat: true }).includes('$__dyn_has'),
       `${name} bypasses the closed-schema path`)
@@ -246,7 +247,7 @@ test('in: runtime membership sees a present null or undefined field on every rec
   export const numeric = (n) => { const o = {}; o[n] = null; return (n in o ? 1 : 0) + (String(n) in o ? 2 : 0) + ((n + 1) in o ? 4 : 0) }
   export const onArray = (k) => { const a = [null, undefined]; a[k] = undefined; return (0 in a ? 1 : 0) + (1 in a ? 2 : 0) + (2 in a ? 4 : 0) + (k in a ? 8 : 0) + ('length' in a ? 16 : 0) }
   export const hashed = (k) => { const h = Object.fromEntries([['a', null], ['b', undefined]]); return (k in h ? 1 : 0) + ('zz' in h ? 2 : 0) }`
-  const oracle = Function(SRC.replaceAll('export ', '') + ';return { nested, durable, durableWrite, ephemeral, deleted, numeric, onArray, hashed }')()
+  const host = oracle(SRC)
   const calls = [
     ['nested', ['i32.trunc_sat_f64_s', 'f64.convert_i32_s']], ['nested', ['i32.trunc_sat_f64_s', 'f64.convert_i32_u']], ['nested', ['i64.trunc_sat_f64_s', 'f64.convert_i32_u']], ['nested', ['zz', 'f64.convert_i32_s']],
     ['durable', ['a']], ['durable', ['b']], ['durable', ['c']], ['durable', ['e']],
@@ -256,9 +257,9 @@ test('in: runtime membership sees a present null or undefined field on every rec
     ['onArray', ['prop']], ['onArray', [1]],
     ['hashed', ['a']], ['hashed', ['b']],
   ]
-  for (const optimize of [0, 1, 2]) {
+  for (const optimize of levels(0, 1, 2)) {
     const ex = jz(SRC, { optimize, memory: 64 }).exports
-    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+    for (const [fn, args] of calls) is(ex[fn](...args), host[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
   }
 })
 
@@ -290,7 +291,7 @@ test('in: a deleted field is absent, a present undefined field is present, throu
   export const rewrittenCount = (n, k, v) => { const o = pick(n); delete o[k]; o[k] = v; return count(o) }
   export const writtenUndefined = (n, k, q) => { const o = pick(n); o[k] = undefined; return has(o, q) }
   export const writtenUndefinedKeys = (n, k) => { const o = pick(n); o[k] = undefined; return keys(o) }`
-  const oracle = Function(SRC.replaceAll('export ', '') + ';return { present, presentOwn, presentKeys, deleted, deletedOwn, deletedKeys, deletedCount, deletedRead, deletedJson, deletedClone, rewritten, rewrittenCount, writtenUndefined, writtenUndefinedKeys }')()
+  const host = oracle(SRC)
   const calls = [
     ['present', [0, 'a']], ['present', [0, 'b']], ['present', [0, 'z']], ['present', [1, 'a']], ['present', [3, 's33']],
     ['presentOwn', [0, 'a']], ['presentOwn', [0, 'z']], ['presentKeys', [0]],
@@ -303,9 +304,9 @@ test('in: a deleted field is absent, a present undefined field is present, throu
     ['writtenUndefined', [0, 'b', 'b']], ['writtenUndefined', [1, 'c', 'c']], ['writtenUndefined', [1, 'z', 'z']],
     ['writtenUndefinedKeys', [0, 'b']], ['writtenUndefinedKeys', [1, 'z']],
   ]
-  for (const optimize of [0, 1, 2]) {
+  for (const optimize of levels(0, 1, 2)) {
     const ex = jz(SRC, { optimize, memory: 64 }).exports
-    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+    for (const [fn, args] of calls) is(ex[fn](...args), host[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
   }
 })
 
@@ -330,7 +331,7 @@ test('in: inferred-schema aliases cannot bypass source-side shape mutations', ()
       return k in alias
     }`],
   ]
-  for (const [name, src] of cases) for (const optimize of [0, 2, 3]) {
+  for (const [name, src] of cases) for (const optimize of levels(0, 2, 3)) {
     is(jz(src, { optimize }).exports.f('added'), true, `O${optimize}: ${name}`)
     ok(compile(src, { optimize, wat: true }).includes('$__dyn_has'),
       `O${optimize}: ${name} retains runtime dispatch`)
@@ -357,7 +358,7 @@ test('dyn-reach: a dyn-read schema and an untouched sibling both read through th
     a.aOnly = a.aOnly + 41
     return a.aOnly + (touched|0)
   }`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     is(jz(src, { optimize }).exports.f('bOnly'), 44, `O${optimize}: clean schema a reads/writes through the plain static path`)
     is(jz(src, { optimize }).exports.f('missing'), 42, `O${optimize}: clean schema a stays correct when the dyn read misses`)
   }
@@ -375,7 +376,7 @@ test('dyn-reach: a dyn-read schema and an untouched sibling both read through th
     for (let kk in b) keys += kk + ','
     return keys + '|' + touched
   }`
-  for (const optimize of [0, 2, 3])
+  for (const optimize of levels(0, 2, 3))
     is(jz(enumSrc, { optimize }).exports.f('bOnly'), 'bOnly,bTwo,|2', `O${optimize}: for-in over the dyn-reached schema enumerates every field`)
 
   // The historical corruption class (a stale construction-time sidecar copy
@@ -388,7 +389,7 @@ test('dyn-reach: a dyn-read schema and an untouched sibling both read through th
     let after = b[k]
     return before + '|' + after
   }`
-  for (const optimize of [0, 2, 3])
+  for (const optimize of levels(0, 2, 3))
     is(jz(syncSrc, { optimize }).exports.f('bOnly'), '2|99', `O${optimize}: a plain dot-write after construction stays visible to a later dynamic read`)
 })
 
@@ -407,7 +408,7 @@ test('dyn-reach: an unresolvable dyn-key receiver fails closed to ALL, and still
     a.aOnly = a.aOnly + (touched|0)
     return a
   }`
-  for (const optimize of [0, 2, 3])
+  for (const optimize of levels(0, 2, 3))
     is(jz(src, { optimize }).exports.f(0, 'x').aOnly, 1, `O${optimize}: value correctness holds under the ALL-sentinel fallback`)
 
   const wat = compile(src, { optimize: 0, wat: true })
@@ -441,7 +442,7 @@ test('dyn-reach: union points-to — a polymorphic param reaches exactly its 2 c
       return c
     }
   `
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     is(jz(src, { optimize }).exports.f(1, 'val').cOnly, 11, `O${optimize}: schema A's field resolves through the polymorphic param`)
     is(jz(src, { optimize }).exports.f(2, 'other').cOnly, 21, `O${optimize}: schema B's field resolves through the SAME polymorphic param`)
     is(jz(src, { optimize }).exports.f(1, 'missing').cOnly, 1, `O${optimize}: an absent key still misses cleanly`)
@@ -473,7 +474,7 @@ test('dyn-reach: union points-to — an unresolvable call-site argument degrades
       return c
     }
   `
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     is(jz(src, { optimize }).exports.f(1, 'val').cOnly, 11, `O${optimize}: schema A's field still resolves correctly under the ALL fallback`)
     is(jz(src, { optimize }).exports.f(2, 'third').cOnly, 31, `O${optimize}: the unresolvable call site's own schema still resolves correctly under the ALL fallback`)
   }
@@ -502,7 +503,7 @@ test('dyn-keys: a computed write reaches a slot-built literal through every rout
     export const viaClass = (k, v) => { const p = new P(7); p[k] = v; return probe(p) + '|' + p.x + '|' + p[k] }
     export const viaAssign = (k, v) => { const o = Object.assign({ x: 0, y: 0 }, { x: 3 }); o[k] = v; return probe(o) + '|' + o.x }
     export const twice = (k, k2, v) => { const o = mk(1); o[k] = v; o[k2] = v + 1; o.x = 9; return probe(o) + '|' + Object.keys(o).length }`
-  const oracle = Function(SRC.replaceAll('export ', '') + ';return { direct, viaCall, viaArray, viaClosure, viaClass, viaAssign, twice }')()
+  const host = oracle(SRC)
   const calls = [
     ['direct', ['x', 5]], ['direct', ['z', 5]],
     ['viaCall', ['y', 6]], ['viaCall', ['added', 6]],
@@ -512,9 +513,9 @@ test('dyn-keys: a computed write reaches a slot-built literal through every rout
     ['viaAssign', ['y', 1]], ['viaAssign', ['n', 1]],
     ['twice', ['a', 'b', 1]], ['twice', ['x', 'b', 1]], ['twice', ['b', 'a', 1]],
   ]
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const ex = jz(SRC, { optimize }).exports
-    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+    for (const [fn, args] of calls) is(ex[fn](...args), host[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
   }
 })
 
@@ -532,12 +533,12 @@ test('in: a deleted field written again through a static dot write is present', 
   export const other = () => (has({ c: 3 }, 'c') ? 1 : 0) + count({ c: 3 })
   export const rewritten = (k, v) => { const o = { a: 1, b: 2 }; delete o[k]; o.a = v; return (has(o, 'a') ? 1 : 0) + (has(o, k) ? 2 : 0) + (o[k] === v ? 4 : 0) + count(o) * 8 }
   export const rewrittenDyn = (k, q, v) => { const o = { a: 1, b: 2 }; delete o[k]; o[q] = v; return (has(o, 'a') ? 1 : 0) + (has(o, k) ? 2 : 0) + count(o) * 8 }`
-  const oracle = Function(SRC.replaceAll('export ', '') + ';return { other, rewritten, rewrittenDyn }')()
+  const host = oracle(SRC)
   const calls = [['other', []], ['rewritten', ['a', 5]], ['rewritten', ['b', 5]],
     ['rewrittenDyn', ['a', 'a', 5]], ['rewrittenDyn', ['a', 'a', undefined]], ['rewrittenDyn', ['b', 'a', 5]]]
-  for (const optimize of [0, 1, 2]) {
+  for (const optimize of levels(0, 1, 2)) {
     const ex = jz(SRC, { optimize }).exports
-    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+    for (const [fn, args] of calls) is(ex[fn](...args), host[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
   }
 })
 
@@ -1801,7 +1802,7 @@ test('single-call-site unary `-` param-hop: absent Map key (module-level Map) th
 // dynamic key. Anything broader that may carry BigInt rejects instead of
 // falling through to Number unary arithmetic.
 test('local Map present-key BigInt crosses a unary parameter hop', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { f } = jz(`
       const g = (v) => -v
       export let f = () => { const m = new Map(); m.set('a', 5n); return g(m.get('a')) }
@@ -1819,7 +1820,7 @@ test('control-dependent local Map BigInt unary hop preserves both domains', () =
       return g(m.get('a'))
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { f } = jz(src, { optimize }).exports
     is(f(true), -5n, `O${optimize || 0}: present BigInt stays BigInt`)
     ok(Number.isNaN(f(false)), `O${optimize || 0}: absent value negates to NaN`)

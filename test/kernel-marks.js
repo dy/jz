@@ -11,6 +11,7 @@ import { compile, _compileInProcess } from '../index.js'
 import { instantiate } from '../interop.js'
 import { readMarks, phaseDeltas } from '../scripts/kernel-marks.mjs'
 import { PHASE_NAMES } from '../scripts/phase-marks.js'
+import { levels } from './_matrix.js'
 
 const RECORDER = readFileSync(new URL('../scripts/phase-marks.js', import.meta.url), 'utf8')
 // The driver: records like compileAst's profiler hook does, and measures the
@@ -33,7 +34,7 @@ const kernel = (optimize = 2) => {
   return instantiate(wasm, { memory: 256 })
 }
 
-for (const optimize of [false, 1, 2, 3]) test(`kernel marks: first/repeated recording and readback allocate nothing O${optimize || 0}`, () => {
+for (const optimize of levels(false, 1, 2, 3)) test(`kernel marks: first/repeated recording and readback allocate nothing O${optimize || 0}`, () => {
   const k = kernel(optimize), ex = k.exports
   const start = ex.heap()
   is(ex.record(1, 3), 0, 'the first record')
@@ -64,7 +65,7 @@ test('kernel marks: a phase past the capacity is counted, not recorded, through 
   ex.setPhaseCapacity(256)
 })
 
-for (const optimize of [false, 1, 2, 3]) test(`kernel marks: capacities and read indices have integer bounds O${optimize || 0}`, () => {
+for (const optimize of levels(false, 1, 2, 3)) test(`kernel marks: capacities and read indices have integer bounds O${optimize || 0}`, () => {
   const k = kernel(optimize), ex = k.exports
   for (const [input, capacity] of [[1.5, 1], [0.5, 0], [NaN, 0], [-0, 0], [-Infinity, 0], [Infinity, 256], [255.9, 255]]) {
     ex.setPhaseCapacity(input); ex.resetMarks()

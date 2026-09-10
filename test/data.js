@@ -3,8 +3,9 @@
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile, _compileInProcess } from '../index.js'
-import { onWasi, onKernel, adaptI64 } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
+import { cases, oracle } from './util.js'
 
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
@@ -27,11 +28,11 @@ test('if conversion preserves conditional BigInt updates in a Number/BigInt bind
       return bytes[7]
     }
   `
-  const oracle = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 1, 2, 3]) {
+  const host = oracle(source).f
+  for (const optimize of levels(false, 1, 2, 3)) {
     const f = jz(source, { optimize }).exports.f
     for (const input of ['nan', '-nan', '2', '-nan', 'nan'])
-      is(f(input), oracle(input), `${input} O${optimize || 0}`)
+      is(f(input), host(input), `${input} O${optimize || 0}`)
   }
 })
 
@@ -49,8 +50,8 @@ test('result carriers: arithmetic coerces open nullish operands before storing t
       const result = (value = value ${op} rhs())
       return [result, value, calls]
     }`
-    const expected = Function(source.replace('export ', '') + '; return f')()
-    for (const optimize of [false, 1, 2, 3]) {
+    const expected = oracle(source).f
+    for (const optimize of levels(false, 1, 2, 3)) {
       const actual = jz(source, {optimize}).exports.f
       for (const args of [[2, 3], [null, 0], [undefined, 0], [1, null], [1, undefined], [2, 3]])
         is(actual(...args), expected(...args), `${op} O${optimize || 0}: ${args}`)
@@ -66,8 +67,8 @@ test('result carriers: caught mixed BigInt arithmetic preserves local values and
     try { value = value | rhs() } catch (e) { caught = 1 }
     return [caught, calls, value === 3]
   }`
-  const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 1, 2, 3]) {
+  const expected = oracle(source).f
+  for (const optimize of levels(false, 1, 2, 3)) {
     const actual = jz(source, {optimize}).exports.f
     for (const big of [true, false, true])
       is(actual(big), expected(big), `O${optimize || 0}: ${big}`)
@@ -83,12 +84,12 @@ test('result carriers: heterogeneous arrays retain local BigInt and Boolean resu
     const expression = kind === 'bigint' ? `${value}|1n` : `typeof ${value}==='number'`
     const source = `export function f(input){let trace=0;const value=${expression};
       ${sequence ? '' : 'trace++;'}return [value,trace]}`
-    const oracle = Function(source.replaceAll('export ', '')+';return f')()
-    for (const optimize of [false,1,2,3]) {
+    const host = oracle(source).f
+    for (const optimize of levels(false,1,2,3)) {
       const f = jz(source, {optimize}).exports.f
       for (const input of ['0','6','-1']) {
         actual.push([kind,sequence,optimize,input,f(input)])
-        expected.push([kind,sequence,optimize,input,oracle(input)])
+        expected.push([kind,sequence,optimize,input,host(input)])
       }
     }
   }
@@ -100,7 +101,7 @@ test('result carriers: heterogeneous arrays retain local BigInt and Boolean resu
 test('BigInt constructor: null and undefined reject before a later successful call', () => {
   const source = 'export const f=value=>BigInt(value)', actual = [], expected = []
   const run = fn => { try { return fn() } catch (e) { return e.name } }
-  for (const optimize of [false, 1, 2, 3]) {
+  for (const optimize of levels(false, 1, 2, 3)) {
     const f = jz(source, {optimize}).exports.f
     for (const value of ['6', null, '6', undefined, '6']) {
       actual.push([optimize, run(() => f(value))])
@@ -118,8 +119,8 @@ test('result carriers: a captured BigInt shift RHS preserves its result and effe
       value = value ${op} rhs()
       return [Number(value),calls]
     }`
-    const expected = Function(source.replace('export ', '') + '; return f')()
-    for (const optimize of [false, 1, 2, 3]) {
+    const expected = oracle(source).f
+    for (const optimize of levels(false, 1, 2, 3)) {
       const actual = jz(source, {optimize}).exports.f
       is(actual(), expected(), `${op} O${optimize || 0}`)
       is(actual(), expected(), 'repeat')
@@ -133,8 +134,8 @@ test('result carriers: comma BigInt shift operands retain their payloads', () =>
     const value=(trace=trace*10+1,6n) << (trace=trace*10+2,1n)
     return [Number(value),trace]
   }`
-  const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 1, 2, 3])
+  const expected = oracle(source).f
+  for (const optimize of levels(false, 1, 2, 3))
     is(jz(source, {optimize}).exports.f(), expected(), `O${optimize || 0}`)
 })
 
@@ -148,8 +149,8 @@ test(`result carriers: complex BigInt member ${write} returns the expression val
     const result=(${write})
     return [Number(result),Number(a[0]),trace]
   }`
-  const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 1, 2, 3])
+  const expected = oracle(source).f
+  for (const optimize of levels(false, 1, 2, 3))
     is(jz(source, {optimize}).exports.f(0), expected(0), `O${optimize || 0}`)
 })
 
@@ -177,8 +178,8 @@ test(`result carriers: complex ${array} member ${write} returns the expression v
     const result=(${write})
     return [Number(result),Number(a[0]),trace]
   }`
-  const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 1, 2, 3])
+  const expected = oracle(source).f
+  for (const optimize of levels(false, 1, 2, 3))
     is(jz(source, {optimize}).exports.f(0), expected(0), `O${optimize || 0}`)
 })
 
@@ -196,8 +197,8 @@ test(`result carriers: complex ${array} member ${write} takes its reference once
     try { ${write} } catch(e) { caught=e }
     return [caught,Number(a[0]),trace]
   }`
-  const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 1, 2, 3]) {
+  const expected = oracle(source).f
+  for (const optimize of levels(false, 1, 2, 3)) {
     const f = jz(source, {optimize}).exports.f
     for (const stage of [0, 1, 2, 0]) is(f(stage), expected(stage), `O${optimize || 0}: stage ${stage}`)
   }
@@ -213,8 +214,8 @@ test('result carriers: an inlined receiver and key of a member ++ run once', () 
     const result=(get()[key()])++
     return [Number(result),Number(a[0]),trace]
   }`
-  const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 1, 2, 3])
+  const expected = oracle(source).f
+  for (const optimize of levels(false, 1, 2, 3))
     is(jz(source, {optimize}).exports.f(), expected(), `O${optimize || 0}`)
 })
 
@@ -227,7 +228,7 @@ test('catch locals: an untouched initializer survives the normal completion path
     try { result=(get()[key()]+=rhs()) } catch(e) { caught=e }
     return [result,obj.value,trace,caught]
   }`
-  for (const optimize of [false, 1, 2, 3])
+  for (const optimize of levels(false, 1, 2, 3))
     is(jz(source, {optimize}).exports.f(0)[3], 0, `O${optimize || 0}: catch did not execute`)
 })
 
@@ -237,7 +238,7 @@ test('logical member: an absent array slot in a returned closure takes the RHS',
       return i=>(holder.a[i+0] ??= 7,holder.a[i])
     }
     export function f(){const update=make(); return [update(0),update(0)]}`
-  for (const optimize of [false, 1, 2, 3])
+  for (const optimize of levels(false, 1, 2, 3))
     is(jz(source, {optimize}).exports.f(), [7,7], `O${optimize || 0}`)
 })
 
@@ -270,7 +271,7 @@ test('RepresentationPlan: direct call edges preserve raw-only helpers and normal
     export let numberTag = () => tag(4)
     export let nullable = c => maybe(c ? 4n : null)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.rawCall(), 5n, `O${optimize || 0}: raw-only edge stays raw`)
     is(e.bigintTag(), 'bigint', `O${optimize || 0}: BigInt entering a tagged param is boxed once`)
@@ -313,7 +314,7 @@ test('summary result carriers preserve BigInt payloads, absence, and arithmetic 
     export function collisionNeg(i) { return -new BigInt64Array([${sentinelBits}n])[i] }
     export function collisionNot(i) { return ~new BigInt64Array([${sentinelBits}n])[i] }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.partialNumber(0), undefined, `O${optimize || 0}: numeric fallthrough stays undefined`)
     is(e.partialNumber(1), 1, `O${optimize || 0}: numeric present arm stays Number`)
@@ -362,13 +363,13 @@ test('typed reads evaluate receiver and index once across present, empty, and bo
     export function at(n, i) { trace = 0; let v = receiver(n).at(index(i)); return [v, trace] }
     export function first(n) { trace = 0; let v = receiver(n).at(); return [v, trace] }
   `
-  const oracle = new Function(src.replaceAll('export ', '') + '; return { at, first }')()
-  for (const optimize of [false, 2, 3]) {
+  const host = oracle(src)
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     // A → A → empty B → A on one instance, then both relative-index bounds.
     for (const [n, i] of [[1, 0], [1, 0], [0, 0], [1, 0], [1, -1], [1, 1], [1, -2], [1, Infinity]])
-      is(e.at(n, i), oracle.at(n, i), `O${optimize || 0}: at(${n}, ${i}) payload and effect order`)
-    for (const n of [1, 0, 1]) is(e.first(n), oracle.first(n), `O${optimize || 0}: omitted index, length ${n}`)
+      is(e.at(n, i), host.at(n, i), `O${optimize || 0}: at(${n}, ${i}) payload and effect order`)
+    for (const n of [1, 0, 1]) is(e.first(n), host.first(n), `O${optimize || 0}: omitted index, length ${n}`)
   }
 })
 
@@ -386,7 +387,7 @@ test('typed reduce validates empty inputs and preserves callback arguments and e
     export function missing() { return new Float64Array(0).reduce() }
     export function single() { return new BigInt64Array([7n]).reduce(() => { throw 1 }) }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     for (let i = 0; i < 2; i++) is(e.order(), [10, 123], `O${optimize || 0}: receiver, callback, seed; four callback args`)
     throws(() => e.empty(), error => error instanceof TypeError)
@@ -406,7 +407,7 @@ test('typed iteration and scalar map evaluate receiver and callback producers on
     export function map(empty) { reads = 0; callbacks = 0; let a = receiver(empty).map(callback()); return [a[0], a[1], reads, callbacks] }
     export function index() { reads = 0; let v = receiver(false).indexOf(3); return [v, reads] }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.map(false), [3, 4, 1, 1], `O${optimize || 0}: scalar map evaluates both producers once`)
     is(e.map(true), [undefined, undefined, 1, 1], `O${optimize || 0}: empty map still evaluates its callback producer`)
@@ -421,7 +422,7 @@ test('checked BigInt indices preserve an absent inner read', () => {
     let values = new Float64Array([11])
     return values[indices[i]]
   }`
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.result(0), 11, `O${optimize || 0}: present BigInt index zero`)
     is(e.result(1), undefined, `O${optimize || 0}: absent index must not become zero`)
@@ -432,12 +433,12 @@ test('checked BigInt indices preserve an absent inner read', () => {
 test('typed some result retains boolean identity beside a Number in an array', () => {
   const src = `function receiver() { return new Float64Array([2, 3]) }
     export function result() { let value = receiver().some(x => x === 3); return [value, 1] }`
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.result(), [true, 1], `O${optimize || 0}: boolean, not Number 1`)
 })
 
 for (const method of ['reduce', 'reduceRight']) test(`plain array ${method} rejects empty unseeded input`, () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(`export function result() { return [].${method}((a, b) => a + b) }`, { optimize }).exports
     throws(() => e.result(), error => error instanceof TypeError)
   }
@@ -456,7 +457,7 @@ test('array reductions require a seed across direct, reverse, map, and filter fo
       export function seeded() { let a = []; return ${fold}((a, b) => a + b, 0) }
       export function undefinedSeed() { let a = []; return ${fold}((a, b) => a + b, undefined) }
     `
-    for (const optimize of [false, 2, 3]) {
+    for (const optimize of levels(false, 2, 3)) {
       const e = jz(src, { optimize }).exports
       // A → A → empty B → singleton → A on the same instance.
       for (const n of [2, 2, 0, 1, 2]) {
@@ -477,7 +478,7 @@ test('filter reduction completes predicate effects before reporting no seed', ()
       visits = 0
       return [1, 2].filter(x => { visits++; return x < 0 }).reduce((a, b) => a + b)
     }`
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     for (let i = 0; i < 2; i++) {
       throws(() => e.result(), error => error instanceof TypeError)
@@ -491,7 +492,7 @@ test('optional BigInt typed reduction preserves a Number accumulator', () => {
     let a = c ? new BigInt64Array([2n, 3n]) : null
     return a?.reduce(() => 42, 0)
   }`
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.result(0), undefined, `O${optimize || 0}: null receiver`)
     is(e.result(1), 42, `O${optimize || 0}: Number callback and seed do not inherit the element kind`)
@@ -517,7 +518,7 @@ test('method result carriers follow the resolved producer', () => {
     export function nullableIncludes(value) { return value?.includes('a') }
     export function defined(value) { return typeof value !== 'undefined' }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.builtin(0), 7, `O${optimize || 0}: own includes result is not boolean-coerced`)
     is(e.builtin(1), true, `O${optimize || 0}: builtin includes result is boxed boolean`)
@@ -559,7 +560,7 @@ test('RepresentationPlan: plain local writes normalize a Number-or-BigInt bindin
       return value + 1 === 1
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.classify(0), 'number', `O${optimize || 0}: Number write keeps its native carrier`)
     is(e.classify(1), 'bigint', `O${optimize || 0}: BigInt write enters the tagged local carrier`)
@@ -585,7 +586,7 @@ test('RepresentationPlan: covered reassigned params use tagged typeof without ma
     export let assignedCheck = () => isBigInt(2, 1)
     export let literalCheck = () => isBigInt(5n, 0)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.numberKind(), 'number', `O${optimize || 0}: Number is not inferred BigInt from another write`)
     is(e.assignedKind(), 'bigint', `O${optimize || 0}: reassigned BigInt is tagged`)
@@ -612,7 +613,7 @@ test('RepresentationPlan: body-write-only BigInt acquisition still materializes 
     export let numberKind = () => kind(2, 0)
     export let assignedKind = () => kind(2, 1)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.numberKind(), 'number', `O${optimize || 0}: Number entry keeps its own kind`)
     is(e.assignedKind(), 'bigint', `O${optimize || 0}: body-written BigInt reads through the tag`)
@@ -651,7 +652,7 @@ test('RepresentationPlan: conditional assignments normalize only the taken BigIn
     export let andTake = () => a(2)
     export let andKeep = () => a(0)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.nullishTake(), 11, `O${optimize || 0}: ??= taken arm boxes BigInt and evaluates RHS once`)
     is(e.nullishKeep(), 0, `O${optimize || 0}: ??= untaken arm keeps Number and skips RHS`)
@@ -673,7 +674,7 @@ test('RepresentationPlan: covered return edges materialize dynamic call results'
     export let numberCheck = () => typeof choose(0) === 'bigint'
     export let bigintCheck = () => typeof choose(1) === 'bigint'
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.numberKind(), 'number', `O${optimize || 0}: Number result stays a Number`)
     is(e.bigintKind(), 'bigint', `O${optimize || 0}: BigInt result crosses tagged`)
@@ -697,7 +698,7 @@ test('RepresentationPlan: ternary arms normalize before entering a tagged local'
       return typeof value
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.kind(0), 'number', `O${optimize || 0}: Number ternary arm stays Number`)
     is(e.kind(1), 'bigint', `O${optimize || 0}: BigInt ternary arm is boxed before merge`)
@@ -718,7 +719,7 @@ test('RepresentationPlan: host ingress distinguishes JS BigInt from Number bits'
       ? value + 1n === -5n
       : value + 1 === -5
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.kind(2), 'number', `O${optimize || 0}: host Number remains Number`)
     is(e.kind(5n), 'bigint', `O${optimize || 0}: host BigInt is boxed at ingress`)
@@ -757,7 +758,7 @@ test('RepresentationPlan: ordinary array storage preserves a dynamic BigInt memb
       return typeof values[0] === 'bigint'
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.kind(0), 'number', `O${optimize || 0}: Number array element`)
     is(e.kind(1), 'bigint', `O${optimize || 0}: BigInt array element is stored tagged`)
@@ -826,7 +827,7 @@ test('P0-2: bigint literals at the 64-bit signed/unsigned boundaries', () => {
 test('audit-#11 P0-1: tagged dynamic BigInt retires the subnormal carrier guess', () => {
   is(run('let big = 1n; export function f() { let o = {}; o.a = 5e-324; o.b = 1; return +o.a }').f(), 5e-324)
   is(run('let big = 1n; export function f() { const a = []; a.push(5e-324); a.push("s"); return +a[0] }').f(), 5e-324)
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { f } = jz(`export let f = flag => { let v = flag ? 1n : 5e-324; return Number(v) }`, { optimize }).exports
     is(f(0), 5e-324, `O${optimize || 0}: dynamic subnormal stays Number`)
     is(f(1), 1, `O${optimize || 0}: tagged BigInt converts by payload`)
@@ -841,12 +842,11 @@ test('bigint: internal calls keep the i64 carrier (only the JS boundary surfaces
 
 // --- Literals & indexing ---
 
-test('array: empty', () => {
-  is(run('export let f = () => { let a = []; return a.length }').f(), 0)
-})
-
-test('array: single element', () => {
-  is(run('export let f = () => { let a = [42]; return a[0] }').f(), 42)
+test('array: literals & indexing', () => {
+  cases([
+    ['empty', '() => { let a = []; return a.length }', 0],
+    ['single element', '() => { let a = [42]; return a[0] }', 42],
+  ])
 })
 
 test('array: 3 elements', () => {
@@ -859,49 +859,32 @@ test('array: float elements', () => {
   almost(f(), 3.14)
 })
 
-test('array: negative values', () => {
-  is(run('export let f = () => { let a = [-1, -2, -3]; return a[0] + a[1] + a[2] }').f(), -6)
+test('array: values & length', () => {
+  cases([
+    ['negative values', '() => { let a = [-1, -2, -3]; return a[0] + a[1] + a[2] }', -6],
+    // --- .length ---
+    ['.length 0', '() => [].length', 0],
+    ['.length 1', '() => { let a = [99]; return a.length }', 1],
+    ['.length 5', '() => { let a = [1,2,3,4,5]; return a.length }', 5],
+    ['.length 20 (large)', `() => {
+      let a = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+      return a.length
+    }`, 20],
+  ])
 })
 
-// --- .length ---
-
-test('array: .length 0', () => {
-  is(run('export let f = () => [].length').f(), 0)
-})
-
-test('array: .length 1', () => {
-  is(run('export let f = () => { let a = [99]; return a.length }').f(), 1)
-})
-
-test('array: .length 5', () => {
-  is(run('export let f = () => { let a = [1,2,3,4,5]; return a.length }').f(), 5)
-})
-
-test('array: .length 20 (large)', () => {
-  is(run(`export let f = () => {
-    let a = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
-    return a.length
-  }`).f(), 20)
-})
-
-// --- Write ---
-
-test('array: write single', () => {
-  is(run('export let f = () => { let a = [0,0,0]; a[1] = 42; return a[1] }').f(), 42)
-})
-
-test('array: write computed index', () => {
-  const { f } = run('export let f = (i, v) => { let a = [0,0,0]; a[i] = v; return a[i] }')
-  is(f(0, 10), 10); is(f(2, 30), 30)
-})
-
-test('array: write preserves other elements', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2, 3]
-    a[1] = 99
-    return a[0] + a[2]
-  }`)
-  is(f(), 4)  // 1 + 3, a[1] changed but 0 and 2 untouched
+test('array: writes', () => {
+  cases([
+    ['write single', '() => { let a = [0,0,0]; a[1] = 42; return a[1] }', 42],
+    ['write computed index (0,10)', '(i, v) => { let a = [0,0,0]; a[i] = v; return a[i] }', 10, 0, 10],
+    ['write computed index (2,30)', '(i, v) => { let a = [0,0,0]; a[i] = v; return a[i] }', 30, 2, 30],
+    // 1 + 3, a[1] changed but 0 and 2 untouched
+    ['write preserves other elements', `() => {
+      let a = [1, 2, 3]
+      a[1] = 99
+      return a[0] + a[2]
+    }`, 4],
+  ])
 })
 
 test('array: growth preserves direct alias reads', () => {
@@ -937,36 +920,29 @@ test('array: static write visible via dynamic key', () => {
   is(f()[1], 7)
 })
 
-test('array: dynamic write visible via static key', () => {
-  const { f } = run(`export let f = () => {
-    let a = []
-    let k = 'name'
-    a.name = 1
-    a[k] = 8
-    return a.name
-  }`)
-  is(f(), 8)
-})
-
-test('array: nested property writes on array-valued props', () => {
-  const { f } = run(`export let f = () => {
-    let ctx = []
-    ctx.meta = []
-    ctx.meta.name = 9
-    return ctx.meta.name
-  }`)
-  is(f(), 9)
-})
-
-test('array: mixed numeric and string keys stay coherent', () => {
-  const { f } = run(`export let f = () => {
-    let a = []
-    a[0] = []
-    a[0].name = 6
-    a.name = a[0]
-    return a.name.name
-  }`)
-  is(f(), 6)
+test('array: dynamic keys', () => {
+  cases([
+    ['dynamic write visible via static key', `() => {
+      let a = []
+      let k = 'name'
+      a.name = 1
+      a[k] = 8
+      return a.name
+    }`, 8],
+    ['nested property writes on array-valued props', `() => {
+      let ctx = []
+      ctx.meta = []
+      ctx.meta.name = 9
+      return ctx.meta.name
+    }`, 9],
+    ['mixed numeric and string keys stay coherent', `() => {
+      let a = []
+      a[0] = []
+      a[0].name = 6
+      a.name = a[0]
+      return a.name.name
+    }`, 6],
+  ])
 })
 
 test('array: growth inside helper preserves caller view', () => {
@@ -1104,13 +1080,11 @@ test('array: >8 elements = pointer', () => {
 
 // --- Literals & read ---
 
-test('object: two properties', () => {
-  const { f } = run('export let f = () => { let o = {x: 10, y: 20}; return o.x + o.y }')
-  is(f(), 30)
-})
-
-test('object: three properties', () => {
-  is(run('export let f = () => { let o = {r: 1, g: 2, b: 3}; return o.r + o.g + o.b }').f(), 6)
+test('object: properties', () => {
+  cases([
+    ['two properties', '() => { let o = {x: 10, y: 20}; return o.x + o.y }', 30],
+    ['three properties', '() => { let o = {r: 1, g: 2, b: 3}; return o.r + o.g + o.b }', 6],
+  ])
 })
 
 test('object: float values', () => {
@@ -1134,27 +1108,23 @@ test('object: flat-object facts stay scoped per function', () => {
 
 // --- Write ---
 
-test('object: write property', () => {
-  is(run('export let f = () => { let o = {x: 0, y: 0}; o.x = 42; return o.x }').f(), 42)
-})
-
-test('object: write preserves other props', () => {
-  is(run(`export let f = () => {
-    let o = {a: 1, b: 2, c: 3}
-    o.b = 99
-    return o.a + o.c
-  }`).f(), 4)
-})
-
-test('object: reassigned literal can use narrower field set', () => {
-  is(run(`export let f = () => {
-    let o = {}
-    o.a = 1
-    o.b = 2
-    o.c = 3
-    o = {a: 4, b: 5}
-    return o.a + o.b
-  }`).f(), 9)
+test('object: writes', () => {
+  cases([
+    ['write property', '() => { let o = {x: 0, y: 0}; o.x = 42; return o.x }', 42],
+    ['write preserves other props', `() => {
+      let o = {a: 1, b: 2, c: 3}
+      o.b = 99
+      return o.a + o.c
+    }`, 4],
+    ['reassigned literal can use narrower field set', `() => {
+      let o = {}
+      o.a = 1
+      o.b = 2
+      o.c = 3
+      o = {a: 4, b: 5}
+      return o.a + o.b
+    }`, 9],
+  ])
 })
 
 // --- Pass & return ---
@@ -1220,20 +1190,13 @@ test('string: SSO creation', () => {
   ok(isNaN(ptr))  // NaN-boxed
 })
 
-test('string: SSO .length', () => {
-  is(run('export let f = () => { let s = "abc"; return s.length }').f(), 3)
-})
-
-test('string: SSO empty', () => {
-  is(run('export let f = () => { let s = ""; return s.length }').f(), 0)
-})
-
-test('string: SSO max (4 chars)', () => {
-  is(run('export let f = () => { let s = "abcd"; return s.length }').f(), 4)
-})
-
-test('string: SSO single char', () => {
-  is(run('export let f = () => { let s = "x"; return s.length }').f(), 1)
+test('string: SSO', () => {
+  cases([
+    ['SSO .length', '() => { let s = "abc"; return s.length }', 3],
+    ['SSO empty', '() => { let s = ""; return s.length }', 0],
+    ['SSO max (4 chars)', '() => { let s = "abcd"; return s.length }', 4],
+    ['SSO single char', '() => { let s = "x"; return s.length }', 1],
+  ])
 })
 
 // --- Heap strings (>4 chars) ---
@@ -1243,16 +1206,12 @@ test('string: heap creation', () => {
   ok(isNaN(ptr))
 })
 
-test('string: heap .length', () => {
-  is(run('export let f = () => { let s = "hello world!"; return s.length }').f(), 12)
-})
-
-test('string: heap .length 5 (boundary)', () => {
-  is(run('export let f = () => { let s = "hello"; return s.length }').f(), 5)
-})
-
-test('string: heap .length long', () => {
-  is(run('export let f = () => { let s = "the quick brown fox jumps"; return s.length }').f(), 25)
+test('string: heap', () => {
+  cases([
+    ['heap .length', '() => { let s = "hello world!"; return s.length }', 12],
+    ['heap .length 5 (boundary)', '() => { let s = "hello"; return s.length }', 5],
+    ['heap .length long', '() => { let s = "the quick brown fox jumps"; return s.length }', 25],
+  ])
 })
 
 // --- String as parameter ---
@@ -1275,21 +1234,18 @@ test('string: pass heap to function', () => {
 // MIXED
 // ============================================
 
-test('mixed: array of computed values', () => {
-  const { f } = run(`export let f = (x) => {
-    let a = [x, x * 2, x * 3]
-    return a[0] + a[1] + a[2]
-  }`)
-  is(f(10), 60)
-})
-
-test('mixed: object with array access pattern', () => {
-  const { f } = run(`export let f = () => {
-    let data = [100, 200, 300]
-    let cfg = {idx: 1, scale: 0.5}
-    return data[cfg.idx]
-  }`)
-  is(f(), 200)
+test('mixed: array & object access', () => {
+  cases([
+    ['array of computed values', `(x) => {
+      let a = [x, x * 2, x * 3]
+      return a[0] + a[1] + a[2]
+    }`, 60, 10],
+    ['object with array access pattern', `() => {
+      let data = [100, 200, 300]
+      let cfg = {idx: 1, scale: 0.5}
+      return data[cfg.idx]
+    }`, 200],
+  ])
 })
 
 test('mixed: nested function calls', () => {
@@ -1310,116 +1266,89 @@ test('mixed: nested function calls', () => {
 // String indexing (returns single-char string)
 // ============================================
 
-test('string: SSO [i] returns char string', () => {
-  const { f } = jz('export let f = (i) => { let s = "hi"; return s[i] }').exports
-  is(f(0), 'h')
-  is(f(1), 'i')
-})
-
-test('string: heap [i] returns char string', () => {
-  const { f } = jz('export let f = (i) => { let s = "hello world"; return s[i] }').exports
-  is(f(0), 'h')
-  is(f(6), 'w')
-})
-
-test('string: literal [i]', () => {
-  is(jz('export let f = () => "abc"[1]').exports.f(), 'b')
+test('string: indexing', () => {
+  cases([
+    ['SSO [i] returns char string (0)', '(i) => { let s = "hi"; return s[i] }', 'h', 0],
+    ['SSO [i] returns char string (1)', '(i) => { let s = "hi"; return s[i] }', 'i', 1],
+    ['heap [i] returns char string (0)', '(i) => { let s = "hello world"; return s[i] }', 'h', 0],
+    ['heap [i] returns char string (6)', '(i) => { let s = "hello world"; return s[i] }', 'w', 6],
+    ['literal [i]', '() => "abc"[1]', 'b'],
+  ])
 })
 
 // ============================================
 // Array mutation: push, pop, alias
 // ============================================
 
-test('array: push basic', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2, 3]
-    a.push(4)
-    return a[3]
-  }`)
-  is(f(), 4)
-})
-
-test('array: push updates length', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2]
-    a.push(3)
-    a.push(4)
-    return a.length
-  }`)
-  is(f(), 4)
-})
-
-test('array: pop returns last', () => {
-  const { f } = run(`export let f = () => {
-    let a = [10, 20, 30]
-    return a.pop()
-  }`)
-  is(f(), 30)
-})
-
-test('array: pop decrements length', () => {
-  const { f } = run(`export let f = () => {
-    let a = [10, 20, 30]
-    a.pop()
-    return a.length
-  }`)
-  is(f(), 2)
-})
-
-test('array: push then pop', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2]
-    a.push(99)
-    return a.pop()
-  }`)
-  is(f(), 99)
-})
-
-test('array: alias sees length change', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2, 3]
-    let b = a
-    a.push(4)
-    return b.length
-  }`)
-  is(f(), 4)  // b sees a's push because length is in memory
-})
-
-test('array: alias sees element write', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2, 3]
-    let b = a
-    a[0] = 99
-    return b[0]
-  }`)
-  is(f(), 99)  // b sees a's write (same memory)
+test('array: push/pop/alias', () => {
+  cases([
+    ['push basic', `() => {
+      let a = [1, 2, 3]
+      a.push(4)
+      return a[3]
+    }`, 4],
+    ['push updates length', `() => {
+      let a = [1, 2]
+      a.push(3)
+      a.push(4)
+      return a.length
+    }`, 4],
+    ['pop returns last', `() => {
+      let a = [10, 20, 30]
+      return a.pop()
+    }`, 30],
+    ['pop decrements length', `() => {
+      let a = [10, 20, 30]
+      a.pop()
+      return a.length
+    }`, 2],
+    ['push then pop', `() => {
+      let a = [1, 2]
+      a.push(99)
+      return a.pop()
+    }`, 99],
+    // b sees a's push because length is in memory
+    ['alias sees length change', `() => {
+      let a = [1, 2, 3]
+      let b = a
+      a.push(4)
+      return b.length
+    }`, 4],
+    // b sees a's write (same memory)
+    ['alias sees element write', `() => {
+      let a = [1, 2, 3]
+      let b = a
+      a[0] = 99
+      return b[0]
+    }`, 99],
+  ])
 })
 
 // ============================================
 // Set/Map alias (mutate in place)
 // ============================================
 
-test('Set: add returns same pointer (alias-safe)', () => {
-  // `jz(...).exports` (not the module's `run()`, which decodes through the legacy
-  // adaptI64 f64 NaN-box shim — a genuine JS boolean would reinterpret to NaN there):
-  // `.has()`'s return crosses the real interop boundary as a proper JS boolean.
-  const { f } = jz(`export let f = () => {
-    let s = new Set()
-    let s2 = s
-    s.add(42)
-    return s2.has(42)
-  }`).exports
-  is(f(), true)  // s2 sees the add
-})
-
-test('Map: set returns same pointer (alias-safe)', () => {
-  const { f } = run(`export let f = () => {
-    let m = new Map()
-    let m2 = m
-    m.set(1, 100)
-    return m2.get(1)
-  }`)
-  is(f(), 100)  // m2 sees the set
+test('Set/Map: alias (mutate in place)', () => {
+  cases([
+    // `cases`' shared module runs through plain `jz(...).exports` (not this file's
+    // local `run()`, which decodes through the legacy adaptI64 f64 NaN-box shim —
+    // a genuine JS boolean would reinterpret to NaN there): `.has()`'s return
+    // crosses the real interop boundary as a proper JS boolean.
+    // s2 sees the add
+    ['Set: add returns same pointer (alias-safe)', `() => {
+      let s = new Set()
+      let s2 = s
+      s.add(42)
+      return s2.has(42)
+    }`, true],
+    // m2 sees the set
+    ['Map: set returns same pointer (alias-safe)', `() => {
+      let m = new Map()
+      let m2 = m
+      m.set(1, 100)
+      return m2.get(1)
+    }`, 100],
+  ])
 })
 
 test('Map/Set: receiver laundered through an identity call keeps its pointer identity (O0 regression)', () => {
@@ -1446,7 +1375,7 @@ test('Map/Set: receiver laundered through an identity call keeps its pointer ide
     let mk3 = () => mk()
     let pick = (v) => v
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.mapProbe(), 7, `O${optimize || 0}: Map receiver laundered through pick() keeps identity`)
     is(e.setProbe(), 1, `O${optimize || 0}: Set receiver laundered through pick() keeps identity`)
@@ -1498,106 +1427,84 @@ test('self-compile compact collections: entry hash replaces the redundant probe 
 // the dense probe-chain collisions a grown table produces.
 // ============================================
 
-test('Set: grow past initial capacity keeps all members', () => {
-  const { f } = run(`export let f = () => {
-    let s = new Set()
-    for (let i = 0; i < 20; i++) s.add(i)
-    let ok = 1
-    for (let i = 0; i < 20; i++) if (!s.has(i)) ok = 0
-    return ok + s.size
-  }`)
-  is(f(), 21)  // ok=1, size=20 — no member lost across rehash
-})
-
-test('Map: grow past initial capacity keeps all entries', () => {
-  const { f } = run(`export let f = () => {
-    let m = new Map()
-    for (let i = 0; i < 20; i++) m.set(i, i * 10)
-    let sum = 0
-    for (let i = 0; i < 20; i++) sum += m.get(i)
-    return sum + m.size
-  }`)
-  is(f(), 1920)  // sum(i*10, 0..19)=1900, +size 20
-})
-
-test('Set: delete removes member and decrements size', () => {
-  const { f } = run(`export let f = () => {
-    let s = new Set()
-    s.add(1); s.add(2); s.add(3)
-    let r = s.delete(2)
-    return r + (s.has(2) ? 100 : 0) + s.size
-  }`)
-  is(f(), 3)  // delete→1, has(2)→false, size→2
-})
-
-test('Map: delete removes entry and get returns undefined', () => {
-  const { f } = run(`export let f = () => {
-    let m = new Map()
-    m.set(1, 10); m.set(2, 20)
-    m.delete(1)
-    return (m.get(1) === undefined ? 1 : 0) + m.size
-  }`)
-  is(f(), 2)  // get(1)→undefined, size→1
-})
-
-test('Set: delete absent member returns false (boolean, not boxed coll)', () => {
-  // Regression: methodValType inferred `.delete` as VAL.SET, so `let r = s.delete(x)`
-  // boxed the i32 result into a (truthy) NaN-box — absent deletes read as true.
-  const { f } = run(`export let f = () => {
-    let s = new Set()
-    s.add(1)
-    let r = s.delete(99)
-    return (r ? 100 : 0) + s.size
-  }`)
-  is(f(), 1)  // delete(99)→false, size unchanged at 1
-})
-
-test('Set: delete preserves probe chain for survivors', () => {
-  const { f } = run(`export let f = () => {
-    let s = new Set()
-    for (let i = 0; i < 20; i++) s.add(i)
-    for (let i = 0; i < 20; i += 2) s.delete(i)
-    let ok = 1
-    for (let i = 1; i < 20; i += 2) if (!s.has(i)) ok = 0
-    for (let i = 0; i < 20; i += 2) if (s.has(i)) ok = 0
-    return ok + s.size
-  }`)
-  is(f(), 11)  // odds survive, evens gone, size→10
-})
-
-test('Map: delete after grow preserves remaining entries', () => {
-  const { f } = run(`export let f = () => {
-    let m = new Map()
-    for (let i = 0; i < 20; i++) m.set(i, i)
-    for (let i = 0; i < 10; i++) m.delete(i)
-    let sum = 0
-    for (let i = 10; i < 20; i++) sum += m.get(i)
-    return sum + m.size
-  }`)
-  is(f(), 155)  // sum(10..19)=145, +size 10
-})
-
-test('Map: delete then re-add same key', () => {
-  const { f } = run(`export let f = () => {
-    let m = new Map()
-    m.set(5, 50)
-    m.delete(5)
-    m.set(5, 99)
-    return m.get(5) + m.size
-  }`)
-  is(f(), 100)  // 99 + size 1
-})
-
-test('Set: delete down to empty then re-add', () => {
-  const { f } = run(`export let f = () => {
-    let s = new Set()
-    s.add(1); s.add(2)
-    s.delete(1); s.delete(2)
-    let emptied = s.size
-    s.add(7)
-    return emptied * 10 + (s.has(7) ? 1 : 0) + s.size
-  }`)
-  is(f(), 2)  // emptied=0, has(7)=1, size=1
+test('Set/Map: grow past capacity + delete', () => {
+  cases([
+    // ok=1, size=20 — no member lost across rehash
+    ['Set: grow past initial capacity keeps all members', `() => {
+      let s = new Set()
+      for (let i = 0; i < 20; i++) s.add(i)
+      let ok = 1
+      for (let i = 0; i < 20; i++) if (!s.has(i)) ok = 0
+      return ok + s.size
+    }`, 21],
+    // sum(i*10, 0..19)=1900, +size 20
+    ['Map: grow past initial capacity keeps all entries', `() => {
+      let m = new Map()
+      for (let i = 0; i < 20; i++) m.set(i, i * 10)
+      let sum = 0
+      for (let i = 0; i < 20; i++) sum += m.get(i)
+      return sum + m.size
+    }`, 1920],
+    // delete→1, has(2)→false, size→2
+    ['Set: delete removes member and decrements size', `() => {
+      let s = new Set()
+      s.add(1); s.add(2); s.add(3)
+      let r = s.delete(2)
+      return r + (s.has(2) ? 100 : 0) + s.size
+    }`, 3],
+    // get(1)→undefined, size→1
+    ['Map: delete removes entry and get returns undefined', `() => {
+      let m = new Map()
+      m.set(1, 10); m.set(2, 20)
+      m.delete(1)
+      return (m.get(1) === undefined ? 1 : 0) + m.size
+    }`, 2],
+    // Regression: methodValType inferred `.delete` as VAL.SET, so `let r = s.delete(x)`
+    // boxed the i32 result into a (truthy) NaN-box — absent deletes read as true.
+    // delete(99)→false, size unchanged at 1
+    ['Set: delete absent member returns false (boolean, not boxed coll)', `() => {
+      let s = new Set()
+      s.add(1)
+      let r = s.delete(99)
+      return (r ? 100 : 0) + s.size
+    }`, 1],
+    // odds survive, evens gone, size→10
+    ['Set: delete preserves probe chain for survivors', `() => {
+      let s = new Set()
+      for (let i = 0; i < 20; i++) s.add(i)
+      for (let i = 0; i < 20; i += 2) s.delete(i)
+      let ok = 1
+      for (let i = 1; i < 20; i += 2) if (!s.has(i)) ok = 0
+      for (let i = 0; i < 20; i += 2) if (s.has(i)) ok = 0
+      return ok + s.size
+    }`, 11],
+    // sum(10..19)=145, +size 10
+    ['Map: delete after grow preserves remaining entries', `() => {
+      let m = new Map()
+      for (let i = 0; i < 20; i++) m.set(i, i)
+      for (let i = 0; i < 10; i++) m.delete(i)
+      let sum = 0
+      for (let i = 10; i < 20; i++) sum += m.get(i)
+      return sum + m.size
+    }`, 155],
+    // 99 + size 1
+    ['Map: delete then re-add same key', `() => {
+      let m = new Map()
+      m.set(5, 50)
+      m.delete(5)
+      m.set(5, 99)
+      return m.get(5) + m.size
+    }`, 100],
+    // emptied=0, has(7)=1, size=1
+    ['Set: delete down to empty then re-add', `() => {
+      let s = new Set()
+      s.add(1); s.add(2)
+      s.delete(1); s.delete(2)
+      let emptied = s.size
+      s.add(7)
+      return emptied * 10 + (s.has(7) ? 1 : 0) + s.size
+    }`, 2],
+  ])
 })
 
 // ============================================
@@ -1618,7 +1525,7 @@ test('Set: delete down to empty then re-add', () => {
 // resolver — the same locals-aware mechanism every other op there already
 // uses), not by hand-patching interop.js's decoder.
 test('Map/Set: has/delete cross the JS boundary as real booleans (proven receiver), every optimize level', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const o = `O${optimize || 0}`
     is(jz(`export let f = () => { let m = new Map(); m.set(7, 1); return m.has(7) }`, { optimize }).exports.f(), true, `${o}: Map.has present`)
     is(jz(`export let f = () => { let m = new Map(); m.set(7, 1); return m.has(8) }`, { optimize }).exports.f(), false, `${o}: Map.has absent`)
@@ -1646,7 +1553,7 @@ test('Map/Set: has() crosses the boundary as a real boolean through a genuinely 
     let s = new Set(); s.add(9)
     return probe(m, 7) && !probe(m, 8) && probe(s, 9) && !probe(s, 10)
   }`
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.f(), true, `O${optimize || 0}: dynamic Map+Set receiver`)
 })
 
@@ -1665,7 +1572,7 @@ test('Map: has() on a receiver laundered across the export boundary itself', () 
     export let sizeOf = (c) => c.size
     export let probe = (c, k) => c.has(k)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const o = `O${optimize || 0}`
     const { exports } = jz(src, { optimize })
     const m = exports.mk()
@@ -1680,67 +1587,55 @@ test('Map: has() on a receiver laundered across the export boundary itself', () 
 // Edge cases: push chain, empty pop
 // ============================================
 
-test('array: push chained', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1]
-    a.push(2)
-    a.push(3)
-    a.push(4)
-    return a[0] + a[1] + a[2] + a[3]
-  }`)
-  is(f(), 10)
-})
-
-test('array: push preserves existing', () => {
-  const { f } = run(`export let f = () => {
-    let a = [10, 20]
-    a.push(30)
-    return a[0] + a[1]
-  }`)
-  is(f(), 30)  // original elements unchanged
-})
-
-test('array: push beyond capacity triggers grow', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2]
-    a.push(3)
-    a.push(4)
-    a.push(5)
-    a.push(6)
-    let b = [100]
-    return a[4] + a[5] + b[0]
-  }`)
-  is(f(), 111)  // 5+6+100 — no heap corruption
-})
-
-test('array: grow links dynamic move helper after hash helpers', () => {
-  const { f } = run(`export let f = () => {
-    let obj = Object.fromEntries([["x", 3]])
-    let values = []
-    values.push({ a: 1 })
-    values.push({ a: 2 })
-    values.push({ a: 3 })
-    values.push({ a: 4 })
-    values.push({ a: 5 })
-    return values.length + obj.x
-  }`)
-  is(f(), 8)
-})
-
-test('array: push many beyond initial cap', () => {
-  const { f } = run(`export let f = () => {
-    let a = []
-    a.push(1)
-    a.push(2)
-    a.push(3)
-    a.push(4)
-    a.push(5)
-    a.push(6)
-    a.push(7)
-    a.push(8)
-    return a.length + a[7]
-  }`)
-  is(f(), 16)  // length=8, a[7]=8
+test('array: push edge cases', () => {
+  cases([
+    ['push chained', `() => {
+      let a = [1]
+      a.push(2)
+      a.push(3)
+      a.push(4)
+      return a[0] + a[1] + a[2] + a[3]
+    }`, 10],
+    // original elements unchanged
+    ['push preserves existing', `() => {
+      let a = [10, 20]
+      a.push(30)
+      return a[0] + a[1]
+    }`, 30],
+    // 5+6+100 — no heap corruption
+    ['push beyond capacity triggers grow', `() => {
+      let a = [1, 2]
+      a.push(3)
+      a.push(4)
+      a.push(5)
+      a.push(6)
+      let b = [100]
+      return a[4] + a[5] + b[0]
+    }`, 111],
+    ['grow links dynamic move helper after hash helpers', `() => {
+      let obj = Object.fromEntries([["x", 3]])
+      let values = []
+      values.push({ a: 1 })
+      values.push({ a: 2 })
+      values.push({ a: 3 })
+      values.push({ a: 4 })
+      values.push({ a: 5 })
+      return values.length + obj.x
+    }`, 8],
+    // length=8, a[7]=8
+    ['push many beyond initial cap', `() => {
+      let a = []
+      a.push(1)
+      a.push(2)
+      a.push(3)
+      a.push(4)
+      a.push(5)
+      a.push(6)
+      a.push(7)
+      a.push(8)
+      return a.length + a[7]
+    }`, 16],
+  ])
 })
 
 test('array: out-of-range read returns undefined', () => {
@@ -1756,29 +1651,23 @@ test('array: split missing item is undefined', () => {
   ok(Number.isNaN(f()))
 })
 
-test('array: truthy with ||', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1]
-    return (a || [2])[0]
-  }`)
-  is(f(), 1)
-})
-
-test('array: truthy with &&', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1]
-    return (a && [2])[0]
-  }`)
-  is(f(), 2)
-})
-
-test('array: pop on single element', () => {
-  const { f } = run(`export let f = () => {
-    let a = [42]
-    let v = a.pop()
-    return v + a.length
-  }`)
-  is(f(), 42)  // v=42, length=0
+test('array: truthy & pop', () => {
+  cases([
+    ['truthy with ||', `() => {
+      let a = [1]
+      return (a || [2])[0]
+    }`, 1],
+    ['truthy with &&', `() => {
+      let a = [1]
+      return (a && [2])[0]
+    }`, 2],
+    // v=42, length=0
+    ['pop on single element', `() => {
+      let a = [42]
+      let v = a.pop()
+      return v + a.length
+    }`, 42],
+  ])
 })
 
 // ============================================
@@ -2065,7 +1954,7 @@ test('hash lane: churn (from-pairs, delete-shift, grow, clear, dict) matches hos
     out += '|' + st.size + ',' + st.has(3) + ',' + st.has(6)
     return out
   }`
-  const host = new Function(SRC.replace('export let f', 'let f') + '; return f()')()
+  const host = oracle(SRC).f()
   const { exports, memory } = jz(SRC)
   const got = exports.f()
   is(typeof got === 'bigint' ? memory.read(got) : got, host)
@@ -2250,7 +2139,7 @@ test('RepresentationPlan: Map storage preserves dynamic BigInt keys and values',
       return m.has(flag ? 7n : 7) ? 1 : 0
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.vkind(0), 'number', `O${optimize || 0}: Number map value`)
     is(e.vkind(1), 'bigint', `O${optimize || 0}: BigInt map value stored tagged`)
@@ -2280,7 +2169,7 @@ test('RepresentationPlan: Set membership preserves dynamic BigInt members', () =
       return s.size
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.member(0), 1, `O${optimize || 0}: Number member probes`)
     is(e.member(1), 1, `O${optimize || 0}: BigInt member probes`)
@@ -2319,7 +2208,7 @@ test('RepresentationPlan: array mutators preserve dynamic BigInt values', () => 
       return typeof a[1]
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     for (const name of ['viaPush', 'viaPushMulti', 'viaUnshift', 'viaUnshiftMulti', 'viaFill']) {
       is(e[name](0), 'number', `O${optimize || 0}: ${name} Number member`)
@@ -2336,7 +2225,7 @@ test('RepresentationPlan: JSON.stringify throws on dynamic BigInt in every posit
     export let nested = flag => { try { return JSON.stringify({a: [1, {b: flag ? 5n : 2}]}) } catch (e) { return "threw" } }
     export let uncaught = () => JSON.stringify(9n)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.bare(0), '2', `O${optimize || 0}: bare Number serializes`)
     is(e.bare(1), 'threw', `O${optimize || 0}: bare BigInt throws`)
@@ -2360,7 +2249,7 @@ test('tagged-union strict equality: a non-BigInt member never bit-collides with 
   // 1n's. The proven-tagged compare arm short-circuits non-box members to
   // FALSE; OPEN operands (raw BigInt possible) never take that arm and keep
   // the documented raw-carrier bits semantics on the dynamic path.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(`
       export let f = (flag) => { let value = flag ? 1n : 0; return value === 0n }
       export let g = (flag) => { let value = flag ? 1n : 0; return value === 1n }
@@ -2386,7 +2275,7 @@ test('equality folds preserve operand effects, in source order (re-audit P0)', (
   // it as a literal) and dodged the C3 tag dispatch — value === bump()
   // compared raw carrier bits, colliding tagged Number 0 with 0n. The bare-
   // name hoist restores kind + plan resolution for the temp like any local.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(`
       let n = 0
       function bump() { n = n + 1; return 0n }
@@ -2429,7 +2318,7 @@ test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)',
     export let ga = (x) => gnorm(x)
     export let gb = (x) => gnorm(x)
     export let gc = (x) => gnorm(x)`
-  for (const optimize of [false, 2, 3]) for (const [label, src] of [['2exp', two], ['5exp', five]]) {
+  for (const optimize of levels(false, 2, 3)) for (const [label, src] of [['2exp', two], ['5exp', five]]) {
     const e = jz(src, { optimize }).exports
     is(e.geq('9'), true, `O${optimize || 0} ${label}: string entry converts, 9n === 9n`)
     is(e.geq(9), false, `O${optimize || 0} ${label}: number entry stays number, 9 !== 9n`)
@@ -2472,7 +2361,7 @@ test('bigint: ANONYMOUS direct-return union join materializes (C5b — was KNOWN
   // materializedJoins directly (ground truth) instead of only guessing from
   // unresolved arm recursion, so the export lane routes the generic decode
   // precisely rather than by coincidence of the boundary-current fallback.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const t = jz(`export let g = (flag) => flag ? 1n : 0`, { optimize }).exports
     ok(typeof t.g(1) === 'bigint' && t.g(1) === 1n, `O${optimize || 0}: direct-return '?:' 1n arm crosses typed`)
     is(t.g(0), 0, `O${optimize || 0}: the Number 0 arm stays a Number`)
@@ -2502,7 +2391,7 @@ test('bigint: ANONYMOUS direct-return union join materializes (C5b — was KNOWN
 })
 
 test('bigint: C5b adjacent join gaps — bare params, nested nullish unions, and raw-specialized callees', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
 
     const open = jz(`function choose(flag, n) { return flag ? 1n : n }
@@ -2547,7 +2436,7 @@ test('bigint: storage-read box-pointer-bits leak through a reassigned param acro
   // the BOX POINTER BITS (a small heap offset under a PTR.BIGINT NaN-box
   // tag, not the unboxed i64 payload) got shifted/masked as if they were
   // the raw value.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function leb(n) {
@@ -2588,7 +2477,7 @@ test('bigint: storage-read method-family sweep — get/pop/shift/at/[]/.member c
   // cell. Pinned as one family so a regression in any single producer shape
   // shows up immediately, matching this fixpoint's own discipline
   // (.work/archive/phase-c-unification.md's falsified-predicate-forms note).
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const single = (setup, read) => `export let f = (i) => { ${setup}; let n = ${read}; n >>= 7n; return n }`
     const cross = (setup, read) => `
@@ -2626,7 +2515,7 @@ test('bigint: ++/-- on a covered-function param uses RepresentationPlan provenan
   // reassigned param. representationCompoundAssignAction is the frozen
   // whole-program proof that the binding is materialized BigInt; ++/-- must
   // consult it just like the other compound assignments.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function g(n) { n++; return n }
@@ -2645,7 +2534,7 @@ test('bigint: storage-read forwarded through a closure/dispatch-table call (shap
   // producer; the materialization fixpoint may therefore normalize the local
   // before its BigInt compound update. This is the actual watr HANDLER[key]
   // dispatch shape, not a direct-call approximation.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       const HANDLER = {
@@ -2726,7 +2615,7 @@ test('bigint: storage-read forwarded OUT of a dispatch-table closure into a seco
   // forwarding seam; a third official test, call_indirect64.wast, failed
   // alongside them ("table index is out of bounds") -- same seam, a table64
   // index instead of a data offset.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function leb(n) { n >>= 7n; return n }
@@ -2791,7 +2680,7 @@ test('bigint: storage-read forwarded through TWO plain named functions, no closu
   // surviving in ctx.funcs.list) remains real and unfixed -- this pin closes
   // because the SYMPTOM it produced no longer reaches a wrong value, not
   // because the orphan stopped existing.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function leb(n) { n >>= 7n; return n }
@@ -2835,7 +2724,7 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
   // targets, now fed the index's proven candidate too. An unresolved
   // `.`-member call is untouched — same runtime dispatch, same "no claim"
   // default as before this fix.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const src = `
       function parseNum(n) {
@@ -2918,7 +2807,7 @@ test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-na
   // fire through the SAME shared `visitCallSites` call-arg loop Shape #8
   // already resolves `.`-member callees through — bare-name and
   // index-resolved callees get the identical proof (sibling pin below).
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function leb(n) {
@@ -2947,7 +2836,7 @@ test('bigint: shape #9 sibling materializes through an index-resolved member cal
   // set is materializable, then normalizes closure ingress, body writes, and
   // result to the same boxed contract. ProgramIndex remains the sole
   // authority that proves obj.leb names this function.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function leb(n) {
@@ -3009,7 +2898,7 @@ test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding
   // widening trust in `source`'s bits generally (which can also reach a
   // closed bigint bit through the unrelated NUMERIC_VALUE_OPS+canBeBigint
   // heuristic, still correctly gated by valTypeOf alone).
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function i64(n) { if (typeof n === 'string') n = i64.parse(n); return leb(n) }
@@ -3038,7 +2927,7 @@ test('bigint: one-authority fix — valTypeOf itself resolves a `.`-member calle
   // tag-shaped i64 constant" hazard this file documents elsewhere. Small
   // magnitudes (900) don't collide with the tag and passed even before
   // this fix; this one didn't.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function i64(n) { if (typeof n === 'string') n = i64.parse(n); return leb(n) }
@@ -3092,7 +2981,7 @@ test('bigint: one-authority fix — `.`-member callee result as a ternary arm fe
   `
   const expect = { trueOr: 71776119061217281n, trueAnd: 0n, trueShl: 143552238122434560n,
     falseOr: 123456789n, falseAnd: 21n, falseShl: 246913578n }
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const member = jz(memberSrc, { optimize }).exports
     for (const [fn, want] of Object.entries(expect))
@@ -3160,7 +3049,7 @@ test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i
     function leb(n) { n >>= 7n; return n }
     export let f = () => leb(900n)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(src, { optimize }).exports
     is(e.f(), 7n, `${lbl}: plain RAW bigint literal argument crosses unchanged`)
@@ -3209,7 +3098,7 @@ test('bigint: range-boundary family survives storage box/unbox (array push+read+
     '+2^62 control': ['4611686018427387904n', 4611686018427387904n],
     '-2^62 control': ['-4611686018427387904n', -4611686018427387904n],
   }
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     for (const [name, [lit, expect]] of Object.entries(FAMILY)) {
       // Seeded array literal (`[0n]`, not `[]`) — an untyped empty-array-literal's
@@ -3232,7 +3121,7 @@ test('bigint: range-boundary family survives a Number|BigInt union box/unbox (mi
     '+2^62 control': ['4611686018427387904n', 4611686018427387904n],
     '-2^62 control': ['-4611686018427387904n', -4611686018427387904n],
   }
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     for (const [name, [lit, expect]] of Object.entries(FAMILY)) {
       // `x` starts Number, reassigned to the boundary BigInt on the taken branch —
@@ -3268,7 +3157,7 @@ test('bigint: range-boundary family survives the host export boundary (string in
   // (string crosses in, BigInt crosses back out) through the SAME
   // materialize-then-arithmetic box-forcing shape as the union pin above,
   // without the unrelated raw-argument marshaling gap.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const { f } = jz(`export let f = (s) => { let n = BigInt(s); return n + 0n }`, { optimize }).exports
     for (const [name, [str, expect]] of Object.entries(FAMILY)) is(f(str), expect, `${lbl}: host boundary round-trip, ${name}`)
@@ -3290,7 +3179,7 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
   // typed store must write that box's i64 payload, not the pointer bits. Both
   // signed and unsigned 64-bit constructors share this emitter. Values outside
   // signed i64 use JZ's documented wrapping BigInt dialect.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     for (const ctor of ['BigInt64Array', 'BigUint64Array']) {
       for (const [name, lit] of Object.entries(FAMILY)) {
@@ -3316,7 +3205,7 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
   // JZ's compact runtime code-error channel becomes a real host TypeError, but
   // is not a source-level Error object; reject a surrounding catch rather than
   // accept different catch identity/effects.
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     throws(() => jz(BIGINT_TYPED_STORE_CATCH_SOURCE, { optimize }), /inside try\/catch is not supported/)
   // Other statically non-BigInt inputs take the allowed correct-or-reject path;
   // JZ does not pretend their raw carriers are i64 payloads.
@@ -3328,7 +3217,7 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
   // negative control: raw bits that look exactly like PTR.BIGINT must not be
   // runtime-unboxed. Its hostile 0xffffffff low word would trap near 4 GiB if
   // the old unconditional maybeUnboxBigInt attempt returned.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(BIGINT_TYPED_STORE_SOURCE, { optimize }).exports
     for (const { fn, args, expect } of BIGINT_TYPED_STORE_CALLS)
       is(e[fn](...args), expect, `O${optimize || 0}: ${fn}`)
@@ -3362,7 +3251,7 @@ test('bigint: BigInt typed-array stores recover a materialized RHS payload (was 
   }
   const effectSource = `export let f = () => { let trace = 0, x = 0; if (1) x = ${BIGINT_TYPED_STORE_PAYLOAD}; const arr = new BigInt64Array(1); const index = () => { trace = trace * 10 + 1; return 0 }; arr[index()] = x; return trace * 10 + (arr[0] === ${BIGINT_TYPED_STORE_PAYLOAD} ? 1 : 0) }`
   is(hostEffects(), 11, 'Node oracle: computed index evaluates once before the write')
-  for (const optimize of [false, 3])
+  for (const optimize of levels(false, 3))
     is(jz(effectSource, { optimize }).exports.f(), 11, `O${optimize || 0}: matches Node source order and effects`)
 })
 
@@ -3381,7 +3270,7 @@ test('bigint: unary "-"/"~" and joint-binary census results materialize through 
   // instead of the sentinel lane for these covered exports (verified
   // separately below — the sentinel lane itself stays in place, unused for
   // these shapes, a dead-but-present fallback per this slice's own scope).
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
 
     // UNARY_NEG ('-'): present key → real (possibly negative) BigInt; absent
@@ -3441,7 +3330,7 @@ test('typeof folds preserve operand effects, in source order (audit P0: emitType
   // in the returned tree: `typeof bump() === 'boolean'` skipped bump() entirely
   // whenever its return kind was statically known. JS evaluates the typeof operand
   // before comparing — the call must still run, exactly once, on every fold path.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const bo = jz(`
       let n = 0
       function bump() { n = n + 1; return true }
@@ -3522,7 +3411,7 @@ test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched,
       return a + '|' + b
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     is(e.go(), 'O|H', `O${optimize || 0}: both the literal-object and array-element-HASH call sites read their own .name correctly`)
   }
@@ -3614,7 +3503,7 @@ test('RepresentationPlan: a forwarded param stays untrusted when its OWN source 
   const start = wat.indexOf('(func $sink')
   const body = wat.slice(start, wat.indexOf('\n  (func ', start + 1))
   ok(/__dyn_get_expr/.test(body), "O0: sink's buf param stays runtime-dispatched — the wider census still catches the genuine polymorphism reaching it through forward, not just the ordering artifact the positive pin above fixes")
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     // makeHijack's object has no .length — buf.length legitimately reads
     // undefined -> NaN through the real (runtime-dispatched) property read,
     // consistently across optimize levels, not a garbage jz-Array header word.
@@ -3714,7 +3603,7 @@ test('typed array: .subarray() stays sound after a same-property dynamic-index w
   // called" pin below) — but this pin also exercises the call, matching the
   // originally-reported repro shape (a closure attached to an object literal,
   // used as its own typed-array-index method).
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       export function main() {
         const b = { buf: new Uint8Array(8), n: 0 }
@@ -3732,7 +3621,7 @@ test('typed array: .subarray() stays sound after a same-property dynamic-index w
 })
 
 test('typed array: .subarray() stays sound even when the poisoning closure is only DEFINED, never called', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       export function main() {
         const b = { buf: new Uint8Array(8), n: 0 }
@@ -3756,7 +3645,7 @@ test('typed array: .subarray() stays sound across a real (zero-iteration-at-runt
   // happens) never runs — the schema-slot hazard is established by the
   // STATIC call graph (bufPush's parameter unified with makeByteBuf's return
   // shape), not by which loop iterations actually execute.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       const makeByteBuf = (cap) => { const buf0 = new Uint8Array(cap); const b = { buf: buf0, length: 0 }; return b }
       function bufEnsure(b, n) {
@@ -3823,7 +3712,7 @@ test('typed array: .subarray() stays sound across a real (zero-iteration-at-runt
 // narrower, defense-in-depth widening of its own shadow probe for the same
 // shape, kept as a second layer.
 test('object mutated via a parameter: plain field reassignment propagates back', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function bump(o) { o.n = o.n + 1 }
       export function main() {
@@ -3839,7 +3728,7 @@ test('object mutated via a parameter: plain field reassignment propagates back',
 })
 
 test('object mutated via a parameter: typed-array field growth (reassignment) propagates back', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function grow(o) {
         const nb = new Uint8Array(o.buf.length * 2)
@@ -3860,7 +3749,7 @@ test('object mutated via a parameter: typed-array field growth (reassignment) pr
 })
 
 test('object mutated via a parameter: nested call depth 2 propagates back', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function inner(o, v) { o.buf[o.n] = v; o.n = o.n + 1 }
       function outer(o, v) { inner(o, v) }
@@ -3877,7 +3766,7 @@ test('object mutated via a parameter: nested call depth 2 propagates back', () =
 })
 
 test('object mutated via a parameter: loop with zero and one iterations propagates back', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function bump(o) { o.n = o.n + 1 }
       export function main(count) {
@@ -3897,7 +3786,7 @@ test('object mutated via a parameter: closure method named like an Array builtin
   // closure property named `push` (not a real Array), mutated by calling
   // that closure THROUGH a separate function's own parameter — the
   // minimal core of the makeByteBuf/writeItem idiom below.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       const makeBuf = (cap) => {
         const b = { buf: new Uint8Array(cap), n: 0 }
@@ -3925,7 +3814,7 @@ test('object mutated via a parameter: .length read elsewhere in the same functio
   // read is ever compiled as a jz-Array header load (ptr-8) instead of the
   // object's real dynamic `length` property, independent of whether
   // `.push()` itself dispatches correctly.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       const makeByteBuf = (cap) => {
         const buf0 = new Uint8Array(cap)
@@ -4025,7 +3914,7 @@ test('object mutated via a parameter: the real watr-shaped repro (makeByteBuf/wr
     }
   `
   const expected = { 0: 0, 1: 1287, 2: 5688, 3: 13824, 5: 44452 }
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = jz(src, { optimize }).exports
     for (const count of [0, 1, 2, 3, 5]) {
       is(e.main(count), expected[count], `O${optimize || 0} count=${count}: matches native JS`)
@@ -4090,7 +3979,7 @@ test('object read via a parameter: closure method named like a String builtin (c
   // The exact shape that broke: an object literal with a POST-HOC attached
   // closure property named `charCodeAt` (not a real String), read by calling
   // that closure THROUGH a separate function's own parameter.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function makeT(n) { const t = { n }; t.charCodeAt = (i) => t.n + i; return t }
       function call1(o) { return o.charCodeAt(1) }
@@ -4101,7 +3990,7 @@ test('object read via a parameter: closure method named like a String builtin (c
 })
 
 test('object read via a parameter: closure method named like a String builtin (trim) called through a parameter', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function makeT(n) { const t = { n }; t.trim = () => t.n * 2; return t }
       function call1(o) { return o.trim() }
@@ -4112,7 +4001,7 @@ test('object read via a parameter: closure method named like a String builtin (t
 })
 
 test('object read via a parameter: closure method named like a String builtin (padStart) called through a parameter', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function makeT(n) { const t = { n }; t.padStart = (w) => t.n + w; return t }
       function call1(o) { return o.padStart(7) }
@@ -4123,7 +4012,7 @@ test('object read via a parameter: closure method named like a String builtin (p
 })
 
 test('object read via a parameter: loop with zero and one iterations propagates the charCodeAt-closure call', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function makeT(n) { const t = { n: n }; t.charCodeAt = (i) => { t.n = t.n + i; return t.n }; return t }
       function bump(o) { o.charCodeAt(1) }
@@ -4146,7 +4035,7 @@ test('object read via a parameter: .length read elsewhere in the same function s
   // if that read is ever compiled as a jz-String byteLen op instead of the
   // object's real (dynamic) `length` property, independent of whether
   // `.charCodeAt()` itself dispatches correctly.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const src = `
       function makeT(n) { const t = { n, length: 7 }; t.charCodeAt = (i) => t.n + i; return t }
       function useIt(o) { const a = o.charCodeAt(1); const b = o.length; return a * 100 + b }
@@ -4244,7 +4133,7 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   const escapedWat = String(compile(escapedSrc, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractBody(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
   ok(/__dyn_get_expr/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also reaches the host — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     is(jz(closedSrc, { optimize }).exports.main(), 2, `O${optimize || 0}: closed-table computed dispatch still computes the correct value (push2 pushes 5 then 6)`)
   }
 })
@@ -4309,7 +4198,7 @@ test('closed computed-dispatch table: an unresolvable SIBLING argument no longer
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's buf param (2nd position) proves ARRAY and keeps direct codegen even though its sibling argument (lookup(idx, list)) only resolves through a genuinely-unknown body-local — one unresolvable position no longer poisons the whole synthesized call")
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 1, `O${optimize || 0}: list.shift() empties the array (idx=7, list=[]), lookup(7,[]) is undefined, grab pushes it once — computes the JS-correct length regardless of which positions the census could prove`)
 })
 
@@ -4355,7 +4244,7 @@ test('closed computed-dispatch table: a member reached by a SHORT outer call dec
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractBody(wat, 'write')), "O0: write's buf param, fed only by relay's own if(out)-guarded internal call, proves ARRAY and keeps direct codegen — relay.out stays clean because the SHORT 2-arg call from `short`/`b` (relay's own out unsuppliable there) is declined outright instead of poisoning relay.out with a false 'missing, no default' fact")
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 3, `O${optimize || 0}: instr(a) pushes 5 into out and 5 into scratch (out.length=1, scratch.length=1); short(b) pushes 9 into out with no 3rd arg, out param undefined so write never runs (out.length=2) — total scratch(1)+out(2)=3, JS-correct regardless of which positions the census could prove`)
 })
 
@@ -4400,7 +4289,7 @@ test('RepresentationPlan: a param fed only a `.`-property read of a proven-schem
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed only dispatch's own `c.items` property read, proves ARRAY through the receiver's schemaId + SlotFact kind census and keeps direct array codegen — no shadow probe")
   ok(/__dyn_get_expr/.test(extractBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the grab result above is not vacuous')
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.useProp(), 20, `O${optimize || 0}: dispatch(1, CTX) -> grab(1, CTX.items) -> CTX.items[1] === 20, JS-correct`)
 })
 
@@ -4425,7 +4314,7 @@ test('RepresentationPlan: a `.`-property read chained off a proven array-element
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed rows[i].items (an array-element read chained with a property), proves ARRAY and keeps direct array codegen")
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.useArrElem(), 40, `O${optimize || 0}: rows[1].items[0] === 40, JS-correct`)
 })
 
@@ -4503,7 +4392,7 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call attach
   // shape — Shape #8's own object-literal gate is untouched. `g` below
   // reproduces the actual blocking ingredient: the base function called
   // directly, elsewhere, unrelated to the `.`-member call being resolved.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const src = `
       function parseNum(n) {
@@ -4571,7 +4460,7 @@ test('DictKindIndex: a for-in-unrolled array-as-dictionary proves a direct `.`-p
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, fed only assemble's own ctx.type read, proves ARRAY through the for-in-unroll census and keeps direct array codegen — no shadow probe")
   ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the id result above is not vacuous')
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 42, `O${optimize || 0}: assemble() -> ctx.type.push(42); id(0, ctx.type) === 42, JS-correct`)
 })
 
@@ -4605,7 +4494,7 @@ test('DictKindIndex: the for-in-unroll census survives a same-module named-funct
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
   ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 22, `O${optimize || 0}: instr(['funcidx',1], ctx) -> id(1, ctx.func) === 22, JS-correct`)
 })
 
@@ -4638,7 +4527,7 @@ test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the sa
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through TABLE's array-of-arrows forward (position 1, past a shorter-arity sibling member), still proves ARRAY")
   ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 77, `O${optimize || 0}: dispatch(1,[1,2,3],ctx) -> id(0, ctx.type) === 77, JS-correct`)
 })
 
@@ -4664,7 +4553,7 @@ test('DictKindIndex: `??=`/`||=`/`&&=` fold their RHS the same as a plain `=` wr
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param proves ARRAY even though its target's `meta` key is only ever ??='d, never poisoning the OTHER, unrelated `type` key")
-  for (const optimize of [false, 2, 3])
+  for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 9, `O${optimize || 0}: JS-correct through the ??= write`)
 })
 
@@ -4777,7 +4666,7 @@ test('bigint: object-literal property referencing an existing function, both sho
   // `{ parse: parseNum }` key. The inline-closure and nested-base siblings
   // below now take their own separately proven paths, so this remains the
   // direct static-object control.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const body = `
       function parseNum(n) {
@@ -4814,7 +4703,7 @@ test('bigint: object-literal inline closure reached via STATIC `.`-access, not c
   // that ordinary static inline-closure dispatch keeps the tagged value. The
   // following test separately covers a closure that creates BigInt provenance
   // through its own reassignment.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function leb(n) { n >>= 7n; return n }
@@ -4834,7 +4723,7 @@ test('bigint: inline closure property materializes its reassigned parameter and 
   // A parameter that becomes BigInt inside the body is projected back onto the
   // closure boundary, and the value ABI candidate is accepted only when every
   // body write can be normalized to the boxed target.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       const ns = {}
@@ -4858,7 +4747,7 @@ test('bigint: nested member `a.b.c(...)` resolves through a closed intermediate 
   // while the root and intermediate object remain unshadowed, unreassigned,
   // nonescaping, and free of computed writes. The same frozen target feeds
   // kind, provenance, and emission; tagged results are never boxed twice.
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function parseNum(n) {
@@ -4879,7 +4768,7 @@ test('bigint: nested member `a.b.c(...)` resolves through a closed intermediate 
 })
 
 test('nested ProgramIndex targets decline conflicting and computed writes', () => {
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const conflict = jz(`
       function a() { return 1 }
       function b() { return 2 }
@@ -4912,8 +4801,8 @@ test('nested ProgramIndex targets decline conflicting and computed writes', () =
 // the guarded ABI's numeric contract (the ratchet kernels' element reads).
 test('result carriers: an any parameter keeps JS semantics through a local copy', () => {
   const source = `export function f(initial, operand) { let value = initial; const sum = (value = value + operand); const product = initial * operand; return [sum, value, product] }`
-  const expected = Function(source.replace('export ', '') + '; return f')()
-  for (const optimize of [false, 2]) {
+  const expected = oracle(source).f
+  for (const optimize of levels(false, 2)) {
     const actual = jz(source, { optimize }).exports.f
     for (const args of [[2, 3], [null, 3], [undefined, 3], ['a', 3], ['4', 3], [true, 3]])
       is(actual(...args), expected(...args), `O${optimize || 0}: ${args}`)

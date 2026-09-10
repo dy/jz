@@ -10,6 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { batch } from './util.js'
 import { onWasi, onKernel } from './_matrix.js'
 
 const val = async (src, ...args) => {
@@ -17,6 +18,16 @@ const val = async (src, ...args) => {
   ok(r instanceof Promise, 'async export adopts into a host Promise')
   return r
 }
+
+// Batch several standalone `export let f = <arrow>` programs (no module-level
+// state, no shared names) into ONE compiled module — one compile instead of
+// one per program. Each thunk calls its own export and asserts the same
+// Promise-adoption check `val` makes, ready to be awaited.
+const valAll = (arrows) => batch(arrows).map(f => () => {
+  const r = f()
+  ok(r instanceof Promise, 'async export adopts into a host Promise')
+  return r
+})
 
 test('async: completes synchronously to a settled host Promise', async () => {
   if (onWasi() || onKernel()) return
@@ -50,12 +61,18 @@ test('async: rejection propagates through await', async () => {
 
 test('async: Promise API — resolve/reject/all/race, executor', async () => {
   if (onWasi() || onKernel()) return
-  is(await val(`export let f = () => Promise.resolve(2).then((v) => v + 40)`), 42)
-  is(await val(`export let f = () => Promise.reject('R').catch((e) => 'c:' + e)`), 'c:R')
+  const [c0, c1, c3, c4] = valAll([
+    `() => Promise.resolve(2).then((v) => v + 40)`,
+    `() => Promise.reject('R').catch((e) => 'c:' + e)`,
+    `() => Promise.race([Promise.resolve('fast'), new Promise(() => 0)])`,
+    `() => new Promise((res) => res(9)).then((v) => v + 1)`,
+  ])
+  is(await c0(), 42)
+  is(await c1(), 'c:R')
   is(await val(`async function a() { return 1 }
                 export let f = () => Promise.all([a(), Promise.resolve(2), 3]).then((vs) => vs.join('-'))`), '1-2-3')
-  is(await val(`export let f = () => Promise.race([Promise.resolve('fast'), new Promise(() => 0)])`), 'fast')
-  is(await val(`export let f = () => new Promise((res) => res(9)).then((v) => v + 1)`), 10)
+  is(await c3(), 'fast')
+  is(await c4(), 10)
 })
 
 test('async: arrows and expressions', async () => {
@@ -89,9 +106,16 @@ test('async: try/catch across await routes the rejection to the catch', async ()
       try { out = await fail(n); out += 1; if (n === 2) throw 5 } catch (e) { out = await tag(e) }
       return out * 1000 + n
     }`
-  is(await val(src, 1), 11001)
-  is(await val(src, 5), 1042005)
-  is(await val(src, 2), 1005002)
+  // Same program, three arguments — compile once, call three times.
+  const { exports } = jz(src)
+  const call = (n) => {
+    const r = exports.f(n)
+    ok(r instanceof Promise, 'async export adopts into a host Promise')
+    return r
+  }
+  is(await call(1), 11001)
+  is(await call(5), 1042005)
+  is(await call(2), 1005002)
 })
 
 test('async: destructuring declarations across an await', async () => {
@@ -215,17 +239,25 @@ test('async/generator bodies: nested function forms own their returns and declar
   // One canonical boundary (FN_BOUNDARY_OPS) + fn-decl hoisting fix these.
   // Function DECLARATION at machine-body top level — hoisted to a const-bound
   // expression; callable before its textual position (JS hoisting semantics).
-  is(await val(`export let f = async () => { function helper() { return 1 } return helper() }`), 1)
-  is(await val(`export let f = async () => { const v = helper(); function helper() { return 6 } return v }`), 6)
+  const [c0, c1, c2, c3, c4, c5] = valAll([
+    `async () => { function helper() { return 1 } return helper() }`,
+    `async () => { const v = helper(); function helper() { return 6 } return v }`,
+    `async () => { const h = function () { return 2 }; return h() }`,
+    `async () => { function helper() { let x = 7; return x } return helper() }`,
+    `async () => { function helper() { return 10 } const v = await Promise.resolve(helper()); return v + 1 }`,
+    `async () => { const h = () => 3; return h() }`,
+  ])
+  is(await c0(), 1)
+  is(await c1(), 6)
   // Function EXPRESSION with its own return — was decomposed into a machine
   // return pre-fix ("yield inside `const`" rejection).
-  is(await val(`export let f = async () => { const h = function () { return 2 }; return h() }`), 2)
+  is(await c2(), 2)
   // Nested declaration's own locals stay its own (collectLocals boundary).
-  is(await val(`export let f = async () => { function helper() { let x = 7; return x } return helper() }`), 7)
+  is(await c3(), 7)
   // Interleaves with genuine machine effects (await) correctly.
-  is(await val(`export let f = async () => { function helper() { return 10 } const v = await Promise.resolve(helper()); return v + 1 }`), 11)
+  is(await c4(), 11)
   // Nested arrows keep working (the one boundary the old walkers had).
-  is(await val(`export let f = async () => { const h = () => 3; return h() }`), 3)
+  is(await c5(), 3)
   // Same machinery, plain generator: fn decl at generator-body top level.
   is(jz(`function* g() { function h() { return 4 } yield h() }
          export let f = () => g().next().value`).exports.f(), 4)

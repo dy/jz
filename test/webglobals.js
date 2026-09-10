@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onKernel, onWasi } from './_matrix.js'
+import { onKernel, onWasi, levels } from './_matrix.js'
 import jz from '../index.js'
 
 const run = (code, opts) => {
@@ -9,20 +9,43 @@ const run = (code, opts) => {
   return typeof r === 'bigint' ? memory.read(r) : r
 }
 
+// Batch several standalone arrow bodies into ONE compiled module (each under its
+// own export name) — one compile instead of one per arrow. Returns a thunk per
+// arrow, decoded exactly like `run`, so callers can do `is(calls[i](), want)` or
+// hand a thunk straight to `throws`.
+const runMany = (arrows, opts) => {
+  const { exports, memory } = jz(arrows.map((a, i) => `export let c${i} = ${a}`).join('\n'), opts)
+  return arrows.map((_, i) => () => {
+    const r = exports[`c${i}`]()
+    return typeof r === 'bigint' ? memory.read(r) : r
+  })
+}
+
 // === encodeURI / decodeURI ===
 
 test('encodeURI: reserved set passes through, rest percent-encodes', () => {
   const src = `a b;/?:@&=+$,#-_.!~*'()中`
-  is(run(`export let f = () => encodeURI(${JSON.stringify(src)})`), encodeURI(src))
-  is(run(`export let f = () => encodeURIComponent(${JSON.stringify(src)})`), encodeURIComponent(src))
-  is(run(`export let f = () => encodeURI("")`), '')
+  const [c0, c1, c2] = runMany([
+    `() => encodeURI(${JSON.stringify(src)})`,
+    `() => encodeURIComponent(${JSON.stringify(src)})`,
+    `() => encodeURI("")`,
+  ])
+  is(c0(), encodeURI(src))
+  is(c1(), encodeURIComponent(src))
+  is(c2(), '')
 })
 
 test('decodeURI: reserved escapes stay, case preserved, malformed throws', () => {
-  is(run(`export let f = () => decodeURI("a%20b%2f%3B%3f%23%e4%b8%ad")`), decodeURI('a%20b%2f%3B%3f%23%e4%b8%ad'))
-  is(run(`export let f = () => decodeURI("%2F%2c")`), '%2F%2c') // original case kept
-  is(run(`export let f = () => decodeURIComponent("a%20b%2F")`), 'a b/')
-  throws(() => run(`export let f = () => decodeURI("%2G")`))
+  const [c0, c1, c2, c3] = runMany([
+    `() => decodeURI("a%20b%2f%3B%3f%23%e4%b8%ad")`,
+    `() => decodeURI("%2F%2c")`,
+    `() => decodeURIComponent("a%20b%2F")`,
+    `() => decodeURI("%2G")`,
+  ])
+  is(c0(), decodeURI('a%20b%2f%3B%3f%23%e4%b8%ad'))
+  is(c1(), '%2F%2c') // original case kept
+  is(c2(), 'a b/')
+  throws(c3)
 })
 
 // === console.info / console.debug (compile + run, output is host-side) ===
@@ -34,63 +57,104 @@ test('console.info/debug compile and run', () => {
 // === base64 / hex codecs ===
 
 test('btoa/atob: host parity incl whitespace, padding, binary bytes', () => {
-  is(run(`export let f = () => btoa("hello world!")`), btoa('hello world!'))
-  is(run(`export let f = () => btoa("")`), '')
-  is(run(`export let f = () => btoa("a")`), 'YQ==')
-  is(run(`export let f = () => atob("aGVsbG8gd29ybGQh")`), 'hello world!')
-  is(run(`export let f = () => atob(" aGV sbG8\\n")`), 'hello')       // forgiving: ws + no padding
-  is(run(`export let f = () => atob("gA==").charCodeAt(0)`), 128)     // binary byte reads back
-  throws(() => run(`export let f = () => atob("Y!Q=")`))              // non-alphabet char
-  throws(() => run(`export let f = () => atob("AAAAA")`))             // len%4 == 1 after strip
-  throws(() => run(`export let f = () => atob("AB=C")`))              // char after padding
+  const [c0, c1, c2, c3, c4, c5, c6, c7, c8] = runMany([
+    `() => btoa("hello world!")`,
+    `() => btoa("")`,
+    `() => btoa("a")`,
+    `() => atob("aGVsbG8gd29ybGQh")`,
+    `() => atob(" aGV sbG8\\n")`,
+    `() => atob("gA==").charCodeAt(0)`,
+    `() => atob("Y!Q=")`,
+    `() => atob("AAAAA")`,
+    `() => atob("AB=C")`,
+  ])
+  is(c0(), btoa('hello world!'))
+  is(c1(), '')
+  is(c2(), 'YQ==')
+  is(c3(), 'hello world!')
+  is(c4(), 'hello')       // forgiving: ws + no padding
+  is(c5(), 128)     // binary byte reads back
+  throws(c6)              // non-alphabet char
+  throws(c7)             // len%4 == 1 after strip
+  throws(c8)              // char after padding
 })
 
 test('Uint8Array.fromBase64/fromHex + instance codecs', () => {
-  is(run(`export let f = () => { let u = Uint8Array.fromBase64("AQIDBA=="); return u[0] * 1000 + u[3] }`), 1004)
-  is(run(`export let f = () => Uint8Array.fromBase64("AQID").length`), 3)   // padless (loose)
-  is(run(`export let f = () => { let u = Uint8Array.fromHex("ff00Ab"); return [u[0], u[1], u[2]] }`).join(','), '255,0,171')
-  throws(() => run(`export let f = () => Uint8Array.fromHex("f")`))         // odd length
-  throws(() => run(`export let f = () => Uint8Array.fromHex("zz")`))        // non-hex
-  is(run(`export let f = () => { let u = new Uint8Array(3); u[0] = 1; u[1] = 2; u[2] = 3; return u.toBase64() }`), 'AQID')
-  is(run(`export let f = () => { let u = new Uint8Array(1); u[0] = 250; return u.toBase64() }`), '+g==')
-  is(run(`export let f = () => { let u = new Uint8Array(1); u[0] = 250; return u.toBase64({alphabet: 'base64url', omitPadding: true}) }`), '-g')
-  is(run(`export let f = () => { let u = new Uint8Array(2); u[0] = 255; u[1] = 10; return u.toHex() }`), 'ff0a')
-  is(run(`export let f = () => Uint8Array.fromBase64(btoa("xyz")).toHex()`), '78797a')
+  const [c0, c1, c2, c3, c4, c5, c6, c7, c8, c9] = runMany([
+    `() => { let u = Uint8Array.fromBase64("AQIDBA=="); return u[0] * 1000 + u[3] }`,
+    `() => Uint8Array.fromBase64("AQID").length`,
+    `() => { let u = Uint8Array.fromHex("ff00Ab"); return [u[0], u[1], u[2]] }`,
+    `() => Uint8Array.fromHex("f")`,
+    `() => Uint8Array.fromHex("zz")`,
+    `() => { let u = new Uint8Array(3); u[0] = 1; u[1] = 2; u[2] = 3; return u.toBase64() }`,
+    `() => { let u = new Uint8Array(1); u[0] = 250; return u.toBase64() }`,
+    `() => { let u = new Uint8Array(1); u[0] = 250; return u.toBase64({alphabet: 'base64url', omitPadding: true}) }`,
+    `() => { let u = new Uint8Array(2); u[0] = 255; u[1] = 10; return u.toHex() }`,
+    `() => Uint8Array.fromBase64(btoa("xyz")).toHex()`,
+  ])
+  is(c0(), 1004)
+  is(c1(), 3)   // padless (loose)
+  is(c2().join(','), '255,0,171')
+  throws(c3)         // odd length
+  throws(c4)        // non-hex
+  is(c5(), 'AQID')
+  is(c6(), '+g==')
+  is(c7(), '-g')
+  is(c8(), 'ff0a')
+  is(c9(), '78797a')
 })
 
 test('setFromBase64/setFromHex: whole chunks, {read, written}', () => {
-  const r1 = run(`export let f = () => { let u = new Uint8Array(8); let r = u.setFromBase64("AQID"); return [r.read, r.written, u[2]] }`)
-  is(r1.join(','), '4,3,3')
+  const [c0, c1, c2] = runMany([
+    `() => { let u = new Uint8Array(8); let r = u.setFromBase64("AQID"); return [r.read, r.written, u[2]] }`,
+    `() => { let u = new Uint8Array(2); let r = u.setFromBase64("AQIDBA=="); return [r.read, r.written] }`,
+    `() => { let u = new Uint8Array(2); let r = u.setFromHex("ff00ab"); return [r.read, r.written, u[0], u[1]] }`,
+  ])
+  is(c0().join(','), '4,3,3')
   // capacity 2 cannot take the 3-byte chunk — stops before it
-  const r2 = run(`export let f = () => { let u = new Uint8Array(2); let r = u.setFromBase64("AQIDBA=="); return [r.read, r.written] }`)
-  is(r2.join(','), '0,0')
-  const r3 = run(`export let f = () => { let u = new Uint8Array(2); let r = u.setFromHex("ff00ab"); return [r.read, r.written, u[0], u[1]] }`)
-  is(r3.join(','), '4,2,255,0')
+  is(c1().join(','), '0,0')
+  is(c2().join(','), '4,2,255,0')
 })
 
 test('TextDecoder: view-safe decode, UTF-8-only label', () => {
+  const [c0, c1] = runMany([
+    `() => { let u = new Uint8Array(4); u[0] = 120; u[1] = 104; u[2] = 105; u[3] = 33; return new TextDecoder().decode(u.subarray(1)) }`,
+    `() => new TextDecoder('utf-8').decode(new TextEncoder().encode('ok'))`,
+  ])
   // a subarray VIEW decodes its data, not its descriptor (pre-existing bug pin)
-  is(run(`export let f = () => { let u = new Uint8Array(4); u[0] = 120; u[1] = 104; u[2] = 105; u[3] = 33; return new TextDecoder().decode(u.subarray(1)) }`), 'hi!')
-  is(run(`export let f = () => new TextDecoder('utf-8').decode(new TextEncoder().encode('ok'))`), 'ok')
+  is(c0(), 'hi!')
+  is(c1(), 'ok')
+  // a non-UTF-8 label is a compile-time reject (module/webio.js validates the
+  // literal label statically) — batching it with the passing calls above would
+  // fail the WHOLE shared module's compile, so it keeps its own compile.
   throws(() => run(`export let f = () => new TextDecoder('utf-16').decode(new Uint8Array(2))`))
 })
 
 test('TextEncoder.encodeInto: {read, written}, UTF-8 boundary safe', () => {
-  const r1 = run(`export let f = () => { let u = new Uint8Array(8); let r = new TextEncoder().encodeInto("hi", u); return [r.read, r.written, u[0]] }`)
-  is(r1.join(','), '2,2,104')
+  const [c0, c1, c2] = runMany([
+    `() => { let u = new Uint8Array(8); let r = new TextEncoder().encodeInto("hi", u); return [r.read, r.written, u[0]] }`,
+    `() => { let u = new Uint8Array(2); return new TextEncoder().encodeInto("a中", u).written }`,
+    `() => { let u = new Uint8Array(4); return new TextEncoder().encodeInto("a中b", u).written }`,
+  ])
+  is(c0().join(','), '2,2,104')
   // truncation never splits a multi-byte sequence ("中" is 3 bytes)
-  is(run(`export let f = () => { let u = new Uint8Array(2); return new TextEncoder().encodeInto("a中", u).written }`), 1)
-  is(run(`export let f = () => { let u = new Uint8Array(4); return new TextEncoder().encodeInto("a中b", u).written }`), 4)
+  is(c1(), 1)
+  is(c2(), 4)
 })
 
 // === crypto ===
 
 test('crypto.getRandomValues: fills, guards, returns receiver', () => {
-  const bytes = run(`export let f = () => { let a = new Uint8Array(16); crypto.getRandomValues(a); return a }`)
-  ok(bytes.some(b => b !== 0), 'entropy fill produced nonzero bytes')
-  is(run(`export let f = () => { let a = new Uint8Array(4); return crypto.getRandomValues(a).length }`), 4)
-  throws(() => run(`export let f = () => crypto.getRandomValues(new Float64Array(2))`))  // TypeMismatch
-  throws(() => run(`export let f = () => crypto.getRandomValues(new Uint8Array(70000))`)) // QuotaExceeded
+  const [c0, c1, c2, c3] = runMany([
+    `() => { let a = new Uint8Array(16); crypto.getRandomValues(a); return a }`,
+    `() => { let a = new Uint8Array(4); return crypto.getRandomValues(a).length }`,
+    `() => crypto.getRandomValues(new Float64Array(2))`,
+    `() => crypto.getRandomValues(new Uint8Array(70000))`,
+  ])
+  ok(c0().some(b => b !== 0), 'entropy fill produced nonzero bytes')
+  is(c1(), 4)
+  throws(c2)  // TypeMismatch
+  throws(c3) // QuotaExceeded
 })
 
 test('crypto.randomUUID: v4 shape; randomSeed reproducible', () => {
@@ -176,29 +240,53 @@ test('requestAnimationFrame: clean error under wasi', () => {
 // === URLSearchParams ===
 
 test('URLSearchParams: parse, get/getAll/has/set/append/delete, size', () => {
-  is(run(`export let f = () => new URLSearchParams('a=1&b=%20x&a=3&c').get('a')`), '1')
-  is(run(`export let f = () => new URLSearchParams('a=1&a=3').getAll('a')`).join(','), '1,3')
-  is(run(`export let f = () => new URLSearchParams('q=hello+world').get('q')`), 'hello world')
-  is(run(`export let f = () => new URLSearchParams('a=%GGx').get('a')`), '%GGx') // forgiving
-  is(run(`export let f = () => new URLSearchParams('?x=1').get('x')`), '1')
-  is(run(`export let f = () => new URLSearchParams('flag').get('flag')`), '')
-  is(run(`export let f = () => new URLSearchParams('a=1').get('zz') === null`), true)
-  is(run(`export let f = () => new URLSearchParams('a=1&b=2&a=3').size`), 3)
-  is(run(`export let f = () => { let p = new URLSearchParams('a=1&b=2&a=3'); p.set('a', '9'); return p.toString() }`), 'a=9&b=2')
-  is(run(`export let f = () => { let p = new URLSearchParams('a=1&b=2&a=3'); p.delete('a'); return p.toString() }`), 'b=2')
-  is(run(`export let f = () => { let p = new URLSearchParams('a=1&a=3'); p.delete('a', '1'); return p.toString() }`), 'a=3')
-  ok(run(`export let f = () => { let p = new URLSearchParams(); p.append('k', 'v'); return p.has('k') && !p.has('k', 'z') }`))
+  const [c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11] = runMany([
+    `() => new URLSearchParams('a=1&b=%20x&a=3&c').get('a')`,
+    `() => new URLSearchParams('a=1&a=3').getAll('a')`,
+    `() => new URLSearchParams('q=hello+world').get('q')`,
+    `() => new URLSearchParams('a=%GGx').get('a')`,
+    `() => new URLSearchParams('?x=1').get('x')`,
+    `() => new URLSearchParams('flag').get('flag')`,
+    `() => new URLSearchParams('a=1').get('zz') === null`,
+    `() => new URLSearchParams('a=1&b=2&a=3').size`,
+    `() => { let p = new URLSearchParams('a=1&b=2&a=3'); p.set('a', '9'); return p.toString() }`,
+    `() => { let p = new URLSearchParams('a=1&b=2&a=3'); p.delete('a'); return p.toString() }`,
+    `() => { let p = new URLSearchParams('a=1&a=3'); p.delete('a', '1'); return p.toString() }`,
+    `() => { let p = new URLSearchParams(); p.append('k', 'v'); return p.has('k') && !p.has('k', 'z') }`,
+  ])
+  is(c0(), '1')
+  is(c1().join(','), '1,3')
+  is(c2(), 'hello world')
+  is(c3(), '%GGx') // forgiving
+  is(c4(), '1')
+  is(c5(), '')
+  is(c6(), true)
+  is(c7(), 3)
+  is(c8(), 'a=9&b=2')
+  is(c9(), 'b=2')
+  is(c10(), 'a=3')
+  ok(c11())
 })
 
 test('URLSearchParams: sort, escaping, inits, iteration', () => {
-  is(run(`export let f = () => { let p = new URLSearchParams('c=3&a=1&b=2&a=0'); p.sort(); return p.toString() }`), 'a=1&a=0&b=2&c=3')
-  is(run(`export let f = () => { let p = new URLSearchParams(); p.set('k v', 'a&b=c'); return p.toString() }`), 'k+v=a%26b%3Dc')
-  is(run(`export let f = () => new URLSearchParams('n=' + encodeURIComponent('中文')).get('n')`), '中文')
-  is(run(`export let f = () => new URLSearchParams([['a','1'],['b','2']]).toString()`), 'a=1&b=2')
-  is(run(`export let f = () => new URLSearchParams({x: 'a', y: 'b'}).toString()`), 'x=a&y=b')
-  is(run(`export let f = () => { let p = new URLSearchParams('a=1'); let q = new URLSearchParams(p); q.append('b','2'); return p.toString() + '|' + q.toString() }`), 'a=1|a=1&b=2')
-  is(run(`export let f = () => { let out = ''; for (let e of new URLSearchParams('a=1&b=2').entries()) out += e[0] + e[1]; return out }`), 'a1b2')
-  is(run(`export let f = () => { let out = ''; new URLSearchParams('a=1&b=2').forEach((v, k) => { out += k + '=' + v + ';' }); return out }`), 'a=1;b=2;')
+  const [c0, c1, c2, c3, c4, c5, c6, c7] = runMany([
+    `() => { let p = new URLSearchParams('c=3&a=1&b=2&a=0'); p.sort(); return p.toString() }`,
+    `() => { let p = new URLSearchParams(); p.set('k v', 'a&b=c'); return p.toString() }`,
+    `() => new URLSearchParams('n=' + encodeURIComponent('中文')).get('n')`,
+    `() => new URLSearchParams([['a','1'],['b','2']]).toString()`,
+    `() => new URLSearchParams({x: 'a', y: 'b'}).toString()`,
+    `() => { let p = new URLSearchParams('a=1'); let q = new URLSearchParams(p); q.append('b','2'); return p.toString() + '|' + q.toString() }`,
+    `() => { let out = ''; for (let e of new URLSearchParams('a=1&b=2').entries()) out += e[0] + e[1]; return out }`,
+    `() => { let out = ''; new URLSearchParams('a=1&b=2').forEach((v, k) => { out += k + '=' + v + ';' }); return out }`,
+  ])
+  is(c0(), 'a=1&a=0&b=2&c=3')
+  is(c1(), 'k+v=a%26b%3Dc')
+  is(c2(), '中文')
+  is(c3(), 'a=1&b=2')
+  is(c4(), 'x=a&y=b')
+  is(c5(), 'a=1|a=1&b=2')
+  is(c6(), 'a1b2')
+  is(c7(), 'a=1;b=2;')
 })
 
 // === navigator.hardwareConcurrency ===
@@ -220,19 +308,32 @@ const skipF16 = { skip: typeof Float16Array === 'undefined' }
 const f16 = (x) => new Float16Array([x])[0]
 
 test('Float16Array: store/load round exactly like the host', skipF16, () => {
-  for (const v of [1.5, 0.1, 0.30000000000000004, 65504, 65519.999, 65520, 5.96e-8, 2.98e-8, -2.5, 1 / 3, 1e-10])
-    is(run(`export let f = () => { let a = new Float16Array(1); a[0] = ${v}; return a[0] }`), f16(v))
-  ok(run(`export let f = () => { let a = new Float16Array(1); a[0] = 0/0; return a[0] !== a[0] }`), 'NaN round-trips')
-  is(run(`export let f = () => { let a = new Float16Array(1); a[0] = 65520; return a[0] }`), Infinity)
+  const values = [1.5, 0.1, 0.30000000000000004, 65504, 65519.999, 65520, 5.96e-8, 2.98e-8, -2.5, 1 / 3, 1e-10]
+  const calls = runMany([
+    ...values.map(v => `() => { let a = new Float16Array(1); a[0] = ${v}; return a[0] }`),
+    `() => { let a = new Float16Array(1); a[0] = 0/0; return a[0] !== a[0] }`,
+    `() => { let a = new Float16Array(1); a[0] = 65520; return a[0] }`,
+  ])
+  values.forEach((v, i) => is(calls[i](), f16(v)))
+  ok(calls[values.length](), 'NaN round-trips')
+  is(calls[values.length + 1](), Infinity)
 })
 
 test('Float16Array: ctor forms, methods keep the kind', skipF16, () => {
-  is(run(`export let f = () => { let a = new Float16Array([1.1, 2.2]); return a[0] }`), f16(1.1))
-  is(run(`export let f = () => new Float16Array([1, 2, 3]).length`), 3)
-  is(run(`export let f = () => { let b = new Float16Array([1, 2, 3]).map(x => x * 0.1); return b[2] }`), f16(3 * 0.1))
-  is(run(`export let f = () => { let a = new Float16Array(3); a.fill(0.1); return a[1] }`), f16(0.1))
-  is(run(`export let f = () => { let a = new Float16Array([0.1, 0.2, 0.3]); return a.slice(1)[0] }`), f16(0.2))
-  is(run(`export let f = () => new Float16Array([1.5, 2.5]).reduce((a, b) => a + b, 0)`), 4)
+  const [c0, c1, c2, c3, c4, c5] = runMany([
+    `() => { let a = new Float16Array([1.1, 2.2]); return a[0] }`,
+    `() => new Float16Array([1, 2, 3]).length`,
+    `() => { let b = new Float16Array([1, 2, 3]).map(x => x * 0.1); return b[2] }`,
+    `() => { let a = new Float16Array(3); a.fill(0.1); return a[1] }`,
+    `() => { let a = new Float16Array([0.1, 0.2, 0.3]); return a.slice(1)[0] }`,
+    `() => new Float16Array([1.5, 2.5]).reduce((a, b) => a + b, 0)`,
+  ])
+  is(c0(), f16(1.1))
+  is(c1(), 3)
+  is(c2(), f16(3 * 0.1))
+  is(c3(), f16(0.1))
+  is(c4(), f16(0.2))
+  is(c5(), 4)
 })
 
 test('Float16Array: loops sum exactly at every optimize level', skipF16, () => {
@@ -244,16 +345,22 @@ test('Float16Array: loops sum exactly at every optimize level', skipF16, () => {
     return s
   }`
   const ref = (() => { const a = new Float16Array(100); for (let i = 0; i < 100; i++) a[i] = i * 0.1; let s = 0; for (let i = 0; i < 100; i++) s += a[i]; return s })()
-  for (const optimize of [0, 2, 3, 'size']) is(run(src, { optimize }), ref)
+  for (const optimize of levels(0, 2, 3, 'size')) is(run(src, { optimize }), ref)
 })
 
 test('Math.f16round matches host', skipF16, () => {
-  for (const v of [0.1, 1 / 3, 65519.999, 5.96e-8]) is(run(`export let f = () => Math.f16round(${v})`), f16(v))
+  const values = [0.1, 1 / 3, 65519.999, 5.96e-8]
+  const calls = runMany(values.map(v => `() => Math.f16round(${v})`))
+  values.forEach((v, i) => is(calls[i](), f16(v)))
 })
 
 test('DataView.getFloat16/setFloat16: LE + BE', () => {
-  is(run(`export let f = () => { let dv = new DataView(new ArrayBuffer(4)); dv.setFloat16(0, 1.5, true); return dv.getFloat16(0, true) }`), 1.5)
-  const beBytes = run(`export let f = () => { let dv = new DataView(new ArrayBuffer(4)); dv.setFloat16(0, 1.5); return [dv.getFloat16(0), dv.getUint8(0)] }`)
+  const [c0, c1] = runMany([
+    `() => { let dv = new DataView(new ArrayBuffer(4)); dv.setFloat16(0, 1.5, true); return dv.getFloat16(0, true) }`,
+    `() => { let dv = new DataView(new ArrayBuffer(4)); dv.setFloat16(0, 1.5); return [dv.getFloat16(0), dv.getUint8(0)] }`,
+  ])
+  is(c0(), 1.5)
+  const beBytes = c1()
   is(beBytes[0], 1.5)
   is(beBytes[1], 0x3E) // big-endian high byte first
 })
@@ -272,10 +379,14 @@ test('Float16Array: marshals both directions', skipF16, () => {
 // === Uint8ClampedArray ===
 
 test('Uint8ClampedArray: ToUint8Clamp semantics', () => {
-  const r = run(`export let f = () => { let a = new Uint8ClampedArray(6); a[0] = 300; a[1] = -5; a[2] = 250.5; a[3] = 249.5; a[4] = 0/0; a[5] = 1.5; return a }`)
-  is([...r].join(','), '255,0,250,250,0,2') // clamp + round-half-even + NaN→0
-  is(run(`export let f = () => { let a = new Uint8ClampedArray([256.7, -3]); return [a[0], a[1]] }`).join(','), '255,0')
-  is(run(`export let f = () => { let a = new Uint8ClampedArray(2); a[0] = 100; return a[0] + 1 }`), 101)
+  const [c0, c1, c2] = runMany([
+    `() => { let a = new Uint8ClampedArray(6); a[0] = 300; a[1] = -5; a[2] = 250.5; a[3] = 249.5; a[4] = 0/0; a[5] = 1.5; return a }`,
+    `() => { let a = new Uint8ClampedArray([256.7, -3]); return [a[0], a[1]] }`,
+    `() => { let a = new Uint8ClampedArray(2); a[0] = 100; return a[0] + 1 }`,
+  ])
+  is([...c0()].join(','), '255,0,250,250,0,2') // clamp + round-half-even + NaN→0
+  is(c1().join(','), '255,0')
+  is(c2(), 101)
 })
 
 test('Uint8ClampedArray: loop stores clamp at every optimize level', () => {
@@ -287,7 +398,7 @@ test('Uint8ClampedArray: loop stores clamp at every optimize level', () => {
     return s
   }`
   const ref = (() => { const a = new Uint8ClampedArray(64); for (let i = 0; i < 64; i++) a[i] = i * 8.5 - 20; let s = 0; for (let i = 0; i < 64; i++) s += a[i]; return s })()
-  for (const optimize of [0, 2, 3, 'size']) is(run(src, { optimize }), ref)
+  for (const optimize of levels(0, 2, 3, 'size')) is(run(src, { optimize }), ref)
 })
 
 // === direct fresh-ctor receivers (regression pin) ===
@@ -296,10 +407,17 @@ test('Uint8ClampedArray: loop stores clamp at every optimize level', () => {
 // element kind except Float64Array (Int32Array read 0s). Pin the class.
 
 test('method chains on fresh typed ctors resolve the element kind', () => {
-  is(run(`export let f = () => new Int32Array([1, 2, 3]).map(x => x * 2)[2]`), 6)
-  is(run(`export let f = () => new Uint8Array([1, 2, 3]).map(x => x + 1)[1]`), 3)
-  is(run(`export let f = () => new Float64Array([1, 2, 3]).map(x => x * 0.5)[2]`), 1.5)
-  if (!skipF16.skip) is(run(`export let f = () => new Float16Array([1, 2, 3]).map(x => x * 0.1)[2]`), f16(3 * 0.1))
+  const arrows = [
+    `() => new Int32Array([1, 2, 3]).map(x => x * 2)[2]`,
+    `() => new Uint8Array([1, 2, 3]).map(x => x + 1)[1]`,
+    `() => new Float64Array([1, 2, 3]).map(x => x * 0.5)[2]`,
+  ]
+  if (!skipF16.skip) arrows.push(`() => new Float16Array([1, 2, 3]).map(x => x * 0.1)[2]`)
+  const [c0, c1, c2, c3] = runMany(arrows)
+  is(c0(), 6)
+  is(c1(), 3)
+  is(c2(), 1.5)
+  if (!skipF16.skip) is(c3(), f16(3 * 0.1))
 })
 
 // === clean errors for the ext-dispatch class ===

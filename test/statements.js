@@ -5,10 +5,8 @@ import { onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import math from '../module/math.js'
 import { scalarCase } from './_scalar-core-cases.js'
+import { cases, run } from './util.js'
 
-function run(code, opts) {
-  return jz(code, opts).exports
-}
 
 function runScalarCase(id, opts) {
   const entry = scalarCase(id)
@@ -42,12 +40,11 @@ function hasSection(wasm, code) {
 
 test('block: let + return', () => runScalarCase('block-let-return'))
 
-test('block: multiple lets', () => {
-  is(run('export let f = (x) => { let a = x + 1; let b = a * 2; return b }').f(3), 8)
-})
-
-test('block: const in body', () => {
-  is(run('export let f = (x) => { const y = x * x; return y + 1 }').f(4), 17)
+test('block: multiple lets / const in body', () => {
+  cases([
+    ['multiple lets', '(x) => { let a = x + 1; let b = a * 2; return b }', 8, 3],
+    ['const in body', '(x) => { const y = x * x; return y + 1 }', 17, 4],
+  ])
 })
 
 // === Assignment operators ===
@@ -68,58 +65,29 @@ test('assignment: >>=', () => runScalarCase('assignment-shr'))
 
 test('assignment: <<=', () => runScalarCase('assignment-shl'))
 
-test('assignment: &=', () => {
-  is(run('export let f = () => { let a = 255; a &= 0x0F; return a }').f(), 15)
-})
-
-test('assignment: |=', () => {
-  is(run('export let f = () => { let a = 0; a |= 5; return a }').f(), 5)
-})
-
-test('assignment: ^=', () => {
-  is(run('export let f = () => { let a = 0xFF; a ^= 0x0F; return a }').f(), 240)
+test('assignment: &= / |= / ^=', () => {
+  cases([
+    ['&=', '() => { let a = 255; a &= 0x0F; return a }', 15],
+    ['|=', '() => { let a = 0; a |= 5; return a }', 5],
+    ['^=', '() => { let a = 0xFF; a ^= 0x0F; return a }', 240],
+  ])
 })
 
 test('assignment: >>>=', () => runScalarCase('assignment-ushr'))
 
-test('assignment: ||= on falsy', () => {
-  is(run('export let f = () => { let a = 0; a ||= 42; return a }').f(), 42)
-})
-
-test('assignment: ||= on truthy', () => {
-  is(run('export let f = () => { let a = 5; a ||= 42; return a }').f(), 5)
-})
-
-test('assignment: ||= keeps truthy strings', () => {
-  is(run(`export let f = () => { let a = '\\n'; a ||= ''; return (a + '(').length }`).f(), 2)
-})
-
-test('assignment: &&= on truthy', () => {
-  is(run('export let f = () => { let a = 5; a &&= 42; return a }').f(), 42)
-})
-
-test('assignment: &&= updates truthy strings', () => {
-  is(run(`export let f = () => { let a = 'x'; a &&= 'ok'; return a.length }`).f(), 2)
-})
-
-test('assignment: &&= on falsy', () => {
-  is(run('export let f = () => { let a = 0; a &&= 42; return a }').f(), 0)
-})
-
-test('assignment: ??= on uninitialized local', () => {
-  is(run('export let f = () => { let a; a ??= 42; return a }').f(), 42)
-})
-
-test('assignment: ??= on null', () => {
-  is(run('export let f = () => { let a = null; a ??= 42; return a }').f(), 42)
-})
-
-test('assignment: ??= leaves 0 alone (not nullish)', () => {
-  is(run('export let f = () => { let a = 0; a ??= 42; return a }').f(), 0)
-})
-
-test('assignment: ??= leaves defined value alone', () => {
-  is(run('export let f = () => { let a = 5; a ??= 42; return a }').f(), 5)
+test('assignment: ||= / &&= / ??=', () => {
+  cases([
+    ['||= on falsy', '() => { let a = 0; a ||= 42; return a }', 42],
+    ['||= on truthy', '() => { let a = 5; a ||= 42; return a }', 5],
+    ['||= keeps truthy strings', `() => { let a = '\\n'; a ||= ''; return (a + '(').length }`, 2],
+    ['&&= on truthy', '() => { let a = 5; a &&= 42; return a }', 42],
+    ['&&= updates truthy strings', `() => { let a = 'x'; a &&= 'ok'; return a.length }`, 2],
+    ['&&= on falsy', '() => { let a = 0; a &&= 42; return a }', 0],
+    ['??= on uninitialized local', '() => { let a; a ??= 42; return a }', 42],
+    ['??= on null', '() => { let a = null; a ??= 42; return a }', 42],
+    ['??= leaves 0 alone (not nullish)', '() => { let a = 0; a ??= 42; return a }', 0],
+    ['??= leaves defined value alone', '() => { let a = 5; a ??= 42; return a }', 5],
+  ])
 })
 
 // === Comma operator ===
@@ -164,20 +132,13 @@ test('bigint: bitwise', () => {
   is(run('export let f = () => Number(1n << 7n)').f(), 128)
 })
 
-test('bigint: hex literal', () => {
-  is(run('export let f = () => Number(0xFFn)').f(), 255)
-})
-
-test('bigint: negative literal', () => {
-  is(run('export let f = () => Number(-1n)').f(), -1)
-})
-
-test('bigint: BigInt.asIntN', () => {
-  is(run('export let f = () => Number(BigInt.asIntN(32, 0xFFFFFFFFn))').f(), -1)
-})
-
-test('bigint: BigInt.asUintN', () => {
-  is(run('export let f = () => Number(BigInt.asUintN(32, -1n))').f(), 4294967295)
+test('bigint: hex literal / negative literal / asIntN / asUintN', () => {
+  cases([
+    ['hex literal', '() => Number(0xFFn)', 255],
+    ['negative literal', '() => Number(-1n)', -1],
+    ['BigInt.asIntN', '() => Number(BigInt.asIntN(32, 0xFFFFFFFFn))', -1],
+    ['BigInt.asUintN', '() => Number(BigInt.asUintN(32, -1n))', 4294967295],
+  ])
 })
 
 test('bigint: typeof recognizes BigInt values', () => {
@@ -232,12 +193,11 @@ test('Error(): module-scope throw declares runtime error globals', () => {
   ok(wasm instanceof Uint8Array)
 })
 
-test('try/catch: catches thrown value', () => {
-  is(run('export let f = (x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }').f(-1), 99)
-})
-
-test('try/catch: no throw takes normal path', () => {
-  is(run('export let f = (x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }').f(5), 10)
+test('try/catch: catches thrown value / no throw takes normal path', () => {
+  cases([
+    ['catches thrown value', '(x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }', 99, -1],
+    ['no throw takes normal path', '(x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }', 10, 5],
+  ])
 })
 
 test('try/catch: non-throwing body emits portable wasm', () => {
@@ -246,12 +206,11 @@ test('try/catch: non-throwing body emits portable wasm', () => {
   is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 1)
 })
 
-test('try/catch: thrown string', () => {
-  is(run('export let f = () => { try { throw \"err\" } catch (e) { return e.length } }').f(), 3)
-})
-
-test('try/catch: nested', () => {
-  is(run('export let f = (x) => { try { try { if (x < 0) throw -1; return x } catch (e) { throw e + 10 } } catch (e2) { return e2 + 100 } }').f(-1), 109)
+test('try/catch: thrown string / nested', () => {
+  cases([
+    ['thrown string', '() => { try { throw "err" } catch (e) { return e.length } }', 3],
+    ['nested', '(x) => { try { try { if (x < 0) throw -1; return x } catch (e) { throw e + 10 } } catch (e2) { return e2 + 100 } }', 109, -1],
+  ])
 })
 
 test('try/finally: normal completion runs cleanup', () => {
@@ -264,44 +223,29 @@ test('try/finally: non-throwing body emits portable wasm', () => {
   is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 30)
 })
 
-test('try/finally: throw runs cleanup before catch', () => {
-  is(run('export let f = () => { let x = 0; try { try { throw 2 } finally { x += 10 } } catch (e) { return x + e } }').f(), 12)
+test('try/finally: return/throw override behavior', () => {
+  cases([
+    ['throw runs cleanup before catch', '() => { let x = 0; try { try { throw 2 } finally { x += 10 } } catch (e) { return x + e } }', 12],
+    ['return preserves returned value and runs cleanup', '() => { let x = 1; try { return x } finally { x = 9 } }', 1],
+    ['finally return overrides return', '() => { try { return 1 } finally { return 2 } }', 2],
+    ['finally throw overrides return', '() => { try { try { return 1 } finally { throw 2 } } catch (e) { return e } }', 2],
+  ])
 })
 
-test('try/finally: return preserves returned value and runs cleanup', () => {
-  is(run('export let f = () => { let x = 1; try { return x } finally { x = 9 } }').f(), 1)
+test('try/catch/finally: cleanup on throw vs normal completion', () => {
+  cases([
+    ['cleanup runs after handled throw', '() => { let x = 0; try { throw 2 } catch (e) { x = e } finally { x += 10 }; return x }', 12],
+    ['cleanup runs on normal completion', '() => { let x = 0; try { x = 5 } catch (e) { x = -1 } finally { x += 10 }; return x }', 15],
+  ])
 })
 
-test('try/finally: finally return overrides return', () => {
-  is(run('export let f = () => { try { return 1 } finally { return 2 } }').f(), 2)
-})
-
-test('try/finally: finally throw overrides return', () => {
-  is(run('export let f = () => { try { try { return 1 } finally { throw 2 } } catch (e) { return e } }').f(), 2)
-})
-
-test('try/catch/finally: cleanup runs after handled throw', () => {
-  is(run('export let f = () => { let x = 0; try { throw 2 } catch (e) { x = e } finally { x += 10 }; return x }').f(), 12)
-})
-
-test('try/catch/finally: cleanup runs on normal completion', () => {
-  is(run('export let f = () => { let x = 0; try { x = 5 } catch (e) { x = -1 } finally { x += 10 }; return x }').f(), 15)
-})
-
-test('try/finally: nested finally runs inner to outer', () => {
-  is(run('export let f = () => { let x = 0; try { try { x += 1 } finally { x += 10 } } finally { x += 100 }; return x }').f(), 111)
-})
-
-test('try/finally: nested finally on throw runs all cleanups', () => {
-  is(run('export let f = () => { let x = 0; try { try { throw 1 } finally { x += 10 } } catch (e) { x += e } finally { x += 100 }; return x }').f(), 111)
-})
-
-test('try/finally: break in finally', () => {
-  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { s += i } finally { if (i === 2) break } }; return s }').f(), 3)
-})
-
-test('try/finally: continue in finally', () => {
-  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i === 2) continue; s += i } finally { s += 10 } }; return s }').f(), 58)
+test('try/finally: nested cleanup, break, continue', () => {
+  cases([
+    ['nested finally runs inner to outer', '() => { let x = 0; try { try { x += 1 } finally { x += 10 } } finally { x += 100 }; return x }', 111],
+    ['nested finally on throw runs all cleanups', '() => { let x = 0; try { try { throw 1 } finally { x += 10 } } catch (e) { x += e } finally { x += 100 }; return x }', 111],
+    ['break in finally', '() => { let s = 0; for (let i = 0; i < 5; i++) { try { s += i } finally { if (i === 2) break } }; return s }', 3],
+    ['continue in finally', '() => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i === 2) continue; s += i } finally { s += 10 } }; return s }', 58],
+  ])
 })
 
 // Finally scoping: a branch runs ONLY the finalizers of trys it actually exits.
@@ -532,20 +476,13 @@ test('fn.prop: reassignment is a mutable slot, not a static direct call', () => 
   `).exports.f(), 11)
 })
 
-test('auto-box: local array property', () => {
-  is(run('export let f = () => { let a = [1, 2, 3]; a.x = 99; return a.x }').f(), 99)
-})
-
-test('auto-box: local array .length after boxing', () => {
-  is(run('export let f = () => { let a = [10, 20, 30]; a.tag = 1; return a.length }').f(), 3)
-})
-
-test('auto-box: local array indexing after boxing', () => {
-  is(run('export let f = () => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }').f(), 60)
-})
-
-test('auto-box: arrow property call (valueOf pattern)', () => {
-  is(run('export let f = () => { let a = [1,2]; a.myFn = () => 99; return a.myFn() }').f(), 99)
+test('auto-box: local array property/length/index/method', () => {
+  cases([
+    ['local array property', '() => { let a = [1, 2, 3]; a.x = 99; return a.x }', 99],
+    ['local array .length after boxing', '() => { let a = [10, 20, 30]; a.tag = 1; return a.length }', 3],
+    ['local array indexing after boxing', '() => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }', 60],
+    ['arrow property call (valueOf pattern)', '() => { let a = [1,2]; a.myFn = () => 99; return a.myFn() }', 99],
+  ])
 })
 
 // === If/else ===
@@ -800,16 +737,12 @@ test('host boundary: returning null vs undefined', () => {
 
 // === for...of ===
 
-test('for...of: sum array', () => {
-  is(run('export let f = () => { let s = 0; for (let x of [1, 2, 3]) s += x; return s }').f(), 6)
-})
-
-test('for...of: named array', () => {
-  is(run('export let f = () => { let a = [5, 10, 15]; let s = 0; for (let x of a) s += x; return s }').f(), 30)
-})
-
-test('for...of: early return', () => {
-  is(run('export let f = () => { for (let x of [1, 2, 3]) { if (x > 1) return x }; return 0 }').f(), 2)
+test('for...of: array iteration', () => {
+  cases([
+    ['sum array', '() => { let s = 0; for (let x of [1, 2, 3]) s += x; return s }', 6],
+    ['named array', '() => { let a = [5, 10, 15]; let s = 0; for (let x of a) s += x; return s }', 30],
+    ['early return', '() => { for (let x of [1, 2, 3]) { if (x > 1) return x }; return 0 }', 2],
+  ])
 })
 
 // === for...in ===
@@ -996,12 +929,11 @@ test('continue: labeled continue on while', () => runScalarCase('continue-labele
 
 test('continue: skips iteration', () => runScalarCase('continue-skip'))
 
-test('try/finally: break runs cleanup before exit', () => {
-  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i == 2) break; s += i } finally { s += 10 } } return s }').f(), 31)
-})
-
-test('try/finally: continue runs cleanup before next iteration', () => {
-  is(run('export let f = () => { let s = 0; for (let i = 0; i < 3; i++) { try { if (i == 1) continue; s += i } finally { s += 10 } } return s }').f(), 32)
+test('try/finally: break/continue runs cleanup in loop', () => {
+  cases([
+    ['break runs cleanup before exit', '() => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i == 2) break; s += i } finally { s += 10 } } return s }', 31],
+    ['continue runs cleanup before next iteration', '() => { let s = 0; for (let i = 0; i < 3; i++) { try { if (i == 1) continue; s += i } finally { s += 10 } } return s }', 32],
+  ])
 })
 
 // === Logical operators ===
@@ -1467,8 +1399,10 @@ test('statements: member BigInt ++ is stable across repeated compiles (no schema
 // silent zero-iteration masked two real self-compile miscompiles before it was
 // flipped to a throw (see __iter_arr).
 test('statements: for-of over nullish throws', () => {
-  is(run(`export let f = (x) => { let n = 0; try { for (let v of x) n++ } catch (e) { n = -1 } return n }`).f(null), -1)
-  is(run(`export let f = () => { let n = 0; try { for (let v of null) n++ } catch (e) { n = -1 } return n }`).f(), -1)
+  cases([
+    ['nullish parameter', `(x) => { let n = 0; try { for (let v of x) n++ } catch (e) { n = -1 } return n }`, -1, null],
+    ['null literal', `() => { let n = 0; try { for (let v of null) n++ } catch (e) { n = -1 } return n }`, -1],
+  ])
 })
 
 // Predicate builtins carry BOOL (kind-traits CALLEE_VAL): the === compare is

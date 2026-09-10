@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
 import { FAMILIES } from './_families.js'
 
 const HOSTED = process.env.JZ_SELF_FAMILIES === '1'
@@ -50,7 +50,7 @@ for (const { family, cases } of FAMILIES) for (const c of cases) test(`family ${
   if (onKernel()) return
   const js = await oracle(c.src)
   for (const [fn, args, expected] of c.calls) { const got = outcome(js[fn], args); ok(matches(got, expected), `Node: ${fn}(${args.map(show).join(', ')}) → ${describe(got)}, the authored ${show(expected)} is wrong`) }
-  for (const level of [0, 1, 2]) check(instantiate(compile(c.src, { optimize: level }), { memory: 64 }).exports, c.calls, `O${level}`)
+  for (const level of levels(0, 1, 2)) check(instantiate(compile(c.src, { optimize: level }), { memory: 64 }).exports, c.calls, `O${level}`)
 })
 
 if (HOSTED) {
@@ -64,7 +64,7 @@ if (HOSTED) {
     return bytes
   }
   for (const { family, cases } of FAMILIES) for (const c of cases) test(`hosted family ${family}: ${c.name}${c.red?.hosted ? ` [red hosted: ${c.red.hosted}]` : ''}`, () => {
-    for (const level of [1, 2]) {
+    for (const level of levels(1, 2)) {
       const k = instantiate(selfBytes(), { memory: 8192 })
       const bytes = compileOn(k, c.src, level)
       ok(same(bytes, compile(c.src, { optimize: level })), `O${level}: the kernel's bytes are the native compile's`)

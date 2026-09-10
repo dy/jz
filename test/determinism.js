@@ -6,7 +6,7 @@
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { OPT_LEVEL } from './_matrix.js'
+import { OPT_LEVEL, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_SOURCE } from './_bigint-typed-store-corpus.js'
 import { scalarCase } from './_scalar-core-cases.js'
 
@@ -31,7 +31,7 @@ test(`determinism: same source → byte-identical wasm (opt ${OPT_LEVEL})`, () =
 
 test('determinism: stable across opt levels (each level self-consistent)', () => {
   for (const src of PROGRAMS) {
-    for (const opt of [0, 1, 2, 3]) {
+    for (const opt of levels(0, 1, 2, 3)) {
       const a = compile(src, { optimize: opt }), b = compile(src, { optimize: opt })
       ok(eq(a, b), `non-deterministic at optimize:${opt} for: ${src.slice(0, 40)}…`)
     }
@@ -90,7 +90,7 @@ test('determinism: α-renamed source compiles byte-identical', () => {
     let ${s} = (x) => x`
   const base = mk('p', 'q', 'r', 's', 't', 'u')
   const renamed = mk('alpha', 'beta', 'gamma', 'delta', 'eps', 'zeta')
-  for (const optimize of [0, 2, 'speed']) {
+  for (const optimize of levels(0, 2, 'speed')) {
     const a = compile(base, { optimize }), b = compile(renamed, { optimize })
     ok(a.length === b.length && a.every((x, i) => x === b[i]), `O${optimize}: α-rename changed bytes (${a.length} vs ${b.length})`)
   }
@@ -108,7 +108,7 @@ test('determinism: warm-process recompile is text-identical (per-compile counter
       for (let i = 0; i < N; i++) s += a[i] * a[i] + a[i]   // load-CSE shape
       return s
     }`
-  for (const optimize of [2, 'speed']) {
+  for (const optimize of levels(2, 'speed')) {
     const a = compile(src, { optimize, wat: true })
     const b = compile(src, { optimize, wat: true })
     ok(a === b, `O${optimize}: warm recompile changed WAT text`)

@@ -11,6 +11,8 @@ import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import jz from '../index.js'
 import { scalarCase } from './_scalar-core-cases.js'
+import { levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 // Deterministic PRNG so failures reproduce.
 const rng = (seed => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296)(0xC0FFEE)
@@ -51,7 +53,7 @@ const PROGRAMS = [
 //     ties-toward-+∞ (module/math.js).  • `Math.imul(_, ≥2³¹)` — operand now
 //     ToInt32-wrapped, not saturated (module/math.js).  Both are back in PROGRAMS.
 
-const jsRef = src => new Function(`${src.replace(/export\s+let\s+f\s*=/, 'let f =')}\n;return f`)()
+const jsRef = src => oracle(src).f
 const RUNS = 400
 
 for (const { name, src, args } of PROGRAMS) {
@@ -101,7 +103,7 @@ const MEM_PROGRAMS = [
 for (const { name, src } of MEM_PROGRAMS) {
   test(`differential mem: ${name}`, () => {
     const ref = jsRef(src)
-    for (const level of [2, 'speed']) {
+    for (const level of levels(2, 'speed')) {
       const { exports: { f } } = jz(src, { optimize: { level } })
       for (let i = 0; i < 120; i++) {
         const seed = sval()
@@ -128,7 +130,7 @@ for (const { name, src, args, want } of REASSIGN_PROGRAMS) {
   test(`differential reassign: ${name}`, () => {
     const ref = jsRef(src)
     ok(Object.is(ref(...args), want), `oracle sanity: js ${name} = ${ref(...args)} (expected ${want})`)
-    for (const level of [0, 1, 2, 3, 'speed']) {
+    for (const level of levels(0, 1, 2, 3, 'speed')) {
       const { exports: { f } } = jz(src, { optimize: { level } })
       const got = f(...args)
       ok(Object.is(got, want), `${name}@${level} → jz ${got} ≠ ${want}`)

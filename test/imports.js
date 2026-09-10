@@ -1,7 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { onWasi, adaptI64 } from './_matrix.js'
+import { onWasi, adaptI64, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 
@@ -27,7 +27,7 @@ function run(code) {
 
 // Imported initializers execute in __start too: their call edges must use the
 // same representation plan as the entry module, including unary producers.
-for (const optimize of [false, 1, 2, 3]) test(`imported BigInt initializers normalize call arguments O${optimize || 0}`, () => {
+for (const optimize of levels(false, 1, 2, 3)) test(`imported BigInt initializers normalize call arguments O${optimize || 0}`, () => {
   const consumer = `export const consume = bits => Number((bits >> 32n) & 0xffffffffn)`
   for (const expression of ['~(1n << BigInt(32))', '-(1n << BigInt(32))', '1n << BigInt(32)']) {
     const { exports } = jz(`
@@ -48,7 +48,7 @@ for (const optimize of [false, 1, 2, 3]) test(`imported BigInt initializers norm
   }
 })
 
-for (const optimize of [false, 1, 2, 3]) test(`imported raw BigInt slots normalize at a tagged call boundary O${optimize || 0}`, () => {
+for (const optimize of levels(false, 1, 2, 3)) test(`imported raw BigInt slots normalize at a tagged call boundary O${optimize || 0}`, () => {
   for (const [bits, access] of [
     [0n, 'table.bits'], [0x7ff8000000000000n, 'table.bits'],
     [0x7ffa800000000000n, 'table.bits'], [-1n, 'table.bits'],

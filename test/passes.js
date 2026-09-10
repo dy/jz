@@ -15,6 +15,7 @@ import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
 import { HELPER_COUNTERS } from '../src/helper-counters.js'
+import { levels } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -72,7 +73,7 @@ test('passes: comments and whitespace never change output bytes', () => {
   const PAD = '// ' + 'x'.repeat(97) + '\n'
   const pad5k = PAD.repeat(50)   // ~5 KB of comment
   for (const src of SRCS) {
-    for (const optimize of [undefined, 0, 2, 'speed', 'size']) {
+    for (const optimize of levels(undefined, 0, 2, 'speed', 'size')) {
       const opts = optimize === undefined ? {} : { optimize }
       const plain = compile(src, opts)
       const padded = compile(pad5k + src + '\n' + pad5k, opts)

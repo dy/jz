@@ -22,7 +22,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { ctx } from '../src/ctx.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
 
 const HEX = 'const _hx8 = n => n.toString(16).padStart(8, "0")\n'
 const I64HEX = 'i64Hex = bits => "0x" + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))\n'
@@ -61,7 +61,7 @@ const LAYOUT = 'export const LAYOUT = { A: 1, NAN: 0x7FF8000000000000n }\nexport
 test('bigint boundary: an exported function read only in BigInt arithmetic keeps its BigInt argument, from the program and from the host', () => {
   if (onKernel()) return
   const src = HEX + 'export const ' + I64HEX + LAYOUT
-  for (const level of [1, 2]) {
+  for (const level of levels(1, 2)) {
     const ex = run(src, level)
     is(ex.f(), 18, `an in-program call of the exported i64Hex with a BigInt (O${level})`)   // red: Cannot mix BigInt and other types, use explicit conversions
     is(ex.i64Hex(0x8000000000000000n), '0x8000000000000000', `the host's call with a BigInt (O${level})`)   // red: the same
@@ -75,7 +75,7 @@ test('bigint boundary: the same function called with BigInt literals from the pr
   // With literal BigInt arguments at the call sites the same seeding rejects at compile time
   // instead: `RepresentationPlan host-box param lacks i64 boundary: i64Hex[0]` (boundary-wrap.js).
   const src = HEX + 'export const ' + I64HEX + LAYOUT + calls('i64Hex', PAYLOADS)
-  for (const level of [1, 2]) {
+  for (const level of levels(1, 2)) {
     const ex = run(src, level)   // red: the compile-time rejection
     const retained = []
     PAYLOADS.forEach((p, i) => {
@@ -103,7 +103,7 @@ test('bigint boundary: a parameter proven BigInt by a typeof guard rides the box
   if (onKernel()) return
   // The reference shape: not an i64 parameter, yet a correct BigInt boundary.
   const src = 'export const g = b => typeof b === "bigint" ? b + 1n : 0n\nexport let f = () => g(2n)\n' + calls('g', PAYLOADS)
-  for (const level of [1, 2]) {
+  for (const level of levels(1, 2)) {
     const wasm = compile(src, { optimize: level })
     const b = boundary(wasm, 'g')
     is(b.type, 'f64', `the carrier is the boxed f64 (O${level})`)
@@ -134,7 +134,7 @@ test('bigint boundary: a plain BigInt value with the box prefix crosses the host
 test('bigint boundary: the sibling scopes run: the same function not exported; a typeof guard as a statement', () => {
   if (onKernel()) return
   const local = HEX + 'const ' + I64HEX + 'const LAYOUT = { A: 1, NAN: 0x7FF8000000000000n }\nexport let f = () => i64Hex(LAYOUT.NAN).length'
-  for (const level of [1, 2]) is(run(local, level).f(), 18, `the same function not exported (O${level})`)
+  for (const level of levels(1, 2)) is(run(local, level).f(), 18, `the same function not exported (O${level})`)
   const byIf = 'export const addr = (idx) => { if (typeof idx === "number") return idx * 8; return idx }\nexport let f = () => addr(2)'
   is(run(byIf, 1).f(), 16, 'a typeof guard as a statement (the kernel compiles this shape; the expression form calls i64Hex)')
   const expr = 'export const addr = (idx) => typeof idx === "number" ? idx * 8 : idx\nexport let f = () => addr(2)'

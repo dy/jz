@@ -6,8 +6,8 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64 } from '../interop.js'
-import { onWasi, belowOpt } from './_matrix.js'
-import { run } from './util.js'
+import { onWasi, belowOpt, levels } from './_matrix.js'
+import { run, oracle, cases } from './util.js'
 
 test('empty literal allocation follows its own writes, not a forwarded result kind', () => {
   const sources = [
@@ -17,7 +17,7 @@ test('empty literal allocation follows its own writes, not a forwarded result ki
     ['computed initializer', 'let k="a";let o={[k="kk"]:3};return o.kk', 3],
     ['spread enumeration', 'const s={a:1,b:2};const o={...s,z:9};let keys="";for(const k in o)keys+=k;return keys', 'abz'],
   ]
-  for (const optimize of [false, 2, 3]) for (const [name, body, expected] of sources) {
+  for (const optimize of levels(false, 2, 3)) for (const [name, body, expected] of sources) {
     is(Function(body)(), expected, `${name}: JavaScript oracle`)
     const { f } = jz(`export function f(){${body}}`, { optimize }).exports
     is(f(), expected, `${name}: O${optimize || 0}`)
@@ -138,7 +138,7 @@ test('recursive boolean results keep truthiness and declare final coercion temps
   `
   // A recursive predicate's result is the join of its returns (the program
   // summary): a boolean, as in JS, not the 0/1 the boundary used to hand out.
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const { member, chain, other, block, effects } = jz(source, { optimize }).exports
     is(member(), true, `O${optimize}: direct recursive predicate`)
     is(chain(), true, `O${optimize}: nested recursive predicate`)
@@ -189,7 +189,7 @@ test('opaque .length nullish TypeError schema is catchable at every tier', () =>
     try { return x['length'] }
     catch (e) { return e.name === 'TypeError' ? 1 : 0 }
   }`
-  for (const optimize of [0, 1, 2, 3])
+  for (const optimize of levels(0, 1, 2, 3))
     is(jz(src, { optimize }).exports.f(null), 1, `O${optimize}`)
 })
 
@@ -204,7 +204,7 @@ test('dead opaque-length TypeError schema is pruned from custom sections post-tr
   // `dead` is declared but never called or exported — at O2/O3 (treeshake on)
   // it, and its only use of the shared length-throw path, are fully removed.
   const src = `function dead(x) { return x.length }\nexport let f = () => 42`
-  for (const optimize of [2, 3, 'size']) {
+  for (const optimize of levels(2, 3, 'size')) {
     const wat = compile(src, { optimize, wat: true })
     ok(!wat.includes('"jz:schema"'), `O${optimize}: no live schema left to describe — section omitted`)
     ok(!wat.includes('"jz:errcls"'), `O${optimize}: no live Error class left to name — section omitted`)
@@ -214,7 +214,7 @@ test('dead opaque-length TypeError schema is pruned from custom sections post-tr
 
 test('reachable opaque-length TypeError schema survives custom-section reconciliation', () => {
   const src = `export let f = x => x.length`
-  for (const optimize of [0, 2, 3, 'size'])
+  for (const optimize of levels(0, 2, 3, 'size'))
     ok(compile(src, { optimize, wat: true }).includes('"jz:errcls"'),
       `O${optimize}: a genuinely reachable throw keeps the Error class named`)
   throws(() => jz(src).exports.f(null), err => err instanceof TypeError,
@@ -228,7 +228,7 @@ test('opaque .length host provenance survives aliases and internal call hops', (
     function read(x) { return x.length }
     export let f = x => read(relay(x))
   `
-  for (const optimize of [0, 1, 2, 3])
+  for (const optimize of levels(0, 1, 2, 3))
     is(jz(src, { optimize }).exports.f({ length: 8.75 }), 8.75, `O${optimize}`)
 })
 
@@ -790,25 +790,18 @@ test('Regression: duplicate object-literal keys — last write wins, single slot
 // have none, so the read returned NULL_NAN. The varName-bound form
 // (`let o = {b:1}; o.b`) already worked because ctx.schema.idOf carries the
 // schema; this extends the same shape resolution to anonymous receivers.
-test('Regression: .prop on anonymous object literal resolves slot', () => {
-  is(run(`export let f = () => ({b: 1}).b`).f(), 1)
-})
-
-test('Regression: .prop on multi-prop anonymous literal', () => {
-  is(run(`export let f = () => ({a: 10, b: 20, c: 30}).b`).f(), 20)
-  is(run(`export let f = () => ({a: 10, b: 20, c: 30}).c`).f(), 30)
-})
-
-// Chained `.prop.prop` over nested literals — outer `.a` returns the inner
-// OBJECT pointer, and the outer `.b` slot read needs the inner literal's
-// schema. The literal walk recurses through `.prop` chains over known
-// literals to find the receiver schema at the deepest reachable node.
-test('Regression: chained .prop on nested anonymous literals', () => {
-  is(run(`export let f = () => ({a: {b: 7}}).a.b`).f(), 7)
-})
-
-test('Regression: deeply nested anonymous literals', () => {
-  is(run(`export let f = () => ({x: {y: {z: 42}}}).x.y.z`).f(), 42)
+test('Regression: .prop on anonymous object literals', () => {
+  cases([
+    ['resolves slot', '() => ({b: 1}).b', 1],
+    ['multi-prop (b)', '() => ({a: 10, b: 20, c: 30}).b', 20],
+    ['multi-prop (c)', '() => ({a: 10, b: 20, c: 30}).c', 30],
+    // Chained `.prop.prop` over nested literals — outer `.a` returns the inner
+    // OBJECT pointer, and the outer `.b` slot read needs the inner literal's
+    // schema. The literal walk recurses through `.prop` chains over known
+    // literals to find the receiver schema at the deepest reachable node.
+    ['chained on nested literals', '() => ({a: {b: 7}}).a.b', 7],
+    ['deeply nested literals', '() => ({x: {y: {z: 42}}}).x.y.z', 42],
+  ])
 })
 
 test('Regression: anonymous fixed-shape object literals do not allocate dynamic shadows', () => {
@@ -2034,7 +2027,7 @@ test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
     return s
   }
   export let missing = () => { const c = {}; c['k'] = (c['k'] | 0) + 5; return c['k'] | 0 }`
-  for (const optimize of [0, 2]) {
+  for (const optimize of levels(0, 2)) {
     const { exports } = jz(src, { optimize })
     is(exports.go(9), 9, `O${optimize}: 3 keys x 3 hits`)
     is(exports.go(10), 10, `O${optimize}: uneven distribution still sums to n`)
@@ -2186,9 +2179,8 @@ test('objects: a record-stream cursor keeps its member schema', () => {
   }
   for (const [name, tail] of Object.entries(tails)) {
     const src = head + tail
-    const e = {}
-    new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
-    for (const optimize of [0, 2, 3, 'size'])
+    const e = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size'))
       is(jz(src, { optimize }).exports.f(1000), e.f(1000), `${name} @O${optimize}`)
   }
 })
@@ -2202,9 +2194,8 @@ test('in-place replace store past the length extends the array at every tier', (
   const src = `const mk = () => { const a = []; for (let i = 0; i < 4; i++) a.push({ x: i, y: 2 }); return a }
   const run = (ps, n) => { let s = 0; for (let i = 0; i < n; i++) { const p = ps[i]; const nx = ((p ? p.x : 0) + 1) | 0; ps[i] = { x: nx, y: 1 }; s = (s + nx) | 0 } return s * 100 + ps.length }
   export let f = (n) => run(mk(), n)`
-  const e = {}
-  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
-  for (const optimize of [0, 2, 3, 'size'])
+  const e = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size'))
     for (const n of [2, 4, 6, 9]) is(jz(src, { optimize }).exports.f(n), e.f(n), `n=${n} @O${optimize}`)
 })
 
@@ -2222,9 +2213,8 @@ test('objects: numeric keys are property keys through fromEntries and a negative
   const get = (o, k) => o[k]
   export let f = () => [A[-1], A['-1'], get(A, -1), get(A, '-1'), get(A, 2), get(A, '2'), A[1.5], get(A, 1.5), A['1.5'], D[-1], D[-2], D[T.string], L[-1], get(L, -1), Object.keys(A).length, Object.keys(D).join(',')].join('|')
   export let g = () => [typeof [1, 2, 3][-1], typeof 'abc'[-1], typeof new Float64Array(2)[-1]].join('|')`
-  const e = {}
-  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
-  for (const optimize of [0, 2, 3]) {
+  const e = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
     const ex = jz(src, { optimize }).exports
     is(ex.f(), e.f(), `f @O${optimize}`)
     is(ex.g(), e.g(), `g @O${optimize}`)
@@ -2239,9 +2229,8 @@ test('objects: a runtime write of undefined to a module object wins over the lit
   const src = `const obj = { value: 5, other: 1 }
     const key = () => 'val' + 'ue'
     export let f = (initial) => { obj.value = initial; const k = key(); const a = obj[k]; const b = obj[k] || 2; obj[k] ||= 7; return [a, b, obj.value, obj[k], obj.other].map(String).join('|') }`
-  const e = {}
-  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
-  for (const optimize of [0, 2]) {
+  const e = oracle(src)
+  for (const optimize of levels(0, 2)) {
     const ex = jz(src, { optimize }).exports
     for (const v of [5, undefined, null, 0, undefined, 3]) is(ex.f(v), e.f(v), `initial ${v} @O${optimize}`)
   }
@@ -2275,9 +2264,8 @@ test('objects: an unknown receiver\'s length write and spread push reach the obj
     return [n, buf.buf[1], buf.length, m, arr.length, arr[1], a.length].join('|')
   }
   export let g = (o, n) => { o.length = n; return o.length }`
-  const e = {}
-  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
-  for (const optimize of [0, 2]) {
+  const e = oracle(src)
+  for (const optimize of levels(0, 2)) {
     const ex = jz(src, { optimize }).exports
     for (const i of [0, 1, 2]) is(ex.f(i), e.f(i), `f(${i}) @O${optimize}`)
     is(ex.g([1, 2, 3], 1), 1, `array length write @O${optimize}`)

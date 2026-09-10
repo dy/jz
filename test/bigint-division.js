@@ -1,9 +1,10 @@
 import test from 'tst'
 import {is} from 'tst/assert.js'
 import jz, {compile} from '../index.js'
+import { levels } from './_matrix.js'
+import { oracle } from './util.js'
 
-const levels = [false, 1, 2, 3]
-const oracle = source => Function(source.replaceAll('export ', '') + ';return {f,state}')()
+const LEVELS = levels(false, 1, 2, 3)
 const observe = (f, args, wasm) => {
   try { return ['return', f(...args)] }
   catch (e) { return ['throw', wasm && e?.name === 'Error' && Object.hasOwn(e, 'thrown') ? e.thrown : e?.name ?? e] }
@@ -20,7 +21,7 @@ test(`BigInt ${op}: ${consumer} preserves zero errors, operand order and recover
     function right(n,stage){trace=trace*10+2;if(stage===2)throw 2;return BigInt(n)}
     export function f(a,b,stage){trace=0;const v=${consumer.replace('VALUE',value)};trace=trace*10+3;return v}
     export const state=()=>trace`
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const expected = oracle(source), actual = jz(source,{optimize}).exports
     for (const args of [['6','2',0], ['6','0',0], ['0','0',0], ['-7','2',0],
       ['-9223372036854775808','-1',0], ['6','0',1], ['6','0',2],
@@ -36,7 +37,7 @@ for (const op of ['/', '%']) test(`BigInt ${op}=: failed writes preserve RHS sta
     function rhs(input,stage){trace=trace*10+2;value=99n;if(stage===2)throw 2;return BigInt(input)}
     export function f(input,stage){value=6n;trace=1;const result=(value ${op}= rhs(input,stage));trace=trace*10+3;return result}
     export const state=()=>[String(value),trace]`
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const expected = oracle(source), actual = jz(source,{optimize}).exports
     for (const args of [['2',0], ['0',0], ['0',2], ['bad',0], ['2',0]]) {
       is(observe(actual.f,args,true), observe(expected.f,args,false), `O${optimize || 0}: ${args}`)
@@ -49,7 +50,7 @@ for (const op of ['/', '%']) test(`BigInt ${op}=: signed-i64 overflow boundary i
   for (const target of ['value', '((value))']) {
     const source = `export function f(a,b){let value=BigInt(a);${target} ${op}= BigInt(b);return value}
       export const state=()=>0`
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const expected=oracle(source),actual=jz(source,{optimize}).exports
       for (const args of [['-9223372036854775808','-1'], ['-9223372036854775808','1'],
         ['9223372036854775807','-1'], ['0','-1'], ['6','0'], ['6','2']])
@@ -66,7 +67,7 @@ for (const op of ['/', '%']) test(`BigInt ${op}: call-free catch and finally rem
         catch(e){trace=2;return e.name}
         finally{trace=trace*10+3}}
       export const state=()=>trace`
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const expected = oracle(source), actual = jz(source,{optimize}).exports
       for (const args of [[false],[true],[false]]) {
         is(observe(actual.f,args,true),observe(expected.f,args,false), `${expression} O${optimize || 0}: ${args}`)
@@ -82,7 +83,7 @@ for (const op of ['/', '%']) test(`BigInt ${op}: zero errors are branded, not re
     const source = `let trace=0
       export function f(which,input){${handler ? `try{${body}}${handler}` : body}}
       export const state=()=>trace`
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const expected=oracle(source),actual=jz(source,{optimize}).exports
       for (const args of [[false,'2'],[false,'0'],[true,'0'],[false,'0'],[true,'2'],[false,'2']]) {
         is(observe(actual.f,args,true),observe(expected.f,args,false), `${handler} O${optimize || 0}: ${args}`)
@@ -91,7 +92,7 @@ for (const op of ['/', '%']) test(`BigInt ${op}: zero errors are branded, not re
     }
   }
   const source=`export function f(input){try{6n ${op} BigInt(input)}catch(e){return e instanceof RangeError}return false}`
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const {f}=jz(source,{optimize}).exports
     is([f('2'),f('0'),f('2')],[false,true,false],'catch receives a real RangeError')
   }
@@ -103,7 +104,7 @@ for (const op of ['/', '%']) test(`BigInt ${op}: implicit error census precedes 
       function describe(e){return e.name+': '+e.message}
       export function f(input){try{divide(input);return 'ok'}catch(e){return describe(e)}}
       function divide(input){return 6n ${op} BigInt(input)}`
-    for (const optimize of levels) {
+    for (const optimize of LEVELS) {
       const {f}=jz(source,{optimize}).exports
       is([f('2'),f('0'),f('2')],['ok','RangeError: Division by zero','ok'])
     }
@@ -111,7 +112,7 @@ for (const op of ['/', '%']) test(`BigInt ${op}: implicit error census precedes 
   const source=`function classify(e){return e instanceof Error && e instanceof RangeError && !(e instanceof TypeError)}
     export function f(input){try{divide(input)}catch(e){return classify(e)}return false}
     function divide(input){return 6n ${op} BigInt(input)}`
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const {f}=jz(source,{optimize}).exports
     is([f('2'),f('0'),f('2')],[false,true,false])
   }
@@ -121,7 +122,7 @@ test('BigInt division and remainder: constant nonzero divisors demand no error r
   // The export's BigInt result crosses boxed (its result contract), so the
   // module owns memory for the cell; the error runtime (the exception tag)
   // stays out.
-  for (const optimize of levels) for (const op of ['/', '%']) for (const divisor of ['2n','-1n']) {
+  for (const optimize of LEVELS) for (const op of ['/', '%']) for (const divisor of ['2n','-1n']) {
     const bytes=compile(`export function f(){return -9223372036854775808n ${op} ${divisor}}`,{optimize})
     const mod=new WebAssembly.Module(bytes)
     is(WebAssembly.Module.exports(mod).some(e=>e.kind==='tag'),false,`${op} ${divisor} O${optimize || 0}`)
@@ -129,7 +130,7 @@ test('BigInt division and remainder: constant nonzero divisors demand no error r
 })
 
 test('Number division and remainder: nonthrowing catches cost no output bytes', () => {
-  for (const optimize of levels) for (const op of ['/', '%'])
+  for (const optimize of LEVELS) for (const op of ['/', '%'])
     is(compile(`export function f(a,b){try{return a ${op} b}catch(e){return 0}}`,{optimize}),
       compile(`export function f(a,b){return a ${op} b}`,{optimize}), `${op} O${optimize || 0}`)
 })
@@ -138,7 +139,7 @@ for (const op of ['/', '%']) test(`joint ${op}: Number zero stays numeric; mixed
   const source = `export function f(a,b,ab,bb){
     const x=ab?BigInt(a):Number(a),y=bb?BigInt(b):Number(b);return x ${op} y}
     export const state=()=>0`
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const expected=oracle(source),actual=jz(source,{optimize}).exports
     for (const args of [['6','0',true,true], ['6','0',true,false], ['6','0',false,true],
       ['6','0',false,false], ['-6','0',false,false], ['0','0',false,false], ['6','2',true,true]])

@@ -3,10 +3,8 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { adaptI64 } from './_matrix.js'
+import { run } from './util.js'
 
-function run(code) {
-  return jz(code).exports
-}
 
 // === Object destruct alias ===
 
@@ -19,16 +17,6 @@ test('destruct: {x: a, y: b} = obj', () => {
 })
 
 // === Array spread ===
-
-test('spread: [...a, ...b]', () => {
-  const { f } = run(`export let f = () => {
-    let a = [1, 2]
-    let b = [3, 4]
-    let c = [...a, ...b]
-    return c.length
-  }`)
-  is(f(), 4)
-})
 
 test('spread: [...a, ...b] values', () => {
   const { f } = run(`export let f = () => {

@@ -39,7 +39,7 @@ import {
 } from '../scripts/wat-probe.mjs'
 import {
   typedIntSource, typedIntMinMaxSource, typedIVSRSource, typedByteScanSource, typedMapSource,
-} from './fuzz.js'
+} from './_fuzz.js'
 
 // Test-specific predicates (the shared ones live in scripts/wat-probe.mjs):
 // the loop trip-count overhead narrowLoopBound removes

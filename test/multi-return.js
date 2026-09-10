@@ -1,11 +1,8 @@
 // Phase 2: Multi-value return tests
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import { run } from './util.js'
 
-function run(code, opts) {
-  return jz(code, opts).exports
-}
 
 // Multi-value just works — no profile needed
 

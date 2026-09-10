@@ -21,8 +21,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 import { initSchema } from '../module/schema.js'
+import { levels } from './_matrix.js'
 
 // A multi-schema static read unboxes only if EVERY alternative is proven
 // boxed BigInt. Per-schema (raw OR unboxed) does not prove a raw merged read.
@@ -51,7 +52,7 @@ test('slot carriers: refinements require one common read representation', () => 
 
 test('slot carriers: static brackets share dot access unboxing of uniform BigInt slots', () => {
   const bits = 0x1234567812345678n
-  for (const optimize of [false, 1, 2, 3]) {
+  for (const optimize of levels(false, 1, 2, 3)) {
     const { exports } = jz(`
       const table = {bits: ${bits}n}
       table.bits = ${bits}n
@@ -68,7 +69,7 @@ test('slot carriers: static brackets share dot access unboxing of uniform BigInt
   }
 })
 
-const LEVELS = [0, 2]
+const LEVELS = levels(0, 2)
 
 test('slot-hazards: dyn keyed write poisons floor elision', () => {
   const src = `
@@ -253,8 +254,7 @@ export let main = () => step(init())`
   const loop = stepBody.slice(stepBody.indexOf('(loop'))
   ok(/i32\.load/.test(loop), 'packed cells: slot reads are bare i32.load')
   ok(!/trunc_sat/.test(loop), 'no f64→i32 conversion left in the kernel loop')
-  const exportsJs = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+  const exportsJs = oracle(src)
   is(run(src, { optimize: 'speed' }).main(), exportsJs.main(), 'bit-matches plain JS')
 })
 
@@ -327,8 +327,7 @@ export let main = () => {
   return (hit * 1000 + missing * 100 + t.z * 10 + (t.x === 99 ? 1 : 0)) | 0   // 41131
 }`
   for (const optimize of LEVELS) {
-    const exportsJs = {}
-    new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
+    const exportsJs = oracle(src)
     is(run(src, { optimize }).main(), exportsJs.main(), `O${optimize}: cross-schema prop read/write JS-exact`)
   }
 })

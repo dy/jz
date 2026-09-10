@@ -9,7 +9,8 @@ import jz, { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
-import { onKernel, OPT_LEVEL } from './_matrix.js'
+import { onKernel, OPT_LEVEL, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 // Bindings carry prepare's scope suffix; find one by function and bare name.
 const binding = (fn, bare) => {
@@ -154,8 +155,8 @@ test('summary: dynamic literals analyze callbacks after spreads and computed key
         return JSON.stringify(name)
       } }
       export const probe = () => table.f(['()', 'ok'])`
-    const expected = Function(src.replace('export const probe', 'const probe') + '; return probe()')()
-    for (const optimize of [0, 2, 3])
+    const expected = oracle(src).probe()
+    for (const optimize of levels(0, 2, 3))
       is(jz(src, { optimize }).exports.probe(), expected, `${first}, O${optimize}`)
   }
 })
@@ -489,7 +490,7 @@ test('summary: a literal is allocated as the runtime allocates it; emission read
   is(tagOf(kindOf('f', 'd')), K.HASH, 'an empty literal declared into a computed-key binding is a dictionary')
   is(tagOf(kindOf('f', 's')), K.HASH, 'a written empty literal without a materialized schema is a dictionary')
   ok(!isNullable(kindOf('rd', 'o')) && tagOf(kindOf('rd', 'o')) === K.ANY && hasTag(kindOf('rd', 'o'), K.OBJECT) && hasTag(kindOf('rd', 'o'), K.HASH), 'a spread literal or an argument literal is an object or a dictionary')
-  for (const optimize of [false, 2]) is(jz(`export const f = (k, x) => { let o = {}; o.a = 1; o.b = 2; const t = { [k]: 3 }; return o.a + o.b + t[k] + (new Set([1]).length === undefined ? 10 : 0) }`, { optimize }).exports.f('z', 1), 16, `O${optimize || 0}: the literal reads through the summary's kind`)
+  for (const optimize of levels(false, 2)) is(jz(`export const f = (k, x) => { let o = {}; o.a = 1; o.b = 2; const t = { [k]: 3 }; return o.a + o.b + t[k] + (new Set([1]).length === undefined ? 10 : 0) }`, { optimize }).exports.f('z', 1), 16, `O${optimize || 0}: the literal reads through the summary's kind`)
 })
 
 test('summary: an absent tag joins a union without widening it; a callback drops its surplus arguments', () => {
@@ -519,7 +520,7 @@ test('summary: named callable values share closure argument and result analysis'
     summarize(src)
     ok(!ctx.summary.escaped.has('put'), 'internal namespace does not escape its function')
     is(tagOf(ctx.summary.resultOf('put')), K.ARRAY, 'recursive default-array result survives a callable value')
-    for (const level of [0, 2, 3]) {
+    for (const level of levels(0, 2, 3)) {
       const { count } = jz(src, { optimize: { level, sourceInline: false } }).exports
       is(count(0, 'put'), 0)
       is(count(5, 'put'), 5)
@@ -527,7 +528,7 @@ test('summary: named callable values share closure argument and result analysis'
   }
   const mixed = `function twice(x){return x*2}
     export function result(n,key){const table={twice, plus:x=>x+3};return table[key](n)}`
-  for (const level of [0, 2, 3]) {
+  for (const level of levels(0, 2, 3)) {
     const { result } = jz(mixed, { optimize: { level, sourceInline: false } }).exports
     is(result(4, 'twice'), 8)
     is(result(4, 'plus'), 7)

@@ -1,8 +1,17 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import jz from '../index.js'
+import { oracle, batch } from './util.js'
 
-const same = src => is(jz(src).exports.f(), Function(src.replace('export ', '') + '; return f()')())
+const same = src => is(jz(src).exports.f(), oracle(src).f())
+
+// Batch several standalone `export let f = ...` programs (self-contained, no
+// module-level state) into ONE compiled module — one compile instead of one
+// per program. `sameMany` mirrors `same`'s oracle comparison per program;
+// `runMany` hands back the callable exports themselves for tests that need
+// to invoke `f` with different arguments.
+const sameMany = (srcs) => batch(srcs).forEach((f, i) => is(f(), oracle(srcs[i]).f()))
+const runMany = batch
 
 test('iterator parameters: acquisition and stepping fail at call time', () => {
   for (const kind of ['function', 'function*', 'async function*']) {
@@ -143,7 +152,7 @@ test('iterator parameters: DataView is not an indexed iterable', () => {
 })
 
 test('iterator destructuring: declarations and assignments preserve pulls and closing', () => {
-  for (const binding of ['let [a = (log += "default;", 4),, b] = source', 'const [a = (log += "default;", 4),, b] = source', 'var [a = (log += "default;", 4),, b] = source', 'let a, b; ([a = (log += "default;", 4),, b] = source)']) same(`
+  sameMany(['let [a = (log += "default;", 4),, b] = source', 'const [a = (log += "default;", 4),, b] = source', 'var [a = (log += "default;", 4),, b] = source', 'let a, b; ([a = (log += "default;", 4),, b] = source)'].map(binding => `
     export let f = () => {
       let log = '', n = 0;
       let source = { [Symbol.iterator]: () => {
@@ -154,18 +163,20 @@ test('iterator destructuring: declarations and assignments preserve pulls and cl
       ${binding};
       return log + a + '|' + b + '|' + n;
     };
-  `)
+  `))
 })
 
 test('iterator destructuring: empty, rest, nested object and Unicode string patterns', () => {
-  for (const stmt of ['let [] = source', 'let [a, ...rest] = source', 'let {p: [a, ...rest]} = {p: source}', 'let a, rest; ({p: [a, ...rest]} = {p: source})']) same(`
+  sameMany([
+    ...['let [] = source', 'let [a, ...rest] = source', 'let {p: [a, ...rest]} = {p: source}', 'let a, rest; ({p: [a, ...rest]} = {p: source})'].map(stmt => `
     export let f = () => {
       let log = '', n = 0;
       let source = { [Symbol.iterator]: () => ({next: () => { n++; log += 'n'; return {value: n, done: n > 3} }, return: () => { log += 'r'; return {} }}) };
       ${stmt}; return log;
     };
-  `)
-  same(`export let f = () => { let [a, b, ...c] = '😀éab'; return a + '|' + b + '|' + c.join('') };`)
+  `),
+    `export let f = () => { let [a, b, ...c] = '😀éab'; return a + '|' + b + '|' + c.join('') };`,
+  ])
 })
 
 test('iterator destructuring: assignment returns its source and evaluates it once', () => same(`
@@ -178,7 +189,7 @@ test('iterator destructuring: assignment returns its source and evaluates it onc
 `))
 
 test('iterator destructuring: binding errors close, step errors do not', () => {
-  for (const phase of ['default', 'step']) same(`
+  sameMany(['default', 'step'].map(phase => `
     export let f = () => {
       let closed = 0;
       let fail = () => { throw new Error('default') };
@@ -188,7 +199,7 @@ test('iterator destructuring: binding errors close, step errors do not', () => {
       try { let [x = fail()] = source } catch (e) { return e.message + '|' + closed }
       return 'missing error';
     };
-  `)
+  `))
 })
 
 test('iterator destructuring: assignment references precede each pull', () => same(`
@@ -202,9 +213,11 @@ test('iterator destructuring: assignment references precede each pull', () => sa
 `))
 
 test('iterator destructuring: source calls and defaults are prepared once', () => {
-  same(`export let f = () => { const [a, b = '#fallback'] = 'x'.split('##'); return a + b };`)
-  same(`export let f = () => { let source = []; let [a = (source.push(7), 3), b] = source; return a + '|' + b };`)
-  same(`export let f = () => { let source = [undefined, 2]; let [a = (source = [9,9], 1), b] = source; return a + '|' + b };`)
+  sameMany([
+    `export let f = () => { const [a, b = '#fallback'] = 'x'.split('##'); return a + b };`,
+    `export let f = () => { let source = []; let [a = (source.push(7), 3), b] = source; return a + '|' + b };`,
+    `export let f = () => { let source = [undefined, 2]; let [a = (source = [9,9], 1), b] = source; return a + '|' + b };`,
+  ])
 })
 
 test('iterator parameters: array nested in an object initializes before generator starts', () => same(`
@@ -216,25 +229,30 @@ test('iterator parameters: array nested in an object initializes before generato
 
 
 test('iterator destructuring: native collection views and non-iterable rejection', () => {
-  same(`export let f = () => { let [a, ...b] = new Set([3,4,5]); return a + '|' + b.join(',') };`)
-  same(`export let f = () => { let [[k,v]] = new Map([['x',7]]); return k + v };`)
-  same(`export let f = () => { try { let [a] = {0: 3, length: 1} } catch(e) { return e.name } return 'missing error' };`)
+  sameMany([
+    `export let f = () => { let [a, ...b] = new Set([3,4,5]); return a + '|' + b.join(',') };`,
+    `export let f = () => { let [[k,v]] = new Map([['x',7]]); return k + v };`,
+    `export let f = () => { try { let [a] = {0: 3, length: 1} } catch(e) { return e.name } return 'missing error' };`,
+  ])
 })
 
 
 test('iterator destructuring: initially undefined bindings still coerce later strings', () => {
-  for (const value of ['1', 'bad', '']) same(`export let f = () => {
+  sameMany(['1', 'bad', ''].map(value => `export let f = () => {
     let source = ['${value}']; let [x] = source;
     return isNaN(x) + '|' + isFinite(x) + '|' + (x * 2) + '|' + (+x);
-  };`)
+  };`))
 })
 
 
 test('numeric-only initialization and nullable booleans preserve ToNumber', () => {
-  for (const value of ['true', 'false', '5']) {
-    const f = jz(`export let f = c => { let x; if(c) x=${value}; return x*2 }`).exports.f
+  const values = ['true', 'false', '5']
+  const lastSrc = `export let f = () => { let x; return x };`
+  const fns = runMany([...values.map(value => `export let f = c => { let x; if(c) x=${value}; return x*2 }`), lastSrc])
+  values.forEach((value, i) => {
+    const f = fns[i]
     is(Number.isNaN(f(0)), true)
     is(f(1), Number(value === 'true' ? true : value === 'false' ? false : 5) * 2)
-  }
-  same(`export let f = () => { let x; return x };`)
+  })
+  is(fns[values.length](), oracle(lastSrc).f())
 })

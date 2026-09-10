@@ -1,9 +1,9 @@
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { parseRegex, compileRegex } from '../module/regex.js'
-import { evaluate } from './util.js'
+import { evaluate, cases } from './util.js'
 import jz, { compile } from '../index.js'
-import { adaptI64, onKernel } from './_matrix.js'
+import { adaptI64, onKernel, levels } from './_matrix.js'
 
 /** Compile + run, read result via jz.memory (for string-returning expressions) */
 function evalStr(code) {
@@ -395,94 +395,51 @@ test('regex: str.match(regex) named capture groups', () => {
 // (PCRE/Perl test vectors, validation patterns, backtracking edges)
 // ============================================================================
 
-// === Greedy vs lazy quantifiers ===
-
-test('regex stress: greedy * matches maximally', async () => {
-  is(await evaluate('/a.*b/.test("aXXXb")'), true)
-  is(await evaluate('/a.*b/.test("ab")'), true)
-  is(await evaluate('/a.*b/.test("a")'), false)
-})
-
-test('regex stress: lazy *? matches minimally', async () => {
-  is(await evaluate('/a.*?b/.test("aXXXb")'), true)
-  is(await evaluate('/a.*?b/.test("ab")'), true)
-})
-
-test('regex stress: greedy + requires at least one', async () => {
-  is(await evaluate('/a.+b/.test("aXb")'), true)
-  is(await evaluate('/a.+b/.test("ab")'), false)
-})
-
-// === Repetition {n,m} ===
-
-test('regex stress: exact repetition {n}', async () => {
-  is(await evaluate('/a{3}/.test("aaa")'), true)
-  is(await evaluate('/a{3}/.test("aa")'), false)
-  is(await evaluate('/a{3}/.test("aaaa")'), true)
-})
-
-test('regex stress: range repetition {n,m}', async () => {
-  is(await evaluate('/a{2,4}/.test("aa")'), true)
-  is(await evaluate('/a{2,4}/.test("aaaa")'), true)
-  is(await evaluate('/a{2,4}/.test("a")'), false)
-})
-
-test('regex stress: open-ended {n,}', async () => {
-  is(await evaluate('/a{2,}/.test("aa")'), true)
-  is(await evaluate('/a{2,}/.test("aaaaa")'), true)
-  is(await evaluate('/a{2,}/.test("a")'), false)
-})
-
-// === Anchors ===
-
-test('regex stress: ^ and $ together', async () => {
-  is(await evaluate('/^exact$/.test("exact")'), true)
-  is(await evaluate('/^exact$/.test("not exact")'), false)
-  is(await evaluate('/^exact$/.test("exactly")'), false)
-})
-
-test('regex stress: anchor with quantifier', async () => {
-  is(await evaluate('/^a+$/.test("aaaa")'), true)
-  is(await evaluate('/^a+$/.test("aaab")'), false)
-  is(await evaluate('/^a+$/.test("")'), false)
-})
-
-// === Alternation edge cases ===
-
-test('regex stress: multi-branch alternation', async () => {
-  is(await evaluate('/foo|bar|baz/.test("baz")'), true)
-  is(await evaluate('/foo|bar|baz/.test("qux")'), false)
-})
-
-test('regex stress: alternation with anchors', async () => {
-  is(await evaluate('/^(cat|dog)$/.test("cat")'), true)
-  is(await evaluate('/^(cat|dog)$/.test("catdog")'), false)
-})
-
-// === Nested groups ===
-
-test('regex stress: nested quantified groups', async () => {
-  is(await evaluate('/(ab)+/.test("ababab")'), true)
-  is(await evaluate('/(ab)+/.test("abc")'), true)
-  is(await evaluate('/(ab)+/.test("ba")'), false)
-})
-
-test('regex stress: non-capturing group', async () => {
-  is(await evaluate('/(?:ab)+c/.test("ababc")'), true)
-  is(await evaluate('/(?:ab)+c/.test("abc")'), true)
-  is(await evaluate('/(?:ab)+c/.test("ac")'), false)
-})
-
-// === Character class edge cases ===
-
-test('regex stress: char class with special chars', async () => {
-  is(await evaluate('/[.+*?]/.test(".")'), true)
-  is(await evaluate('/[.+*?]/.test("x")'), false)
-})
-
-test('regex stress: negated class with range', async () => {
-  is(await evaluate('/[^0-9]/.test("a")'), true)
-  is(await evaluate('/[^0-9]/.test("5")'), false)
+test('regex stress: quantifiers / anchors / alternation / groups / classes', () => {
+  cases([
+    // === Greedy vs lazy quantifiers ===
+    ['greedy * matches maximally: aXXXb', '() => /a.*b/.test("aXXXb")', true],
+    ['greedy * matches maximally: ab', '() => /a.*b/.test("ab")', true],
+    ['greedy * matches maximally: a', '() => /a.*b/.test("a")', false],
+    ['lazy *? matches minimally: aXXXb', '() => /a.*?b/.test("aXXXb")', true],
+    ['lazy *? matches minimally: ab', '() => /a.*?b/.test("ab")', true],
+    ['greedy + requires at least one: aXb', '() => /a.+b/.test("aXb")', true],
+    ['greedy + requires at least one: ab', '() => /a.+b/.test("ab")', false],
+    // === Repetition {n,m} ===
+    ['exact repetition {n}: aaa', '() => /a{3}/.test("aaa")', true],
+    ['exact repetition {n}: aa', '() => /a{3}/.test("aa")', false],
+    ['exact repetition {n}: aaaa', '() => /a{3}/.test("aaaa")', true],
+    ['range repetition {n,m}: aa', '() => /a{2,4}/.test("aa")', true],
+    ['range repetition {n,m}: aaaa', '() => /a{2,4}/.test("aaaa")', true],
+    ['range repetition {n,m}: a', '() => /a{2,4}/.test("a")', false],
+    ['open-ended {n,}: aa', '() => /a{2,}/.test("aa")', true],
+    ['open-ended {n,}: aaaaa', '() => /a{2,}/.test("aaaaa")', true],
+    ['open-ended {n,}: a', '() => /a{2,}/.test("a")', false],
+    // === Anchors ===
+    ['^ and $ together: exact', '() => /^exact$/.test("exact")', true],
+    ['^ and $ together: not exact', '() => /^exact$/.test("not exact")', false],
+    ['^ and $ together: exactly', '() => /^exact$/.test("exactly")', false],
+    ['anchor with quantifier: aaaa', '() => /^a+$/.test("aaaa")', true],
+    ['anchor with quantifier: aaab', '() => /^a+$/.test("aaab")', false],
+    ['anchor with quantifier: empty', '() => /^a+$/.test("")', false],
+    // === Alternation edge cases ===
+    ['multi-branch alternation: baz', '() => /foo|bar|baz/.test("baz")', true],
+    ['multi-branch alternation: qux', '() => /foo|bar|baz/.test("qux")', false],
+    ['alternation with anchors: cat', '() => /^(cat|dog)$/.test("cat")', true],
+    ['alternation with anchors: catdog', '() => /^(cat|dog)$/.test("catdog")', false],
+    // === Nested groups ===
+    ['nested quantified groups: ababab', '() => /(ab)+/.test("ababab")', true],
+    ['nested quantified groups: abc', '() => /(ab)+/.test("abc")', true],
+    ['nested quantified groups: ba', '() => /(ab)+/.test("ba")', false],
+    ['non-capturing group: ababc', '() => /(?:ab)+c/.test("ababc")', true],
+    ['non-capturing group: abc', '() => /(?:ab)+c/.test("abc")', true],
+    ['non-capturing group: ac', '() => /(?:ab)+c/.test("ac")', false],
+    // === Character class edge cases ===
+    ['char class with special chars: dot', '() => /[.+*?]/.test(".")', true],
+    ['char class with special chars: x', '() => /[.+*?]/.test("x")', false],
+    ['negated class with range: a', '() => /[^0-9]/.test("a")', true],
+    ['negated class with range: 5', '() => /[^0-9]/.test("5")', false],
+  ])
 })
 
 test('regex stress: \\w \\d \\s combinations', async () => {
@@ -492,20 +449,16 @@ test('regex stress: \\w \\d \\s combinations', async () => {
   is(await evaluate('/\\d+\\.\\d+/.test("314")'), false)
 })
 
-test('regex stress: word boundary', async () => {
-  is(await evaluate('/\\bword\\b/.test("a word here")'), true)
-  is(await evaluate('/\\bword\\b/.test("password")'), false)
-  is(await evaluate('/\\bword\\b/.test("wordy")'), false)
-})
-
-test('regex stress: dot does not match newline', async () => {
-  is(await evaluate('/a.b/.test("axb")'), true)
-  is(await evaluate('/a.b/.test("aXb")'), true)
-})
-
-test('regex stress: empty alternation branch', async () => {
-  is(await evaluate('/a|/.test("b")'), true)
-  is(await evaluate('/a|/.test("a")'), true)
+test('regex stress: word boundary / dot / empty alternation', () => {
+  cases([
+    ['word boundary: a word here', '() => /\\bword\\b/.test("a word here")', true],
+    ['word boundary: password', '() => /\\bword\\b/.test("password")', false],
+    ['word boundary: wordy', '() => /\\bword\\b/.test("wordy")', false],
+    ['dot does not match newline: axb', '() => /a.b/.test("axb")', true],
+    ['dot does not match newline: aXb', '() => /a.b/.test("aXb")', true],
+    ['empty alternation branch: b', '() => /a|/.test("b")', true],
+    ['empty alternation branch: a', '() => /a|/.test("a")', true],
+  ])
 })
 
 // === Real-world patterns ===
@@ -517,48 +470,29 @@ test('regex stress: integer pattern', async () => {
   is(await evaluate('/^-?\\d+$/.test("")'), false)
 })
 
-test('regex stress: hex color', async () => {
-  is(await evaluate('/^#[0-9a-f]{6}$/.test("#ff00aa")'), true)
-  is(await evaluate('/^#[0-9a-f]{6}$/.test("#FF00AA")'), false)
-  is(await evaluate('/^#[0-9a-f]{6}$/.test("#fff")'), false)
-})
-
-test('regex stress: simple identifier', async () => {
-  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("_foo123")'), true)
-  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("123abc")'), false)
-  is(await evaluate('/^[a-zA-Z_]\\w*$/.test("x")'), true)
-})
-
-test('regex stress: IP-like pattern', async () => {
-  is(await evaluate('/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1.1")'), true)
-  is(await evaluate('/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1")'), false)
-})
-
-// === Lookahead ===
-
-test('regex stress: positive lookahead', async () => {
-  is(await evaluate('/\\d+(?=px)/.test("100px")'), true)
-  is(await evaluate('/\\d+(?=px)/.test("100em")'), false)
-})
-
-test('regex stress: negative lookahead', async () => {
-  is(await evaluate('/\\d+(?!px)/.test("100em")'), true)
-  is(await evaluate('/foo(?!bar)/.test("foobaz")'), true)
-  is(await evaluate('/foo(?!bar)/.test("foobar")'), false)
-})
-
-test('regex stress: search finds correct position', async () => {
-  is(await evaluate('"abc def ghi".search(/def/)'), 4)
-  is(await evaluate('"xxxxx".search(/y/)'), -1)
-  is(await evaluate('"aaa".search(/a/)'), 0)
-})
-
-test('regex stress: split with multi-char separator', async () => {
-  is(await evaluate('"a::b::c".split(/::/).length'), 3)
-})
-
-test('regex stress: split at start/end', async () => {
-  is(await evaluate('"1abc2".split(/\\d/).length'), 3)
+test('regex stress: real-world patterns / lookahead / search / split', () => {
+  cases([
+    // === Real-world patterns ===
+    ['hex color: valid lowercase', '() => /^#[0-9a-f]{6}$/.test("#ff00aa")', true],
+    ['hex color: uppercase rejected', '() => /^#[0-9a-f]{6}$/.test("#FF00AA")', false],
+    ['hex color: too short', '() => /^#[0-9a-f]{6}$/.test("#fff")', false],
+    ['simple identifier: leading underscore', '() => /^[a-zA-Z_]\\w*$/.test("_foo123")', true],
+    ['simple identifier: leading digit rejected', '() => /^[a-zA-Z_]\\w*$/.test("123abc")', false],
+    ['simple identifier: single letter', '() => /^[a-zA-Z_]\\w*$/.test("x")', true],
+    ['IP-like pattern: full', '() => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1.1")', true],
+    ['IP-like pattern: incomplete', '() => /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test("192.168.1")', false],
+    // === Lookahead ===
+    ['positive lookahead: matches', '() => /\\d+(?=px)/.test("100px")', true],
+    ['positive lookahead: no match', '() => /\\d+(?=px)/.test("100em")', false],
+    ['negative lookahead: no px', '() => /\\d+(?!px)/.test("100em")', true],
+    ['negative lookahead: not followed by bar', '() => /foo(?!bar)/.test("foobaz")', true],
+    ['negative lookahead: followed by bar rejected', '() => /foo(?!bar)/.test("foobar")', false],
+    ['search finds correct position: middle', '() => "abc def ghi".search(/def/)', 4],
+    ['search finds correct position: no match', '() => "xxxxx".search(/y/)', -1],
+    ['search finds correct position: at start', '() => "aaa".search(/a/)', 0],
+    ['split with multi-char separator', '() => "a::b::c".split(/::/).length', 3],
+    ['split at start/end', '() => "1abc2".split(/\\d/).length', 3],
+  ])
 })
 
 test('regex stress: replace no match returns original', () => {
@@ -570,16 +504,15 @@ test('regex stress: replace at boundaries', () => {
   is(evalStr('"abc".replace(/$/, "X")'), 'abcX')
 })
 
-test('regex stress: backtracking in alternation', async () => {
-  // First branch "ab" matches at pos 0, but full pattern needs "abc"; must
-  // backtrack to try "a" branch.
-  is(await evaluate('/(ab|a)c/.test("ac")'), true)
-})
-
-test('regex stress: greedy backtrack', async () => {
-  // .* greedily consumes all, then backtracks to match trailing 'c'.
-  is(await evaluate('/^.*c$/.test("abc")'), true)
-  is(await evaluate('/^.*c$/.test("abd")'), false)
+test('regex stress: backtracking', () => {
+  cases([
+    // First branch "ab" matches at pos 0, but full pattern needs "abc"; must
+    // backtrack to try "a" branch.
+    ['backtracking in alternation', '() => /(ab|a)c/.test("ac")', true],
+    // .* greedily consumes all, then backtracks to match trailing 'c'.
+    ['greedy backtrack: abc', '() => /^.*c$/.test("abc")', true],
+    ['greedy backtrack: abd', '() => /^.*c$/.test("abd")', false],
+  ])
 })
 
 // === new RegExp() with literal pattern ===
@@ -677,20 +610,15 @@ test('regex: \\s matches VT (\\x0B) and FF (\\x0C)', () => {
   is(r.exports.f(mem.String('a')),   false)  // non-whitespace still fails
 })
 
-test('regex: [\\s] class also matches VT and FF', () => {
-  // \s inside character class should also get VT/FF
-  const r = jz(`export let f = (s) => /[\\s]/.test(s)`)
-  const mem = r.memory
-  is(r.exports.f(mem.String('\x0B')), true)
-  is(r.exports.f(mem.String('\x0C')), true)
-})
-
-test('regex: split on \\s+ splits on VT and FF', () => {
-  // 'a\x0Bb'.split(/\s+/) in JS → ['a', 'b'] (VT is whitespace)
-  const r = jz(`export let f = (s) => s.split(/\\s+/).length`)
-  const mem = r.memory
-  is(r.exports.f(mem.String('a\x0Bb')), 2)  // VT splits
-  is(r.exports.f(mem.String('a\x0Cb')), 2)  // FF splits
+test('regex: \\s class / split on VT and FF', () => {
+  cases([
+    // \s inside character class should also get VT/FF
+    ['[\\s] class also matches VT and FF: VT', '(s) => /[\\s]/.test(s)', true, '\x0B'],
+    ['[\\s] class also matches VT and FF: FF', '(s) => /[\\s]/.test(s)', true, '\x0C'],
+    // 'a\x0Bb'.split(/\s+/) in JS → ['a', 'b'] (VT is whitespace)
+    ['split on \\s+ splits on VT and FF: VT', '(s) => s.split(/\\s+/).length', 2, 'a\x0Bb'],
+    ['split on \\s+ splits on VT and FF: FF', '(s) => s.split(/\\s+/).length', 2, 'a\x0Cb'],
+  ])
 })
 
 test('regex: replace with a function replacer (single + /g)', () => {
@@ -724,26 +652,25 @@ test('regex: replace callback receives capture groups + offset + string (ES 22.1
     'hello world'.replace('world', (m, o, str) => m.toUpperCase() + '@' + o + '/' + str.length))
 })
 
-test('regex: quantifier attempts reset contained captures (ES RepeatMatcher)', () => {
-  const run = src => jz(src).exports.f
-  // A later iteration matching the OTHER alternation branch clears the group.
-  is(run('export let f = (s) => { let m = /(?:(a)|b)+/.exec(s); return typeof m[1] }')('ab'),
-    'undefined')
-  // A failed extra attempt restores the last successful iteration's capture.
-  is(run('export let f = (s) => { let m = /(b)+x/.exec(s); return m[1] }')('bbx'), 'b')
-  // Failed-branch partial writes must not leak into later matches (/g walk).
-  is(run('export let f = (s) => s.replace(/(a)(z)?|X/g, (m, g1, g2) => "[" + g1 + "," + g2 + "]")')('abXcd'),
-    'abXcd'.replace(/(a)(z)?|X/g, (m, g1, g2) => '[' + g1 + ',' + g2 + ']'))
-})
-
-test('regex: \\uXXXX escapes in regex literals compile and match', () => {
-  const run = src => jz(src).exports.f
-  // The pattern atom keeps raw \uHHHH from the parser; decodeIdent normalizes
-  // it via IDESC replace — the shape that failed in-kernel before groups flowed.
-  is(run('export let f = (s) => /\\u0041B/.test(s) ? 1 : 0')('xABy'), 1)
-  is(run('export let f = (s) => /\\u0041B/.test(s) ? 1 : 0')('xaBy'), 0)
-  is(run('export let f = (s) => s.replace(/[\\u0030-\\u0039]+/g, "#")')('a12b345c'),
-    'a12b345c'.replace(/[0-9]+/g, '#'))
+test('regex: quantifier capture reset / \\uXXXX escapes', () => {
+  cases([
+    // A later iteration matching the OTHER alternation branch clears the group.
+    ['quantifier attempts reset contained captures (ES RepeatMatcher): alternation clears group',
+      '(s) => { let m = /(?:(a)|b)+/.exec(s); return typeof m[1] }', 'undefined', 'ab'],
+    // A failed extra attempt restores the last successful iteration's capture.
+    ['quantifier attempts reset contained captures (ES RepeatMatcher): failed attempt restores capture',
+      '(s) => { let m = /(b)+x/.exec(s); return m[1] }', 'b', 'bbx'],
+    // Failed-branch partial writes must not leak into later matches (/g walk).
+    ['quantifier attempts reset contained captures (ES RepeatMatcher): failed-branch writes do not leak',
+      '(s) => s.replace(/(a)(z)?|X/g, (m, g1, g2) => "[" + g1 + "," + g2 + "]")',
+      'abXcd'.replace(/(a)(z)?|X/g, (m, g1, g2) => '[' + g1 + ',' + g2 + ']'), 'abXcd'],
+    // The pattern atom keeps raw \uHHHH from the parser; decodeIdent normalizes
+    // it via IDESC replace — the shape that failed in-kernel before groups flowed.
+    ['\\uXXXX escapes in regex literals compile and match: matches', '(s) => /\\u0041B/.test(s) ? 1 : 0', 1, 'xABy'],
+    ['\\uXXXX escapes in regex literals compile and match: no match', '(s) => /\\u0041B/.test(s) ? 1 : 0', 0, 'xaBy'],
+    ['\\uXXXX escapes in regex literals compile and match: class range replace',
+      '(s) => s.replace(/[\\u0030-\\u0039]+/g, "#")', 'a12b345c'.replace(/[0-9]+/g, '#'), 'a12b345c'],
+  ])
 })
 
 test('regex: matchAll collects all matches', () => {
@@ -775,7 +702,7 @@ export let sweep = () => {
   }
   return out
 }`
-  for (const optimize of [0, 2])
+  for (const optimize of levels(0, 2))
     is(jz(src, { optimize }).exports.sweep(), '__heap_end __heap ', `O${optimize}: untyped receiver scans`)
 })
 

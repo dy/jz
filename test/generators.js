@@ -8,8 +8,12 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { oracle, batch } from './util.js'
 
 const j = (code) => jz(code).exports.f()
+
+// Several standalone arrows as one compile, each called once.
+const jMany = (arrows) => batch(arrows).map(f => f())
 
 test('generators: manual next() protocol + return value', () => {
   is(j(`function* g(n) { let i = 0; while (i < n) { yield i; i++ } return -1 }
@@ -199,12 +203,18 @@ test('using: scope-exit disposal', () => {
   is(j(`let log = ''
         let open = () => ({ [Symbol.dispose]: () => { log += 'd' } })
         export let f = () => { try { using a = open(); log += 'b'; throw 'boom' } catch (e) { log += 'c' } return log }`), 'bdc')
-  is(j(`export let f = () => { using a = null; return 'ok' }`), 'ok')
+  // Both bodies are self-contained (no module-level state, no shared names) —
+  // batched into one compile even though they're not textually adjacent.
+  const [okVal, threw] = jMany([
+    `() => { using a = null; return 'ok' }`,
+    `() => { try { using a = { x: 1 }; return 'no' } catch (e) { return e.includes('dispose') ? 'threw' : e } }`,
+  ])
+  is(okVal, 'ok')
   is(j(`let log = ''
         let open = () => ({ [Symbol.dispose]: () => { log += 'd' } })
         let g = () => { using a = open(); log += 'b'; return 9 }
         export let f = () => '' + g() + log`), '9bd')
-  is(j(`export let f = () => { try { using a = { x: 1 }; return 'no' } catch (e) { return e.includes('dispose') ? 'threw' : e } }`), 'threw')
+  is(threw, 'threw')
 })
 
 // Spread of iterator VALUES: __drain normalizes at the site (pass-through for
@@ -304,7 +314,7 @@ test('generators: finally runs once on normal, injected and caught exceptions', 
     `let log = ''; function* g() { try { try { yield 1 } finally { log += 'I'; throw 'F' } } finally { log += 'O' } }
      export function f() { const it = g(); it.next(); try { it.throw('E') } catch(e) { log += e }; return log }`,
   ]) {
-    const expected = Function(source.replace('export ', '') + '; return f()')()
+    const expected = oracle(source).f()
     is(j(source), expected)
   }
 })

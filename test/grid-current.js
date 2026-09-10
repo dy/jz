@@ -9,15 +9,17 @@ import test from 'tst'
 import { ok } from 'tst/assert.js'
 import jz from '../index.js'
 import fs from 'fs'
+import { levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 const src = fs.readFileSync(new URL('../assets/grid-current.js', import.meta.url), 'utf8')
 // the SAME source as plain JS: strip the ESM `export` keywords and hand back the four exports.
-const asJs = () => new Function(`${src.replace(/export\s+let\s+/g, 'let ')}\nreturn { resize, configure, frame, spawn, param }`)()
+const asJs = () => oracle(src)
 
 const W = 384, H = 256, SCALE = 1.333   // fractional scale → DPR-style spacing an i32-narrowed global would truncate
 const CLICKS = [[0.37, 0.5], [0.62, 0.31], [0.18, 0.77], [0.83, 0.22], [0.5, 0.5], [0.91, 0.66], [0.045, 0.12]]
 
-for (const optimize of [0, 3]) {
+for (const optimize of levels(0, 3)) {
   test(`grid-current: jz wasm renders byte-identical to plain JS (optimize ${optimize})`, () => {
     const a = jz(src, { optimize }).exports
     const b = asJs()

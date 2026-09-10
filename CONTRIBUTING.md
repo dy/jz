@@ -302,6 +302,24 @@ Run one file:
 node test/strings.js
 ```
 
+The suite runs once per compiler configuration (`npm run test:matrix`: default,
+opt0, opt3, wasi; CI runs the four legs in parallel). A test that must hold at
+several optimize levels writes `for (const optimize of levels(false, 2, 3))`
+(`test/_matrix.js`): each leg runs its own level and the plain default leg also
+runs O1, which no leg carries, so the matrix supplies the sweep instead of every
+test compiling at every level on every leg. `JZ_TEST_SWEEP=1` runs the whole
+list in one process. Files that build the kernel, spawn tooling, or pass every
+option themselves are listed in `LEG_INVARIANT` / `OPT_INVARIANT` in
+`test/index.js` and run on the default leg only; naming a file on the command
+line runs it on any leg.
+
+Shared helpers live in `test/util.js`: `run` (exports), `wat` (text),
+`oracle(src)` (the same program evaluated by Node), `agree` (jz equals Node for
+one call), `funcWat` (one function's WAT), and `cases(rows)`, which compiles a
+table of `[label, arrowSource, want, ...args]` rows as one module. A compile is
+almost all of a test's cost, so a family of one-assertion programs belongs in one
+`cases` table, not one compile per assertion.
+
 Release semantics also run `npm run test:262` and
 `npm run test:262:builtins`. Negative-parse acceptance is an exact path set,
 not a count ceiling: any change must update and explain

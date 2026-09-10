@@ -7,12 +7,13 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import jz from '../index.js'
+import { levels } from './_matrix.js'
 
 const measure = (body, calls = 1000, warm = 10) => {
   const src = `${body}
 export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0; i < n; i++) s += run(i); return __heap_mark() - h0 + (s > 1e300 ? 1 : 0) }`
   const out = {}
-  for (const optimize of [0, 1, 2]) {
+  for (const optimize of levels(0, 1, 2)) {
     const ex = jz(src, { optimize, memory: 256 }).exports
     ex.probe(warm)   // warm: first-time growth of caches is not the per-call cost
     out[optimize] = ex.probe(calls) / calls

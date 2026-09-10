@@ -1,0 +1,98 @@
+// The kernel-parity corpus: the source strings test/kernel-parity.js proves
+// byte-identical between the native and self-compiled pipelines, test/kernel-oracle.js
+// runs three ways for value parity (byte identity alone certifies identically-wrong
+// output as readily as identically-right), and test/eager-stdlib-parity.js compiles
+// with the stdlib preloaded.
+import { BIGINT_TYPED_STORE_SOURCE } from './_bigint-typed-store-corpus.js'
+import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
+
+export const CORPUS = {
+  sum: `export let sum = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }`,
+  math: `export let f = (x) => Math.sqrt(x * x + 1) + Math.abs(x)`,
+  dict: `export let count = (s) => { let d = {}; for (let i = 0; i < s.length; i++) { let c = s[i]; d[c] = (d[c] || 0) + 1 } return d['a'] || 0 }`,
+  arr: `export let rev = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i = a.length - 1; i >= 0; i--) s += a[i]; return s }`,
+  // preEval coverage (audit P0 2026-07-25): the kernel entries used to skip the
+  // preEval front-half stage entirely, so statically-foldable programs emitted
+  // different bits than native AT EVERY TIER — and none of the rows above
+  // exercised constant folding. These two are the audit's own repros: float
+  // fold ordering (0.1+0.2-0.3 bit pattern) and pure-Math folding at O0.
+  fold: `export let f = () => 0.1 + 0.2 - 0.3`,
+  mfold: `export let g = () => Math.sqrt(9) + Math.abs(-2)`,
+  // Generic peephole handoff: computed eq-zero expressions canonicalize to eqz,
+  // while a bare-local zero arm stays visible to dense-switch recognition.
+  eqzero: EQ_ZERO_KERNEL,
+  // Self-compile miscompile #4 (audit re-hunt, 2026-07-30): a helper whose return
+  // tails mix a NUMBER with a bare `false` literal, tested via `=== false` /
+  // `!== false` at the call site — module/typedarray.js's `isConst` is this
+  // shape (SIMD-pattern-detection: `typeof node === 'number' ? node : …
+  // return false`), and its call sites in analyzeSimd gate on `!== false`.
+  // Compiling THIS SOURCE (not running it) is what exposed the bug: native
+  // jz never runs typedarray.js's own JS through jz's compiler, only the
+  // kernel build does (dist/jz.wasm = jz compiling its own source) — so a
+  // codegen defect in this exact shape stayed invisible until self-compiled.
+  // Root cause: the boolean literal's cheap i32 0/1 representation (by
+  // design — branch/arithmetic position) only gets boxed into a real f64
+  // TRUE/FALSE atom at a handful of explicit escape sites; a NUMBER-mixed
+  // generic-f64 return isn't one of them, so `return false` here silently
+  // crossed as the plain float 0 — indistinguishable from a genuine `0`
+  // constant at `!== false`, so the guard was always true. Originally worked
+  // around at module/typedarray.js's `isConst` (a `null` sentinel instead of
+  // overloading `false` — `null`'s compiled representation is always a
+  // proper NaN-box, no i32-vs-f64 ambiguity) pending a real fix for "this
+  // class of return-boxing gap elsewhere in the compiler" (audit #5 item 4).
+  // That fix landed (audit #5 item 2, this exact CORPUS row — see
+  // src/compile/emit.js 'return' + src/compile/index.js emitFunc's
+  // ctx.func.mixedAtomReturn: a function with >= 2 syntactic return
+  // statements that isn't proven uniformly BOOL now boxes any individually-
+  // BOOL return tail to its TRUE_NAN/FALSE_NAN atom) — `isConst` was reverted
+  // back to overloading `false` as ITS OWN generality test: the self-compiled
+  // kernel now compiles this exact mixed-return shape, in the compiler's own
+  // source, soundly.
+  boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
+export let f = (s) => g(s) === false`,
+  // Self-compile miscompile #5 (audit re-hunt, 2026-07-30): composing two
+  // typed-array constructors — `new Int32Array(new Float64Array([x]))` —
+  // nests two instances of the SAME `new.${name}` closure template (module/
+  // typedarray.js's `for (const [name, elemType] of Object.entries(...))`
+  // loop). The outer (Int32Array) instance's copy path called `emit(lenExpr)`
+  // (recursing into the inner Float64Array instance) BEFORE calling
+  // `copyFromTyped(src)`, which itself closes over `elemType`/`aux`/`stride`/
+  // `name` from the SAME loop — a nested emit() call between a closure's
+  // capture and its later re-read is the ledger's "closure-capture-after-
+  // nested-emit" self-compile class (.work/archive/todo.md 2026-07-23, TYPED-INDEX
+  // KERNEL MISCOMPILE): once compiled by the kernel, the outer closure's
+  // read of elemType AFTER the nested call observed the INNER (Float64Array,
+  // elemType=7) iteration's value instead of its own (Int32Array, elemType=4)
+  // — the copy loop wrote f64.store at stride 8 instead of the ToInt32-
+  // wrapped i32.store at stride 4. Fixed by building copyFromTyped's (and the
+  // sibling runtime-dispatch branch's) IR BEFORE the nested emit(lenExpr)
+  // call — same final IR tree, reordered so the vulnerable closure reads
+  // happen before the recursive compile, not after.
+  nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,
+  // A boxed Number|BigInt local must be unboxed at a known BigInt typed-array
+  // store, while a raw i64 payload with identical PTR.BIGINT tag bits must not
+  // be probed. This pair caught the unconditional-unbox kernel taint.
+  biginttypedstore: BIGINT_TYPED_STORE_SOURCE,
+  // Class-wide sweep (2026-07-30, ledger-directed): three more capture-after-
+  // nested-emit sites found and fixed alongside nestedtyped, all in
+  // module/typedarray.js's per-iteration `for (const [...] of Object.entries(...))`
+  // emitter closures — same root as nestedtyped, different tables/branches.
+  // Fixed by snapshotting the closure's OWN captures into locals before the
+  // first nested emit() call, so later reads see the local (immune) instead of
+  // re-reading the free variable (which a nested sibling-closure invocation can
+  // clobber once this file is kernel-compiled).
+  // (1) new.${name}'s SUBVIEW branch (`new T(buffer, off, len)`): `stride`/
+  // `name` read after emit(lenExpr2)/emit(offsetExpr) — untouched by the
+  // nestedtyped fix, which only covered the srcType===TYPED and srcType==null
+  // branches of the same closure.
+  subviewtyped: `export let f = (buf) => new Int32Array(buf, 0, new Float64Array(4).length)`,
+  // (2)+(3) the DataView get/set closures (DV_GET/DV_SET loops): loadOp/
+  // resultType/size/signed (get) and storeOp/valType/size (set) read after
+  // emit(off)/emit(val)/emit(leNode) — reachable via a DataView receiver
+  // nesting another DataView call in an offset/value position.
+  dvnested: `export let f = (dv) => dv.setFloat64(dv.getInt32(0), dv.getFloat64(8))`,
+  // (4) TypedArray.from's array-literal fast path: stride/store/elemType
+  // re-read for element k+1 after element k's emit() — reachable when one
+  // literal element is itself a nested same-family typed-array construction.
+  fromnested: `export let f = () => Int32Array.from([Float64Array.from([5])[0], 2])`,
+}

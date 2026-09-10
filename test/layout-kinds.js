@@ -31,8 +31,8 @@ import { DBG_INVARIANTS } from '../src/ctx.js'
 import { PTR } from '../layout.js'
 import { KIND_REGISTRY, CONTENT_IDENTITY_ORDER, eqIdentityChain, sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { KIND_REGISTRY as KIND_REGISTRY_DOC, FINDINGS } from '../layout-kinds-doc.js'
+import { run, cases } from './util.js'
 
-const run = (code, opts) => jz(code, opts).exports
 
 // ============================================================================
 // Registry self-consistency (catches this FILE going stale, not the runtime)
@@ -74,29 +74,26 @@ if (DBG_INVARIANTS) {
 // never dereferences a pointer's offset — safe with any offset, including 0).
 // ============================================================================
 
-test('typeof: NUMBER', () => is(run('export let f = () => typeof 1').f(), 'number'))
-test('typeof: STRING (heap, non-literal-folded)', () => is(run('export let f = () => typeof ("a" + "b" + "c" + "d" + "e" + "f" + "g")').f(), 'string'))
-test('typeof: ARRAY', () => is(run('export let f = () => typeof [1,2,3]').f(), 'object'))
-test('typeof: OBJECT (schema)', () => is(run('export let f = () => typeof ({a:1,b:2})').f(), 'object'))
-test('typeof: SET', () => is(run('export let f = () => typeof new Set()').f(), 'object'))
-test('typeof: MAP', () => is(run('export let f = () => typeof new Map()').f(), 'object'))
-test('typeof: TYPED', () => is(run('export let f = () => typeof new Float64Array(4)').f(), 'object'))
-test('typeof: BUFFER', () => is(run('export let f = () => typeof new ArrayBuffer(8)').f(), 'object'))
-test('typeof: CLOSURE', () => is(run('export let f = () => typeof (() => 1)').f(), 'function'))
-test('typeof: ATOM.NULL', () => is(run('export let f = () => typeof null').f(), 'object'))
-test('typeof: ATOM.UNDEFINED', () => is(run('export let f = () => typeof undefined').f(), 'undefined'))
-test('typeof: ATOM.BOOLEAN true', () => is(run('export let f = () => typeof true').f(), 'boolean'))
-test('typeof: ATOM.BOOLEAN false', () => is(run('export let f = () => typeof false').f(), 'boolean'))
-test('typeof: ATOM.SYMBOL', () => is(run('export let f = () => typeof Symbol("x")').f(), 'symbol'))
-
-test('typeof: HASH (synthetic __mkptr — no jz-source literal produces a bare HASH value)', () => {
-  is(run(`export let f = () => { let a = [0]; return typeof __mkptr(${PTR.HASH}, 0, 0) }`).f(), 'object')
-})
-test('typeof: EXTERNAL (synthetic __mkptr, mirrors test/pointers.js\'s __ptr_type EXTERNAL pin)', () => {
-  is(run(`export let f = () => { let a = [0]; return typeof __mkptr(${PTR.EXTERNAL}, 67, 0) }`).f(), 'object')
-})
-test('typeof: BIGINT literal (statically folded, bypasses $__typeof entirely)', () => {
-  is(run('export let f = () => typeof 5n').f(), 'bigint')
+test('typeof', () => {
+  cases([
+    ['NUMBER', '() => typeof 1', 'number'],
+    ['STRING (heap, non-literal-folded)', '() => typeof ("a" + "b" + "c" + "d" + "e" + "f" + "g")', 'string'],
+    ['ARRAY', '() => typeof [1,2,3]', 'object'],
+    ['OBJECT (schema)', '() => typeof ({a:1,b:2})', 'object'],
+    ['SET', '() => typeof new Set()', 'object'],
+    ['MAP', '() => typeof new Map()', 'object'],
+    ['TYPED', '() => typeof new Float64Array(4)', 'object'],
+    ['BUFFER', '() => typeof new ArrayBuffer(8)', 'object'],
+    ['CLOSURE', '() => typeof (() => 1)', 'function'],
+    ['ATOM.NULL', '() => typeof null', 'object'],
+    ['ATOM.UNDEFINED', '() => typeof undefined', 'undefined'],
+    ['ATOM.BOOLEAN true', '() => typeof true', 'boolean'],
+    ['ATOM.BOOLEAN false', '() => typeof false', 'boolean'],
+    ['ATOM.SYMBOL', '() => typeof Symbol("x")', 'symbol'],
+    ['HASH (synthetic __mkptr — no jz-source literal produces a bare HASH value)', `() => { let a = [0]; return typeof __mkptr(${PTR.HASH}, 0, 0) }`, 'object'],
+    [`EXTERNAL (synthetic __mkptr, mirrors test/pointers.js's __ptr_type EXTERNAL pin)`, `() => { let a = [0]; return typeof __mkptr(${PTR.EXTERNAL}, 67, 0) }`, 'object'],
+    ['BIGINT literal (statically folded, bypasses $__typeof entirely)', '() => typeof 5n', 'bigint'],
+  ])
 })
 
 // ============================================================================
@@ -106,37 +103,22 @@ test('typeof: BIGINT literal (statically folded, bypasses $__typeof entirely)', 
 // content-equal strings must be ===.
 // ============================================================================
 
-test('identity: STRING content — two independently-built equal strings are ===', () => {
-  is(run(`export let f = () => {
+test('identity', () => {
+  cases([
+    ['STRING content — two independently-built equal strings are ===', `() => {
     let a = "a" + "b" + "c" + "d" + "e" + "f" + "g"
     let b = "a" + "bc" + "d" + "ef" + "g"
     return a === b
-  }`).f(), true)
-})
-
-test('identity: ARRAY pointer-bits — two same-content arrays are !==', () => {
-  is(run('export let f = () => [1,2] === [1,2]').f(), false)
-})
-test('identity: OBJECT pointer-bits — two same-shape objects are !==', () => {
-  is(run('export let f = () => ({a:1}) === ({a:1})').f(), false)
-})
-test('identity: SET pointer-bits — two empty sets are !==', () => {
-  is(run('export let f = () => new Set() === new Set()').f(), false)
-})
-test('identity: MAP pointer-bits — two empty maps are !==', () => {
-  is(run('export let f = () => new Map() === new Map()').f(), false)
-})
-test('identity: TYPED pointer-bits — two same-content typed arrays are !==', () => {
-  is(run('export let f = () => { let a = new Int32Array([1,2]); let b = new Int32Array([1,2]); return a === b }').f(), false)
-})
-test('identity: BUFFER pointer-bits — two same-size buffers are !==', () => {
-  is(run('export let f = () => new ArrayBuffer(4) === new ArrayBuffer(4)').f(), false)
-})
-test('identity: CLOSURE pointer-bits — two CAPTURING closures from the same factory are !== (real per-creation heap block)', () => {
-  is(run('export let f = () => { let mk = (x) => (() => x); return mk(1) === mk(1) }').f(), false)
-})
-test('identity: CLOSURE zero-capture degenerate case — a captureless closure has no heap block, so re-evaluating the same literal is === (documented in layout-kinds.js CLOSURE.identity, not a cross-consumer finding)', () => {
-  is(run('export let f = () => { let mk = () => (() => 1); return mk() === mk() }').f(), true)
+  }`, true],
+    ['ARRAY pointer-bits — two same-content arrays are !==', '() => [1,2] === [1,2]', false],
+    ['OBJECT pointer-bits — two same-shape objects are !==', '() => ({a:1}) === ({a:1})', false],
+    ['SET pointer-bits — two empty sets are !==', '() => new Set() === new Set()', false],
+    ['MAP pointer-bits — two empty maps are !==', '() => new Map() === new Map()', false],
+    ['TYPED pointer-bits — two same-content typed arrays are !==', '() => { let a = new Int32Array([1,2]); let b = new Int32Array([1,2]); return a === b }', false],
+    ['BUFFER pointer-bits — two same-size buffers are !==', '() => new ArrayBuffer(4) === new ArrayBuffer(4)', false],
+    ['CLOSURE pointer-bits — two CAPTURING closures from the same factory are !== (real per-creation heap block)', '() => { let mk = (x) => (() => x); return mk(1) === mk(1) }', false],
+    ['CLOSURE zero-capture degenerate case — a captureless closure has no heap block, so re-evaluating the same literal is === (documented in layout-kinds.js CLOSURE.identity, not a cross-consumer finding)', '() => { let mk = () => (() => 1); return mk() === mk() }', true],
+  ])
 })
 
 // ============================================================================
@@ -144,16 +126,16 @@ test('identity: CLOSURE zero-capture degenerate case — a captureless closure h
 // STRING dedups by content; every other kind dedups by pointer-bits.
 // ============================================================================
 
-test('Set keying: STRING dedups by content across independently-built equal strings', () => {
-  is(run(`export let f = () => {
+test('Set keying', () => {
+  cases([
+    ['STRING dedups by content across independently-built equal strings', `() => {
     let s = new Set()
     s.add("a" + "b" + "c" + "d" + "e" + "f" + "g")
     s.add("a" + "bc" + "d" + "ef" + "g")
     return s.size
-  }`).f(), 1)
-})
-test('Set keying: ARRAY does NOT dedup by content (pointer-bits)', () => {
-  is(run(`export let f = () => { let s = new Set(); s.add([1,2]); s.add([1,2]); return s.size }`).f(), 2)
+  }`, 1],
+    ['ARRAY does NOT dedup by content (pointer-bits)', `() => { let s = new Set(); s.add([1,2]); s.add([1,2]); return s.size }`, 2],
+  ])
 })
 test('Map keying: a re-derived equal string still hits (content hash+eq)', () => {
   is(run(`export let f = () => {
@@ -192,16 +174,12 @@ test('closed[typeof]: typeof(boxed BigInt) reports "bigint" ($__typeof PTR.BIGIN
   is(run(`export let f = () => { let a = [0]; return typeof __box_bigint(5n) }`).f(), 'bigint')
 })
 
-test('closed[eq-identity]: === on two equal-value boxed BigInts is true ($__eq content-compare arm)', () => {
-  is(run(`export let f = () => { let a = [0]; return __box_bigint(5n) === __box_bigint(5n) }`).f(), true)
-})
-
-test('closed[eq-identity]: === on two DIFFERENT-value boxed BigInts is still false', () => {
-  is(run(`export let f = () => { let a = [0]; return __box_bigint(5n) === __box_bigint(6n) }`).f(), false)
-})
-
-test('closed[eq-identity]: Set dedup by BigInt value now works across separate boxes ($__same_value_zero/$__map_hash arms)', () => {
-  is(run(`export let f = () => { let a = [0]; let s = new Set(); s.add(__box_bigint(5n)); s.add(__box_bigint(5n)); return s.size }`).f(), 1)
+test('closed[eq-identity]', () => {
+  cases([
+    ['=== on two equal-value boxed BigInts is true ($__eq content-compare arm)', `() => { let a = [0]; return __box_bigint(5n) === __box_bigint(5n) }`, true],
+    ['=== on two DIFFERENT-value boxed BigInts is still false', `() => { let a = [0]; return __box_bigint(5n) === __box_bigint(6n) }`, false],
+    ['Set dedup by BigInt value now works across separate boxes ($__same_value_zero/$__map_hash arms)', `() => { let a = [0]; let s = new Set(); s.add(__box_bigint(5n)); s.add(__box_bigint(5n)); return s.size }`, 1],
+  ])
 })
 
 test('closed[interop-decode]: a boxed BigInt returned to the host decodes to a real host bigint (mem.read t===5 arm)', () => {

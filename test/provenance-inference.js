@@ -13,6 +13,7 @@ import {
   TYPED_CTOR_CONFLICT, TYPED_SOURCE_NAME, TYPED_SOURCE_CALL, TYPED_SOURCE_FIELD, TYPED_SOURCE_INDEX,
   typedStorageFact,
 } from '../src/typed-provenance.js'
+import { levels } from './_matrix.js'
 
 test('typed provenance: one grammar authority joins and chains every storage source', () => {
   const names = new Map([['a', 'new.Int16Array'], ['b', 'new.Int16Array'], ['c', 'new.Float64Array']])
@@ -115,7 +116,7 @@ export let go = () => {
   // Σ i·0.5 + Σ i·0.25 for i in [0,64) = 0.75·(63·64/2) = 0.75·2016 = 1512
   is(exports.go(), 1512)
   // Same value across every optimize tier (the guard must not change behavior).
-  for (const optimize of [false, 2, 3]) is(jz(src, { optimize }).exports.go(), 1512, `O${optimize || 0}`)
+  for (const optimize of levels(false, 2, 3)) is(jz(src, { optimize }).exports.go(), 1512, `O${optimize || 0}`)
 })
 
 test('provenance: indexed TypedArray → copy chain preserves BigInt storage at every tier', () => {
@@ -125,7 +126,7 @@ export let read = flag => {
   const out = rows[flag].slice().map(x => x)
   return Number(out.at(0))
 }`
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { exports } = jz(src, { optimize })
     is(exports.read(0), 7, `O${optimize || 0}: row 0`)
     is(exports.read(1), 9, `O${optimize || 0}: row 1`)

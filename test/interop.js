@@ -12,7 +12,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import * as interop from 'jz/interop'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
 
@@ -236,7 +236,7 @@ test('interop: memory.allocTyped gives a live view + box for zero-copy input', (
 // program by the time this one threw, e.g. `err()`'s own — the corruption
 // throws off every Error class after the first one used anywhere in the
 // module, not just at this call site).
-for (const optimize of [false, 2, 3]) {
+for (const optimize of levels(false, 2, 3)) {
   const lbl = `O${optimize || 0}`
   test(`interop: decodeThrown recovers .message for EVERY built-in Error class in one module, not just the first (${lbl})`, () => {
     const { exports } = interop.instantiate(compile(`

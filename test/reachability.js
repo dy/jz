@@ -21,7 +21,7 @@ import { pathToFileURL } from 'node:url'
 import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { ctx } from '../src/ctx.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
 
 // Every program appends to `t` as its functions run and reads it through `trace()`.
 const T = `let t = ''\nexport const trace = () => t\n`
@@ -136,12 +136,12 @@ for (const [title, p] of Object.entries(PROGRAMS)) test(`reachability: ${title}`
   const js = await oracle(p)
   is(p.run(js), p.results, 'the authored results are what Node computes for the source')
   is(js.trace(), p.calls, 'and so is the authored call order')
-  for (const level of [0, 2]) {
+  for (const level of levels(0, 2)) {
     const { results, calls } = behavior(p, level)
     is(results, p.results, `results at O${level}`)
     is(calls, p.calls, `the functions ran in the expected order at O${level}`)
   }
-  if (p.without) for (const level of [0, 2]) {
+  if (p.without) for (const level of levels(0, 2)) {
     const bytes = compile(p.src, { optimize: level }), pruned = compile(p.without, { optimize: level })
     const exWithout = instantiate(pruned, { memory: 64 }).exports
     is(p.run(exWithout), p.results, `deleting the dead callable from the source changes nothing (O${level})`)

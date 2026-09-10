@@ -15,7 +15,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
+import { levels } from './_matrix.js'
 
 // the immutable-bench kernel shape, parameterized so each test gets a fresh module
 const KERNEL = `
@@ -46,11 +47,6 @@ const step = (ps) => {
 }
 export let main = () => step(init())`
 
-const jsEval = (src) => {
-  const exports = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 =').replace(/export const (\w+) =/g, 'const $1 = exports.$1 ='))(exports)
-  return exports
-}
 
 test('inplace-store: field updates reuse a proven object pointer', () => {
   const src = `const make = n => {
@@ -65,8 +61,8 @@ test('inplace-store: field updates reuse a proven object pointer', () => {
     const a = make(n); for (let j = 0; j < 4; j++) step(a)
     let s = 0; for (let i = 0; i < n; i++) s += a[i].x + a[i].y; return s
   }`
-  const expected = jsEval(src).f
-  for (const optimize of [0, 2, 3]) {
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 2, 3)) {
     const f = jz(src, {optimize}).exports.f
     for (const n of [0, 1, 9, 1]) is(f(n), expected(n), `O${optimize}: ${n} objects`)
     if (optimize) {
@@ -89,7 +85,7 @@ test('inplace-store: fires on the immutable-update kernel and bit-matches JS', (
     'in-place fast path emitted (guarded or statically discharged)')
   ok(stepBody === '' || !/__alloc_hdr/.test(stepBody), 'step loop allocates nothing')
   const { main } = run(KERNEL, { optimize: 'speed' })
-  is(main(), jsEval(KERNEL).main(), 'stepped sums bit-match plain JS')
+  is(main(), oracle(KERNEL).main(), 'stepped sums bit-match plain JS')
 })
 
 test('inplace-store: loop-invariant array base hoists out of the step loop', () => {
@@ -121,7 +117,7 @@ test('inplace-store: alias read AFTER the store keeps fresh-object semantics', (
     return acc
   }`
   const { main } = run(src, { optimize: 'speed' })
-  is(main(), jsEval(src).main(), 'post-store alias reads the pre-store values')
+  is(main(), oracle(src).main(), 'post-store alias reads the pre-store values')
 })
 
 test('inplace-store: element leaked out of the array disables the transform', () => {
@@ -139,7 +135,7 @@ test('inplace-store: element leaked out of the array disables the transform', ()
     return (kept.x * 1000 + ps[0].x) | 0
   }`
   const { main } = run(src, { optimize: 'speed' })
-  is(main(), jsEval(src).main(), 'leaked element keeps its pre-store values')
+  is(main(), oracle(src).main(), 'leaked element keeps its pre-store values')
 })
 
 test('inplace-store: alien-schema element at runtime takes the generic arm', () => {
@@ -159,5 +155,5 @@ test('inplace-store: alien-schema element at runtime takes the generic arm', () 
     return acc
   }`
   const { main } = run(src, { optimize: 'speed' })
-  is(main(), jsEval(src).main(), 'mixed-schema array stays bit-exact')
+  is(main(), oracle(src).main(), 'mixed-schema array stays bit-exact')
 })

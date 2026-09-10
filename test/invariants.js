@@ -16,15 +16,14 @@ import { ctx, reset, DBG_INVARIANTS } from '../src/ctx.js'
 import { analyzeBody, reanalyzeBody, setFuncBody, invalidateAllBodyFacts } from '../src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
-import { run } from './util.js'
-import { onKernel } from './_matrix.js'
+import { run, wat } from './util.js'
+import { onKernel, levels } from './_matrix.js'
 import { representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { buildProgramIndex } from '../src/compile/program-index.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
 
 // === Helper: compile with WAT output for structural inspection ===
-const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
 
 // ============================================================================
 // Const enforcement invariants
@@ -893,7 +892,7 @@ test('invariant: unreachable functions are neither analyzed nor emitted, and sti
   if (onKernel()) return
   const base = 'export let f = (x) => x + 1'
   const dead = 'let dead = (s) => "unreachable literal " + s\n' + base
-  for (const optimize of [false, true]) {
+  for (const optimize of levels(false, true)) {
     const a = compile(base, { optimize }), b = compile(dead, { optimize })
     ok(Buffer.from(a).equals(Buffer.from(b)), `dead code leaves no trace at optimize=${optimize}`)
   }

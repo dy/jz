@@ -1,20 +1,17 @@
 // Closures: capture, currying, callbacks, methods, ABI/arity, unboxing
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { belowOpt, onWasi, onKernel } from './_matrix.js'
+import { belowOpt, onWasi, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
+import { oracle, run, wat } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { T } from '../src/ast.js'
 
 // Raw instantiation — proves the test path needs no host imports.
-function run(code, opts) {
-  return jz(code, opts).exports
-}
 
 // jz() wires host imports needed by dynamic-property and full-runtime paths.
 const runHost = (code, opts) => jz(code, opts).exports
 
-const wat = (src) => jz.compile(src, { wat: true })
 const fnBody = (w, name) => {
   const re = new RegExp(`\\(func \\$${name}(?:\\$exp)?(?:\\s|$)`)
   const m = w.match(re)
@@ -391,7 +388,7 @@ test('RepresentationPlan: generic closure slots carry Number, Bool, and boxed Bi
     export let literalCheck = index => checks[index](5n)
     export let numberCheck = index => checks[index](2)
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = runHost(src, { optimize })
     is(e.kind(0, 2), 'number', `O${optimize || 0}: Number slot`)
     is(e.kind(0, Number.MIN_VALUE), 'number', `O${optimize || 0}: subnormal Number stays Number`)
@@ -417,7 +414,7 @@ test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel
     export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }
     export let t = (x) => { let v = x > 0 && 1; const g = () => typeof v; let arr = [g]; return arr[0]() }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const e = runHost(src, { optimize })
     is(e.f(-1), false, `O${optimize || 0}: false arm keeps boolean identity, not raw 0`)
     is(e.f(1), 1, `O${optimize || 0}: truthy arm stays the genuine number`)
@@ -650,8 +647,8 @@ test('spread into closure: mixed literal + spread', () => {
 // results must equal JS's at every level, whichever lowering the rest takes.
 
 const agreesWithJS = (src, args = [0, 1, 7]) => {
-  for (const optimize of [0, 1, 2]) {
-    const js = Function(src.replace('export let f', 'var f') + '; return f')()
+  for (const optimize of levels(0, 1, 2)) {
+    const js = oracle(src).f
     const { f } = jz(src, { optimize }).exports
     for (const i of args) is(f(i), js(i), `f(${i}) at O${optimize}`)
   }
@@ -876,7 +873,7 @@ test('closure-unbox: codegen — local declared as i32', () => {
   ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')
   ok(!/\(local \$g f64\)/.test(body), '$g not f64')
   const { f } = jz(src, { optimize: { watr: false } }).exports
-  const js = Function(src.replace('export ', '') + ';return f')()
+  const js = oracle(src).f
   for (const n of [0, 0, 10, -1]) is(f(n), js(n), `multi-use captured closure: n=${n}`)
 })
 
@@ -1069,15 +1066,15 @@ test('a computed-key write on a closure is a property write, on every receiver f
   export const deleted = (k) => { const c = (x) => x; c[k] = 1; delete c[k]; return k in c }
   export const numeric = (v) => { const c = (x) => x; c[7] = v; return c['7'] + c[7] }
   export const overwritten = (k) => { const c = (x) => x; c[k] = 1; c[k] = 2; return c[k] }`
-  const oracle = Function(SRC.replaceAll('export ', '') + ';return { local, localCall, captured, arrow, arrowCall, decl, member, deleted, numeric, overwritten }')()
+  const host = oracle(SRC)
   const calls = [
     ['local', ['z', 3]], ['localCall', ['z', 3]], ['captured', ['z', 3]],
     ['arrow', ['z', 3]], ['arrow', ['w', 4]], ['arrowCall', ['z', 3]], ['decl', ['z', 3]],
     ['member', ['z']], ['deleted', ['z']], ['numeric', [5]], ['overwritten', ['z']],
   ]
-  for (const optimize of [0, 1, 2]) {
+  for (const optimize of levels(0, 1, 2)) {
     const ex = runHost(SRC, { optimize })
-    for (const [fn, args] of calls) is(ex[fn](...args), oracle[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
+    for (const [fn, args] of calls) is(ex[fn](...args), host[fn](...args), `O${optimize}: ${fn}(${args.map(a => JSON.stringify(a)).join(', ')})`)
   }
 })
 
@@ -1856,7 +1853,7 @@ test('closures: i32-narrowed param coerces with ES ToInt32 WRAP, not saturation'
 // (src/compile/index.js onlyCallIsSelf).
 test('static closure env: re-entrant enclosing function with two call sites reads its own captures', async () => {
   const src = `export function outer(n) { const x = n; const f = () => x * x + x; const a = f(); if (n > 0) outer(n - 1); return a + f() }`
-  for (const lvl of [0, 2, 3]) {
+  for (const lvl of levels(0, 2, 3)) {
     const { instance } = await WebAssembly.instantiate(compile(src, { optimize: lvl }))
     is(instance.exports.outer(2), 12, `optimize ${lvl}`)
   }
@@ -1894,7 +1891,7 @@ test('closure-plan: constant capture through a non-capturing intermediate arrow'
     }
     return mid(x)
   }`
-  for (const lvl of [0, 1, 2, 3])
+  for (const lvl of levels(0, 1, 2, 3))
     is(run(src, { optimize: lvl }).outer(10), 8, `optimize ${lvl}`)
 })
 
@@ -1954,7 +1951,7 @@ test('scalar builtin callbacks retain predicate types and binary parameter count
     export let integers = () => [true, '1', NaN, 2, 2.5].map(Number.isInteger).join()
     export let powers = () => [2, 3, 4].map(Math.pow).join()
     export let absolute = () => [-2, 0, 3].map(Math.abs).join()`
-  const js = Function(src.replaceAll('export let ', 'let ') + '; return {predicates, integers, powers, absolute}')()
+  const js = oracle(src)
   const ex = jz(src).exports
   for (const key of Object.keys(js)) is(ex[key](), js[key](), key)
 })

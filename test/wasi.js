@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import { adaptI64 } from './_matrix.js'
+import { adaptI64, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
@@ -676,7 +676,7 @@ test('init: exports self-arm without _initialize (raw-instance _clear + grow)', 
 
 test('WASI clocks own scratch storage without overwriting static strings', () => {
   const label = 'persistent UTF-16: Ā 😀'
-  for (const optimize of [0, 1, 2, 3]) {
+  for (const optimize of levels(0, 1, 2, 3)) {
     const captured = [], imports = wasi({ write: (_, text) => captured.push(text) })
     const mod = new WebAssembly.Module(compile(`
       const label = ${JSON.stringify(label)}
@@ -694,7 +694,7 @@ test('WASI clocks own scratch storage without overwriting static strings', () =>
 
 
 test('WASI integer output preserves signed and unsigned 32-bit values', () => {
-  for (const optimize of [0, 1, 2, 3]) {
+  for (const optimize of levels(0, 1, 2, 3)) {
     const captured = [], imports = wasi({ write: (_, text) => captured.push(text) })
     const mod = new WebAssembly.Module(compile(
       'export let f = n => { n |= 0; console.log(n, n >>> 0, `signed=${n} unsigned=${n >>> 0}`) }',

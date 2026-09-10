@@ -27,13 +27,14 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import jz from '../index.js'
+import { levels } from './_matrix.js'
 
 // Compiles `src` at BOTH optimize 0 and optimize 3, runs `native` beside each,
 // and asserts every call in `argsList` agrees — the differential vs V8 the
 // task's own gate requires, pinned at both ends of the optimizer range so a
 // pass that folds/moves the runtime branch can't quietly break presence.
 function differential(src, native, argsList, label = '') {
-  for (const optimize of [0, 3]) {
+  for (const optimize of levels(0, 3)) {
     const { f } = jz(src, { optimize }).exports
     for (const args of argsList) {
       const got = f(...args)
@@ -398,7 +399,7 @@ test('conditional-spread: present undefined remains distinct from an absent grou
 // ============================================================================
 
 test('conditional-spread: compile-time-constant truthy/falsy conditions match native at optimize 0 and 3', () => {
-  for (const optimize of [0, 3]) {
+  for (const optimize of levels(0, 3)) {
     const { fTrue, fFalse } = jz(`
       export let fTrue = () => {
         const o = { a: 1, ...(true && { b: 2 }) }

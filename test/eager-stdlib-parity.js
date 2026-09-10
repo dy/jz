@@ -23,7 +23,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { CORPUS } from './kernel-parity.js'
+import { CORPUS } from './_kernel-corpus.js'
 import { onKernel } from './_matrix.js'
 
 // _eagerStdlib is a host-side opts field (index.js's jzCompileInner) — the

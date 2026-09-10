@@ -33,7 +33,7 @@
  */
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { belowOpt, onKernel, onWasi, withBigintStrict } from './_matrix.js'
+import { belowOpt, onKernel, onWasi, withBigintStrict, levels } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
@@ -99,7 +99,7 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
 // hijack-object side of this fix).
 test('methodEvidence STRING: charCodeAt usage alone no longer proves STRING (unproven param stays runtime-dispatched, still correct for a real string)', () => {
   const src = `export const hd = (s) => { const c = s.charCodeAt(0); return c + s.length }`
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     is(jz(src, { optimize }).exports.hd('AB'), 67, `O${optimize || 0}: "AB".charCodeAt(0)=65 + "AB".length=2`)
   }
 })
@@ -110,7 +110,7 @@ test('methodEvidence STRING: expression-bodied arrow — same retirement, same c
   // an expression-bodied arrow, not just a block-bodied one — unrelated to,
   // and unaffected by, methodEvidence's retirement).
   const src = `export const hd = (s) => s.charCodeAt(0) + s.length`
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     is(jz(src, { optimize }).exports.hd('AB'), 67, `O${optimize || 0}: expr-body — "AB".charCodeAt(0)=65 + "AB".length=2`)
   }
 })
@@ -2925,7 +2925,7 @@ test('dict-mode alloc: for-of population of a module-level dict is sound at ever
     let n = 0
     for (const k of arr) T[k] = n++
     export let f = () => (T['a'] * 100) + (T['b'] * 10) + (T['c'] | 0) + (T['zz'] === undefined ? 1000 : 2000)`
-  for (const optimize of [0, 1, 2, 3])
+  for (const optimize of levels(0, 1, 2, 3))
     is(jz(src, { optimize }).exports.f(), 1012, `O${optimize} for-of dict values correct`)
 })
 
@@ -2934,7 +2934,7 @@ test('dict-mode alloc: local-scope for-of RMW counter (word-frequency idiom) is 
     for (const k of ks) T[k] = (T[k] | 0) + 1
     for (const k of ks) out = out * 10 + (T[k] | 0)
     return out }`
-  for (const optimize of [0, 1, 3])
+  for (const optimize of levels(0, 1, 3))
     is(jz(src, { optimize }).exports.g(), 212, `O${optimize} local RMW counter correct`)
 })
 

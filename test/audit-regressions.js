@@ -1,9 +1,9 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
 
-const tiers = [0, 2, 'speed', 'size']
+const TIERS = levels(0, 2, 'speed', 'size')
 const vec = `
 function vec(x,y){return {x,y}}
 function add(a,b){return vec(a.x+b.x,a.y+b.y)}
@@ -12,7 +12,7 @@ export function run(n){let acc=vec(0,0);for(let i=0;i<n;i++)acc=add(acc,vec(i,-i
 
 test('audit: recursive mixed values retain identity across numeric comparisons', () => {
   const src = 'export function fib(n){return n<2?n:fib(n-1)+fib(n-2)}'
-  for (const optimize of tiers) {
+  for (const optimize of TIERS) {
     const { fib } = jz(src, { optimize }).exports
     for (const v of ['1', '', null, false, true, 0, 1]) is(fib(v), v, `${optimize}: ${JSON.stringify(v)}`)
     is(fib(10), 55)
@@ -27,7 +27,7 @@ test('audit: Float32 SIMD preserves f64 arithmetic and store rounding', () => {
     const C = globalThis[ctor], input = new C(values)
     for (const k of [-0.9999998807907104, 1.0000000000000002, -0, Infinity]) {
       const expected = Float32Array.from(input, x => x*k+1)
-      for (const optimize of [2, 'speed']) {
+      for (const optimize of levels(2, 'speed')) {
         const actual = jz(src, { optimize }).exports.run(k)
         for (let i=0;i<expected.length;i++) is(actual[i], expected[i], `${ctor} ${optimize} k=${k} i=${i}`)
       }
@@ -39,7 +39,7 @@ test('audit: standalone higher-order exports accept host callbacks', () => {
   if (onKernel()) return
   for (const decl of ['export function hof(n,f)', 'export const hof=(n,f)=>']) {
     const src = `${decl}{let s=0;for(let i=0;i<n;i++)s+=f(i);return s}`
-    for (const optimize of tiers) {
+    for (const optimize of TIERS) {
       const { hof } = jz(src, { optimize, host: 'js' }).exports
       let calls=0
       const f = x => { calls++; return x+1 }
@@ -50,7 +50,7 @@ test('audit: standalone higher-order exports accept host callbacks', () => {
 })
 
 test('audit: record recurrence scalarizes without allocations', () => {
-  for (const optimize of tiers) {
+  for (const optimize of TIERS) {
     const { run } = jz(vec, { optimize }).exports
     for (const n of [0,1,2,10,101]) { const s=n*(n-1)/2; is(run(n),Math.sqrt(s*s+s*s)) }
   }
@@ -65,7 +65,7 @@ test('audit: record replacement preserves swaps, aliases and escaped identity', 
     [`let p={x:1,y:2};return (p={x:3,y:4}).y`,4],
     [`let p={x:1,y:2};p={x:3};return p.x`,3],
   ]
-  for (const [body,expected] of cases) for (const optimize of tiers)
+  for (const [body,expected] of cases) for (const optimize of TIERS)
     is(jz(`export function result(){${body}}`,{optimize}).exports.result(),expected)
 })
 
@@ -96,7 +96,7 @@ test('audit: changing record shapes preserves absent fields and own keys', () =>
     ['let p={};const before=p.x;p.x=1;return before', undefined],
     ['let p={x:1,y:2};p=null;return p', null],
   ]
-  for (const optimize of tiers) for (const [body, expected] of cases) {
+  for (const optimize of TIERS) for (const [body, expected] of cases) {
     const { result } = jz(`export function result(){${body}}`, { optimize }).exports
     is(result(), expected, `${optimize}: ${body}`)
     is(result(), expected, 'repeated call preserves absence')
@@ -104,7 +104,7 @@ test('audit: changing record shapes preserves absent fields and own keys', () =>
   // Raw BigInt payloads (including NaN-box-shaped bits) must be boxed before
   // either guarded or general schema dispatch can join them with absence.
   for (const value of ['0n', '-1n', '9223372036854775807n', '-9223372036854775808n', '0x7ff8000200000000n']) {
-    for (const optimize of tiers) {
+    for (const optimize of TIERS) {
       const { result } = jz(`export function result(which){
         let p={x:1,y:${value}};
         if(which===1)p={z:1,y:3n};if(which===0)p={x:3};return p.y
@@ -112,7 +112,7 @@ test('audit: changing record shapes preserves absent fields and own keys', () =>
       for (const which of [2,2,0,1,0,2]) is(result(which), which === 0 ? undefined : which === 1 ? 3n : BigInt(value.slice(0,-1)))
     }
   }
-  for (const optimize of tiers) {
+  for (const optimize of TIERS) {
     const { result } = jz(`function first(a){return a[0]}
       export function result(full){let p={x:1,items:[7]};if(!full)p={x:3};if(full===1)p={x:4,items:[]};return first(p.items)}`, { optimize }).exports
     // Existing absent-array dialect: preserve undefined, never dereference
@@ -121,7 +121,7 @@ test('audit: changing record shapes preserves absent fields and own keys', () =>
   }
   // A → A → B → A in one instance: neither retained aliases nor a prior
   // allocation may supply the missing field of a newly constructed object.
-  for (const optimize of tiers) {
+  for (const optimize of TIERS) {
     const { result } = jz(`let p={x:1,y:2};
       export function result(full){if(full)p={x:3,y:4};else p={x:5};return p.y}`, { optimize }).exports
     for (const full of [true,true,false,true,false,false]) is(result(full), full ? 4 : undefined)
@@ -161,7 +161,7 @@ test('audit: nullable calls evaluate arguments before throwing and recover', () 
     ['let f=key?twice:null;return f((calls++,f=x=>x+3,4))+calls', 1, 0, 9, 101],
     ['const table={twice};return table[key]((()=>{calls++;throw 7})())', 'twice', 'missing', 201, 201],
   ]
-  for (const [body, good, bad, expected, failed] of cases) for (const optimize of tiers) {
+  for (const [body, good, bad, expected, failed] of cases) for (const optimize of TIERS) {
     const src = `${prefix}export function result(key){calls=0;try{${body}}catch(e){return e===7?200+calls:e.name==='TypeError'?100+calls:-1}}`
     const { result } = jz(src, { optimize }).exports
     is(result(good), expected, 'A: valid call or argument exception')
@@ -169,7 +169,7 @@ test('audit: nullable calls evaluate arguments before throwing and recover', () 
     is(result(bad), failed, 'B: missing/null callee still evaluates arguments')
     is(result(good), expected, 'A after B: recovery preserves behavior')
   }
-  for (const optimize of tiers) {
+  for (const optimize of TIERS) {
     const { result } = jz('function twice(x){return x*2}export function result(key){const table={twice};return table[key](4)}', { optimize }).exports
     throws(() => result('missing'), TypeError, 'missing entry reaches the host as a TypeError')
     is(result('twice'), 8, 'host error does not poison the next call')

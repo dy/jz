@@ -3,20 +3,17 @@ import { is, ok, almost } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { belowOpt, onKernel } from './_matrix.js'
+import { belowOpt, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
+import { run, wat } from './util.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
-function run(code) {
-  return jz(code).exports
-}
 
 const SIMD_OPT = { optimize: { vectorizeLaneLocal: true, watr: true } }
 // Same pipeline with vectorization OFF — the scalar oracle for SIMD correctness checks.
 const NOVEC = { optimize: { vectorizeLaneLocal: false, watr: true } }
 const runVec = (code, opts) => jz(code, opts).exports
-const wat = (code, opts) => compile(code, { ...opts, wat: true })
 const hasV128 = (w) =>
   /v128\.load|v128\.store|i32x4\.|i64x2\.|f32x4\.|f64x2\.|v128\.(and|or|xor)/.test(w)
 
@@ -471,7 +468,7 @@ for (const Kind of ['Float64Array', 'Float32Array']) {
       const assigns = BW_VALUES.map((v, i) => `a[${i}]=${bwLit(v)}`).join('; ')
       const src = `export let main = () => { let a = new ${Kind}(${BW_VALUES.length}); ${assigns}; return a.map(x => x ${jsOp} 1) }`
       const want = Array.from(new globalThis[Kind](BW_VALUES).map(fn))
-      for (const optimize of [0, 2, 3]) {
+      for (const optimize of levels(0, 2, 3)) {
         const got = Array.from(jz(src, { optimize }).exports.main())
         for (let i = 0; i < BW_VALUES.length; i++)
           is(got[i], want[i], `${Kind} x${jsOp}1 O${optimize} elem[${i}] (src=${BW_VALUES[i]})`)
@@ -552,21 +549,42 @@ const INT_BW_ELEMS = {
 }
 const INT_BW_JS_OPS = { '&': (x, c) => x & c, '|': (x, c) => x | c, '^': (x, c) => x ^ c, '<<': (x, c) => x << c, '>>': (x, c) => x >> c, '>>>': (x, c) => x >>> c }
 
-for (const [Kind, vals] of Object.entries(INT_BW_ELEMS)) {
-  for (const [jsOp, fn] of Object.entries(INT_BW_JS_OPS)) {
-    test(`SIMD map bitwise constant - ${Kind} x ${jsOp} c matches native ToInt32/shift-mask for c in {1.5,-0,33,0.9,2147483648.7,NaN,Infinity,-1.5}, O0/O2/O3`, () => {
-      const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
-      for (const c of INT_BW_CONSTS) {
-        const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x ${jsOp} ${bwLit(c)}) }`
-        const want = Array.from(new globalThis[Kind](vals).map(x => fn(x, c)))
-        for (const optimize of [0, 2, 3]) {
-          const got = Array.from(jz(src, { optimize }).exports.main())
-          for (let i = 0; i < vals.length; i++)
-            is(got[i], want[i], `${Kind} x${jsOp}${bwLit(c)} O${optimize} elem[${i}] (src=${vals[i]})`)
-        }
-      }
-    })
+// Two typed maps in one module that differ only in their constant, or only in
+// their operator, keep their own helpers. The helper was named by a per-function
+// id, so two functions' first maps both registered `__simd_map_0` and the later
+// body replaced the earlier: `a.map(x => x & 1.5)` computed `x & 33`. Now the
+// name is the (element type, op, constant) content.
+test('SIMD map bitwise constant - sibling maps differing only in a constant or an operator keep their own helper', () => {
+  const vals = [0, 1, -1, 5, -6, 255, -255]
+  const map = (name, expr) => `export let ${name} = () => { let a = new Int32Array([${vals}]); return a.map(x => ${expr}) }`
+  const src = [map('and15', 'x & 1.5'), map('and33', 'x & 33'), map('or15', 'x | 1.5'), map('and2', 'x & 2'), map('and3', 'x & 3'),
+    // a negative-zero constant keeps its sign in the emitted WAT (String(-0) is '0')
+    `export let negz = () => { let a = new Float64Array([1, -2]); return a.map(x => x * -0) }`].join('\n')
+  const want = { and15: vals.map(x => x & 1.5), and33: vals.map(x => x & 33), or15: vals.map(x => x | 1.5), and2: vals.map(x => x & 2), and3: vals.map(x => x & 3), negz: [-0, 0] }
+  for (const optimize of levels(0, 2, 3)) {
+    const ex = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(Array.from(ex[name]()), want[name], `${name} O${optimize}`)
   }
+})
+
+// Every (operator, constant) map of one kind in ONE module — each map is its own
+// call site for genSimdMap, so one compile per kind and level covers the grid.
+for (const [Kind, vals] of Object.entries(INT_BW_ELEMS)) {
+  test(`SIMD map bitwise constant - ${Kind} x {&,|,^,<<,>>,>>>} c matches native ToInt32/shift-mask for c in {1.5,-0,33,0.9,2147483648.7,NaN,Infinity,-1.5}, O0/O2/O3`, () => {
+    const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+    const ops = Object.entries(INT_BW_JS_OPS)
+    const src = ops.flatMap(([jsOp], o) => INT_BW_CONSTS.map((c, k) =>
+      `export let m${o}_${k} = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x ${jsOp} ${bwLit(c)}) }`)).join('\n')
+    for (const optimize of levels(0, 2, 3)) {
+      const ex = jz(src, { optimize }).exports
+      ops.forEach(([jsOp, fn], o) => INT_BW_CONSTS.forEach((c, k) => {
+        const want = Array.from(new globalThis[Kind](vals).map(x => fn(x, c)))
+        const got = Array.from(ex[`m${o}_${k}`]())
+        for (let i = 0; i < vals.length; i++)
+          is(got[i], want[i], `${Kind} x${jsOp}${bwLit(c)} O${optimize} elem[${i}] (src=${vals[i]})`)
+      }))
+    }
+  })
 }
 
 // Arithmetic (mul/add/sub) on an INTEGER element (Int32Array/Uint32Array) with
@@ -589,7 +607,7 @@ test('SIMD map arithmetic decline - Int32Array/Uint32Array fractional constant (
     for (const [jsOp, c] of cases) {
       const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x ${jsOp} ${c}) }`
       const want = Array.from(new globalThis[Kind](vals).map(x => ARITH_JS_OPS[jsOp](x, c)))
-      for (const optimize of [0, 2, 3]) {
+      for (const optimize of levels(0, 2, 3)) {
         const got = Array.from(jz(src, { optimize }).exports.main())
         for (let i = 0; i < vals.length; i++)
           is(got[i], want[i], `${Kind} x${jsOp}${c} O${optimize} elem[${i}] (src=${vals[i]})`)
@@ -656,7 +674,7 @@ for (const Kind of ['Int32Array', 'Uint32Array']) {
     for (const c of DIV_CONSTS) {
       const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x / ${c}) }`
       const want = Array.from(new globalThis[Kind](vals).map(x => x / c))
-      for (const optimize of [0, 2, 3]) {
+      for (const optimize of levels(0, 2, 3)) {
         const got = Array.from(jz(src, { optimize }).exports.main())
         for (let i = 0; i < vals.length; i++)
           is(got[i], want[i], `${Kind} x/${c} O${optimize} elem[${i}] (src=${vals[i]})`)
@@ -672,7 +690,7 @@ for (const method of ['sqrt', 'ceil', 'floor']) {
       const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
       const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => Math.${method}(x)) }`
       const want = Array.from(new globalThis[Kind](vals).map(x => Math[method](x)))
-      for (const optimize of [0, 2, 3]) {
+      for (const optimize of levels(0, 2, 3)) {
         const got = Array.from(jz(src, { optimize }).exports.main())
         for (let i = 0; i < vals.length; i++)
           is(got[i], want[i], `${Kind} Math.${method} O${optimize} elem[${i}] (src=${vals[i]})`)
@@ -686,7 +704,7 @@ test('SIMD map Math.abs decline - Uint32Array high-bit-set elements match native
   const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
   const src = `export let main = () => { let a = new Uint32Array(${vals.length}); ${assigns}; return a.map(x => Math.abs(x)) }`
   const want = Array.from(new Uint32Array(vals).map(x => Math.abs(x)))
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const got = Array.from(jz(src, { optimize }).exports.main())
     for (let i = 0; i < vals.length; i++)
       is(got[i], want[i], `Uint32Array Math.abs O${optimize} elem[${i}] (src=${vals[i]})`)
@@ -698,7 +716,7 @@ test('SIMD map Math.abs - Int32Array signed case unaffected by the Uint32Array e
   const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
   const src = `export let main = () => { let a = new Int32Array(${vals.length}); ${assigns}; return a.map(x => Math.abs(x)) }`
   const want = Array.from(new Int32Array(vals).map(x => Math.abs(x)))
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const got = Array.from(jz(src, { optimize }).exports.main())
     for (let i = 0; i < vals.length; i++)
       is(got[i], want[i], `Int32Array Math.abs O${optimize} elem[${i}] (src=${vals[i]})`)

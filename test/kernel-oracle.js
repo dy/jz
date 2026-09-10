@@ -39,10 +39,10 @@
 import test from 'tst'
 import { is, not, throws } from 'tst/assert.js'
 import jz from '../index.js'
-import { CORPUS } from './kernel-parity.js'
+import { CORPUS } from './_kernel-corpus.js'
 import { compileViaKernel } from './kernel-target.js'
 import { instantiate } from '../interop.js'
-import { onWasi, withBigintStrict } from './_matrix.js'
+import { onWasi, withBigintStrict, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 
 // The oracle: the exact same source, imported as a plain ES module. Valid jz
@@ -466,7 +466,7 @@ export let f = (x) => callAdd(x)`,
     ] },
 ]
 
-for (const opt of [0, 2, 3]) {
+for (const opt of levels(0, 2, 3)) {
   test(`kernel oracle: native + kernel agree with JS at O${opt}`, async () => {
     // Same rationale as kernel-parity.js's wasi guard: the WASI boundary
     // shims are a native-only construction, orthogonal to what this tier checks.
@@ -491,7 +491,7 @@ test('kernel oracle: BigInt typed-array stores reject a Number before in-range o
   const mod = await oracle(src)
   const caught = await oracle(BIGINT_TYPED_STORE_CATCH_SOURCE)
   is(caught.caughtMismatch(), 11, 'JS oracle catches the OOB Number-to-BigInt conversion after the index effect')
-  for (const opt of [0, 2, 3]) {
+  for (const opt of levels(0, 2, 3)) {
     const nat = runNative(src, opt), ker = runKernel(src, opt)
     throws(() => runNative(BIGINT_TYPED_STORE_CATCH_SOURCE, opt), /inside try\/catch is not supported/)
     throws(() => runKernel(BIGINT_TYPED_STORE_CATCH_SOURCE, opt), /inside try\/catch is not supported/)
@@ -525,7 +525,7 @@ test('kernel oracle: fold — documented divergence (rational constant-fold vs n
   const mod = await oracle(src)
   const want = mod.f()
   is(want, 5.551115123125783e-17, 'JS oracle baseline (pin so a V8 change is visible, not silently absorbed)')
-  for (const opt of [0, 2, 3]) {
+  for (const opt of levels(0, 2, 3)) {
     const nat = runNative(src, opt).f()
     const ker = runKernel(src, opt).f()
     is(nat, 2.7755575615628914e-17, `fold O${opt}: native's single-rounding rational fold (documented, not naive-JS-equal)`)
@@ -564,7 +564,7 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
   const mod = await oracle(src)
   const want = mod.f()
   is(want, -5e-324, 'JS oracle baseline')
-  for (const opt of [0, 2, 3]) {
+  for (const opt of levels(0, 2, 3)) {
     is(runNative(src, opt).f(), want, `subnormal O${opt}: native matches JS oracle exactly (AST-tagged literal kind, no carrier ambiguity)`)
     is(runKernel(src, opt).f(), want, `subnormal O${opt}: kernel matches JS oracle too (no more BigInt-carrier collision on a bigint-free program)`)
   }
@@ -653,7 +653,7 @@ test('kernel oracle: heterogeneous BigInt array element — strict-mode (opt-in)
     export let out = () => { touch(1); return mkBig(1) }
   `
   const modules = { './a.jz': `export let touch = (x) => +x`, './b.jz': bSrc }
-  for (const opt of [0, 2, 3])
+  for (const opt of levels(0, 2, 3))
     throws(() => withBigintStrict(() => jz(mainSrc, { modules, optimize: opt })), /BigInt value at this collection/, `O${opt}: heterogeneous BigInt array element refuses to compile`)
 })
 
@@ -673,7 +673,7 @@ export let f = (s) => g(s) === false`
     { args: [false], want: true },  // g(false)=false (atom); false === false → true
   ]
   for (const { args, want } of cases) is(mod.f(...args), want, `ternary: JS oracle baseline f(${args.map(String)})`)
-  for (const opt of [0, 2, 3]) {
+  for (const opt of levels(0, 2, 3)) {
     const nat = runNative(src, opt).f
     const ker = runKernel(src, opt).f
     for (const { args, want } of cases) {
@@ -753,7 +753,7 @@ test('kernel oracle: ambiguous BOOL|NUMBER local storage rejects instead of eras
     `export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`,
     `export let f = (x) => { let v = x > 0 && 1; const g = () => typeof v; return g() }`,
   ]
-  for (const src of rows) for (const opt of [0, 2, 3]) {
+  for (const src of rows) for (const opt of levels(0, 2, 3)) {
     throws(() => runNative(src, opt), /can be both Boolean and Number/, `native O${opt}: correct-or-reject`)
     throws(() => runKernel(src, opt), /can be both Boolean and Number/, `kernel O${opt}: same rejection`)
   }
@@ -782,7 +782,7 @@ test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDIN
     { args: [1], want: 1 },       // x>0 is true; v is the genuine number 1
   ]
   for (const { args, want } of cases) is(mod.f(...args), want, `captured-then-read: JS oracle baseline f(${args.map(String)})`)
-  for (const opt of [0, 2, 3]) {
+  for (const opt of levels(0, 2, 3)) {
     const nat = runNative(src, opt).f
     const ker = runKernel(src, opt).f
     for (const { args, want } of cases) {
@@ -829,7 +829,7 @@ test('kernel oracle: console.log string constants — AGREE (closed incidentally
   if (onWasi()) return
   const heapSrc = `export let start = () => { console.log('bare-fired'); return 1 }`  // 10 chars — heap string
   const ssoSrc = `export let start = () => { console.log('short'); return 1 }`        // 5 chars — SSO string
-  for (const opt of [0, 1, 2, 3]) {
+  for (const opt of levels(0, 1, 2, 3)) {
     for (const [label, src, want] of [['heap', heapSrc, 'bare-fired'], ['sso', ssoSrc, 'short']]) {
       is(runNative(src, opt).start(), 1, `${label} O${opt}: native runs cleanly`)
       // CARRIER_BOX flag deleted — boxing unconditional; row always runs.
@@ -877,7 +877,7 @@ test('kernel oracle: bare BigInt array-element return — AGREE (re-audit #6 fin
   for (const { name, src } of cases) {
     const mod = await oracle(src)
     const want = mod.f()
-    for (const opt of [0, 1, 2, 3]) {
+    for (const opt of levels(0, 1, 2, 3)) {
       is(runNative(src, opt).f(), want, `${name} O${opt}: native agrees with JS oracle`)
       is(runKernel(src, opt).f(), want, `${name} O${opt}: kernel agrees with JS oracle`)
     }

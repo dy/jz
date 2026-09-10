@@ -6,8 +6,9 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
+import { oracle } from './util.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
 // boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
@@ -42,7 +43,7 @@ const CONST_PRIMITIVES = {
 for (const [name, src] of Object.entries(CONST_PRIMITIVES)) {
   test(`minimal: const ${name} — no __start`, () => {
     if (skip) return
-    for (const O of [0, 2]) {
+    for (const O of levels(0, 2)) {
       ok(!hasStart(src, O), `${name} @O${O}: a constant must not run in __start`)
     }
   })
@@ -61,7 +62,7 @@ const HEAP_FREE = {
 for (const [name, src] of Object.entries(HEAP_FREE)) {
   test(`minimal: heap-free ${name} — no memory/allocator`, () => {
     if (skip) return
-    for (const O of [0, 2]) {
+    for (const O of levels(0, 2)) {
       ok(!hasMemory(src, O), `${name} @O${O}: heap-free program must not declare memory`)
       ok(!hasAllocator(src, O), `${name} @O${O}: heap-free program must not pull the allocator`)
     }
@@ -126,7 +127,7 @@ const NO_DEAD = {
 for (const [name, src] of Object.entries(NO_DEAD)) {
   test(`minimal: ${name} emits no dead internal func`, () => {
     if (skip) return
-    for (const O of [0, 2]) {
+    for (const O of levels(0, 2)) {
       const dead = deadInternalFuncs(src, O)
       is(dead.length, 0, `${name} @O${O}: dead internal funcs — ${dead.join(', ')}`)
     }
@@ -155,7 +156,7 @@ test('minimal: medium leaf called in a hot loop inlines', () => {
     export let step = (n) => { let i = 0; while (i < n) { relaxish(i, i + 2); relaxish(i, i + 4); i = i + 2 } }
     export let setup = (n) => { arr = new Float64Array(n); return arr }
   `
-  for (const O of [2, 'speed']) {
+  for (const O of levels(2, 'speed')) {
     ok(!has(src, 'call $relaxish', O), `@O${O}: a hot-loop leaf helper must inline, not stay a call`)
   }
 })
@@ -222,7 +223,7 @@ const TYPED_SLOTS = {
 for (const [name, src] of Object.entries(TYPED_SLOTS)) {
   test(`minimal: flat-object ${name} — no ToNumber/allocator`, () => {
     if (skip) return
-    for (const O of [0, 2]) {
+    for (const O of levels(0, 2)) {
       ok(!has(src, '$__to_num', O), `${name} @O${O}: a numeric slot must not pull ToNumber`)
       ok(!hasAllocator(src, O), `${name} @O${O}: a scalarized numeric object allocates nothing`)
     }
@@ -255,7 +256,7 @@ const FLAT_ARRAYS = {
 for (const [name, src] of Object.entries(FLAT_ARRAYS)) {
   test(`minimal: flat array ${name} — no memory/allocator`, () => {
     if (skip) return
-    for (const O of [0, 2]) {
+    for (const O of levels(0, 2)) {
       ok(!hasMemory(src, O), `${name} @O${O}: a scalarized array needs no memory`)
       ok(!hasAllocator(src, O), `${name} @O${O}: a scalarized array allocates nothing`)
     }
@@ -379,7 +380,7 @@ const STRINGY = ['__to_num', '__to_str', '__str_concat', '__ftoa', '__itoa', '__
 for (const [name, src] of Object.entries(NUMERIC_FILL)) {
   test(`minimal: numeric Array(n) (${name}) skips ToNumber/string`, () => {
     if (skip) return
-    for (const O of [0, 2]) {
+    for (const O of levels(0, 2)) {
       const w = wat(src, O)
       for (const h of STRINGY) ok(!w.includes(`$${h} `) && !w.includes(`$${h})`),
         `${name} @O${O}: a numeric Array(n) must not pull ${h}`)
@@ -419,7 +420,7 @@ const NUMERIC_TABLE = {
 for (const [name, src] of Object.entries(NUMERIC_TABLE)) {
   test(`minimal: module numeric const table (${name}) skips ToNumber/string`, () => {
     if (skip) return
-    for (const O of [0, 2]) {
+    for (const O of levels(0, 2)) {
       const w = wat(src, O)
       for (const h of STRINGY) ok(!w.includes(`$${h} `) && !w.includes(`$${h})`),
         `${name} @O${O}: a module numeric table must not pull ${h}`)
@@ -467,7 +468,7 @@ test('minimal [known-gap]: new Date still drags in the allocator', () => {
 test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachability-gated)', () => {
   if (skip) return
   const src = 'export let f = (a, b) => a + b'
-  for (const O of [0, 2]) {
+  for (const O of levels(0, 2)) {
     ok(!hasMemory(src, O), `@O${O}: an Error-free program must not declare memory`)
     ok(!hasAllocator(src, O), `@O${O}: an Error-free program must not pull the allocator`)
     ok(!has(src, '__errcls__', O), `@O${O}: no Error schema leaks into a program that never constructs one`)
@@ -489,7 +490,7 @@ test('minimal: heap-free numeric fn stays heap-free (Error machinery is reachabi
 test('minimal: nullish-receiver TypeError message strings appear exactly when the check site does (audit-#11 gap-2)', () => {
   if (skip) return
   const src = "export let f = () => { const m = new Map(); m.set('present', [1, 2]); return m.get('missing').length }"
-  for (const O of [0, 2]) {
+  for (const O of levels(0, 2)) {
     const w = wat(src, O)
     ok(w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: the constructed TypeError's class name string is present`)
     ok(w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the read-family message string is present`)
@@ -526,7 +527,7 @@ test('minimal: dead opaque-.length throw path leaves neither the TypeError schem
     for (let i = 0; i < rows.length; i++) s += rows[i].x
     return s
   }`
-  for (const O of [0, 2, 3]) {
+  for (const O of levels(0, 2, 3)) {
     const w = wat(src, O)
     ok(!w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: rows is provably always an array — the TypeError class name string must not leak`)
     ok(!w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the never-reached throw's message string must not leak`)
@@ -539,7 +540,7 @@ test('minimal: live opaque-.length throw path keeps both strings and throws a re
     let obj = x > 0 ? { a: 1 } : undefined
     return obj.length
   }`
-  for (const O of [0, 2, 3]) {
+  for (const O of levels(0, 2, 3)) {
     const w = wat(src, O)
     ok(w.includes('T\\00y\\00p\\00e\\00E\\00r\\00r\\00o\\00r'), `@O${O}: obj can be undefined at runtime — the TypeError class name string must survive`)
     ok(w.includes('Cannot read properties of undefined'.split('').join('\\00')), `@O${O}: the reachable throw's message string must survive`)
@@ -615,7 +616,7 @@ test('minimal: the compact-prototype bench rows stay at or below their recorded 
 // Each pins one lowering with a differential run and a byte ratchet at
 // `optimize: 'size'` (the recorded value may only fall).
 const run = (src, opts) => new WebAssembly.Instance(new WebAssembly.Module(compile(src, { alloc: false, ...opts }))).exports
-const jsFn = (src, name) => { const e = {}; new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 =').replace(/export const (\w+)\s*=/g, 'exports.$1 ='))(e); return e[name] }
+const jsFn = (src, name) => oracle(src)[name]
 
 // A union-typed array pushed from several literal sites reserves each element
 // through one __arr_push_slot call; the sites store only their fields.
@@ -780,7 +781,7 @@ test('minimal: lambda hoisting keeps evaluation order against real effects', () 
     for (let i = 0; i < 64; i++) h = (h * 31 + out[i]) | 0
     return h
   }`
-  for (const optimize of ['size', 0, 3]) is(run(src, { optimize }).f(20), jsFn(src, 'f')(20), `O${optimize}`)
+  for (const optimize of levels('size', 0, 3)) is(run(src, { optimize }).f(20), jsFn(src, 'f')(20), `O${optimize}`)
 })
 
 // `3 + ((s >>> 8) % 6)`: the remainder of a uint32 draw by a positive literal
@@ -956,7 +957,7 @@ test('minimal: an own-name-current array reads without the forwarding follow', (
   const pre = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
   const body = pre.slice(pre.indexOf('(func $f'), pre.indexOf('(func', pre.indexOf('(func $f') + 10))
   ok(!body.includes('call $__ptr_offset '), 'no forwarding follow in the function')
-  for (const n of [0, 1, 5, 40]) for (const O of [0, 'size', 3]) is(jz(src, { optimize: O }).exports.f(n), jsFn(src, 'f')(n), `O${O} n=${n}`)
+  for (const n of [0, 1, 5, 40]) for (const O of levels(0, 'size', 3)) is(jz(src, { optimize: O }).exports.f(n), jsFn(src, 'f')(n), `O${O} n=${n}`)
   // an alias can grow the array behind the binding's back: the follow stays
   const aliased = src.replace('a[n + 2] = 7', 'const b = a; b.push(9); b[n + 2] = 7')
   const pre2 = compile(aliased, { wat: true, optimize: { level: 'size', watr: false } })
@@ -975,5 +976,5 @@ test('minimal: an own-name-current array reads without the forwarding follow', (
   }`
   const pre3 = compile(captured, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
   ok(pre3.includes('call $__ptr_offset '), 'a captured array keeps the follow')
-  for (const n of [0, 5, 40]) for (const O of [0, 'size', 3]) is(jz(captured, { optimize: O }).exports.f(n), jsFn(captured, 'f')(n), `captured O${O} n=${n}`)
+  for (const n of [0, 5, 40]) for (const O of levels(0, 'size', 3)) is(jz(captured, { optimize: O }).exports.f(n), jsFn(captured, 'f')(n), `captured O${O} n=${n}`)
 })

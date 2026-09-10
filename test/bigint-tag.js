@@ -10,8 +10,10 @@ import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { isBigIntBox } from '../src/ir.js'
+import { levels } from './_matrix.js'
+import { oracle } from './util.js'
 
-const levels = [false, 1, 2]
+const LEVELS = levels(false, 1, 2)
 // A Map that holds a BigInt somewhere gives its reads the tagged domain.
 const SRC = `const m = new Map()
 export let seed = () => { m.set('big', 5n); return 0 }
@@ -23,7 +25,7 @@ export let tpl = (k) => \`v=\${m.get(k)}\` + '|' + ('' + m.get(k))
 export let store = (k) => { const a = new BigInt64Array(1); const v = m.get(k); a[0] = v; return a[0] }`
 
 test('bigint tag: a Number whose bits spell the BigInt tag stays a Number in a tagged Map', () => {
-  for (const optimize of levels) {
+  for (const optimize of LEVELS) {
     const ex = jz(SRC, { optimize }).exports
     ex.seed()
     for (const n of [1, 3, 5, 12, 13, 20]) is(ex.count('c' + n, n), n, `count ${n} (O${optimize || 0})`)
@@ -41,6 +43,7 @@ test('bigint tag: a Number whose bits spell the BigInt tag stays a Number in a t
 
 // The predicate itself: the NaN test precedes the tag test.
 test('bigint tag: isBigIntBox asks for a NaN-box before reading the tag', () => {
+  jz('export let f = () => 0')   // the predicate records an include on the live compile session
   const ir = isBigIntBox(['local.get', '$v'], 'v')
   is(ir[0], 'i32.and')
   is(ir[1][0], 'f64.ne', 'a raw Number never reaches the tag test')
@@ -69,11 +72,11 @@ test('bigint tag: a join written to a raw binding unboxes its call arm', () => {
     } else { value = typeof input === 'string' ? parseFloat(input) : input; new Float64Array(_buf)[0] = value }
     return hex()
   }`
-  const oracle = Function(SRC.replaceAll('export ', '') + ';return {f64}')()
-  for (const optimize of levels) {
+  const host = oracle(SRC)
+  for (const optimize of LEVELS) {
     const { f64 } = jz(SRC, { optimize }).exports
     for (const input of ['nan:0x7FF8000200000000', '-nan:0x1234', 'nan:canonical', 'nan', 1.5, '2.5'])
-      is(f64(input), oracle.f64(input), `${input} (O${optimize || 0})`)
+      is(f64(input), host.f64(input), `${input} (O${optimize || 0})`)
   }
 })
 
@@ -104,10 +107,10 @@ test('bigint tag: a tagged carrier beside an unresolved operand dispatches on th
     const r = table.get(1)(i, {}, out)
     return r.join('|') + '|' + Number(big) + a.length
   }`
-  const oracle = Function(SRC.replaceAll('export let ', 'var ') + ';return {f}')()
-  for (const optimize of levels) {
+  const host = oracle(SRC)
+  for (const optimize of LEVELS) {
     const { f } = jz(SRC, { optimize }).exports
-    for (const i of [0, 1, 2, 3]) is(f(i), oracle.f(i), `f(${i}) (O${optimize || 0})`)
+    for (const i of [0, 1, 2, 3]) is(f(i), host.f(i), `f(${i}) (O${optimize || 0})`)
   }
 })
 
@@ -135,10 +138,10 @@ test('bigint tag: an array element is a tagged slot, whatever wrote it and whoev
     `export let f = (i) => { let a = [${HI}n, 2n]; let n = a[i]; n >>= 7n; return n }`,
   ]
   for (const src of SRCS) {
-    const oracle = Function(src.replace('export let ', 'var ') + ';return f')()
-    for (const optimize of levels) {
+    const host = oracle(src).f
+    for (const optimize of LEVELS) {
       const { f } = jz(src, { optimize }).exports
-      for (const i of [0, 1]) is(f(i), oracle(i), `${src.slice(22, 70)} f(${i}) (O${optimize || 0})`)
+      for (const i of [0, 1]) is(f(i), host(i), `${src.slice(22, 70)} f(${i}) (O${optimize || 0})`)
     }
   }
 })
@@ -157,10 +160,10 @@ test('bigint tag: a closure result crosses its ABI tagged; a caller chosen at ru
     `export let f = (k) => { const p = v => k ? BigInt(v) + ${HI}n : v; const v = p(1); return typeof v === 'bigint' ? v - ${HI}n : v }`,
   ]
   for (const src of SRCS) {
-    const oracle = Function(src.replace('export let ', 'var ') + ';return f')()
-    for (const optimize of levels) {
+    const host = oracle(src).f
+    for (const optimize of LEVELS) {
       const { f } = jz(src, { optimize }).exports
-      for (const k of [0, 1]) is(f(k), oracle(k), `${src.slice(src.indexOf('export') + 18, src.indexOf('export') + 70)} f(${k}) (O${optimize || 0})`)
+      for (const k of [0, 1]) is(f(k), host(k), `${src.slice(src.indexOf('export') + 18, src.indexOf('export') + 70)} f(${k}) (O${optimize || 0})`)
     }
   }
 })
@@ -184,10 +187,10 @@ test('bigint tag: a parameter of every kind materializes; the joins it feeds kee
     `export let f = (k) => { let x = k ? BigInt(3) : k === 0; x = k ? x + 1n : x; return k ? Number(x - 3n) : String(x) }`,
   ]
   for (const src of SRCS) {
-    const oracle = Function(src.replace('export let ', 'var ') + ';return f')()
-    for (const optimize of levels) {
+    const host = oracle(src).f
+    for (const optimize of LEVELS) {
       const { f } = jz(src, { optimize }).exports
-      for (const k of [0, 1, 2]) is(f(k), oracle(k), `${src.slice(src.indexOf('export') + 18, src.indexOf('export') + 70)} f(${k}) (O${optimize || 0})`)
+      for (const k of [0, 1, 2]) is(f(k), host(k), `${src.slice(src.indexOf('export') + 18, src.indexOf('export') + 70)} f(${k}) (O${optimize || 0})`)
     }
   }
 })
@@ -210,12 +213,12 @@ test('bigint tag: typeof reads a subnormal Number as a number; a boxed BigInt by
   const NOBIG = `const box = (v) => [v][0]
   export let sub = () => { const n = box(5e-324); return (typeof n === 'bigint' ? 1 : 0) + (typeof n !== 'bigint' ? 2 : 0) }
   export let once = () => { let k = 0; const f = () => { k++; return 5e-324 }; return (typeof f() === 'bigint' ? 10 : 0) + (typeof f() !== 'bigint' ? 20 : 0) + k }`
-  const oracle = Function(SRC.replaceAll('export let ', 'var ') + ';return { sub, big, join, arr, spell }')()
-  const oracle2 = Function(NOBIG.replaceAll('export let ', 'var ') + ';return { sub, once }')()
-  for (const optimize of levels) {
+  const host = oracle(SRC)
+  const oracle2 = oracle(NOBIG)
+  for (const optimize of LEVELS) {
     const ex = jz(SRC, { optimize }).exports
     for (const [fn, args] of [['sub', []], ['big', []], ['join', [1]], ['join', [0]], ['arr', [0]], ['arr', [1]], ['arr', [2]], ['arr', [3]], ['spell', []]])
-      is(ex[fn](...args), oracle[fn](...args), `${fn}(${args.join(', ')}) (O${optimize || 0})`)
+      is(ex[fn](...args), host[fn](...args), `${fn}(${args.join(', ')}) (O${optimize || 0})`)
     const ex2 = jz(NOBIG, { optimize }).exports
     for (const fn of ['sub', 'once']) is(ex2[fn](), oracle2[fn](), `no bigint syntax: ${fn}() (O${optimize || 0})`)
   }
@@ -237,17 +240,25 @@ const EQ_VALUES = ['300n', '1n', '0n', '-5n', '9007199254740993n']
 const EQ_OPS = [(X, P) => `${X} == ${P}`, (X, P) => `${P} == ${X}`, (X, P) => `${X} != ${P}`, (X, P) => `${X} === ${P}`]
 const eqTable = (X, wrap = p => p, ops = EQ_OPS) =>
   `[${EQ_PARTNERS.flatMap(p => ops.map(op => op(X, wrap(p)))).join(', ')}].map(v => v ? 1 : 0).join('')`
+// Each shape names its export and helpers with a suffix `s`, so every (shape, value)
+// program of a table compiles as one module — one compile per level, not one per program.
 const EQ_SHAPES = {
-  literal: (V) => `export let f = (k) => ${eqTable(V)}`,
-  local: (V) => `export let f = (k) => { const b = ${V}; return ${eqTable('b')} }`,
-  param: (V) => `const h = (v, k) => ${eqTable('v')}; export let f = (k) => h(${V}, k)`,
-  mixedParam: (V) => `const h = (v, k) => ${eqTable('v')}; export let f = (k) => h(k ? ${V} : 'z', k)`,
-  element: (V) => `export let f = (k) => { const a = [${V}, 'x', 7]; return ${eqTable('a[k - 1]')} }`,
-  bigintElement: (V) => `export let f = (k) => { const a = [${V}, 1n]; return ${eqTable('a[k - 1]')} }`,
-  mapValue: (V) => `const m = new Map(); export let f = (k) => { m.set('k', ${V}); return ${eqTable("m.get('k')")} }`,
-  closureResult: (V) => `const mk = (k) => () => k ? ${V} : 'z'; export let f = (k) => { const g = mk(k); return ${eqTable('g()')} }`,
-  hostValue: (V) => `export let f = (x, k) => { const y = typeof x === 'bigint' ? x : 0n; return ${eqTable('x')} }`,
-  anyPartner: (V) => `const box = (v) => [v][0]; export let f = (k) => { const b = ${V}; return ${eqTable('b', p => `box(${p})`, EQ_OPS.slice(0, 3))} }`,
+  literal: (V, s) => `export let f${s} = (k) => ${eqTable(V)}`,
+  local: (V, s) => `export let f${s} = (k) => { const b = ${V}; return ${eqTable('b')} }`,
+  param: (V, s) => `const h${s} = (v, k) => ${eqTable('v')}; export let f${s} = (k) => h${s}(${V}, k)`,
+  mixedParam: (V, s) => `const h${s} = (v, k) => ${eqTable('v')}; export let f${s} = (k) => h${s}(k ? ${V} : 'z', k)`,
+  element: (V, s) => `export let f${s} = (k) => { const a = [${V}, 'x', 7]; return ${eqTable('a[k - 1]')} }`,
+  bigintElement: (V, s) => `export let f${s} = (k) => { const a = [${V}, 1n]; return ${eqTable('a[k - 1]')} }`,
+  mapValue: (V, s) => `const m${s} = new Map(); export let f${s} = (k) => { m${s}.set('k', ${V}); return ${eqTable(`m${s}.get('k')`)} }`,
+  closureResult: (V, s) => `const mk${s} = (k) => () => k ? ${V} : 'z'; export let f${s} = (k) => { const g = mk${s}(k); return ${eqTable('g()')} }`,
+  hostValue: (V, s) => `export let f${s} = (x, k) => { const y = typeof x === 'bigint' ? x : 0n; return ${eqTable('x')} }`,
+  anyPartner: (V, s) => `const box${s} = (v) => [v][0]; export let f${s} = (k) => { const b = ${V}; return ${eqTable('b', p => `box${s}(${p})`, EQ_OPS.slice(0, 3))} }`,
+}
+// One program per (shape, value) of a table, all in one module: [{ shape, V, name }, src].
+const tableModule = (shapes, values) => {
+  const rows = Object.keys(shapes).flatMap(shape => values.map(V => ({ shape, V })))
+  rows.forEach((r, i) => { r.name = `f${i}`; r.src = shapes[r.shape](r.V, `${i}`) })
+  return [rows, rows.map(r => r.src).join('\n')]
 }
 // ToString (ES2024 7.1.17) of a BigInt through every carrier: its decimal
 // digits, whatever box it rides in. String(), a template, concatenation on
@@ -255,35 +266,35 @@ const EQ_SHAPES = {
 // formats the box; nothing unboxes ahead of it.
 const strTable = (X) => `[String(${X}), \`\${${X}}\`, ${X} + '', '' + ${X}, [${X}].join('/'), ${X}.toString(), ${X}.toString(16)].join('|')`
 const STR_SHAPES = {
-  literal: (V) => `export let f = (k) => ${strTable(V)}`,
-  local: (V) => `export let f = (k) => { const b = ${V}; return ${strTable('b')} }`,
-  param: (V) => `const h = (v, k) => ${strTable('v')}; export let f = (k) => h(${V}, k)`,
-  mixedParam: (V) => `const h = (v, k) => ${strTable('v')}; export let f = (k) => h(k ? ${V} : 'z', k)`,
-  tagged: (V) => `export let f = (k) => { const v = k ? ${V} : k; return ${strTable('v')} }`,
-  element: (V) => `export let f = (k) => { const a = [${V}, 'x', 7]; return ${strTable('a[k - 1]')} }`,
-  bigintElement: (V) => `export let f = (k) => { const a = [${V}, 1n]; return ${strTable('a[k - 1]')} }`,
-  mapValue: (V) => `const m = new Map(); export let f = (k) => { m.set('k', ${V}); return ${strTable("m.get('k')")} }`,
-  closureResult: (V) => `const mk = (k) => () => k ? ${V} : 'z'; export let f = (k) => { const g = mk(k); return ${strTable('g()')} }`,
-  hostValue: (V) => `export let f = (x, k) => { const y = typeof x === 'bigint' ? x : 0n; return ${strTable('x')} }`,
+  literal: (V, s) => `export let f${s} = (k) => ${strTable(V)}`,
+  local: (V, s) => `export let f${s} = (k) => { const b = ${V}; return ${strTable('b')} }`,
+  param: (V, s) => `const h${s} = (v, k) => ${strTable('v')}; export let f${s} = (k) => h${s}(${V}, k)`,
+  mixedParam: (V, s) => `const h${s} = (v, k) => ${strTable('v')}; export let f${s} = (k) => h${s}(k ? ${V} : 'z', k)`,
+  tagged: (V, s) => `export let f${s} = (k) => { const v = k ? ${V} : k; return ${strTable('v')} }`,
+  element: (V, s) => `export let f${s} = (k) => { const a = [${V}, 'x', 7]; return ${strTable('a[k - 1]')} }`,
+  bigintElement: (V, s) => `export let f${s} = (k) => { const a = [${V}, 1n]; return ${strTable('a[k - 1]')} }`,
+  mapValue: (V, s) => `const m${s} = new Map(); export let f${s} = (k) => { m${s}.set('k', ${V}); return ${strTable(`m${s}.get('k')`)} }`,
+  closureResult: (V, s) => `const mk${s} = (k) => () => k ? ${V} : 'z'; export let f${s} = (k) => { const g = mk${s}(k); return ${strTable('g()')} }`,
+  hostValue: (V, s) => `export let f${s} = (x, k) => { const y = typeof x === 'bigint' ? x : 0n; return ${strTable('x')} }`,
 }
+const argsOf = (shape, V) => shape === 'hostValue' ? [Function(`return ${V}`)(), 1] : [1]
+
 test('bigint tag: ToString across every carrier formats the digits', () => {
-  for (const [shape, src] of Object.entries(STR_SHAPES)) for (const V of ['300n', '-5n', '0n', '9007199254740993n']) {
-    const source = src(V)
-    const oracle = Function(source.replace('export let ', 'var ') + ';return f')()
-    const args = shape === 'hostValue' ? [Function(`return ${V}`)(), 1] : [1]
-    for (const optimize of levels) is(jz(source, { optimize }).exports.f(...args), oracle(...args), `${shape} ${V} (O${optimize || 0})`)
+  const [rows, src] = tableModule(STR_SHAPES, ['300n', '-5n', '0n', '9007199254740993n'])
+  const host = oracle(src)
+  for (const optimize of LEVELS) {
+    const ex = jz(src, { optimize }).exports
+    for (const { shape, V, name } of rows) is(ex[name](...argsOf(shape, V)), host[name](...argsOf(shape, V)), `${shape} ${V} (O${optimize || 0})`)
   }
 })
 
 test('bigint tag: loose equality across domains, through every carrier', () => {
-  for (const [shape, src] of Object.entries(EQ_SHAPES)) for (const V of EQ_VALUES) {
-    const source = src(V)
-    const oracle = Function(source.replace('export let ', 'var ') + ';return f')()
-    const args = shape === 'hostValue' ? [Function(`return ${V}`)(), 1] : [1]
-    const want = oracle(...args)
-    for (const optimize of levels) {
-      const { f } = jz(source, { optimize }).exports
-      const got = f(...args)
+  const [rows, src] = tableModule(EQ_SHAPES, EQ_VALUES)
+  const host = oracle(src)
+  for (const optimize of LEVELS) {
+    const ex = jz(src, { optimize }).exports
+    for (const { shape, V, name } of rows) {
+      const args = argsOf(shape, V), want = host[name](...args), got = ex[name](...args)
       const at = got === want ? -1 : [...got].findIndex((c, i) => c !== want[i])
       const ops = shape === 'anyPartner' ? 3 : 4
       const where = at < 0 ? '' : ` ${['==', '== (reversed)', '!=', '==='][at % ops]} ${EQ_PARTNERS[Math.floor(at / ops)]}`
@@ -320,10 +331,10 @@ test('bigint tag: a raw direct result into every boxed consumer, and a boxed pro
   }
   for (const [shape, src] of Object.entries(SHAPES)) for (const v of PAYLOADS) {
     const source = src(v)
-    const oracle = Function(source.replaceAll('export let ', 'var ') + ';return f')()
-    for (const optimize of levels) {
+    const host = oracle(source).f
+    for (const optimize of LEVELS) {
       const { f } = jz(source, { optimize }).exports
-      for (const k of [0, 1]) { const want = oracle(k); is(f(k), typeof want === 'bigint' ? BigInt.asIntN(64, want) : want, `${shape} ${v} f(${k}) (O${optimize || 0})`) }
+      for (const k of [0, 1]) { const want = host(k); is(f(k), typeof want === 'bigint' ? BigInt.asIntN(64, want) : want, `${shape} ${v} f(${k}) (O${optimize || 0})`) }
     }
   }
 })

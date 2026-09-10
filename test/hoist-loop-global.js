@@ -17,20 +17,13 @@
  */
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 
 // `export let X =`/`export const X =` -> `let X = exports.X =`/`const X = exports.X =`
 // (a real LOCAL binding, not just a property) so exported functions here —
 // which call EACH OTHER by bare name (warmup -> helper, main -> scanThenDispatch)
 // — resolve correctly under plain `new Function`. `let` (not `const`) for the
 // `export let` form: `cur`/`idx` are reassigned after their initial declaration.
-const jsEval = (src) => {
-  const exports = {}
-  new Function('exports', src
-    .replace(/export let (\w+) =/g, 'let $1 = exports.$1 =')
-    .replace(/export const (\w+) =/g, 'const $1 = exports.$1 ='))(exports)
-  return exports
-}
 
 test('hoist-loop-global: DIRECT reassignment of the global inside the loop stays correct', () => {
   // `cur` is reassigned to a DIFFERENT string mid-loop (i===2) — a hoisted
@@ -50,7 +43,7 @@ test('hoist-loop-global: DIRECT reassignment of the global inside the loop stays
       return out
     }`
   const { scan } = run(src, { optimize: 'speed' })
-  is(scan(), jsEval(src).scan(), 'per-read derivation across the mid-loop reassignment stays bit-exact')
+  is(scan(), oracle(src).scan(), 'per-read derivation across the mid-loop reassignment stays bit-exact')
 })
 
 test('hoist-loop-global: TRANSITIVE reassignment through a callee reachable from the loop stays correct', () => {
@@ -71,7 +64,7 @@ test('hoist-loop-global: TRANSITIVE reassignment through a callee reachable from
       return out
     }`
   const { scan } = run(src, { optimize: 'speed' })
-  is(scan(), jsEval(src).scan(), 'per-read derivation across the transitive reassignment stays bit-exact')
+  is(scan(), oracle(src).scan(), 'per-read derivation across the transitive reassignment stays bit-exact')
 })
 
 test('hoist-loop-global: the hoisted (sound) case still produces correct values', () => {
@@ -93,7 +86,7 @@ test('hoist-loop-global: the hoisted (sound) case still produces correct values'
       return acc + cc
     }
     export const main = () => { warmup(); setup('   hi there   '); return scanThenDispatch(1, 5) }`
-  const jsExpected = jsEval(src).main()
+  const jsExpected = oracle(src).main()
   const { main: mainOff } = run(src, { optimize: { hoistLoopGlobalPtrOffset: false } })
   const { main: mainOn } = run(src, { optimize: 'speed' })
   is(mainOff(), jsExpected, 'un-hoisted control matches plain JS')

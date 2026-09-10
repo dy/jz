@@ -1,9 +1,9 @@
 // Comprehensive spread operator tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 import jz, { compile } from '../index.js'
-import { belowOpt } from './_matrix.js'
+import { belowOpt, levels } from './_matrix.js'
 
 // ============================================
 // SPREAD IN ARRAY LITERALS
@@ -535,8 +535,8 @@ test('spread into a method: the source is staged once, by its kind', () => {
       const k = ['q']; k.push(...new Set([7, 8])); r.push(k.join(''))
       return r.join('|')
     }`
-  const expected = Function(src.replace('export let f', 'var f') + '; return f')()()
-  for (const optimize of [0, 1, 2]) is(jz(src, { optimize }).exports.f(), expected, `O${optimize}`)
+  const expected = oracle(src).f()
+  for (const optimize of levels(0, 1, 2)) is(jz(src, { optimize }).exports.f(), expected, `O${optimize}`)
 })
 
 test('spread into a method: a program without a string of its own compiles', () => {
@@ -547,7 +547,7 @@ test('spread into a method: a program without a string of its own compiles', () 
     const t = [1, 2]
     const run = (i) => { a.unshift(...t); a.shift(); return a.shift() }
     export let probe = (n) => run(n)`
-  for (const optimize of [0, 1, 2]) is(jz(src, { optimize }).exports.probe(0), 2, `O${optimize}`)
+  for (const optimize of levels(0, 1, 2)) is(jz(src, { optimize }).exports.probe(0), 2, `O${optimize}`)
   const w = compile(src, { wat: true })
   ok(!/__is_str_key/.test(w), 'the loop reads its elements by index')
 })

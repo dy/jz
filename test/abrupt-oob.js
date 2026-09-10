@@ -22,11 +22,13 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 const agree = (src) => {
-  const ref = new Function(`${src.replace('export let f', 'let f')}; return f()`)()
+  const ref = oracle(src).f()
   const out = [ref]
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const { exports } = jz(src, { optimize })
     out.push(exports.f())
   }

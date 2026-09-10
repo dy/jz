@@ -1,47 +1,80 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
-import { onWasi } from './_matrix.js'
+import { batch } from './util.js'
+import { onWasi, levels } from './_matrix.js'
 
 const run = code => jz(code).exports.f()
 const same = (actual, expected) => {
   if (Number.isNaN(expected)) return ok(Number.isNaN(actual))
   return is(actual, expected)
 }
+// Several standalone programs as one compile, each called once.
+const runMany = (srcs) => batch(srcs).map(f => f())
 
 test('Date.UTC: default fields and year offset', () => {
-  same(run('export let f = () => Date.UTC(1970)'), 0)
-  same(run('export let f = () => Date.UTC(2016, 6, 5, 15, 34, 45, 876)'), 1467732885876)
-  same(run('export let f = () => Date.UTC(70, 0)'), 0)
-  same(run('export let f = () => Date.UTC(100, 0)'), -59011459200000)
+  const [r0, r1, r2, r3] = runMany([
+    'export let f = () => Date.UTC(1970)',
+    'export let f = () => Date.UTC(2016, 6, 5, 15, 34, 45, 876)',
+    'export let f = () => Date.UTC(70, 0)',
+    'export let f = () => Date.UTC(100, 0)',
+  ])
+  same(r0, 0)
+  same(r1, 1467732885876)
+  same(r2, 0)
+  same(r3, -59011459200000)
 })
 
 test('Date.UTC: overflow and non-integer values', () => {
-  same(run('export let f = () => Date.UTC(2016, 12, 1)'), 1483228800000)
-  same(run('export let f = () => Date.UTC(2016, -1, 1)'), 1448928000000)
-  same(run('export let f = () => Date.UTC(1970.9, 0.9, 1.9, 0.9, 0.9, 0.9, 0.9)'), 0)
-  same(run('export let f = () => Date.UTC(-1970.9, -0.9, -0.9, -0.9, -0.9, -0.9, -0.9)'), -124334438400000)
+  const [r0, r1, r2, r3] = runMany([
+    'export let f = () => Date.UTC(2016, 12, 1)',
+    'export let f = () => Date.UTC(2016, -1, 1)',
+    'export let f = () => Date.UTC(1970.9, 0.9, 1.9, 0.9, 0.9, 0.9, 0.9)',
+    'export let f = () => Date.UTC(-1970.9, -0.9, -0.9, -0.9, -0.9, -0.9, -0.9)',
+  ])
+  same(r0, 1483228800000)
+  same(r1, 1448928000000)
+  same(r2, 0)
+  same(r3, -124334438400000)
 })
 
 test('Date.UTC: NaN and TimeClip', () => {
-  same(run('export let f = () => Date.UTC()'), NaN)
-  same(run('export let f = () => Date.UTC(NaN, 0)'), NaN)
-  same(run('export let f = () => Date.UTC(1970, NaN)'), NaN)
-  same(run('export let f = () => Date.UTC(275760, 8, 13, 0, 0, 0, 0)'), 8640000000000000)
-  same(run('export let f = () => Date.UTC(275760, 8, 13, 0, 0, 0, 1)'), NaN)
+  const [r0, r1, r2, r3, r4] = runMany([
+    'export let f = () => Date.UTC()',
+    'export let f = () => Date.UTC(NaN, 0)',
+    'export let f = () => Date.UTC(1970, NaN)',
+    'export let f = () => Date.UTC(275760, 8, 13, 0, 0, 0, 0)',
+    'export let f = () => Date.UTC(275760, 8, 13, 0, 0, 0, 1)',
+  ])
+  same(r0, NaN)
+  same(r1, NaN)
+  same(r2, NaN)
+  same(r3, 8640000000000000)
+  same(r4, NaN)
 })
 
 test('Date.parse: date strings', () => {
-  same(run('export let f = () => Date.parse("2024-01-01T00:00:00Z")'), 1704067200000)
-  same(run('export let f = () => Date.parse("2024-06-05")'), Date.UTC(2024, 5, 5))
-  same(run('export let f = () => Date.parse("not a date")'), NaN)
+  const [r0, r1, r2] = runMany([
+    'export let f = () => Date.parse("2024-01-01T00:00:00Z")',
+    'export let f = () => Date.parse("2024-06-05")',
+    'export let f = () => Date.parse("not a date")',
+  ])
+  same(r0, 1704067200000)
+  same(r1, Date.UTC(2024, 5, 5))
+  same(r2, NaN)
 })
 
 test('Date object: getTime and valueOf', () => {
-  same(run('export let f = () => { let d = new Date(0); return d.getTime() }'), 0)
-  same(run('export let f = () => { let d = new Date(12345); return d.getTime() }'), 12345)
-  same(run('export let f = () => { let d = new Date(0); return d.valueOf() }'), 0)
-  same(run('export let f = () => { let d = new Date(NaN); return d.getTime() }'), NaN)
+  const [r0, r1, r2, r3] = runMany([
+    'export let f = () => { let d = new Date(0); return d.getTime() }',
+    'export let f = () => { let d = new Date(12345); return d.getTime() }',
+    'export let f = () => { let d = new Date(0); return d.valueOf() }',
+    'export let f = () => { let d = new Date(NaN); return d.getTime() }',
+  ])
+  same(r0, 0)
+  same(r1, 12345)
+  same(r2, 0)
+  same(r3, NaN)
 })
 
 test('Date object: proven-receiver .valueOf()/.getTime() compares correctly against a NUMBER literal', () => {
@@ -54,8 +87,12 @@ test('Date object: proven-receiver .valueOf()/.getTime() compares correctly agai
   // it directly) — so `d.valueOf() === n` folded unsound (false) even for a
   // fully statically-known Date, on EVERY optimize level, until
   // kind-traits.js's own VAL.DATE carve-out landed.
-  is(run('export let f = () => { let d = new Date(1234567890000); return d.valueOf() === 1234567890000 }'), true)
-  is(run('export let f = () => { let d = new Date(1234567890000); return d.getTime() === 1234567890000 }'), true)
+  const [r0, r1] = runMany([
+    'export let f = () => { let d = new Date(1234567890000); return d.valueOf() === 1234567890000 }',
+    'export let f = () => { let d = new Date(1234567890000); return d.getTime() === 1234567890000 }',
+  ])
+  is(r0, true)
+  is(r1, true)
 })
 
 test('Date object: unresolved-vt receiver .valueOf() discriminates Date from plain object/array (.work/archive/printer-trio.md residual)', () => {
@@ -113,7 +150,7 @@ test('Date object: unresolved-vt receiver .valueOf() via a shared dispatch funct
       return unresolvedValueOf(d) === 1234567890000 && unresolvedValueOf(o) === o
     }
   `
-  for (const optimize of [false, 1, 2, 3])
+  for (const optimize of levels(false, 1, 2, 3))
     is(jz(src, { optimize }).exports.f(), true, `Date brand survives a shared helper at O${optimize || 0}`)
 })
 
@@ -125,7 +162,7 @@ test('Date object: unresolved .getTime() discriminates Date and rejects non-Date
       return x.getTime()
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { exports: e } = jz(src, { optimize })
     is(e.f(0), 1234567890000, `O${optimize || 0}: unresolved runtime Date takes the aux-discriminated emitter`)
     throws(() => e.f(1), err => err instanceof TypeError, `O${optimize || 0}: unresolved runtime array throws instead of reading element 0`)
@@ -143,7 +180,7 @@ test('Date object: guarded no-arg Date methods preserve ignored argument effects
       return n
     }
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { f } = jz(src, { optimize }).exports
     is(f(0), 1, `O${optimize || 0}: Date branch evaluates ignored args once`)
     is(f(1), 2, `O${optimize || 0}: non-callable branch evaluates args before throwing`)
@@ -184,7 +221,7 @@ test('Date object: unresolved argument-taking Date methods preserve args and dis
     let x = items[which]
     return x.setTime(n)
   }`
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { f } = jz(src, { optimize }).exports
     is(f(0, 999), 999, `O${optimize || 0}: runtime Date setter receives its argument`)
     throws(() => f(1, 999), err => err instanceof TypeError,
@@ -193,16 +230,27 @@ test('Date object: unresolved argument-taking Date methods preserve args and dis
 })
 
 test('Date object: setTime', () => {
-  same(run('export let f = () => { let d = new Date(0); d.setTime(999); return d.getTime() }'), 999)
-  same(run('export let f = () => { let d = new Date(0); return d.setTime(999) }'), 999)
-  same(run('export let f = () => { let d = new Date(0); d.setTime(NaN); return d.getTime() }'), NaN)
-  same(run('export let f = () => { let d = new Date(0); d.setTime(8640000000000000); return d.getTime() }'), 8640000000000000)
-  same(run('export let f = () => { let d = new Date(0); d.setTime(8640000000000001); return d.getTime() }'), NaN)
+  const [r0, r1, r2, r3, r4] = runMany([
+    'export let f = () => { let d = new Date(0); d.setTime(999); return d.getTime() }',
+    'export let f = () => { let d = new Date(0); return d.setTime(999) }',
+    'export let f = () => { let d = new Date(0); d.setTime(NaN); return d.getTime() }',
+    'export let f = () => { let d = new Date(0); d.setTime(8640000000000000); return d.getTime() }',
+    'export let f = () => { let d = new Date(0); d.setTime(8640000000000001); return d.getTime() }',
+  ])
+  same(r0, 999)
+  same(r1, 999)
+  same(r2, NaN)
+  same(r3, 8640000000000000)
+  same(r4, NaN)
 })
 
 test('Date object: TimeClip in constructor', () => {
-  same(run('export let f = () => { let d = new Date(8640000000000001); return d.getTime() }'), NaN)
-  same(run('export let f = () => { let d = new Date(-8640000000000001); return d.getTime() }'), NaN)
+  const [r0, r1] = runMany([
+    'export let f = () => { let d = new Date(8640000000000001); return d.getTime() }',
+    'export let f = () => { let d = new Date(-8640000000000001); return d.getTime() }',
+  ])
+  same(r0, NaN)
+  same(r1, NaN)
 })
 
 test('Date object: no-arg constructor uses current time', () => {
@@ -218,14 +266,23 @@ test('Date object: no-arg constructor uses current time', () => {
 })
 
 test('Date object: date-only string constructor', () => {
-  same(run('export let f = () => { let d = new Date("2024-06-05"); return d.getTime() }'), Date.UTC(2024, 5, 5))
-  same(run('export let f = () => { let d = new Date("2024-06-05"); return d.getUTCDay() }'), 3)
-  same(run('export let f = () => { let d = new Date("not a date"); return d.getTime() }'), NaN)
+  const [r0, r1, r2] = runMany([
+    'export let f = () => { let d = new Date("2024-06-05"); return d.getTime() }',
+    'export let f = () => { let d = new Date("2024-06-05"); return d.getUTCDay() }',
+    'export let f = () => { let d = new Date("not a date"); return d.getTime() }',
+  ])
+  same(r0, Date.UTC(2024, 5, 5))
+  same(r1, 3)
+  same(r2, NaN)
 })
 
 test('Date object: multi-arg constructor uses UTC-backed fields', () => {
-  same(run('export let f = () => { let d = new Date(2025, 0, 15, 10, 30); return d.getTime() }'), Date.UTC(2025, 0, 15, 10, 30))
-  same(run('export let f = () => { let d = new Date(70, 0, 1); return d.getTime() }'), Date.UTC(70, 0, 1))
+  const [r0, r1] = runMany([
+    'export let f = () => { let d = new Date(2025, 0, 15, 10, 30); return d.getTime() }',
+    'export let f = () => { let d = new Date(70, 0, 1); return d.getTime() }',
+  ])
+  same(r0, Date.UTC(2025, 0, 15, 10, 30))
+  same(r1, Date.UTC(70, 0, 1))
 })
 
 test('Date UTC getters', () => {
@@ -284,11 +341,18 @@ test('Date local time getters: UTC-backed aliases', () => {
 })
 
 test('Date local time getters: epoch zero does not throw', () => {
-  same(run('export let f = () => { let d = new Date(0); return d.getHours() }'), 0)
-  same(run('export let f = () => { let d = new Date(0); return d.getUTCHours() }'), 0)
-  same(run('export let f = () => { let d = new Date(0); return d.getMinutes() }'), 0)
-  same(run('export let f = () => { let d = new Date(0); return d.getSeconds() }'), 0)
-  same(run('export let f = () => { let d = new Date(0); return d.getMilliseconds() }'), 0)
+  const [r0, r1, r2, r3, r4] = runMany([
+    'export let f = () => { let d = new Date(0); return d.getHours() }',
+    'export let f = () => { let d = new Date(0); return d.getUTCHours() }',
+    'export let f = () => { let d = new Date(0); return d.getMinutes() }',
+    'export let f = () => { let d = new Date(0); return d.getSeconds() }',
+    'export let f = () => { let d = new Date(0); return d.getMilliseconds() }',
+  ])
+  same(r0, 0)
+  same(r1, 0)
+  same(r2, 0)
+  same(r3, 0)
+  same(r4, 0)
 })
 
 test('Date local time getters: NaN date propagates NaN', () => {
@@ -303,8 +367,12 @@ test('Date local time getters: NaN date propagates NaN', () => {
 })
 
 test('Date object: relational comparison uses time value', () => {
-  same(run('export let f = () => { let a = new Date(0); let b = new Date(1); return a < b ? 1 : 0 }'), 1)
-  same(run('export let f = () => { let a = new Date(2); let b = new Date(1); return a > b ? 1 : 0 }'), 1)
+  const [r0, r1] = runMany([
+    'export let f = () => { let a = new Date(0); let b = new Date(1); return a < b ? 1 : 0 }',
+    'export let f = () => { let a = new Date(2); let b = new Date(1); return a > b ? 1 : 0 }',
+  ])
+  same(r0, 1)
+  same(r1, 1)
 })
 
 test('Date UTC setters: time components', () => {
@@ -368,20 +436,34 @@ test('Date UTC setters: setUTCFullYear resets NaN to 0', () => {
 })
 
 test('Date UTC setters: NaN propagation', () => {
-  same(run('export let f = () => { let d = new Date(0); return d.setUTCHours(NaN) }'), NaN)
-  same(run('export let f = () => { let d = new Date(0); d.setUTCHours(NaN); return d.getTime() }'), NaN)
+  const [r0, r1] = runMany([
+    'export let f = () => { let d = new Date(0); return d.setUTCHours(NaN) }',
+    'export let f = () => { let d = new Date(0); d.setUTCHours(NaN); return d.getTime() }',
+  ])
+  same(r0, NaN)
+  same(r1, NaN)
 })
 
 test('Date toISOString', () => {
-  same(run('export let f = () => { let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)); return d.toISOString() }'), '2025-01-15T10:30:45.123Z')
-  same(run('export let f = () => { let d = new Date(0); return d.toISOString() }'), '1970-01-01T00:00:00.000Z')
-  same(run('export let f = () => { let d = new Date(NaN); return d.toISOString() }'), '')
+  const [r0, r1, r2] = runMany([
+    'export let f = () => { let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)); return d.toISOString() }',
+    'export let f = () => { let d = new Date(0); return d.toISOString() }',
+    'export let f = () => { let d = new Date(NaN); return d.toISOString() }',
+  ])
+  same(r0, '2025-01-15T10:30:45.123Z')
+  same(r1, '1970-01-01T00:00:00.000Z')
+  same(r2, '')
 })
 
 test('Date toUTCString', () => {
-  same(run('export let f = () => { let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 0)); return d.toUTCString() }'), 'Wed, 15 Jan 2025 10:30:45 GMT')
-  same(run('export let f = () => { let d = new Date(0); return d.toUTCString() }'), 'Thu, 01 Jan 1970 00:00:00 GMT')
-  same(run('export let f = () => { let d = new Date(NaN); return d.toUTCString() }'), '')
+  const [r0, r1, r2] = runMany([
+    'export let f = () => { let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 0)); return d.toUTCString() }',
+    'export let f = () => { let d = new Date(0); return d.toUTCString() }',
+    'export let f = () => { let d = new Date(NaN); return d.toUTCString() }',
+  ])
+  same(r0, 'Wed, 15 Jan 2025 10:30:45 GMT')
+  same(r1, 'Thu, 01 Jan 1970 00:00:00 GMT')
+  same(r2, '')
 })
 
 test('Date toUTCString: leap year', () => {
@@ -390,24 +472,44 @@ test('Date toUTCString: leap year', () => {
 
 test('Date toISOString: expanded years (sign + 6 digits)', () => {
   // spec DateString: years outside [0, 9999] carry an explicit sign and 6-digit padding
-  same(run('export let f = () => new Date(8640000000000000).toISOString()'), '+275760-09-13T00:00:00.000Z')
-  same(run('export let f = () => new Date(-8640000000000000).toISOString()'), '-271821-04-20T00:00:00.000Z')
-  same(run('export let f = () => new Date(Date.UTC(-1, 11, 31, 23, 59, 59, 999)).toISOString()'), '-000001-12-31T23:59:59.999Z')
+  const [r0, r1, r2] = runMany([
+    'export let f = () => new Date(8640000000000000).toISOString()',
+    'export let f = () => new Date(-8640000000000000).toISOString()',
+    'export let f = () => new Date(Date.UTC(-1, 11, 31, 23, 59, 59, 999)).toISOString()',
+  ])
+  same(r0, '+275760-09-13T00:00:00.000Z')
+  same(r1, '-271821-04-20T00:00:00.000Z')
+  same(r2, '-000001-12-31T23:59:59.999Z')
 })
 
 test('Date toJSON', () => {
-  same(run('export let f = () => { let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)); return d.toJSON() }'), '2025-01-15T10:30:45.123Z')
-  same(run('export let f = () => new Date(NaN).toJSON()'), null)
-  same(run('export let f = () => JSON.stringify(new Date(NaN).toJSON())'), 'null')
+  const [r0, r1, r2] = runMany([
+    'export let f = () => { let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)); return d.toJSON() }',
+    'export let f = () => new Date(NaN).toJSON()',
+    'export let f = () => JSON.stringify(new Date(NaN).toJSON())',
+  ])
+  same(r0, '2025-01-15T10:30:45.123Z')
+  same(r1, null)
+  same(r2, 'null')
 })
 
 test('Date toDateString / toTimeString', () => {
-  same(run('export let f = () => new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)).toDateString()'), 'Wed Jan 15 2025')
-  same(run('export let f = () => new Date(Date.UTC(2025, 0, 5)).toDateString()'), 'Sun Jan 05 2025')
-  same(run('export let f = () => new Date(8640000000000000).toDateString()'), 'Sat Sep 13 275760')
-  same(run('export let f = () => new Date(Date.UTC(-1, 11, 31)).toDateString()'), 'Fri Dec 31 -0001')
-  same(run('export let f = () => new Date(NaN).toDateString()'), 'Invalid Date')
-  same(run('export let f = () => new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)).toTimeString()'), '10:30:45 GMT+0000 (Coordinated Universal Time)')
-  same(run('export let f = () => new Date(0).toTimeString()'), '00:00:00 GMT+0000 (Coordinated Universal Time)')
-  same(run('export let f = () => new Date(NaN).toTimeString()'), 'Invalid Date')
+  const [r0, r1, r2, r3, r4, r5, r6, r7] = runMany([
+    'export let f = () => new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)).toDateString()',
+    'export let f = () => new Date(Date.UTC(2025, 0, 5)).toDateString()',
+    'export let f = () => new Date(8640000000000000).toDateString()',
+    'export let f = () => new Date(Date.UTC(-1, 11, 31)).toDateString()',
+    'export let f = () => new Date(NaN).toDateString()',
+    'export let f = () => new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123)).toTimeString()',
+    'export let f = () => new Date(0).toTimeString()',
+    'export let f = () => new Date(NaN).toTimeString()',
+  ])
+  same(r0, 'Wed Jan 15 2025')
+  same(r1, 'Sun Jan 05 2025')
+  same(r2, 'Sat Sep 13 275760')
+  same(r3, 'Fri Dec 31 -0001')
+  same(r4, 'Invalid Date')
+  same(r5, '10:30:45 GMT+0000 (Coordinated Universal Time)')
+  same(r6, '00:00:00 GMT+0000 (Coordinated Universal Time)')
+  same(r7, 'Invalid Date')
 })

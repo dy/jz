@@ -71,15 +71,14 @@ const TESTS = [
   'invariants',
   'refactor-oracle',
   'layout-kinds',
-  'pow-ulp',
-  'pow-fold-ulp',
-  'fifthroot-ulp',
+  'struct-inline',
+  'bench-merge',
+  'pow',
   'wat-invariants',
   'loop-square',
   'inplace-store',
   'slot-hazards',
   'never-grown',
-  'bool-identity',
   'abrupt-oob',
   'hoist-loop-global',
   'iteration',
@@ -104,7 +103,6 @@ const TESTS = [
   'jsstring',
   'booleans',
   'warnings',
-  'forin-deopt',
   'deopt',
   'minimal-output',
   'bench-svg',
@@ -176,7 +174,8 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // compiler ran self-compiled (prepare's own `new Set(skip)`); the Set
   // constructor is now spec-correct (nullish iterable → empty set,
   // __iter_arr_ctor) and the whole exclusions burn-down is COMPLETE.
-  'simd', 'optimizer', 'slot-hazards',
+  'simd', 'optimizer', 'slot-hazards', 'struct-inline',
+  'bench-merge',   // drives bench/bench.mjs in subprocesses — host tooling, nothing to self-compile
   // 'objects','strings','spread' cleared 2026-07-23: reassigned-param val
   // poisoning fixed the Array.isArray const-fold class (analyze.js declared-
   // guard) — 14 kernel value bugs cleared in one fix; json keeps 2 structural
@@ -192,10 +191,29 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // structural subnormal fold guards in prepare/pre-eval/emitNeg); the one
   // deep-carrier row (-1n<0n at O2, watr-in-kernel dynamic-compare) is
   // onKernel-curated in statements.js with the mechanism.
-  // 'pow-fold-ulp','fifthroot-ulp' cleared 2026-07-24: three stacked kernel gaps
+  // 'pow' (then pow-fold-ulp and fifthroot-ulp) cleared 2026-07-24: three stacked kernel gaps
   // peeled in powResolvePool — regex ctrl-char pattern escapes (→ manual scan),
   // startsWith positional arg dropped (→ slice-compare), obj[numVar] object
   // read (→ dense arrays for type/lastUse/regOf).
+// Files whose compile inputs are the same on every leg — measured, not assumed:
+// each was run under the default, opt0, opt3 and wasi legs with every in-process
+// compile hashed (source plus the options after the env defaults merge), and the
+// four hash sets were identical. They build the kernel, spawn tooling, or pass
+// every option themselves, so a leg cannot change what they test: the default leg
+// owns them and the opt0/opt3/wasi legs skip them (about 6 minutes a leg). Naming
+// a file on the command line runs it on any leg.
+const LEG_INVARIANT = new Set([
+  'self-checkpoint', 'self-build', 'self-compile-source', 'kernel-marks', 'eager-stdlib-parity',
+  'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-svg', 'bench-merge', 'cli', 'native-lowering',
+  'headline', 'site', 'guide', 'web-smoke',
+])
+// Files that choose their own optimize levels (an explicit `optimize` on every
+// compile; fuzz and wat-invariants sweep {0,1,2,3} themselves) but compile under the
+// leg's host: the opt0/opt3 legs skip them, the wasi leg keeps them.
+const OPT_INVARIANT = new Set(['fuzz', 'wat-invariants', 'kernel-gate', 'perf-ratchet', 'refactor-oracle', 'self-compile-includes', 'snapshot'])
+const onOptLeg = process.env.JZ_TEST_OPTIMIZE != null, onHostLeg = !!process.env.JZ_TEST_HOST
+const legSkips = (name) => (onOptLeg && (LEG_INVARIANT.has(name) || OPT_INVARIANT.has(name))) || (onHostLeg && LEG_INVARIANT.has(name))
+
 const target = process.env.JZ_TEST_TARGET
 if (target && target !== 'jz.wasm') throw new Error(`Unknown JZ_TEST_TARGET '${target}'; use jz.wasm and set JZ_KERNEL to the compiler file`)
 const onKernelTarget = target === 'jz.wasm'
@@ -203,7 +221,7 @@ const onKernelTarget = target === 'jz.wasm'
 const selected = (argFilters.length
   ? TESTS.filter(name => argFilters.includes(name))
   : TESTS
-).filter(name => !(onKernelTarget && !argFilters.includes(name) && KERNEL_EXCLUDE.has(name)))
+).filter(name => argFilters.includes(name) || !((onKernelTarget && KERNEL_EXCLUDE.has(name)) || legSkips(name)))
 
 if (argFilters.length && selected.length !== argFilters.length) {
   const known = new Set(TESTS)

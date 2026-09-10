@@ -2,9 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-function run(code) {
-  return jz(code).exports
-}
+import { run } from './util.js'
 
 // === Basic Symbol creation ===
 

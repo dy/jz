@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, instantiate } from '../interop.js'
-import { onWasi, onKernel, adaptI64 } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
 // unproven-receiver reads pull the env external machinery declares imports —
@@ -676,7 +676,7 @@ test('durable slot log reuses repeated writes and cancelled entries before _clea
     export let last = () => cache.get('key')[0]
     export let size = () => cache.size
   `
-  for (const optimize of [false, 2, 3]) {
+  for (const optimize of levels(false, 2, 3)) {
     const { exports: e } = jz(source, { optimize })
     for (let round = 0; round < 2; round++) {
       is(e.write(4096, false), 2, 'repeated overwrites use one pending heal per slot')
@@ -934,7 +934,7 @@ test('memory.write: growth and a failed marshal preserve destination atomicity',
 })
 
 test('host fields: typed layout, nullable and nested contracts survive every tier', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const m = jz(`
       const child = { buf: new Float32Array([1, 2]) }
       const o = { child, optional: null, count: 1 }
@@ -961,7 +961,7 @@ test('host fields: typed layout, nullable and nested contracts survive every tie
 
 
 test('host fields: scalar carriers decode and update consistently', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const m = jz('const o={x:1n,yes:true};export const get=()=>o;export const value=()=>o.x', { optimize })
     const p = m.instance.exports.get()
     is(m.memory.read(p), { x: 1n, yes: true })
@@ -972,7 +972,7 @@ test('host fields: scalar carriers decode and update consistently', () => {
 })
 
 test('host fields: shared shapes keep BigInts and numbers distinct', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const m = jz('const a={x:1n};const b={x:2};export const get=()=>a;export const other=()=>b;export const value=()=>a.x', { optimize })
     const p = m.instance.exports.get()
     is(m.memory.read(p), { x: 1n })
@@ -988,7 +988,7 @@ test('host fields: shared shapes keep BigInts and numbers distinct', () => {
 })
 
 test('host fields: only consumed discriminants constrain replacement values', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const m = jz('const a={tag:0,x:3};const b={tag:1,y:4};export const get=()=>a;export const value=n=>{const o=n?a:b;return o.tag===0?o.x:o.y}', { optimize })
     const p = m.instance.exports.get()
     throws(() => m.memory.write(p, { tag: 1 }), /discriminant/)
@@ -999,7 +999,7 @@ test('host fields: only consumed discriminants constrain replacement values', ()
 })
 
 test('host array handles: element writes invalidate closed element proofs', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const m = jz('const a=[1,2];export const get=()=>a;export const value=()=>a[0]+1', { optimize })
     m.memory.write(m.instance.exports.get(), ['abc'])
     is(m.exports.value(), 'abc1')
@@ -1053,7 +1053,7 @@ test('stateful DSP: reset reclaims block scratch while preserving filter state',
 
 
 test('host fields: returned literals have independent mutable storage', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const m = jz('export const make=()=>({a:1,b:2})', { optimize })
     const first = m.instance.exports.make()
     m.memory.write(first, { a: 7 })
@@ -1063,7 +1063,7 @@ test('host fields: returned literals have independent mutable storage', () => {
 })
 
 test('host fields: tagged unions preserve arithmetic domains', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const m = jz('const a={x:1n};const b={x:2};export const get=()=>a;export const other=()=>b;export const add=()=>a.x+1n', { optimize })
     is(m.exports.add(), 2n)
     m.memory.write(m.instance.exports.get(), { x: 3 })

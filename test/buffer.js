@@ -4,6 +4,8 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
+import { levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 // === Allocation + byteLength ===
 
@@ -898,11 +900,11 @@ test('DataView has byte bounds, not indexed elements or length', () => {
         String(d.length), String(d[0]), typeof n, typeof d[0], n + 1, d[0] + 1]
     }
   `
-  const oracle = new Function(source.replaceAll('export let ', 'let ') + '; return {local, direct}')()
-  for (const optimize of [0, 1, 2, 3]) {
+  const host = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3)) {
     const { exports: e } = jz(source, { optimize })
-    is(e.direct(), oracle.direct())
-    for (const flag of [false, true]) is(e.local(flag), oracle.local(flag))
+    is(e.direct(), host.direct())
+    for (const flag of [false, true]) is(e.local(flag), host.local(flag))
     const d = new DataView(new ArrayBuffer(8), 2, 3)
     d.setUint8(0, 71)
     is(e.length(d), d.length)
@@ -914,7 +916,7 @@ test('DataView has byte bounds, not indexed elements or length', () => {
 })
 
 test('DataView indexed writes reject before touching buffer bytes', () => {
-  for (const optimize of [0, 1, 2, 3]) {
+  for (const optimize of levels(0, 1, 2, 3)) {
     const { exports: e } = jz(`
       let d = new DataView(new ArrayBuffer(8))
       d.setUint8(0, 71)

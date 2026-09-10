@@ -2,9 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-function run(code, opts) {
-  return jz(code, opts).exports
-}
+import { run } from './util.js'
 
 // ============================================
 // Array destructuring

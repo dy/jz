@@ -4,10 +4,9 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import jz from '../index.js'
 import { strHashLiteral } from '../module/collection.js'
+import { levels } from './_matrix.js'
+import { run, oracle, cases } from './util.js'
 
-function run(code) {
-  return jz(code).exports
-}
 
 // ============================================
 // STRING METHODS
@@ -19,20 +18,13 @@ test('String.fromCharCode: A', () => {
   is(run('export let f = () => String.fromCharCode(65).length').f(), 1)
 })
 
-test('encodeURIComponent: leaves unescaped characters intact', () => {
-  is(run(`export let f = () => encodeURIComponent("AZaz09-_.!~*'()")`).f(), "AZaz09-_.!~*'()")
-})
-
-test('encodeURIComponent: percent-encodes reserved and whitespace bytes', () => {
-  is(run('export let f = () => encodeURIComponent("a b?x=1&y=/")').f(), 'a%20b%3Fx%3D1%26y%3D%2F')
-})
-
-test('encodeURIComponent: percent-encodes UTF-8 bytes', () => {
-  is(run('export let f = () => encodeURIComponent("é ☃")').f(), '%C3%A9%20%E2%98%83')
-})
-
-test('encodeURIComponent: missing argument encodes undefined', () => {
-  is(run('export let f = () => encodeURIComponent()').f(), 'undefined')
+test('encodeURIComponent', () => {
+  cases([
+    ['leaves unescaped characters intact', `() => encodeURIComponent("AZaz09-_.!~*'()")`, "AZaz09-_.!~*'()"],
+    ['percent-encodes reserved and whitespace bytes', '() => encodeURIComponent("a b?x=1&y=/")', 'a%20b%3Fx%3D1%26y%3D%2F'],
+    ['percent-encodes UTF-8 bytes', '() => encodeURIComponent("é ☃")', '%C3%A9%20%E2%98%83'],
+    ['missing argument encodes undefined', '() => encodeURIComponent()', 'undefined'],
+  ])
 })
 
 test('encodeURIComponent: dynamic value compiles without JS host imports under WASI', () => {
@@ -76,19 +68,15 @@ test('decodeURIComponent: malformed escape throws', () => {
 // f64-strided — `encode(':')[0]` yielded a denormal (bits of 58) and
 // `encode('AB')[1]` read 8 bytes ahead → 0. General Uint8Array indexing was fine;
 // only encode()'s result diverged, corrupting exotic export names (':' → 0).
-test('TextEncoder: encode result supports indexed access', () => {
-  is(run(`export let f = () => new TextEncoder().encode(':')[0]`).f(), 58)
-})
-
-test('TextEncoder: encode result indexes each byte', () => {
-  is(run(`export let f = () => {
-    let b = new TextEncoder().encode('AB')
-    return b[0] * 1000 + b[1]
-  }`).f(), 65066)
-})
-
-test('TextEncoder: spread of encode result preserves bytes', () => {
-  is(run(`export let f = () => [...new TextEncoder().encode('AB')].join(',')`).f(), '65,66')
+test('TextEncoder', () => {
+  cases([
+    ['encode result supports indexed access', `() => new TextEncoder().encode(':')[0]`, 58],
+    ['encode result indexes each byte', `() => {
+      let b = new TextEncoder().encode('AB')
+      return b[0] * 1000 + b[1]
+    }`, 65066],
+    ['spread of encode result preserves bytes', `() => [...new TextEncoder().encode('AB')].join(',')`, '65,66'],
+  ])
 })
 
 // Repeated `dst.push(...tenc.encode(buf))` inside a loop with branching must keep
@@ -156,12 +144,11 @@ test('string +: realistic build-string loop matches JS', () => {
   is(f(4), '0,1,2,3,')
 })
 
-test('string ==: compares by value', () => {
-  is(run('export let f = () => "module" == "module"').f(), true)
-})
-
-test('string ==: concatenated string compares by value', () => {
-  is(run('export let f = () => { let s = "mod" + "ule"; return s == "module" }').f(), true)
+test('string ==', () => {
+  cases([
+    ['compares by value', '() => "module" == "module"', true],
+    ['concatenated string compares by value', '() => { let s = "mod" + "ule"; return s == "module" }', true],
+  ])
 })
 
 test('string !=: different contents compare unequal', () => {
@@ -190,14 +177,13 @@ test('string <=: includes equality', () => {
   is(run('export let f = () => "b" <= "a"').f(), false)
 })
 
-test('string <: shared prefix, shorter sorts first', () => {
-  is(run('export let f = () => "app" < "apple"').f(), true)
-  is(run('export let f = () => "apple" < "app"').f(), false)
-})
-
-test('string <: empty sorts before non-empty', () => {
-  is(run('export let f = () => "" < "a"').f(), true)
-  is(run('export let f = () => "a" < ""').f(), false)
+test('string <', () => {
+  cases([
+    ['shared prefix, shorter sorts first: app < apple', '() => "app" < "apple"', true],
+    ['shared prefix, shorter sorts first: apple < app', '() => "apple" < "app"', false],
+    ['empty sorts before non-empty: "" < "a"', '() => "" < "a"', true],
+    ['empty sorts before non-empty: "a" < ""', '() => "a" < ""', false],
+  ])
 })
 
 test('string < via variables', () => {
@@ -264,47 +250,32 @@ test('digit parser over untyped string receiver returns the parsed number', () =
 // === localeCompare ===
 // Byte-wise variant — not locale-aware. Returns -1/0/1.
 
-test('.localeCompare: returns -1/0/1', () => {
-  is(run('export let f = () => "a".localeCompare("b")').f(), -1)
-  is(run('export let f = () => "a".localeCompare("a")').f(), 0)
-  is(run('export let f = () => "b".localeCompare("a")').f(), 1)
-})
-
-test('.localeCompare: shared prefix tiebreaks by length', () => {
-  is(run('export let f = () => "app".localeCompare("apple")').f(), -1)
-  is(run('export let f = () => "apple".localeCompare("app")').f(), 1)
+test('.localeCompare', () => {
+  cases([
+    ['returns -1/0/1: a vs b', '() => "a".localeCompare("b")', -1],
+    ['returns -1/0/1: a vs a', '() => "a".localeCompare("a")', 0],
+    ['returns -1/0/1: b vs a', '() => "b".localeCompare("a")', 1],
+    ['shared prefix tiebreaks by length: app vs apple', '() => "app".localeCompare("apple")', -1],
+    ['shared prefix tiebreaks by length: apple vs app', '() => "apple".localeCompare("app")', 1],
+  ])
 })
 
 // === parseInt ===
 
-test('parseInt: decimal', () => {
-  is(run('export let f = () => parseInt("42")').f(), 42)
-})
-
-test('parseInt: hex 0x', () => {
-  is(run('export let f = () => parseInt("0xff")').f(), 255)
-})
-
-test('parseInt: radix 16', () => {
-  is(run('export let f = () => parseInt("ff", 16)').f(), 255)
-})
-
-test('parseInt: negative', () => {
-  is(run('export let f = () => parseInt("-123")').f(), -123)
-})
-
-test('parseInt: number passthrough', () => {
-  is(run('export let f = () => parseInt(3.14)').f(), 3)
-})
-
-test('parseInt: large hex integer > 53 bits', () => {
+test('parseInt', () => {
   // parseInt must preserve rounding for hex integers beyond f64 exact range.
   // 0x2000000000000100000000001 = 2^97 + 2^44 + 1 → rounds to 2^97 + 2^45.
-  const val = run('export let f = () => parseInt("0x2000000000000100000000001")').f()
-  const buf = new ArrayBuffer(8), u8 = new Uint8Array(buf)
-  u8.set([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46])
-  const expected = new Float64Array(buf)[0]
-  is(val, expected, `got ${val}, expected ${expected}`)
+  const hexBuf = new ArrayBuffer(8), hexU8 = new Uint8Array(hexBuf)
+  hexU8.set([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46])
+  const largeHexWant = new Float64Array(hexBuf)[0]
+  cases([
+    ['decimal', '() => parseInt("42")', 42],
+    ['hex 0x', '() => parseInt("0xff")', 255],
+    ['radix 16', '() => parseInt("ff", 16)', 255],
+    ['negative', '() => parseInt("-123")', -123],
+    ['number passthrough', '() => parseInt(3.14)', 3],
+    ['large hex integer > 53 bits', '() => parseInt("0x2000000000000100000000001")', largeHexWant],
+  ])
 })
 
 test('parseInt: round-once past 2^53 matches JS (exact i64 accumulation)', () => {
@@ -323,12 +294,11 @@ test('parseInt: round-once past 2^53 matches JS (exact i64 accumulation)', () =>
 
 // === .concat ===
 
-test('string: .concat single', () => {
-  is(run(`export let f = () => "hello".concat(" world").length`).f(), 11)
-})
-
-test('string: .concat two', () => {
-  is(run(`export let f = () => "a".concat("b").length`).f(), 2)
+test('string: .concat', () => {
+  cases([
+    ['single', `() => "hello".concat(" world").length`, 11],
+    ['two', `() => "a".concat("b").length`, 2],
+  ])
 })
 
 test('template literal: fused concat returns string and skips concat helper', () => {
@@ -388,20 +358,15 @@ test('fused concat: i32-proven parts render digits at the cursor — no temp str
 
 // === .slice ===
 
-test('string: .slice basic', () => {
-  const { f } = run(`export let f = () => {
-    let s = "hello"
-    return s.slice(1, 4).length
-  }`)
-  is(f(), 3)  // "ell"
-})
-
-test('string: .slice negative', () => {
-  is(run(`export let f = () => "hello".slice(-3).length`).f(), 3)  // "llo"
-})
-
-test('string: .slice no args', () => {
-  is(run(`export let f = () => "hello".slice().length`).f(), 5)
+test('string: .slice', () => {
+  cases([
+    ['basic', `() => {
+      let s = "hello"
+      return s.slice(1, 4).length
+    }`, 3],  // "ell"
+    ['negative', `() => "hello".slice(-3).length`, 3],  // "llo"
+    ['no args', `() => "hello".slice().length`, 5],
+  ])
 })
 
 // === .slice token-views (no-copy) ===
@@ -440,50 +405,40 @@ test('slice-view: fires for non-escaping local-string slice', () => {
   }`).f(), 1)
 })
 
-test('slice-view: length + charCodeAt on a view', () => {
-  is(run(`export let f = () => {
-    let s = 'abcdefghij'
-    let t = s.slice(2, 7)
-    return t.length * 100 + t.charCodeAt(0)
-  }`).f(), 5 * 100 + 'c'.charCodeAt(0))
-})
-
-test('slice-view: negative indices', () => {
-  is(run(`export let f = () => {
-    let s = 'abcdefg'
-    let t = s.slice(-3, -1)
-    return t === 'ef' ? 1 : 0
-  }`).f(), 1)
-})
-
-test('slice-view: empty and out-of-range slices', () => {
-  is(run(`export let f = () => {
-    let s = 'abcdefg'
-    let t = s.slice(3, 3)
-    return t.length
-  }`).f(), 0)
-  is(run(`export let f = () => {
-    let s = 'abc'
-    let t = s.slice(0, 100)
-    return t === 'abc' ? 1 : 0
-  }`).f(), 1)
-})
-
-test('slice-view: view of a view', () => {
-  is(run(`export let f = () => {
-    let s = 'abcdefghij'
-    let t = s.slice(1, 9)
-    let u = t.slice(2, 5)
-    return u === 'def' ? 1 : 0
-  }`).f(), 1)
-})
-
-test('slice-view: slice of a long heap string', () => {
-  is(run(`export let f = () => {
-    let s = 'abcdefghijklmnopqrstuvwxyz0123456789'
-    let t = s.slice(10, 20)
-    return t === 'klmnopqrst' ? 1 : 0
-  }`).f(), 1)
+test('slice-view: basic slicing behavior', () => {
+  cases([
+    ['length + charCodeAt on a view', `() => {
+      let s = 'abcdefghij'
+      let t = s.slice(2, 7)
+      return t.length * 100 + t.charCodeAt(0)
+    }`, 5 * 100 + 'c'.charCodeAt(0)],
+    ['negative indices', `() => {
+      let s = 'abcdefg'
+      let t = s.slice(-3, -1)
+      return t === 'ef' ? 1 : 0
+    }`, 1],
+    ['empty and out-of-range slices: empty', `() => {
+      let s = 'abcdefg'
+      let t = s.slice(3, 3)
+      return t.length
+    }`, 0],
+    ['empty and out-of-range slices: out-of-range', `() => {
+      let s = 'abc'
+      let t = s.slice(0, 100)
+      return t === 'abc' ? 1 : 0
+    }`, 1],
+    ['view of a view', `() => {
+      let s = 'abcdefghij'
+      let t = s.slice(1, 9)
+      let u = t.slice(2, 5)
+      return u === 'def' ? 1 : 0
+    }`, 1],
+    ['slice of a long heap string', `() => {
+      let s = 'abcdefghijklmnopqrstuvwxyz0123456789'
+      let t = s.slice(10, 20)
+      return t === 'klmnopqrst' ? 1 : 0
+    }`, 1],
+  ])
 })
 
 test('slice-view: concat operand keeps view (read-only use)', () => {
@@ -576,22 +531,16 @@ test('slice-view: no view when receiver type is unknown', () => {
 
 // === .substring ===
 
-test('string: .substring basic', () => {
-  const { f } = run(`export let f = () => {
-    let s = "hello"
-    return s.substring(1, 4).length
-  }`)
-  is(f(), 3)
-})
-
-// === .indexOf ===
-
-test('string: .indexOf found', () => {
-  is(run(`export let f = () => "hello".indexOf("l")`).f(), 2)
-})
-
-test('string: .indexOf not found', () => {
-  is(run(`export let f = () => "hello".indexOf("x")`).f(), -1)
+test('string: .substring / .indexOf', () => {
+  cases([
+    ['.substring basic', `() => {
+      let s = "hello"
+      return s.substring(1, 4).length
+    }`, 3],
+    // === .indexOf ===
+    ['.indexOf found', `() => "hello".indexOf("l")`, 2],
+    ['.indexOf not found', `() => "hello".indexOf("x")`, -1],
+  ])
 })
 
 test('object ToString uses inherited Object.prototype fallback', () => {
@@ -609,135 +558,70 @@ test('object ToString uses inherited Object.prototype fallback', () => {
   is(effects(), '[object Object]:1', 'receiver construction evaluates once before coercion')
 })
 
-test('string: literal startsWith/endsWith', () => {
-  const { f } = run(`export let f = () => {
-    let a = "memory.store"
-    let b = "xstore"
-    let c = "memory.x"
-    return (a.startsWith("memory.") ? 10 : 0) + (a.endsWith("store") ? 1 : 0)
-      + (b.startsWith("memory.") ? 100 : 0) + (b.endsWith("store") ? 1 : 0)
-      + (c.startsWith("memory.") ? 10 : 0) + (c.endsWith("store") ? 100 : 0)
-  }`)
-  is(f(), 22)
-})
-
-test('string: startsWith/endsWith coerce non-string args via ToString', () => {
-  // Per spec, the search arg goes through ToString. Without coercion, a numeric
-  // arg's __str_length reads as 0, the suffix loop runs zero iterations, and
-  // the function falls through to "match" — `"100".endsWith(99)` would lie.
-  is(run(`export let f = () => "100".endsWith(99) ? 1 : 0`).f(), 0)
-  is(run(`export let f = () => "199".endsWith(99) ? 1 : 0`).f(), 1)
-  is(run(`export let f = () => "9foo".startsWith(9) ? 1 : 0`).f(), 1)
-})
-
-test('string: .toString and .valueOf return the receiver', () => {
-  // Spec 21.1.3.27/28 — both are identity for primitive strings.
-  is(run(`export let f = () => "hi".toString().length`).f(), 2)
-  is(run(`export let f = () => "world".valueOf().length`).f(), 5)
-  is(run(`export let f = () => { let s = "abc"; return s.toString() === s ? 1 : 0 }`).f(), 1)
+test('string: startsWith/endsWith/toString', () => {
+  cases([
+    ['literal startsWith/endsWith', `() => {
+      let a = "memory.store"
+      let b = "xstore"
+      let c = "memory.x"
+      return (a.startsWith("memory.") ? 10 : 0) + (a.endsWith("store") ? 1 : 0)
+        + (b.startsWith("memory.") ? 100 : 0) + (b.endsWith("store") ? 1 : 0)
+        + (c.startsWith("memory.") ? 10 : 0) + (c.endsWith("store") ? 100 : 0)
+    }`, 22],
+    // Per spec, the search arg goes through ToString. Without coercion, a numeric
+    // arg's __str_length reads as 0, the suffix loop runs zero iterations, and
+    // the function falls through to "match" — `"100".endsWith(99)` would lie.
+    ['coerce non-string args via ToString: endsWith(99) on "100"', `() => "100".endsWith(99) ? 1 : 0`, 0],
+    ['coerce non-string args via ToString: endsWith(99) on "199"', `() => "199".endsWith(99) ? 1 : 0`, 1],
+    ['coerce non-string args via ToString: startsWith(9) on "9foo"', `() => "9foo".startsWith(9) ? 1 : 0`, 1],
+    // Spec 21.1.3.27/28 — both are identity for primitive strings.
+    ['.toString and .valueOf return the receiver: "hi".toString().length', `() => "hi".toString().length`, 2],
+    ['.toString and .valueOf return the receiver: "world".valueOf().length', `() => "world".valueOf().length`, 5],
+    ['.toString and .valueOf return the receiver: s.toString() === s', `() => { let s = "abc"; return s.toString() === s ? 1 : 0 }`, 1],
+  ])
 })
 
 test('string index: out-of-range returns undefined', () => {
   ok(run(`export let f = () => "hello"[99]`).f() === undefined)
 })
 
-// === .includes ===
-
-test('string: .includes found', () => {
-  is(run(`export let f = () => "hello".includes("ell")`).f(), true)
-})
-
-test('string: .includes not found', () => {
-  is(run(`export let f = () => "hello".includes("xyz")`).f(), false)
-})
-
-// === .startsWith ===
-
-test('string: .startsWith true', () => {
-  is(run(`export let f = () => "hello".startsWith("hel")`).f(), true)
-})
-
-test('string: .startsWith false', () => {
-  is(run(`export let f = () => "hello".startsWith("lo")`).f(), false)
-})
-
-// === .endsWith ===
-
-test('string: .endsWith true', () => {
-  is(run(`export let f = () => "hello".endsWith("lo")`).f(), true)
-})
-
-test('string: .endsWith false', () => {
-  is(run(`export let f = () => "hello".endsWith("hel")`).f(), false)
-})
-
-// === .toUpperCase ===
-
-test('string: .toUpperCase', () => {
-  is(run(`export let f = () => "hello".toUpperCase()`).f(), 'HELLO')
-  // only ASCII letters change; digits/punctuation/already-upper pass through.
-  is(run(`export let f = () => "aB3z!".toUpperCase()`).f(), 'AB3Z!')
-})
-
-// === .toLowerCase ===
-
-test('string: .toLowerCase', () => {
-  is(run(`export let f = () => "HELLO".toLowerCase()`).f(), 'hello')
-  is(run(`export let f = () => "Ab3Z!".toLowerCase()`).f(), 'ab3z!')
-})
-
-test('string: .toLocaleLowerCase', () => {
-  is(run(`export let f = () => "HELLO".toLocaleLowerCase().length`).f(), 5)
-})
-
-test('string: .toLocaleLowerCase ignores locale args', () => {
-  is(run(`export let f = () => "HELLO".toLocaleLowerCase("tr").length`).f(), 5)
-})
-
-// === .trim ===
-
-test('string: .trim', () => {
-  is(run(`export let f = () => " hello ".trim().length`).f(), 5)
-})
-
-test('string: .trimStart', () => {
-  is(run(`export let f = () => " hello ".trimStart().length`).f(), 6)
-})
-
-test('string: .trimEnd', () => {
-  is(run(`export let f = () => " hello ".trimEnd().length`).f(), 6)
-})
-
-// === .repeat ===
-
-test('string: .repeat', () => {
-  is(run(`export let f = () => "ab".repeat(3).length`).f(), 6)  // "ababab"
-})
-
-// === .replace ===
-
-test('string: .replace first only', () => {
-  is(run(`export let f = () => "hello hello".replace("hello", "hi").length`).f(), 8)  // "hi hello"
-})
-
-// === .replaceAll ===
-
-test('string: .replaceAll', () => {
-  is(run(`export let f = () => "a_b_c".replaceAll("_", "-").length`).f(), 5)  // "a-b-c"
-})
-
-test('string: .replaceAll removes all', () => {
-  is(run(`export let f = () => "a__b__c".replaceAll("__", "").length`).f(), 3)  // "abc"
-})
-
-// === .split ===
-
-test('string: .split basic', () => {
-  const { f } = run(`export let f = () => {
-    let a = "a,b,c".split(",")
-    return a.length
-  }`)
-  is(f(), 3)
+test('string: methods', () => {
+  cases([
+    // === .includes ===
+    ['.includes found', `() => "hello".includes("ell")`, true],
+    ['.includes not found', `() => "hello".includes("xyz")`, false],
+    // === .startsWith ===
+    ['.startsWith true', `() => "hello".startsWith("hel")`, true],
+    ['.startsWith false', `() => "hello".startsWith("lo")`, false],
+    // === .endsWith ===
+    ['.endsWith true', `() => "hello".endsWith("lo")`, true],
+    ['.endsWith false', `() => "hello".endsWith("hel")`, false],
+    // === .toUpperCase ===
+    ['.toUpperCase', `() => "hello".toUpperCase()`, 'HELLO'],
+    // only ASCII letters change; digits/punctuation/already-upper pass through.
+    ['.toUpperCase: digits/punctuation pass through', `() => "aB3z!".toUpperCase()`, 'AB3Z!'],
+    // === .toLowerCase ===
+    ['.toLowerCase', `() => "HELLO".toLowerCase()`, 'hello'],
+    ['.toLowerCase: digits/punctuation pass through', `() => "Ab3Z!".toLowerCase()`, 'ab3z!'],
+    ['.toLocaleLowerCase', `() => "HELLO".toLocaleLowerCase().length`, 5],
+    ['.toLocaleLowerCase ignores locale args', `() => "HELLO".toLocaleLowerCase("tr").length`, 5],
+    // === .trim ===
+    ['.trim', `() => " hello ".trim().length`, 5],
+    ['.trimStart', `() => " hello ".trimStart().length`, 6],
+    ['.trimEnd', `() => " hello ".trimEnd().length`, 6],
+    // === .repeat ===
+    ['.repeat', `() => "ab".repeat(3).length`, 6],  // "ababab"
+    // === .replace ===
+    ['.replace first only', `() => "hello hello".replace("hello", "hi").length`, 8],  // "hi hello"
+    // === .replaceAll ===
+    ['.replaceAll', `() => "a_b_c".replaceAll("_", "-").length`, 5],  // "a-b-c"
+    ['.replaceAll removes all', `() => "a__b__c".replaceAll("__", "").length`, 3],  // "abc"
+    // === .split ===
+    ['.split basic', `() => {
+      let a = "a,b,c".split(",")
+      return a.length
+    }`, 3],
+  ])
 })
 
 // Empty separator: regression for infinite-loop when plen=0 (advance was
@@ -751,86 +635,54 @@ test('string: .split("") splits into chars', () => {
   is(run(`export let f = () => "x".split("").length | 0`).f(), 1)
 })
 
-// === .padStart ===
-
-test('string: .padStart', () => {
-  is(run(`export let f = () => "5".padStart(3, "0").length`).f(), 3)
-})
-
-// === .padEnd ===
-
-test('string: .padEnd', () => {
-  is(run(`export let f = () => "5".padEnd(3, "0").length`).f(), 3)
-})
-
-// === Chaining ===
-
-test('string: chain .toUpperCase.slice', () => {
-  is(run(`export let f = () => "hello".toUpperCase().slice(0, 2)`).f(), 'HE')
+test('string: pad / chain', () => {
+  cases([
+    // === .padStart ===
+    ['.padStart', `() => "5".padStart(3, "0").length`, 3],
+    // === .padEnd ===
+    ['.padEnd', `() => "5".padEnd(3, "0").length`, 3],
+    // === Chaining ===
+    ['chain .toUpperCase.slice', `() => "hello".toUpperCase().slice(0, 2)`, 'HE'],
+  ])
 })
 
 // === Tagged template literals ===
 
-test('tagged template: receives strings array and values', () => {
-  const { f } = run(`export let f = () => {
-    let tag = (strs, val) => strs[0].length * 100 + val
-    return tag\`hello \${42} world\`
-  }`)
-  is(f(), 642)  // 'hello '.length=6 → 600 + 42
-})
-
-test('tagged template: strings.length === exprs.length + 1', () => {
-  const { f } = run(`export let f = () => {
-    let tag = (strs, a, b) => strs.length * 10 + a + b
-    return tag\`x=\${1}, y=\${2}.\`
-  }`)
-  is(f(), 33)  // 3 strings → 30 + 1 + 2
-})
-
-test('tagged template: leading interpolation has empty first string', () => {
-  const { f } = run(`export let f = () => {
-    let tag = (strs, val) => strs[0].length === 0 ? val : -1
-    return tag\`\${7}rest\`
-  }`)
-  is(f(), 7)
-})
-
-test('tagged template: trailing interpolation has empty last string', () => {
-  const { f } = run(`export let f = () => {
-    let tag = (strs, val) => strs[strs.length - 1].length === 0 ? val : -1
-    return tag\`rest\${9}\`
-  }`)
-  is(f(), 9)
-})
-
-test('tagged template: no interpolation', () => {
-  const { f } = run(`export let f = () => {
-    let tag = (strs) => strs[0].length
-    return tag\`bare\`
-  }`)
-  is(f(), 4)
+test('tagged template', () => {
+  cases([
+    ['receives strings array and values', `() => {
+      let tag = (strs, val) => strs[0].length * 100 + val
+      return tag\`hello \${42} world\`
+    }`, 642],  // 'hello '.length=6 → 600 + 42
+    ['strings.length === exprs.length + 1', `() => {
+      let tag = (strs, a, b) => strs.length * 10 + a + b
+      return tag\`x=\${1}, y=\${2}.\`
+    }`, 33],  // 3 strings → 30 + 1 + 2
+    ['leading interpolation has empty first string', `() => {
+      let tag = (strs, val) => strs[0].length === 0 ? val : -1
+      return tag\`\${7}rest\`
+    }`, 7],
+    ['trailing interpolation has empty last string', `() => {
+      let tag = (strs, val) => strs[strs.length - 1].length === 0 ? val : -1
+      return tag\`rest\${9}\`
+    }`, 9],
+    ['no interpolation', `() => {
+      let tag = (strs) => strs[0].length
+      return tag\`bare\`
+    }`, 4],
+  ])
 })
 
 // === charAt, charCodeAt, at ===
 
-test('String: charAt', () => {
-  is(run(`export let f = () => "hello".charAt(1).charCodeAt(0)`).f(), 101)
-})
-
-test('String: charCodeAt', () => {
-  is(run(`export let f = () => "ABC".charCodeAt(0)`).f(), 65)
-})
-
-test('String: charCodeAt(2)', () => {
-  is(run(`export let f = () => "ABC".charCodeAt(2)`).f(), 67)
-})
-
-test('String: at positive', () => {
-  is(run(`export let f = () => "hello".at(0).charCodeAt(0)`).f(), 104)
-})
-
-test('String: at negative', () => {
-  is(run(`export let f = () => "hello".at(-1).charCodeAt(0)`).f(), 111)
+test('String: charAt / charCodeAt / at', () => {
+  cases([
+    ['charAt', `() => "hello".charAt(1).charCodeAt(0)`, 101],
+    ['charCodeAt', `() => "ABC".charCodeAt(0)`, 65],
+    ['charCodeAt(2)', `() => "ABC".charCodeAt(2)`, 67],
+    ['at positive', `() => "hello".at(0).charCodeAt(0)`, 104],
+    ['at negative', `() => "hello".at(-1).charCodeAt(0)`, 111],
+  ])
 })
 
 test('String: charAt out of range → "" (not "\\x00")', () => {
@@ -857,33 +709,20 @@ test('String: .at on an untyped param dispatches to the string handler (not arra
 
 // === search / match ===
 
-test('String: search found', () => {
-  is(run(`export let f = () => "hello world".search("world")`).f(), 6)
-})
-
-test('String: search not found', () => {
-  is(run(`export let f = () => "hello".search("xyz")`).f(), -1)
-})
-
-test('String: match found', () => {
-  is(run(`export let f = () => "hello world".match("world").length`).f(), 1)
-})
-
-test('String: match not found', () => {
-  is(run(`export let f = () => "hello".match("xyz")`).f(), 0)
-})
-
-test('String: match result content', () => {
-  is(run(`export let f = () => "hello world".match("world")[0].length`).f(), 5)
-})
-
-test('String: .concat on a dynamic (untyped) receiver', () => {
-  // Regression: untyped `s.concat(...)` fell through to dynamic dispatch and hit an
-  // internal "__ext_call never registered" error. Now routed via the runtime
-  // string/array ptr-type branch (string → __str_concat).
-  is(run(`export let f = (s) => s.concat("!")`).f('hi'), 'hi!')
-  is(run(`export let f = (s) => s.concat("-", "x")`).f('hi'), 'hi-x')
-  is(run(`export let f = () => "ab".concat("cd")`).f(), 'abcd')
+test('String: search / match / concat', () => {
+  cases([
+    ['search found', `() => "hello world".search("world")`, 6],
+    ['search not found', `() => "hello".search("xyz")`, -1],
+    ['match found', `() => "hello world".match("world").length`, 1],
+    ['match not found', `() => "hello".match("xyz")`, 0],
+    ['match result content', `() => "hello world".match("world")[0].length`, 5],
+    // Regression: untyped `s.concat(...)` fell through to dynamic dispatch and hit an
+    // internal "__ext_call never registered" error. Now routed via the runtime
+    // string/array ptr-type branch (string → __str_concat).
+    ['.concat on a dynamic (untyped) receiver: single arg', `(s) => s.concat("!")`, 'hi!', 'hi'],
+    ['.concat on a dynamic (untyped) receiver: two args', `(s) => s.concat("-", "x")`, 'hi-x', 'hi'],
+    ['.concat on a dynamic (untyped) receiver: literal receiver', `() => "ab".concat("cd")`, 'abcd'],
+  ])
 })
 
 // Documented divergence: `+` on two untyped params infers numeric addition (no
@@ -972,34 +811,24 @@ test('SSO 7-bit: literal === literal and heap === SSO-literal (mixed)', () => {
   is(run(`export let f = (s) => s.toUpperCase() === "ABCDEX" ? 1 : 0`).f('abcdef'), 0)
   is(run(`export let f = (s) => ("ab" + s) === "abcdef" ? 1 : 0`).f('cdef'), 1)         // heap concat === SSO-literal
 })
-test('SSO 7-bit: materialized concat round-trips length + tail char (slow copy path)', () => {
-  // "lit" + param and accumulator both materialize the result and read it back
-  // (param + param has a separate, pre-existing concat bug, so it is avoided here).
-  is(run(`export let f = (s) => { let x = "re" + s; return x.length*1000 + x.charCodeAt(x.length-1) }`).f('turn'), 6000 + 'n'.charCodeAt(0))
-  is(run(`export let f = () => { let s = ""; s += "re"; s += "sult"; return s.length*1000 + s.charCodeAt(5) }`).f(), 6000 + 't'.charCodeAt(0))
-})
-test('SSO 7-bit: slice produces a correct 6-char SSO', () => {
-  is(run(`export let f = (s) => s.slice(0,6)`).f('returns'), 'return')
-  is(run(`export let f = (s) => s.slice(1,6).charCodeAt(4)`).f('xresult'), 'result'.charCodeAt(4))
-})
-test('SSO 7-bit: indexOf / startsWith / endsWith on 6-char', () => {
-  is(run(`export let f = (s) => s.indexOf("def")`).f('abcdef'), 3)
-  is(run(`export let f = (s) => s.startsWith("abc") ? 1 : 0`).f('abcdef'), 1)
-  is(run(`export let f = (s) => s.endsWith("def") ? 1 : 0`).f('abcdef'), 1)
-})
-test('SSO 7-bit: toUpperCase / toLowerCase on 5-6 char', () => {
-  is(run(`export let f = (s) => s.toUpperCase()`).f('hello'), 'HELLO')
-  is(run(`export let f = (s) => s.toLowerCase()`).f('STRING'), 'string')
-})
-test('SSO 7-bit: number→string concat keeps digits (itoa SSO path)', () => {
-  is(run(`export let f = (n) => "P:" + n`).f(5), 'P:5')
-  is(run(`export let f = () => { let s = ""; for (let i=0;i<4;i++) s += i; return s }`).f(), '0123')
-})
-test('SSO 7-bit: Set/Map with 6-char string keys (collection hash)', () => {
-  is(run(`export let f = () => { let s = new Set(); s.add("string"); s.add("result"); return (s.has("string") && s.has("result") && !s.has("absent")) ? 1 : 0 }`).f(), 1)
-})
-test('SSO 7-bit: JSON.parse 4-char key/value round-trips', () => {
-  is(run(`export let f = () => JSON.parse('{"name":"jdef"}').name`).f(), 'jdef')
+test('SSO 7-bit: producers/consumers', () => {
+  cases([
+    // "lit" + param and accumulator both materialize the result and read it back
+    // (param + param has a separate, pre-existing concat bug, so it is avoided here).
+    ['materialized concat round-trips length + tail char (slow copy path): param concat', `(s) => { let x = "re" + s; return x.length*1000 + x.charCodeAt(x.length-1) }`, 6000 + 'n'.charCodeAt(0), 'turn'],
+    ['materialized concat round-trips length + tail char (slow copy path): accumulator', `() => { let s = ""; s += "re"; s += "sult"; return s.length*1000 + s.charCodeAt(5) }`, 6000 + 't'.charCodeAt(0)],
+    ['slice produces a correct 6-char SSO: slice(0,6)', `(s) => s.slice(0,6)`, 'return', 'returns'],
+    ['slice produces a correct 6-char SSO: slice(1,6).charCodeAt(4)', `(s) => s.slice(1,6).charCodeAt(4)`, 'result'.charCodeAt(4), 'xresult'],
+    ['indexOf / startsWith / endsWith on 6-char: indexOf', `(s) => s.indexOf("def")`, 3, 'abcdef'],
+    ['indexOf / startsWith / endsWith on 6-char: startsWith', `(s) => s.startsWith("abc") ? 1 : 0`, 1, 'abcdef'],
+    ['indexOf / startsWith / endsWith on 6-char: endsWith', `(s) => s.endsWith("def") ? 1 : 0`, 1, 'abcdef'],
+    ['toUpperCase / toLowerCase on 5-6 char: toUpperCase', `(s) => s.toUpperCase()`, 'HELLO', 'hello'],
+    ['toUpperCase / toLowerCase on 5-6 char: toLowerCase', `(s) => s.toLowerCase()`, 'string', 'STRING'],
+    ['number→string concat keeps digits (itoa SSO path): "P:" + n', `(n) => "P:" + n`, 'P:5', 5],
+    ['number→string concat keeps digits (itoa SSO path): accumulator loop', `() => { let s = ""; for (let i=0;i<4;i++) s += i; return s }`, '0123'],
+    ['Set/Map with 6-char string keys (collection hash)', `() => { let s = new Set(); s.add("string"); s.add("result"); return (s.has("string") && s.has("result") && !s.has("absent")) ? 1 : 0 }`, 1],
+    ['JSON.parse 4-char key/value round-trips', `() => JSON.parse('{"name":"jdef"}').name`, 'jdef'],
+  ])
 })
 
 // === ≤6-ASCII⇒SSO producer invariant (module/string.js header) ===
@@ -1025,41 +854,29 @@ test('SSO invariant: number formatting (mkstr/ftoa/static_str)', () => {
   is(run(`export let f = (n) => (n + "") === "NaN" ? 1 : 0`).f(NaN), 1)
   is(run(`export let f = (n) => n.toString(16) === "ff" ? 1 : 0`).f(255), 1)
 })
-test('SSO invariant: toUpperCase/toLowerCase of SSO stays SSO', () => {
-  is(run(`export let f = (s) => s.toUpperCase() === "ABCDEF" ? 1 : 0`).f('abcdef'), 1)
-  is(run(`export let f = (s) => s.slice(0, 5).toLowerCase() === "abcde" ? 1 : 0`).f('ABCDEXYZ'), 1)
-})
-test('SSO invariant: repeat / pad short results', () => {
-  is(run(`export let f = (s) => s.repeat(2) === "ababab".slice(0, 4) ? 1 : 0`).f('ab'), 1)
-  is(run(`export let f = (s) => s.padStart(5, "0") === "00abc" ? 1 : 0`).f('abc'), 1)
-  is(run(`export let f = (s) => s.padEnd(6, ".") === "abc..." ? 1 : 0`).f('abc'), 1)
-})
-test('SSO invariant: split pieces and trim results', () => {
-  is(run(`export let f = (s) => s.split(",")[1] === "bcdef" ? 1 : 0`).f('aaaaaaa,bcdef,cc'), 1)
-  is(run(`export let f = (s) => s.trim() === "abcde" ? 1 : 0`).f('   abcde   '), 1)
-})
-test('SSO invariant: JSON.parse 5-6 char strings (simple + escape paths)', () => {
-  is(run(`export let f = (s) => JSON.parse(s).k === "hello" ? 1 : 0`).f('{"k":"hello"}'), 1)
-  is(run(String.raw`export let f = (s) => JSON.parse(s).k === "a\nb" ? 1 : 0`).f('{"k":"a\\nb"}'), 1)
-})
-test('SSO invariant: URI codecs short results', () => {
-  is(run(`export let f = (s) => decodeURIComponent(s) === "a b" ? 1 : 0`).f('a%20b'), 1)
-  is(run(`export let f = (s) => encodeURIComponent(s) === "abc" ? 1 : 0`).f('abc'), 1)
-})
-test('SSO invariant: String.fromCharCode multi-arg', () => {
-  is(run(`export let f = () => String.fromCharCode(97, 98, 99, 100, 101) === "abcde" ? 1 : 0`).f(), 1)
-})
-test('SSO invariant: template literal short results (the $-name builder shape)', () => {
-  // The kernel builds wasm identifiers via \`$\${name}\` — a leaked short heap
-  // string here broke the self-compile ("Unknown global $add5").
-  is(run('export let f = (s) => `$${s}` === "$a5" ? 1 : 0').f('a5'), 1)
-  is(run('export let f = (s) => `x${s}y${s}` === "xa5ya5" ? 1 : 0').f('a5'), 1)
-  is(run('export let f = (n) => `f${n}` === "f12" ? 1 : 0').f(12), 1)
-})
-test('SSO invariant: long/non-ASCII strings still content-compare (heap fallback intact)', () => {
-  is(run(`export let f = (s) => (s + "n") === "function" ? 1 : 0`).f('functio'), 1)
-  is(run(`export let f = (s) => s === "héllo" ? 1 : 0`).f('héllo'), 1)
-  is(run(`export let f = (s) => (s + "é") === "aé" ? 1 : 0`).f('a'), 1)
+test('SSO invariant: producers/consumers', () => {
+  cases([
+    ['toUpperCase/toLowerCase of SSO stays SSO: toUpperCase', `(s) => s.toUpperCase() === "ABCDEF" ? 1 : 0`, 1, 'abcdef'],
+    ['toUpperCase/toLowerCase of SSO stays SSO: slice+toLowerCase', `(s) => s.slice(0, 5).toLowerCase() === "abcde" ? 1 : 0`, 1, 'ABCDEXYZ'],
+    ['repeat / pad short results: repeat', `(s) => s.repeat(2) === "ababab".slice(0, 4) ? 1 : 0`, 1, 'ab'],
+    ['repeat / pad short results: padStart', `(s) => s.padStart(5, "0") === "00abc" ? 1 : 0`, 1, 'abc'],
+    ['repeat / pad short results: padEnd', `(s) => s.padEnd(6, ".") === "abc..." ? 1 : 0`, 1, 'abc'],
+    ['split pieces and trim results: split', `(s) => s.split(",")[1] === "bcdef" ? 1 : 0`, 1, 'aaaaaaa,bcdef,cc'],
+    ['split pieces and trim results: trim', `(s) => s.trim() === "abcde" ? 1 : 0`, 1, '   abcde   '],
+    ['JSON.parse 5-6 char strings (simple + escape paths): simple', `(s) => JSON.parse(s).k === "hello" ? 1 : 0`, 1, '{"k":"hello"}'],
+    ['JSON.parse 5-6 char strings (simple + escape paths): escape', String.raw`(s) => JSON.parse(s).k === "a\nb" ? 1 : 0`, 1, '{"k":"a\\nb"}'],
+    ['URI codecs short results: decodeURIComponent', `(s) => decodeURIComponent(s) === "a b" ? 1 : 0`, 1, 'a%20b'],
+    ['URI codecs short results: encodeURIComponent', `(s) => encodeURIComponent(s) === "abc" ? 1 : 0`, 1, 'abc'],
+    ['String.fromCharCode multi-arg', `() => String.fromCharCode(97, 98, 99, 100, 101) === "abcde" ? 1 : 0`, 1],
+    // The kernel builds wasm identifiers via \`$\${name}\` — a leaked short heap
+    // string here broke the self-compile ("Unknown global $add5").
+    ['template literal short results (the $-name builder shape): $${s}', '(s) => `$${s}` === "$a5" ? 1 : 0', 1, 'a5'],
+    ['template literal short results (the $-name builder shape): x${s}y${s}', '(s) => `x${s}y${s}` === "xa5ya5" ? 1 : 0', 1, 'a5'],
+    ['template literal short results (the $-name builder shape): f${n}', '(n) => `f${n}` === "f12" ? 1 : 0', 1, 12],
+    ['long/non-ASCII strings still content-compare (heap fallback intact): concat to "function"', `(s) => (s + "n") === "function" ? 1 : 0`, 1, 'functio'],
+    ['long/non-ASCII strings still content-compare (heap fallback intact): non-ASCII equality', `(s) => s === "héllo" ? 1 : 0`, 1, 'héllo'],
+    ['long/non-ASCII strings still content-compare (heap fallback intact): non-ASCII concat', `(s) => (s + "é") === "aé" ? 1 : 0`, 1, 'a'],
+  ])
 })
 
 // === `x === "literal"` specialization (emit.js emitLooseEq) ===
@@ -1070,7 +887,7 @@ test('SSO invariant: long/non-ASCII strings still content-compare (heap fallback
 test('str-eq spec: heap concat === SSO literal is true (the soundness case)', () => {
   // `"i"+"f"` allocates a HEAP "if" with different bits than the inline SSO literal —
   // a pure i64.eq would wrongly say not-equal; the __str_eq fallback content-compares.
-  for (const opt of [false, 2]) {
+  for (const opt of levels(false, 2)) {
     is(jz(`let x = "i"+"f"; export let main = () => (x === "if") | 0`, { optimize: opt }).exports.main(), 1, `concat===lit @${opt}`)
     is(jz(`let x = "func"+"tion"; export let main = () => (x === "function") | 0`, { optimize: opt }).exports.main(), 1, `long concat===lit @${opt}`)
     is(jz(`let x = "i"+"g"; export let main = () => (x === "if") | 0`, { optimize: opt }).exports.main(), 0, `concat!==lit @${opt}`)
@@ -1294,7 +1111,7 @@ test('UTF-16 construction evaluates arguments before numeric coercion', () => {
       let b = () => { log += 'b'; return 0xDE00 };
       let s = String.${method}(a,b()); return s + '|' + log
     }`
-    is(run(src).f(), Function(src.replace('export ','')+';return f()')())
+    is(run(src).f(), oracle(src).f())
   }
 })
 

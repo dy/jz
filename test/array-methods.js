@@ -2,8 +2,9 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi, onKernel, adaptI64 } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { parse, has } from '../scripts/wat-probe.mjs'
+import { oracle, cases } from './util.js'
 
 function run(code) {
   const { module, instance } = jz(code)
@@ -63,16 +64,12 @@ test('.filter: none match', () => {
 
 // === .reduce ===
 
-test('.reduce: sum', () => {
-  is(run(`export let f = () => [1, 2, 3, 4, 5].reduce((s, x) => s + x, 0)`).f(), 15)
-})
-
-test('.reduce: product', () => {
-  is(run(`export let f = () => [1, 2, 3, 4].reduce((p, x) => p * x, 1)`).f(), 24)
-})
-
-test('.reduce: max', () => {
-  is(run(`export let f = () => [3, 7, 2, 9, 1].reduce((m, x) => { if (x > m) return x; return m }, 0)`).f(), 9)
+test('.reduce', () => {
+  cases([
+    ['sum', '() => [1, 2, 3, 4, 5].reduce((s, x) => s + x, 0)', 15],
+    ['product', '() => [1, 2, 3, 4].reduce((p, x) => p * x, 1)', 24],
+    ['max', '() => [3, 7, 2, 9, 1].reduce((m, x) => { if (x > m) return x; return m }, 0)', 9],
+  ])
 })
 
 // === .forEach ===
@@ -97,35 +94,28 @@ test('.find: not found', () => {
 
 // === .indexOf ===
 
-test('.indexOf: found', () => {
-  is(run(`export let f = () => [10, 20, 30].indexOf(20)`).f(), 1)
-})
-
-test('.indexOf: not found', () => {
-  is(run(`export let f = () => [10, 20, 30].indexOf(99)`).f(), -1)
-})
-
-// String equality must compare values, not NaN-boxed pointer bits — distinct
-// allocations of the same string literal land at different heap addresses, so
-// f64.eq treats them as unequal. indexOf/includes must route through __eq.
-test('.indexOf: string found', () => {
-  is(run(`export let f = () => ["A","B","C"].indexOf("B")`).f(), 1)
-})
-
-test('.indexOf: string via variable still matches', () => {
-  is(run(`export let f = () => { let x = "B"; return ["A","B","C"].indexOf(x) }`).f(), 1)
+test('.indexOf', () => {
+  cases([
+    ['found', '() => [10, 20, 30].indexOf(20)', 1],
+    ['not found', '() => [10, 20, 30].indexOf(99)', -1],
+    // String equality must compare values, not NaN-boxed pointer bits — distinct
+    // allocations of the same string literal land at different heap addresses, so
+    // f64.eq treats them as unequal. indexOf/includes must route through __eq.
+    ['string found', '() => ["A","B","C"].indexOf("B")', 1],
+    ['string via variable still matches', '() => { let x = "B"; return ["A","B","C"].indexOf(x) }', 1],
+  ])
 })
 
 // === .lastIndexOf ===
 // Array.prototype.lastIndexOf — the highest matching index. Previously absent, so the
 // method was force-narrowed to String (STRING_ONLY_METHODS) and `arr.lastIndexOf(x)`
 // silently returned -1. Now a real array path; an UNTYPED receiver forks string-vs-array.
-test('.lastIndexOf: last occurrence wins', () => {
-  is(run(`export let f = () => [1, 5, 3, 5, 2].lastIndexOf(5)`).f(), 3)
-  is(run(`export let f = () => [1, 5, 1, 3].lastIndexOf(1)`).f(), 2)
-})
-test('.lastIndexOf: not found', () => {
-  is(run(`export let f = () => [1, 2, 3].lastIndexOf(9)`).f(), -1)
+test('.lastIndexOf', () => {
+  cases([
+    ['last occurrence wins [1,5,3,5,2]', '() => [1, 5, 3, 5, 2].lastIndexOf(5)', 3],
+    ['last occurrence wins [1,5,1,3]', '() => [1, 5, 1, 3].lastIndexOf(1)', 2],
+    ['not found', '() => [1, 2, 3].lastIndexOf(9)', -1],
+  ])
 })
 test('.lastIndexOf: untyped param array (no longer force-narrowed to string)', () => {
   is(runHost(`export let f = (a) => a.lastIndexOf(5)`).f([1, 5, 3, 5]), 3)   // host-marshalled array arg
@@ -175,27 +165,26 @@ test('.join: a program with no string of its own', () => {
     [`export let f = (s) => [1, 2].join(s)`, ['x']],
     [`export let f = () => [1, 2].join(1)`, []],
   ]) {
-    const expected = new Function(src.replace('export let f =', 'return'))()(...args)
-    for (const optimize of [0, 1, 2]) is(runHost(src, { optimize }).f(...args), expected, `${src} O${optimize}`)
+    const expected = oracle(src).f(...args)
+    for (const optimize of levels(0, 1, 2)) is(runHost(src, { optimize }).f(...args), expected, `${src} O${optimize}`)
   }
 })
 
 // === .sort ===
 
-test('.sort: numeric ascending', () => {
-  is(run(`export let f = () => {
+test('.sort: numeric', () => {
+  cases([
+    ['ascending', `() => {
     let a = [3, 1, 2]
     a.sort((x, y) => x - y)
     return a[0] * 100 + a[1] * 10 + a[2]
-  }`).f(), 123)
-})
-
-test('.sort: numeric descending', () => {
-  is(run(`export let f = () => {
+  }`, 123],
+    ['descending', `() => {
     let a = [1, 3, 2]
     a.sort((x, y) => y - x)
     return a[0] * 100 + a[1] * 10 + a[2]
-  }`).f(), 321)
+  }`, 321],
+  ])
 })
 
 test('.sort: returns the array (mutates in place)', () => {
@@ -208,31 +197,27 @@ test('.sort: returns the array (mutates in place)', () => {
   is(f(), 13)
 })
 
-test('.sort: empty array', () => {
-  is(run(`export let f = () => {
+test('.sort: empty, single-element, and stable ties', () => {
+  cases([
+    ['empty array', `() => {
     let a = []
     a.sort((x, y) => x - y)
     return a.length
-  }`).f(), 0)
-})
-
-test('.sort: single-element array', () => {
-  is(run(`export let f = () => {
+  }`, 0],
+    ['single-element array', `() => {
     let a = [42]
     a.sort((x, y) => x - y)
     return a[0]
-  }`).f(), 42)
-})
-
-test('.sort: stable for equal keys', () => {
-  // Sort by tens digit only — units digit ties must preserve insertion order.
-  // Input: [22, 11, 21, 12, 23] sorted by floor(x/10) →
-  // 1x's first (in original order: 11, 12), then 2x's (in original order: 22, 21, 23).
-  is(run(`export let f = () => {
+  }`, 42],
+    // Sort by tens digit only — units digit ties must preserve insertion order.
+    // Input: [22, 11, 21, 12, 23] sorted by floor(x/10) →
+    // 1x's first (in original order: 11, 12), then 2x's (in original order: 22, 21, 23).
+    ['stable for equal keys', `() => {
     let a = [22, 11, 21, 12, 23]
     a.sort((x, y) => Math.floor(x / 10) - Math.floor(y / 10))
     return a[0] * 10000 + a[1] * 100 + a[2]
-  }`).f(), 111222)
+  }`, 111222],
+  ])
 })
 
 test('.sort: comparator may mutate outer let', () => {
@@ -266,54 +251,40 @@ test('.sort: default string sort on numbers (lexicographic)', () => {
 
 // === .shift ===
 
-test('.shift: repeated shifts update visible array', () => {
-  is(run(`export let f = () => {
+test('.shift', () => {
+  cases([
+    ['repeated shifts update visible array', `() => {
     let a = [10, 20, 30, 40]
     let x = a.shift()
     let y = a.shift()
     return x + y * 10 + a.length * 100 + a[0] * 1000
-  }`).f(), 30410)
-})
-
-test('.shift: aliases follow shifted storage', () => {
-  is(run(`export let f = () => {
+  }`, 30410],
+    ['aliases follow shifted storage', `() => {
     let a = [5, 6, 7]
     let b = a
     a.shift()
     return b.length * 100 + b[0] * 10 + b[1]
-  }`).f(), 267)
-})
-
-test('.shift: push after shift appends after live tail', () => {
-  is(run(`export let f = () => {
+  }`, 267],
+    ['push after shift appends after live tail', `() => {
     let a = [1, 2, 3]
     a.shift()
     a.push(9)
     return a.length * 100 + a[0] * 10 + a[2]
-  }`).f(), 329)
-})
-
-test('.shift: dynamic properties move with array', () => {
-  is(run(`export let f = () => {
+  }`, 329],
+    ['dynamic properties move with array', `() => {
     let a = [1, 2, 3]
     a.name = 7
     a.shift()
     return a.name + a.length * 100 + a[0] * 10
-  }`).f(), 227)
-})
-
-test('.shift: dynamic properties survive a second shift (global-table rekey)', () => {
-  is(run(`export let f = () => {
+  }`, 227],
+    ['dynamic properties survive a second shift (global-table rekey)', `() => {
     let a = [1, 2, 3, 4]
     a.name = 7
     a.shift()
     a.shift()
     return a.name + a.length * 100 + a[0] * 10
-  }`).f(), 237)
-})
-
-test('.shift then grow: dynamic properties survive both (global-table move, then relocate)', () => {
-  is(run(`export let f = () => {
+  }`, 237],
+    ['then grow: dynamic properties survive both (global-table move, then relocate)', `() => {
     let a = [1, 2]
     a.name = 9
     a.shift()
@@ -321,14 +292,11 @@ test('.shift then grow: dynamic properties survive both (global-table move, then
     a.push(4)
     a.push(5)
     return a.name + a.length * 100 + a[0] * 10 + a[3]
-  }`).f(), 434)
-})
-
-// A dyn-props membership filter over the global table must never skip a TRUE
-// entry: exercise a props-carrying array (forces the global table non-empty)
-// alongside a plain array whose shift/grow must stay a correct no-op miss.
-test('.shift/.push: plain array unaffected by another array\'s dynamic props (filter miss stays correct)', () => {
-  is(run(`export let f = () => {
+  }`, 434],
+    // A dyn-props membership filter over the global table must never skip a TRUE
+    // entry: exercise a props-carrying array (forces the global table non-empty)
+    // alongside a plain array whose shift/grow must stay a correct no-op miss.
+    ["/.push: plain array unaffected by another array's dynamic props (filter miss stays correct)", `() => {
     let tagged = [1, 2, 3]
     tagged.name = 7
     tagged.shift()
@@ -337,7 +305,8 @@ test('.shift/.push: plain array unaffected by another array\'s dynamic props (fi
     plain.push(40)
     plain.push(50)
     return tagged.name + plain.length * 100 + plain[0] * 10 + plain[2]
-  }`).f(), 647)
+  }`, 647],
+  ])
 })
 
 test('.shift then .push: the head slack is reused, aliases and properties follow', () => {
@@ -367,8 +336,8 @@ test('.shift then .push: the head slack is reused, aliases and properties follow
   const ops = [0, 0, 6, 2, 0, 4, 1, 5, 2, 0, 1, 3, 0, 11, 0, 6, 1, 0, 0, 0, 10, 0, 10, 4, 10, 0, 1, 12, 0, 0, 0, 13, 1, 1, 1, 7, 12]
   const xs = [30, 48, 12, 2, 36, 48, 30, 28, 18, 6, 16, 22, 12, 34, 20, 30, 34, 34, 14, 6, 22, 44, 38, 44, 14, 8, 20, 14, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   for (let k = 0; k < 40; k++) { ops.push(0, 1); xs.push(k, k) }   // the queue past its capacity: the slide
-  const want = Function(src.replace('export let run', 'var run') + '; return run')()(ops, xs, ops.length)
-  for (const optimize of [0, 1, 2])
+  const want = oracle(src).run(ops, xs, ops.length)
+  for (const optimize of levels(0, 1, 2))
     is(jz(src, { optimize }).exports.run(new Float64Array(ops), new Float64Array(xs), ops.length), want, `O${optimize}`)
 })
 
@@ -422,26 +391,21 @@ test('.join: comma sep', () => {
 
 // === .flat ===
 
-test('.flat: nested arrays', () => {
-  is(run(`export let f = () => [[1,2],[3,4],[5]].flat().length`).f(), 5)
-})
-
-test('.flat: mixed', () => {
-  is(run(`export let f = () => { let a = [[10, 20], 30, [40]].flat(); return a[0] + a[1] + a[2] + a[3] }`).f(), 100)
+test('.flat', () => {
+  cases([
+    ['nested arrays', '() => [[1,2],[3,4],[5]].flat().length', 5],
+    ['mixed', '() => { let a = [[10, 20], 30, [40]].flat(); return a[0] + a[1] + a[2] + a[3] }', 100],
+  ])
 })
 
 // === .flatMap ===
 
-test('.flatMap: expand', () => {
-  is(run(`export let f = () => [1, 2, 3].flatMap((x) => [x, x * 2]).length`).f(), 6)
-})
-
-test('.flatMap: values', () => {
-  is(run(`export let f = () => { let a = [1, 2].flatMap((x) => [x, x * 10]); return a[0] + a[1] + a[2] + a[3] }`).f(), 33)
-})
-
-test('.flatMap: preserves prior output across growth', () => {
-  is(run(`export let f = () => { let a = [1, 2, 3, 4, 5].flatMap((x) => [x, x + 10]); return a.length * 100 + a[0] + a[9] }`).f(), 1016)
+test('.flatMap', () => {
+  cases([
+    ['expand', '() => [1, 2, 3].flatMap((x) => [x, x * 2]).length', 6],
+    ['values', '() => { let a = [1, 2].flatMap((x) => [x, x * 10]); return a[0] + a[1] + a[2] + a[3] }', 33],
+    ['preserves prior output across growth', '() => { let a = [1, 2, 3, 4, 5].flatMap((x) => [x, x + 10]); return a.length * 100 + a[0] + a[9] }', 1016],
+  ])
 })
 
 // === Chained ===
@@ -1009,7 +973,7 @@ test('.at: BigInt64Array/BigUint64Array', () => {
   is(f(), 1)
   is(u(), 1)
   is(arith(), 1)
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const n = jz(`export let f = () => Number(new BigInt64Array([7n]).at(0))`, { optimize }).exports.f
     is(n(), 7, `Number(BigInt64Array#at), O${optimize}`)
   }
@@ -1025,7 +989,7 @@ test('.at: erased and polymorphic TypedArray preserves Number versus BigInt iden
     let value = which ? new BigInt64Array([7n]) : new Int8Array([7])
     return value.at(0)
   }`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const f = jz(src, { optimize }).exports.f
     is(f(0), 7, `numeric arm, O${optimize}`)
     is(f(1), 7n, `BigInt arm, O${optimize}`)
@@ -1764,7 +1728,7 @@ test('runtime-polymorphic TypedArray elements preserve Number versus BigInt iden
     let value = which ? new BigInt64Array([7n]) : new Int8Array([7])
     return value[0]
   }`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const read = jz(src, { optimize }).exports.read
     is(read(0), 7, `numeric arm, O${optimize}`)
     is(read(1), 7n, `BigInt arm, O${optimize}`)
@@ -1777,7 +1741,7 @@ test('runtime-polymorphic TypedArray writes validate the destination domain', ()
     value[0] = which ? 7n : 300
     return value[0]
   }`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const write = jz(src, { optimize }).exports.write
     is(write(0), 44, `numeric arm, O${optimize}`)
     is(write(1), 7n, `BigInt arm, O${optimize}`)
@@ -1791,7 +1755,7 @@ test('runtime-polymorphic TypedArray writes reject mismatched indirect result do
     value[0] = producers[bigValue]()
     return value[0]
   }`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const write = jz(src, { optimize }).exports.write
     is(write(0, 0), 7, `Number → numeric, O${optimize}`)
     is(write(1, 1), 7n, `BigInt → BigInt, O${optimize}`)
@@ -1808,7 +1772,7 @@ test('runtime-polymorphic TypedArray writes tag computed named-method results', 
     value[0] = (bigValue ? i64 : i32).parse()
     return value[0]
   }`
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const write = jz(src, { optimize }).exports.write
     is(write(0, 0), 7, `Number → numeric, O${optimize}`)
     is(write(1, 1), 7n, `BigInt → BigInt, O${optimize}`)
@@ -1823,7 +1787,7 @@ test('BigInt TypedArray copy methods retain element provenance through local ass
     ['slice', `new BigInt64Array([1n]).slice()`],
     ['filter', `new BigInt64Array([1n]).filter(x => true)`],
   ]
-  for (const optimize of [0, 2, 3]) for (const [name, expr] of methods) {
+  for (const optimize of levels(0, 2, 3)) for (const [name, expr] of methods) {
     const f = jz(`export let f = () => { let result = ${expr}; return result[0] === 1n ? 1 : 0 }`, { optimize }).exports.f
     is(f(), 1, `${name}, O${optimize}`)
   }
@@ -1975,11 +1939,11 @@ test('array callbacks: a mapped element that may be null keeps its null test; fi
   export let g = (k) => { const emitted = [["f64.const", 1], k ? ["local.get", "$n"] : ["f64.const", 2]]; const slots = emitted.map(v => bits(v)); return slots.every(b => b !== null) ? 1 : 0 }
   export let h = (k) => { const xs = [1, 2, 3].map(x => x === k ? null : x * 2); return xs.filter(x => x !== null).length * 10 + (xs.find(x => x === null) === null ? 1 : 0) + (xs.findLast(x => x === 7) === undefined ? 100 : 0) }
   export let e = (...vals) => { const slots = vals.map(v => mark(v)); return slots.every(b => b !== null) ? 1 : 0 }`
-  const oracle = Function(src.replaceAll('export ', '') + ';return {f,g,h,e}')()
-  for (const optimize of [false, 1, 2]) {
+  const host = oracle(src)
+  for (const optimize of levels(false, 1, 2)) {
     const ex = jz(src, { optimize }).exports
-    for (const k of [0, 1, 2]) for (const name of ['f', 'g', 'h']) is(ex[name](k), oracle[name](k), `${name}(${k}) O${optimize || 0}`)
-    for (const k of [0, 2]) is(ex.e(k, 2), oracle.e(k, 2), `e(${k}, 2) O${optimize || 0}`)
+    for (const k of [0, 1, 2]) for (const name of ['f', 'g', 'h']) is(ex[name](k), host[name](k), `${name}(${k}) O${optimize || 0}`)
+    for (const k of [0, 2]) is(ex.e(k, 2), host.e(k, 2), `e(${k}, 2) O${optimize || 0}`)
   }
 })
 
@@ -2020,10 +1984,10 @@ test('element kind: the summary cell joins every store, so a non-number store ke
     'numeric stores keep the read numeric': `export let f = (i) => { const a = [1, 2]; a.push(3); a[0] = 4; a.unshift(5); return a[i] === 'y' ? 1 : 0 }`,
   }
   for (const [name, src] of Object.entries(cases)) {
-    const oracle = Function(src.replace('export let f', 'var f') + '; return f')()
-    for (const optimize of [0, 1, 2, 3]) {
+    const host = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3)) {
       const { f } = jz(src, { optimize }).exports
-      for (const i of [0, 1]) is(f(i), oracle(i), `${name} (i=${i}) O${optimize}`)
+      for (const i of [0, 1]) is(f(i), host(i), `${name} (i=${i}) O${optimize}`)
     }
   }
 })
@@ -2053,10 +2017,10 @@ test('element kind: a module array reads its cell, joined over every function', 
       export let f = (i) => { a.push(3); a[0] = 4; return a[i] === 'y' ? 1 : 0 }`,
   }
   for (const [name, src] of Object.entries(cases)) {
-    const oracle = Function(src.replace('export let f', 'var f') + '; return f')()
-    for (const optimize of [0, 1, 2, 3]) {
+    const host = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3)) {
       const { f } = jz(src, { optimize }).exports
-      for (const i of [0, 1]) is(f(i), oracle(i), `${name} (i=${i}) O${optimize}`)
+      for (const i of [0, 1]) is(f(i), host(i), `${name} (i=${i}) O${optimize}`)
     }
   }
 })
@@ -2077,11 +2041,11 @@ test('element kind: an array every store into which is a number reads numbers wi
       export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += T[i & 3]; return s }`,
   }
   for (const [name, src] of Object.entries(cases)) {
-    for (const optimize of [0, 2]) {
+    for (const optimize of levels(0, 2)) {
       const wat = compile(src, { wat: true, optimize })
       ok(!/\$__to_num[ )]/.test(wat), `${name} O${optimize}: no ToNumber on the element read`)
     }
-    const oracle = Function(src.replace('export let f', 'var f') + '; return f')()
-    is(jz(src).exports.f(4), oracle(4), `${name}: value`)
+    const host = oracle(src).f
+    is(jz(src).exports.f(4), host(4), `${name}: value`)
   }
 })

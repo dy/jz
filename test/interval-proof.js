@@ -4,7 +4,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 const GUARD = 'x >= 0 && x < 4 && y >= 0 && y < 4 && src[y * 4 + x] === 1'
 const KERNEL = `
@@ -87,11 +88,6 @@ const AFFINE_WRAP_GUARD = KERNEL.replace(
   'x >= 0 && x < 4',
   'x + 2147483647 >= 0 && x + 2147483647 < 4')
 
-const jsExports = (src) => {
-  const exports = {}
-  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(exports)
-  return exports
-}
 const sameOutput = (a, b) => typeof a === 'string' ? a === b
   : a.length === b.length && a.every((x, i) => x === b[i])
 const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
@@ -117,8 +113,8 @@ const INPUTS = [
 ]
 
 test('interval proof: a named const carries conjunctive i32 bounds to a typed store', () => {
-  const native = jsExports(KERNEL).mark
-  for (const optimize of [0, 2, 3]) {
+  const native = oracle(KERNEL).mark
+  for (const optimize of levels(0, 2, 3)) {
     const wasm = jz(KERNEL, { optimize }).exports.mark
     for (const args of INPUTS)
       is(wasm(...args), native(...args), `O${optimize} (${args.map(String).join(', ')}): Node parity`)
@@ -127,7 +123,7 @@ test('interval proof: a named const carries conjunctive i32 bounds to a typed st
 
 test('interval proof: named-guard WAT is raw at O0/O2/O3; sibling controls fail closed', () => {
   if (onKernel()) return // the self-compile kernel returns bytes, not host-inspectable WAT
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     const named = compile(KERNEL, { optimize, wat: true })
     const inline = compile(INLINE, { optimize, wat: true })
     ok(!hasTypedBoundsTemp(named), `O${optimize}: named guard removes the typed bounds branch`)
@@ -152,7 +148,7 @@ test('interval proof: named-guard WAT is raw at O0/O2/O3; sibling controls fail 
 })
 
 test('interval proof: effects, stale facts, NaN, signed values, and aliasing stay exact', () => {
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     for (const [name, src, args] of [
       ['aliased read/write', KERNEL, [1, 1]],
       ['stale dependency', STALE_DEP, [1, 1]],
@@ -164,7 +160,7 @@ test('interval proof: effects, stale facts, NaN, signed values, and aliasing sta
       ['overflowing index', OVERFLOW_INDEX, [1, 3]],
       ['wrapping affine guard', AFFINE_WRAP_GUARD, [-2147483648, 1]],
     ]) {
-      const native = jsExports(src).mark
+      const native = oracle(src).mark
       const wasm = jz(src, { optimize }).exports.mark
       is(wasm(...args), native(...args), `O${optimize}: ${name} matches Node`)
     }
@@ -173,7 +169,7 @@ test('interval proof: effects, stale facts, NaN, signed values, and aliasing sta
 
 test('interval proof: output is independent of prior guard shapes', () => {
   const predecessors = [LET_FLAG, STALE_DEP, REPEATED_KEY, EFFECTFUL_GUARD, CALL_MUTATION, F64_COORDS, OR_GUARD]
-  for (const optimize of [0, 2, 3]) {
+  for (const optimize of levels(0, 2, 3)) {
     assertCompileHistoryIndependent(KERNEL, predecessors, { optimize }, `O${optimize} binary`)
     if (!onKernel())
       assertCompileHistoryIndependent(KERNEL, predecessors, { optimize, wat: true }, `O${optimize} WAT`)
@@ -209,14 +205,14 @@ const FIELD_ESCAPES = [
 test('interval proof: xor/shift cursors are proven inside their field', () => {
   const wat = compile(BIT_REVERSAL, { optimize: 3, wat: true })
   ok(!hasTypedBoundsTemp(wat), 'bit-reversal accesses are raw')
-  const native = jsExports(BIT_REVERSAL).rev
-  for (const optimize of [0, 2, 3]) {
+  const native = oracle(BIT_REVERSAL).rev
+  for (const optimize of levels(0, 2, 3)) {
     const wasm = jz(BIT_REVERSAL, { optimize }).exports.rev
     is(wasm(1), native(1), `O${optimize}: permutation matches Node`)
     is(wasm(7), native(7), `O${optimize}: permutation of another fill matches Node`)
   }
   for (const [name, src] of FIELD_ESCAPES) {
     ok(hasCheckedTypedAccess(compile(src, { optimize: 3, wat: true })), `${name}: access stays checked`)
-    is(jz(src).exports.f(100), jsExports(src).f(100), `${name}: matches Node`)
+    is(jz(src).exports.f(100), oracle(src).f(100), `${name}: matches Node`)
   }
 })

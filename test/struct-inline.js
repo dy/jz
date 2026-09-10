@@ -14,17 +14,13 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
+import { levels } from './_matrix.js'
 
-const jsEval = (src) => {
-  const exports = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'const $1 = exports.$1 ='))(exports)
-  return exports
-}
 
 const both = (src, name = 'main') => {
-  const truth = jsEval(src)[name]()
-  for (const optimize of [false, true])
+  const truth = oracle(src)[name]()
+  for (const optimize of levels(false, true))
     is(run(src, { optimize }).exports?.[name]() ?? run(src, { optimize })[name](), truth, `${name} bit-matches JS (optimize:${optimize})`)
 }
 
@@ -372,7 +368,7 @@ test('union inline: packed carrier is JS-exact and fully devirtualized', () => {
       }
       return h
     }`
-  const host = jsEval(SRC).main()
+  const host = oracle(SRC).main()
   is(run(SRC, { optimize: 'speed' }).main(), host)
   const wat = compile(SRC, { optimize: { level: 'speed', watr: false }, wat: true })
   const seg = String(wat)
@@ -420,8 +416,8 @@ test('union inline: cursor param crosses the call — packed, i32 ladder, exact'
       }
       return h
     }`
-  const host = jsEval(SRC).main()
-  for (const optimize of [false, 'speed']) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
+  const host = oracle(SRC).main()
+  for (const optimize of levels(false, 'speed')) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
   // Reference mode: unionInline:false disables the representation wholesale —
   // the three-way differential leg (off / on / plain JS above).
   is(run(SRC, { optimize: { level: 'speed', unionInline: false } }).main(), host, 'JS-exact (unionInline:false)')
@@ -491,8 +487,8 @@ test('union inline: non-grammar cursor-param uses fail closed, values exact', ()
   }
   for (const [name, [read, extra = '']] of Object.entries(CASES)) {
     const src = SRC(read, extra)
-    const truth = jsEval(src).main()
-    for (const optimize of [false, 'speed'])
+    const truth = oracle(src).main()
+    for (const optimize of levels(false, 'speed'))
       is(run(src, { optimize }).main(), truth, `${name} JS-exact (optimize:${optimize})`)
   }
 })
@@ -521,6 +517,6 @@ test('union inline: reassigned cursor param fails closed, value exact', () => {
       for (let i = 0; i < rows.length; i++) h = (h + measure(rows[i], alt)) | 0
       return h
     }`
-  const host = jsEval(SRC).main()
-  for (const optimize of [false, 'speed']) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
+  const host = oracle(SRC).main()
+  for (const optimize of levels(false, 'speed')) is(run(SRC, { optimize }).main(), host, `JS-exact (optimize:${optimize})`)
 })

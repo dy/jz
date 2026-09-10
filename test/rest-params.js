@@ -216,17 +216,6 @@ test('Object.assign: extend from literal', () => {
   is(f(), 6)
 })
 
-test('Object.assign: extend from multiple sources', () => {
-  const { f } = run(`export let f = () => {
-    let a = {x: 1}
-    let b = {y: 2}
-    let c = {z: 3}
-    Object.assign(a, b, c)
-    return a.x + a.y + a.z
-  }`)
-  is(f(), 6)
-})
-
 test('Object.assign: original props unchanged', () => {
   const { f } = run(`export let f = () => {
     let a = {x: 10}

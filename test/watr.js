@@ -1,6 +1,6 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, levels } from './_matrix.js'
 import jz from '../index.js'
 import { compile as nativeCompile } from 'watr'
 import { readFileSync, readdirSync } from 'fs'
@@ -49,15 +49,13 @@ const COMPILE_MODULES = {
 }
 
 const watrJs = readFileSync(`${WATR_ROOT}/watr.js`, 'utf8')
-let topLevelCompile
 
-function compiledWatr() {
-  if (!topLevelCompile) {
-    const inst = withRawCarrier(() => jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 }))
-    topLevelCompile = inst.exports.compile
-  }
-  return topLevelCompile
-}
+// The library builds (~2 s each) happen once per file: the jz-compiled watr.js
+// package entry, and its compile.js graph for the metacircular checks.
+let watrBuild, compileJsBuild
+const compiledWatrBuild = () => watrBuild ??= withRawCarrier(() => jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 }))
+const compiledWatr = () => compiledWatrBuild().exports.compile
+const compiledCompileJs = () => compileJsBuild ??= withRawCarrier(() => jz(watrSrc('compile.js'), { jzify: true, memory: 4096, modules: COMPILE_MODULES }))
 
 function sameWasm(name, wat, compile = compiledWatr()) {
   const jzBin = compile(wat)
@@ -230,9 +228,7 @@ test('watr bug: branch hints - branch hints section not found', () => {
 
 test('watr: top-level package entry compiles', () => {
   if (onWasi()) return  // wasi: host global WebAssembly
-  const compiled = withRawCarrier(() => jz.compile(watrJs, { jzify: true, modules: ENTRY_MODULES }))
-  ok(compiled instanceof Uint8Array, 'top-level watr entry compiles to wasm bytes')
-  ok(new WebAssembly.Module(compiled) instanceof WebAssembly.Module, 'top-level watr output is valid wasm')
+  ok(compiledWatrBuild().module instanceof WebAssembly.Module, 'top-level watr output is valid wasm')
 })
 
 test('watr: top-level package entry instantiates', () => {
@@ -265,7 +261,7 @@ test('Map.set: omitted value stores undefined and keeps key present', () => {
 })
 
 test('watr: compiled compile.js handles empty func module', async () => {
-  const inst = await withRawCarrier(() => jz(watrSrc('compile.js'), { jzify: true, modules: COMPILE_MODULES }))
+  const inst = compiledCompileJs()
   sameWasm('empty func module', '(module (func))', inst.exports.default)
 })
 
@@ -311,7 +307,7 @@ test('jz: const-table bigint prop read survives whole-program write hazard', () 
     const _hx8 = (n) => n.toString(16).padStart(8, "0")
     export const i64Hex = bits => "0x" + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))
     export const nanPrefixHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS)`
-  for (const optimize of [false, 3]) {
+  for (const optimize of levels(false, 3)) {
     const { exports } = jz(`
       import { LAYOUT, i64Hex, nanPrefixHex } from "./layout.js"
       export const run = () => i64Hex(LAYOUT.NAN_PREFIX_BITS) + "|" + nanPrefixHex()
@@ -334,7 +330,7 @@ test('jz: bigint param loop-reassigned through a sink keeps one representation',
     let limits = (s) => uleb(BigInt(s), [])
     export let run = () => { let r = limits("300"); return r[0] * 1000 + r[1] }
   `
-  for (const optimize of [false, 3]) {
+  for (const optimize of levels(false, 3)) {
     const { exports } = jz(src, { jzify: true, optimize })
     is(exports.run(), 44002, `uleb bytes O${optimize || 0}`)
   }
@@ -354,12 +350,7 @@ test('jz: bigint param loop-reassigned through a sink keeps one representation',
 })
 
 test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {
-  const inst = await withRawCarrier(() => jz(watrSrc('compile.js'), {
-    jzify: true,
-    memory: 4096,
-    modules: COMPILE_MODULES,
-  }))
-  const jzCompile = inst.exports.default
+  const jzCompile = compiledCompileJs().exports.default
   ok(typeof jzCompile === 'function', 'watr.wasm exports default compile()')
 
   const dir = new URL('./watr-examples/', import.meta.url)
@@ -381,15 +372,7 @@ test('watr metacircular: jz-built watr.wasm produces byte-identical output', asy
 // These exercise the full jz→watr pipeline (parse + print + compile) and
 // reproduce actual bugs that only manifest when watr is compiled by jz.
 
-let topLevelInstance
-
-function compiledWatrInstance() {
-  if (!topLevelInstance) {
-    const inst = withRawCarrier(() => jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 }))
-    topLevelInstance = inst.exports
-  }
-  return topLevelInstance
-}
+const compiledWatrInstance = () => compiledWatrBuild().exports
 
 function instantiateWat(wat) {
   const { parse, print, compile } = compiledWatrInstance()

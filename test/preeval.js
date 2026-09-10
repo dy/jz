@@ -1,13 +1,13 @@
 // preEval — compile-time constant folding (src/prepare/pre-eval.js)
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { constNumExpr, constIntExpr } from '../src/static.js'
 import { ctx } from '../src/ctx.js'
 import { scalarCase } from './_scalar-core-cases.js'
+import { oracle, run } from './util.js'
 
-function run(code, opts) { return jz(code, opts).exports }
 
 // ============================================================================
 // Fold-fires pins — WAT contains the LITERAL, not the runtime ops/calls.
@@ -272,8 +272,8 @@ test('constant facts: module, local and capture folds preserve boundaries and bi
     'export function f(x){const z=-0;const g=()=>1/z;return g()}',
     'const Z=1/0;export function f(x){return Z+x}',
   ]
-  for (const optimize of [0, 2, 'speed', 'size']) for (const source of bodies) {
-    const expected = Function(source.replace('export ', '') + ';return f')()
+  for (const optimize of levels(0, 2, 'speed', 'size')) for (const source of bodies) {
+    const expected = oracle(source).f
     const { f } = run(source, { optimize })
     for (const x of [0, 4, -1, 4]) is(f(x), expected(x), `${optimize}: ${source}`)
   }

@@ -11,13 +11,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 
-const jsEval = (src) => {
-  const exports = {}
-  new Function('exports', src.replace(/export let (\w+) =/g, 'const $1 = exports.$1 ='))(exports)
-  return exports
-}
 
 // The word-frequency shape: kernel reads `words[toks[i]]` per token while a
 // dictionary receiver takes keyed writes and a clean helper is called.
@@ -49,7 +44,7 @@ test('never-grown: read-only array param reads raw base (no __ptr_offset per rea
   ok(body, 'kernel emitted')
   const loop = body.slice(body.indexOf('(loop'))
   ok(!/call \$__ptr_offset\b/.test(loop), 'token loop resolves no array base')
-  is(run(src, { optimize: 'speed' }).main(), jsEval(src).main(), 'bit-matches plain JS')
+  is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'bit-matches plain JS')
 })
 
 test('never-grown: fail-closed when the body grows any possibly-array receiver', () => {
@@ -72,7 +67,7 @@ export let main = () => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(/call \$__(?:ptr_offset|arr_typed_(?:obj_)?set_idx)\b|__inl\d|__poff\d/.test(body), 'forwarding-aware base resolution kept')
-  is(run(src, { optimize: 'speed' }).main(), jsEval(src).main(), 'value exact')
+  is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
 })
 
 test('never-grown: fail-closed when a transitive callee grows arrays', () => {
@@ -92,7 +87,7 @@ export let main = () => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(/call \$__ptr_offset\b|call \$__typed_idx\b|__inl\d|__poff\d/.test(body), 'callee growth keeps forwarding-aware reads')
-  is(run(src, { optimize: 'speed' }).main(), jsEval(src).main(), 'value exact')
+  is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
 })
 
 test('never-grown: fail-closed when the param itself escapes', () => {
@@ -114,5 +109,5 @@ export let main = () => {
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(/call \$__ptr_offset\b|__inl\d|__poff\d/.test(body), 'escaping param keeps forwarding-aware reads')
-  is(run(src, { optimize: 'speed' }).main(), jsEval(src).main(), 'value exact')
+  is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
 })

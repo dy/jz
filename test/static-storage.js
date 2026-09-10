@@ -8,7 +8,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
-import { onKernel } from './_matrix.js'
+import { onKernel, levels } from './_matrix.js'
 
 const DSP = `const a = new Float64Array(64); const b = new Float64Array(64)
 export let f = (x) => {
@@ -26,7 +26,7 @@ test('static storage: module-scope constant-length typed arrays need no allocato
   ok(!/__alloc_hdr/.test(wat), 'no header construction at start')
   const bytes = compile(DSP, { optimize: 'size', alloc: false })
   ok(bytes.length <= 300, `typed row is ${bytes.length} bytes; the prototype's was 287`)
-  for (const optimize of [0, 1, 2, 3, 'size']) {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const { exports } = instantiate(compile(DSP, { optimize }))
     is(exports.f(3), 4480, `optimize ${optimize}`)
     is(exports.f(0), 4096)
@@ -107,7 +107,7 @@ test('static storage: a typed global rewritten inside a function keeps no per-fu
     export let get = (n) => fit(n)
     export let len = () => cur.length
     export let count = () => grows`
-  for (const optimize of [0, 1, 2]) {
+  for (const optimize of levels(0, 1, 2)) {
     const { exports } = jz(src, { optimize })
     is(exports.len(), 0)
     is(exports.get(3), -1); is(exports.get(3), -1); is(exports.get(5), -1)
