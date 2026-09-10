@@ -109,7 +109,7 @@ export function initSchema(ctx) {
    *  Both paths exist because vars covers names without a per-function ValueRep
    *  (prepare-phase rest/destructure tracking, module-level autoboxes).
    *  Poisoned names (shape-disagreeing assignments, see prepare's
-   *  bindAssignSchema) resolve to NO schema regardless of store: a fixed-slot
+   *  bindSchema) resolve to NO schema regardless of store: a fixed-slot
    *  read against one literal's layout would misread the other sources. */
   ctx.schema.idOf = (name) => {
     // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver (`ctx.schema`, not
@@ -500,6 +500,9 @@ export function initSchema(ctx) {
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
     if (!hasTag(ctx.summary?.fieldKind(sid, prop) ?? 0, K.BIGINT)) return false
+    // A lost receiver shape admits dynamic reads. Store a self-describing
+    // BigInt even when all writes are declaration literals.
+    if (ctx.summary?.opaqueSchema(sid)) return true
     // DECL-LITERAL-ONLY slot → RAW, not boxed (bigint retirement §4: the boxed
     // pairing exists only for the UNPROVEN case). A prop name never NAMED-
     // written anywhere in the program means every write to this slot is an

@@ -181,10 +181,9 @@ export default (ctx) => {
     // A host-visible literal inside a callable needs fresh storage. Top-level
     // initialization outside loops runs once and can still use static data.
     if ((!ctx.summary?.hostSchema(schemaId) || (ctx.func.atModuleScope && !ctx.func.stack.length)) && !ctx.types.anyDelete && neverWritten && !shadow && !brand && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
-      // storedValueNarrow, NOT storedValue: this branch only runs when
-      // `!shadow` (just checked above), so no dynamic reader can ever observe
-      // these fields. See carrierF64Narrow's own doc comment (ir.js).
-      const emitted = values.map((v, i) => storedFieldValue(v, schemaId, names[i], false))
+      // Static and runtime construction share the field storage contract:
+      // a dynamically readable BigInt cannot become a static raw slot.
+      const emitted = values.map((v, i) => storedFieldValue(v, schemaId, names[i]))
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(v))
       if (slots.every(b => b !== null)) {
@@ -943,7 +942,7 @@ const sourceSchema = (obj) => resolveSchema(obj)
 // — every one of the 7 classes shares this exact layout (module/schema.js's
 // `errorSid`, salted-but-content-identical registration). A BOUND Error name
 // already resolves through `ctx.schema.resolve` below (its declaration-schema
-// binding, src/prepare/index.js's `bindDeclSchema`) with no help needed here;
+// binding, src/prepare/schema.js's `bindSchema`) with no help needed here;
 // this closes the one shape that binding doesn't cover — an Error constructed
 // and used inline, never given a name (`Object.assign(new TypeError('x'), …)`,
 // `Object.keys(new TypeError('x'))`) — which previously left `resolveSchema`

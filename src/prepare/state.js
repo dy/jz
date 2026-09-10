@@ -96,7 +96,7 @@ export let funcValueNames
 // at decl-processing time, right where funcValueNames gets its own entries.
 export let promiseRecvNames  // `.then`/`.catch`/`.finally` are function-valued
 export let withResolversRecvNames  // `.resolve`/`.reject` are function-valued
-export let assignSid      // name → sid|null of the agreed literal shape across `=` assignments (consensus/poison; vars binding is module-scope only)
+export let assignSid      // name → agreed source schema across declarations and assignments
 export let declInitUnknown  // Set<name> — bindings whose value source the `=`-assignment consensus
                      // never sees (explicit non-literal decl initializer, params, catch,
                      // destructure targets). BindingId totality makes this a plain

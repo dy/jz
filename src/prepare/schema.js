@@ -1,5 +1,5 @@
 /**
- * Object-literal and declaration schema tracking: bindAssignSchema/bindDeclSchema/
+ * Object-literal and declaration schema tracking: bindSchema/
  * censusUnknownInitDecl/conditionalSpreadGroupPrepare/inferAssignSchema — the "track
  * schemas" concern from the pass's own header contract.
  *
@@ -10,8 +10,6 @@ import { staticObjectProps } from '../static.js'
 import { ctx } from '../ctx.js'
 import { assignSid, declInitUnknown } from './state.js'
 
-
-
 // Schema id when prhs is a bare object literal with static keys, else null.
 export function objLiteralSid(prhs) {
   if (!Array.isArray(prhs) || prhs[0] !== '{}') return null
@@ -19,36 +17,27 @@ export function objLiteralSid(prhs) {
   return props ? ctx.schema.register(props.names, props.brand) : null
 }
 
-// Shape-consensus accounting for every `name = …` assignment. `sid` is the
-// RHS literal's schema id (null for any non-literal source). A name's schema
-// binds only while ALL its assignments agree on that one literal shape: the
-// first literal binds; any disagreeing assignment — non-literal RHS or a
-// different-shape literal — unbinds and poisons. Poisoned names never rebind,
-// so compile-time fixed-slot reads can't be aimed at one shape while the
-// variable holds another (the misread class: `.x` returning a foreign
-// object's slot-0 value). Compile consumes the END state — order-insensitive.
-export function bindAssignSchema(name, sid, bind = true) {
-  // Consensus (poison) is tracked for EVERY assignment; only module-scope
-  // names additionally BIND into ctx.schema.vars — that map is module-global,
-  // and publishing a function local there both mis-keys it and costs real
-  // codegen (a local in vars blocked scalar replacement: 5320 → 1310 B).
-  // Function locals resolve through their per-function ValueReps instead;
-  // their poison still has to be recorded, or a disagreeing literal would
-  // serve a fixed slot to a value of another shape.
-  // BindingId totality: same name ⇒ same binding, module-wide. The old
-  // cross-binding containment (bindSites bar census, owner-scoped poison
-  // reachability, assignBindOwners) is unrepresentable and deleted — a
-  // binding with any unknown-source site simply has disagreeing sources.
+// Declarations and assignments share one consensus over source shapes. A
+// replacement with a different shape must not inherit the earlier layout.
+// The binding's planned layout may later grow through property writes, so
+// compare source ids here, not the potentially merged schema.vars entry.
+export function bindSchema(name, sid, bind = true) {
+  if (ctx.schema.poisoned?.has(name)) return
   const had = assignSid.get(name)
-  if (had != null) {
-    if (had !== sid) { assignSid.delete(name); ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
-  } else if (sid != null) {
-    if (declInitUnknown.has(name)) { ctx.schema.poisoned?.add(name); return }
-    if (!ctx.schema.poisoned?.has(name)) {
-      assignSid.set(name, sid)
-      if (bind) ctx.schema.vars.set(name, sid)
-    }
-  } else ctx.schema.poisoned?.add(name)
+  // Even equal source shapes are distinct allocations. Extending one through
+  // Object.assign/property writes cannot extend every replacement's layout.
+  if (had != null) ctx.schema.unknownInit?.add(name)
+  const layout = ctx.schema.vars.get(name)
+  if (sid == null || declInitUnknown.has(name) || (had != null && (had !== sid || layout != null && layout !== sid))) {
+    assignSid.delete(name)
+    ctx.schema.vars.delete(name)
+    ctx.schema.poisoned?.add(name)
+    return
+  }
+  assignSid.set(name, sid)
+  // Assignment-only local facts stay in ValueReps. Declarations and module
+  // assignments also publish the layout used by prepare's object operations.
+  if (bind && !ctx.schema.vars.has(name)) ctx.schema.vars.set(name, sid)
 }
 
 // A BINDING whose value source the assignment consensus never sees — explicit
@@ -64,17 +53,6 @@ export function censusUnknownInitDecl(name, ownLiteral = false) {
   if (!ownLiteral) ctx.schema.unknownInit?.add(name)
   if (ctx.schema.vars.has(name)) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
 }
-// Consensus setter for literal-shape BINDINGS (`const x = {…}` at any scope,
-// object-literal param defaults) — the decl-initializer sibling of
-// bindAssignSchema (which owns the `=`-assignment channel and its poison).
-export function bindDeclSchema(name, sid) {
-  if (typeof name !== 'string') return
-  if (ctx.schema.poisoned?.has(name) || declInitUnknown.has(name)) return
-  const had = ctx.schema.vars.get(name)
-  if (had != null && had !== sid) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name); return }
-  ctx.schema.vars.set(name, sid)
-}
-
 // Recognizes `cond && {k: v, …}` — decl-schema-binding's own hand-synced copy
 // of module/object.js's conditionalSpreadGroup / src/kind.js's identical
 // mirror (see the decl-tracking call site below for why prepare needs its

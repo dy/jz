@@ -33,7 +33,7 @@ import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternI
 import { boundSafeCalls, mintLocal, scanReassignedTopLevel, writesReceiver } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
-import { bindAssignSchema, bindDeclSchema, censusUnknownInitDecl, conditionalSpreadGroupPrepare, inferAssignSchema, objLiteralSid } from './schema.js'
+import { bindSchema, censusUnknownInitDecl, conditionalSpreadGroupPrepare, inferAssignSchema, objLiteralSid } from './schema.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_ARRAYS, STATIC_CONSTS, STATIC_STRINGS, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
 
@@ -401,9 +401,9 @@ const handlers = {
         recordGlobalRep(plhs, prhs)
         if (Array.isArray(prhs) && prhs[0] === '{}') {
           const props = staticObjectProps(prhs.slice(1))
-          if (props) bindAssignSchema(plhs, ctx.schema.register(props.names, props.brand))
-        } else bindAssignSchema(plhs, null)
-      } else bindAssignSchema(plhs, objLiteralSid(prhs))
+          if (props) bindSchema(plhs, ctx.schema.register(props.names, props.brand))
+        } else bindSchema(plhs, null)
+      } else bindSchema(plhs, objLiteralSid(prhs))
       // Static string/array facts hold only while every assignment is constant.
       // Array facts additionally require the census-clean name (no indexed/
       // method mutation anywhere — see the const-decl gate).
@@ -423,8 +423,8 @@ const handlers = {
     // Compile reads the END state, so the conflict check is order-insensitive.
     else if (typeof plhs === 'string') {
       // depth > 0: consensus/poison only — a function local never publishes
-      // into the module-global vars map (see bindAssignSchema).
-      bindAssignSchema(plhs, objLiteralSid(prhs), false)
+      // into the module-global vars map (see bindSchema).
+      bindSchema(plhs, objLiteralSid(prhs), false)
     }
     // Match the resolved import identity: prep has already renamed the
     // bundled helper, so comparing against its source spelling misses it.
@@ -2315,7 +2315,7 @@ function prepDecl(op, ...inits) {
         // to a fixed slot load that misreads the hash, so leave reads dynamic.
         if (allKnown && (props.length || brand) && ctx.schema.register) {
           const sid = ctx.schema.register(props, brand)
-          bindDeclSchema(declName, sid)
+          bindSchema(declName, sid)
         }
         else censusUnknownInitDecl(declName)
       } else if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '()' &&
@@ -2327,7 +2327,7 @@ function prepDecl(op, ...inits) {
         // NAME's schema rather than re-inspecting its init expression —
         // instanceof's tier-2 fold and module/object.js's spread/Object.assign
         // source-schema check both only ever see the literal-call-shaped case.
-        bindDeclSchema(declName, ctx.schema.errorSid(normed[1]))
+        bindSchema(declName, ctx.schema.errorSid(normed[1]))
       }
       // Any other initializer: no shape claim. An empty `{}` is still the
       // name's own mint (its layout is decided later: a dictionary, a box,

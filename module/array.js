@@ -932,6 +932,15 @@ export default (ctx) => {
     if (keyType === VAL.STRING)
       return typed(dynLoad(ptrExpr, asF64(emit(idx))), 'f64')
     if (vt === 'array') {
+      // Presence is independent of the element kind. The checked array
+      // helper handles an absent receiver before touching its header.
+      if (mayBeUndefined(arr)) {
+        inc('__arr_idx')
+        const read = key => ['call', '$__arr_idx', asI64(ptrExpr), key]
+        return useRuntimeKeyDispatch && keyType !== VAL.NUMBER
+          ? emitDynamicKeyDispatch(ptrExpr, key => read(asI32(typed(key, 'f64'))))
+          : typed(read(vi), 'f64')
+      }
       // Base offset of the array's data region. A binding proven never relocated
       // (scanNeverGrown — a fresh array literal whose every use is a pure read, so no
       // grow op can ever run) skips the realloc-forwarding follow: its base is the raw

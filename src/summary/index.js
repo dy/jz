@@ -90,6 +90,7 @@ const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
 export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [], constString = () => null, constStrings = () => null }) {
   const tops = [...inits, ast]
   const kinds = []                   // binding id (keyOf) → kind
+  const opaqueSchemas = new Set() // schemas whose identity is lost at a value join
   const fields = new Map()           // sid → kind[]
   const results = new Map()          // function name or closure id → kind
   const closures = new Map()         // `=>` node → closure id
@@ -283,6 +284,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const raiseEntry = (arr, ik, k) => { const t = tagOf(ik); if (t === K.NUMBER) raiseElem(arr, k); else if (t === K.STRING) raiseWild(arr, k); else if (t !== K.NONE) { raiseElem(arr, k); raiseWild(arr, k) } }
   /** A value the summary no longer follows: a closure's callers become unknown, an array's elements too. */
   const escape = (k) => {
+    if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !opaqueSchemas.has(paramOf(k))) {
+      opaqueSchemas.add(paramOf(k)); changed = true
+    }
     if (tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) for (const id of membersOf(paramOf(k))) escapeId(id)
     // The cell goes to ANY before its elements escape: an array of itself ends there.
     if (celled(k)) { invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) } }
@@ -1447,7 +1451,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions,
     schemas: schemas.map(props => props.slice()), methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, openSchemas, hostSchemas,
+    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, openSchemas, hostSchemas, opaqueSchemas,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts)
@@ -1672,7 +1676,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.length = 0; incoming.length = 0; fields.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear()
     poisonedAll = 0; poisonedIndexed = 0
     seed(seeded)

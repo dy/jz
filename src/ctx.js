@@ -588,10 +588,10 @@ export function reset(proto, globals, bridge) {
                            //   non-literal, or two different literals). A poisoned
                            //   name never (re)binds in schema.vars: fixed-slot reads
                            //   against ONE literal's layout would misread the other
-                           //   sources' objects. Populated by prepare's `=` handler;
+                           //   sources' objects. Populated by prepare's bindSchema;
                            //   end-of-prepare state is what compile reads, so the
                            //   conflict is order-insensitive.
-    unknownInit: new Set(), // names whose objects are minted elsewhere (a parameter,
+    unknownInit: new Set(), // names with replacements or objects minted elsewhere (a parameter,
                            //   a non-literal initializer, a catch or destructure
                            //   binding — prepare's censusUnknownInitDecl). No plan
                            //   step may give such a name a merged or auto-boxed

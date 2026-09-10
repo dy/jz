@@ -17,14 +17,16 @@ preserve the original value; Float32 maps retain f64 computation; standalone
 higher-order exports accept host callbacks through the existing call ABI.
 Bare f64 globals initialize to `undefined`, including when storage analysis has
 recorded their type; this keeps nullish closure initialization correct at O0.
-The full default suite passes 4,521 tests with one skip (64,120 assertions),
-including seven audit regressions with 567 assertions, 29 constant-folding tests
-with 297 assertions, and all ten deterministic loop-work ratchets. Language/builtin conformance passes
-3,151/869 cases, and functional self-hosting passes 34 checks (296 assertions).
-The rebuilt Watr Wasm passes its full suite. The full O0/O3/WASI matrix also
-passes: 4,521/4,521/4,518 tests respectively, with one skip in each leg
-(63,993/64,115/62,244 assertions). Compiler sources remained unchanged during
-this final run; native/kernel byte parity and compile-reuse checks pass.
+Record declarations and assignments now share shape consensus. Replacement
+preserves missing fields and own keys, including BigInt and absent-array reads.
+Eight audit regressions pass 923 assertions across all optimization tiers.
+With the shared workspace's pending test consolidation, default passes 4,197
+checks (46,620 assertions); O0/O3/WASI pass 4,011/4,011/4,062 checks
+(38,652/38,973/39,048 assertions), each with one skip. Default's benchmark-anchor
+check failed under concurrent matrix load and passed in the isolated full rerun;
+its tolerance is unchanged. Language/builtin conformance passes 3,151/869 cases.
+Functional self-hosting passes 34 checks (296 assertions). The downstream Watr
+Wasm and VST results below predate this shape-consensus change.
 
 The stateful VST fixture in `@audio/compile` passes 12,438 checks with each
 compiler (JZ reverified on this optimizer; Porffor verified previously): variable blocks, live parameters, independent overlapping instances,
@@ -39,7 +41,7 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 301,390 | 300,000 |
+   | Watr encoder | 300,483 | 300,000 |
    | FFT | 1,718 | 1,758 |
    | bezfit | 3,245 | 3,017 |
    | immutable | 1,478 | 1,481 |
@@ -50,8 +52,8 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    | wordcount | 3,706 | 3,480 |
 
    Equality is not a strict win. No benchmark sources or budgets changed.
-   Against `b401fe2`, shapes shrinks 19 bytes and wordcount 42; the encoder grows
-   891 bytes. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
+   Before the record-shape fix, the audit measured shapes −19 bytes, wordcount
+   −42 and encoder +891 against `b401fe2`. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
    scale 1,013→869, Uint8 clamp 1,213→1,055, matmul 25,561→25,407.
    Correct mixed-value comparison grows fib 18,694→18,894. These are binary
    sizes, not throughput claims; the size gate remains open.
@@ -94,8 +96,9 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
 2. **Speed and evidence.** The stored reference fails leadership claims,
    including V8 losses on jessie and Watr, and is stale. After this consolidation,
-   the standalone self-compile timing gate still fails: warm 1.488×/1.530×/1.552×
-   against 1.03×, fresh 1.218× against 0.99×. Functional bootstrap passes.
+   the isolated self-compile timing gate still fails: warm 1.441×/1.479×/1.480×
+   against 1.03×, fresh 1.229× against 0.99×. Functional bootstrap passes.
+   These are current gate results, not a paired before/after speed comparison.
    The last complete benchmark run, before tiny-constant specialization, passed
    247 checks and failed 19: eight fastest-Wasm comparisons, native resample,
    stored native-lowering bands, six strict AS size comparisons, the encoder cap,
@@ -116,10 +119,15 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    Boolean/Number, BigInt and lifetime boundaries. Rebuild downstream Wasm with
    matching compiler/interop revisions. Replace pinned parser/optimizer archives
    with published npm versions once they contain the required fixes.
-   Fix missing-field reads after record shape changes: `let p={x:1,y:2};
-   p={x:3}; return p.y` currently returns `0`, not `undefined`, including O0.
-   Scalar replacement rejects differing field sets; this remaining defect is
-   in the general record representation/read proof.
+   Record replacement now shares declaration/assignment shape consensus:
+   missing fields remain absent, including replacement after `Object.assign`.
+   The duplicated declaration check is removed. Lost schema identity now selects
+   existing tagged BigInt storage, and representation planning retains computed
+   field initializers. Possibly absent arrays use the existing checked array
+   helper. This shrinks the encoder 301,390→300,483 B (907 B); the other eight
+   size fixtures stay byte-identical. The encoder is still 483 B over its cap.
+   A separate callable edge remains: `let p={x:1,y:2}; p={x:3}; p.y()`
+   is rejected during compilation instead of throwing TypeError at runtime.
    Internal errors still use numeric codes (explicitly pinned in `test/errors.js`),
    so unifying their representation remains compatibility work: a nullable local call's caught
    error has `name === 'TypeError'` and reaches the host as TypeError, but
@@ -127,9 +135,10 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    nullable-dispatch review fix: `let f=flag?twice:null; try { f(4) }
    catch(e) { return e instanceof TypeError }` (with `twice(x){return x*2}`).
 
-5. **Review handoff.** Complete the callable-reachability probe (exports,
-   address-taken functions, init/default/optional/member/dispatch edges). Give
-   an independent reviewer a pinned candidate and its gate logs; previous
+5. **Review handoff.** The callable-reachability probe finds no unsound
+   functions in 144 compiled specimens. Its Web Audio specimen remains uncovered:
+   the oracle's module-graph setup omits that case. Resolve this coverage gap.
+   Give an independent reviewer a pinned candidate and its gate logs; previous
    implementation work does not constitute independent expert approval.
 
 ## Next reductions

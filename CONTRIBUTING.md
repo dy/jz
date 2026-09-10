@@ -71,11 +71,22 @@ unknown. Allocating
 helpers cannot be speculated before zero-trip loops or crossed by allocator-global
 reads.
 
+Prepare uses one shape-consensus check for declarations and assignments.
+Source shapes remain separate from layouts extended by property writes or
+`Object.assign`: replacing a record cannot inherit the earlier instance's
+extra fields. Replaced bindings reuse the existing allocation-provenance guard
+to prevent layout extension; disagreeing shapes use ordinary schema dispatch.
+The summary records lost schema identity, so dynamically readable BigInt fields
+use the existing tagged storage. Representation planning retains object-field
+initializers as it does array elements, including computed BigInt values.
+Possibly absent arrays use the existing checked index helper before header reads.
+
 The host boundary carries plain `jz:fields` data alongside schema names. The
 summary supplies field families and typed/nested identities; schema analysis
 supplies numeric refinements and records only discriminant constants actually
 consulted by lowering. Host-exposed schemas use tagged BigInt storage, including
-shapes shared by BigInts and numbers; private schemas retain their raw lanes.
+shapes shared by BigInts and numbers; private schemas whose identity stays known
+retain their raw lanes.
 Returned object literals allocate independently, since host writes can outlive
 the call. Interop enforces
 that snapshot on structured ingress and writes, and uses it to decode scalar

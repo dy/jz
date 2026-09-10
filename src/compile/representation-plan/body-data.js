@@ -486,6 +486,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         const start = cm[2] === 'set' ? 1 : 0
         for (let i = start; i < args.length; i++) addEdge('storage-write', plannedOf(args[i]), BOXED_BIGINT, node)
       }
+    } else if (op === '{}') {
+      // The schema selects raw or tagged field storage. Retain each value's
+      // emitted carrier so that either choice can normalize computed BigInts.
+      for (let i = 1; i < node.length; i++)
+        if (Array.isArray(node[i]) && node[i][0] === ':') plannedOf(node[i][2])
     } else if (op === '[') {
       // An array literal's elements are tagged slots as much as a push: a
       // computed BigInt element (`-5n`, `b - 6n`, a slot read) boxes on the

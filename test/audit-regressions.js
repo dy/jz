@@ -69,6 +69,65 @@ test('audit: record replacement preserves swaps, aliases and escaped identity', 
     is(jz(`export function result(){${body}}`,{optimize}).exports.result(),expected)
 })
 
+test('audit: changing record shapes preserves absent fields and own keys', () => {
+  const cases = [
+    ['let p={x:1,y:2};p={x:3};return p.y', undefined],
+    ['let p={x:1,y:2};p={};return p.y', undefined],
+    ['let p={};p={x:3};return p.x', 3],
+    ['let p={x:1,y:2};p={z:3};return p.x', undefined],
+    ['let p={x:1,y:2};p={y:3,x:4};return p.x*10+p.y', 43],
+    ['let p={x:1,y:2};const old=p;p={x:3};return old.y', 2],
+    ['let p={x:1,y:2};const get=()=>p.y;p={x:3};return get()', undefined],
+    ['let p={x:1,y:2};p={x:3};return Object.keys(p).join()', 'x'],
+    ['let p={x:1,y:2};p={x:3,y:undefined};return Object.keys(p).join()', 'x,y'],
+    ['let p={x:1,y:2};p={x:3};p.y=4;return p.y', 4],
+    ['let p={x:1,y:2};p={x:3};return p.y+1', NaN],
+    ['let p={x:1,y:2};p={x:3};return typeof p.y', 'undefined'],
+    ['let p={x:1,y:2n};p={x:3};return p.y', undefined],
+    ['let p={x:1,y:new Float64Array(1)};p={x:3};return p.y', undefined],
+    ['let p={x:1,y:()=>2};p={x:3};return p.y', undefined],
+    ['let p={x:1,y:null};p={x:3};return p.y', undefined],
+    ['let p={x:1,y:2};p={x:3};p={x:4,y:0};return p.y', 0],
+    ['let p={x:1,y:2};p={x:3};p={x:4,y:null};return p.y', null],
+    ['let p={x:1,y:2};p={...{x:3}};return p.y', undefined],
+    ['let p={x:1};Object.assign(p,{y:2});p={x:3};return p.y', undefined],
+    ['let p={x:1};p={x:3};const before=p.y;Object.assign(p,{y:2});return before', undefined],
+    ['let p={x:1};p.y=2;p={x:3};return p.y', undefined],
+    ['let p={};const before=p.x;p.x=1;return before', undefined],
+    ['let p={x:1,y:2};p=null;return p', null],
+  ]
+  for (const optimize of tiers) for (const [body, expected] of cases) {
+    const { result } = jz(`export function result(){${body}}`, { optimize }).exports
+    is(result(), expected, `${optimize}: ${body}`)
+    is(result(), expected, 'repeated call preserves absence')
+  }
+  // Raw BigInt payloads (including NaN-box-shaped bits) must be boxed before
+  // either guarded or general schema dispatch can join them with absence.
+  for (const value of ['0n', '-1n', '9223372036854775807n', '-9223372036854775808n', '0x7ff8000200000000n']) {
+    for (const optimize of tiers) {
+      const { result } = jz(`export function result(which){
+        let p={x:1,y:${value}};
+        if(which===1)p={z:1,y:3n};if(which===0)p={x:3};return p.y
+      }`, { optimize }).exports
+      for (const which of [2,2,0,1,0,2]) is(result(which), which === 0 ? undefined : which === 1 ? 3n : BigInt(value.slice(0,-1)))
+    }
+  }
+  for (const optimize of tiers) {
+    const { result } = jz(`function first(a){return a[0]}
+      export function result(full){let p={x:1,items:[7]};if(!full)p={x:3};if(full===1)p={x:4,items:[]};return first(p.items)}`, { optimize }).exports
+    // Existing absent-array dialect: preserve undefined, never dereference
+    // the missing value as an array header. A present empty array is distinct.
+    for (const full of [2,2,0,1,2]) is(result(full), full === 2 ? 7 : undefined)
+  }
+  // A → A → B → A in one instance: neither retained aliases nor a prior
+  // allocation may supply the missing field of a newly constructed object.
+  for (const optimize of tiers) {
+    const { result } = jz(`let p={x:1,y:2};
+      export function result(full){if(full)p={x:3,y:4};else p={x:5};return p.y}`, { optimize }).exports
+    for (const full of [true,true,false,true,false,false]) is(result(full), full ? 4 : undefined)
+  }
+})
+
 test('audit: fixed array lengths survive helpers and record layouts', () => {
   const src = `function make(){const a=[];for(let i=0;i<32;i++){if(i&1)a.push({x:i,y:i*2});else a.push({x:i,z:i*3})}return a}
 function count(a){let s=0;for(let i=0;i<a.length;i++)s+=a[i].x;return s}
