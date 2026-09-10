@@ -20,17 +20,20 @@
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--font); -webkit-font-smoothing: antialiased; }
 .masthead, main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
 main { padding-block: 48px 32px; }
-h1 { margin: 0 0 20px; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; font-weight: 400; }
+h1 { margin: 0 0 14px; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; font-weight: 400; }
+/* standfirst: orients a reader who landed here cold, before the first instruction. */
+.prose .lede { margin: 0 0 28px; max-width: 29em; font-size: clamp(17px, 2vw, 19px); line-height: 1.45; color: var(--dim); }
 h2 { margin: 36px 0 12px; font-size: 18px; font-weight: 600; }
-.terminal { margin: 20px 0; padding: 20px 24px; background: #000; color: #ccc; border: 1px solid #222; overflow-x: auto; font: 13.5px/22px var(--font-mono); color-scheme: dark; }
+.terminal { margin: 20px 0; padding: 20px 24px; background: #000; color: #e6e6e6; border: 1px solid #222; overflow-x: auto; font: 13.5px/22px var(--font-mono); color-scheme: dark; }
 .terminal code { font: inherit; }
 .terminal:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .terminal ::selection { color: #000; background: #ddd; }
-::highlight(comment) { color: #888; }
-::highlight(keyword), ::highlight(storage), ::highlight(numeric), ::highlight(constant), ::highlight(boolean) { color: #eee; }
-::highlight(string), ::highlight(regexp), ::highlight(support), ::highlight(type) { color: #aaa; }
-::highlight(operator), ::highlight(punctuation) { color: #999; }
-::highlight(function), ::highlight(variable), ::highlight(property) { color: #ccc; }
+/* token classes from assets/highlight.js, styled as the REPL styles #hl on its dark palette */
+.terminal .k { font-weight: 700; }                  /* keyword */
+.terminal .t { font-weight: 600; }                  /* Type / builtin */
+.terminal .n { font-weight: 600; color: #c8c8c8; }  /* number */
+.terminal .s { color: #b3b3b3; }                    /* string */
+.terminal .c { color: #8a8a8a; }                    /* comment */
 @media (max-width: 640px) { .masthead, main { padding-inline: 20px; } main { padding-top: 32px; } .terminal { padding: 16px; font-size: 12px; } }
 </style>
 </head>
@@ -56,7 +59,8 @@ h2 { margin: 36px 0 12px; font-size: 18px; font-weight: 600; }
 <main>
 <article class="prose">
   <h1>Start with a function you already have.</h1>
-  <p>Wrap it in a <code>jz</code> template and it comes back as a WebAssembly module with that function exported. No annotations, no second language.</p>
+  <p class="lede">JZ compiles a distilled subset of JavaScript to WebAssembly. Nothing here is a new language: no annotations to add, and the file you compile still runs as plain JavaScript.</p>
+  <p>Wrap that function in a <code>jz</code> template and it comes back as a WebAssembly module with the function exported, ready to call.</p>
   <pre class="terminal" tabindex="0" aria-label="JavaScript: compile and call a function"><code id="tag-run" class="language-javascript">import jz from 'jz'
 
 const { exports } = jz`
@@ -109,7 +113,7 @@ memory.reset()</code></pre>
       <a href="https://github.com/dy/jz/issues">issues</a>
     </nav>
     <div class="legal">
-      <p class="about">JZ compiles JavaScript to WebAssembly.<br>Audio, graphics and simulations. Same JS.</p>
+      <p class="about">JZ compiles JavaScript to WebAssembly<br>for audio, graphics, simulations and compute</p>
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
       <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>
@@ -117,6 +121,9 @@ memory.reset()</code></pre>
 </footer>
 <script type="module" src="../assets/version.js"></script>
 <script type="module" src="../assets/theme.js"></script>
-<script type="module" src="../assets/highlight.js"></script>
+<script type="module">
+import { highlight } from '../assets/highlight.js'
+for (const code of document.querySelectorAll('code.language-javascript')) code.innerHTML = highlight(code.textContent)
+</script>
 </body>
 </html>

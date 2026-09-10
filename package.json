@@ -124,7 +124,6 @@
   ],
   "devDependencies": {
     "esbuild": "^0.28.0",
-    "microlighter": "2.1.0",
     "sprae": "^13.3.8",
     "tst": "^9.4.0",
     "typescript": "^5.8.2",

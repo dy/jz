@@ -331,6 +331,7 @@ html.embed .brand { display: none; }
 </main>
 
 <script type="module">
+import { highlight, highlightWat } from '../assets/highlight.js'
 // The whole point: the compiler runs HERE, in the page — parse, type inference,
 // WASM emit, instantiate. No server, no build step. (dist/jz.js is the
 // standalone bundle — `npm run build` regenerates it.)
@@ -340,27 +341,7 @@ const $ = id => document.getElementById(id)
 const editor = $('editor'), out = $('out'), watEl = $('wat'), stat = $('stat'), expr = $('expr')
 const hlEl = $('hl'), guidesEl = $('guides'), gutterEl = $('gutterlines'), activeEl = $('activeline'), mainEl = document.querySelector('main')
 
-const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-
-// ── syntax highlight: one regex per language, monochrome classes ──
-// JS: comment/string/number/keyword/Type
-const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?)|\b(0[xXbBoO][0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(let|const|var|function|class|new|return|if|else|for|while|do|break|continue|export|import|from|default|try|catch|finally|throw|typeof|instanceof|in|of|switch|case|this|extends|super|static|null|undefined|true|false)\b|\b([A-Z][A-Za-z0-9_]*)\b/g
-const TOKEN_CLS = ['c', 's', 'n', 'k', 't']
-// WAT: comment(;;)/string/$name/keyword/type/number
-const WTOKEN = /(;;[^\n]*)|("(?:\\.|[^"\\\n])*")|(\$[^\s()";]+)|\b(module|func|param|result|local|global|memory|data|table|elem|type|import|export|start|mut|offset|align|shared|block|loop|if|then|else|end|br|br_if|call|call_indirect|return)\b|\b(i32|i64|f32|f64|v128|funcref|externref)\b|(-?(?:0x[0-9a-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?|nan|inf))/g
-const WCLS = ['c', 's', 't', 'k', 't', 'n']
-const tokenize = (src, re, cls) => {
-  let html = '', last = 0, m; re.lastIndex = 0
-  while ((m = re.exec(src))) {
-    html += esc(src.slice(last, m.index))
-    const i = m.slice(1).findIndex(g => g !== undefined)
-    html += `<span class="${cls[i]}">${esc(m[0])}</span>`
-    last = re.lastIndex
-  }
-  return html + esc(src.slice(last))
-}
-const highlight = src => tokenize(src, TOKEN, TOKEN_CLS)
-const highlightWat = line => tokenize(line, WTOKEN, WCLS)
+// syntax highlight — shared with the guide (assets/highlight.js): JS + WAT, monochrome classes
 // Custom sections (jz:schema/rest/noalias/…) carry long byte tuples; collapse the
 // payload to `a b c … z` so the WAT stays scannable. Display-only — fold math reads
 // the original lines, and no parens are dropped, so paren depth is unchanged.
