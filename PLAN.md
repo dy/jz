@@ -62,7 +62,8 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    functional self-hosting and the rebuilt Watr Wasm suites also pass.
    The encoder saves 68 bytes. Mixed-kind uses still lose callable identity,
    so this does not eliminate all generic iterator handling in the encoder.
-   A direct before/after self-build comparison shrinks the compiler artifact
+   With the shared workspace's pending import cleanup held constant, a direct
+   before/after self-build comparison shrinks the compiler artifact
    15,515,517→15,474,859 bytes. On the six warm compiler workloads, the paired
    after/before geomean is 0.996× (effectively neutral); measured heap use rises
    672–848 bytes per compilation. These scoped measurements do not close the
