@@ -223,9 +223,11 @@ const COMPILE_FAMILY_OWNERS = [
 
 test('architecture: compile-session families have one declaration owner outside the driver', () => {
   const driver = readFileSync(join(ROOT, 'src/compile/index.js'), 'utf8')
+  const stages = [driver, ...['analyze-for-emit.js', 'emit-func.js', 'closure-emit.js']
+    .map(file => readFileSync(join(ROOT, 'src/compile', file), 'utf8'))]
   for (const [file, names] of COMPILE_FAMILY_OWNERS) {
     const owner = readFileSync(join(ROOT, 'src/compile', file), 'utf8')
-    ok(driver.includes(`from './${file}'`), `compile/index.js imports ${file}`)
+    ok(stages.some(source => source.includes(`from './${file}'`)), `compiler stages import ${file}`)
     for (const name of names) {
       const declaration = new RegExp(`^(?:export\\s+)?(?:const\\s+${name}\\b|function\\s+${name}\\b)`, 'gm')
       is([...owner.matchAll(declaration)].length, 1, `${name} is declared exactly once in ${file}`)
