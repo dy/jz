@@ -15,12 +15,37 @@ import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { highlight, highlightWat } from '../assets/highlight.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // The REPL's default editor content, straight from the page source.
 const replHtml = readFileSync(join(ROOT, 'repl/index.html'), 'utf8')
 const introMatch = replHtml.match(/const INTRO_SRC = `([\s\S]*?)`/)
+
+test('web-smoke: highlighting preserves source through empty, partial and repeated edits', () => {
+  const plain = html => html.replace(/<span class="[ktsnc]">|<\/span>/g, '').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
+  for (const [render, a, b] of [
+    [highlight, 'jz`export const x = "<&"`\nconst after = 2', 'jz`return 3` + jz`return 4`'],
+    [highlightWat, '(module (func $f (result i32) i32.const -1))', '(data "<&") ;; comment'],
+  ]) {
+    is(render(''), '', 'empty editor')
+    is(plain(render('x')), 'x', 'one character')
+    const first = render(a)
+    is(plain(first), a, 'copyable source is unchanged')
+    is(render(a), first, 'A → A produces identical markup')
+    is(plain(render(b)), b, 'A → different B preserves B')
+    is(render(''), '', 'clearing after edits leaves no markup')
+    for (let end = 0; end <= a.length; end++)
+      is(plain(render(a.slice(0, end))), a.slice(0, end), `unfinished edit at boundary ${end}`)
+    is(render(a), first, 'complete source after partial edits is unchanged')
+    ok(!render('"<img src=x onerror=alert(1)> &lt;"').includes('<img'), 'source HTML stays inert')
+  }
+  const js = highlight('jz`export const x = 1`\nreturn x')
+  ok(js.includes('<span class="k">export</span>'), 'tagged body highlights as code')
+  ok(js.includes('<span class="k">return</span>'), 'tokenization resumes after the tagged body')
+  ok(highlightWat('(i32.const -1)').includes('<span class="n">-1</span>'), 'negative WAT literal is one number token')
+})
 
 test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node globals', () => {
   ok(introMatch, 'INTRO_SRC found in repl/index.html')

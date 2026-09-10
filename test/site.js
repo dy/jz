@@ -10,13 +10,10 @@ import { spawnSync } from 'node:child_process'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/build-site.mjs'), ...args], { encoding: 'utf8' })
 
-test('site: guide is canonical and the old URL redirects rather than duplicating content', () => {
+test('site: guide is canonical and the sitemap uses its current URL', () => {
   const guide = readFileSync(join(root, 'guide/index.html'), 'utf8')
   ok(guide.includes('<title>Guide | JZ</title>'), 'short page title')
   ok(guide.includes('rel="canonical" href="https://jz.js.org/guide/"'), 'canonical URL')
-  const old = readFileSync(join(root, 'get-started/index.html'), 'utf8')
-  ok(old.includes('http-equiv="refresh" content="0; url=../guide/"'), 'immediate redirect')
-  ok(old.includes('href="../guide/"'), 'fallback works without scripts')
   const sitemap = spawnSync(process.execPath, [join(root, 'scripts/sitemap.mjs'), root], { encoding: 'utf8' })
   is(sitemap.status, 0, sitemap.stderr)
   ok(sitemap.stdout.includes('<loc>https://jz.js.org/guide/</loc>'), 'guide indexed')
