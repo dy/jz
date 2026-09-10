@@ -821,7 +821,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (!prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const fn of membersByName.get(prop) ?? NO_MEMBERS) callWith(binderOf(fn), recv)
     }
     if (t === K.HASH) return optionalResult(op, recv, orAbsent(elemOf(recv)))
-    if (isCount(prop, t)) return optionalResult(op, recv, NUMBER)
+    if (isCount(prop, recv)) return optionalResult(op, recv, NUMBER)
     if (prop === 'buffer' && t === K.TYPED) return optionalResult(op, recv, kind(K.BUFFER))
     if (t === K.ARRAY && paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return optionalResult(op, recv, orAbsent(propOf(recv, prop)))
     return optionalResult(op, recv, ANY)

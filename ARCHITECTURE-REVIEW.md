@@ -44,6 +44,34 @@ The follow-up keeps the existing pipeline and implements the review's bounded wo
 Validation and release evidence are recorded below. The implementation does not
 constitute independent expert approval or close the speed/size release gates.
 
+## Remaining work
+
+The four reproduced findings, analysis freshness ownership, and release-document
+status are implemented. The follow-on work belongs to PLAN.md:
+
+1. Finish semantic boundary cases. DataView length/index reads now distinguish
+   byte bounds from elements; numeric indexed writes reject before touching
+   bytes. Declaration/assignment array destructuring still needs the iterator
+   semantics already used by parameter patterns.
+2. Prove stateful DSP ownership through the complete VST lifecycle under both
+   compilers: variable blocks, reset, teardown, concurrent instances and bounded
+   allocation. The compiler-host filter test alone does not establish this.
+3. Fix size/runtime/self-compile gates, then refresh reference, memory and rival
+   evidence under valid measurement conditions. Keep thresholds unchanged.
+4. Give an independent reviewer a pinned candidate and its final gate logs.
+   The original reachability probe was incomplete; retain that obligation too.
+
+A new semantic IR, context rewrite, region API or wholesale vectorizer rewrite
+remains deferred unless a measured defect requires it.
+
+The DataView follow-up passes 4,493 core tests (one skip, 63,022 assertions),
+33 self-hosting tests and 869 builtin conformance cases. The 64 buffer tests
+include four-tier checks for absent reads, conversions, membership and rejected
+writes that preserve buffer bytes. It adds no representation, but the focused
+Watr encoder probe grows 318 bytes to 305,301; this is a correctness fix, not a
+size win. The final correctness matrix and competitive gates for this follow-up
+have not been rerun; the pinned CI evidence below belongs to the earlier source.
+
 ## Host-storage follow-up
 
 Host-exposed schemas now box BigInt fields consistently, including schemas shared

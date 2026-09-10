@@ -267,8 +267,10 @@ const NUMERIC_PROPS = Object.assign(Object.create(null), {
   byteOffset: new Set([VAL.TYPED]),
   size: new Set([VAL.SET, VAL.MAP]),
 })
-export function propValType(prop, objType) {
+export function propValType(prop, objType, ctor) {
   if (objType == null) return null
+  // TYPED includes DataView: an element constructor must prove array length.
+  if (prop === 'length' && objType === VAL.TYPED && !typedCtorElemValType(ctor)) return null
   const kinds = NUMERIC_PROPS[prop]
   return kinds && kinds.has(objType) ? VAL.NUMBER : null
 }
@@ -277,5 +279,6 @@ export function typedCtorElemValType(ctor) {
   if (!ctor) return null
   const isView = ctor.endsWith('.view')
   const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
+  if (TYPED_ELEM_CODE[name] == null) return null
   return name === 'BigInt64Array' || name === 'BigUint64Array' ? VAL.BIGINT : VAL.NUMBER
 }

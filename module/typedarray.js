@@ -16,7 +16,7 @@ import { valTypeOf } from '../src/kind.js'
 import { typedIdxProven, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, mayBeUndefined, repOf } from '../src/reps.js'
-import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_AUX, encodeTypedElemAux } from '../layout.js'
+import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
 import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -1195,6 +1195,10 @@ export default (ctx) => {
   ctx.core.stdlib['__typed_set_idx'] = () => `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32) (local $vb i64)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (if (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG}))
+      (then
+        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.DATAVIEW_INDEX_WRITE})))
+        (throw $__jz_err (f64.const ${ERR.DATAVIEW_INDEX_WRITE}))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))

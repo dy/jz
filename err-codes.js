@@ -78,6 +78,7 @@ export const ERR = {
   ACCESSOR_DESCRIPTOR: 119,    // Object.defineProperty – accessor descriptor (get/set) at runtime
   BIGINT_NULLISH: 120,         // BigInt(null/undefined) — ToBigInt of a nullish value
   BIGINT_UNSIGNED_SHIFT: 121,  // `>>>` — a BigInt operand at runtime (ES2020 §6.1.6.2.11: no BigInt::unsignedRightShift)
+  DATAVIEW_INDEX_WRITE: 122,   // indexed own properties on DataView are unsupported
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -132,6 +133,7 @@ export const ERR_INFO = {
   [ERR.CLONE_UNCLONEABLE]: { name: 'TypeError', message: 'could not be cloned' },
   [ERR.ITERATE_NULLISH]: { name: 'TypeError', message: 'Cannot iterate null or undefined' },
   [ERR.CRYPTO_NOT_TYPED]: { name: 'TypeError', message: 'getRandomValues: argument must be an integer-typed array' },
+  [ERR.DATAVIEW_INDEX_WRITE]: { name: 'TypeError', message: 'DataView indexed properties are unsupported; use setInt8/setUint8 or another DataView setter to write bytes' },
   [ERR.CRYPTO_FLOAT_TYPE]: { name: 'TypeError', message: 'getRandomValues: Float32Array/Float64Array are not allowed' },
   [ERR.JSON_CIRCULAR]: { name: 'TypeError', message: 'Converting circular structure to JSON' },
   [ERR.JSON_BIGINT]: { name: 'TypeError', message: 'Do not know how to serialize a BigInt' },

@@ -21,6 +21,7 @@ import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDema
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { ERR } from '../err-codes.js'
+import { DATA_VIEW_FLAG } from '../layout.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
@@ -198,7 +199,7 @@ export default (ctx) => {
     __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_typed_set_idx: () => ['__ptr_type', '__len', '__arr_set_idx_ptr',
+    __arr_typed_set_idx: () => ['__ptr_type', '__ptr_aux', '__len', '__arr_set_idx_ptr',
       representationProgramHasBigint(ctx) ? '__typed_set_idx_tagged' : '__typed_set_idx'],
     __arr_typed_obj_set_idx: () => ['__arr_typed_set_idx', '__ptr_type', '__dyn_set', '__i32_to_str',
       ...(ctx.linkDemand.external ? ['__ext_set'] : [])],
@@ -491,7 +492,8 @@ export default (ctx) => {
         (then (return (call $__arr_set_idx_ptr (local.get $ptr) (local.get $i) (local.get $val)))))
       (if (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
         (then
-          (if (i32.lt_u (local.get $i) (call $__len (local.get $ptr)))
+          (if (i32.or (i32.lt_u (local.get $i) (call $__len (local.get $ptr)))
+                     (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${DATA_VIEW_FLAG})))
             (then (drop (call $${typedSet} (local.get $ptr) (local.get $i) (local.get $val)${domainArg}))))
           (return (f64.reinterpret_i64 (local.get $ptr)))))
       (f64.reinterpret_i64 (local.get $ptr)))`

@@ -284,13 +284,14 @@ VT['[]'] = (args) => {
   // typedReadMaybeOob below and keep the runtime compare.
   const recvVt = valTypeOf(args[0])
   if (recvVt === VAL.TYPED) {
-    const elem = typedCtorElemValType(typedReceiverCtor(args[0]))
+    const ctor = typedReceiverCtor(args[0])
+    const elem = typedCtorElemValType(ctor)
     // With no BigInt syntax in the whole program, every accepted host typed
     // ingress is numeric (interop rejects evidence-free BigInt typed arrays),
     // so an open ctor still has a closed NUMBER element domain. Preserve the
     // numeric hot-path proof; BigInt-capable programs keep the kind open and
     // use the tagged runtime reader.
-    return elem || (!ctx.features.bigint ? VAL.NUMBER : null)
+    return ctor ? elem : (!ctx.features.bigint ? VAL.NUMBER : null)
   }
   // Indexed read on a STRING returns a 1-char string (SSO at runtime).
   if (recvVt === VAL.STRING) return VAL.STRING
@@ -430,7 +431,7 @@ VT['.'] = (args) => {
   // them NUMBER lets `+` skip the string-concat dispatch. Object schema slots
   // resolved above override this, keeping user-defined same-name slots sound.
   const objType = typeof args[0] === 'string' ? lookupValType(args[0]) : valTypeOf(args[0])
-  const pvt = propValType(args[1], objType)
+  const pvt = propValType(args[1], objType, args[1] === 'length' && objType === VAL.TYPED ? typedReceiverCtor(args[0]) : null)
   if (pvt) return pvt
   return null
 }

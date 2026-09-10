@@ -118,8 +118,15 @@ replace the full committed performance evidence.
   are explicit; whole-store invalidation includes anonymous bodies. See
   [ARCHITECTURE-REVIEW.md](ARCHITECTURE-REVIEW.md) for evidence and remaining gates.
 
-- DataView identity and view bounds are preserved, but `.length` and numeric
-  property access still take typed-array fallbacks instead of returning undefined.
+- DataView reads now distinguish byte bounds from indexed elements: `.length`
+  and absent numeric properties return undefined. Generic TYPED facts no longer
+  prove integer length; concrete typed-array constructors retain that proof.
+  Indexed writes reject instead of overwriting buffer bytes. Indexed own
+  properties remain unsupported (STABILITY.md); no new representation was added.
+  This follow-up passes 4,493 core tests (one skip, 63,022 assertions), 33
+  self-hosting tests and 869 builtin conformance cases. The focused Watr size
+  harness grows from 304,983 to 305,301 bytes (+318); the size target remains
+  open. These harness figures differ from the full benchmark backstop above.
 - Array parameter destructuring uses iterator semantics. Declaration and assignment
   array patterns still use indexed lowering; keep that difference explicit.
 - UTF-16 strings are implemented throughout the value ABI, including lone

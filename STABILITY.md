@@ -142,6 +142,9 @@ names beyond exported ones — the name section is opt-in via `--names`);
 
 ## Known limitations at v1
 
+- **DataView indexed own properties** are unsupported. Indexed writes reject;
+  use DataView setters to write bytes. An unextended view has no `.length` or
+  indexed elements; `.byteLength` and `.byteOffset` describe its byte bounds.
 - **Ambiguous `boolean∪number` locals** whose stored identity would escape
   reject at compile time (truthiness-only uses compile fine); full support
   needs a tagged Boolean carrier plan.

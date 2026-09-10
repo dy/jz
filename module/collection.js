@@ -21,7 +21,7 @@ import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET }
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { dataLen } from '../src/static-data.js'
 import { stringHash } from '../src/string-data.js'
-import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat } from '../layout.js'
+import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { ERR, ERR_INFO } from '../err-codes.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
@@ -2465,7 +2465,11 @@ export default (ctx) => {
 
     if (Array.isArray(key) && key[0] === 'str') {
       const prop = key[1]
-      if (prop === 'length' && (objType === VAL.ARRAY || objType === VAL.TYPED || objType === VAL.STRING || objType === VAL.SET || objType === VAL.MAP))
+      if (prop === 'length' && objType === VAL.TYPED) {
+        inc('__ptr_aux')
+        return typed(['i32.eqz', ['i32.and', ['call', '$__ptr_aux', asI64(emit(obj))], ['i32.const', DATA_VIEW_FLAG]]], 'i32')
+      }
+      if (prop === 'length' && (objType === VAL.ARRAY || objType === VAL.STRING || objType === VAL.SET || objType === VAL.MAP))
         return typed(['i32.const', 1], 'i32')
 
       const schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)

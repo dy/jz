@@ -23,7 +23,7 @@ import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { dataLen } from '../src/static-data.js'
 import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
-import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
+import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
@@ -920,6 +920,8 @@ export default (ctx) => {
             (if (result i32) (i32.eq (local.get $t) (i32.const 3))
               (then
                 (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+                ;; DataView has byte bounds but no indexed elements.
+                (if (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG})) (then (return (i32.const 0))))
                 (if (result i32) (i32.and (local.get $aux) (i32.const 8))
                   (then (i32.shr_u (i32.load (local.get $off))
                                    (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
@@ -1151,10 +1153,8 @@ export default (ctx) => {
   /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch.
    *  ARRAY length is i32 at offset-8 — inline that load directly instead of calling
    *  __len which re-dispatches on type. ptrOffsetIR handles
-   *  ARRAY forwarding (non-ARRAY skips the forwarding loop). TYPED has a variable-width
-   *  layout depending on the aux typed-element shift, so it still routes through __len.
-   *  A proven ARRAY|TYPED union keeps the lean __len path; every other
-   *  unresolved value uses real property dispatch. */
+   *  ARRAY forwarding (non-ARRAY skips the forwarding loop). Generic TYPED may
+   *  be a DataView, whose byte bounds do not imply a length property. */
   function emitLengthAccess(va, vt, arrayOrTyped = false) {
     // jsstring carrier: receiver is an externref slot (boundary param tagged
     // `jsstring` by narrow.js phase J). Route to the `wasm:js-string` length
@@ -1170,8 +1170,6 @@ export default (ctx) => {
     // Set/Map have no .length in JS — their count is `.size`. (The former
     // shared-layout __len shortcut returned the entry count here.)
     if (vt === VAL.SET || vt === VAL.MAP) return undefExpr()
-    if (vt === VAL.TYPED)
-      return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
     // Known string → byteLen via the active string rep. Pass the slot
     // carrier (f64 under nanbox-sso) — the rep op handles internal
     // reinterpret/wrap. The `?.` call site passes a bare `['local.get', $t]`
@@ -1180,13 +1178,11 @@ export default (ctx) => {
       const f64Va = va?.type === 'f64' ? va : typed(va, 'f64')
       return typed(['f64.convert_i32_s', ctx.abi.string.ops.length(f64Va, ctx)], 'f64')
     }
-    // A closed ARRAY|TYPED union has no ordinary property arm and can keep
-    // the lean length helper. `notString` alone is insufficient: OBJECT/HASH/
-    // EXTERNAL values also satisfy it and need a real property Get.
-    if (arrayOrTyped) {
-      inc('__len')
+    // Keep the DataView distinction even for a closed ARRAY|TYPED union.
+    if (vt === VAL.TYPED || arrayOrTyped) {
+      inc('__length.value')
       setLinkDemand('typedarray')
-      return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
+      return typed(['call', '$__length.value', ['i64.reinterpret_f64', va]], 'f64')
     }
     // Unknown → runtime dispatch via stdlib. Set/Map dispatch arms are pulled
     // only when user code actually constructs Set/Map (collection.js sets the
@@ -1873,7 +1869,7 @@ export default (ctx) => {
     (call $__to_num (i64.reinterpret_f64 ${rawLengthPropArm()})))`
 
   const buildLengthHelper = (name, numeric) => {
-    // Everything that is not a string/array/typed reads `length` as an ordinary
+    // Everything that is not a string/array/typed array reads `length` as an ordinary
     // property: OBJECT schema slot, HASH key, sidecar — or undefined. Set/Map
     // have no `.length`; their count is `.size`. Keep numeric coercion outlined
     // so it cannot inflate the dominant ARRAY helper body.
@@ -1891,7 +1887,9 @@ export default (ctx) => {
     (if (i32.and (f64.ne (local.get $f) (local.get $f)) (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})))
       (then (return ${arrayLengthIR})))
     ${ctx.linkDemand.typedarray ? `(if (i32.and (f64.ne (local.get $f) (local.get $f)) (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
-      (then (return ${typedLengthIR})))` : ''}
+      (then
+        (if (i32.eqz (i32.and (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${DATA_VIEW_FLAG})))
+          (then (return ${typedLengthIR})))))` : ''}
     (if (i32.and (f64.ne (local.get $f) (local.get $f)) (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
       (then (return (f64.convert_i32_s (call $__str_len (local.get $v))))))
     (if (f64.eq (local.get $f) (local.get $f))

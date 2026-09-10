@@ -880,6 +880,55 @@ test('DataView identity survives erased values and host boundaries', () => {
   }
 })
 
+test('DataView has byte bounds, not indexed elements or length', () => {
+  const source = `
+    export let length = x => x.length
+    export let index = (x, i) => x[i]
+    export let local = flag => {
+      let b = new ArrayBuffer(8)
+      let d = new DataView(b, 2, 3)
+      d.setUint8(0, 71)
+      let x = flag ? d : new Uint8Array(b, 2, 3)
+      return [x.length, x[0], x[9], x.length === undefined, x[0] === undefined, x.byteLength, 'length' in x, 0 in x]
+    }
+    export let direct = () => {
+      let d = new DataView(new ArrayBuffer(8))
+      let n = d.length
+      return [n, d[0], d['length'], d['0'], n === undefined, d[0] === undefined,
+        String(d.length), String(d[0]), typeof n, typeof d[0], n + 1, d[0] + 1]
+    }
+  `
+  const oracle = new Function(source.replaceAll('export let ', 'let ') + '; return {local, direct}')()
+  for (const optimize of [0, 1, 2, 3]) {
+    const { exports: e } = jz(source, { optimize })
+    is(e.direct(), oracle.direct())
+    for (const flag of [false, true]) is(e.local(flag), oracle.local(flag))
+    const d = new DataView(new ArrayBuffer(8), 2, 3)
+    d.setUint8(0, 71)
+    is(e.length(d), d.length)
+    for (const i of [0, 2, 9, '0', 'length']) is(e.index(d, i), d[i])
+    const a = new Uint8Array(d.buffer, 2, 3)
+    is(e.length(a), a.length)
+    is(e.index(a, 0), a[0])
+  }
+})
+
+test('DataView indexed writes reject before touching buffer bytes', () => {
+  for (const optimize of [0, 1, 2, 3]) {
+    const { exports: e } = jz(`
+      let d = new DataView(new ArrayBuffer(8))
+      d.setUint8(0, 71)
+      export let read = () => d.getUint8(0)
+      export let write = v => d[0] = v
+      export let erased = (x, v) => x[0] = v
+    `, { optimize })
+    throws(() => e.write(42), /DataView indexed properties are unsupported/)
+    is(e.read(), 71)
+    throws(() => e.erased(new DataView(new ArrayBuffer(8)), 42), /DataView indexed properties are unsupported/)
+    is(e.erased(new Uint8Array(8), 42), 42)
+  }
+})
+
 test('typed-array descriptor provenance crosses calls and closures', () => {
   for (const name of ['Int8Array', 'Int16Array', 'Int32Array', 'Float32Array', 'Float64Array']) {
     const { exports: e } = jz(`

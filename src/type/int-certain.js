@@ -13,6 +13,7 @@ import { ctx } from '../ctx.js'
 import { VAL, lookupValType } from '../reps.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
 import { NO_VALUE, staticValue } from '../static.js'
+import { typedStorageNameCtor } from '../typed-context.js'
 
 // === Integer-certainty fixpoint (shared by analyzeIntCertain + program-facts) ===
 
@@ -102,7 +103,7 @@ function makeIntLevelExpr(intLevels, slotLevelOf) {
         const r = slotLevelOf(expr[1], expr[2])
         if (r != null) return r
       }
-      return typeof expr[1] === 'string' && propValType(expr[2], lookupValType(expr[1])) === VAL.NUMBER ? 1 : 0
+      return typeof expr[1] === 'string' && propValType(expr[2], lookupValType(expr[1]), expr[2] === 'length' ? typedStorageNameCtor(ctx, expr[1]) : null) === VAL.NUMBER ? 1 : 0
     }
     if (INT_CLOSED_OPS.has(op)) {
       const a = levelOf(expr[1])

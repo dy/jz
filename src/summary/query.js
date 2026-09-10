@@ -159,7 +159,7 @@ export function summaryQueries(facts) {
           return optionalResult(op, r, fn && !memberMayBeOwn(n[2]) ? results.get(fn) ?? ANY : fn || memberMayBeOwn(n[2]) ? ANY : NULLISH)
         }
         if (t === K.HASH) return optionalResult(op, r, orAbsent(elemOf(r)))
-        if (isCount(n[2], t)) return optionalResult(op, r, NUMBER)
+        if (isCount(n[2], r)) return optionalResult(op, r, NUMBER)
         if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(n[2])) return optionalResult(op, r, orAbsent(propOf(r, n[2])))
         return optionalResult(op, r, n[2] === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY)
       }

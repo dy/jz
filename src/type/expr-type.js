@@ -120,7 +120,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   // per-iteration `f64.convert_i32_s` widen and matching `arr[i]`/`i*k` truncs.
   // The membership lives in one place — `propValType` (src/kind-traits.js).
   if (op === '.') {
-    if (typeof expr[1] === 'string' && propValType(expr[2], lookupValType(expr[1])) === VAL.NUMBER) return 'i32'
+    if (typeof expr[1] === 'string' && propValType(expr[2], lookupValType(expr[1]), expr[2] === 'length' ? typedElemCtorOf(expr[1], locals) : null) === VAL.NUMBER) return 'i32'
     // Strict-int32 schema slot (write census): the read emits as a raw i32
     // (emitSchemaSlotRead's trunc route), so the static local-slot classifier
     // must agree — `const x = hitX ? p.x : nx` then declares x i32 instead of

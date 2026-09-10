@@ -1103,11 +1103,13 @@ test('intCertain: Math.sqrt / Math.sin / Math.cos poison', () => {
   is(r.a, false); is(r.b, false); is(r.c, false)
 })
 
-test('intCertain: .length on TYPED / ARRAY / STRING / BUFFER receiver is int', () => {
+test('intCertain: generic TYPED may be DataView; only sized receivers prove length', () => {
   const r1 = runAnalyze('let f = (arr) => { let n = arr.length }', { arr: VAL.TYPED })
-  is(r1.n, true)
+  is(r1.n, false)
   const r2 = runAnalyze('let f = (s) => { let n = s.length }', { s: VAL.STRING })
   is(r2.n, true)
+  const r3 = runAnalyze('let f = (a) => { let n = a.length }', { a: VAL.ARRAY })
+  is(r3.n, true)
 })
 
 test('intCertain: .length on unknown receiver does not claim int', () => {
