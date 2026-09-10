@@ -62,6 +62,7 @@ jobs:
           node scripts/build-site.mjs _site
           # overlay the just-built artifacts (gitignored, so absent from the archive).
           mkdir -p _site/dist && cp dist/jz.js dist/interop.js _site/dist/
+          cp -R dist/microlighter _site/dist/
           # assets/sprae.js is bundled from the `sprae` devDep at build time (a WEB asset, not compiler
           # dist): the landing binds its live bench figures with it. site.css + the font in assets/ are
           # tracked, so they're already in the archive — only the built sprae.js needs the overlay.

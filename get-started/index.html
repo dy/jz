@@ -15,28 +15,33 @@
 <link rel="icon" href="../jz.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../assets/site.css">
 <style>
-/* Compact technical guide; existing monochrome palette, a single reading column and working code. */
+/* The guide shares the FAQ's prose; code is a quiet terminal surface. */
 *, *::before, *::after { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--font); -webkit-font-smoothing: antialiased; }
 .masthead, main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
 main { padding-block: 48px 32px; }
-article { max-width: 640px; }
-h1 { margin: 0 0 16px; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; font-weight: 400; }
-h2 { margin: 40px 0 12px; font-size: 22px; font-weight: 400; }
-p { margin: 12px 0; color: var(--soft); font-size: 16px; line-height: 1.6; }
-code { font-family: var(--font-mono); font-size: .85em; }
-pre { margin: 16px 0; padding: 16px; border: 1px solid var(--line); overflow-x: auto; font-size: 14px; line-height: 1.6; }
-pre code { font-size: inherit; }
-.file { margin-bottom: -8px; font-size: 13px; color: var(--dim); }
-@media (max-width: 640px) { .masthead, main { padding-inline: 20px; } main { padding-top: 32px; } pre { font-size: 12px; } }
+h1 { margin: 0 0 20px; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; font-weight: 400; }
+h2 { margin: 36px 0 12px; font-size: 18px; font-weight: 600; }
+.terminal { margin: 20px 0; padding: 20px 24px; background: #000; color: #ccc; border: 1px solid #222; overflow-x: auto; font: 13.5px/22px var(--font-mono); color-scheme: dark; }
+.terminal code { font: inherit; }
+.terminal:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.terminal ::selection { color: #000; background: #ddd; }
+::highlight(comment) { color: #888; }
+::highlight(keyword), ::highlight(storage), ::highlight(numeric), ::highlight(constant), ::highlight(boolean) { color: #eee; }
+::highlight(string), ::highlight(regexp), ::highlight(support), ::highlight(type) { color: #aaa; }
+::highlight(operator), ::highlight(punctuation) { color: #999; }
+::highlight(function), ::highlight(variable), ::highlight(property) { color: #ccc; }
+@media (max-width: 640px) { .masthead, main { padding-inline: 20px; } main { padding-top: 32px; } .terminal { padding: 16px; font-size: 12px; } }
 </style>
 </head>
 <body>
 <header class="masthead">
   <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a><span class="sub">get started</span></div>
-  <nav>
-    <a href="../repl/">repl</a>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a href="../get-started/" aria-current="page">guide</a>
+    <a href="../examples/">examples</a>
     <a href="../bench/">bench</a>
+    <a href="../repl/">repl</a>
     <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.9.2</span> <span class="exp">experimental</span></a>
     <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
       <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -49,48 +54,44 @@ pre code { font-size: inherit; }
 </header>
 
 <main>
-<article>
-  <h1>Compile JavaScript to WebAssembly</h1>
-  <p>Keep your numeric code in JavaScript. JZ compiles it to WASM, without type annotations. Start with one function.</p>
+<article class="prose">
+  <h1>JavaScript in. WebAssembly out.</h1>
+  <p>A <code>jz</code> template turns a piece of JavaScript into a WebAssembly module. Export a function, then call it from your app.</p>
+  <pre class="terminal" tabindex="0" aria-label="JavaScript: compile and call a function"><code id="tag-run" class="language-javascript">import jz from 'jz'
 
-  <h2>Install</h2>
-  <pre><code>npm install jz</code></pre>
-  <p>Or try the <a class="lnk" href="../repl/">online compiler</a> without installing anything.</p>
+const { exports } = jz`
+  export const dist = (x, y) =&gt;
+    (x*x + y*y) ** 0.5
+`
 
-  <h2>Compile and call</h2>
-  <p class="file">distance.js</p>
-  <pre><code id="distance-source">export const dist = (x, y) =&gt; (x*x + y*y) ** 0.5</code></pre>
-  <p class="file">run.mjs</p>
-  <pre><code id="distance-run">import { readFile } from 'node:fs/promises'
-import { compile } from 'jz'
+console.log(exports.dist(3, 4)) // 5</code></pre>
+  <p>The tag compiles and instantiates once. Keep the module around; each call to <code>exports.dist</code> runs WebAssembly. The function itself is ordinary JavaScript, with no type annotations.</p>
+  <pre class="terminal" tabindex="0" aria-label="Install JZ"><code>npm install jz</code></pre>
+  <p>Or start in the <a href="../repl/">playground</a> — nothing to install.</p>
 
-const source = await readFile('./distance.js', 'utf8')
-const wasm = compile(source)
-const { instance } = await WebAssembly.instantiate(wasm)
+  <h2>Give it a whole loop</h2>
+  <p>A tiny function shows the pattern. Numeric loops are where to try it: process a whole array in one call, so useful work outweighs the cost of crossing into WASM.</p>
+  <pre class="terminal" tabindex="0" aria-label="JavaScript: pass a typed array"><code id="array-run" class="language-javascript">import jz from 'jz'
 
-console.log(instance.exports.dist(3, 4)) // 5</code></pre>
-  <p>Run <code>node run.mjs</code> from the folder containing both files. Your fallback is the original file: <code>import { dist } from './distance.js'</code> and call it as ordinary JavaScript.</p>
-  <p>To compile ahead of time, use <code>npx jz distance.js -o distance.wasm</code>. Ship the WASM file; the compiler can stay in your build step.</p>
-
-  <h2>Pass arrays</h2>
-  <p>For arrays, strings and objects, use JZ's wrapper to move values across the JS/WASM boundary.</p>
-  <pre><code id="array-run">import jz from 'jz'
-
-const { exports, memory } = jz(`
+const { exports, memory } = jz`
   export const sum = a =&gt; {
     let total = 0
     for (const x of a) total += x
     return total
   }
-`)
+`
 
-console.log(exports.sum(new Float64Array([1, 2, 3]))) // 6
+const values = new Float64Array([1, 2, 3])
+console.log(exports.sum(values)) // 6
 memory.reset()</code></pre>
-  <p>Heap allocations accumulate until reset. Reset only after a batch is finished: it invalidates previous WASM pointers and views. For prebuilt modules, use <code>instantiate</code> from <code>jz/interop</code>. See the <a class="lnk" href="https://github.com/dy/jz/blob/main/STABILITY.md#host-memory-contract">memory contract</a>.</p>
+  <p>The wrapper handles arrays, strings and objects. Heap allocations accumulate until reset; finish the batch before calling <code>memory.reset()</code>, which invalidates prior WASM pointers and views. See the <a href="https://github.com/dy/jz/blob/main/STABILITY.md#host-memory-contract">memory contract</a> when keeping state between calls.</p>
 
-  <h2>Choose the right work</h2>
-  <p>JZ is experimental. Start with numeric loops, image processing or simulations; keep DOM and Node APIs in your host app. It implements a JavaScript subset, with <a class="lnk" href="https://github.com/dy/jz#what-differs-from-js">documented semantic differences</a>. Run your existing tests against both versions and measure the whole call, including data transfer.</p>
-  <p><a class="lnk" href="../examples/">Explore examples</a> · <a class="lnk" href="../bench/">Read benchmarks</a> · <a class="lnk" href="https://github.com/dy/jz#usage">API options and reference</a></p>
+  <h2>Keep the source. Ship the module.</h2>
+  <p>Already have a numeric kernel? Keep it in a regular <code>.js</code> file, export its functions, and compile it during your build:</p>
+  <pre class="terminal" tabindex="0" aria-label="Compile an existing JavaScript file"><code>npx jz kernel.js -o kernel.wasm</code></pre>
+  <p>The original file remains your JavaScript fallback. Ship the compiled module and load it with <code>instantiate</code> from <code>jz/interop</code>; the compiler stays in the build step. <a href="https://github.com/dy/jz#usage">API and CLI reference →</a></p>
+  <p>Start with one kernel and run your existing tests against both versions. JZ is experimental and supports a <a href="https://github.com/dy/jz#what-differs-from-js">JavaScript subset</a>; measure the full call, including data transfer.</p>
+  <p><a href="../examples/">Find an example to adapt</a> · <a href="../bench/">See the measurements</a></p>
 </article>
 </main>
 <footer>
@@ -116,5 +117,6 @@ memory.reset()</code></pre>
 </footer>
 <script type="module" src="../assets/version.js"></script>
 <script type="module" src="../assets/theme.js"></script>
+<script type="module" src="../assets/highlight.js"></script>
 </body>
 </html>

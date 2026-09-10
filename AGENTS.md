@@ -80,6 +80,8 @@ smoke test and `test:self` for the bundle. Edit source, not output.
   branch); URL https://jz.js.org/ (dy.github.io/jz redirects there).
   It installs without root lifecycle scripts, builds browser assets with
   `scripts/build-dist.mjs --js-only`, and gates the gallery plus REPL/hero smoke.
+  The guide's microlighter files are copied to `dist/microlighter/` and included
+  in the Pages artifact; its copyable examples are also tested before deployment.
   Full-suite, self-compile and benchmark failures belong to their separate gates;
   they do not block static site updates. Example compilation still must succeed.
 - **npm** — `prepare` builds `dist/` before pack, so the published tarball ships

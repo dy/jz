@@ -29,6 +29,7 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node g
   is(built.status, 0, `dist build: ${built.stderr}`)
   for (const file of ['dist/jz.js', 'dist/interop.js', 'assets/sprae.js'])
     ok(built.stdout.includes(`wrote ${file}`), `${file} freshly built for Pages`)
+  ok(built.stdout.includes('wrote dist/microlighter'), 'guide highlighter and grammar freshly copied for Pages')
   ok(!built.stdout.includes('wrote dist/jz.wasm'), 'browser build omits self-compilation')
 
   const driver = `

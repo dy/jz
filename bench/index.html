@@ -18,8 +18,8 @@
 /* Swiss B&W, same system as ../repl */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --sans: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: var(--font);
+  --mono: var(--font-mono);
   /* --ink/--soft/--dim/--mute/--paper/--band come themed from assets/site.css (light-dark tokens) */
   --mid: light-dark(#6c6c78, #8a8a93);     /* secondary text */
   --faint: light-dark(#e3e3e9, #1c1c25);   /* hairlines / bar tracks */
@@ -173,9 +173,11 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 
 <header class="masthead">
   <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a><span class="sub">bench</span></div>
-  <nav>
-    <a href="../repl/">repl</a>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a href="../get-started/">guide</a>
     <a href="../examples/">examples</a>
+    <a href="../bench/" aria-current="page">bench</a>
+    <a href="../repl/">repl</a>
     <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.7.0</span> <span class="exp">experimental</span></a>
     <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
       <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>

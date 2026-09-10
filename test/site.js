@@ -10,6 +10,20 @@ import { spawnSync } from 'node:child_process'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/build-site.mjs'), ...args], { encoding: 'utf8' })
 
+test('site: primary menus keep the same destinations and the self-compile badge names a real workflow', () => {
+  for (const file of ['index.html', 'get-started/index.html', 'examples/index.html', 'bench/index.html', 'floatbeat/index.html', 'examples/lib/jzdemo.js']) {
+    const html = readFileSync(join(root, file), 'utf8')
+    const nav = html.match(/<nav class="[^"]*site-nav"[^>]*>([\s\S]*?)<\/nav>/)[1]
+    const links = [...nav.matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)]
+    is(links.map(([, href, label]) => [href.replace(/^(\.\.\/)+/, ''), label]),
+      [['get-started/', 'guide'], ['examples/', 'examples'], ['bench/', 'bench'], ['repl/', 'repl']], file)
+  }
+  const home = readFileSync(join(root, 'index.html'), 'utf8')
+  ok(!home.includes('selfhost.yml'), 'no stale self-host workflow URL')
+  ok(home.includes('workflows/self-compile.yml/badge.svg'), 'badge uses self-compile workflow')
+  ok(readFileSync(join(root, '.github/workflows/self-compile.yml'), 'utf8').includes('name: self-compile'), 'linked workflow exists')
+})
+
 test('site: gallery stays current and renders into the deployment directory', () => {
   const checked = build('--check')
   is(checked.status, 0, checked.stderr)

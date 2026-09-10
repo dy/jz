@@ -31,8 +31,7 @@
       }
 
       :root {
-        --font: Futura, 'Futura PT', 'Avant Garde', 'ITC Avant Garde Gothic Std', 'Century Gothic', Jost, 'Helvetica Neue', sans-serif;
-        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --mono: var(--font-mono);
         /* colours come from assets/site.css as light-dark() tokens; the hero pins them back to dark (it stays a dark island) */
         --padx: 40px;
         --cw: 960px;
@@ -1025,8 +1024,7 @@
       }
 
       /* 20px only on the narrowest phones; ≥480 keeps the shared column inset (matches the examples header) */
-      .faq summary .fq,
-      .faq .ans {
+      .faq summary .fq {
         max-width: 720px;
       }
 
@@ -1084,14 +1082,6 @@
 
       .faq .ans {
         padding: 0 8px clamp(20px, 2.2vw, 26px) 0;
-        font-size: 16px;
-        line-height: 24px;
-        color: var(--ink);
-      }
-
-      /* black body text */
-      .faq .ans p+p {
-        margin-top: 0.7em;
       }
 
       /* gentle gap between paragraphs within an answer */
@@ -1127,30 +1117,6 @@
         .faq details[open]::details-content {
           block-size: auto;
         }
-      }
-
-      /* answer links wear the shared .lnk fashion (site.css) — element-scoped so every prose link gets it */
-      .faq .ans a {
-        color: var(--ink);
-        text-decoration: underline;
-        text-decoration-color: var(--mute);
-        text-decoration-thickness: 1px;
-        text-underline-offset: 2px;
-        transition: text-decoration-color .16s;
-      }
-
-      .faq .ans a:hover,
-      .faq .ans a:focus-visible {
-        text-decoration-color: currentColor;
-      }
-
-      .faq .ans code {
-        font-family: var(--mono);
-        font-size: .85em;
-        color: var(--ink);
-        background: light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08));
-        padding: .1em .4em;
-        white-space: nowrap;
       }
 
       .faq .ans b {
@@ -1300,7 +1266,8 @@
        in-pitch JS/JZ switch flips its engine and the FPS/ms readout times the frame -->
       <canvas class="grid-current" id="grid-current" aria-hidden="true"></canvas>
 
-      <nav class="hero-nav">
+      <nav class="hero-nav site-nav" aria-label="Main navigation">
+        <a href="get-started/">guide</a>
         <a href="examples/">examples</a>
         <a href="bench/">bench</a>
         <a href="repl/">repl</a>
@@ -1381,7 +1348,7 @@
           <summary><h2 class="fq">What is JZ?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
+          <div class="ans prose">
             <p>JZ compiles a distilled JavaScript subset, Crockford’s “good parts” – into native-grade WASM.</p>
             <p><b>Valid JZ is valid JS</b>. Same source runs as plain JS or compiles without rewrite to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
             <table>
@@ -1425,7 +1392,7 @@
           <summary><h2 class="fq">What is supported?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
+          <div class="ans prose">
             <p>A minimal modern functional JS subset – no dynamic constructs or reflection. The jzify layer lowers legacy patterns, generators, and async/await.</p>
             <div class="subset">
               <div class="ring out">
@@ -1448,7 +1415,7 @@
           <summary><h2 class="fq">Why no types?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">Ordinary code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower, always-correct dynamic path.</div>
+          <div class="ans prose">Ordinary code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower, always-correct dynamic path.</div>
         </details>
 
 
@@ -1456,8 +1423,8 @@
           <summary><h2 class="fq">Why not Porffor, scriptc, or AssemblyScript?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
-            <p>Porffor aims to cover the full JS spec but emits no WASM (its 2026 rewrite compiles through C to native) and runs slower than V8 on the <a href="bench/">cases</a> it completes; scriptc makes native CLI binaries from TypeScript, no WASM target; AssemblyScript is a typed TypeScript dialect for WASM whose source can’t run as JS.</p>
+          <div class="ans prose">
+            <p>Porffor aims to cover the full JS spec but emits no WASM (its 2026 rewrite compiles through C to native) and runs slower than V8 on the <a href="bench/">cases</a> it completes; scriptc makes native CLI binaries from TypeScript, no WASM target; AssemblyScript compiles a typed TypeScript dialect to WASM.</p>
             <p>JZ compiles plain JS that still runs and tests as JS, and the release gate keeps its WASM fastest per case; the price is the overdynamic constructs it refuses.</p>
           </div>
         </details>
@@ -1466,7 +1433,7 @@
           <summary><h2 class="fq">Why not Rust, Go, or C?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
+          <div class="ans prose">
             <p>Rust, Go, and C are excellent when a rewrite and second toolchain make sense. JZ is for the hot path you want to keep in JavaScript: one source, one test suite, a JS fallback, and comparable WASM or <a href="#native">native</a> performance.</p>
           </div>
         </details>
@@ -1476,7 +1443,7 @@
           <summary><h2 class="fq">Is it fast?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
+          <div class="ans prose">
             <p>JZ leads V8 and AssemblyScript by geomean on the covered corpus and targets near-native speed. The release gate is stricter than an average: JZ must be the fastest WASM on every case. Per-case numbers, missing target coverage, and every measured loss stay visible on the <a href="bench/">bench page</a>; a rival win remains a bug to close, not an exception to hide.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus – jz vs the wasm field (C, Rust, Go, Zig, MoonBit, AssemblyScript, compiled to WASM and run in V8), V8 itself, and Porffor's native AOT; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
@@ -1487,7 +1454,7 @@
           <summary><h2 class="fq">How can it beat V8?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
+          <div class="ans prose">
             <p>WASM isn't magically faster – V8 also JIT-compiles hot JS to machine code. But a JIT pays for staying ready for any JS: shape checks, deopt guards, GC pauses in the hot loop. JZ's subset is closed, so it commits ahead of time to what a JIT only gambles on – static layout, monomorphic calls, no GC – and auto-vectorizes loops to SIMD, which V8 doesn't attempt on plain JS.</p>
           </div>
         </details>
@@ -1496,7 +1463,7 @@
           <summary><h2 class="fq">Can it go native?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
+          <div class="ans prose">
             <p><code>jz → wasm2c → clang -O3</code> produces a standalone native binary. See <a href="https://github.com/dy/jz/blob/main/scripts/native/README.md" target="_blank" rel="noopener">full pipeline →</a>.</p>
           </div>
         </details>
@@ -1505,15 +1472,15 @@
           <summary><h2 class="fq">Can it compile itself?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>, and the self-compiled build passes the full test suite in CI. <a href="https://github.com/dy/jz/actions/workflows/selfhost.yml" target="_blank"
-              rel="noopener" aria-label="self-host CI status"><img src="https://github.com/dy/jz/actions/workflows/selfhost.yml/badge.svg" alt="self-host CI status" style="height:18px;vertical-align:middle"></a></div>
+          <div class="ans prose">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>. CI checks the wasm-hosted compiler against the test suite. <a href="https://github.com/dy/jz/actions/workflows/self-compile.yml" target="_blank"
+              rel="noopener" aria-label="self-compile CI status"><img src="https://github.com/dy/jz/actions/workflows/self-compile.yml/badge.svg" alt="self-compile CI status" style="height:18px;vertical-align:middle"></a></div>
         </details>
 
         <details name="faq">
           <summary><h2 class="fq">Is it production ready?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">
+          <div class="ans prose">
             <p>It’s <b>experimental</b> (pre-1.0) – ABI can still shift.</p>
             <p>But real code already ships on it: <a href="https://github.com/colorjs/color-space#wasm" target="_blank" rel="noopener">color-space v3</a> builds its precompiled 27-space WASM backend with JZ.</p>
             <p>CI gates the full suite, test262, the bench, and the self-compile. A fuzzer diffs every kernel against the same source in V8.</p>
@@ -1525,7 +1492,7 @@
           <summary><h2 class="fq">How do I use it?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans">The CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) produces a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank"
+          <div class="ans prose">The CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) produces a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank"
               rel="noopener">Setup &amp; options →</a></div>
         </details>
       </div>

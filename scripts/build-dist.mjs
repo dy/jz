@@ -11,6 +11,7 @@
  *   assets/sprae.js — minified bundle of sprae (a WEB asset, not compiler dist):
  *                  the landing binds its live bench figures with sprae `:text`
  *                  directives. Resolved from the npm package or a sibling dy/sprae.
+ *   dist/microlighter/ — guide syntax highlighter and JavaScript grammar.
  *   dist/jz.wasm — the jz compiler compiled to wasm by jz (full self-compile). Its
  *                  default export is `compileSelf(source) → wasm bytes`: the whole
  *                  pipeline (parse → jzify → prepare → compile → watr-encode) runs
@@ -20,7 +21,7 @@
  * Run: npm run build (all artifacts), npm run build:web (browser assets only).
  */
 import { build } from 'esbuild'
-import { writeFileSync, mkdirSync, statSync, existsSync, readFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, statSync, existsSync, readFileSync, copyFileSync } from 'node:fs'
 import { stripWatTemplates } from './wat-strip.mjs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -111,7 +112,15 @@ if (spraeEntry) {
   throw new Error('sprae not found — install dependencies before building browser assets')
 }
 
-// Pages serves these three JS bundles, never the self-compiled compiler.
+// The guide uses microlighter's CSS ranges and only its JavaScript grammar.
+const lighter = dirname(fileURLToPath(import.meta.resolve('microlighter')))
+mkdirSync(resolve(OUT, 'microlighter/grammars'), { recursive: true })
+for (const file of ['index.js', 'highlight.js', 'grammar-dependencies.js', 'grammars/javascript.js'])
+  copyFileSync(resolve(lighter, file), resolve(OUT, 'microlighter', file))
+copyFileSync(resolve(lighter, '../LICENSE'), resolve(OUT, 'microlighter/LICENSE'))
+console.log('wrote dist/microlighter (JavaScript grammar)')
+
+// Pages serves browser assets, never the self-compiled compiler.
 // Keep bootstrap correctness/performance in their own gates.
 if (process.argv.includes('--js-only')) process.exit(0)
 
