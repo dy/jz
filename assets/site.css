@@ -142,7 +142,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 /* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left;
    descriptor, credit and license stacked right. ─── */
 footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: var(--paper); }
-footer .about { margin: 0 0 8px; color: var(--dim); font: inherit; line-height: 1.5; }
+footer .about { margin: 0 0 8px; color: var(--mute); font: inherit; line-height: 1.5; }   /* as quiet as the credit line below it */
 footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }
 footer .wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
 footer .wordmark img { width: 40px; height: 40px; display: block; }

@@ -87,22 +87,22 @@ test('benchmark ratios: paired positive finite measurements, independent columns
   }
 })
 
-test('headline: hand-WAT coverage excludes invalid and lab cases; size median and RSS direction are explicit', () => {
+test('headline: size median excludes invalid and lab cases; RSS direction is explicit for V8 and AssemblyScript', () => {
   const pair = (bytes, memKb = 50) => C({ bytes, memKb, parity: 'ok' }, {
-    wat: { bytes: 100, parity: 'ok' }, v8: { memKb: 100, parity: 'ok' },
+    as: { bytes: 100, memKb: 100, parity: 'ok' }, v8: { memKb: 100, parity: 'ok' },
   })
   const cases = { a: pair(100), b: pair(300), c: pair(900), jz: pair(99999), bad: pair(Infinity) }
   const s = headlineStats({ cases })
-  is(s.watsize, '3×', 'odd median')
-  is(s.watcases, 3, 'only valid finite sizes outside LAB count')
+  is(s.assize, '3×', 'odd median over valid finite sizes outside LAB')
   is(s.v8mem, '0.50×', 'half the RSS reads as half of V8')
+  is(s.asmem, '0.50×', 'half the RSS reads as half of AssemblyScript')
   delete cases.c
-  is(headlineStats({ cases }).watsize, '2×', 'even median averages middle values')
-  cases.a.targets.wat.parity = 'DIFF'
-  is(headlineStats({ cases }).watcases, 1, 'wrong WAT excluded')
-  is(headlineStats({ cases: {} }).watsize, null, 'empty size hidden')
-  is(headlineStats({ cases: {} }).watcases, 0, 'empty coverage')
+  is(headlineStats({ cases }).assize, '2×', 'even median averages middle values')
+  cases.a.targets.as.parity = 'DIFF'
+  is(headlineStats({ cases }).assize, '3×', 'wrong AssemblyScript row excluded')
+  is(headlineStats({ cases: {} }).assize, null, 'empty size hidden')
   is(headlineStats({ cases: {} }).v8mem, null, 'empty RSS hidden')
+  is(headlineStats({ cases: {} }).asmem, null, 'empty AssemblyScript RSS hidden')
   is(headlineStats({ cases: { a: pair(100, 200) } }).v8mem, '2.00×', 'double RSS is not described as a saving')
 })
 

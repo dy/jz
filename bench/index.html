@@ -38,6 +38,7 @@ body { background: var(--paper); color: var(--ink); font-family: var(--sans);
 
 main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding: 0 var(--padx) 90px; }
 section { margin-top: 64px; }
+.intro + section { margin-top: 44px; }   /* the strip's numerals carry their own air; the corpus follows closer than sections space apart */
 h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; border-bottom: 1px solid var(--ink); padding-bottom: 8px; margin-bottom: 18px; }
 p { font-size: 16px; line-height: 24px; max-width: 70ch; }
 p + p { margin-top: 10px; }
@@ -98,7 +99,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 #strip .mlabel { font-weight: 600; color: var(--ink); }
 #strip .stat span .cico { width: 12px; height: 12px; margin-right: 5px; vertical-align: -1.5px; }
 #strip .mstats { gap: clamp(18px, 2.4vw, 34px); }
-#strip .stat small { display: block; margin-top: 4px; color: var(--mid); font-size: 11px; }
 
 /* bar rows */
 .row { display: grid; grid-template-columns: 220px 1fr 56px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
@@ -245,7 +245,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
       <a href="https://github.com/dy/jz/issues">issues</a>
     </nav>
     <div class="legal">
-      <p class="about">JZ compiles JavaScript to WebAssembly.<br>Audio, graphics and simulations. Same JS.</p>
+      <p class="about">JZ compiles JavaScript to WebAssembly<br>for audio, graphics, simulations and compute</p>
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
       <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>
@@ -658,7 +658,7 @@ $('geomean').addEventListener('click', e => {
 
 // ── stat strip ───────────────────────────────────────────────────────────────
 // Headline ratios come from the same evidence as the landing hero. Labels spell
-// out the direction: speedup vs a target, size/RSS as a fraction of that target.
+// out the direction: speedup vs a target, RSS/size as a fraction of that target.
 // Each cell is [key, label, band, tip]. Detailed rivals stay in the corpus chart.
 const STRIP = [
   ['Speedup', [
@@ -666,18 +666,18 @@ const STRIP = [
     ['rust', 'vs Rust wasm', 'wasm', 'Rust wasm time ÷ JZ time, geometric mean over matched, correct cases. Both run in V8. Higher = JZ faster.'],
     ['nat', 'vs C native', 'native', 'Native C time ÷ JZ wasm time, geometric mean over matched, correct cases. Below 1× = native C faster.'],
   ]],
-  ['Size', [
-    ['assize', 'of AssemblyScript', 'wasm', 'JZ bytes ÷ AssemblyScript bytes, median over matched, correct cases. JZ optimize:"size"; asc -Osize --runtime stub --noAssert. Below 1× = JZ smaller.'],
-    ['watsize', 'of hand-WAT', 'wasm', 'JZ bytes ÷ handwritten WASM bytes, median over the comparable subset. Hand-WAT is a manual baseline, not a compiler. Above 1× = JZ larger.'],
-  ]],
   ['Memory', [
     ['v8mem', 'of V8 RSS', 'js', 'JZ RSS ÷ V8 RSS, geometric mean over matched, correct cases. Both run in Node. Peak memory includes the whole process, not just the WASM heap. Below 1× = JZ uses less memory.'],
+    ['asmem', 'of AssemblyScript RSS', 'wasm', 'JZ RSS ÷ AssemblyScript RSS, geometric mean over matched, correct cases. Both run in Node; AssemblyScript carries its GC runtime. Below 1× = JZ uses less memory.'],
+  ]],
+  ['Size', [
+    ['assize', 'of AssemblyScript', 'wasm', 'JZ bytes ÷ AssemblyScript bytes, median over matched, correct cases. JZ optimize:"size"; asc -Osize --runtime stub --noAssert. Below 1× = JZ smaller.'],
   ]],
 ]
 const renderStrip = () => {
   const s = headlineStats(DATA)
   const cell = ([k, lab, band, title]) => s[k]
-    ? `<a class="stat" href="#speed" title="${esc(title)}"><b>${s[k]}</b><span>${band && CLS_ICO[band] ? CLS_ICO[band] : ''}${esc(lab)}</span>${k === 'watsize' ? `<small>${nCases(s.watcases)}</small>` : ''}</a>` : ''
+    ? `<a class="stat" href="#speed" title="${esc(title)}"><b>${s[k]}</b><span>${band && CLS_ICO[band] ? CLS_ICO[band] : ''}${esc(lab)}</span></a>` : ''
   $('strip').innerHTML = STRIP.map(([label, defs]) => {
     const cells = defs.map(cell).join('')
     return cells ? `<div class="mgroup"><span class="mlabel">${label}</span><div class="mstats">${cells}</div></div>` : ''

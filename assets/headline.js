@@ -7,8 +7,7 @@
 //   asspeed       geomean of as.medianUs / jz.medianUs (jz vs AssemblyScript on speed)
 //   peak          max V8/jz speedup (the best single-case SIMD win)
 //   assize        MEDIAN of jz.wasm / as.wasm bytes (apples-to-apples binary↔binary)
-//   v8mem         geomean of jz.memKb / v8.memKb (fraction of V8 peak process RSS)
-//   watsize       median of jz.wasm / hand-WAT bytes; watcases is its case count
+//   v8mem, asmem  geomean of jz.memKb / target.memKb (fraction of V8 / AssemblyScript peak process RSS)
 // Rows count only with `ok` or the documented `fma` checksum. Failed, wrong, and
 // unclassified rows are not evidence for speed, size, or memory comparisons.
 // The LAB set — jz-internal probe cases: the self-compile compiler rows (jz/watr/
@@ -54,8 +53,7 @@ export function headlineStats(results) {
   let peak = 0
   for (const c of cases) { const t = c.targets; if (timedBenchmarkRow(t.jz) && timedBenchmarkRow(t.v8)) peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
   const sizes = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (correctBenchmarkRow(t.jz) && correctBenchmarkRow(t[tgt]) && t.jz.bytes > 0 && t[tgt].bytes > 0 && Number.isFinite(t.jz.bytes) && Number.isFinite(t[tgt].bytes)) a.push(t.jz.bytes / t[tgt].bytes) } return a }
-  const wat = sizes('wat')
-  const mem = benchmarkRatio(cases, 'v8', 'memKb')
+  const memOf = tgt => { const m = benchmarkRatio(cases, tgt, 'memKb'); return m ? 1 / m.geo : null }
   return {
     v8: f(ratio('v8')), peak: f(peak || null), porf: f(ratio('porf-native')), rust: f(ratio('rust-wasm')),
     jsc: f(ratio('jsc')),                    // jz vs JavaScriptCore (Safari's engine)
@@ -64,8 +62,8 @@ export function headlineStats(results) {
     rustnat: f(ratio('rust'), 2),            // jz vs native Rust (rustc -O) — same native-parity story (the hero's 3rd stat)
     asspeed: f(ratio('as')),                 // jz vs AssemblyScript on speed
     assize: f(median(sizes('as'))),          // fraction of AssemblyScript wasm bytes
-    watsize: f(median(wat)), watcases: wat.length,
-    v8mem: f(mem ? 1 / mem.geo : null, 2),   // fraction of Node's RSS running the same source as JS
+    v8mem: f(memOf('v8'), 2),                // fraction of Node's RSS running the same source as JS
+    asmem: f(memOf('as'), 2),                // fraction of AssemblyScript's RSS (its GC runtime included), same Node
   }
 }
 
