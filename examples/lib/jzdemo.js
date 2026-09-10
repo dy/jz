@@ -82,7 +82,7 @@ const addMasthead = (name) => {
   header.innerHTML = `
     <div class="brand"><a class="logo" href="../../"><img src="../../jz.svg" width="40" height="40" alt="jz"></a><a class="sub" href="../">examples</a></div>
     <nav class="site-nav" aria-label="Main navigation">
-      <a href="../../get-started/">guide</a>
+      <a href="../../guide/">guide</a>
       <a href="../../examples/">examples</a>
       <a href="../../bench/">bench</a>
       <a href="../../repl/">repl</a>

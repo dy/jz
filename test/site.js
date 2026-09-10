@@ -10,13 +10,26 @@ import { spawnSync } from 'node:child_process'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/build-site.mjs'), ...args], { encoding: 'utf8' })
 
+test('site: guide is canonical and the old URL redirects rather than duplicating content', () => {
+  const guide = readFileSync(join(root, 'guide/index.html'), 'utf8')
+  ok(guide.includes('<title>Guide | JZ</title>'), 'short page title')
+  ok(guide.includes('rel="canonical" href="https://jz.js.org/guide/"'), 'canonical URL')
+  const old = readFileSync(join(root, 'get-started/index.html'), 'utf8')
+  ok(old.includes('http-equiv="refresh" content="0; url=../guide/"'), 'immediate redirect')
+  ok(old.includes('href="../guide/"'), 'fallback works without scripts')
+  const sitemap = spawnSync(process.execPath, [join(root, 'scripts/sitemap.mjs'), root], { encoding: 'utf8' })
+  is(sitemap.status, 0, sitemap.stderr)
+  ok(sitemap.stdout.includes('<loc>https://jz.js.org/guide/</loc>'), 'guide indexed')
+  ok(!sitemap.stdout.includes('/get-started/'), 'old route excluded')
+})
+
 test('site: primary menus keep the same destinations and the self-compile badge names a real workflow', () => {
-  for (const file of ['index.html', 'get-started/index.html', 'examples/index.html', 'bench/index.html', 'floatbeat/index.html', 'examples/lib/jzdemo.js']) {
+  for (const file of ['index.html', 'guide/index.html', 'examples/index.html', 'bench/index.html', 'floatbeat/index.html', 'examples/lib/jzdemo.js']) {
     const html = readFileSync(join(root, file), 'utf8')
     const nav = html.match(/<nav class="[^"]*site-nav"[^>]*>([\s\S]*?)<\/nav>/)[1]
     const links = [...nav.matchAll(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/g)]
     is(links.map(([, href, label]) => [href.replace(/^(\.\.\/)+/, ''), label]),
-      [['get-started/', 'guide'], ['examples/', 'examples'], ['bench/', 'bench'], ['repl/', 'repl']], file)
+      [['guide/', 'guide'], ['examples/', 'examples'], ['bench/', 'bench'], ['repl/', 'repl']], file)
   }
   const home = readFileSync(join(root, 'index.html'), 'utf8')
   ok(!home.includes('selfhost.yml'), 'no stale self-host workflow URL')

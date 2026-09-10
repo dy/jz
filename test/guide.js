@@ -4,11 +4,11 @@ import { is } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
-const html = readFileSync(new URL('../get-started/index.html', import.meta.url), 'utf8')
+const html = readFileSync(new URL('../guide/index.html', import.meta.url), 'utf8')
 const code = id => html.match(new RegExp(`<code id="${id}"[^>]*>([\\s\\S]*?)</code>`))[1].replaceAll('&gt;', '>')
 const bundle = new URL('../dist/jz.js', import.meta.url).href
 
-test('get started: tagged function, array batches and the same-source JS fallback compute correctly', () => {
+test('guide: tagged function, array batches and the same-source JS fallback compute correctly', () => {
   const plain = code('tag-run').match(/jz`([\s\S]*?)`/)[1]
   for (const [name, source, expected] of [
     ['tagged function', code('tag-run'), '5'],

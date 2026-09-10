@@ -34,7 +34,7 @@ non-audio path; audio moves are parked at the bottom of each phase, marked *(aud
 - [x] **Deployed static discovery:** all 66 catalog entries rendered as static gallery links
   and captions; page introduction; concise descriptive titles ending in `| JZ`;
   product descriptor in homepage/guide/gallery/bench footers.
-- [x] **Published getting started:** `/get-started/` leads with the tagged-template
+- [x] **Published guide:** `/guide/` leads with the tagged-template
   pattern, then a whole numeric loop and compiling an existing file. Keep host
   setup details in the API reference; the guide should make the useful pattern
   obvious before discussing machinery. Shares FAQ prose styling. Links to
@@ -147,7 +147,7 @@ research notes for the deferred promotion track, not extra work in this queue.
 
 | Request / associative searches | Destination |
 |---|---|
-| JS to WASM; JavaScript to WebAssembly compiler; compile/convert existing JS | Homepage + getting started |
+| JS to WASM; JavaScript to WebAssembly compiler; compile/convert existing JS | Homepage + guide |
 | Can all JS compile? Supported JavaScript subset; browser compatibility | Compatibility/reference |
 | Online JS to WASM compiler; playground; JS to WAT; download WASM | Existing REPL |
 | WASM without Rust/C++; faster JS without rewriting; no type annotations | Migration guide |

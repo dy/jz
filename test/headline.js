@@ -5,9 +5,10 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { classifyBenchmarkChecksum, correctBenchmarkRow, headlineStats, timedBenchmarkRow } from '../assets/headline.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, headlineStats, timedBenchmarkRow } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
@@ -23,7 +24,7 @@ test('headline: ratios are geomean(target/jz), peak is max, sizes are median', (
   is(s.v8, '2.8×')       // geomean(2, 4) = √8
   is(s.rust, '1×')       // geomean(0.9, 1.1) ≈ 0.995 → 1×
   is(s.peak, '4×')       // max V8/jz speedup, not a geomean
-  is(s.assize, '2×')     // median(1000/900, 2000/1000)
+  is(s.assize, '1.6×')   // median(1000/900, 2000/1000) averages both middle values
 })
 
 test('headline: a WRONG-result (parity DIFF) run is excluded from the ratio', () => {
@@ -60,7 +61,49 @@ test('headline: a WRONG-result JZ row is excluded from speed, size, memory, and 
   is(stats.asspeed, '3×', 'wrong JZ timing does not inflate speed')
   is(stats.peak, '3×', 'wrong JZ timing does not inflate peak')
   is(stats.assize, '2×', 'wrong JZ bytes do not shrink the size ratio')
-  is(stats.v8mem, '3.00×', 'wrong JZ memory does not inflate the memory ratio')
+  is(stats.v8mem, '0.33×', 'memory is the fraction of V8 RSS used by JZ')
+})
+
+test('benchmark ratios: paired positive finite measurements, independent columns and no retained state', () => {
+  for (const metric of ['medianUs', 'memKb', 'bytes']) {
+    const pair = (a, b) => C({ [metric]: a, parity: 'ok' }, { v8: { [metric]: b, parity: 'fma' } })
+    const a = [pair(10, 20), pair(100, 800)]
+    is(benchmarkRatio([], 'v8', metric), null, 'empty evidence')
+    is(benchmarkRatio([pair(1, 1)], 'v8', metric), { geo: 1, n: 1 }, 'smallest sample, equal measurements')
+    for (const invalid of [undefined, null, 0, -1, NaN, Infinity, -Infinity]) {
+      is(benchmarkRatio([pair(invalid, 1), pair(1, invalid)], 'v8', metric), null, `${metric}: invalid on either side: ${invalid}`)
+    }
+    const first = benchmarkRatio(a, 'v8', metric)
+    is(Math.round(first.geo * 100), 400, 'geomean of target/JZ: sqrt(2 × 8)')
+    is(first.n, 2, 'paired coverage')
+    is(benchmarkRatio(a, 'v8', metric), first, 'A → A')
+    is(benchmarkRatio([pair(4, 1)], 'v8', metric), { geo: .25, n: 1 }, 'A → different B')
+    is(benchmarkRatio(a, 'missing', metric), null, 'absent target')
+    for (const bad of [{ parity: 'DIFF' }, { parity: undefined }, { status: 'fail' }, { status: 'pending' }]) {
+      const j = pair(1, 1000), r = pair(1, 1000)
+      Object.assign(j.targets.jz, bad); Object.assign(r.targets.v8, bad)
+      is(benchmarkRatio([...a, j, r], 'v8', metric), first, 'invalid checksum/status cannot change value or coverage')
+    }
+  }
+})
+
+test('headline: hand-WAT coverage excludes invalid and lab cases; size median and RSS direction are explicit', () => {
+  const pair = (bytes, memKb = 50) => C({ bytes, memKb, parity: 'ok' }, {
+    wat: { bytes: 100, parity: 'ok' }, v8: { memKb: 100, parity: 'ok' },
+  })
+  const cases = { a: pair(100), b: pair(300), c: pair(900), jz: pair(99999), bad: pair(Infinity) }
+  const s = headlineStats({ cases })
+  is(s.watsize, '3×', 'odd median')
+  is(s.watcases, 3, 'only valid finite sizes outside LAB count')
+  is(s.v8mem, '0.50×', 'half the RSS reads as half of V8')
+  delete cases.c
+  is(headlineStats({ cases }).watsize, '2×', 'even median averages middle values')
+  cases.a.targets.wat.parity = 'DIFF'
+  is(headlineStats({ cases }).watcases, 1, 'wrong WAT excluded')
+  is(headlineStats({ cases: {} }).watsize, null, 'empty size hidden')
+  is(headlineStats({ cases: {} }).watcases, 0, 'empty coverage')
+  is(headlineStats({ cases: {} }).v8mem, null, 'empty RSS hidden')
+  is(headlineStats({ cases: { a: pair(100, 200) } }).v8mem, '2.00×', 'double RSS is not described as a saving')
 })
 
 test('headline: missing-parity and zero-time rows are excluded', () => {
@@ -92,6 +135,28 @@ test('bench page: invalid rows stay outside corpus and per-case ratio bars', () 
     'an unranked measurement gets no relative bar')
   is(page.includes("r.parity = ref == null ? 'unclassified'"), true,
     'a live run without a reference cannot claim parity')
+})
+
+test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory sorts last', () => {
+  const page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
+  const render = page.match(/const renderGeomean = \(\) => \{[\s\S]*?\n\}/)[0]
+  const row = memKb => ({ medianUs: 1, bytes: 1, memKb, parity: 'ok' })
+  const rendered = []
+  runInNewContext(render + '\nrenderGeomean()', {
+    COLS: [['speed', 'speed', 'medianUs'], ['mem', 'memory', 'memKb'], ['size', 'size', 'bytes']],
+    TARGETS: Object.fromEntries(['jz', 'missing', 'large', 'small'].map(label => [label, { label, band: 'wasm' }]).concat([
+      ['native', { label: 'native', band: 'native' }],
+    ])),
+    CORPUS: [{ targets: { jz: row(1000), missing: row(null), large: row(2000), small: row(500), native: row(1) } }],
+    benchmarkRatio, sortBy: 'mem', BREAK: 12,
+    BANDS: [['wasm', 'WASM'], ['native', 'native']], CLS_ICO: {}, DESC: {},
+    localGeo: () => null, coverage: () => ({ ran: 1, attempted: 1 }),
+    nCases: n => `${n} cases`, esc: String, fmtX: String, stripClassSub: label => label,
+    $: () => ({}), rowHtml: r => { rendered.push(r); return '' },
+  })
+  is(rendered.map(r => r.label), ['small', 'jz', 'large', 'missing', 'native'], 'ascending within bands, missing last')
+  is(rendered.map(r => Math.round(r.rel * 1000)), [500, 1000, 2000, 0, 1], 'bar inputs use target/JZ, not target/smallest')
+  is(rendered.map(r => Math.round(r.maxLin)), [2, 2, 2, 2, 2], 'shared scale keeps all measured bars below the 12× cutoff')
 })
 
 test('headline: an attempted-but-failed run ({status:"fail"}) is excluded, never NaN', () => {

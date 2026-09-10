@@ -25,7 +25,7 @@ const TESTS = [
   'wasi',
   'web-smoke',
   'site',
-  'get-started',
+  'guide',
   'webglobals',
   'std',
   'snapshot',

@@ -47,7 +47,7 @@ jobs:
           npm run build:site
           node test/site.js
           node test/web-smoke.js          # builds all browser bundles with --js-only
-          node test/get-started.js        # execute the guide's copyable examples
+          node test/guide.js              # execute the guide's copyable examples
       - name: build example and playable benchmark wasm
         run: |
           npm run build:examples

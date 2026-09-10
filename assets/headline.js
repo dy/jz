@@ -7,7 +7,8 @@
 //   asspeed       geomean of as.medianUs / jz.medianUs (jz vs AssemblyScript on speed)
 //   peak          max V8/jz speedup (the best single-case SIMD win)
 //   assize        MEDIAN of jz.wasm / as.wasm bytes (apples-to-apples binary↔binary)
-//   *mem          geomean of target.memKb / jz.memKb (peak process RSS per run)
+//   v8mem         geomean of jz.memKb / v8.memKb (fraction of V8 peak process RSS)
+//   watsize       median of jz.wasm / hand-WAT bytes; watcases is its case count
 // Rows count only with `ok` or the documented `fma` checksum. Failed, wrong, and
 // unclassified rows are not evidence for speed, size, or memory comparisons.
 // The LAB set — jz-internal probe cases: the self-compile compiler rows (jz/watr/
@@ -30,21 +31,31 @@ export const correctBenchmarkRow = row => !!row && row.status == null &&
 export const timedBenchmarkRow = row => correctBenchmarkRow(row) &&
   row.medianUs > 0 && Number.isFinite(row.medianUs)
 
+// Paired measurements only: target / JZ. Used by the corpus columns and headlines.
+export function benchmarkRatio(cases, target, metric) {
+  let sum = 0, n = 0
+  for (const c of cases) {
+    const j = c.targets.jz, r = c.targets[target]
+    if (!correctBenchmarkRow(j) || !correctBenchmarkRow(r)) continue
+    const a = j[metric], b = r[metric]
+    if (!(a > 0 && b > 0 && Number.isFinite(a) && Number.isFinite(b))) continue
+    sum += Math.log(b) - Math.log(a); n++
+  }
+  return n ? { geo: Math.exp(sum / n), n } : null
+}
+
 export function headlineStats(results) {
   const cases = Object.entries(results.cases || {}).filter(([id]) => !LAB.has(id)).map(([, c]) => c)
-  const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
-  const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
+  const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? (s[s.length >> 1] + s[(s.length - 1) >> 1]) / 2 : null }
   const f = (x, d = 1) => x == null ? null : x.toFixed(d).replace(/\.0$/, '') + '×'
   // A row counts only after it ran and produced an accepted checksum. This applies
   // to JZ too: a fast wrong JZ row must not inflate the headline.
-  const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (timedBenchmarkRow(t.jz) && timedBenchmarkRow(t[tgt])) a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
+  const ratio = tgt => benchmarkRatio(cases, tgt, 'medianUs')?.geo
   let peak = 0
   for (const c of cases) { const t = c.targets; if (timedBenchmarkRow(t.jz) && timedBenchmarkRow(t.v8)) peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
-  const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (correctBenchmarkRow(t.jz) && correctBenchmarkRow(t[tgt]) && t.jz.bytes > 0 && t[tgt].bytes > 0) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }
-  // memory: geomean of target peak-RSS ÷ jz peak-RSS over correct cases (memKb —
-  // whole-process footprint per run, see results.json meta.memory). Same shape as
-  // the speed ratio so the strip/hero cells read identically: >1× = jz lighter.
-  const memRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (timedBenchmarkRow(t.jz) && timedBenchmarkRow(t[tgt]) && t.jz.memKb && t[tgt].memKb) a.push(t[tgt].memKb / t.jz.memKb) } return geo(a) }
+  const sizes = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (correctBenchmarkRow(t.jz) && correctBenchmarkRow(t[tgt]) && t.jz.bytes > 0 && t[tgt].bytes > 0 && Number.isFinite(t.jz.bytes) && Number.isFinite(t[tgt].bytes)) a.push(t.jz.bytes / t[tgt].bytes) } return a }
+  const wat = sizes('wat')
+  const mem = benchmarkRatio(cases, 'v8', 'memKb')
   return {
     v8: f(ratio('v8')), peak: f(peak || null), porf: f(ratio('porf-native')), rust: f(ratio('rust-wasm')),
     jsc: f(ratio('jsc')),                    // jz vs JavaScriptCore (Safari's engine)
@@ -52,11 +63,9 @@ export function headlineStats(results) {
     nat: f(ratio('nat'), 2),                 // jz vs native C (clang -O3) — the native ceiling (≈ parity)
     rustnat: f(ratio('rust'), 2),            // jz vs native Rust (rustc -O) — same native-parity story (the hero's 3rd stat)
     asspeed: f(ratio('as')),                 // jz vs AssemblyScript on speed
-    assize: f(sizeRatio('as')),              // (porfsize retired — the Porffor rewrite compiles via C, emits no wasm)
-    moonbitsize: f(sizeRatio('moonbit')),    // jz vs MoonBit wasm bytes — the wasm-first language's compiler
-    javymem: f(memRatio('javy')),            // jz vs Javy (QuickJS-in-wasm interpreter heap)
-    graaljsmem: f(memRatio('graaljs')),      // jz vs GraalJS (JVM-hosted engine)
-    v8mem: f(memRatio('v8'), 2),             // jz vs Node running the same source as JS (same host process)
+    assize: f(median(sizes('as'))),          // fraction of AssemblyScript wasm bytes
+    watsize: f(median(wat)), watcases: wat.length,
+    v8mem: f(mem ? 1 / mem.geo : null, 2),   // fraction of Node's RSS running the same source as JS
   }
 }
 
