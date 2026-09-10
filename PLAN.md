@@ -6,11 +6,11 @@ bounded callback work and reliable installation are the release outcome.
 
 ## Release gates
 
-- **Functional verification:** default/O0/O3/WASI and extended fuzz pass in CI
-  on `df25e1ba`. Local default/O0/O3 each pass 4,487 tests with one skip.
-  Self-hosted correctness passes 32 tests; recursive self-compilation, public
-  type checks and example builds pass. Self-compile timing remains a separate
-  failing gate.
+- **Functional verification:** JZ `b0a6e9c5` passes default/O0/O3/WASI and
+  extended fuzz in CI. The local default suite passes 4,491 tests with one
+  skip (62,961 assertions). Self-hosted correctness passes 32 tests; recursive
+  self-compilation, types, examples, Watr and Pages builds pass. Timing is a
+  separate failing gate.
 - **Conformance:** function reflection consistently rejects on the known builtin
   and Promise paths. Property descriptors remain a documented limitation; the
   generated array-spread test now has the same classification as its call/new
@@ -18,26 +18,26 @@ bounded callback work and reliable installation are the release outcome.
   `await using`, and initialized `for await` bindings are validated before DCE.
   Full language/builtin runs pass 3,151/869 cases with zero failures; the
   accepted-negative ledger is zero. Keep those gates and pass floors intact.
-- **Size:** shared late pooling reduces the encoder fixture from 306,936 to
-  304,983 bytes; the 300,000-byte budget remains open. FFT is 1,726 bytes
-  against AssemblyScript's 1,758. The focused run still loses to AssemblyScript
-  on bezfit, sdf, shapes, slices and wordcount. Keep sources and thresholds fixed.
-- **Speed/evidence:** committed benchmark results predate the current compiler.
-  Refresh complete rival coverage after fixes, on a machine within the existing
-  load/swap limits. A loaded development run cannot certify leadership. The
-  current self-compile timing gate still fails: best warm geomean 1.320×
-  against 1.03×, fresh 1.134× against 0.99×. The development machine has heavy
-  swap use;
-  do not treat this run as release evidence or relax the caps. The development
-  benchmark run passes 242 gates and fails 24: runtime/size gaps, missing TinyGo
-  coverage, stale native-lowering evidence, and two examples below strict wins.
-  The pinned revision’s CI benchmark run passes 240 checks and fails 8
-  (six AssemblyScript size losses, the Watr size budget and stale native
-  lowering evidence); its available rivals differ from the local run.
-  CI’s separate claims job fails 13 of 20 checks: stale/invalid evidence,
-  incomplete rival coverage and unproven runtime/size leadership. Keep that
-  failure distinct from the passing correctness matrix. Failed timing commands
-  fail explicitly instead of producing NaN ratios.
+- **Size:** the encoder backstop measures 304,947 bytes against its 300,000-byte
+  limit. FFT is 1,726 bytes against AssemblyScript's 1,758. Remaining measured
+  AssemblyScript size losses: bezfit, immutable, sdf, shapes, slices, tokenizer
+  and wordcount. Keep sources and thresholds fixed.
+- **Speed/evidence:** the final local benchmark run passes 245 checks and fails
+  21: runtime gaps, seven AssemblyScript size losses, the encoder budget,
+  performance fuzz, two examples, missing TinyGo coverage and stale native
+  lowering evidence. The final self-compile timing run remains red: best warm
+  1.332× against 1.03×; fresh 1.166× against 0.99×.
+  TinyGo's local 0.34 installation has a broken root lookup and rejects Go 1.26.
+  An isolated official 0.42.0 run builds all 44 comparable cases: 43 checksums
+  verify, while entity has an unclassified reference. This repairs the coverage
+  diagnosis; it does not replace the committed benchmark snapshot.
+  CI's claims job passes 7 of 20 checks. The 13 failures include stale reference
+  and memory evidence, invalid swap pressure and unproven runtime/size leadership.
+  Live swap remains 14,417 MB against the 4,096 MB evidence-validity limit.
+  Refresh the complete reference and memory evidence on a quiet machine after
+  the remaining codegen gaps are fixed; do not relax the caps or certify these
+  development timings. The old alpha native row also needs that refresh: its
+  WASI corruption is fixed and the current paired probe has the correct checksum.
 - **Compatibility:** rebuild downstream Wasm with matching compiler and interop
   revisions. Replace the pinned watr archive with an npm release containing its
   required fixes when available. The rebuilt Watr encoder passes 352 core
@@ -99,9 +99,9 @@ shapes no longer require raw-bit decoding guesses. Field-type and numeric
 contracts remain, preserving typed class methods. Host construction and writes
 preserve boolean identity. Returned literals allocate independently; top-level
 initializers outside loops keep static storage. Field metadata omits absent
-refinements. Final combined matrix/bootstrap verification is in progress.
-The preceding full run passed 4,488 cases with one size regression; the
-shared pass-order correction passes all 98 minimal-output tests.
+refinements. The final correctness matrix and bootstrap pass on `b0a6e9c5`.
+Shared pooling runs before outlining estimates costs; the size regression is
+repaired without changing its 120-byte ratchet (the case is now 119 bytes).
 
 WASI clocks now reserve their own eight-byte static slot instead of overwriting
 address zero. Integer console output preserves signed and unsigned 32-bit

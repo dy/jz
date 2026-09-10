@@ -53,7 +53,7 @@ identity is preserved by the generic host marshaller. Fresh returned literals
 allocate separately; module initialization outside loops still permits static
 data. The field metadata encodes only present refinements. These changes require
 matching compiler/interop revisions; the historical verification below predates
-this follow-up. Final combined matrix/bootstrap verification remains pending.
+this follow-up. The final combined matrix and bootstrap pass on JZ `b0a6e9c5`.
 
 The generic scalar pool now belongs to Watr, after folding/inlining and before
 outlining. JZ's tape implementation is removed. Watr's 333 optimizer/propagation
@@ -379,3 +379,29 @@ and Watr’s 300,000-byte budget. Available tools and rival versions differ from
 the local run. Self-compile, kernel-gate, test262, Watr and pages workflows also
 pass on that revision. These results close the review’s verification work;
 the remaining performance/evidence failures still block v1 readiness.
+
+
+## Final consolidation verification — 2026-09-10
+
+Source: JZ `b0a6e9c5a5c9b2cc111aaa977469b290e0c9a4aa`, Watr
+`5d3a9d9942faf74c78152932c78876c19907a2cf`. The
+[CI matrix](https://github.com/dy/jz/actions/runs/34437266679) passes default,
+O0, O3, WASI and extended fuzz. The local default suite passes 4,491 tests
+with one skip and 62,961 assertions. Self-hosting passes 32 tests; recursive
+self-compilation produces a working 14,904,321-byte child compiler. Types,
+example builds, Watr, conformance (3,151 language / 869 builtin cases), the
+kernel workflow and Pages pass. These are functional results, not timing certification.
+
+The local competitive gate passes 245 checks and fails 21. The encoder budget
+is still red at 304,947 / 300,000 bytes; FFT now beats the local AssemblyScript
+size (1,726 / 1,758). Seven other size comparisons remain red. Self-compile
+ratios remain above their caps: best warm 1.332×, fresh 1.166×. CI's separate
+claims job fails 13 of 20 checks, including stale reference/memory evidence and
+invalid swap pressure. The live machine still uses 14,417 MB of swap against
+the 4,096 MB validity limit. An isolated TinyGo 0.42.0 run recovers 43 verified
+rows from 44 builds; one reference remains unclassified. No reference snapshot,
+benchmark source, threshold or conformance floor was changed.
+
+The review's concrete ownership defects are repaired and the duplicate pool is
+removed. V1 readiness remains withheld; PLAN.md names the remaining semantic,
+DSP, speed, size and evidence obligations. This is not independent expert approval.
