@@ -6,11 +6,11 @@ bounded callback work and reliable installation are the release outcome.
 
 ## Release gates
 
-- **Functional verification:** the full default/O0/O3/WASI matrix passes
-  (4,472/4,472/4,474/4,472 tests, one skip per leg). The final default run,
-  including the last LICM regression, passes 4,475 tests with one skip.
-  Self-hosted correctness passes 32 tests; recursive self-compilation, hosted closure regressions and
-  public type checks pass. Self-compile timing remains a separate failing gate.
+- **Functional verification:** default/O0/O3/WASI and extended fuzz pass in CI
+  on `df25e1ba`. Local default/O0/O3 each pass 4,487 tests with one skip.
+  Self-hosted correctness passes 32 tests; recursive self-compilation, public
+  type checks and example builds pass. Self-compile timing remains a separate
+  failing gate.
 - **Conformance:** function reflection consistently rejects on the known builtin
   and Promise paths. Property descriptors remain a documented limitation; the
   generated array-spread test now has the same classification as its call/new
@@ -19,19 +19,23 @@ bounded callback work and reliable installation are the release outcome.
   Full language/builtin runs pass 3,151/869 cases with zero failures; the
   accepted-negative ledger is zero. Keep those gates and pass floors intact.
 - **Size:** callback lowering across runtime method arms reduces Watr from
-  330,237 to 305,757 bytes. Its 300,000-byte budget remains open. Current size
-  losses to AssemblyScript: bezfit, dispatch, fft, immutable, lz, sdf, shapes,
+  330,237 to 305,757 bytes before this review. Enforced host contracts bring
+  the current encoder fixture to 306,790 bytes; its 300,000-byte budget remains
+  open. Current size losses to AssemblyScript: bezfit, dispatch, fft, immutable, lz, sdf, shapes,
   slices, tokenizer and wordcount. Keep benchmark sources and thresholds fixed.
 - **Speed/evidence:** committed benchmark results predate the current compiler.
   Refresh complete rival coverage after fixes, on a machine within the existing
   load/swap limits. A loaded development run cannot certify leadership. The
-  current self-compile timing gate still fails: best warm geomean 1.338×
-  against 1.03×, fresh 1.110× against 0.99×. The development machine has heavy
+  current self-compile timing gate still fails: best warm geomean 1.320×
+  against 1.03×, fresh 1.134× against 0.99×. The development machine has heavy
   swap use;
   do not treat this run as release evidence or relax the caps. The development
-  benchmark run passes 239 gates and fails 27: runtime/size gaps, missing TinyGo
+  benchmark run passes 242 gates and fails 24: runtime/size gaps, missing TinyGo
   coverage, stale native-lowering evidence, and two examples below strict wins.
-  Failed timing commands now fail explicitly instead of producing NaN ratios.
+  CI’s separate claims job fails 13 of 20 checks: stale/invalid evidence,
+  incomplete rival coverage and unproven runtime/size leadership. Keep that
+  failure distinct from the passing correctness matrix. Failed timing commands
+  fail explicitly instead of producing NaN ratios.
 - **Compatibility:** rebuild downstream Wasm with matching compiler and interop
   revisions. Replace the pinned watr archive with an npm release containing its
   required fixes when available. The rebuilt Watr encoder passes 352 core
@@ -70,9 +74,9 @@ indexing and motion of allocator-global reads.
 Executable regressions cover these effects, zero-trip loops, signed-zero
 constants, shared AST ancestors, and temporaries read outside the loop.
 
-The compiler is 15,374,562 bytes, 2,864 more than the preceding revision; the
+The compiler is 15,417,678 bytes, 43,116 more than the preceding revision; the
 consolidation and correctness fixes do not establish a size or speed win.
-Recursive self-compilation produces a working 14,873,980-byte compiler.
+Recursive self-compilation produces a working 14,893,075-byte compiler.
 Measurements were made on a loaded development machine and are not release
 certification. A six-case profile still attributes about 21% of samples to string hashing,
 equality and dynamic property reads. Follow measured lookup/lowering costs;
@@ -80,10 +84,13 @@ a new semantic IR or wholesale vectorizer rewrite is not a v1 prerequisite.
 
 ## Remaining semantic/lifetime work
 
-- A concurrent focused review reports three host-boundary defects: overlapping
-  odd-size standalone allocations, detached views during recursive marshalling,
-  and host writes that violate inferred field representations. These remain
-  separate v1 blockers; the LICM effect defect from that review is fixed here.
+- The focused review’s reproduced boundary defects are repaired: standalone
+  allocations round upward, recursive writes stage before acquiring their view,
+  and plain field metadata enforces the representations used by lowering.
+  Retained host arrays have open element facts; fresh returned arrays retain
+  construction-time specialization. Analysis dependencies and invalidation seams
+  are explicit; whole-store invalidation includes anonymous bodies. See
+  [ARCHITECTURE-REVIEW.md](ARCHITECTURE-REVIEW.md) for evidence and remaining gates.
 
 - DataView identity and view bounds are preserved, but `.length` and numeric
   property access still take typed-array fallbacks instead of returning undefined.
@@ -101,8 +108,11 @@ The gain fixture in `@audio/compile` passes 132 checks per compiler, including
 parameter queues, overlapping instances and 12,000 blocks without observed heap
 growth. The offline Web Audio render matches Node's PCM checksum. Gain is stateless:
 next use a filter or compressor with the same JS oracle under both compilers.
-Exercise variable block sizes, persistent state, instance teardown and bounded
-allocation in the process callback before generalizing `@audio/compile-vst`.
+JZ now also checks a stateful filter against JS over 200 blocks with reset,
+bit-exact output and stable page count. That host-memory test does not validate
+the VST lifecycle. Exercise variable block sizes, persistent state, instance
+teardown and bounded allocation in both plugin backends before generalizing
+`@audio/compile-vst`.
 
 On the M4 Max gain fixture, median 128-frame stereo blocks measured 0.625 µs with
 JZ and 1.166 µs with Porffor, including native hosting and copies. This demonstrates
