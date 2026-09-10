@@ -1,11 +1,12 @@
 /**
  * Static-string(-array) value extraction and indexed-const-literal hoisting: the
  * bindStaticConst/bindStaticGlobal/deleteStaticGlobal/invalidateMutatedArray family
- * plus hoistIndexedConstLiterals and the staticStringExpr/constNum lookup helpers.
+ * plus hoistIndexedConstLiterals and the staticStringExpr lookup helpers.
  *
  * @module prepare/literals
  */
 
+import { constNumExpr } from '../static.js'
 import { walkAst } from '../ast.js'
 import { includeForStringValue } from '../autoload.js'
 import { ctx } from '../ctx.js'
@@ -204,30 +205,6 @@ function lookupStaticStringArray(name) {
   return ctx.scope.shapeStrArrays?.get(resolved) ?? null
 }
 
-/** Evaluate a constant numeric expression (number literals + basic arithmetic) for
- *  compile-time string/template folding. Returns null when it isn't a pure-number
- *  constant — string `+` and dynamic parts fall through to the caller's runtime path. */
-function constNum(node) {
-  if (Array.isArray(node) && node[0] == null && typeof node[1] === 'number') return node[1]
-  if (!Array.isArray(node)) return null
-  const [op, a, b] = node
-  if ((op === 'u-' || op === '-' || op === '+') && b === undefined) {
-    const x = constNum(a)
-    return x == null ? null : op === 'u-' || op === '-' ? -x : +x
-  }
-  const x = constNum(a), y = constNum(b)
-  if (x == null || y == null) return null
-  switch (op) {
-    case '+': return x + y
-    case '-': return x - y
-    case '*': return x * y
-    case '/': return y === 0 ? null : x / y
-    case '%': return y === 0 ? null : x % y
-    case '**': return x ** y
-  }
-  return null
-}
-
 export function staticStringExpr(node) {
   const lit = stringValue(node)
   if (lit != null) return lit
@@ -253,7 +230,7 @@ export function staticStringExpr(node) {
       // A numeric interpolation (`${123}`, `${1+2}`) is a constant in string context —
       // ToString it so a fully-static template folds to one literal instead of a runtime
       // concat. (Only the template case stringifies numbers; `+` stays polymorphic.)
-      if (s == null) { const n = constNum(part); if (n != null) s = String(n) }
+      if (s == null) { const n = constNumExpr(part); if (n != null) s = String(n) }
       if (s == null) return null
       out += s
     }

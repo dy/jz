@@ -21,15 +21,58 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { warningsView } from '../../session-views.js'
-import { ASSIGN_OPS, MUTATE_OPS, T, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
-import { intLevelMap } from '../../type.js'
+import { constNumExpr } from '../../static.js'
+import { typedStaticLen, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, isNullable, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
 import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
 import { collectBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
+
+/** Publish immutable numeric globals before representation planning. */
+export function foldModuleConstants(ast) {
+  const pending = []
+  for (const root of [ast, ...ctx.module.moduleInits]) {
+    const stmts = Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
+    for (const stmt of stmts) {
+      if (!Array.isArray(stmt) || stmt[0] !== 'const') continue
+      for (const decl of stmt.slice(1))
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' &&
+            ctx.scope.globals.has(decl[1]) && ctx.scope.consts?.has(decl[1])) pending.push(decl)
+    }
+  }
+  // Cross-module dependencies may arrive out of order. Only unresolved
+  // declarations remain in the next sweep; fractional constants resolve too.
+  const lookup = name => ctx.scope.constNums?.get(name) ?? ctx.scope.constInts?.get(name) ?? null
+  let changed = true
+  while (changed) {
+    changed = false
+    let remaining = 0
+    for (const decl of pending) {
+      const [, name, init] = decl
+      const value = constNumExpr(init, lookup)
+      if (value == null || !Number.isFinite(value)) { pending[remaining++] = decl; continue }
+      const int = Number.isInteger(value) && !Object.is(value, -0) && value >= I32_MIN && value <= I32_MAX
+      declGlobal(name, int ? 'i32' : 'f64', value, { mut: false })
+      if (int) (ctx.scope.constInts ||= new Map()).set(name, value)
+      ;(ctx.scope.constNums ||= new Map()).set(name, value)
+      changed = true
+    }
+    pending.length = remaining
+  }
+  // Constructor lengths depend on the same settled numeric bindings.
+  if (ctx.scope.pendingTypedLens) {
+    for (const [name, rhs] of ctx.scope.pendingTypedLens) {
+      const len = typedStaticLen(rhs)
+      if (len != null && ctx.scope.globalTypedElem?.has(name))
+        (ctx.scope.globalTypedLen ||= new Map()).set(name, len)
+    }
+    ctx.scope.pendingTypedLens = null
+  }
+}
 
 /** Module-global kinds from the program summary: a global's kind is the join of
  *  every assignment in the program, so the declaration's own claim (prepare's

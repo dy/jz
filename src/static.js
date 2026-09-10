@@ -44,33 +44,46 @@ export const staticIndexKey = (node) =>
   Array.isArray(node) && node[0] == null && Number.isInteger(node[1]) && node[1] >= 0 && node[1] < 0x100000000
     ? String(node[1]) : null
 
-/** Fold compile-time integer expressions (literals, const bindings, + - * <<). */
-export function constIntExpr(node) {
-  // Literal/name resolution (number, `[null,N]`, and string-bound intConst) is
-  // intLiteralValue's own job, ONE lookup with its i32 end clamp — no re-derived
-  // copy here that could skip it and hand back an out-of-i32-range raw value.
-  const lit = intLiteralValue(node)
-  if (lit != null) return lit
+/** Evaluate pure numeric syntax; the caller owns which bindings are constant.
+ *  Unknown values and operations return null. No coercion, calls or member reads. */
+export function constNumExpr(node, resolve) {
+  if (typeof node === 'number') return node
+  if (typeof node === 'string') return resolve ? resolve(node) : null
   if (!Array.isArray(node)) return null
+  if (node[0] == null) return typeof node[1] === 'number' ? node[1] : null
   const op = node[0]
-  if (op === 'u-') {
-    const v = constIntExpr(node[1])
-    return v == null ? null : -v
+  const x = constNumExpr(node[1], resolve)
+  if (x == null) return null
+  if (node.length === 2) {
+    if (op === 'u-' || op === '-') return -x
+    if (op === 'u+' || op === '+') return +x
+    if (op === '~') return ~x
+    return null
   }
   if (node.length !== 3) return null
-  const a = constIntExpr(node[1]), b = constIntExpr(node[2])
-  if (a == null || b == null) return null
-  if (op === '+') return a + b
-  if (op === '-') return a - b
-  if (op === '*') return a * b
-  if (op === '<<') return a << b
-  if (op === '>>') return a >> b
-  if (op === '>>>') return a >>> b
-  if (op === '&') return a & b
-  if (op === '|') return a | b
-  if (op === '^') return a ^ b
-  if (op === '%') return b === 0 ? null : a % b
-  return null
+  const y = constNumExpr(node[2], resolve)
+  if (y == null) return null
+  switch (op) {
+    case '+': return x + y
+    case '-': return x - y
+    case '*': return x * y
+    case '/': return x / y
+    case '%': return x % y
+    case '**': return x ** y
+    case '&': return x & y
+    case '|': return x | y
+    case '^': return x ^ y
+    case '<<': return x << y
+    case '>>': return x >> y
+    case '>>>': return x >>> y
+    default: return null
+  }
+}
+
+/** Known i32-range value; retain -0 for exact literal substitution. */
+export function constIntExpr(node) {
+  const value = constNumExpr(node, intLiteralValue)
+  return Number.isInteger(value) && value >= I32_MIN && value <= I32_MAX ? value : null
 }
 
 

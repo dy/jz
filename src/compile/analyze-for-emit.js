@@ -1,6 +1,6 @@
 import { ctx } from '../ctx.js'
 import { T, isBlockBody, isReassigned, walkAst } from '../ast.js'
-import { intLiteralValue } from '../static.js'
+import { constIntExpr } from '../static.js'
 import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
@@ -446,29 +446,8 @@ export function analyzeFuncForEmit(func, programFacts) {
 }
 
 function seedLocalIntConsts(body) {
-  // Fold each never-reassigned local `const`/`let NAME = EXPR` to a known i32, so a
-  // divisor / bound / size built from earlier consts (`rr = R|0; win = 2*rr+1`) becomes
-  // a compile-time literal — which lets the int-divide lowering hand the wasm backend a
-  // constant divisor to magic-multiply (no runtime sdiv), array bounds resolve, etc.
-  // Mirrors the module-scope fold (evalConst above); a string ref resolves through the
-  // intConst already recorded on its rep, and the fixpoint lets a later const see an
-  // earlier one regardless of declaration order. Skips nested functions (own scope).
-  const evalC = (n) => {
-    if (typeof n === 'number') return Number.isInteger(n) ? n : null
-    if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number') return Number.isInteger(n[1]) ? n[1] : null
-    if (typeof n === 'string') return intLiteralValue(n)   // a seeded intConst / literal local
-    if (!Array.isArray(n)) return null
-    const [op, a, b] = n
-    const va = evalC(a); if (va == null) return null
-    if (op === 'u-' || (op === '-' && b === undefined)) return -va
-    const vb = evalC(b); if (vb == null) return null
-    switch (op) {
-      case '+': return va + vb; case '-': return va - vb; case '*': return va * vb
-      case '&': return va & vb; case '|': return va | vb; case '^': return va ^ vb
-      case '<<': return va << vb; case '>>': return va >> vb; case '>>>': return va >>> vb
-      default: return null
-    }
-  }
+  // Seed immutable local integer facts with the shared numeric evaluator.
+  // Binding eligibility and the i32 storage limit belong to this analysis.
   const decls = []
   walkAst(body, { enter: node => {
     const op = node[0]
@@ -487,7 +466,7 @@ function seedLocalIntConsts(body) {
     changed = false
     for (const decl of decls) {
       if (seeded.has(decl[1])) continue
-      const value = evalC(decl[2])
+      const value = constIntExpr(decl[2])
       if (value != null && Number.isInteger(value) && value >= I32_MIN && value <= I32_MAX) {
         updateRep(decl[1], { intConst: value }); seeded.add(decl[1]); changed = true
       }

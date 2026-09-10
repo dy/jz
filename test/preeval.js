@@ -3,6 +3,8 @@ import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import { onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
+import { constNumExpr, constIntExpr } from '../src/static.js'
+import { ctx } from '../src/ctx.js'
 import { scalarCase } from './_scalar-core-cases.js'
 
 function run(code, opts) { return jz(code, opts).exports }
@@ -237,4 +239,52 @@ test('guard: recursive/self-referential zero-arg call never folds (and never han
 test('matrix: folds under wasi host too', () => {
   if (onWasi()) { is(run('export let f = () => 6 * 7', { host: 'wasi' }).f(), 42); return }
   is(run('export let f = () => 6 * 7').f(), 42)
+})
+
+
+test('constant facts: numeric syntax shares exact arithmetic and rejects effects', () => {
+  const lit = n => [null, n]
+  for (const op of ['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>']) {
+    for (const [a, b] of [[7, 2], [-7, 2], [0, 0], [2147483648, 1], [0.5, 2]]) {
+      const expected = Function('a', 'b', `return a ${op} b`)(a, b)
+      is(Object.is(constNumExpr([op, lit(a), lit(b)]), expected), true, `${a} ${op} ${b}`)
+    }
+  }
+  is(Object.is(constNumExpr(['u-', lit(0)]), -0), true)
+  is(Object.is(constIntExpr(['u-', lit(0)]), -0), true, 'literal facts preserve negative zero')
+  is(constIntExpr(['*', ['/', lit(3), lit(2)], lit(2)]), 3, 'fractional intermediates retain precision')
+  is(constIntExpr(['/', lit(3), lit(2)]), null)
+  is(constIntExpr(['/', lit(1), lit(0)]), null)
+  is(constNumExpr(['*', 'half', lit(6)], name => name === 'half' ? 0.5 : null), 3)
+  for (const node of [null, undefined, 'missing', [null, '2'], ['++', 'x'], ['()', 'f'], ['.', 'a', 'length'], ['=', 'x', lit(2)]])
+    is(constNumExpr(node), null, 'unknown/effectful syntax stays dynamic')
+})
+
+test('constant facts: module, local and capture folds preserve boundaries and binding ownership', () => {
+  const bodies = [
+    'const HALF=0.5;const N=HALF*6;const a=new Float32Array(N);export function f(x){return a.length+x*N}',
+    'export function f(x){const half=0.5;const n=half*6;return x*n+n}',
+    'export function f(x){const n=(3/2)*2;const g=()=>n;return x*g()+g()}',
+    'const N=3;export function f(N){let n=N;n+=1;return n}',
+    'const N=2147483647+1;export function f(x){return N+x}',
+    'const Z=-0;export function f(x){return 1/Z}',
+    'export function f(x){let z=-0;return 1/z}',
+    'export function f(x){const z=-0;const g=()=>1/z;return g()}',
+    'const Z=1/0;export function f(x){return Z+x}',
+  ]
+  for (const optimize of [0, 2, 'speed', 'size']) for (const source of bodies) {
+    const expected = Function(source.replace('export ', '') + ';return f')()
+    const { f } = run(source, { optimize })
+    for (const x of [0, 4, -1, 4]) is(f(x), expected(x), `${optimize}: ${source}`)
+  }
+  if (onKernel()) return
+  const a = bodies[0]
+  for (const source of [a, a, 'const HALF=2;export function f(){return HALF}', a]) {
+    const { f } = run(source)
+    if (source === a) {
+      is(ctx.scope.constNums.get('N'), 3, 'fractional dependency publishes the shared numeric fact')
+      is(ctx.scope.constInts.get('N'), 3, 'integer consumers receive the settled result')
+      is(f(4), 15)
+    } else is(f(), 2)
+  }
 })

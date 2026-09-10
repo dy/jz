@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `9120319`.
+`package.json` and the lockfile pin the public watr source archive at `e146006`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -34,6 +34,8 @@ Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
 Unmapped numeric/flat callee locals retain their call frame.
+Unwritten parameters with a shared tiny constant substitute directly at every
+read, including loop reads, without creating a local or a cleanup sweep.
 Public adapters use the ordinary small-function inline budget; larger workers
 remain shared. Internal dispatch trampolines retain the speed-tier budget.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
@@ -161,6 +163,17 @@ Float32Array storage does not lower JavaScript arithmetic precision. Maps and
 stencils choose their computation lanes together: f32 loads promote to f64x2,
 arithmetic stays f64, and stores round to f32. Copies and sign operations can
 retain f32x4 lanes. Narrow integer stores preserve the scalar conversion.
+
+Numeric syntax has one evaluator in `static.js`. Module planning, local and
+capture facts, integer proofs and template folding share it; callers retain
+binding eligibility and storage limits. Module constants settle in `plan/scope.js`
+before representation planning, with only unresolved declarations revisited.
+The semantic summary is a snapshot stored on `ctx.summary`; it does not own the
+mutable emission state beside it. Source rewrites require a fresh summary.
+
+Closure calls capture the callee before argument effects and validate callability
+after those effects. Generic, spread and member-slot calls share the same ABI
+lowering in `module/function.js`; proven callable values omit the runtime check.
 
 Fixed plain-array lengths flow from the existing builder analysis into local
 and parameter ValueReps, then FunctionPlan owns them during emission. Spread,

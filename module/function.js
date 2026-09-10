@@ -12,35 +12,13 @@
 
 import { typed, asF64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, ptrTypeEq, throwTypeErrorIR } from '../src/ir.js'
 import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
+import { constNumExpr } from '../src/static.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
 import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/representation-plan.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf, VAL } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, DBG_INVARIANTS } from '../src/ctx.js'
-
-const intConstExpr = (node) => {
-  if (typeof node === 'number' && Number.isInteger(node)) return node
-  if (Array.isArray(node) && node[0] == null && Number.isInteger(node[1])) return node[1]
-  if (!Array.isArray(node)) return null
-  const [op, a, b] = node
-  const av = intConstExpr(a)
-  if (op === 'u-' || (op === '-' && b === undefined)) return av == null ? null : -av
-  const bv = intConstExpr(b)
-  if (av == null || bv == null) return null
-  switch (op) {
-    case '+': return av + bv
-    case '-': return av - bv
-    case '*': return av * bv
-    case '&': return av & bv
-    case '|': return av | bv
-    case '^': return av ^ bv
-    case '<<': return av << bv
-    case '>>': return av >> bv
-    case '>>>': return av >>> bv
-    default: return null
-  }
-}
 
 // Republished on ctx.closure below for src/compile/closure-plan.js's
 // mintClosureEnvPlans — a pure function of `body` alone, safely re-derivable
@@ -55,8 +33,8 @@ const topLevelIntConsts = (body) => {
       const decl = stmt[i]
       if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
       if (stmt[0] === 'let' && isReassigned(body, decl[1])) continue
-      const v = intConstExpr(decl[2])
-      if (v != null && v >= -2147483648 && v <= 2147483647) out.set(decl[1], v)
+      const v = constNumExpr(decl[2])
+      if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) out.set(decl[1], v)
     }
   }
   return out

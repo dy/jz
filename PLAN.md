@@ -10,19 +10,21 @@ history. This file tracks only release evidence and unfinished work.
 
 ## Verification
 
-The audit follow-up pins Watr `9120319`: public adapters retain shared large
+The audit follow-up pins Watr `e146006`: public adapters retain shared large
 workers, nonescaping record replacement scalarizes, and fixed array lengths
 survive lowering and cold argument-free builder inlining. Mixed numeric/tagged comparisons
 preserve the original value; Float32 maps retain f64 computation; standalone
 higher-order exports accept host callbacks through the existing call ABI.
 Bare f64 globals initialize to `undefined`, including when storage analysis has
 recorded their type; this keeps nullish closure initialization correct at O0.
-The full default suite passes 4,518 tests with one skip (63,708 assertions),
-including six audit regressions with 383 assertions and all ten deterministic
-loop-work ratchets. Language/builtin conformance passes
+The full default suite passes 4,521 tests with one skip (64,120 assertions),
+including seven audit regressions with 567 assertions, 29 constant-folding tests
+with 297 assertions, and all ten deterministic loop-work ratchets. Language/builtin conformance passes
 3,151/869 cases, and functional self-hosting passes 34 checks (296 assertions).
 The rebuilt Watr Wasm passes its full suite. The full O0/O3/WASI matrix also
-passes: 4,518/4,518/4,515 tests respectively, with one skip in each leg.
+passes: 4,521/4,521/4,518 tests respectively, with one skip in each leg
+(63,993/64,115/62,244 assertions). Compiler sources remained unchanged during
+this final run; native/kernel byte parity and compile-reuse checks pass.
 
 The stateful VST fixture in `@audio/compile` passes 12,438 checks with each
 compiler (JZ reverified on this optimizer; Porffor verified previously): variable blocks, live parameters, independent overlapping instances,
@@ -37,19 +39,19 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 301,426 | 300,000 |
+   | Watr encoder | 301,390 | 300,000 |
    | FFT | 1,718 | 1,758 |
    | bezfit | 3,245 | 3,017 |
-   | immutable | 1,481 | 1,481 |
+   | immutable | 1,478 | 1,481 |
    | sdf | 2,224 | 2,209 |
-   | shapes | 1,846 | 1,695 |
+   | shapes | 1,839 | 1,695 |
    | slices | 1,628 | 1,657 |
-   | tokenizer | 1,559 | 1,551 |
-   | wordcount | 3,722 | 3,480 |
+   | tokenizer | 1,556 | 1,551 |
+   | wordcount | 3,706 | 3,480 |
 
    Equality is not a strict win. No benchmark sources or budgets changed.
-   Against `b401fe2`, shapes shrinks 12 bytes and wordcount 26; the encoder grows
-   927 bytes. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
+   Against `b401fe2`, shapes shrinks 19 bytes and wordcount 42; the encoder grows
+   891 bytes. Audit kernels shrink: vec/add 4,185→101 bytes (no heap), Float32
    scale 1,013→869, Uint8 clamp 1,213→1,055, matmul 25,561→25,407.
    Correct mixed-value comparison grows fib 18,694→18,894. These are binary
    sizes, not throughput claims; the size gate remains open.
@@ -76,18 +78,30 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    184-assertion regression covers empty tables/spreads, null, member replacement,
    argument exceptions and A→A→failing B→A recovery at all tiers and under WASI.
 
+   Watr `e146006` substitutes shared tiny constant parameters directly at every
+   immutable read. This removes synthesized locals rather than adding a pass.
+   Relative to the call-boundary fix it saves encoder/shapes/immutable/tokenizer/
+   wordcount 36/7/3/3/16 bytes; the other four measured outputs are unchanged.
+   Immutable now passes strict AS size leadership. Numeric constant evaluation
+   is consolidated across five former evaluators, with module planning removed
+   from the driver; that consolidation alone leaves all nine sizes unchanged.
+   A paired self-build with the same optimizer and pending import cleanup on
+   both sides shrinks 15,479,117→15,468,221 bytes. Across mat4/fft/biquad/sort/
+   crc32/mandelbrot, measured allocation falls 824/2,728/2,328/1,160/920/1,688
+   bytes per compilation; paired throughput is 0.987× after/before (a small difference,
+   measured during concurrent validation). Direct AST indexing avoids iterator allocation in the shared evaluator.
+   These are scoped comparisons, not evidence that the release caps pass.
+
 2. **Speed and evidence.** The stored reference fails leadership claims,
-   including V8 losses on jessie and Watr, and is stale. Prior self-compile
-   timing also fails: warm 1.332× against 1.03× and fresh 1.166× against 0.99×.
-   Excessive load/swap invalidates development timing as release evidence.
-   The audit validation also fails the warm self-compile gate (1.340× median
-   against 1.03×); its functional bootstrap passes. Concurrent validation is
-   insufficient evidence for any fresh-start performance improvement.
-   After callable consolidation, the standalone timing gate still fails:
-   warm 1.425×/1.452×/1.478×, fresh 1.227×. The complete benchmark gate passes
-   247 checks and fails 19: eight fastest-Wasm comparisons, native resample,
-   the stored native-lowering bands, six strict AS size comparisons, the
-   encoder cap, perf-fuzz and the example speed gate. No caps were changed.
+   including V8 losses on jessie and Watr, and is stale. After this consolidation,
+   the standalone self-compile timing gate still fails: warm 1.488×/1.530×/1.552×
+   against 1.03×, fresh 1.218× against 0.99×. Functional bootstrap passes.
+   The last complete benchmark run, before tiny-constant specialization, passed
+   247 checks and failed 19: eight fastest-Wasm comparisons, native resample,
+   stored native-lowering bands, six strict AS size comparisons, the encoder cap,
+   perf-fuzz and example speed. Immutable's size comparison is now fixed by the
+   measured specialization above; the complete rival reference still needs renewal.
+   No sources, conformance floors or performance caps were relaxed.
    Repair the remaining codegen gaps, then refresh complete runtime, memory,
    native-lowering and rival evidence on a quiet machine. TinyGo 0.42 builds
    44 comparable cases with 43 matching checksums; classify the entity mismatch
@@ -106,7 +120,8 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    p={x:3}; return p.y` currently returns `0`, not `undefined`, including O0.
    Scalar replacement rejects differing field sets; this remaining defect is
    in the general record representation/read proof.
-   Also fix in-module error classification: a nullable local call's caught
+   Internal errors still use numeric codes (explicitly pinned in `test/errors.js`),
+   so unifying their representation remains compatibility work: a nullable local call's caught
    error has `name === 'TypeError'` and reaches the host as TypeError, but
    `e instanceof TypeError` can return false. This reproduces before the
    nullable-dispatch review fix: `let f=flag?twice:null; try { f(4) }

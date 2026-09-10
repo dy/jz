@@ -29,7 +29,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, HEAP, declGlobal, assertCtxInvariants } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, HEAP, assertCtxInvariants } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
@@ -37,7 +37,7 @@ import { i64Hex, FIELD } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo, walkAst } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge } from '../kind.js'
 import { intLiteralValue } from '../static.js'
-import { intCertainMap, typedStaticLen } from '../type.js'
+import { intCertainMap } from '../type.js'
 import {
   analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
   structInlinePass, unionInlinePass, reanalyzeBody, invalidateAllBodyFacts,
@@ -77,12 +77,12 @@ import {
   slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
   findBodyStart, tcoTailRewrite,
-  I32_MIN, I32_MAX,
   carrierF64,
   applyBigintRepresentationAction,
   freshId,
 } from '../ir.js'
 import plan from './plan/index.js'
+import { foldModuleConstants } from './plan/scope.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
@@ -106,32 +106,8 @@ import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc } from './emit-func.js'
 import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'
 
+// Optional profiling; pass behavior is identical without a profiler.
 const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, fn) : fn()
-
-// Per-compile func name set + map live on ctx.funcs.names / ctx.funcs.map,
-// populated at compile() entry. Both reset by ctx.js reset() and re-filled here.
-
-// Low-level IR helpers previously lived here. Pure ones moved to src/ir.js;
-// emit-calling ones (toBool, emitTypeofCmp, emitDecl, materializeMulti,
-// buildArrayWithSpreads) moved to src/emit.js.
-
-// AST-analysis primitives live in kind.js, type.js, static.js, program-facts.js.
-
-
-
-
-// === Module compilation ===
-
-
-
-
-
-
-
-
-// MapOverlay implementation lives in map-overlay.js so FunctionPlan can
-// fork detached typed views without importing this compile driver.
-
 
 /** Compile a prepared AST into the assembled WAT IR consumed by watr: assemble, then link. */
 export default function compile(ast, profiler) {
@@ -175,6 +151,8 @@ export function assemble(ast, profiler) {
   ctx.funcs.names.clear()
   ctx.funcs.map.clear()
   for (const f of ctx.funcs.list) { ctx.funcs.names.add(f.name); ctx.funcs.map.set(f.name, f) }
+  // The summary owns semantic facts; ctx also carries mutable lowering state.
+  // Rebuild from explicit inputs after source rewrites, never from old facts.
   const summarizeProgram = () => summarize(ast, {
     inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, exported: isExported,
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
@@ -208,86 +186,7 @@ export function assemble(ast, profiler) {
     if (!(ctx.scope.globals.get(name)?.mut && ctx.scope.globals.get(name)?.type === 'f64'))
       err(`'${name}' conflicts with a compiler internal — choose a different name`)
 
-  // Pre-fold const globals: evaluate constant initializers before function compilation
-  // so functions see the correct global types (i32 vs f64). Covers the main module
-  // and every bundled sub-module — a sub-module's top-level `const SPACE = 32` lands
-  // in `moduleInits` (emitted from __start), not `ast`, so without this it stays a
-  // `(mut f64)` global. Folding it makes the scanner's char-code constants immutable
-  // globals V8 constant-folds at each read site.
-  if (ast) {
-    const evalConst = n => {
-      if (typeof n === 'number') return n
-      // A reference to an already-folded integer const (`const NEW = CALL + 1`):
-      // resolve it from constInts so const-referencing-const initializers fold too.
-      // Without this they stay unfolded → decl defaults to 0 AND emitDecl skips the
-      // (const) runtime init → the binding reads 0 (e.g. subscript's NEW=CALL+1 → the
-      // `new` keyword registers with precedence 0 and never dispatches).
-      if (typeof n === 'string') return ctx.scope.constInts?.get(n) ?? null
-      if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number') return n[1]
-      if (!Array.isArray(n)) return null
-      const [op, a, b] = n
-      const va = evalConst(a), vb = b !== undefined ? evalConst(b) : null
-      if (va == null) return null
-      if (op === 'u-' || (op === '-' && b === undefined)) return -va
-      if (vb == null) return null
-      if (op === '+') return va + vb; if (op === '-') return va - vb
-      if (op === '*') return va * vb; if (op === '%' && vb) return va % vb
-      if (op === '/' && vb) return va / vb; if (op === '**') return va ** vb
-      if (op === '&') return va & vb; if (op === '|') return va | vb
-      if (op === '^') return va ^ vb; if (op === '<<') return va << vb
-      if (op === '>>') return va >> vb; if (op === '>>>') return va >>> vb
-      return null
-    }
-    const topStmts = n => Array.isArray(n) && n[0] === ';' ? n.slice(1)
-      : Array.isArray(n) && n[0] === 'const' ? [n] : []
-    const stmts = [...topStmts(ast)]
-    for (const mi of ctx.module.moduleInits || []) stmts.push(...topStmts(mi))
-    // Fixpoint: a const may reference one declared later or in another module
-    // (`NEW = CALL + 1`). Each pass folds every now-resolvable initializer (its refs
-    // already in constInts); repeat until none change so order/cross-module refs resolve.
-    const foldedDecls = new Set()
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const s of stmts) {
-        if (!Array.isArray(s) || s[0] !== 'const') continue
-        for (const decl of s.slice(1)) {
-          if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-          const [, name, init] = decl
-          if (foldedDecls.has(name)) continue
-          if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
-          const v = evalConst(init)
-          if (v == null || !isFinite(v)) continue
-          foldedDecls.add(name)
-          changed = true
-          const isInt = Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX
-          declGlobal(name, isInt ? 'i32' : 'f64', v, { mut: false })
-          // Cache integer values for cross-call const-arg propagation: `f(N)` where
-          // `const N = 8` should observe the param as intConst=8.
-          if (isInt) (ctx.scope.constInts ||= new Map()).set(name, v)
-          // Cache EVERY folded value (fractional too) so readVar substitutes the
-          // literal at each read site — compile-time paths (emitPow's constant
-          // non-integer exponent → exp(c·log x), narrowing, the vectorizer) see
-          // through the global where V8 would only fold it at runtime. colorpq's
-          // PQ exponents (nv = 2610/16384, p = 1.7·2523/32) rode global.get into
-          // the generic runtime-exponent $math.pow because of exactly this gap.
-          ;(ctx.scope.constNums ||= new Map()).set(name, v)
-        }
-      }
-    }
-  }
-
-  // Typed-ctor sizes parked at prepare (`new T(CIN*H*W)` — names only now folded):
-  // re-run the static-len derivation with constInts populated. Feeds the interval
-  // proof's receiver lengths (typedIdxProven class 5).
-  if (ctx.scope.pendingTypedLens) {
-    for (const [name, rhs] of ctx.scope.pendingTypedLens) {
-      const len = typedStaticLen(rhs)
-      if (len != null && ctx.scope.globalTypedElem?.has(name))
-        (ctx.scope.globalTypedLen ||= new Map()).set(name, len)
-    }
-    ctx.scope.pendingTypedLens = null
-  }
+  foldModuleConstants(ast)
 
   // Whole-program constant fold of module-scope aggregate literals — `var x=[1,2,3];
   // y=x[0]` → `y=1`, dropping the array (no data segment, no __arr_idx_known) when
