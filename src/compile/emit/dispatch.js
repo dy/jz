@@ -577,7 +577,9 @@ export function emitDecl(...inits) {
         continue
       }
       if (isGlobal(i)) {
-        if (!ctx.scope.globalTypes.has(i)) result.push(['global.set', `$${i}`, undef])
+        // A recorded f64 storage type still carries undefined. Only a narrowed
+        // raw carrier may omit this initialization under assigned-before-read.
+        if ((ctx.scope.globalTypes.get(i) ?? 'f64') === 'f64') result.push(['global.set', `$${i}`, undef])
         continue
       }
       // An i32-typed local (a narrowed integer index feeder) can't hold the f64

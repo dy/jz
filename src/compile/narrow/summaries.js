@@ -13,17 +13,16 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  returnExprs, callArgs, ASSIGN_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, some, isReassigned,
+  returnExprs, callArgs, ASSIGN_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
 } from '../../ast.js'
-import { findMutations } from '../analyze.js'
 import {
-  staticArrayElems, hull, typedValueLiteral, typedValueExprRange,
+  staticArrayElems, staticArrayLen, hull, typedValueLiteral, typedValueExprRange,
 } from '../../static.js'
 import { typedElemCtor, typedStaticLen } from '../../type.js'
 
 // Fixed lengths of internal arrays built from a literal plus unconditional
-// pushes in canonical constant-trip loops. Any alias, unknown call, conditional
-// push, indexed write, or control exit rejects the array. This captures table
+// pushes in canonical constant-trip loops. Any alias, unknown call, unequal
+// branch growth, indexed write, or control exit rejects the array. This captures table
 // builders without pretending mutable JS arrays are generally fixed-size.
 export function inferInternalArrayLengths(paramReps) {
   const cint = (n) => {
@@ -53,11 +52,16 @@ export function inferInternalArrayLengths(paramReps) {
     if (n[0] === '=>') return refs(n, arr) ? null : 0
     if (n[0] === '()') {
       if (Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === arr)
-        return n[1][2] === 'push' && callArgs(n).length > 0 && !callArgs(n).some(a => refs(a, arr))
+        return n[1][2] === 'push' && callArgs(n).length > 0 && !callArgs(n).some(a => (Array.isArray(a) && a[0] === '...') || refs(a, arr))
           ? callArgs(n).length : null
       if (callArgs(n).some(a => refs(a, arr)) || refs(n[1], arr)) return null
     }
-    if (n[0] === 'if' || n[0] === '?:' || n[0] === 'while' || n[0] === 'do' || n[0] === 'for' || n[0] === 'switch')
+    if (n[0] === 'if' || n[0] === '?:') {
+      if (refs(n[1], arr)) return null
+      const a = pushCount(n[2], arr), b = pushCount(n[3], arr)
+      return a != null && a === b ? a : null
+    }
+    if (n[0] === 'while' || n[0] === 'do' || n[0] === 'for' || n[0] === 'switch')
       return refs(n, arr) ? null : 0
     if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue') return null
     if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
@@ -102,8 +106,8 @@ export function inferInternalArrayLengths(paramReps) {
         const d = n[i]
         if (Array.isArray(d) && d[0] === '=' && d[1] === arr) {
           if (defNode) { bad = true; return false }
-          const elems = staticArrayElems(d[2])
-          if (elems) { len = elems.length; defNode = d } else bad = true
+          const size = staticArrayLen(d[2])
+          if (size != null) { len = size; defNode = d } else bad = true
         }
       }
       if ((n[0] === 'if' || n[0] === '?:' || n[0] === 'while' || n[0] === 'do' || n[0] === 'switch') && refs(n, arr)) {
@@ -129,7 +133,7 @@ export function inferInternalArrayLengths(paramReps) {
         return false
       }
       if (n[0] === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === arr && n[1][2] === 'push') {
-        if (len == null || !callArgs(n).length || callArgs(n).some(a => refs(a, arr))) bad = true
+        if (len == null || !callArgs(n).length || callArgs(n).some(a => (Array.isArray(a) && a[0] === '...') || refs(a, arr))) bad = true
         else len += callArgs(n).length
         return false
       }
@@ -189,8 +193,8 @@ export function inferInternalArrayLengths(paramReps) {
       if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
-        const elems = staticArrayElems(d[2])
-        const len = elems ? elems.length
+        const size = staticArrayLen(d[2])
+        const len = size != null ? size
           : Array.isArray(d[2]) && d[2][0] === '()' && typeof d[2][1] === 'string' ? funcLens.get(d[2][1])
           : null
         if (len != null) { candidates.set(d[1], len); defs.set(d[1], d) }
@@ -220,7 +224,7 @@ export function inferInternalArrayLengths(paramReps) {
     }
     locals.set(f, m)
   }
-  return { funcLens, locals }
+  return { funcLens, locals, safeParams }
 }
 
 // Whole-program typed-element hulls for fresh local typed arrays. A callee
@@ -486,4 +490,3 @@ export function boundedByCallerLength(expr, recvName, body, seen = null) {
   }
   return false
 }
-

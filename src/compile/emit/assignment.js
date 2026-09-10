@@ -216,7 +216,14 @@ export const assignmentOps = {
     // (ir.js) for the established pattern this mirrors.
     const neverEscapes = Array.isArray(val) && val[0] === '[' && ctx.schema.arrayVars?.has(name)
       ? true : ctx.func._arrayLiteralNeverEscapes
-    let ev = withInitializerScope(selfAccum ? name : null, neverEscapes, () => emit(val))
+    // Literal reassignment adopts the same settled layout as declaration.
+    // Without the target, a reordered literal allocates its own schema while
+    // subsequent binding reads still use the planned field offsets.
+    const objectLiteral = Array.isArray(val) && val[0] === '{}' && val.length > 1
+    let ev
+    if (objectLiteral) ctx.schema.targetStack.push({ name, active: true })
+    try { ev = withInitializerScope(selfAccum ? name : null, neverEscapes, () => emit(val)) }
+    finally { if (objectLiteral) ctx.schema.targetStack.pop() }
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBigintRepresentationAction(ev, val, repAction)
     return writeVar(name, ev, void_, val)

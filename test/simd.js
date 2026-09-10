@@ -372,14 +372,16 @@ test('SIMD f32x4 - map with remainder', () => {
 })
 
 // f32 arithmetic loops: jz computes Float32Array math in f64 (promote→f64 op→
-// demote). Lifting to f32x4 drops the f64 intermediate to f32 (sub-ulp, inaudible
-// for audio/DSP) — NOT bit-exact, so gated on relaxedSimd (speed). A pure copy has
+// demote). Arithmetic keeps f64x2 lanes and narrows only at the store. A pure copy has
 // no arithmetic; promote(load)+demote round-trips losslessly → vectorizes always.
 
-test('SIMD f32x4 - contiguous scale vectorizes at speed, scalar below it', () => {
+test('SIMD Float32 storage - contiguous scale retains f64 arithmetic at both tiers', () => {
   const src = `export let s = (n, k) => { let a = new Float32Array(n); let o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i] * k; return o }`
-  ok(/f32x4\.mul/.test(wat(src, SPEED)), 'f32 scale → f32x4.mul under relaxedSimd (speed)')
-  ok(!/f32x4\.mul/.test(wat(src, SIMD_OPT)), 'f32 scale stays scalar without relaxedSimd (bit-exact default)')
+  for (const opts of [SPEED, SIMD_OPT]) {
+    const w = wat(src, opts)
+    ok(/f64x2\.mul/.test(w) && /f32x4\.demote_f64x2_zero/.test(w), 'multiply in f64, round at the store')
+    ok(!/f32x4\.mul/.test(w), 'no intermediate f32 rounding')
+  }
 })
 
 test('SIMD f32x4 - pure copy vectorizes bit-exactly without relaxedSimd', () => {
@@ -422,7 +424,7 @@ test('SIMD - int→f32 widening map (Int16Array → Float32Array normalize)', ()
   // f32x4.convert, f32x4.mul. i8/i16/u8 are exact in f32 → bit-identical to scalar.
   const src = `export let f = (n) => { let s = new Int16Array(n); let o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = s[i] * 0.5; return o }`
   const w = wat(src, SPEED)
-  ok(/f32x4\.convert_i32x4_s/.test(w) && /extend_low_i16x8_s/.test(w), 'i16→f32 widening chain')
+  ok(/f64x2\.convert_low_i32x4_s/.test(w) && /extend_low_i16x8_s/.test(w), 'i16→f64 widening chain')
   // correctness: i16 values exact in f32, *0.5 exact → identical to scalar
   is(jz(`export let m = () => {
     let s = new Int16Array(8); for (let i=0;i<8;i++) s[i] = (i-4) * 1000

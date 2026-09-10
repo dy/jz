@@ -61,6 +61,7 @@ const TESTS = [
   'dyn-closure-tables',
   'preeval',
   'inference',
+  'audit-regressions',
   'provenance-inference',
   'speculate',
   'unsigned',

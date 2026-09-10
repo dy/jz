@@ -1,3 +1,5 @@
+import { walkAst } from '../../ast.js'
+
 export const LANE_INFO = {
   i8:  { lanes: 16, strideLog2: 0, stride: 1, splat: 'i8x16.splat', constOp: 'i32.const' },
   i16: { lanes: 8,  strideLog2: 1, stride: 2, splat: 'i16x8.splat', constOp: 'i32.const' },
@@ -120,14 +122,6 @@ export const INT_WIDEN_F32 = {
   'i32.load16_u': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_u'],                        cvt: 'u', lossy: false },
   'i32.load8_s':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s'], cvt: 's', lossy: false },
   'i32.load8_u':  { load: 'v128.load32_zero', steps: ['i16x8.extend_low_i8x16_u', 'i32x4.extend_low_i16x8_u'], cvt: 'u', lossy: false },
-}
-
-// f64 scalar op → f32x4 SIMD op, for Float32Array arithmetic jz computes in f64
-// (promote→f64 op→demote). Used only in f32-lane context under relaxedSimd, since
-// the f64→f32 intermediate-precision drop is not bit-exact (see _relaxF32).
-export const F64_TO_F32X4 = {
-  'f64.add': 'f32x4.add', 'f64.sub': 'f32x4.sub', 'f64.mul': 'f32x4.mul', 'f64.div': 'f32x4.div',
-  'f64.min': 'f32x4.min', 'f64.max': 'f32x4.max', 'f64.neg': 'f32x4.neg', 'f64.abs': 'f32x4.abs', 'f64.sqrt': 'f32x4.sqrt',
 }
 
 // Horizontal reductions: associative+commutative ops applied to one
@@ -292,3 +286,15 @@ export const PPC_CALL2 = {
 // `$math.cbrt_v` (inlining the small per-lane repack mirror would erase the vectorized call the
 // lift produced). The protection policy lives here in jz, not hardcoded in watr.
 export const SIMD_PINNED = [...new Set([...Object.keys(PPC_CALL2), ...Object.values(PPC_CALL2)])]
+// Arithmetic precision can exceed storage width (notably Float32Array).
+// Maps and stencils share this decision before validating memory strides.
+export function floatLane(body) {
+  let lane = null, wide = false
+  for (const stmt of body) walkAst(stmt, { enter: n => {
+    const t = LOAD_OPS[n[0]] || STORE_OPS[n[0]]
+    if (t === 'f64') lane = 'f64'
+    else if (t === 'f32' && lane == null) lane = 'f32'
+    if (/^f64\.(add|sub|mul|div|sqrt|min|max|lt|gt|le|ge|eq|ne)$/.test(n[0])) wide = true
+  } })
+  return lane === 'f32' && wide ? 'f64' : lane
+}

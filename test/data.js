@@ -4057,7 +4057,7 @@ test('object passed as a parameter: a param that is only READ keeps its direct (
   const next = wat.indexOf('\n  (func ', start + 1)
   const body = wat.slice(start, next)
   ok(!/__dyn_get_expr/.test(body), 'O0: sumArr never probes for an own-property shadow — a.length/a[i] compile straight through')
-  ok(/\$__ptr_offset/.test(body) && /i32\.const 8/.test(body), 'O0: .length still reads the direct array-header word (fast path unchanged)')
+  ok(/(?:i32|f64)\.const 5/.test(body), 'O0: unanimous caller length lowers directly to a constant')
 })
 
 // --- object mutated/read inside a function via a PARAMETER, called with a
@@ -4604,7 +4604,7 @@ test('DictKindIndex: the for-in-unroll census survives a same-module named-funct
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
   ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
-  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
   for (const optimize of [false, 2, 3])
     is(jz(src, { optimize }).exports.main(), 22, `O${optimize || 0}: instr(['funcidx',1], ctx) -> id(1, ctx.func) === 22, JS-correct`)
 })

@@ -855,10 +855,13 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     }
     return typed([`f64.${f64op}`, dateNum(a, va, vta), dateNum(b, vb, vtb)], 'i32')
   }
-  if (vtb === VAL.NUMBER && needsToNumberCoercion(a, vta))
-    return typed([`f64.${f64op}`, toNumF64(a, va), asF64(vb)], 'i32')
-  if (vta === VAL.NUMBER && needsToNumberCoercion(b, vtb))
-    return typed([`f64.${f64op}`, asF64(va), toNumF64(b, vb)], 'i32')
+  // A numeric partner rules out lexicographic comparison. Coercion belongs
+  // to the value contract, regardless of whether it came from a parameter,
+  // call, or property read. toNumF64 already elides proven numeric carriers.
+  const numA = vta === VAL.NUMBER || (va.type === 'i32' && va.ptrKind == null)
+  const numB = vtb === VAL.NUMBER || (vb.type === 'i32' && vb.ptrKind == null)
+  if ((numB && !numA) || (numA && !numB))
+    return typed([`f64.${f64op}`, toNumF64(a, va), toNumF64(b, vb)], 'i32')
   // An `.unsigned` i32 operand ([0, 2^32)) can't share a signed i32 compare with a
   // possibly-signed one: mixed sign inverts the order (3 < 0xFFFFFFFF unsigned, but
   // 3 > -1 signed). Widen to f64, where asF64 converts each operand by its own
@@ -904,14 +907,6 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   return typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
 }
 
-/** Both relational (`<` `>=` …) and loose `==`/`!=` need ToNumber on the
- *  unknown side iff it's known-string or might dereference a boxed value. */
-function needsToNumberCoercion(expr, vt) {
-  if (vt === VAL.STRING) return true
-  if (vt != null) return false
-  return mayReadBoxedValue(expr)
-}
-
 // Loose `==` of a certain number `num` against `other`. A static string is
 // its ToNumber. A partner of no static kind is compared inline when it is a
 // genuine number; the NaN-boxed remainder (a boolean atom, a boxed BigInt, a
@@ -933,10 +928,6 @@ function looseNumberEq(num, other, otherIR, otherVt, negate, numLeft) {
     ['then', ['f64.eq', nG(), oG]],
     ['else', ['call', '$__eq_num', nG(), ['i64.reinterpret_f64', oG]]]], 'i32')
   return typed(['block', ['result', 'i32'], ...(numLeft ? [...setN, ...setO] : [...setO, ...setN]), fin(cmp)], 'i32')
-}
-
-function mayReadBoxedValue(expr) {
-  return Array.isArray(expr) && (expr[0] === '.' || expr[0] === '[]' || expr[0] === '?.' || expr[0] === '?.[]')
 }
 
 function intConstValue(expr) {

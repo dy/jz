@@ -1,8 +1,8 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { constNum, firstAccess, hasGlobalSet, isI32Const, isLocalGet, matchStrideAddr, matchStrideOffset } from './addr-model.js'
+import { constNum, firstAccess, isI32Const, isLocalGet, matchStrideAddr, matchStrideOffset } from './addr-model.js'
 import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
-import { LANE_INFO, LOAD_OPS, STORE_OPS } from './lane-tables.js'
+import { LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
 import { liftFail, liftStmt } from './lift.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
 
@@ -188,7 +188,7 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   }
 
   // Scan loads/stores: address `base + (IDX<<K)`, ivCoeff(IDX)=1, base invariant.
-  let laneType = null, stride = -1
+  let laneType = floatLane(body), stride = laneType ? LANE_INFO[laneType].stride : -1
   const offTees = new Map()    // $pe → IDX expr  (from $pe = IDX<<K)
   const addrTees = new Map()   // $ab → { base, idx }
   const sites = []             // { kind, base, idx, memBytes }
@@ -235,8 +235,8 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
       if (node.length !== 3) return false
       const st = STORE_OPS[op]
       if (laneType == null) { if (st !== 'f64' && st !== 'f32') return false; laneType = st; stride = LANE_INFO[st].stride }
-      else if (st !== laneType) return false
-      const m = matchAddr(node[1])
+      else if (st !== laneType && !(st === 'f32' && laneType === 'f64')) return false
+      const m = matchAddr(node[1], LANE_INFO[st].stride)
       if (!m) return false
       sites.push({ kind: 'store', base: m.base, idx: m.idx, memBytes: 0 })
       return scan(node[2], node, 2)                        // value child only

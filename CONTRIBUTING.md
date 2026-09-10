@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `b401fe2`.
+`package.json` and the lockfile pin the public watr source archive at `9120319`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -34,6 +34,8 @@ Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
 Unmapped numeric/flat callee locals retain their call frame.
+Public adapters use the ordinary small-function inline budget; larger workers
+remain shared. Internal dispatch trampolines retain the speed-tier budget.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
 this policy with its existing `hoistConstantPool` option.
 The downstream watr workflow builds and tests with the same current JZ package.
@@ -150,6 +152,20 @@ Current pipeline: `source → parse (subscript/jessie) → jzify (default-on; st
 
 The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
 
+Float32Array storage does not lower JavaScript arithmetic precision. Maps and
+stencils choose their computation lanes together: f32 loads promote to f64x2,
+arithmetic stays f64, and stores round to f32. Copies and sign operations can
+retain f32x4 lanes. Narrow integer stores preserve the scalar conversion.
+
+Fixed plain-array lengths flow from the existing builder analysis into local
+and parameter ValueReps, then FunctionPlan owns them during emission. Spread,
+conflicting growth, resizing, and escaping uses invalidate the proof. Equal
+push counts across branches preserve it. Cold argument-free array builders stay callable
+through inference; shared Watr inlining can remove their frame after lowering.
+Record scalar replacement uses one validator for field access, nonescape and
+whole-record replacement. Replacement values evaluate before any field changes;
+aliases, captures, differing field sets and observed record values keep storage.
+
 Strings store UTF-16LE code units; lengths and positions count units, while
 allocation sizes and addresses count bytes. Short ASCII strings retain the
 six-unit SSO representation. UTF-8 encoding belongs to byte APIs and Wasm text
@@ -222,6 +238,28 @@ gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scat
 - **No external runtime and no GC.** Needed JZ runtime operations are linked into the module; unused operations are omitted.
 
 ## Testing
+
+### Source cleanup
+
+`npm run lint:imports` checks unused imports in the root JavaScript modules,
+`src/`, `jzify/`, and `module/`. Run `npm run lint:imports:fix` to remove them.
+The ESLint configuration enables only this rule, so it does not reformat code
+or remove variables. Keep initialization-only dependencies as bare imports
+(`import './register.js'`); the fixer preserves those.
+
+`npm run audit:files` uses Knip to find unreachable source modules. Package
+exports and the CLI are discovered from `package.json`; `knip.json` also roots
+the standalone scripts, tests, examples, benchmarks, and browser assets that
+use compiler internals. Fixtures, generated output, and standalone programs
+are outside the source-file deletion scope. When adding a new external loader,
+include its entry point before trusting the report.
+
+Review reported files for string-based loading and documented use before
+deleting them. After that review, `npm run audit:files -- --fix --fix-type files
+--allow-remove-files` removes the reported files. Run the tests below after
+cleanup; an unused binding alone does not prove its module has no side effects.
+
+### Test suites
 
 Tests use [tst](https://github.com/dy/tst). Each file in `test/` is self-contained. Run all:
 

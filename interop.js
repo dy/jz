@@ -1363,6 +1363,11 @@ const prepareInterop = (opts) => {
     const prop = state.mem.read(propBig)
     const obj = extRecv(objBig, prop, 'method call')
     const args = state.mem.read(argsBig)
+    // Method keys are normalized before this boundary; undefined marks a direct call.
+    if (prop === undefined) {
+      if (typeof obj !== 'function') throw new TypeError('Host value is not callable')
+      return hostRet(state, Reflect.apply(obj, undefined, args))
+    }
     if (typeof obj[prop] !== 'function')
       throw new Error(`'${prop}' is not a function on this host ${obj?.constructor?.name ?? 'object'}`)
     const value = obj[prop].apply(obj, args)

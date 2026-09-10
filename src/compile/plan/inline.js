@@ -36,6 +36,7 @@ import {
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { constIntExpr } from '../../static.js'
+import { K, core, tagOf } from '../../summary/index.js'
 import { analyzeBody } from '../analyze.js'
 import {
   LOOP_OPS, isSimpleArg, mutatesAny, loopDepth, nodeSize, clonePlain, collectBindings,
@@ -692,6 +693,11 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // stays at generic f64 ABI with __typed_idx dispatch instead of i32 + f64.load.
     // Keeping the factory as a callable function preserves the call-site type fact.
     if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('new.'))) continue
+    // Keep cold, argument-free array builders intact through result inference.
+    // Dynamic builders still inline here to expose their pointer flow; delaying
+    // those loses narrowing without gaining a fixed result length.
+    if (hasLoop && paramNames.size === 0 && tagOf(core(ctx.summary.resultOf(func.name))) === K.ARRAY &&
+        !sites.some(site => site.callerFunc?.body && containsNode(site.callerFunc.body, site.node))) continue
     if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
     if (!hasLoop) leaves.add(func.name)

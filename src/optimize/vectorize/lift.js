@@ -4,7 +4,7 @@ import { hasBranchOrReturn, hasSideEffect, isI32Const, matchMirrorAddr } from '.
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
 import { inlinePureCallExpr } from './inline-pure.js'
-import { F64_TO_F32X4, INT_WIDEN_F32, LANE_COMPARE, LANE_INFO, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
+import { INT_WIDEN_F32, LANE_COMPARE, LANE_INFO, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 
 // Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
@@ -35,13 +35,8 @@ function liftCanon(coreV, C, ctx, info) {
 // codegen, which never reads it). `vecState.whyNotReason` captures the FIRST (deepest) lift
 // bail for the block currently under the recognizer chain; the walk reads it after.
 export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: false, crPow: false }
-// Precision-relaxed f32 SIMD. jz computes Float32Array arithmetic in f64
-// (`f32.demote_f64 (f64.mul (f64.promote_f32 …) …)`); lifting that chain to
-// `f32x4.mul` over `v128.load` changes the intermediate from f64 to f32 — a
-// sub-ulp difference at f32 precision (inaudible for audio/DSP, the canonical
-// f32-SIMD trade every audio engine makes), but NOT bit-exact, so it is gated
-// on the same `relaxedSimd` opt-in that enables relaxed-FMA. The promote/demote
-// *strip* for a pure f32 copy (no arithmetic) round-trips losslessly and stays
+// Float32 storage still computes JavaScript expressions in f64 lanes. The
+// promote/demote strip for a pure f32 copy round-trips losslessly and stays
 // on unconditionally. Armed for the duration of a vectorizeLaneLocal call.
 
 // optimize.crPow, armed the same way — the const-exponent pow arm picks its lowering
@@ -363,13 +358,23 @@ export function liftExprV(expr, ctx) {
     const addr = typeof ld[1] === 'string' && ld[1].startsWith('offset=') ? ['v128.load64_zero', ld[1], ld[2]] : ['v128.load64_zero', ld[1]]
     return ['f64x2.promote_low_f32x4', addr]
   }
+  if (ctx.laneType === 'f64' && (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u')
+      && isArr(expr[1]) && INT_WIDEN_F32[expr[1][0]]) {
+    const ld = expr[1], w = INT_WIDEN_F32[ld[0]], ty = LOAD_OPS[ld[0]]
+    // Read exactly two source elements, including the final vector chunk.
+    const load = ty === 'i32' ? 'v128.load64_zero' : ty === 'i16' ? 'v128.load32_zero' : 'i32.load16_u'
+    let v = [load, ...ld.slice(1)]
+    if (ty === 'i8') v = ['i32x4.splat', v]
+    for (const step of w.steps) v = [step, v]
+    return [op === 'f64.convert_i32_u' ? 'f64x2.convert_low_i32x4_u' : 'f64x2.convert_low_i32x4_s', v]
+  }
 
   // f32-lane: jz computes Float32Array arithmetic in f64, wrapping the f32 load in
   // `f64.promote_f32` and the result in `f32.demote_f64`. The promote/demote are
   // lane-space identities — strip them (a promote-of-load + demote round-trips
-  // losslessly: a pure `b[i]=a[i]` copy vectorizes bit-exactly, always). The f64
-  // arithmetic op and any f64 constant map to their f32x4 forms only under
-  // relaxedSimd, since computing in f32 (vs f64-then-demote) drops sub-ulp precision.
+  // losslessly: a pure `b[i]=a[i]` copy vectorizes bit-exactly, always).
+  // Only sign operations commute with the store rounding; arithmetic uses
+  // the f64 lane selected by floatLane.
   if (ctx.laneType === 'f32') {
     if (op === 'f64.promote_f32') return liftExprV(expr[1], ctx)
     if (op === 'f32.demote_f64') return liftExprV(expr[1], ctx)
@@ -387,14 +392,7 @@ export function liftExprV(expr, ctx) {
       if (!vecState.relaxF32) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedSimd (f32 round of the constant)')
       return ['f32x4.splat', ['f32.const', expr[1]]]
     }
-    const f32op = F64_TO_F32X4[op]
-    if (f32op) {
-      if (!vecState.relaxF32) return liftFail(ctx, `${op}: f32 SIMD computes in f32 not f64 (sub-ulp) — needs relaxedSimd`)
-      const a = liftExprV(expr[1], ctx); if (ctx.fail) return null
-      if (expr.length === 2) return [f32op, a]                 // unary: neg / abs / sqrt
-      const b = liftExprV(expr[2], ctx); if (ctx.fail) return null
-      return [f32op, a, b]
-    }
+    if (op === 'f64.neg' || op === 'f64.abs') return ['f32x4.' + op.slice(4), liftExprV(expr[1], ctx)]
   }
 
   // Loads → v128.load (preserving address, including any local.tee).
@@ -776,6 +774,20 @@ function narrowStore(addr, val, laneType, sty, ctx) {
   let pre, lane8, store
   if (laneType === 'f64' && sty === 'f32') { pre = ['f32x4.demote_f64x2_zero', val]; lane8 = g; store = 'i64.store' }
   else if (laneType === 'f64' && sty === 'i32') { pre = ['i32x4.trunc_sat_f64x2_s_zero', val]; lane8 = g; store = 'i64.store' }
+  else if (laneType === 'f64' && (sty === 'i16' || sty === 'i8')) {
+    // Wasm has no f64x2→i64x2 conversion. Keep the scalar ToInt32 conversion
+    // on each result lane, then pack only the two written elements.
+    const vt = `$__nvi${ctx.freshIdRef.next++}`
+    ctx.extraLocals.push(['local', vt, 'v128'])
+    sets.push(['local.set', vt, val])
+    const convert = i => {
+      const x = ['f64x2.extract_lane', i, ['local.get', vt]]
+      return ['select', ['i32.const', 0], ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], ['f64.eq', x, ['f64.const', 'inf']]]
+    }
+    pre = ['i32x4.replace_lane', 1, ['i32x4.splat', convert(0)], convert(1)]
+    lane8 = sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)
+    store = sty === 'i16' ? 'i32.store' : 'i32.store16'
+  }
   else if (laneType === 'f32' && (sty === 'i16' || sty === 'i8')) {
     // Scalar integer stores are wrapIntIR ToIntN: a +Inf lane stores 0 where the
     // saturated lane packs to -1 (INT32_MAX's low bytes). andnot the lanes equal
@@ -797,4 +809,3 @@ function narrowStore(addr, val, laneType, sty, ctx) {
   const packed = store === 'i64.store' ? ['i64x2.extract_lane', 0, lane8] : ['i32x4.extract_lane', 0, lane8]
   return ['block', ...sets, ['local.set', tmp, pre], [store, addr, packed]]
 }
-

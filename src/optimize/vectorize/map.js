@@ -1,8 +1,8 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, firstAccess, hasGlobalSet, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
+import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, firstAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
 import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
-import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS } from './lane-tables.js'
+import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
 import { liftFail, liftStmt, peelNarrowConv } from './lift.js'
 import { isArr } from './node-utils.js'
 
@@ -52,23 +52,12 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     for (const s of body) walkAst(s, { enter: recordIndex })
   }
 
-  // The compute/lane type is the WIDEST FLOAT among all loads+stores. A narrower
-  // float/int LOAD is then a widening read (INT_WIDEN_F32 / f32→f64), a narrower
-  // float/int STORE a narrowing write (demote / trunc+wrap) — both sub-width memory
-  // ops around the float lane. Pinning it up front (vs whichever op the recursive
-  // scan hits first) is what lets a narrowing map `i16[i] = f32arr[i]*k` keep the
-  // f32 compute lane instead of locking onto the i16 store. No float → integer lane
-  // (set by the scan below, unchanged).
+  // Select float computation precision before scanning memory widths. Narrower
+  // loads widen and narrower stores round/truncate around that lane. Without
+  // float storage, the memory scan below selects the integer lane.
   const isNarrowStore = (lane, sty) => (lane === 'f32' && (sty === 'i16' || sty === 'i8'))
-    || (lane === 'f64' && (sty === 'f32' || sty === 'i32'))
-  let preFloat = null
-  const recordFloatWidth = n => {
-    if (!isArr(n)) return
-    const t = LOAD_OPS[n[0]] || STORE_OPS[n[0]]
-    if (t === 'f64') preFloat = 'f64'
-    else if (t === 'f32' && preFloat == null) preFloat = 'f32'
-  }
-  for (const s of body) walkAst(s, { enter: recordFloatWidth })
+    || (lane === 'f64' && (sty === 'f32' || sty === 'i32' || sty === 'i16' || sty === 'i8'))
+  const preFloat = floatLane(body)
   if (preFloat) { laneType = preFloat; stride = LANE_INFO[preFloat].stride }
 
   // Record a memory site's pixel stride. An AoS stride (P>1) is f64-lane only (the gather/scatter
@@ -96,20 +85,18 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     const op = node[0]
     if (LOAD_OPS[op]) {
       const lt = LOAD_OPS[op]
-      // int→f32 widening map (`out[i] = intArr[i] (*k)`): an integer load feeding a
-      // Float32Array store. Accept under the f32 lane and validate at the int element
-      // stride (the loop steps `lanes` f32 = 4 elements; load64_zero/load32_zero read
-      // exactly 4 ints). liftExprV widens via INT_WIDEN_F32.
-      const widenInt = laneType === 'f32' && lt !== 'f32' && INT_WIDEN_F32[op]
+      // Integer loads feeding float arithmetic retain their storage stride.
+      // liftExprV reads exactly the selected number of computation lanes.
+      const widenInt = (laneType === 'f32' || laneType === 'f64') && INT_WIDEN_F32[op]
       if (laneType == null) {
         laneType = lt
         stride = LANE_INFO[laneType].stride
-      } else if (lt !== laneType && !widenInt) {
+      } else if (lt !== laneType && !widenInt && !(laneType === 'f64' && lt === 'f32')) {
         return false
       }
       const m = matchLaneAddr(memAddr(node), incVar, addrLocals, offsetTees, allowAos, aosPix, idxTees)
       if (!m) return false
-      if ((1 << m.strideLog2) !== (widenInt ? LANE_INFO[lt].stride : stride)) return false
+      if ((1 << m.strideLog2) !== LANE_INFO[lt].stride) return false
       if (!recordAos(m)) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, pixelStride: m.pixelStride, base: m.base })
       if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)

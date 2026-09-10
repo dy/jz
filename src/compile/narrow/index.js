@@ -22,7 +22,7 @@
 import { ctx, err, DBG_INVARIANTS } from '../../ctx.js'
 import { withTypedElemOverlay } from '../flow-state.js'
 import { I32_MIN, I32_MAX } from '../../ir.js'
-import { staticArrayElems } from '../../static.js'
+import { staticArrayLen } from '../../static.js'
 import { exprType, typedElemCtor, typedStaticLen } from '../../type.js'
 import { VAL } from '../../reps.js'
 import { ctorFromElemAux } from '../../../layout.js'
@@ -124,6 +124,7 @@ export default function narrowSignatures(programFacts, ast) {
   const { callerCtx } = phase
   const typedValueRanges = inferTypedValueRanges(paramReps)
   const internalArrayLengths = inferInternalArrayLengths(paramReps)
+  programFacts.arrayLengths = internalArrayLengths.locals
   const intConstArg = (arg) => {
     let raw = null
     if (typeof arg === 'number') raw = arg
@@ -459,8 +460,14 @@ export default function narrowSignatures(programFacts, ast) {
         ?? null
     if (Array.isArray(arg) && arg[0] === '()' && typeof arg[1] === 'string')
       return internalArrayLengths.funcLens.get(arg[1]) ?? null
-    const elems = staticArrayElems(arg)
-    return elems ? elems.length : null
+    return staticArrayLen(arg)
+  }
+  // An entry length is not a body invariant for a resizing/escaping parameter.
+  // Poison those slots before propagation so downstream readers cannot inherit it.
+  for (const func of ctx.funcs.list) {
+    const safe = internalArrayLengths.safeParams.get(func.name)
+    for (let k = 0; k < func.sig.params.length; k++)
+      if (!safe?.[k]) ensureParamRep(paramReps, func.name, k).arrayLen = null
   }
   let arrayLenChanged = true
   while (arrayLenChanged) {

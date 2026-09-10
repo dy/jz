@@ -272,6 +272,8 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (bodyFacts?.valTypes) {
     for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
   }
+  const arrayLengths = programFacts.arrayLengths?.get(func)
+  if (arrayLengths) for (const [name, arrayLen] of arrayLengths) updateRep(name, { arrayLen })
   // Never-relocated array bindings — the `[]` reader skips the forwarding follow.
   if (bodyFacts?.neverGrown) for (const name of bodyFacts.neverGrown) updateRep(name, { neverGrown: true })
   // Own-name-current bindings — grown only through their own name, every grow

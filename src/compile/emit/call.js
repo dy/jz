@@ -8,12 +8,14 @@ import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
   PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, walkAst,
 } from '../../ast.js'
-import { LAYOUT, OPTF, PTR, ctx, err } from '../../ctx.js'
+import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand } from '../../ctx.js'
+import { includeForArrayAccess } from '../../autoload.js'
 import {
-  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNullish, reconstructArgsWithSpreads, temp, tempI32, throwTypeErrorIR, typed, undefExpr,
+  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNullish, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, throwTypeErrorIR, typed, undefExpr,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
+import { K, core, tagOf } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
@@ -296,6 +298,39 @@ function recordClosureTableCallSite(arrName, argNodes) {
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
  *  Uniform convention: fn.call packs all args into an array and trampolines. */
 function emitGenericClosureCall(callee, parsed) {
+  // Open callable values may be host functions as well as compiled closures.
+  // Share the existing external-call ABI; proven closures keep their direct path.
+  if (ctx.transform.targetProfile.envImports && valTypeOf(callee) !== VAL.CLOSURE
+      && tagOf(core(ctx.summary.kindOfExpr(callee))) !== K.CLOSURE) {
+    includeForArrayAccess()
+    inc('__ext_call', '__ptr_type')
+    setLinkDemand('external')
+    const ct = temp('callee'), recv = typed(['local.get', `$${ct}`], 'f64')
+    const setup = [['local.set', `$${ct}`, asF64(emit(callee))]]
+    let args, arrayIR
+    if (parsed.hasSpread) {
+      const at = temp('args')
+      setup.push(['local.set', `$${at}`, asF64(buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads)))])
+      arrayIR = typed(['local.get', `$${at}`], 'f64')
+      args = [arrayIR]
+    } else {
+      args = parsed.normal.map(a => {
+        const t = temp('arg')
+        setup.push(['local.set', `$${t}`, ctx.closure.argIR(a)])
+        return typed(['local.get', `$${t}`], 'f64')
+      })
+      const arr = allocPtr({ type: PTR.ARRAY, len: args.length, tag: 'args' })
+      arrayIR = ['block', ['result', 'f64'], arr.init,
+        ...args.map((a, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], a]), arr.ptr]
+    }
+    return typed(['block', ['result', 'f64'], ...setup,
+      ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
+        ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+          ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
+        ['else', ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.CLOSURE),
+          ['then', ctx.closure.call(recv, args, parsed.hasSpread)],
+          ['else', throwTypeErrorIR('call')]]]]], 'f64')
+  }
   const arrName = !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
     ? callee[1] : null
   const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && arrName ? arrName : null

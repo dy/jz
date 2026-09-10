@@ -2008,7 +2008,7 @@ export default (ctx) => {
       // the runtime load too, until/unless a cross-function fact propagates
       // it into one of these two maps.
       if (typeof obj === 'string') {
-        const litLen = ctx.func.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj)
+        const litLen = ctx.func.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj) ?? repOf(obj)?.arrayLen
         if (litLen != null) return typed(['f64.const', litLen], 'f64')
       }
       // Fast path: typed-narrowed local (ptrKind=TYPED with known ptrAux) — bypass

@@ -567,6 +567,11 @@ export function staticArrayElems(expr) {
   return Array.isArray(arg) && arg[0] === ',' ? arg.slice(1) : [arg]
 }
 
+export function staticArrayLen(expr) {
+  const elems = staticArrayElems(expr)
+  return elems && !elems.some(e => Array.isArray(e) && e[0] === '...') ? elems.length : null
+}
+
 /** Schema-id for an object literal expression. Returns null on dynamic keys, spread, shorthand. */
 export function objLiteralSchemaId(expr) {
   if (!Array.isArray(expr) || expr[0] !== '{}' || !ctx.schema?.register) return null

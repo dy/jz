@@ -2478,7 +2478,10 @@ function resolveCallee(callee, args) {
   if (typeof callee === 'string') {
     const local = scopes.length && isDeclared(callee)
     const resolved = local ? null : ctx.scope.chain[callee]
-    if (local) return resolveScope(callee)
+    if (local) {
+      includeForCallableValue()
+      return resolveScope(callee)
+    }
     if (resolved?.includes('.')) return resolved
     if (resolved && hasFunc(resolved)) return resolved
     // Chain-resolved VALUE GLOBAL — a default-imported factory product

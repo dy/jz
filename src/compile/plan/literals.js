@@ -65,14 +65,14 @@ const scalarArrayElems = (expr) => {
   return elems
 }
 
-const scalarObjectProps = (expr) => {
+const scalarObjectProps = (expr, simple = true) => {
   if (!Array.isArray(expr) || expr[0] !== '{}') return null
   const props = staticObjectProps(expr.slice(1))
   if (!props) return null
   const seen = new Set()
   for (let i = 0; i < props.names.length; i++) {
     const name = props.names[i]
-    if (seen.has(name) || !isSimpleArg(props.values[i])) return null
+    if (seen.has(name) || (simple && !isSimpleArg(props.values[i]))) return null
     seen.add(name)
   }
   return props
@@ -138,11 +138,17 @@ const rewriteScalarArrayUses = (node, arrays, parentOp = null) => {
   return node.map((part, i) => i === 0 ? part : rewriteScalarArrayUses(part, arrays, op))
 }
 
-const safeScalarObjectUse = (node, name, keys) => {
+const safeScalarObjectUse = (node, name, keys, statement = false) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (ASSIGN_OPS.has(op) && node[1] === name) return false
+  if (op === '=>' && refsName(node, name, REFS_IN_EXPR)) return false
+  if (ASSIGN_OPS.has(op) && node[1] === name) {
+    if (op !== '=' || !statement) return false
+    const props = scalarObjectProps(node[2], false)
+    return props != null && props.names.length === keys.size && props.names.every(k => keys.has(k))
+      && props.values.every(v => safeScalarObjectUse(v, name, keys))
+  }
   if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if ((op === '.' || op === '?.') && node[1] === name) return keys.has(node[2])
   if (op === '[]' && node[1] === name) {
@@ -151,7 +157,10 @@ const safeScalarObjectUse = (node, name, keys) => {
   }
   if (op === '...' && node[1] === name) return false
   for (let i = 1; i < node.length; i++) {
-    if (!safeScalarObjectUse(node[i], name, keys)) return false
+    const stmt = op === ';' || (op === '{}' && node.length === 2)
+      || (op === 'for' && i === 4) || (op === 'while' && i === 2)
+      || (op === 'do' && i === 1) || (op === 'if' && i >= 2)
+    if (!safeScalarObjectUse(node[i], name, keys, stmt)) return false
   }
   return true
 }
@@ -159,6 +168,15 @@ const safeScalarObjectUse = (node, name, keys) => {
 const rewriteScalarObjectUses = (node, objects) => {
   if (!Array.isArray(node)) return node
   const op = node[0]
+  if (op === '=' && objects.has(node[1])) {
+    const props = scalarObjectProps(node[2], false), fields = objects.get(node[1])
+    // Evaluate every new field before replacing the old record. This preserves
+    // swaps and references to the previous value, independent of property order.
+    const temps = props.names.map(() => `${T}objnext${freshId(ctx)}`)
+    return ['{}', [';', ['const', ...temps.map((t, i) =>
+      ['=', t, rewriteScalarObjectUses(props.values[i], objects)])],
+      ...props.names.map((k, i) => ['=', fields.get(k), temps[i]])]]
+  }
   if ((op === '.' || op === '?.') && objects.has(node[1])) {
     const fields = objects.get(node[1])
     return fields.get(node[2]) ?? [, undefined]
@@ -671,12 +689,12 @@ const scalarizeArrayLiteralSeq = (seq) => {
   return [';', ...out]
 }
 
-const scalarizeObjectLiteralSeq = (seq, escapes) => {
+const scalarizeObjectLiteralSeq = (seq) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
   const stmts = []
   for (let i = 1; i < seq.length; i++) {
-    const stmt = scalarizeObjectLiterals(seq[i], escapes)
+    const stmt = scalarizeObjectLiterals(seq[i])
     if (stmt !== seq[i]) changed = true
     stmts.push(stmt)
   }
@@ -687,14 +705,13 @@ const scalarizeObjectLiteralSeq = (seq, escapes) => {
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
     const decl = stmt[1]
     if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-    if (escapes.get(decl[1]) !== false) continue
     const props = scalarObjectProps(decl[2])
     if (!props) continue
     const keys = new Set(props.names)
     let ok = true
     for (let j = 0; j < stmts.length && ok; j++) {
       if (j === i) continue
-      ok = safeScalarObjectUse(stmts[j], decl[1], keys)
+      ok = safeScalarObjectUse(stmts[j], decl[1], keys, true)
     }
     if (!ok) continue
     candidates.set(decl[1], { index: i, op: stmt[0], props })
@@ -728,14 +745,14 @@ const scalarizeObjectLiteralSeq = (seq, escapes) => {
   return [';', ...out]
 }
 
-function scalarizeObjectLiterals(node, escapes) {
+function scalarizeObjectLiterals(node) {
   if (!Array.isArray(node)) return node
   if (node[0] === '=>') {
-    const body = scalarizeObjectLiterals(node[2], escapes)
+    const body = scalarizeObjectLiterals(node[2])
     return body === node[2] ? node : [node[0], node[1], body]
   }
-  if (node[0] === ';') return scalarizeObjectLiteralSeq(node, escapes)
-  return rewriteChangedChildren(node, scalarizeObjectLiterals, escapes)
+  if (node[0] === ';') return scalarizeObjectLiteralSeq(node)
+  return rewriteChangedChildren(node, scalarizeObjectLiterals)
 }
 
 // === Whole-program constant fold of module-scope aggregate literals ===
@@ -1420,10 +1437,9 @@ export const scalarizeFunctionObjectLiterals = () => {
     if (!func.body || func.raw) continue
     let guard = 0
     while (guard++ < 4) {
-      // The escapes map is read-only here; retain the body-fact authority
-      // instead of cloning a full per-function map for this one pass.
-      const escapes = analyzeBody(func.body).escapes
-      const body = scalarizeObjectLiterals(func.body, escapes)
+      // The use validator proves nonescape and supported replacement together;
+      // the general escape census intentionally treats every reassignment as escape.
+      const body = scalarizeObjectLiterals(func.body)
       if (body === func.body) break
       setFuncBody(func, body)
       changed = true
