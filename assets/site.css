@@ -131,22 +131,23 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .report { display: inline-block; margin-top: 14px; font-family: var(--font); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); padding: 8px 15px; text-decoration: none; transition: background .14s, color .14s; }
 .report:hover { background: var(--ink); color: var(--paper); }
 
-/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left; the credit sits
-   above the "MIT · ॐ" license line, both bottom-right (two stacked rows). ─── */
+/* ─── Footer — shared on landing, bench, examples. Logo + nav columns grouped left;
+   descriptor, credit and license stacked right. ─── */
 footer { padding: clamp(48px,7vw,80px) var(--padx) 56px; background: var(--paper); }
+footer .about { margin: 0 0 8px; color: var(--dim); font: inherit; line-height: 1.5; }
 footer .fwrap { max-width: var(--cw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; display: flex; align-items: flex-start; gap: clamp(36px,4.5vw,60px); }
 footer .wordmark { display: inline-flex; line-height: 0; text-decoration: none; }
 footer .wordmark img { width: 40px; height: 40px; display: block; }
 footer .fcol { display: flex; flex-direction: column; gap: 2px; }
 footer .fcol a { text-decoration: none; color: var(--soft); font-size: 13.5px; padding: 4px 0; transition: color .16s; }
 footer .fcol a:hover { color: light-dark(#000, #fff); }
-footer .legal { margin-left: auto; align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12.5px; color: var(--dim); }   /* credit over "MIT · ॐ", bottom-right */
+footer .legal { width: 50%; margin-left: auto; padding-top: 4px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12.5px; text-align: right; color: var(--dim); }
 footer .legal .credit { color: var(--mute); }   /* "made with watr and jessie" — muted lead, soft links (jz's parser + assembler) */
 footer .legal .dot { color: var(--mute); }       /* the middot between MIT and ॐ */
 footer .legal a { color: var(--soft); text-decoration: none; }
 footer .legal a:hover { color: light-dark(#000, #fff); }
 footer .legal .om { font-size: 15px; font-weight: 700; }   /* Devanagari strokes are thin — bump weight so ॐ reads as dark as the MIT link (same colour, matched density) */
-@media (max-width: 640px) { footer { padding-inline: 20px; } footer .fwrap { flex-wrap: wrap; gap: 18px 16px; } }   /* less side padding; brand · nav · author+license stay on ONE row — legal pinned right via margin-left:auto */
+@media (max-width: 640px) { footer { padding-inline: 20px; } footer .fwrap { flex-wrap: wrap; gap: 18px 16px; } footer .legal { width: 100%; } }   /* wrap the right column below navigation when space is tight */
 
 @media (max-width: 520px) {
   .masthead { gap: 10px; }

@@ -1,7 +1,7 @@
 // Single source of truth for the example gallery.
 //
 // Consumed by:
-//   · examples/index.html       — the thumbnail grid
+//   · scripts/build-site.mjs    — the static thumbnail grid in examples/index.html
 //   · examples/lib/jzdemo.js    — chevron order + nicer labels
 //   · examples/build.mjs        — `build-all` loops this (incl. SIMD kernels)
 //   · ../index.html (landing)   — the hero showcase + teaser grid

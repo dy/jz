@@ -17,7 +17,7 @@
  *                  in wasm, no host help. Built from scripts/self.js — same artifact
  *                  the self-compile gate builds (scripts/self-compile-build.mjs).
  *
- * Run: npm run build
+ * Run: npm run build (all artifacts), npm run build:web (browser assets only).
  */
 import { build } from 'esbuild'
 import { writeFileSync, mkdirSync, statSync, existsSync, readFileSync } from 'node:fs'
@@ -83,10 +83,6 @@ console.log('wrote dist/jz.js  ', kb(jsOut))
   console.log('  wat-strip parity: 3 probes byte-identical')
 }
 
-// --js-only: just the browser-facing bundles (used by test/web-smoke.js — the wasm
-// kernel below costs ~20s and has its own gates).
-if (process.argv.includes('--js-only')) process.exit(0)
-
 // ── dist/interop.js — minified jz/interop bridge (host runtime, no compiler) ──
 const interopOut = resolve(OUT, 'interop.js')
 await build({
@@ -112,8 +108,12 @@ if (spraeEntry) {
   await build({ entryPoints: [spraeEntry], bundle: true, minify: true, format: 'esm', platform: 'neutral', target: 'es2022', legalComments: 'none', outfile: spraeOut })
   console.log('wrote assets/sprae.js', kb(spraeOut))
 } else {
-  console.warn('⚠ sprae not found — `npm i sprae` or clone dy/sprae as a sibling; assets/sprae.js NOT built (landing metric bindings will fail)')
+  throw new Error('sprae not found — install dependencies before building browser assets')
 }
+
+// Pages serves these three JS bundles, never the self-compiled compiler.
+// Keep bootstrap correctness/performance in their own gates.
+if (process.argv.includes('--js-only')) process.exit(0)
 
 // ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-compile) ───
 // Config resolution (CARRIER_BOX injection, region-arena × inlinePtrOffsetFast

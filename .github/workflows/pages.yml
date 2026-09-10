@@ -36,25 +36,30 @@ jobs:
         with:
           node-version: 24
       - uses: actions/configure-pages@v5
-      - run: npm ci
-      # Deploy gate: the full suite includes test/web-smoke.js — dist/jz.js compiling
-      # the REPL default sample + both landing hero grids under browser conditions
-      # (no Node globals). A commit that breaks in-browser compilation fails HERE and
-      # the last good deploy stays live (an unguarded process.env in the `for` emitter
-      # once shipped and broke every loop on every page — never again).
-      - name: gate — suite + demo/REPL web smoke
-        run: npm test
-      - name: build compiler bundle + example wasm
+      # Root prepare builds dist/jz.wasm, which Pages never serves. Install the
+      # dependency tree without lifecycle builds; initialize only the web bundler.
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      # Gate what we serve: browser bundles, REPL/hero behavior and static gallery.
+      # Full compiler, bootstrap and benchmark gates remain in their own workflows.
+      - name: gate — browser assets + demo/REPL smoke
         run: |
-          npm run build                    # dist/jz.js + dist/interop.js — the repl/playground import these
-          npm run build:examples           # examples/**/*.wasm
-          node bench/bench.mjs --emit-web  # bench/web/*.wasm — the live in-page bench runner (cheap, no measurement)
+          npm run build:site
+          node test/site.js
+          node test/web-smoke.js          # builds all browser bundles with --js-only
+          node test/get-started.js        # execute the guide's copyable examples
+      - name: build example and playable benchmark wasm
+        run: |
+          npm run build:examples
+          node bench/bench.mjs --emit-web  # assets only; no measurements or ranking gate
       - name: assemble _site (tracked files + freshly-built artifacts only)
         run: |
           rm -rf _site && mkdir _site
           # tracked files = exactly the repo's source/HTML/thumbs/bench data — no
           # node_modules, no .git, no gitignored junk.
           git archive HEAD --prefix=_site/ | tar -x
+          # Render the gallery from its catalog after copying tracked HTML.
+          node scripts/build-site.mjs _site
           # overlay the just-built artifacts (gitignored, so absent from the archive).
           mkdir -p _site/dist && cp dist/jz.js dist/interop.js _site/dist/
           # assets/sprae.js is bundled from the `sprae` devDep at build time (a WEB asset, not compiler

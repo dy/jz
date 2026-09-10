@@ -78,6 +78,10 @@ smoke test and `test:self` for the bundle. Edit source, not output.
 - **Deploy** — `pages.yml` builds `dist/` + example wasm and uploads them alongside
   the tracked files as the Pages artifact. Pages Source = **GitHub Actions** (not a
   branch); URL https://jz.js.org/ (dy.github.io/jz redirects there).
+  It installs without root lifecycle scripts, builds browser assets with
+  `scripts/build-dist.mjs --js-only`, and gates the gallery plus REPL/hero smoke.
+  Full-suite, self-compile and benchmark failures belong to their separate gates;
+  they do not block static site updates. Example compilation still must succeed.
 - **npm** — `prepare` builds `dist/` before pack, so the published tarball ships
   `dist/jz.js` + `dist/interop.js` (in `package.json` "files"). `dist/jz.wasm` is the
   self-compile artifact — never served, never published.

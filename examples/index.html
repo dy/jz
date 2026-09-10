@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
-<title>JZ examples</title>
+<title>JavaScript to WebAssembly Examples | JZ</title>
 <meta name="description" content="Live demos written in plain JavaScript and compiled to WebAssembly by jz: fractals, fluids, cellular automata, physics, ray tracing, audio.">
 <link rel="canonical" href="https://jz.js.org/examples/">
-<meta property="og:title" content="JZ examples">
+<meta property="og:title" content="JavaScript to WebAssembly Examples | JZ">
 <meta property="og:description" content="Live demos written in plain JavaScript and compiled to WebAssembly by jz: fractals, fluids, cellular automata, physics, ray tracing, audio.">
 <meta property="og:url" content="https://jz.js.org/examples/">
 <meta property="og:image" content="https://jz.js.org/assets/og.png">
@@ -35,9 +35,13 @@ html, body {
   margin-inline: calc(var(--gx-pad) - var(--padx)) auto;
   padding: 36px var(--padx) 72px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(248px, 100%), 1fr));
   gap: 44px 28px;
 }
+
+.intro { grid-column: 1 / -1; max-width: 60ch; }
+.intro h1 { font-size: 28px; font-weight: 400; margin-bottom: 12px; }
+.intro p { color: var(--soft); font-size: 16px; line-height: 1.5; }
 
 .cell { display: block; text-decoration: none; color: inherit; }
 
@@ -104,11 +108,482 @@ html, body {
   </nav>
 </header>
 
-<main class="grid" id="grid"></main>
+<main class="grid" id="grid">
+  <div class="intro">
+    <h1>JavaScript to WebAssembly examples</h1>
+    <p>Fractals, physics, fluids and audio compiled with JZ. Open a demo to compare JavaScript and WebAssembly, inspect the source, and try it in the playground.</p>
+  </div>
+<!-- Generated from examples.js by npm run build:site. -->
+<!-- gallery:start -->
+  <a class="cell" href="./blackhole/">
+    <div class="shot"><img src="./thumbs/blackhole.webp" width="760" height="468" loading="lazy" alt="Black Hole"></div>
+    <div class="cap">
+      <span class="name">blackhole</span>
+      <span class="desc">Schwarzschild geodesics, ray-traced — the far disk arcs over the shadow, brighter on the approaching limb</span>
+    </div>
+  </a>
+  <a class="cell" href="./nbody/">
+    <div class="shot"><img src="./thumbs/nbody.webp" width="760" height="468" loading="lazy" alt="N-body"></div>
+    <div class="cap">
+      <span class="name">nbody</span>
+      <span class="desc">1024-body gravity — pairwise attraction</span>
+    </div>
+  </a>
+  <a class="cell" href="./boids/">
+    <div class="shot"><img src="./thumbs/boids.webp" width="760" height="468" loading="lazy" alt="Boids"></div>
+    <div class="cap">
+      <span class="name">boids</span>
+      <span class="desc">Reynolds flocking — cohesion, alignment, separation; the cursor is a hawk</span>
+    </div>
+  </a>
+  <a class="cell" href="./fireflies/">
+    <div class="shot"><img src="./thumbs/fireflies.webp" width="760" height="468" loading="lazy" alt="Fireflies"></div>
+    <div class="cap">
+      <span class="name">fireflies</span>
+      <span class="desc">Kuramoto oscillators — neighbour-coupled fireflies lock into traveling waves of synchrony</span>
+    </div>
+  </a>
+  <a class="cell" href="./swarm/">
+    <div class="shot"><img src="./thumbs/swarm.webp" width="760" height="468" loading="lazy" alt="Swarm"></div>
+    <div class="cap">
+      <span class="name">swarm</span>
+      <span class="desc">flies that chase and circle the cursor</span>
+    </div>
+  </a>
+  <a class="cell" href="./dwa/">
+    <div class="shot"><img src="./thumbs/dwa.webp" width="760" height="468" loading="lazy" alt="Dynamic Window"></div>
+    <div class="cap">
+      <span class="name">dwa</span>
+      <span class="desc">a robot rolls out every reachable velocity and drives the arc that races to the goal while clearing drifting obstacles — local motion planning</span>
+    </div>
+  </a>
+  <a class="cell" href="./chladni/">
+    <div class="shot"><img src="./thumbs/chladni.webp" width="760" height="468" loading="lazy" alt="Chladni"></div>
+    <div class="cap">
+      <span class="name">chladni</span>
+      <span class="desc">two standing waves interfere into a plate nodal figure — drag to sweep the mode</span>
+    </div>
+  </a>
+  <a class="cell" href="./mandelbrot/">
+    <div class="shot"><img src="./thumbs/mandelbrot.webp" width="760" height="468" loading="lazy" alt="Mandelbrot"></div>
+    <div class="cap">
+      <span class="name">mandelbrot</span>
+      <span class="desc">escape-time fractal — perturbation theory carries the zoom past 10³⁰×</span>
+    </div>
+  </a>
+  <a class="cell" href="./julia/">
+    <div class="shot"><img src="./thumbs/julia.webp" width="760" height="468" loading="lazy" alt="Julia"></div>
+    <div class="cap">
+      <span class="name">julia</span>
+      <span class="desc">z² + c — click any point to make it c, or let it morph on its own</span>
+    </div>
+  </a>
+  <a class="cell" href="./buddhabrot/">
+    <div class="shot"><img src="./thumbs/buddhabrot.webp" width="760" height="468" loading="lazy" alt="Buddhabrot"></div>
+    <div class="cap">
+      <span class="name">buddhabrot</span>
+      <span class="desc">density of Mandelbrot escape orbits — a luminous nebula accumulates</span>
+    </div>
+  </a>
+  <a class="cell" href="./spectra/">
+    <div class="shot"><img src="./thumbs/spectra.webp" width="760" height="468" loading="lazy" alt="Spectra"></div>
+    <div class="cap">
+      <span class="name">spectra</span>
+      <span class="desc">eigenvalues of a stream of random 6×6 matrices — Bohemian lace melts into a spectral cloud</span>
+    </div>
+  </a>
+  <a class="cell" href="./burningship/">
+    <div class="shot"><img src="./thumbs/burningship.webp" width="760" height="468" loading="lazy" alt="Burning Ship"></div>
+    <div class="cap">
+      <span class="name">burningship</span>
+      <span class="desc">escape-time on |Re|,|Im| — a galleon ablaze below the Mandelbrot set</span>
+    </div>
+  </a>
+  <a class="cell" href="./newton/">
+    <div class="shot"><img src="./thumbs/newton.webp" width="760" height="468" loading="lazy" alt="Newton Fractal"></div>
+    <div class="cap">
+      <span class="name">newton</span>
+      <span class="desc">Newton&#39;s method on z³−1 — basins of attraction meet on a fractal edge</span>
+    </div>
+  </a>
+  <a class="cell" href="./lyapunov/">
+    <div class="shot"><img src="./thumbs/lyapunov.webp" width="760" height="468" loading="lazy" alt="Lyapunov"></div>
+    <div class="cap">
+      <span class="name">lyapunov</span>
+      <span class="desc">Markus–Lyapunov “zircon” — order in gold, chaos in dark</span>
+    </div>
+  </a>
+  <a class="cell" href="./domain-color/">
+    <div class="shot"><img src="./thumbs/domain-color.webp" width="760" height="468" loading="lazy" alt="Domain Coloring"></div>
+    <div class="cap">
+      <span class="name">domain‑color</span>
+      <span class="desc">a complex function as an analytic landscape — zeros sink dark, poles flare bright</span>
+    </div>
+  </a>
+  <a class="cell" href="./fern/">
+    <div class="shot"><img src="./thumbs/fern.webp" width="760" height="468" loading="lazy" alt="Barnsley Fern"></div>
+    <div class="cap">
+      <span class="name">fern</span>
+      <span class="desc">the chaos game on four affine maps grows a fern that sways</span>
+    </div>
+  </a>
+  <a class="cell" href="./sph/">
+    <div class="shot"><img src="./thumbs/sph.webp" width="760" height="468" loading="lazy" alt="Particle Fluid"></div>
+    <div class="cap">
+      <span class="name">sph</span>
+      <span class="desc">smoothed-particle-style liquid — pairwise repulsion &amp; viscosity, the classic O(N²) sum</span>
+    </div>
+  </a>
+  <a class="cell" href="./lbm/">
+    <div class="shot"><img src="./thumbs/lbm.webp" width="760" height="468" loading="lazy" alt="Lattice-Boltzmann"></div>
+    <div class="cap">
+      <span class="name">lbm</span>
+      <span class="desc">lattice-Boltzmann flow — a dye filament wraps into the von Kármán vortex street</span>
+    </div>
+  </a>
+  <a class="cell" href="./cloth/">
+    <div class="shot"><img src="./thumbs/cloth.webp" width="760" height="468" loading="lazy" alt="Cloth"></div>
+    <div class="cap">
+      <span class="name">cloth</span>
+      <span class="desc">Verlet cloth with shear bracing — grab, twist, and let the wind billow it</span>
+    </div>
+  </a>
+  <a class="cell" href="./waves/">
+    <div class="shot"><img src="./thumbs/waves.webp" width="760" height="468" loading="lazy" alt="Waves"></div>
+    <div class="cap">
+      <span class="name">waves</span>
+      <span class="desc">viscous black gestures dissolve into silver caustics — real folds from the 2D wave equation</span>
+    </div>
+  </a>
+  <a class="cell" href="./ocean/">
+    <div class="shot"><img src="./thumbs/ocean.webp" width="760" height="468" loading="lazy" alt="Ocean"></div>
+    <div class="cap">
+      <span class="name">ocean</span>
+      <span class="desc">Tessendorf FFT ocean — a Phillips-spectrum sea synthesized by inverse FFT, moonlit</span>
+    </div>
+  </a>
+  <a class="cell" href="./pendulum/">
+    <div class="shot"><img src="./thumbs/pendulum.webp" width="760" height="468" loading="lazy" alt="Double Pendulum"></div>
+    <div class="cap">
+      <span class="name">pendulum</span>
+      <span class="desc">every pixel an initial angle, shaded by time-to-flip — click a pixel to fly that pendulum live</span>
+    </div>
+  </a>
+  <a class="cell" href="./magnet/">
+    <div class="shot"><img src="./thumbs/magnet.webp" width="760" height="468" loading="lazy" alt="Magnetic Pendulum"></div>
+    <div class="cap">
+      <span class="name">magnet</span>
+      <span class="desc">a damped bob over three magnets — each pixel shaded by which magnet wins; fractal basin boundaries</span>
+    </div>
+  </a>
+  <a class="cell" href="./cradle/">
+    <div class="shot"><img src="./thumbs/cradle.webp" width="760" height="468" loading="lazy" alt="Newton&#39;s Cradle"></div>
+    <div class="cap">
+      <span class="name">cradle</span>
+      <span class="desc">Newton&#39;s cradle — kinetic energy passing through</span>
+    </div>
+  </a>
+  <a class="cell" href="./interference/">
+    <div class="shot"><img src="./thumbs/interference.webp" width="760" height="468" loading="lazy" alt="Interference"></div>
+    <div class="cap">
+      <span class="name">interference</span>
+      <span class="desc">Huygens diffraction — drag from two sources to an N-slit grating</span>
+    </div>
+  </a>
+  <a class="cell" href="./schrodinger/">
+    <div class="shot"><img src="./thumbs/schrodinger.webp" width="760" height="468" loading="lazy" alt="Schrödinger"></div>
+    <div class="cap">
+      <span class="name">schrodinger</span>
+      <span class="desc">a quantum wavepacket diffracts through a double slit and tunnels</span>
+    </div>
+  </a>
+  <a class="cell" href="./hydrogen/">
+    <div class="shot"><img src="./thumbs/hydrogen.webp" width="760" height="468" loading="lazy" alt="Hydrogen Orbitals"></div>
+    <div class="cap">
+      <span class="name">hydrogen</span>
+      <span class="desc">the electron clouds of the hydrogen atom — |ψₙₗₘ|² in phase color, morphing s→p→d→f</span>
+    </div>
+  </a>
+  <a class="cell" href="./erosion/">
+    <div class="shot"><img src="./thumbs/erosion.webp" width="760" height="468" loading="lazy" alt="Erosion"></div>
+    <div class="cap">
+      <span class="name">erosion</span>
+      <span class="desc">hydraulic erosion — rain carves the terrain; flux pools into a river network</span>
+    </div>
+  </a>
+  <a class="cell" href="./plasma/">
+    <div class="shot"><img src="./thumbs/plasma.webp" width="760" height="468" loading="lazy" alt="Plasma"></div>
+    <div class="cap">
+      <span class="name">plasma</span>
+      <span class="desc">FBM domain-warp — the classic flowing plasma</span>
+    </div>
+  </a>
+  <a class="cell" href="./lorenz/">
+    <div class="shot"><img src="./thumbs/lorenz.webp" width="760" height="468" loading="lazy" alt="Lorenz"></div>
+    <div class="cap">
+      <span class="name">lorenz</span>
+      <span class="desc">the butterfly that launched chaos theory — a strange attractor in 3D</span>
+    </div>
+  </a>
+  <a class="cell" href="./attractors/">
+    <div class="shot"><img src="./thumbs/attractors.webp" width="760" height="468" loading="lazy" alt="Attractors"></div>
+    <div class="cap">
+      <span class="name">attractors</span>
+      <span class="desc">de Jong map — millions of iters into luminous curves</span>
+    </div>
+  </a>
+  <a class="cell" href="./raymarcher/">
+    <div class="shot"><img src="./thumbs/raymarcher.webp" width="760" height="468" loading="lazy" alt="Raymarcher"></div>
+    <div class="cap">
+      <span class="name">raymarcher</span>
+      <span class="desc">a soft-shadowed SDF sphere field — Shadertoy on the CPU</span>
+    </div>
+  </a>
+  <a class="cell" href="./metaballs/">
+    <div class="shot"><img src="./thumbs/metaballs.webp" width="760" height="468" loading="lazy" alt="Metaballs"></div>
+    <div class="cap">
+      <span class="name">metaballs</span>
+      <span class="desc">organic blobs — 2D implicit surface marching</span>
+    </div>
+  </a>
+  <a class="cell" href="./voronoi/">
+    <div class="shot"><img src="./thumbs/voronoi.webp" width="760" height="468" loading="lazy" alt="Voronoi"></div>
+    <div class="cap">
+      <span class="name">voronoi</span>
+      <span class="desc">brute-force nearest-site cells, drifting</span>
+    </div>
+  </a>
+  <a class="cell" href="./phyllotaxis/">
+    <div class="shot"><img src="./thumbs/phyllotaxis.webp" width="760" height="468" loading="lazy" alt="Phyllotaxis"></div>
+    <div class="cap">
+      <span class="name">phyllotaxis</span>
+      <span class="desc">seeds at the golden angle — a hair off 137.5° breaks the sunflower</span>
+    </div>
+  </a>
+  <a class="cell" href="./harmonograph/">
+    <div class="shot"><img src="./thumbs/harmonograph.webp" width="760" height="468" loading="lazy" alt="Harmonograph"></div>
+    <div class="cap">
+      <span class="name">harmonograph</span>
+      <span class="desc">two damped pendulums trace precessing Lissajous figures</span>
+    </div>
+  </a>
+  <a class="cell" href="./plume/">
+    <div class="shot"><img src="./thumbs/plume.webp" width="760" height="468" loading="lazy" alt="Plume"></div>
+    <div class="cap">
+      <span class="name">plume</span>
+      <span class="desc">seven lines of trig unfold 40k points into rainbow feathers — tweet-sized generative art</span>
+    </div>
+  </a>
+  <a class="cell" href="./epicycles/">
+    <div class="shot"><img src="./thumbs/epicycles.webp" width="760" height="468" loading="lazy" alt="Fourier Epicycles"></div>
+    <div class="cap">
+      <span class="name">epicycles</span>
+      <span class="desc">a chain of rotating circles redraws a curve — the DFT made visible</span>
+    </div>
+  </a>
+  <a class="cell" href="./bifurcation/">
+    <div class="shot"><img src="./thumbs/bifurcation.webp" width="760" height="468" loading="lazy" alt="Bifurcation"></div>
+    <div class="cap">
+      <span class="name">bifurcation</span>
+      <span class="desc">the logistic map&#39;s period-doubling cascade into chaos</span>
+    </div>
+  </a>
+  <a class="cell" href="./times-table/">
+    <div class="shot"><img src="./thumbs/times-table.webp" width="760" height="468" loading="lazy" alt="Times Tables"></div>
+    <div class="cap">
+      <span class="name">times‑table</span>
+      <span class="desc">chords i→i·k mod N draw cardioids, nephroids and beyond</span>
+    </div>
+  </a>
+  <a class="cell" href="./apollonian/">
+    <div class="shot"><img src="./thumbs/apollonian.webp" width="760" height="468" loading="lazy" alt="Apollonian Gasket"></div>
+    <div class="cap">
+      <span class="name">apollonian</span>
+      <span class="desc">Descartes&#39; circle theorem packs circles within circles, forever</span>
+    </div>
+  </a>
+  <a class="cell" href="./truchet/">
+    <div class="shot"><img src="./thumbs/truchet.webp" width="760" height="468" loading="lazy" alt="Truchet Tiles"></div>
+    <div class="cap">
+      <span class="name">truchet</span>
+      <span class="desc">two random arc tiles assemble into endless flowing labyrinths</span>
+    </div>
+  </a>
+  <a class="cell" href="./penrose/">
+    <div class="shot"><img src="./thumbs/penrose.webp" width="760" height="468" loading="lazy" alt="Penrose Tiling"></div>
+    <div class="cap">
+      <span class="name">penrose</span>
+      <span class="desc">golden-ratio deflation — aperiodic order with five-fold symmetry</span>
+    </div>
+  </a>
+  <a class="cell" href="./hyperbolic/">
+    <div class="shot"><img src="./thumbs/hyperbolic.webp" width="760" height="468" loading="lazy" alt="Hyperbolic Tiling"></div>
+    <div class="cap">
+      <span class="name">hyperbolic</span>
+      <span class="desc">a tessellation of the Poincaré disk — Escher&#39;s Circle Limit</span>
+    </div>
+  </a>
+  <a class="cell" href="./lsystem/">
+    <div class="shot"><img src="./thumbs/lsystem.webp" width="760" height="468" loading="lazy" alt="L-Systems"></div>
+    <div class="cap">
+      <span class="name">lsystem</span>
+      <span class="desc">string-rewriting grammars draw Koch, the dragon, and growing plants</span>
+    </div>
+  </a>
+  <a class="cell" href="./ulam/">
+    <div class="shot"><img src="./thumbs/ulam.webp" width="760" height="468" loading="lazy" alt="Ulam Spiral"></div>
+    <div class="cap">
+      <span class="name">ulam</span>
+      <span class="desc">primes on a square spiral — diagonals of prime-rich quadratics</span>
+    </div>
+  </a>
+  <a class="cell" href="./pascal-sierpinski/">
+    <div class="shot"><img src="./thumbs/pascal-sierpinski.webp" width="760" height="468" loading="lazy" alt="Pascal mod p"></div>
+    <div class="cap">
+      <span class="name">pascal‑sierpinski</span>
+      <span class="desc">Pascal&#39;s triangle mod p — mod 2 is Sierpiński, primes remix it</span>
+    </div>
+  </a>
+  <a class="cell" href="./gauss-primes/">
+    <div class="shot"><img src="./thumbs/gauss-primes.webp" width="760" height="468" loading="lazy" alt="Gaussian Primes"></div>
+    <div class="cap">
+      <span class="name">gauss‑primes</span>
+      <span class="desc">primes of ℤ[i] in the plane — eightfold-symmetric constellations</span>
+    </div>
+  </a>
+  <a class="cell" href="./diffusion/">
+    <div class="shot"><img src="./thumbs/diffusion.webp" width="760" height="468" loading="lazy" alt="Reaction–Diffusion"></div>
+    <div class="cap">
+      <span class="name">diffusion</span>
+      <span class="desc">Gray–Scott — organic coral &amp; labyrinths</span>
+    </div>
+  </a>
+  <a class="cell" href="./bz/">
+    <div class="shot"><img src="./thumbs/bz.webp" width="760" height="468" loading="lazy" alt="BZ Reaction"></div>
+    <div class="cap">
+      <span class="name">bz</span>
+      <span class="desc">Barkley excitable medium — meandering spiral waves; drag to cut fronts into new spirals</span>
+    </div>
+  </a>
+  <a class="cell" href="./game-of-life/">
+    <div class="shot"><img src="./thumbs/game-of-life.webp" width="760" height="468" loading="lazy" alt="Game of Life"></div>
+    <div class="cap">
+      <span class="name">game‑of‑life</span>
+      <span class="desc">Conway&#39;s Life, straight into shared pixel memory</span>
+    </div>
+  </a>
+  <a class="cell" href="./sand/">
+    <div class="shot"><img src="./thumbs/sand.webp" width="760" height="468" loading="lazy" alt="Falling Sand"></div>
+    <div class="cap">
+      <span class="name">sand</span>
+      <span class="desc">falling-sand automaton — pour sand, water &amp; walls</span>
+    </div>
+  </a>
+  <a class="cell" href="./sandpile/">
+    <div class="shot"><img src="./thumbs/sandpile.webp" width="760" height="468" loading="lazy" alt="Sandpile"></div>
+    <div class="cap">
+      <span class="name">sandpile</span>
+      <span class="desc">Bak–Tang–Wiesenfeld sandpile — avalanches self-organize grains into a fractal mandala</span>
+    </div>
+  </a>
+  <a class="cell" href="./lenia/">
+    <div class="shot"><img src="./thumbs/lenia.webp" width="760" height="468" loading="lazy" alt="Lenia"></div>
+    <div class="cap">
+      <span class="name">lenia</span>
+      <span class="desc">Orbium — continuous cellular life gliding through a smooth convolution field</span>
+    </div>
+  </a>
+  <a class="cell" href="./slime/">
+    <div class="shot"><img src="./thumbs/slime.webp" width="760" height="468" loading="lazy" alt="Slime Mold"></div>
+    <div class="cap">
+      <span class="name">slime</span>
+      <span class="desc">Physarum — two rival colonies contest territory with competing transport networks</span>
+    </div>
+  </a>
+  <a class="cell" href="./dla/">
+    <div class="shot"><img src="./thumbs/dla.webp" width="760" height="468" loading="lazy" alt="DLA"></div>
+    <div class="cap">
+      <span class="name">dla</span>
+      <span class="desc">diffusion-limited aggregation — click to race competing crystals for the walker supply</span>
+    </div>
+  </a>
+  <a class="cell" href="./maze/">
+    <div class="shot"><img src="./thumbs/maze.webp" width="760" height="468" loading="lazy" alt="Maze"></div>
+    <div class="cap">
+      <span class="name">maze</span>
+      <span class="desc">recursive-backtracker maze, then BFS solve</span>
+    </div>
+  </a>
+  <a class="cell" href="./wireworld/">
+    <div class="shot"><img src="./thumbs/wireworld.webp" width="760" height="468" loading="lazy" alt="Wireworld"></div>
+    <div class="cap">
+      <span class="name">wireworld</span>
+      <span class="desc">a 4-state CA streaming current through a tiled microchip — bus banks, fan-out trees, clock farms</span>
+    </div>
+  </a>
+  <a class="cell" href="./rule30/">
+    <div class="shot"><img src="./thumbs/rule30.webp" width="760" height="468" loading="lazy" alt="Rule 30"></div>
+    <div class="cap">
+      <span class="name">rule30</span>
+      <span class="desc">Wolfram&#39;s elementary CA — one rule, endless aperiodic complexity</span>
+    </div>
+  </a>
+  <a class="cell" href="./ising/">
+    <div class="shot"><img src="./thumbs/ising.webp" width="760" height="468" loading="lazy" alt="Ising Model"></div>
+    <div class="cap">
+      <span class="name">ising</span>
+      <span class="desc">Metropolis spin flips — domains order &amp; melt through Tc, M(t) charted live</span>
+    </div>
+  </a>
+  <a class="cell" href="./percolation/">
+    <div class="shot"><img src="./thumbs/percolation.webp" width="760" height="468" loading="lazy" alt="Percolation"></div>
+    <div class="cap">
+      <span class="name">percolation</span>
+      <span class="desc">occupy sites at probability p — the spanning cluster snaps in at p_c, P∞(p) charted live</span>
+    </div>
+  </a>
+  <a class="cell" href="./watercolor/">
+    <div class="shot"><img src="./thumbs/watercolor.webp" width="760" height="468" loading="lazy" alt="Watercolor"></div>
+    <div class="cap">
+      <span class="name">watercolor</span>
+      <span class="desc">ink on flowing water — a vortical fluid bath; drops bloom, strokes comb</span>
+    </div>
+  </a>
+  <a class="cell" href="./marble/">
+    <div class="shot"><img src="./thumbs/marble.webp" width="760" height="468" loading="lazy" alt="Marbling"></div>
+    <div class="cap">
+      <span class="name">marble</span>
+      <span class="desc">paper marbling — stacked drops push into concentric stones, combs draw them to swirls</span>
+    </div>
+  </a>
+  <a class="cell" href="./dithering/">
+    <div class="shot"><img src="./thumbs/dithering.webp" width="760" height="468" loading="lazy" alt="Dithering"></div>
+    <div class="cap">
+      <span class="name">dithering</span>
+      <span class="desc">David&#39;s lips from the real scan, a pyramid, a cube, a torus — one shadow-casting relief, seven 1-bit dithers</span>
+    </div>
+  </a>
+  <a class="cell" href="./raytrace/">
+    <div class="shot"><img src="./thumbs/raytrace.webp" width="760" height="468" loading="lazy" alt="Raytrace"></div>
+    <div class="cap">
+      <span class="name">raytrace</span>
+      <span class="desc">per-pixel ray tracing — soft shadows, a mirror sphere, and a refractive glass ball</span>
+    </div>
+  </a>
+  <a class="cell" href="./pathtracer/">
+    <div class="shot"><img src="./thumbs/pathtracer.webp" width="760" height="468" loading="lazy" alt="Path Tracer"></div>
+    <div class="cap">
+      <span class="name">pathtracer</span>
+      <span class="desc">path-traced Cornell box — soft shadows, glass, color bleeding; converges live from noise</span>
+    </div>
+  </a>
+<!-- gallery:end -->
+</main>
 <footer>
   <div class="fwrap">
     <a class="wordmark" href="../" aria-label="jz — home"><img src="../jz.svg" width="40" height="40" alt="jz"></a>
     <nav class="fcol">
+      <a href="../get-started/">get started</a>
       <a href="../repl/">repl</a>
       <a href="../examples/">examples</a>
       <a href="../bench/">bench</a>
@@ -119,24 +594,13 @@ html, body {
       <a href="https://github.com/dy/jz/issues">issues</a>
     </nav>
     <div class="legal">
+      <p class="about">JZ compiles JavaScript to WebAssembly.<br>Audio, graphics and simulations. Same JS.</p>
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
       <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>
   </div>
 </footer>
 
-<script type="module">
-import { examples } from './examples.js'
-
-document.getElementById('grid').innerHTML = examples.map(({ name, blurb }) => `
-  <a class="cell" href="./${name}/">
-    <div class="shot"><img src="./thumbs/${name}.webp" width="760" height="468" loading="lazy" alt="${name}"></div>
-    <div class="cap">
-      <span class="name">${name.replace(/-/g, '‑')}</span>
-      <span class="desc">${blurb}</span>
-    </div>
-  </a>`).join('')
-</script>
 <script type="module" src="../assets/version.js"></script>
 <script type="module" src="../assets/theme.js"></script>
 </body>

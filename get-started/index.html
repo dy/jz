@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(()=>{try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'dark'}catch(e){document.documentElement.dataset.theme='dark'}})()</script>
+<title>Get Started | JZ</title>
+<meta name="description" content="Compile JavaScript to WebAssembly with JZ. Install, run your first WASM function, pass typed arrays, and keep the same JavaScript as a fallback.">
+<link rel="canonical" href="https://jz.js.org/get-started/">
+<meta property="og:title" content="Get Started | JZ">
+<meta property="og:description" content="Your first JavaScript to WebAssembly function. Same source, no type annotations.">
+<meta property="og:url" content="https://jz.js.org/get-started/">
+<meta property="og:image" content="https://jz.js.org/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="../jz.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* Compact technical guide; existing monochrome palette, a single reading column and working code. */
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--font); -webkit-font-smoothing: antialiased; }
+.masthead, main { max-width: var(--colw); margin-inline: calc(var(--gx-pad) - var(--padx)) auto; padding-inline: var(--padx); }
+main { padding-block: 48px 32px; }
+article { max-width: 640px; }
+h1 { margin: 0 0 16px; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; font-weight: 400; }
+h2 { margin: 40px 0 12px; font-size: 22px; font-weight: 400; }
+p { margin: 12px 0; color: var(--soft); font-size: 16px; line-height: 1.6; }
+code { font-family: var(--font-mono); font-size: .85em; }
+pre { margin: 16px 0; padding: 16px; border: 1px solid var(--line); overflow-x: auto; font-size: 14px; line-height: 1.6; }
+pre code { font-size: inherit; }
+.file { margin-bottom: -8px; font-size: 13px; color: var(--dim); }
+@media (max-width: 640px) { .masthead, main { padding-inline: 20px; } main { padding-top: 32px; } pre { font-size: 12px; } }
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="brand"><a class="logo" href="../"><img src="../jz.svg" width="40" height="40" alt="jz"></a><span class="sub">get started</span></div>
+  <nav>
+    <a href="../repl/">repl</a>
+    <a href="../bench/">bench</a>
+    <a class="ver" href="https://www.npmjs.com/package/jz" target="_blank" rel="noopener"><span data-ver>v0.9.2</span> <span class="exp">experimental</span></a>
+    <button class="theme-toggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme">
+      <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg>
+    </button>
+    <a class="gh" href="https://github.com/dy/jz" aria-label="jz on GitHub">
+      <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </nav>
+</header>
+
+<main>
+<article>
+  <h1>Compile JavaScript to WebAssembly</h1>
+  <p>Keep your numeric code in JavaScript. JZ compiles it to WASM, without type annotations. Start with one function.</p>
+
+  <h2>Install</h2>
+  <pre><code>npm install jz</code></pre>
+  <p>Or try the <a class="lnk" href="../repl/">online compiler</a> without installing anything.</p>
+
+  <h2>Compile and call</h2>
+  <p class="file">distance.js</p>
+  <pre><code id="distance-source">export const dist = (x, y) =&gt; (x*x + y*y) ** 0.5</code></pre>
+  <p class="file">run.mjs</p>
+  <pre><code id="distance-run">import { readFile } from 'node:fs/promises'
+import { compile } from 'jz'
+
+const source = await readFile('./distance.js', 'utf8')
+const wasm = compile(source)
+const { instance } = await WebAssembly.instantiate(wasm)
+
+console.log(instance.exports.dist(3, 4)) // 5</code></pre>
+  <p>Run <code>node run.mjs</code> from the folder containing both files. Your fallback is the original file: <code>import { dist } from './distance.js'</code> and call it as ordinary JavaScript.</p>
+  <p>To compile ahead of time, use <code>npx jz distance.js -o distance.wasm</code>. Ship the WASM file; the compiler can stay in your build step.</p>
+
+  <h2>Pass arrays</h2>
+  <p>For arrays, strings and objects, use JZ's wrapper to move values across the JS/WASM boundary.</p>
+  <pre><code id="array-run">import jz from 'jz'
+
+const { exports, memory } = jz(`
+  export const sum = a =&gt; {
+    let total = 0
+    for (const x of a) total += x
+    return total
+  }
+`)
+
+console.log(exports.sum(new Float64Array([1, 2, 3]))) // 6
+memory.reset()</code></pre>
+  <p>Heap allocations accumulate until reset. Reset only after a batch is finished: it invalidates previous WASM pointers and views. For prebuilt modules, use <code>instantiate</code> from <code>jz/interop</code>. See the <a class="lnk" href="https://github.com/dy/jz/blob/main/STABILITY.md#host-memory-contract">memory contract</a>.</p>
+
+  <h2>Choose the right work</h2>
+  <p>JZ is experimental. Start with numeric loops, image processing or simulations; keep DOM and Node APIs in your host app. It implements a JavaScript subset, with <a class="lnk" href="https://github.com/dy/jz#what-differs-from-js">documented semantic differences</a>. Run your existing tests against both versions and measure the whole call, including data transfer.</p>
+  <p><a class="lnk" href="../examples/">Explore examples</a> · <a class="lnk" href="../bench/">Read benchmarks</a> · <a class="lnk" href="https://github.com/dy/jz#usage">API options and reference</a></p>
+</article>
+</main>
+<footer>
+  <div class="fwrap">
+    <a class="wordmark" href="../" aria-label="jz — home"><img src="../jz.svg" width="40" height="40" alt="jz"></a>
+    <nav class="fcol">
+      <a href="../get-started/">get started</a>
+      <a href="../repl/">repl</a>
+      <a href="../examples/">examples</a>
+      <a href="../bench/">bench</a>
+    </nav>
+    <nav class="fcol">
+      <a href="https://github.com/dy/jz">github</a>
+      <a href="https://www.npmjs.com/package/jz">npm</a>
+      <a href="https://github.com/dy/jz/issues">issues</a>
+    </nav>
+    <div class="legal">
+      <p class="about">JZ compiles JavaScript to WebAssembly.<br>Audio, graphics and simulations. Same JS.</p>
+      <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
+      <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
+    </div>
+  </div>
+</footer>
+<script type="module" src="../assets/version.js"></script>
+<script type="module" src="../assets/theme.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@
 
 **JZ** (_javascript zero_) is a distilled JS subset that compiles to fast, minimal WASM.
 
-**[site](https://jz.js.org/)**  /  **[try it](https://jz.js.org/repl/)**  /  **[examples](https://jz.js.org/examples/)**  /  **[benchmarks](https://jz.js.org/bench/)** 
+**[site](https://jz.js.org/)**  /  **[get started](https://jz.js.org/get-started/)**  /  **[try it](https://jz.js.org/repl/)**  /  **[examples](https://jz.js.org/examples/)**  /  **[benchmarks](https://jz.js.org/bench/)** 
 
 | Good for | Not for |
 |---|---|

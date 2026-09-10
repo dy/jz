@@ -11,11 +11,10 @@
 // Wired into the suite → `prepublishOnly` runs it on every publish.
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -26,8 +25,11 @@ const introMatch = replHtml.match(/const INTRO_SRC = `([\s\S]*?)`/)
 test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node globals', () => {
   ok(introMatch, 'INTRO_SRC found in repl/index.html')
   // Fresh browser bundle — the artifact under test is what ships, not the source tree.
-  const built = spawnSync(process.execPath, [join(ROOT, 'scripts/build-dist.mjs'), '--js-only'], { cwd: ROOT, timeout: 120_000 })
+  const built = spawnSync(process.execPath, [join(ROOT, 'scripts/build-dist.mjs'), '--js-only'], { cwd: ROOT, timeout: 120_000, encoding: 'utf8' })
   is(built.status, 0, `dist build: ${built.stderr}`)
+  for (const file of ['dist/jz.js', 'dist/interop.js', 'assets/sprae.js'])
+    ok(built.stdout.includes(`wrote ${file}`), `${file} freshly built for Pages`)
+  ok(!built.stdout.includes('wrote dist/jz.wasm'), 'browser build omits self-compilation')
 
   const driver = `
     // Browser condition: no Node globals. Delete BEFORE the bundle loads so any
@@ -53,9 +55,7 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node g
     if (!Number.isFinite(x) || x === 0) throw new Error('orbit(1000) computed ' + x)
     console.log('ok orbit', x)
   `
-  const drv = join(tmpdir(), `jz-web-smoke-${process.pid}.mjs`)
-  writeFileSync(drv, driver)
-  const run = spawnSync(process.execPath, [drv], { cwd: ROOT, timeout: 120_000, encoding: 'utf8' })
+  const run = spawnSync(process.execPath, ['--input-type=module'], { input: driver, cwd: ROOT, timeout: 120_000, encoding: 'utf8' })
   is(run.status, 0, `browser-sim compile failed:\n${run.stderr || run.stdout}`)
   for (const name of ['repl', 'gridCurrent', 'gridLife', 'orbit'])
     ok(run.stdout.includes(`ok ${name}`), `${name} compiled + ran in browser condition`)
