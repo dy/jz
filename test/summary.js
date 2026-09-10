@@ -354,7 +354,7 @@ test('summary: a module global is the join of every store; the declaration\'s cl
   const m2 = jz(src); m2.exports.init(3); is(m2.exports.at(0), 4)
 })
 
-test('summary: a numeric-compatible parameter arrives as a number (spec/boundary.md)', () => {
+test('summary: a numeric-compatible parameter arrives as a number (README.md#experimental-abi)', () => {
   // `row += W` is a `+` operand, `xi < W` a compare against a number: W is a number and so is `w`.
   const src = `let W = 0, H = 0; export let resize = (w, h) => { W = w; H = h }
     export let area = () => { let row = 0, y = 0; while (y < H) { let x = 0; while (x < W) x++; row += W; y++ } return row }`

@@ -1745,7 +1745,7 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // the reciprocal half at init via 256÷128 long division instead of shipping it).
 // 18335→55: `x` is numeric-compatible (src/summary numeric demand): `x * 2` converts,
 // `x + 1` and the slot reads `p.x + p.y` are `+` operands, which JS converts for
-// every kind but a string or an object (spec/boundary.md, the guarded ABI's numeric
+// every kind but a string or an object (README.md#experimental-abi, the guarded ABI's numeric
 // contract). The parameter arrives as f64, the record is three scalars, and nothing
 // links a string.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)

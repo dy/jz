@@ -345,7 +345,7 @@ test('strict: string-default param rejects a number argument', () =>
 // number) and must compile permissively, same as any other duck-typed
 // parameter jz can't prove a single kind for — trading an optional extra
 // strict-mode diagnostic for never silently miscompiling the closure-shadow
-// shape (STABILITY.md: a missed compile-time reject is far preferable to a
+// shape (README.md: a missed compile-time reject is far preferable to a
 // silent wrong value).
 test('strict: .charCodeAt usage alone does not prove a STRING param (no false-positive reject)', () => {
   ok(compile('export const g = (s) => s.charCodeAt(0); export const a = () => g("x"); export const f = () => g(42)',
@@ -366,7 +366,7 @@ test('strict: .charCodeAt usage alone does not prove a STRING param (no false-po
 // another passes a number) and must compile permissively, same as any
 // other duck-typed parameter jz can't prove a single kind for — trading an
 // optional extra strict-mode diagnostic for never silently miscompiling
-// the makeByteBuf shape (STABILITY.md: a missed compile-time reject is far
+// the makeByteBuf shape (README.md: a missed compile-time reject is far
 // preferable to a silent wrong value).
 test('strict: .push usage alone does not prove an ARRAY param (no false-positive reject)', () => {
   ok(compile('export const g = (a) => { a.push(1); return a[0] }; export const h = () => g([1]); export const f = () => g(7)',
@@ -445,7 +445,7 @@ test('error: strict mode dynamic property access message', () => {
 // silently kept its collapsed raw-NUMBER carrier, so `typeof x`/`x===false`
 // read wrong with NO error at all. Both paths now share
 // rejectAmbiguousBoolIdentity — was ACCEPTED-WRONG, now loudly REJECTS
-// (STABILITY.md's documented v1 limitation: full support needs the tagged-
+// (README.md's documented v1 limitation: full support needs the tagged-
 // Boolean-carrier plan; reject is the correct interim per the semantics
 // contract, "reject rather than silently choose … a value").
 test('error: ambiguous BOOL∪NUMBER identity rejects on plain reassignment too (audit-#12, was silently WRONG)', () => {

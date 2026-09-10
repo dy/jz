@@ -5,7 +5,7 @@
 export default `
 export let __it_open = (v) => {
   if (v == null) throw new TypeError('value is not iterable')
-  // Native collection methods expose snapshot views (see STABILITY.md).
+  // Native collection methods expose snapshot views (see README.md).
   if (v instanceof Map) v = v.entries()
   else if (v instanceof Set) v = v.values()
   let w = v

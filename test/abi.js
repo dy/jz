@@ -1,6 +1,6 @@
 // Raw non-JS consumer ABI — internally locked for each emitted binary.
 // This guards compiler/host agreement, not cross-release stability: until a raw
-// ABI version marker exists, STABILITY.md requires exact-version pinning and keeps
+// ABI version marker exists, README.md requires exact-version pinning and keeps
 // the high-level wrapper as the public embedder contract.
 //
 // A wasmtime/Rust/Go/Zig host runs prebuilt jz wasm with (a) the exported allocator,

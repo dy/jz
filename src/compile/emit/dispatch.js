@@ -500,7 +500,7 @@ function tryConcatBufferDecl(name, init) {
 export const TYPED_HI_MASK = '0xFFFFFFFF00000000'
 
 // Loud identity-escape REJECT for a BOOL∪NUMBER-ambiguous merge landing in a
-// plain (non-boxed) local — STABILITY.md "Known limitations at v1": "Ambiguous
+// plain (non-boxed) local — README.md "Known limitations": "Ambiguous
 // boolean∪number locals whose stored identity would escape reject at compile
 // time (truthiness-only uses compile fine); full support needs a tagged
 // Boolean carrier plan." `expr`'s own VT rule (kind.js hasAmbiguousBoolMerge)

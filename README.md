@@ -336,7 +336,7 @@ Safari, which canonicalize f64 NaNs at the boundary. The carrier,
 current raw ABI; they are regression-tested in [`test/abi.js`](test/abi.js)
 but are not cross-release-stable yet. Pin the exact JZ version when persisting
 prebuilt binaries or writing a raw host; use the wrapper API for values and
-live compile/instantiate flows. See the [stability contract](STABILITY.md).
+live compile/instantiate flows. See the [compatibility contract](#compatibility-contract).
 
 The wrapped `exports` returned by `jz()` or `jz/interop`'s `instantiate()`
 marshal arguments, decode results, and convert WASM throws to `Error` objects:
@@ -359,7 +359,7 @@ exports.sum(new Float64Array([1, 2, 3])) // 6
 
 Structured host writes are checked against the compiled field representation,
 including typed-array storage and numeric refinements. Incompatible values throw
-`TypeError`. See the [host memory contract](STABILITY.md#host-memory-contract)
+`TypeError`. See the [host memory contract](#host-memory-contract)
 for mutation, allocation, and view lifetime rules.
 
 For raw `instance.exports` calls, `memory.String`, `.Array`, typed-array
@@ -548,13 +548,87 @@ a one-command JZ target. See the [native pipeline](scripts/native/README.md).
 
 JZ is experimental and pre-1.0. The supported language and WASM ABI may change;
 pin a version and re-test upgrades. The exact v1 commitments and deliberately
-non-JavaScript machine semantics are listed in the [stability contract](STABILITY.md).
+non-JavaScript machine semantics are listed in the [compatibility contract](#compatibility-contract).
 CI runs the core suite, selected test262 language and built-in tests, benchmark
 checks, and a self-host build.
 
 Adoption is ejectable: remove the JZ build step and the source remains JavaScript.
 
 </details>
+
+## Compatibility contract
+
+JZ is pre-v1. For the first stable major, the documented package entry points,
+high-level value wrappers, CLI commands and flags form the public contract;
+removing them or changing their meaning requires a major version. Error classes
+and codes are stable within that major; message text may improve.
+
+Outside the explicit [dialect differences](#what-differs-from-js), accepted
+programs must preserve JavaScript values, exceptions, operand order and effects
+at every optimization level. Unsupported representations must reject. An
+unlisted silent wrong value or an accepted invalid-parse case blocks release.
+Early-error validation runs before lowering in both the JS and Wasm compiler;
+`test/test262-neg-accepts.json` gates the accepted-invalid ledger.
+
+The supported package surface is `jz`, `jz/interop`, `jz/wasi` and `jz/transform`,
+with TypeScript declarations for each. The root exposes `jz()` (including tagged
+templates), `jz.pool`, `compile`, `compileModule`, `instantiate` and `transform`.
+The interop bridge exposes `instantiate`, `toModule` and enhanced `memory` with
+value allocators, `read`, `wrapVal`, `write`, `alloc`, `allocTyped` and `reset`.
+Inspect payloads and per-pass optimizer configuration remain experimental.
+
+### Host memory contract
+
+Strings use UTF-16 code units; UTF-8 belongs at encoding and I/O boundaries.
+`memory.Object()` and `memory.write()` enforce compiled field kinds, typed
+storage, nested schemas, integer refinements and discriminants used by lowering.
+Incompatible replacements throw `TypeError`. Nullable fields admit their value
+family and nullish values. Modules sharing memory must agree on existing schema
+contracts. Booleans preserve their identity; exposed BigInt fields are tagged,
+including shapes shared by BigInts and numbers. Returned object literals have
+independent storage, so mutating one result cannot change a later result.
+
+Plain arrays retained by the host have open element types. Typed arrays retain
+their storage policy; fresh arrays can specialize while being constructed.
+Allocations round upward to eight-byte alignment without signed address
+truncation. Allocation may grow memory and invalidate views: retain handles and
+reacquire views through `memory.read()`.
+
+Array/object writes stage replacement values before committing contents and
+length. If staging throws, the destination is unchanged; allocations remain
+until reset and user getter effects are not rolled back. `memory.reset()`
+invalidates handles allocated after the reset base; module-initialized state
+remains live. Direct writes and forged pointers bypass these checks.
+
+### Experimental ABI
+
+Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
+no independent version marker and is not frozen. Use `jz/interop.instantiate()`
+or pin the exact compiler version when implementing a raw host.
+
+BigInt arguments require compiler-emitted slot evidence; unsupported slots
+throw `TypeError`. `jz:hostabi` and `jz:i64exp` describe current-toolchain boundary
+policy, but their formats, `jz:fields`, schema IDs, `memory.fieldContracts`,
+NaN-box layouts and allocator exports are experimental. So are private raw
+schema decoding, `_`-prefixed exports, `resolveWatrOpts`' result, and low-level
+interop helpers (`wrap`, `coerce`, bit conversions, pointer/tag accessors and
+NaN constants). Kernel byte identity is not promised across releases.
+
+### Known limitations
+
+- DataView indexed own properties are unsupported; indexed writes reject.
+  Use its setters for bytes. Unextended views have no `.length` or indexed
+  elements; `.byteLength` and `.byteOffset` describe byte bounds.
+- Ambiguous Boolean/Number locals whose stored identity escapes reject;
+  truthiness-only uses compile. Full support needs a tagged Boolean carrier.
+- Rest-parameter BigInt elements lack boundary evidence and reject.
+- Array patterns share lazy pulls, undefined-only defaults and IteratorClose on
+  early completion or binding errors. Strings iterate by Unicode code point;
+  literal arrays may lower directly. Native Map/Set views are snapshots;
+  mutation is not live. Indexed values cannot override their iterator. Object
+  iterator providers and generator machines use their next/return protocol.
+
+Remaining release obligations and measured gates are in [PLAN.md](PLAN.md).
 
 <p align="center">
   <a href="LICENSE">MIT</a>, <a href="https://github.com/krishnized/license/">ॐ</a>

@@ -7,7 +7,7 @@ JZ compiles a distilled JavaScript subset, Crockford's "good parts", into native
 ## Docs
 
 - [README](https://jz.js.org/README.md): install, usage, the supported subset, FAQ
-- [Stability contract](https://jz.js.org/STABILITY.md): what stays fixed across versions
+- [Compatibility contract](https://jz.js.org/README.md#compatibility-contract): what stays fixed across versions
 - [Contributing](https://jz.js.org/CONTRIBUTING.md): architecture, tests, performance invariants
 
 ## Try

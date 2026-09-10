@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `c99ab16`.
+`package.json` and the lockfile pin the public watr source archive at `b401fe2`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -30,6 +30,10 @@ fast tier; link no longer implements these generic body rewrites on the tape.
 Watr pools costly scalar literals after folding and inlining, before outlining
 prices repeated expressions.
 Integer equality to zero uses Wasm eqz in the shared identity sweep.
+Single-use, small-function and wrapper inlining share construction, parameter
+setup, local resets, renaming and returns. Read-only local arguments bypass
+copied parameter storage when argument evaluation cannot write their source.
+Unmapped numeric/flat callee locals retain their call frame.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
 this policy with its existing `hoistConstantPool` option.
 The downstream watr workflow builds and tests with the same current JZ package.
@@ -68,8 +72,8 @@ the call. Interop enforces
 that snapshot on structured ingress and writes, and uses it to decode scalar
 carriers. Retained arrays exposed to the host have open elements because their
 handles carry no element contract. Fresh returned arrays keep their construction
-proofs; typed buffers keep their storage policy. See STABILITY.md for mutation and
-allocation failure behavior.
+proofs; typed buffers keep their storage policy. See the [host memory contract](README.md#host-memory-contract) for mutation
+and allocation failure behavior.
 
 ### Body-fact freshness
 

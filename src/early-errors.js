@@ -1888,7 +1888,7 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
         // position, are confirmed correct in-kernel; restructuring this one
         // out of its if/else-if chain into a standalone check first did not
         // change the outcome either). Left reverted rather than shipping a
-        // mismatch against STABILITY.md's "natively and in jz.wasm" claim;
+        // mismatch against README.md's "natively and in jz.wasm" claim;
         // root-causing which val-fact the self-hosted compiler mistrusts
         // here is compiler-internals work outside this pass's scope.
         if (isNode(lhs) && (lhs[0] === 'let' || lhs[0] === 'const' || lhs[0] === 'var')) {

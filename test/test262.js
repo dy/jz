@@ -1045,12 +1045,12 @@ const EXPECTED_FAIL_PREFIXES = [
 //     genuine BOOL∪NUMBER ambiguous-merge case (`x = false ?? 1`, a raw 0/1
 //     carrier bit-compared against the TRUE/FALSE atom with NO way to
 //     recover which one produced a given 0/1 bit pattern short of the full
-//     tagged-Boolean-carrier plan STABILITY.md's "Known limitations" section
+//     tagged-Boolean-carrier plan README.md's "Known limitations" section
 //     names) previously skipped the identity-escape REJECT entirely on the
 //     plain-reassignment path (`let x; x = …` — a DIFFERENT emitter than
 //     decl-with-init's emitDecl, which already had this REJECT). Both paths
 //     now share rejectAmbiguousBoolIdentity (src/compile/emit.js). Zero
-//     accepted-wrong remains for this shape; STABILITY.md's documented v1
+//     accepted-wrong remains for this shape; README.md's documented v1
 //     limitation is the flip condition for turning REJECT into an exact fix.
 //  5. STILL XFAILS, REJECTS (not the ambiguous-merge shape at all — a THIRD,
 //     narrower gap surfaced by 2 of the audit's logical-or/-and files):
@@ -1065,10 +1065,10 @@ const EXPECTED_FAIL_PREFIXES = [
 //     `x` is never touched and the comparison folds to the correct `true`/
 //     `false` at compile time) is a separate, un-scoped optimizer gap — see
 //     .work/archive/todo.md if picked up.
-// [WRONG-VALUE] tag below = release-blocking per STABILITY.md's semantics
+// [WRONG-VALUE] tag below = release-blocking per README.md's semantics
 // contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
 // matches README "What differs from JS?").
-const BOOL_CARRIER = '[REJECT, pinned — flip condition: STABILITY.md tagged-Boolean-carrier plan] BOOL∪NUMBER ambiguous merge correctly REJECTS (was silently wrong pre-audit-#12; retagged from a stale [WRONG-VALUE] label in fix/wrong-values-2 — confirmed live, all 5 files reject cleanly at compile time, no behavior change) — raw 0/1 carrier vs TRUE/FALSE atom at a mixed ??/||/&&/?: join, no way to recover identity post-collapse without the carrier plan'
+const BOOL_CARRIER = '[REJECT, pinned — flip condition: README.md tagged-Boolean-carrier plan] BOOL∪NUMBER ambiguous merge correctly REJECTS (was silently wrong pre-audit-#12; retagged from a stale [WRONG-VALUE] label in fix/wrong-values-2 — confirmed live, all 5 files reject cleanly at compile time, no behavior change) — raw 0/1 carrier vs TRUE/FALSE atom at a mixed ??/||/&&/?: join, no way to recover identity post-collapse without the carrier plan'
 // Audit-#12 classification pass (this commit) — every entry below is tagged
 // by OUTCOME, not just symptom, so a category-(iii) accepted-wrong value can
 // never hide behind a plausible-sounding xfail reason again:
@@ -1079,7 +1079,7 @@ const BOOL_CARRIER = '[REJECT, pinned — flip condition: STABILITY.md tagged-Bo
 //                at host boundaries). Acceptable.
 //   [WRONG-VALUE] — accepted, ran, and produced a plausible-looking value that
 //                silently differs from JS with NO README coverage. Release-
-//                blocking per STABILITY.md's semantics contract; NOT fixed by
+//                blocking per README.md's semantics contract; NOT fixed by
 //                this commit (out of the two assigned families — Family A
 //                rest-destructure isArray, Family B BOOL_CARRIER — surfaced
 //                here as a byproduct of walking the full xfail list). Pinned
@@ -1155,7 +1155,7 @@ const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed th
 //    the dead reassignment after the early return stays exactly as
 //    unreached as spec requires. This file now PASSES outright — removed.
 //  - coalesce/* (BOOL_CARRIER, below): already correctly REJECTS (confirmed
-//    live, all 5 files, via the tagged-Boolean-carrier STABILITY.md pin) —
+//    live, all 5 files, via the tagged-Boolean-carrier README.md pin) —
 //    the [WRONG-VALUE] tag itself was stale (the doc comment even says "now
 //    correctly REJECTS" in its own text). Retagged [REJECT] below, no
 //    behavior change.
