@@ -672,3 +672,38 @@ test('init: exports self-arm without _initialize (raw-instance _clear + grow)', 
   ok(ex.memory.buffer.byteLength > 65536, 'memory grew on demand')
   is(b2f(call2(ex.poke, 14999, 42)), 42, 'far element writes land')
 })
+
+
+test('WASI clocks own scratch storage without overwriting static strings', () => {
+  const label = 'persistent UTF-16: Ā 😀'
+  for (const optimize of [0, 1, 2, 3]) {
+    const captured = [], imports = wasi({ write: (_, text) => captured.push(text) })
+    const mod = new WebAssembly.Module(compile(`
+      const label = ${JSON.stringify(label)}
+      export let f = () => {
+        if (Date.now() > 0 && performance.now() >= 0) console.log(label)
+      }`, { host: 'wasi', optimize }))
+    const inst = new WebAssembly.Instance(mod, imports)
+    imports._setMemory(inst.exports.memory)
+    inst.exports._initialize?.()
+    inst.exports.f()
+    inst.exports.f()
+    is(captured.join(''), `${label}\n${label}\n`, `O${optimize}: clocks preserve literals across calls`)
+  }
+})
+
+
+test('WASI integer output preserves signed and unsigned 32-bit values', () => {
+  for (const optimize of [0, 1, 2, 3]) {
+    const captured = [], imports = wasi({ write: (_, text) => captured.push(text) })
+    const mod = new WebAssembly.Module(compile(
+      'export let f = n => { n |= 0; console.log(n, n >>> 0, `signed=${n} unsigned=${n >>> 0}`) }',
+      { host: 'wasi', optimize }))
+    const inst = new WebAssembly.Instance(mod, imports)
+    imports._setMemory(inst.exports.memory)
+    const exps = adaptI64(mod, inst.exports)
+    for (const n of [-2147483648, -1, 0, 2147483647]) exps.f(n)
+    const expected = [-2147483648, -1, 0, 2147483647].map(n => `${n} ${n >>> 0} signed=${n} unsigned=${n >>> 0}\n`).join('')
+    is(captured.join(''), expected, `O${optimize}: numeric output agrees with JS`)
+  }
+})

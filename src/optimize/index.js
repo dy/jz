@@ -17,7 +17,6 @@
  *   fusedRewrite      — peephole rebox folds + inline ptr/is_* helpers + memarg-offset fold (one walk)
  *   sortLocalsByUse   — reorder local decls so hot ones get 1-byte LEB128 indices; a tape pass, run by src/link
  *   specializeMkptr   — `(call $__mkptr (i32.const T) (i32.const A) X)` → per-combo specialized helper (~4 B/site)
- *   hoistConstantPool — frequently-repeated f64.const values → globals (~7 B/reuse); a tape pass, run by src/link
  *
  * Per-function passes run over sec.funcs + sec.stdlib + sec.start.
  * Whole-module passes see the full function list + globals map.
@@ -58,10 +57,6 @@ export {
   hoistGlobalPtrOffset, collectReachableMemoryWrites, hoistStableGlobalConstLoads,
   guardMaskedVectorSuffix, hoistLoopGlobalPtrOffset, promoteGlobals,
 } from './globals.js'
-
-// Whole-module f64 constant pooling (hoistConstantPool) — see
-// src/optimize/const-pool.js for the full doc.
-export { hoistConstantPool } from './const-pool.js'
 
 // Call-site specialization by literal-arg signature (specializeMkptr) — see
 // src/optimize/specialize-mkptr.js for the full doc.

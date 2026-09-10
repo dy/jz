@@ -8,7 +8,6 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { T, NONE, resetTape, fromWat, toWat, verify, walk, intern, node, str, push, replace, reserve } from '../src/ir/tape.js'
-import { hoistConstantPool } from '../src/optimize/const-pool.js'
 import { treeshake } from '../src/link/treeshake.js'
 import { orderFuncs } from '../src/link/order.js'
 import { pruneUnusedThrowRuntime } from '../src/link/throw-runtime.js'
@@ -138,7 +137,7 @@ test('tape: replace keeps the child position', () => {
   is(verify(root), null)
 })
 
-test('const pool on the tape: a literal used twice pools, hottest first, exact bits, functions only', () => {
+test('shared late constant pool: profitable literals, exact bits and tier policy', () => {
   const wat = compile(`export let f = (x) => x * 0.041666666666666664 + 0.041666666666666664 * x + 2.5 * x + 2.5 + 2.5`, { wat: true, optimize: 2 })
   ok(/global \$__fc0 f64\n\s+\(f64\.const 2\.5\)/.test(wat), 'the three-use literal takes index 0')
   ok(/global \$__fc1 f64\n\s+\(f64\.const 0\.041666666666666664\)/.test(wat), 'the two-use literal keeps its 17 digits')
@@ -147,36 +146,6 @@ test('const pool on the tape: a literal used twice pools, hottest first, exact b
   ok(!/__fc/.test(one), 'a single use is not pooled')
   const off = compile(`export let f = (x) => x * 2.5 + 2.5`, { wat: true, optimize: 3 })
   ok(!/__fc/.test(off), 'the speed tier leaves literals inline')
-})
-
-test('const pool on the tape: function bodies only, declaration placement, exact-bit keys', () => {
-  const pool = (m) => { resetTape(); const root = fromWat(m); hoistConstantPool(root); is(verify(root), null); return toWat(root) }
-  // A global initializer is not a site: it keeps its literal and is not counted.
-  const m1 = pool(['module',
-    ['global', '$g', ['mut', 'f64'], ['f64.const', 2.5]],
-    ['func', '$f', ['drop', ['f64.const', 2.5]], ['drop', ['f64.const', 2.5]]],
-  ])
-  ok(same(m1, ['module',
-    ['global', '$g', ['mut', 'f64'], ['f64.const', 2.5]],
-    ['global', '$__fc0', ['mut', 'f64'], ['f64.const', 2.5]],
-    ['func', '$f', ['drop', ['global.get', '$__fc0']], ['drop', ['global.get', '$__fc0']]],
-  ]), 'the pool global goes after the last global; the initializer literal stays')
-  // No globals: the declaration goes before the first function.
-  const m2 = pool(['module', ['memory', 1], ['func', '$f', ['drop', ['f64.const', 'nan:0x8']], ['drop', ['f64.const', 'nan:0x8']]]])
-  ok(same(m2, ['module', ['memory', 1],
-    ['global', '$__fc0', ['mut', 'f64'], ['f64.const', 'nan:0x8']],
-    ['func', '$f', ['drop', ['global.get', '$__fc0']], ['drop', ['global.get', '$__fc0']]],
-  ]), 'a string literal pools by its text')
-  // Keys are the 64 bits: -0 and 0 are distinct values, and so are NaN payloads.
-  const m3 = pool(['module', ['func', '$f',
-    ['drop', ['f64.const', 0]], ['drop', ['f64.const', -0]], ['drop', ['f64.const', 0]], ['drop', ['f64.const', -0]],
-    ['drop', ['f64.const', NaN]], ['drop', ['f64.const', NaN]]]])
-  const globals = m3.filter(n => n[0] === 'global')
-  is(globals.length, 3, 'three pools: +0, -0, NaN')
-  ok(Object.is(globals[0][3][1], 0) && Object.is(globals[1][3][1], -0), 'first-seen order among equal counts, exact signs')
-  // A single use and an empty module leave the tape untouched.
-  ok(same(pool(['module', ['func', '$f', ['drop', ['f64.const', 1.5]]]]), ['module', ['func', '$f', ['drop', ['f64.const', 1.5]]]]))
-  ok(same(pool(['module']), ['module']))
 })
 
 const onTape = (m, f) => { resetTape(); const root = fromWat(m); const r = f(root); is(verify(root), null); return [toWat(root), r] }

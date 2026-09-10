@@ -12,7 +12,7 @@
  *
  * @module optimize/watr-tail
  */
-import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, localReuse, bool, conditions } from 'watr/optimize'
+import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
@@ -126,6 +126,7 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   if (cfg.propagateLocals === false && watrOpts.propagate === undefined) watrOpts.propagate = false
   if (watrOpts.conditions === undefined) watrOpts.conditions = cfg.chainConditions !== false
   if (watrOpts.bool === undefined) watrOpts.bool = cfg.fusedRewrite !== false
+  if (watrOpts.poolConstants === undefined) watrOpts.poolConstants = cfg.hoistConstantPool !== false
   return watrOpts
 }
 
@@ -453,7 +454,8 @@ export function watrTail(module, cfg, {
     : time('watCleanup', () => {
       if (cfg.chainConditions !== false) conditions(legalized)
       const locals = cfg.propagateLocals !== false ? localReuse(mergeLocals(propagate(legalized))) : legalized
-      return cfg.fusedRewrite !== false ? mergeBlocks(vacuum(bool(locals))) : locals
+      const cleaned = cfg.fusedRewrite !== false ? mergeBlocks(vacuum(bool(locals))) : locals
+      return cfg.hoistConstantPool !== false ? poolConstants(cleaned) : cleaned
     })
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')

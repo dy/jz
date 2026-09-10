@@ -6,8 +6,7 @@
  * (treeshake), the custom sections the interop layer reads describe what
  * survived, the throw runtime goes when nothing can catch. Then the
  * encoding: locals order by use when watr does not follow to order them,
- * functions by call count, local names lose their scope suffixes, repeated
- * literals pool into globals.
+ * functions by call count, local names lose their scope suffixes.
  *
  * `facts` are the compile's whole-module facts, passed explicitly: the
  * resolved optimize config, the user's function and global names, the
@@ -28,7 +27,6 @@ import { fold } from '../optimize/fold.js'
 import { foldLowWordMasks } from '../optimize/low-word-mask.js'
 import { arenaRewind } from '../optimize/arena-rewind.js'
 import { sortLocalsByUse } from '../optimize/sort-locals.js'
-import { hoistConstantPool } from '../optimize/const-pool.js'
 
 const DBG = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
@@ -57,7 +55,6 @@ export function link(module, facts) {
   if ((!cfg || cfg.sortLocalsByUse !== false) && !(cfg && cfg.watr)) sortLocalsByUse(root)
   orderFuncs(root, callCount)
   stripLocalRenameSuffixes(root)
-  if (!cfg || cfg.hoistConstantPool !== false) hoistConstantPool(root)
   if (DBG) check(root, 'after link')
   return toWat(root)
 }

@@ -18,11 +18,10 @@ bounded callback work and reliable installation are the release outcome.
   `await using`, and initialized `for await` bindings are validated before DCE.
   Full language/builtin runs pass 3,151/869 cases with zero failures; the
   accepted-negative ledger is zero. Keep those gates and pass floors intact.
-- **Size:** callback lowering across runtime method arms reduces Watr from
-  330,237 to 305,757 bytes before this review. Enforced host contracts bring
-  the current encoder fixture to 306,790 bytes; its 300,000-byte budget remains
-  open. Current size losses to AssemblyScript: bezfit, dispatch, fft, immutable, lz, sdf, shapes,
-  slices, tokenizer and wordcount. Keep benchmark sources and thresholds fixed.
+- **Size:** shared late pooling reduces the encoder fixture from 306,936 to
+  304,983 bytes; the 300,000-byte budget remains open. FFT is 1,726 bytes
+  against AssemblyScript's 1,758. The focused run still loses to AssemblyScript
+  on bezfit, sdf, shapes, slices and wordcount. Keep sources and thresholds fixed.
 - **Speed/evidence:** committed benchmark results predate the current compiler.
   Refresh complete rival coverage after fixes, on a machine within the existing
   load/swap limits. A loaded development run cannot certify leadership. The
@@ -69,6 +68,14 @@ The shared engine neither reads nor stamps JZ metadata. Both JZ maturity points
 and watr's post-inline invocation use the same engine. Loop vectorization and
 SLP remain distinct.
 
+Scalar constant pooling now runs in Watr after folding and inlining, before
+outlining prices repeated expressions; JZ’s
+separate tape implementation is removed. Propagation folds whole expressions
+through known locals when the encoded result is no larger. The shared pool
+preserves exact bits and imported-global indices and accounts for signed
+immediate widths. It remains disabled at the speed tier.
+
+
 JZ now reuses watr's memory-write classifier. Narrow, floating, 64-bit, SIMD,
 bulk and atomic writes block mutable helper reads; unknown targets block
 alias-dependent motion. Buffer-origin analysis follows single-definition locals
@@ -92,10 +99,16 @@ shapes no longer require raw-bit decoding guesses. Field-type and numeric
 contracts remain, preserving typed class methods. Host construction and writes
 preserve boolean identity. Returned literals allocate independently; top-level
 initializers outside loops keep static storage. Field metadata omits absent
-refinements. Full core verification reached 4,489 passes and one obsolete static
-allocation expectation; the corrected module-initialization distinction passes
-all 98 minimal-output and 76 host-memory tests. The final matrix and bootstrap
-still need verification on the combined optimizer revision.
+refinements. Final combined matrix/bootstrap verification is in progress.
+The preceding full run passed 4,488 cases with one size regression; the
+shared pass-order correction passes all 98 minimal-output tests.
+
+WASI clocks now reserve their own eight-byte static slot instead of overwriting
+address zero. Integer console output preserves signed and unsigned 32-bit
+values using the existing decimal formatters. All 48 focused WASI tests pass.
+The alpha native-lowering probe now has a valid checksum; the current paired
+run puts wasm2c at 0.92× the V8 Wasm time. This development sample does not
+replace the full committed performance evidence.
 
 - The focused review’s reproduced boundary defects are repaired: standalone
   allocations round upward, recursive writes stage before acquiring their view,

@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `3f89641`.
+`package.json` and the lockfile pin the public watr source archive at `5d3a9d9`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -27,6 +27,10 @@ Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 Condition chaining and boolean simplification also run in watr, including the
 fast tier; link no longer implements these generic body rewrites on the tape.
+Watr pools costly scalar literals after folding and inlining, before outlining
+prices repeated expressions.
+Known-local arithmetic folds in the same propagation pass; JZ only selects
+this policy with its existing `hoistConstantPool` option.
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
@@ -101,7 +105,7 @@ jzify/          pre-compile desugar (index.js orchestrator + phase modules)
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
-  optimize/     WAT-array passes + vectorize.js; const-pool, arena-rewind, sort-locals, low-word-mask are tape passes run by link
+  optimize/     WAT-array passes + vectorize.js; arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
   summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites
   ir/           tape.js, the IR tape (parallel typed arrays); the WAT-array helpers until emit builds the tape

@@ -29,6 +29,7 @@ import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
+import { dataAlign, dataLen, dataPush } from '../src/static-data.js'
 
 // A template literal (`a${x}b`) lowers to ['strcat', ...parts] in prepare; a
 // `'a=' + x + ' b=' + y` chain is a left-leaning `+` tree rooted at a string
@@ -63,7 +64,7 @@ const setupWasi = (ctx) => {
   deps({
     __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_int', '__write_byte', '__static_str'],
     __write_num: ['__ftoa', '__write_str'],
-    __write_int: ['__itoa', '__mkstr', '__write_str'],
+    __write_int: ['__itoa_s', '__mkstr', '__write_str'],
     __write_str: ['__utf8_encode', '__str_length'],
     __read_stdin: ['__utf8_decode'],
   })
@@ -99,7 +100,10 @@ const setupWasi = (ctx) => {
     (local $buf i32)
     (local.set $buf (call $__alloc (i32.const 24)))
     (call $__write_str (local.get $fd)
-      (i64.reinterpret_f64 (call $__mkstr (local.get $buf) (call $__itoa (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf))))))`
+      (i64.reinterpret_f64 (call $__mkstr (local.get $buf)
+        (if (result i32) (f64.lt (local.get $val) (f64.const 0))
+          (then (call $__itoa_s (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf)))
+          (else (call $__itoa (i32.trunc_sat_f64_u (local.get $val)) (local.get $buf))))))))`
   ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val i64)
     (local $type i32) (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $val)))
@@ -215,9 +219,15 @@ const setupWasi = (ctx) => {
 
   reg('Date.now', {
     deps: ['__time_ms'],
-    wat: `(func $__time_ms (param $clock i32) (result f64)
-    (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const 0)))
-    (f64.div (f64.convert_i64_u (i64.load (i32.const 0))) (f64.const 1000000)))`,
+    wat: () => {
+      // The static pool may start at zero. Give the clock its own eight bytes.
+      dataAlign(8)
+      const off = dataLen()
+      dataPush(new Uint8Array(8))
+      return `(func $__time_ms (param $clock i32) (result f64)
+        (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const ${off})))
+        (f64.div (f64.convert_i64_u (i64.load (i32.const ${off}))) (f64.const 1000000)))`
+    },
     emit: () => {
       needClock()
       return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')

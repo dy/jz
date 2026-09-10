@@ -24,9 +24,8 @@ The follow-up keeps the existing pipeline and implements the review's bounded wo
   addresses above 2 GiB, and the host-to-Wasm allocator handoff are pinned.
 - **Finding 2:** compiler-emitted `jz:fields` contracts constrain host construction
   and writes. They cover value families, typed layouts, nested/nullable fields,
-  integer refinements and discriminants consumed by lowering. The same plain
-  data decodes boolean and raw BigInt field carriers. Ambiguous raw BigInt
-  unions reject at the host boundary instead of guessing the stored bits. Shared-memory modules reject
+  integer refinements and discriminants consumed by lowering. Host-exposed BigInt fields use tagged storage, including mixed Number/BigInt
+  shapes; the plain metadata preserves boolean identity and validates refinements. Shared-memory modules reject
   conflicting contracts. Retained arrays admit host element changes; fresh arrays
   keep their construction-time specialization. Interop remains compiler-free.
 - **Finding 3:** recursive replacement values stage before destination stores;
@@ -54,7 +53,18 @@ identity is preserved by the generic host marshaller. Fresh returned literals
 allocate separately; module initialization outside loops still permits static
 data. The field metadata encodes only present refinements. These changes require
 matching compiler/interop revisions; the historical verification below predates
-this follow-up. Final matrix/bootstrap verification remains pending.
+this follow-up. Final combined matrix/bootstrap verification remains pending.
+
+The generic scalar pool now belongs to Watr, after folding/inlining and before
+outlining. JZ's tape implementation is removed. Watr's 333 optimizer/propagation
+tests and full JS/Wasm suites pass, including exact bits, imported-global indices
+and the pooling/outline interaction. The size ratchets remain unchanged.
+
+A later benchmark probe exposed a separate ownership defect: WASI clocks wrote
+to address zero, which may hold static literals. The clock now owns eight bytes
+in the static pool; no per-call allocation is added. Integer output also uses
+the existing signed/unsigned formatters correctly. The 48 focused WASI tests
+pass, and the alpha native benchmark produces its expected checksum.
 
 ## Architectural assessment
 
