@@ -54,6 +54,7 @@ const SAMPLES = [
   ['typed-view-iterator', 'function* marker() {} function g([x]) { return x } export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); d.setUint8(1, 23); return g(new Int8Array(b, 1, 2)) }', 23],
   ['dataview-identity', 'export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); return (d instanceof DataView ? 1 : 0) + (d instanceof Int8Array ? 2 : 0) }', 1],
   ['dataview-properties', 'export let main = () => { let d = new DataView(new ArrayBuffer(4)); d.setUint8(0, 71); return [d.length, d[0], d.byteLength, d.getUint8(0)] }', [undefined, undefined, 4, 71]],
+  ['iterator-destructuring', `export let main = () => { let [a, b, ...c] = '😀éab'; return a + '|' + b + '|' + c.join('') }`, '😀|é|ab'],
   ['arithmetic',  'export let main = () => 3 + 4 * 5', 23],
   ['function',    'let inc = x => x + 1; export let main = () => inc(10)', 11],
   ['loop',        'export let main = () => { let s = 0; for (let i = 0; i < 10; i++) s += i; return s }', 45],

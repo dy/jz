@@ -6,11 +6,13 @@ bounded callback work and reliable installation are the release outcome.
 
 ## Release gates
 
-- **Functional verification:** JZ `b0a6e9c5` passes default/O0/O3/WASI and
-  extended fuzz in CI. The local default suite passes 4,491 tests with one
-  skip (62,961 assertions). Self-hosted correctness passes 32 tests; recursive
-  self-compilation, types, examples, Watr and Pages builds pass. Timing is a
-  separate failing gate.
+- **Functional verification:** the iterator/shared-optimizer follow-up passes
+  4,505 default-suite tests with one skip (63,105 assertions), 34 self-hosting
+  checks (296 assertions), and 150 focused iterator/destructuring/numeric checks
+  at each of O0, O3 and WASI. The 254 optimizer checks and all ten deterministic
+  loop-work ratchets pass. Watr's rebuilt Wasm passes its core, propagation and
+  specification suites. The complete new CI matrix remains to run; the previous
+  `b0a6e9c5` matrix and extended fuzz passed. Timing remains a separate red gate.
 - **Conformance:** function reflection consistently rejects on the known builtin
   and Promise paths. Property descriptors remain a documented limitation; the
   generated array-spread test now has the same classification as its call/new
@@ -18,14 +20,15 @@ bounded callback work and reliable installation are the release outcome.
   `await using`, and initialized `for await` bindings are validated before DCE.
   Full language/builtin runs pass 3,151/869 cases with zero failures; the
   accepted-negative ledger is zero. Keep those gates and pass floors intact.
-- **Size:** the encoder backstop measures 304,947 bytes against its 300,000-byte
-  limit. FFT is 1,726 bytes against AssemblyScript's 1,758. Remaining measured
-  AssemblyScript size losses: bezfit, immutable, sdf, shapes, slices, tokenizer
-  and wordcount. Keep sources and thresholds fixed.
-- **Speed/evidence:** the final local benchmark run passes 245 checks and fails
+- **Size:** the current encoder measures 300,595 bytes against the unchanged
+  300,000-byte limit, down from the preceding focused 305,301-byte build.
+  Native collection coverage is included. FFT is 1,726 bytes against
+  AssemblyScript's 1,758. Seven AssemblyScript comparisons remain red:
+  bezfit, immutable, sdf, shapes, slices, tokenizer and wordcount.
+- **Speed/evidence:** the preceding local benchmark run passes 245 checks and fails
   21: runtime gaps, seven AssemblyScript size losses, the encoder budget,
   performance fuzz, two examples, missing TinyGo coverage and stale native
-  lowering evidence. The final self-compile timing run remains red: best warm
+  lowering evidence. The preceding self-compile timing run remains red: best warm
   1.332× against 1.03×; fresh 1.166× against 0.99×.
   TinyGo's local 0.34 installation has a broken root lookup and rejects Go 1.26.
   An isolated official 0.42.0 run builds all 44 comparable cases: 43 checksums
@@ -84,9 +87,9 @@ indexing and motion of allocator-global reads.
 Executable regressions cover these effects, zero-trip loops, signed-zero
 constants, shared AST ancestors, and temporaries read outside the loop.
 
-The compiler is 15,417,678 bytes, 43,116 more than the preceding revision; the
-consolidation and correctness fixes do not establish a size or speed win.
-Recursive self-compilation produces a working 14,893,075-byte compiler.
+The earlier consolidation produced a 15,417,678-byte compiler and a working
+14,893,075-byte recursively compiled child. Those are historical artifacts;
+compare fresh private builds under the same profile when attributing growth.
 Measurements were made on a loaded development machine and are not release
 certification. A six-case profile still attributes about 21% of samples to string hashing,
 equality and dynamic property reads. Follow measured lookup/lowering costs;
@@ -127,8 +130,12 @@ replace the full committed performance evidence.
   self-hosting tests and 869 builtin conformance cases. The focused Watr size
   harness grows from 304,983 to 305,301 bytes (+318); the size target remains
   open. These harness figures differ from the full benchmark backstop above.
-- Array parameter destructuring uses iterator semantics. Declaration and assignment
-  array patterns still use indexed lowering; keep that difference explicit.
+- Parameters, declarations and assignments share iterator-pattern lowering.
+  Pulls/defaults remain ordered; early completion and binding errors close the
+  iterator. Assignment returns its source and snapshots member references before
+  pulling. Literal arrays retain direct lowering. Indexed iterators hold their
+  cursor directly, avoiding a next closure and per-step result allocation.
+  Native Map/Set views retain the existing snapshot limitation (STABILITY.md).
 - UTF-16 strings are implemented throughout the value ABI, including lone
   surrogates. UTF-8 is confined to encoding/I/O and Wasm metadata; binary data
   remains bytes. The six-ASCII-unit short-string representation is unchanged.
@@ -137,15 +144,13 @@ replace the full committed performance evidence.
 
 ## DSP proof
 
-The gain fixture in `@audio/compile` passes 132 checks per compiler, including
-parameter queues, overlapping instances and 12,000 blocks without observed heap
-growth. The offline Web Audio render matches Node's PCM checksum. Gain is stateless:
-next use a filter or compressor with the same JS oracle under both compilers.
-JZ now also checks a stateful filter against JS over 200 blocks with reset,
-bit-exact output and stable page count. That host-memory test does not validate
-the VST lifecycle. Exercise variable block sizes, persistent state, instance
-teardown and bounded allocation in both plugin backends before generalizing
-`@audio/compile-vst`.
+The gain fixture in `@audio/compile` passes 132 checks per compiler over 12,000
+blocks. The new `--stateful` mode passes 12,438 checks with each compiler:
+a stereo one-pole closure agrees exactly with JS across variable blocks, live
+parameters, overlapping instances, close/reopen and last-close runtime reset.
+Both callback heaps remain fixed. The native adapter passes the actual frame
+count and reads JZ's generated argument ABI. This is fixture evidence; the public
+`@audio/compile-vst` builder remains to be implemented.
 
 On the M4 Max gain fixture, median 128-frame stereo blocks measured 0.625 µs with
 JZ and 1.166 µs with Porffor, including native hosting and copies. This demonstrates
@@ -153,3 +158,45 @@ fixture feasibility, not a universal ranking or real-time guarantee. Porffor kee
 its shared arena until the final instance closes; concurrent audio threads and
 within-block automation remain unvalidated. Compiler selection is a build option
 (the fixture supports `--compiler=jz|porffor`), not audio-module metadata.
+
+## Next reductions from the WAT inspection
+
+- Watr `c99ab16` folds integer equality to zero in its existing identity sweep
+  and recognizes the canonical zero arm during dense-switch lowering. JZ’s
+  duplicate fold and bare-local exception are removed. No pass was added.
+- In `slices`, inlining leaves five copies of unchanged caller arguments inside
+  the outer loop. Eliminate those through existing inline/local propagation,
+  with argument-order and local-write proofs; do not add another cleanup pass.
+- In `shapes`, JZ inlines a large dispatch body and reloads/divides the array
+  header length each outer iteration. AssemblyScript keeps dispatch out of line
+  and encodes the length from its typed source. Improve size-aware inlining and
+  propagate JZ's own length proof; keep the benchmark source unchanged.
+- Loop SIMD uses affine addresses, lane purity, alias/dependence checks and a
+  scalar tail. SLP is separate. Narrower butterfly, channel-reduction and
+  mixed-lane recognizers remain; dot SLP still assumes the emitter's four-term
+  unroll. These are structural templates, not benchmark-name dispatch, but they
+  are not an arbitrary-expression SLP optimizer. Fold them into shared lifting
+  only when equivalence tests demonstrate a deletion. The ten loop-op ratchets
+  pass; they do not certify universal runtime leadership over V8.
+
+The audit confirms general affine lane-local vectorization with dependence/alias
+checks and scalar tails. It also finds narrower recognizers (butterfly, channel
+reduction, tone mapping) and a four-term dot-product SLP matcher. These are
+structural patterns, but not arbitrary-expression SLP. Preserve the common
+address/lane machinery and fold overlapping recognizers when a measured gap
+justifies it; do not describe every recognizer as general vectorization.
+
+Fresh self-hosting passes 34 checks (296 assertions). With the same pinned Watr
+and build profile, the preceding source builds to 15,424,208 bytes and this
+source to 15,426,119: +1,911 bytes (0.012%). The small correctness cost here
+should not be confused with differences between stale dist artifacts.
+
+The current focused size run retains seven AssemblyScript losses: bezfit
+3,261/3,017; immutable 1,482/1,481; sdf 2,260/2,209; shapes 1,875/1,695;
+slices 1,660/1,657; tokenizer 1,574/1,551; wordcount 3,786/3,480 bytes.
+Binaryen’s `-Oz` also shrinks several JZ outputs (including immutable to 1,415
+and shapes to 1,821); investigate those remaining generic reductions. It grows
+the encoder to 340,731, so adopting its entire pipeline is not supported.
+The claims audit still rejects the stale snapshot, including V8 losses on
+jessie and watr. No universal V8 lead, final timing result or v1 approval follows
+from this inspection. Benchmark inputs, thresholds and reference rows are unchanged.

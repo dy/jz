@@ -1,4 +1,4 @@
-// Shared source fixture for the eq-zero peephole's IR, full-pipeline, and
+// Shared source fixture for the shared eq-zero fold's IR, full-pipeline, and
 // native-vs-self-hosted regressions. Five same-scrutinee arms are the minimal
 // dense-switch chain accepted by the downstream table builder; the two value
 // functions are deliberately outside that chain and cover both zero-operand

@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `5d3a9d9`.
+`package.json` and the lockfile pin the public watr source archive at `c99ab16`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -29,6 +29,7 @@ Condition chaining and boolean simplification also run in watr, including the
 fast tier; link no longer implements these generic body rewrites on the tape.
 Watr pools costly scalar literals after folding and inlining, before outlining
 prices repeated expressions.
+Integer equality to zero uses Wasm eqz in the shared identity sweep.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
 this policy with its existing `hoistConstantPool` option.
 The downstream watr workflow builds and tests with the same current JZ package.

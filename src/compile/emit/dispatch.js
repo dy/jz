@@ -555,7 +555,9 @@ export function emitDecl(...inits) {
   for (let ii = 0; ii < inits.length; ii++) {
     const i = inits[ii]
     if (typeof i === 'string') {
-      const undef = undefExpr()
+      // Numeric-only storage normalizes the missing value on initialization,
+      // just as emitDecl does for explicit assignments below.
+      const undef = numericStorage(i) ? typed(['f64.const', 'nan'], 'f64') : undefExpr()
       // An uninitialized `let x` holds `undefined` until its first assignment —
       // a read may see the sentinel, so arithmetic on it must coerce (same flag
       // as explicit nullish inits below) UNLESS the first reference in

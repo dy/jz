@@ -141,3 +141,100 @@ test('iterator parameters: DataView is not an indexed iterable', () => {
     }
   `)
 })
+
+test('iterator destructuring: declarations and assignments preserve pulls and closing', () => {
+  for (const binding of ['let [a = (log += "default;", 4),, b] = source', 'const [a = (log += "default;", 4),, b] = source', 'var [a = (log += "default;", 4),, b] = source', 'let a, b; ([a = (log += "default;", 4),, b] = source)']) same(`
+    export let f = () => {
+      let log = '', n = 0;
+      let source = { [Symbol.iterator]: () => {
+        log += 'open;';
+        return {next: () => { log += 'pull;'; n++; return {value: undefined, done: false} },
+          return: () => { log += 'close;'; return {} }};
+      }};
+      ${binding};
+      return log + a + '|' + b + '|' + n;
+    };
+  `)
+})
+
+test('iterator destructuring: empty, rest, nested object and Unicode string patterns', () => {
+  for (const stmt of ['let [] = source', 'let [a, ...rest] = source', 'let {p: [a, ...rest]} = {p: source}', 'let a, rest; ({p: [a, ...rest]} = {p: source})']) same(`
+    export let f = () => {
+      let log = '', n = 0;
+      let source = { [Symbol.iterator]: () => ({next: () => { n++; log += 'n'; return {value: n, done: n > 3} }, return: () => { log += 'r'; return {} }}) };
+      ${stmt}; return log;
+    };
+  `)
+  same(`export let f = () => { let [a, b, ...c] = '😀éab'; return a + '|' + b + '|' + c.join('') };`)
+})
+
+test('iterator destructuring: assignment returns its source and evaluates it once', () => same(`
+  export let f = () => {
+    let n = 0, a, b;
+    let source = { [Symbol.iterator]: () => ({next: () => ({value: ++n, done: false}), return: () => ({})}) };
+    let get = () => { n += 10; return source };
+    let result = ([a,b] = get()); return (result === source) + '|' + a + '|' + b + '|' + n;
+  };
+`))
+
+test('iterator destructuring: binding errors close, step errors do not', () => {
+  for (const phase of ['default', 'step']) same(`
+    export let f = () => {
+      let closed = 0;
+      let fail = () => { throw new Error('default') };
+      let source = { [Symbol.iterator]: () => ({next: () => {
+        if ('${phase}' === 'step') throw new Error('step'); return {value: undefined, done: false};
+      }, return: () => { closed++; throw new Error('close') }}) };
+      try { let [x = fail()] = source } catch (e) { return e.message + '|' + closed }
+      return 'missing error';
+    };
+  `)
+})
+
+test('iterator destructuring: assignment references precede each pull', () => same(`
+  export let f = () => {
+    let log = '', target = [0];
+    let key = () => { log += 'key;'; return 0 };
+    let source = { [Symbol.iterator]: () => ({next: () => { log += 'next;'; return {value: undefined, done: false} }, return: () => { log += 'close;'; return {} }}) };
+    [target[key()] = (log += 'default;', 2)] = source;
+    return log + target[0];
+  };
+`))
+
+test('iterator destructuring: source calls and defaults are prepared once', () => {
+  same(`export let f = () => { const [a, b = '#fallback'] = 'x'.split('##'); return a + b };`)
+  same(`export let f = () => { let source = []; let [a = (source.push(7), 3), b] = source; return a + '|' + b };`)
+  same(`export let f = () => { let source = [undefined, 2]; let [a = (source = [9,9], 1), b] = source; return a + '|' + b };`)
+})
+
+test('iterator parameters: array nested in an object initializes before generator starts', () => same(`
+  let opened = 0;
+  let source = { [Symbol.iterator]: () => { opened++; throw new Error('open') } };
+  function* g({p: [x]}) { yield x }
+  export let f = () => { try { g({p: source}) } catch(e) { return e.message + '|' + opened } return 'missing error' };
+`))
+
+
+test('iterator destructuring: native collection views and non-iterable rejection', () => {
+  same(`export let f = () => { let [a, ...b] = new Set([3,4,5]); return a + '|' + b.join(',') };`)
+  same(`export let f = () => { let [[k,v]] = new Map([['x',7]]); return k + v };`)
+  same(`export let f = () => { try { let [a] = {0: 3, length: 1} } catch(e) { return e.name } return 'missing error' };`)
+})
+
+
+test('iterator destructuring: initially undefined bindings still coerce later strings', () => {
+  for (const value of ['1', 'bad', '']) same(`export let f = () => {
+    let source = ['${value}']; let [x] = source;
+    return isNaN(x) + '|' + isFinite(x) + '|' + (x * 2) + '|' + (+x);
+  };`)
+})
+
+
+test('numeric-only initialization and nullable booleans preserve ToNumber', () => {
+  for (const value of ['true', 'false', '5']) {
+    const f = jz(`export let f = c => { let x; if(c) x=${value}; return x*2 }`).exports.f
+    is(Number.isNaN(f(0)), true)
+    is(f(1), Number(value === 'true' ? true : value === 'false' ? false : 5) * 2)
+  }
+  same(`export let f = () => { let x; return x };`)
+})

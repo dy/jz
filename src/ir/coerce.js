@@ -269,12 +269,9 @@ export function toNumF64(node, v) {
         return typed([...v.slice(0, -1), ['select', tail[1], foldArm(tail[2]), tail[3]]], 'f64')
     }
   }
-  // A binding assigned a nullish literal may hold null/undefined here — coerce per ToNumber
-  // (null→+0, undefined→NaN); a real number falls through unchanged. Only flagged bindings pay
-  // this, so the numeric kernels jz optimizes for (which never assign null) stay untouched.
-  if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
-  if (vt === VAL.BOOL) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
+  if (vt === VAL.BOOL) return typeof node === 'string' && ctx.func.maybeNullish?.has(node)
+    ? coerceAtomsToNum(asF64(v)) : typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
   // Slice 7 widening (.work/archive/todo.md §deletion-sweep §14/§15's own
   // honest-boundary gap): `vt` stays permanently null for a decl/param/capture-
   // hopped census-NUMBER claim (§14 point 3 — `val` never carries a census
@@ -300,7 +297,8 @@ export function toNumF64(node, v) {
     // site that isn't a dict-mode `[]`/`.` read (loop counters, schema slots,
     // the overwhelming hot-path case) pays zero new cost — same node object,
     // same asF64(v) call, no new branch taken.
-    if ((vt === VAL.NUMBER || censusNum) && censusMaybeUndefined(node)) {
+    if ((vt === VAL.NUMBER || censusNum) &&
+        (typeof node === 'string' && ctx.func.maybeNullish?.has(node) || censusMaybeUndefined(node))) {
       // coerceNullishToNum's OWN contract (its doc comment above): `valIR`
       // "must be side-effect-free... it is duplicated". True for the dict/
       // Map direct-read shape (censusShapedNode) and a bare name (a local
@@ -430,6 +428,7 @@ export function toNumF64(node, v) {
     // numeric kernel (fib, math loops) — nullable-param coercion belongs once
     // at the function boundary (null-flow inference), not at each use site.
     const f = asF64(v)
+    if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceAtomsToNum(f)
     if (Array.isArray(f) && f[0] === 'f64.const' && typeof f[1] === 'string') {
       const lit = f[1]
       if (lit.startsWith('nan:'))                           // NaN-boxed sentinel/pointer

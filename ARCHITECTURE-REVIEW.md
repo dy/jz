@@ -49,17 +49,25 @@ constitute independent expert approval or close the speed/size release gates.
 The four reproduced findings, analysis freshness ownership, and release-document
 status are implemented. The follow-on work belongs to PLAN.md:
 
-1. Finish semantic boundary cases. DataView length/index reads now distinguish
-   byte bounds from elements; numeric indexed writes reject before touching
-   bytes. Declaration/assignment array destructuring still needs the iterator
-   semantics already used by parameter patterns.
-2. Prove stateful DSP ownership through the complete VST lifecycle under both
-   compilers: variable blocks, reset, teardown, concurrent instances and bounded
-   allocation. The compiler-host filter test alone does not establish this.
+1. Parameters, declarations and assignments now share iterator lowering; DataView
+   bounds/index identity is repaired. Native collection views retain snapshot
+   semantics; live collection mutation and indexed iterator overrides remain gaps.
+2. Stateful VST lifecycle checks now pass under JZ and Porffor (12,438 each),
+   including variable blocks, overlapping instances, close/reopen and fixed
+   callback heaps. Concurrent audio threads and within-block automation remain
+   unvalidated; the public target builder is still pending.
 3. Fix size/runtime/self-compile gates, then refresh reference, memory and rival
    evidence under valid measurement conditions. Keep thresholds unchanged.
 4. Give an independent reviewer a pinned candidate and its final gate logs.
    The original reachability probe was incomplete; retain that obligation too.
+
+The iterator follow-up passes 4,505 core tests (one skip, 63,105 assertions),
+34 self-hosting checks, 150 focused checks at each of O0/O3/WASI, and the
+3,151/869 language/builtin conformance cases. Watr's rebuilt Wasm and all ten
+loop-work ratchets pass. Nullable string/Boolean coercion and uninitialized
+numeric storage now have regressions. Watr owns equality-to-zero folding and
+canonical dense-switch recognition; JZ's duplicate rule and exception are gone.
+These checks do not close the remaining speed/size and evidence gates.
 
 A new semantic IR, context rewrite, region API or wholesale vectorizer rewrite
 remains deferred unless a measured defect requires it.

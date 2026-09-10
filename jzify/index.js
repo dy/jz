@@ -19,7 +19,7 @@ import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
-import { lowerIteratorParams } from './iterator-params.js'
+import { lowerIteratorParams } from '../src/iterator-pattern.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS } from '../src/ast.js'
 
 const names = createNames()

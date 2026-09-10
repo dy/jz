@@ -150,3 +150,13 @@ names beyond exported ones — the name section is opt-in via `--names`);
   needs a tagged Boolean carrier plan.
 - **Rest-parameter BigInt elements** have no reachable evidence today and
   reject per the marshalling policy.
+
+### Iterator patterns
+
+Array declaration, assignment and parameter patterns share lazy iterator pulls,
+undefined-only defaults and IteratorClose on early completion or binding errors.
+Strings consume Unicode code points. Literal arrays can lower directly.
+Native Map/Set iteration views are snapshots, as in their existing keys/values/
+entries methods; mutation during collection iteration is not live. Custom
+iterator overrides on indexed values are not implemented. Plain object iterator
+providers and generator machines use their next/return protocol.

@@ -10,7 +10,7 @@
 import { substIdents } from './scope.js'
 
 
-export const isDestructPattern = (node) => Array.isArray(node) && (node[0] === '[]' || node[0] === '{}')
+export const isDestructPattern = (node) => Array.isArray(node) && node.length <= 2 && (node[0] === '[]' || node[0] === '{}')
 
 // `,` is the ordinary pattern separator; `;` appears when a `{…}` pattern parsed
 // in STATEMENT position (for-of head cover grammar: `for ({ x = 1 } of …)`) —

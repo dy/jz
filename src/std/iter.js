@@ -1,14 +1,13 @@
-/**
- * `jz:iter` – spread normalization for iterator values: arrays, strings,
- * Sets and Maps pass through untouched (the spread machinery owns them);
- * generator machines and @@iterator providers materialize.
- *
+/** Shared iterator records for binding patterns, plus spread materialization.
  * @module std/iter
  */
 
 export default `
 export let __it_open = (v) => {
   if (v == null) throw new TypeError('value is not iterable')
+  // Native collection methods expose snapshot views (see STABILITY.md).
+  if (v instanceof Map) v = v.entries()
+  else if (v instanceof Set) v = v.values()
   let w = v
   let indexed = Array.isArray(v) || (ArrayBuffer.isView(v) && !(v instanceof DataView)) || typeof v === 'string'
   let method = indexed ? undefined : w['@@iterator']
@@ -16,21 +15,29 @@ export let __it_open = (v) => {
     if (typeof method !== 'function') throw new TypeError('iterator method is not callable')
     w = method()
     if (w == null || typeof w !== 'object') throw new TypeError('iterator is not an object')
-  } else if (indexed) {
-    let i = 0
-    w = { next: () => {
-      if (i >= v.length) return { value: undefined, done: true }
-      let value = v[i]; i++
-      if (typeof v === 'string') { let cp = v.codePointAt(i-1); if (cp > 65535) { value = String.fromCodePoint(cp); i++ } }
-      return { value, done: false }
-    } }
-  } else if (typeof w.next !== 'function') throw new TypeError('value is not iterable')
-  return { iterator: w, next: w.next, done: false }
+  } else if (!indexed && typeof w.next !== 'function') throw new TypeError('value is not iterable')
+  // A nonnegative index is an indexed cursor; -1 is a protocol iterator.
+  return { iterator: w, next: indexed ? undefined : w.next, index: indexed ? 0 : -1, done: false }
 }
 export let __it_pull = (r, value) => {
   if (r.done) return undefined
   // Leave done set if next(), done or value access throws.
   r.done = true
+  if (r.index >= 0) {
+    let v = r.iterator, i = r.index
+    if (i >= v.length) return undefined
+    let result
+    if (typeof v === 'string') {
+      let cp = v.codePointAt(i)
+      if (value) result = String.fromCodePoint(cp)
+      i += cp > 65535 ? 2 : 1
+    } else {
+      if (value) result = v[i]
+      i++
+    }
+    r.index = i; r.done = false
+    return result
+  }
   let next = r.next
   if (typeof next !== 'function') throw new TypeError('iterator next is not callable')
   let step = next()
@@ -50,6 +57,7 @@ export let __it_rest = (r) => {
 export let __it_close = (r, abrupt) => {
   if (r.done) return
   r.done = true
+  if (r.index >= 0) return
   try {
     let close = r.iterator.return
     if (close != null) {

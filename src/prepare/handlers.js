@@ -16,6 +16,7 @@
  * @module prepare/handlers
  */
 
+import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, walkAst } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
@@ -331,14 +332,14 @@ const handlers = {
         }
       }
 
-      const normed = prep(rhs)
+      const normed = typeof rhs === 'string' ? prep(rhs) : rhs
       const tmp = `${T}d${freshPrepareId()}`
       const decls = [['=', tmp, normed]]
       // Propagate schema to temp so rest destructuring can resolve it
       if (typeof normed === 'string' && ctx.schema.vars.has(normed))
         ctx.schema.vars.set(tmp, ctx.schema.vars.get(normed))
       const stmts = []
-      expandDestruct(lhs, tmp, stmts, decls)
+      expandDestruct(lhs, tmp, stmts, decls, arrayLiteralItems(rhs)?.length)
       return prep([',', ['let', ...decls], ...stmts, tmp])
     }
     // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop.
@@ -1734,21 +1735,39 @@ function prepPatternKeys(p) {
 }
 
 function pushPatternAssign(target, valueExpr, out, decls = null) {
+  // Assignment evaluates the target reference before pulling a value (and
+  // before its default). Snapshot both base and computed key across next().
+  const ref = Array.isArray(target) && target[0] === '=' ? target[1] : target
+  if (decls && Array.isArray(ref) && (ref[0] === '.' || ref[0] === '[]' && ref.length === 3)) {
+    const base = `${T}d${freshPrepareId()}`
+    decls.push(base); out.push(['=', base, ref[1]])
+    let key = ref[2]
+    if (ref[0] === '[]') {
+      key = `${T}d${freshPrepareId()}`
+      decls.push(key); out.push(['=', key, ref[2]])
+    }
+    const stable = [ref[0], base, key]
+    if (target === ref) { out.push(['=', stable, valueExpr]); return }
+    const tmp = `${T}d${freshPrepareId()}`
+    decls.push(tmp); out.push(['=', tmp, valueExpr])
+    out.push(['=', stable, ['?:', ['===', tmp, [, undefined]], target[2], tmp]])
+    return
+  }
   if (Array.isArray(target) && target[0] === '=') {
     // Destructuring default fires ONLY on undefined (ES §13.15.5.3) — `??` would
     // also fire on null (`[a = 1] = [null]` must leave a null). Spill the read
     // once, test against undefined, keep the default lazily evaluated.
     const tmp = `${T}d${freshPrepareId()}`
-    if (decls) decls.push(['=', tmp, valueExpr])
-    else out.push(['=', tmp, valueExpr])
-    pushPatternAssign(target[1], ['?:', ['===', tmp, [, undefined]], prep(target[2]), tmp], out, decls)
+    if (decls) decls.push(tmp)
+    out.push(['=', tmp, valueExpr])
+    pushPatternAssign(target[1], ['?:', ['===', tmp, [, undefined]], decls ? target[2] : prep(target[2]), tmp], out, decls)
     return
   }
 
   if (isDestructPattern(target)) {
     const tmp = `${T}d${freshPrepareId()}`
-    if (decls) decls.push(['=', tmp, valueExpr])
-    else out.push(['=', tmp, valueExpr])
+    if (decls) decls.push(tmp)
+    out.push(['=', tmp, valueExpr])
     expandDestruct(target, tmp, out, decls)
     return
   }
@@ -1760,6 +1779,13 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   if (!isDestructPattern(pattern)) return
 
   if (pattern[0] === '[]') {
+    if (srcLen == null) {
+      const exports = prepareModule('jz:iter', bundledSource('jz:iter')).exports
+      out.push(...lowerIteratorPattern(pattern, source, () => `${T}d${freshPrepareId()}`,
+        (target, value, stmts) => pushPatternAssign(target, value, stmts, decls),
+        (fn, arg) => ['()', exports.get(fn), arg]))
+      return
+    }
     includeForArrayPattern()
     const items = patternItems(pattern[1])
     for (let j = 0; j < items.length; j++) {
@@ -1956,6 +1982,10 @@ function preRegisterBuiltinAliases(stmts) {
 
 /** Prepare let/const declaration. */
 function prepDecl(op, ...inits) {
+  if (inits.some(i => Array.isArray(i) && i[0] === '=' && hasArrayPattern(i[1]) && !(arrayLiteralItems(i[2]) && simpleArrayPatternItems(i[1]))))
+    return prep([';', ...inits.flatMap(i => Array.isArray(i) && i[0] === '=' && hasArrayPattern(i[1])
+      ? [['let', ...collectParamNames([i[1]])], ['=', i[1], i[2]]]
+      : [[op, i]])])
   const rest = []
   for (const i of inits) {
     if (Array.isArray(i) && i[0] === '()' && typeof i[1] === 'string' && Array.isArray(i[2]) && i[2][0] === '=' && isDestructPattern(i[2][1])) {
