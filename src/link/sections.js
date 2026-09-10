@@ -21,7 +21,7 @@ const encProp = (out, p) => {
   else { out.push(3); encStr(out, JSON.stringify(p).slice(1, -1)) }
 }
 
-export function schemaSections(root, { schemas, namedUses, errorSids }) {
+export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids }) {
   const FUNC = intern('func')
   const used = new Set()
   walk(root, (id) => { if (T.sid[id] !== NONE) used.add(T.sid[id]) })
@@ -40,6 +40,19 @@ export function schemaSections(root, { schemas, namedUses, errorSids }) {
       for (const p of live) encProp(out, p)
     })
     custom('jz:schema', out)
+    if (fieldContracts) {
+      const fields = []
+      varint(fields, schemas.length)
+      for (let sid = 0; sid < schemas.length; sid++) {
+        const row = used.has(sid) ? fieldContracts[sid] : []
+        varint(fields, row.length)
+        for (const [mask, detail, integer, value] of row) {
+          varint(fields, mask); varint(fields, detail + 1); varint(fields, integer)
+          encStr(fields, value == null ? '' : String(value))
+        }
+      }
+      custom('jz:fields', fields)
+    }
   }
   const entries = errorSids.filter(([sid]) => used.has(sid))
   if (entries.length) {

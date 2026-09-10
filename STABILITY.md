@@ -9,8 +9,7 @@ require a major bump.
 
 **Correct within the documented dialect, or reject.** JZ accepts ordinary
 JavaScript source but deliberately gives a finite set of constructs native,
-machine-level semantics: wrapping i32 and i64 arithmetic, UTF-8 string
-positions, fixed object shapes, byte-oriented dynamic keys and indices, manual
+machine-level semantics: wrapping i32 and i64 arithmetic, fixed object shapes, manual
 memory lifetime, host-boundary job scheduling, and the other cases enumerated
 under [“What differs from JS?”](README.md#what-differs-from-js). Those listed
 differences are part of the language contract; they are not claims of exact
@@ -52,6 +51,37 @@ Marshalling policy at the host boundary: plain BigInt values cross only at
 slots with compiler-emitted evidence (see ABI below); everywhere else they
 reject with a typed `TypeError` — never a silent string or bit
 reinterpretation.
+
+## Host memory contract
+
+Strings use UTF-16 code units. UTF-8 is an explicit encoding or I/O boundary.
+`memory.Object()` and `memory.write()` enforce compiled field kinds, typed
+storage layouts, nested schemas, integer refinements, and discriminants used
+by lowering. Incompatible replacements throw `TypeError`; use matching values
+or change the source to admit the intended alternatives. Nullable fields admit
+their declared value family and nullish values. Decoding uses the same field
+contract, including raw BigInt and boolean carriers. A schema mixing raw BigInt
+bits with other carriers cannot be decoded unambiguously: host reads and writes
+reject it. Use distinct object shapes for those values.
+
+Modules sharing a memory must agree on contracts for an existing schema; an
+incompatible module binding rejects rather than reinterpreting live objects.
+
+Plain arrays shared with the host across calls have open element types; typed
+arrays retain their element storage policy. Fresh arrays can remain specialized
+while being built, before they are returned. The
+`jz:fields` metadata is plain data consumed by compiler-free interop; its binary
+format and `memory.fieldContracts` are experimental raw ABI details.
+
+Allocation starts are rounded upward to eight-byte alignment, without signed
+address truncation. An allocating operation may grow memory and invalidate
+previous views; retain handles and reacquire views with `memory.read()`.
+Plain-array and object writes marshal all replacement values before committing destination
+contents and length. If staging throws, the destination stays unchanged, but
+completed allocations remain until `reset()` and user getter side effects are
+not rolled back. `reset()` invalidates post-reset-base handles; module-initialized
+state remains live. Direct memory writes and forged raw pointers bypass these
+checks and remain the caller's responsibility under the experimental raw ABI.
 
 ## CLI (`jz`, bin → cli.js)
 

@@ -53,6 +53,36 @@ unknown. Allocating
 helpers cannot be speculated before zero-trip loops or crossed by allocator-global
 reads.
 
+The host boundary carries plain `jz:fields` data alongside schema names. The
+summary supplies field families and typed/nested identities; schema analysis
+supplies numeric refinements and records only discriminant constants actually
+consulted by lowering. The shared field-store emitter records raw BigInt
+carriers; an ambiguous raw union rejects at the host boundary. Interop enforces
+that snapshot on structured ingress and writes, and uses it to decode scalar
+carriers. Retained arrays exposed to the host have open elements because their
+handles carry no element contract. Fresh returned arrays keep their construction
+proofs; typed buffers keep their storage policy. See STABILITY.md for mutation and
+allocation failure behavior.
+
+### Body-fact freshness
+
+`analyzeBody` caches observations, not an immutable semantic snapshot. Its
+signature fingerprint covers only the current function signature. Every other
+dependency has an explicit invalidation owner:
+
+| Dependency changed | Invalidation before the next dependent read | Owner |
+|---|---|---|
+| Function body or specialization AST | `setFuncBody` / `reanalyzeBody` | Source rewrite and specialization passes |
+| Current parameter/result signature | Live fingerprint; explicit seams during solving | `body-facts.js`, `narrow/results.js`, `narrow/param-abi.js` |
+| Function value/type/length overlays and caller facts | `reanalyzeBody`; `invalidateBodies` for affected callers | `narrow/caller-ctx.js`, `narrow/results.js`, `narrow/param-abi.js` |
+| Summary, global types/lengths, schema integer census | `invalidateAllBodyFacts` at publication/phase boundaries | `plan/index.js`, `compile/index.js` |
+| Compile session | New fact store / `resetBodyFactsCache` | `session.js` |
+
+Global invalidation clears the complete cache, including anonymous roots.
+Signature checking does not authorize stale overlay reads. New passes use these
+existing seams; they must not add another cache or rely on ambient facts staying
+unchanged accidentally.
+
 Historical `.work/` citations below refer to retired evidence, recoverable using
 [.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.
 

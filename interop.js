@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux } from './layout.js'
 import { ERR_INFO } from './err-codes.js'
 
 // UTF-8 codecs for Wasm metadata. String values use lossless UTF-16 marshalling.
@@ -67,8 +67,10 @@ const makeJsAllocator = (mem, heapGlobal) => {
     // so `(x + 7) & ~7` would re-introduce the same sign flip past 2 GiB even with a
     // correctly-unsigned `getPtr()`. Plain arithmetic has no such ceiling.
     const ptr = getPtr()
-    const aligned = ptr - (ptr % 8)
+    const aligned = Math.ceil(ptr / 8) * 8
     const next = aligned + bytes
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || next >= 2 ** 32)
+      throw new RangeError('allocation exceeds the wasm32 heap or has an invalid size')
     if (next > mem.buffer.byteLength)
       mem.grow(Math.ceil((next - mem.buffer.byteLength) / 65536))
     setPtr(next)
@@ -347,6 +349,20 @@ export const memory = (src) => {
   // (mem.read's OBJECT case indexes it directly by sid and reads prop names
   // off it), so a key that was salt-qualified can't be recovered later by
   // re-scanning `schemas` content alone; it has to be remembered separately.
+  const fieldContracts = mem.fieldContracts || []
+  const fieldBytes = mod && customSection(mod, 'jz:fields')
+  const incomingFields = []
+  if (fieldBytes) {
+    const r = sectionReader(fieldBytes), count = r.varint()
+    for (let sid = 0; sid < count; sid++) {
+      const row = [], n = r.varint()
+      for (let i = 0; i < n; i++) {
+        const mask = r.varint(), detail = r.varint() - 1, integer = r.varint(), value = r.str(r.varint())
+        row.push([mask, detail, integer, value === '' ? null : Number(value)])
+      }
+      incomingFields.push(row)
+    }
+  }
   let schemas = mem.schemas || []
   const schemaKeyToId = mem._schemaKeyToId || new Map()
   const schemaBytes = mod && customSection(mod, 'jz:schema')
@@ -365,8 +381,16 @@ export const memory = (src) => {
       const salt = errorSidToClass.get(j)
       const key = s.length + '\x01' + s.join('\x01') + (salt ? '\x02' + salt : '')
       if (!schemaKeyToId.has(key)) { schemaKeyToId.set(key, schemas.length); schemas.push(s) }
+      const sid = schemaKeyToId.get(key), row = incomingFields[j]
+      if (row?.length) {
+        if (fieldContracts[sid] && JSON.stringify(fieldContracts[sid]) !== JSON.stringify(row))
+          throw new TypeError('jz: incompatible field contracts for a schema already bound to this memory')
+        fieldContracts[sid] = row
+      }
     })
   }
+
+  mem.fieldContracts = fieldContracts
 
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
@@ -528,6 +552,42 @@ export const memory = (src) => {
     return ptr(7, 0, off)
   }
 
+  // Plain compiler-emitted data governs every structured ingress and update.
+  // Check the marshalled representation too: same JS constructor is not enough
+  // when a view descriptor or a different nested schema changes the layout.
+  const wrapField = (sid, i, value) => {
+    const rule = mem.fieldContracts[sid]?.[i]
+    if (rule?.[2] === 8) throw new TypeError('jz: field ' + mem.schemas[sid][i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
+    let wrapped = rule && (rule[0] & (1 << PTR.OBJECT)) && value?.constructor === Object
+      ? mem.Object(value)
+      : rule && (rule[0] & (1 << PTR.TYPED)) && ArrayBuffer.isView(value) && ELEMS[value.constructor.name]
+        ? mem[value.constructor.name](value) : mem.wrapVal(value)
+    if (!rule) return wrapped
+    const [mask, detail, integer, constant] = rule
+    if (detail >= 0 && (mask & (1 << PTR.TYPED)) && typeof wrapped === 'bigint' && type(wrapped) === PTR.TYPED &&
+        (aux(wrapped) & ~TYPED_ELEM_VIEW_FLAG) === (detail & ~TYPED_ELEM_VIEW_FLAG) && aux(wrapped) !== detail) {
+      if (detail & TYPED_ELEM_VIEW_FLAG) {
+        const data = offset(wrapped), length = dv().getUint32(data - 8, true), descriptor = alloc(16), view = dv()
+        view.setUint32(descriptor, length, true)
+        view.setUint32(descriptor + 4, data, true)
+        view.setUint32(descriptor + 8, data, true)
+        wrapped = ptr(PTR.TYPED, detail, descriptor)
+      } else wrapped = mem.wrapVal(mem.read(wrapped))
+    }
+    let family = typeof value === 'boolean' ? FIELD.BOOL : FIELD.NUMBER
+    if (typeof wrapped === 'bigint' && isBox(wrapped)) {
+      const t = type(wrapped), a = aux(wrapped)
+      family = t === PTR.ATOM ? (a === ATOM.NULL || a === ATOM.UNDEF ? FIELD.NULLISH : a === ATOM.FALSE || a === ATOM.TRUE ? FIELD.BOOL : FIELD.NUMBER) : 1 << t
+    }
+    const nested = family === (1 << PTR.OBJECT), typed = family === (1 << PTR.TYPED)
+    const badDetail = (nested || typed) && detail >= 0 && aux(wrapped) !== detail
+    const badNumber = family === FIELD.NUMBER && ((integer && (!Number.isInteger(value) || Object.is(value, -0))) ||
+      (integer === 2 && (value < -2147483648 || value > 2147483647)) || (constant !== null && !Object.is(value, constant)))
+    if (!(mask & family) || badDetail || badNumber)
+      throw new TypeError(`jz: field ${mem.schemas[sid][i]} violates its compiled representation contract${constant !== null ? ': expected discriminant ' + constant : (mask & (1 << PTR.TYPED)) && detail >= 0 ? ': expected ' + (ctorFromElemAux(detail) || 'DataView') : integer === 2 ? ': expected an int32 without negative zero' : ''}`)
+    return integer === 4 ? dv().getBigInt64(offset(wrapped), true) : wrapped
+  }
+
   mem.Object = function(obj) {
     const objKeys = Object.keys(obj)
     const key = objKeys.join(',')
@@ -552,7 +612,7 @@ export const memory = (src) => {
     // buffers/functions were equally unhandled). One dispatch, no duplicate
     // logic to drift out of sync with wrapVal's.
     const wrapped = new BigInt64Array(n)
-    for (let i = 0; i < n; i++) wrapped[i] = bits(mem.wrapVal(obj[schema[i]]))
+    for (let i = 0; i < n; i++) wrapped[i] = bits(wrapField(sid, i, obj[schema[i]]))
     const dst = new BigInt64Array(mem.buffer, raw, n)
     for (let i = 0; i < n; i++) dst[i] = wrapped[i]
     return ptr(6, sid, raw)
@@ -624,7 +684,13 @@ export const memory = (src) => {
       const keys = mem.schemas[a]
       if (!keys) return p
       const obj = {}
-      for (let i = 0; i < keys.length; i++) obj[keys[i]] = mem.read(m.getBigInt64(off + i * 8, true))
+      for (let i = 0; i < keys.length; i++) {
+        const rule = mem.fieldContracts[a]?.[i], raw = m.getBigInt64(off + i * 8, true)
+        if (rule?.[2] === 8) throw new TypeError('jz: field ' + keys[i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
+        let value = rule?.[2] === 4 ? raw : mem.read(raw)
+        if (value != null && rule && (rule[0] & ~FIELD.NULLISH) === FIELD.BOOL) value = !!value
+        obj[keys[i]] = value
+      }
       return obj
     }
     if (t === 7) {  // HASH
@@ -654,17 +720,21 @@ export const memory = (src) => {
   }
 
   mem.write = function(p, data) {
-    const t = type(p), off = offset(p), m = dv()
+    const t = type(p)
+    let off = offset(p), m = dv()
     if (t === 1) {
-      const cap = m.getInt32(off - 4, true)
-      if (data.length > cap) throw Error(`mem.write: ${data.length} elements exceeds this array's capacity of ${cap} — allocate it with a larger capacity, or write ${cap} or fewer elements`)
-      m.setInt32(off - 8, data.length, true)
-      // mem.wrapVal, not bare bits(coerce(…)): an in-place array write accepts
-      // the same value shapes the mem.Array constructor does (string/bigint/
-      // nested array/typed array/…), not numbers only — same marshal contract,
-      // same dispatch, see mem.Object's identical fix for why a hand-rolled
-      // partial dispatch here silently mis-stored a plain BigInt element.
-      for (let i = 0; i < data.length; i++) m.setBigInt64(off + i * 8, bits(mem.wrapVal(data[i])), true)
+      while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+      const cap = m.getInt32(off - 4, true), length = data.length
+      if (!Number.isSafeInteger(length) || length < 0) throw new RangeError('mem.write: invalid array length')
+      if (length > cap) throw Error(`mem.write: ${data.length} elements exceeds this array's capacity of ${cap} — allocate it with a larger capacity, or write ${cap} or fewer elements`)
+      // Recursive marshalling can grow memory. Commit only after all values
+      // marshal, then reacquire the destination view. Failed staging leaves
+      // destination contents/length intact; allocations are reclaimed by reset.
+      const staged = new BigInt64Array(length)
+      for (let i = 0; i < length; i++) staged[i] = bits(mem.wrapVal(data[i]))
+      m = dv()
+      for (let i = 0; i < staged.length; i++) m.setBigInt64(off + i * 8, staged[i], true)
+      m.setInt32(off - 8, staged.length, true)
     } else if (t === 3) {
       const a2 = aux(p), elem = a2 & 7
       const [, stride, , setter] = (a2 & 16) ? ELEMS.BigInt64Array : ELEM_BY_ID[elem]
@@ -682,10 +752,13 @@ export const memory = (src) => {
     } else if (t === 6) {
       const schema = mem.schemas[aux(p)]
       if (!schema) throw Error(`mem.write: this pointer's schema id (${aux(p)}) has no compiled OBJECT schema — write to a pointer returned by mem.Object() for a schema this program compiled`)
+      const staged = []
       for (const k of Object.keys(data)) {
         const i = schema.indexOf(k)
-        if (i >= 0) m.setBigInt64(off + i * 8, bits(mem.wrapVal(data[k])), true)  // mem.wrapVal — see the t===1 branch above
+        if (i >= 0) staged.push([i, bits(wrapField(aux(p), i, data[k]))])
       }
+      m = dv()
+      for (const [i, value] of staged) m.setBigInt64(off + i * 8, value, true)
     } else {
       throw Error(`mem.write only supports ARRAY, TYPED array, and OBJECT pointers — this pointer is a different kind (type tag ${t})`)
     }
@@ -710,6 +783,8 @@ export const memory = (src) => {
   if (globalThis.Float16Array) TA[35] = globalThis.Float16Array
   for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {
     mem[name] = (data) => {
+      // Coerce before allocating, and snapshot views over our growable buffer.
+      if (TA[elemId] && (!(data instanceof TA[elemId]) || data.buffer === mem.buffer)) data = new TA[elemId](data)
       const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes)
       // Same-type source → native memcpy via `.set` (incl. stride-1 Uint8Array:
       // a multi-MB file copied byte-by-byte through DataView dominates decode).

@@ -40,6 +40,10 @@ export const PTR = {
   EXTERNAL: 11,
 }
 
+// Host field contracts use pointer-tag bits plus three scalar families.
+// Detail is a typed-element aux or nested schema id; -1 means unrestricted.
+export const FIELD = { NUMBER: 1 << 12, BOOL: 1 << 13, NULLISH: 1 << 14, ANY: (1 << 15) - 1 }
+
 /** Reserved atom aux ids (PTR.ATOM). */
 export const ATOM = { NULL: 1, UNDEF: 2, FALSE: 4, TRUE: 5 }
 

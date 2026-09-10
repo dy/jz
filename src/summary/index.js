@@ -201,6 +201,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // union-find over ids); a kind names a cell by any id in it, `canon` by the root.
   const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH) && paramOf(k) !== UNKNOWN
   const elems = []               // cell root → element kind
+  const hostArrays = new Set()   // arrays exposed to host writes
+  const retainedArrays = new Set() // arrays reachable across calls, through globals or captures
+  const hostClosures = new Set() // callable results the host can receive
   const tuples = new Map()       // cell root → immutable literal positions; null after mutation or union
   const cellUp = []              // cell id → its parent; a root is its own
   const cells = new Map()        // construction node (an array literal, a `new Map`) → cell id
@@ -237,12 +240,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const id = cell(paramOf(arr))
     if (tuples.get(id) !== null) { tuples.set(id, null); changed = true }
   }
-  const raiseElem = (arr, k, literal = false) => { if (!celled(arr)) return; if (!literal) invalidateTuple(arr); const id = cell(paramOf(arr)), nk = merge(elems[id], k); if (nk !== elems[id]) { elems[id] = nk; changed = true } }
+  const raiseElem = (arr, k, literal = false) => {
+    if (!celled(arr)) return
+    const id = cell(paramOf(arr))
+    if (hostArrays.has(id) && retainedArrays.has(id)) { retain(k); escapeToHost(k); k = ANY; literal = false }
+    if (!literal) invalidateTuple(arr)
+    const nk = merge(elems[id], k)
+    if (nk !== elems[id]) { elems[id] = nk; changed = true }
+  }
+
   const unify = (a, b) => {
     a = cell(a); b = cell(b)
     if (a === b) return a
     invalidateTuple(kind(K.ARRAY, a)); invalidateTuple(kind(K.ARRAY, b))
     cellUp[b] = a; changed = true
+    if (hostArrays.has(b)) hostArrays.add(a)
+    if (retainedArrays.has(b)) retainedArrays.add(a)
     raiseElem(kind(K.ARRAY, a), elems[b])
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
@@ -283,9 +296,34 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const escapeToHost = (k, seen = new Set()) => {
     const t = tagOf(k), p = paramOf(k)
     if (p === UNKNOWN) return
-    if (t === K.CLOSURE) for (const id of membersOf(p)) escapeId(id)
-    else if (t === K.ARRAY || t === K.MAP || t === K.HASH) { const c = cell(p); if (!seen.has(-1 - c)) { seen.add(-1 - c); escapeToHost(elems[c], seen); if (t === K.ARRAY) escapeToHost(anyPropOf(k), seen) } }
+    if (t === K.CLOSURE) { retain(k); for (const id of membersOf(p)) { if (!hostClosures.has(id)) { hostClosures.add(id); changed = true } escapeId(id) } }
+    else if (t === K.ARRAY || t === K.MAP || t === K.HASH) { const c = cell(p); if (!seen.has(-1 - c)) { seen.add(-1 - c); escapeToHost(elems[c], seen); if (t === K.ARRAY) { escapeToHost(anyPropOf(k), seen); hostArrays.add(c); if (retainedArrays.has(c)) raiseElem(k, ANY) } } }
     else if (t === K.OBJECT) { if (!seen.has(p)) { seen.add(p); for (const s of slots(p)) escapeToHost(s, seen) } }
+  }
+  // Returning a fresh local array cannot change its earlier reads. Only a
+  // retained alias (or an import, which may mutate during the call) opens its
+  // element proof. Walk aggregate edges too; arrays have no host element ABI.
+  const retain = (k, seen = new Set()) => {
+    const t = tagOf(k), p = paramOf(k)
+    if (p === UNKNOWN) return
+    if (t === K.CLOSURE) {
+      for (const id of membersOf(p)) {
+        const body = closureBodies[id]
+        if (seen.has(body)) continue
+        seen.add(body)
+        for (const key of captures.get(id) ?? []) retain(kinds[key] ?? K.NONE, seen)
+      }
+    } else if (celled(k)) {
+      const c = cell(p)
+      if (seen.has(-1 - c)) return
+      seen.add(-1 - c)
+      retain(elems[c], seen); retain(anyPropOf(k), seen)
+      retainedArrays.add(c)
+      if (hostArrays.has(c)) raiseElem(k, ANY)
+    } else if (t === K.OBJECT && !seen.has(p)) {
+      seen.add(p)
+      for (const s of slots(p)) retain(s, seen)
+    }
   }
   // A parameter's incoming kind, the join of its arguments alone: a read of
   // the parameter before any reassignment can run sees only this; `kinds`
@@ -378,7 +416,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (k !== undefined && tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) return callClosure(paramOf(k), base, n)
       if (k === undefined && key !== null) return K.NONE  // a local callee not known yet
       // A host import returns the kind it declares; a builtin the kind its trait says (kind-traits.js).
-      if (imports.has(callee)) { for (let i = 0; i < n; i++) { escape(ks[base + i]); escapeToHost(ks[base + i]) } return kindOfVal(imports.get(callee)) }
+      if (imports.has(callee)) { for (let i = 0; i < n; i++) { retain(ks[base + i]); escapeToHost(ks[base + i]); escape(ks[base + i]) } return kindOfVal(imports.get(callee)) }
       // `Object.assign` onto an array: a source of known shape stores its slots
       // as the array's properties (an index-named one as an element); any
       // other source may store anything.
@@ -793,6 +831,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'string') {
       const key = keyOf(n)
       if (key === null) { if (funcByName.has(n)) { escapeId(n); return kind(K.CLOSURE) } return ANY }  // a name from outside the program
+      if (bindingScope[key] !== (current ?? MODULE)) {
+        let keys = captures.get(current)
+        if (!keys) captures.set(current, keys = new Set())
+        if (!keys.has(key)) { keys.add(key); changed = true }
+      }
       // A binding this walk models is bottom until the fixpoint reaches its assignments.
       const k = (post.get(key) ?? (pre.has(key) ? incoming[key] : kinds[key])) ?? K.NONE
       const mask = refined.get(key)
@@ -1076,6 +1119,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // declare either is from outside the program (null).
   const declared = new Map()         // scope → Map(name → binding id)
   let nextBinding = 0
+  const bindingScope = [], captures = new Map()
   const parent = new Map()           // closure id → scope
   const scopeOfSig = new Map(funcs.map(f => [f.sig, f.name]))   // a function's signature record → its scope, for readers
   const scopeOfBody = new Map(funcs.filter(f => f.body !== null && typeof f.body === 'object').map(f => [f.body, f.name]))   // a function's block body → its scope; a closure's is in closuresByBody
@@ -1088,6 +1132,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!d) declared.set(scope, d = new Map())
     if (d.has(name)) return
     const key = nextBinding++
+    bindingScope[key] = scope
     d.set(name, key)
     let keys = nameKeys.get(name)
     if (!keys) nameKeys.set(name, keys = [])
@@ -1582,10 +1627,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (let id = 0; id < closureBodies.length; id++) {
       if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(keyIn(id, p), ANY)
       walkFunction(id, closureBodies[id], closureParams[id], closureDefaults[id])
+      if (hostClosures.has(id)) escapeToHost(results.get(id) ?? K.NONE)
     }
     current = null
     for (const top of tops) stmt(top)
     for (const name of hostGlobals) { const key = keyIn(MODULE, name); if (key !== undefined) escapeToHost(kinds[key] ?? K.NONE) }
+    const seen = new Set()
+    for (const key of declared.get(MODULE)?.values() ?? []) retain(kinds[key] ?? K.NONE, seen)
+    for (const id of hostClosures) for (const key of captures.get(id) ?? []) retain(kinds[key] ?? K.NONE, seen)
     return changed
   })
   // What the host may pass: an exported function's parameters; one the export
@@ -1611,7 +1660,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.length = 0; incoming.length = 0; fields.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear()
     poisonedAll = 0; poisonedIndexed = 0
     seed(seeded)

@@ -26,7 +26,7 @@ import {
   usesDynProps, needsDynShadow, mkPtrIR, isNumericIR, undefExpr,
   freshId, boxBigInt,
 } from '../ir.js'
-import { emit, storedValue, storedValueNarrow } from '../bridge.js'
+import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
@@ -488,7 +488,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
     // objects of a structInline-eligible schema are independent and can
     // coexist). No-op under CARRIER_BOX=off (byte-identical either way).
     ...fields.map((v, i) => ['local.set', `$${vTs[i]}`, packed ? asI32(emit(v))
-      : (ctx.schema.slotBigintBoxedBySid?.(sid, schema[i]) ? storedValue : storedValueNarrow)(v)]),
+      : storedFieldValue(v, sid, schema[i])]),
     ['local.set', `$${cT}`, cellIdx],
     ['local.set', `$${bT}`, alias
       ? ['i32.sub', ['local.get', `$${alias}`], ['i32.shl', ['local.get', `$${cT}`], ['i32.const', 3]]]
@@ -945,7 +945,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
         // under CARRIER_BOX=off (storedValue/storedValueNarrow are
         // byte-identical then).
         const boxed = ctx.schema.slotBigintBoxedBySid?.(vaProbe.ptrAux, prop)
-        return withTemp(boxed ? storedValue(val) : storedValueNarrow(val), t => [
+        return withTemp(storedFieldValue(val, vaProbe.ptrAux, prop, boxed), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
           ['local.get', `$${t}`]])
       }
@@ -973,7 +973,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       const sid = ctx.schema.idOf(obj)
       const wide = needsDynShadow(obj, sid) || ctx.core.includes.has('__dyn_set')
       const boxed = wide || (sid != null && ctx.schema.slotBigintBoxedBySid?.(sid, prop))
-      const va = emit(obj), vv = boxed ? storedValue(val) : storedValueNarrow(val), t = temp()
+      const va = emit(obj), vv = storedFieldValue(val, sid, prop, boxed), t = temp()
       return block64(
         ['local.set', `$${t}`, vv],
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`]),

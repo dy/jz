@@ -185,9 +185,10 @@ export function targetProfileFor(host) {
  *                                see analyzeBody's own module comment for why.
  *                                Ambient-overlay staleness (ctx.func.localReps
  *                                / ctx.func.typedElem / ctx.schema.slotI32Certain
- *                                changing without a signature retype) stays
- *                                the documented "intentionally staleable"
- *                                surface — unchanged, still out of scope.
+ *                                changing without a signature retype) remains
+ *                                under the explicit phase/overlay invalidation
+ *                                contract in CONTRIBUTING.md. A global flush
+ *                                clears the whole store, including anonymous bodies.
  *   bindingUses                  scanBindingUses's per-body free/mutated-name
  *                                summary. Invalidated by: a fresh session only
  *                                (wholesale) — no surgical invalidation exists,

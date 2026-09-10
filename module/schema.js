@@ -272,6 +272,17 @@ export function initSchema(ctx) {
     return ctx.summary?.fieldSid(parentSid, node[2]) ?? null
   }
 
+  // Record discriminants actually consumed by lowering for the host write contract.
+  ctx.schema.slotConstant = (sid, slot) => {
+    const value = ctx.schema.slotConstInts.get(sid)?.[slot]
+    if (value != null) {
+      let used = ctx.schema.slotConstUsed.get(sid)
+      if (!used) ctx.schema.slotConstUsed.set(sid, used = new Set())
+      used.add(slot)
+    }
+    return value
+  }
+
   /** Raw by-sid form for callers that resolve the receiver's schema themselves
    *  (narrow's per-call-site schema census — live refinements/reps aren't
    *  reachable there, same reason slotTypedCtorBySid exists below). No

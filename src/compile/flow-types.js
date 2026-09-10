@@ -138,7 +138,7 @@ function refineIntegerDiscriminant(a, b, out) {
     for (const sid of closedSet) {
       const slot = ctx.schema.list[sid]?.indexOf(alias.prop) ?? -1
       if (slot < 0) continue
-      const cv = ctx.schema.slotConstInts?.get(sid)?.[slot]
+      const cv = ctx.schema.slotConstant(sid, slot)
       if (cv === value || cv == null) matches.push(sid)
     }
     if (matches.length) {
@@ -163,7 +163,7 @@ function refineIntegerDiscriminant(a, b, out) {
   for (let sid = 0; sid < ctx.schema.list.length; sid++) {
     if (ctx.schema.externSlotSids?.has(sid)) continue
     const slot = ctx.schema.list[sid]?.indexOf(alias.prop) ?? -1
-    if (slot >= 0 && ctx.schema.slotConstInts?.get(sid)?.[slot] === value) matches.push(sid)
+    if (slot >= 0 && ctx.schema.slotConstant(sid, slot) === value) matches.push(sid)
   }
   // This is a speculation hint, never a proof: host/external objects or a
   // construction site with a dynamic tag may share the same runtime value.
@@ -188,7 +188,7 @@ function excludeIntegerDiscriminant(a, b, out) {
   const rest = closedSet.filter(sid => {
     const slot = ctx.schema.list[sid]?.indexOf(alias.prop) ?? -1
     if (slot < 0) return true                       // missing prop reads undefined ≠ C — stays
-    const cv = ctx.schema.slotConstInts?.get(sid)?.[slot]
+    const cv = ctx.schema.slotConstant(sid, slot)
     return cv == null || cv !== value
   })
   if (!rest.length || rest.length === closedSet.length) return

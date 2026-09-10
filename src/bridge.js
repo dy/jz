@@ -68,6 +68,16 @@ export const storedValue = node => {
 // comment for the two call sites and the live incident that found this gap.
 export const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64Narrow(node, emit(node))
 
+// Schema storage owns the host decoder's raw-carrier evidence as well as boxing.
+export const storedFieldValue = (node, sid, prop, boxed = ctx.schema.slotBigintBoxedBySid(sid, prop)) => {
+  if (sid != null && !boxed && valTypeOf(node) === VAL.BIGINT) {
+    let slots = ctx.schema.slotRawBigint.get(sid)
+    if (!slots) ctx.schema.slotRawBigint.set(sid, slots = new Set())
+    slots.add(ctx.schema.list[sid].indexOf(prop))
+  }
+  return (boxed ? storedValue : storedValueNarrow)(node)
+}
+
 // Non-boxing twin of storedValue: for positions guarded by a static-kind-
 // driven fast path downstream (an i32-PROVEN emit shortcut, a typeof-operand
 // switch) that must keep firing unmodified for the overwhelmingly common

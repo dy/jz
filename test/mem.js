@@ -1,6 +1,6 @@
 // jz.memory API tests: JS↔WASM interop constructors, read, write
 import test from 'tst'
-import { is, ok, almost } from 'tst/assert.js'
+import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, onKernel, adaptI64 } from './_matrix.js'
@@ -892,4 +892,158 @@ test('followForwardingWat/ptrOffsetFwdWat bound check is i64 (not i32.shl(memory
   is(shlMemSize.length, 1, 'exactly one i32.shl(memory.size,16) survives — __memgrow\'s own benign $__heap_end assignment')
   ok(/\$__heap_end64/.test(wat), 'forwarding-chase bound reads the cached i64 global')
   ok(/i64\.extend_i32_u/.test(wat), 'offset is widened to i64 before the bound compare')
+})
+
+
+test('host allocator: odd-sized mixed allocations never overlap', () => {
+  const mem = jz.memory(), saved = []
+  for (let i = 1; i < 12; i++) {
+    const p = mem.Uint8Array(new Uint8Array(i).fill(i))
+    saved.push([p, new Array(i).fill(i)])
+    mem.String('non-ascii \u03bb' + i)
+    mem.Float64Array([i + .5])
+    for (const [ptr, expected] of saved) is([...mem.read(ptr)], expected)
+  }
+  const before = mem.alloc(0)
+  for (const size of [-1, 1.5, NaN, Infinity, 2 ** 32]) throws(() => mem.alloc(size), RangeError)
+  is(mem.alloc(0), before, 'failed allocations do not advance the heap')
+})
+
+test('host allocator: odd allocation survives Wasm allocator handoff', () => {
+  if (onWasi() || onKernel()) return
+  const mem = jz.memory(), p = mem.Uint8Array([123])
+  const m = jz('export const alloc = () => new Uint8Array([45, 46, 47])', { memory: mem })
+  m.exports.alloc()
+  is([...mem.read(p)], [123])
+  mem.Uint8Array([99])
+  is([...mem.read(p)], [123])
+})
+
+test('memory.write: growth and a failed marshal preserve destination atomicity', () => {
+  const mem = jz.memory(), array = mem.Array([1, 2]), large = 'x'.repeat(70000)
+  mem.schemas.push(['a', 'b'])
+  const object = mem.Object({ a: 1, b: 2 })
+  mem.write(array, [large, 3])
+  is(mem.read(array), [large, 3])
+  mem.write(object, { a: large + large, b: [large] })
+  is(mem.read(object), { a: large + large, b: [large] })
+  throws(() => mem.write(array, ['y'.repeat(300000), 17n]), TypeError)
+  is(mem.read(array), [large, 3], 'failed array staging leaves contents and length intact')
+  throws(() => mem.write(object, { a: 'z'.repeat(300000), b: 17n }), TypeError)
+  is(mem.read(object), { a: large + large, b: [large] }, 'failed object staging is not a partial write')
+})
+
+test('host fields: typed layout, nullable and nested contracts survive every tier', () => {
+  for (const optimize of [0, 2, 3]) {
+    const m = jz(`
+      const child = { buf: new Float32Array([1, 2]) }
+      const o = { child, optional: null, count: 1 }
+      export const setup = () => { o.optional = new Float32Array([2]) }
+      export const get = () => o
+      export const value = () => o.child.buf[0] + (o.optional === null ? 0 : o.optional[0]) + o.count
+    `, { optimize })
+    const p = m.instance.exports.get()
+    m.memory.write(p, { child: { buf: new Float32Array([3]) }, optional: new Float32Array([4]), count: 2 })
+    is(m.exports.value(), 9, 'compatible nested and nullable writes')
+    m.memory.write(p, { optional: null })
+    is(m.exports.value(), 5)
+    for (const change of [
+      { child: { buf: new Float64Array([3]) } }, { child: { buf: 'abc' } },
+      { child: null }, { optional: new Int32Array([3]) }, { count: 3.5 },
+      { count: 2 ** 31 }, { count: -0 }, { count: '3' },
+    ]) {
+      throws(() => m.memory.write(p, change), TypeError)
+      is(m.exports.value(), 5, 'rejected write leaves the object usable')
+    }
+    throws(() => m.memory.Object({ buf: new Float64Array([3]) }), TypeError, 'structured ingress shares the write contract')
+  }
+})
+
+
+test('host fields: scalar carriers decode and update consistently', () => {
+  for (const optimize of [0, 2, 3]) {
+    const m = jz('const o={x:1n,yes:true};export const get=()=>o;export const value=()=>o.x', { optimize })
+    const p = m.instance.exports.get()
+    is(m.memory.read(p), { x: 1n, yes: true })
+    m.memory.write(p, { x: m.memory.BigInt(-3n), yes: false })
+    is(m.exports.value(), -3n)
+    is(m.memory.read(p), { x: -3n, yes: false })
+  }
+})
+
+test('host fields: ambiguous raw BigInt slots reject instead of guessing their bits', () => {
+  for (const optimize of [0, 2, 3]) {
+    const m = jz('const a={x:1n};const b={x:2};export const get=()=>a;export const other=()=>b;export const value=()=>a.x', { optimize })
+    const p = m.instance.exports.get()
+    throws(() => m.memory.read(p), /ambiguous raw BigInt/)
+    throws(() => m.memory.write(p, { x: 3 }), /ambiguous raw BigInt/)
+    is(m.exports.value(), 1n, 'rejection leaves the raw slot intact')
+    const n = jz('export const make=x=>({x})', { optimize })
+    is(n.exports.make(3), { x: 3 }, 'generic tagged fields remain supported')
+    is(n.exports.make('abc'), { x: 'abc' })
+  }
+})
+
+test('host fields: only consumed discriminants constrain replacement values', () => {
+  for (const optimize of [0, 2, 3]) {
+    const m = jz('const a={tag:0,x:3};const b={tag:1,y:4};export const get=()=>a;export const value=n=>{const o=n?a:b;return o.tag===0?o.x:o.y}', { optimize })
+    const p = m.instance.exports.get()
+    throws(() => m.memory.write(p, { tag: 1 }), /discriminant/)
+    m.memory.write(p, { tag: 0, x: 8 })
+    is(m.exports.value(true), 8)
+    is(m.exports.value(false), 4)
+  }
+})
+
+test('host array handles: element writes invalidate closed element proofs', () => {
+  for (const optimize of [0, 2, 3]) {
+    const m = jz('const a=[1,2];export const get=()=>a;export const value=()=>a[0]+1', { optimize })
+    m.memory.write(m.instance.exports.get(), ['abc'])
+    is(m.exports.value(), 'abc1')
+    const n = jz('const o={a:[1,2]};export const get=()=>o;export const value=()=>o.a[0]+1', { optimize })
+    n.memory.write(n.instance.exports.get(), { a: ['xyz'] })
+    is(n.exports.value(), 'xyz1')
+    const c = jz('let read;export const make=()=>{const a=[1,2];read=()=>a[0]+1;return a};export const value=()=>read()', { optimize })
+    c.memory.write(c.instance.exports.make(), ['captured'])
+    is(c.exports.value(), 'captured1')
+  }
+})
+
+
+test('host allocator: alignment preserves unsigned addresses above 2 GiB', () => {
+  const memory = new WebAssembly.Memory({ initial: 32769, maximum: 32769 })
+  const mem = jz.memory(memory)
+  new DataView(memory.buffer).setUint32(1020, 0x80000001, true)
+  is(mem.alloc(1), 0x80000008)
+  is(mem.alloc(3), 0x80000010)
+})
+
+test('host fields: a matching typed constructor is adapted to a view descriptor', () => {
+  const m = jz('const o={a:new Float32Array(new ArrayBuffer(8))};export const get=()=>o;export const value=()=>o.a[0]')
+  m.memory.write(m.instance.exports.get(), { a: new Float32Array([7]) })
+  is(m.exports.value(), 7)
+})
+
+
+test('stateful DSP: reset reclaims block scratch while preserving filter state', () => {
+  const m = jz(`
+    const state = new Float64Array(1)
+    export const process = input => {
+      const output = new Float64Array(input.length)
+      for (let i = 0; i < input.length; i++) {
+        state[0] = state[0] * 0.5 + input[i]
+        output[i] = state[0]
+      }
+      return output
+    }
+  `)
+  let carry = 0, pages
+  for (let block = 0; block < 200; block++) {
+    const input = Float64Array.from({ length: 128 }, (_, i) => ((block * 17 + i * 13) % 31 - 15) / 16)
+    const expected = Array.from(input, x => carry = carry * .5 + x)
+    is(Array.from(m.exports.process(input)), expected)
+    m.memory.reset()
+    pages ??= m.memory.buffer.byteLength
+    is(m.memory.buffer.byteLength, pages, 'block scratch does not accumulate')
+  }
 })

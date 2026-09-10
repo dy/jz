@@ -182,7 +182,7 @@ export function unionInlinePass(programFacts) {
         out = out.filter(sid => {
           const slot = propsOf(sid).indexOf(al.prop)
           if (slot < 0) return typeof v !== 'number'   // missing prop reads undefined ≠ any int
-          const cv = ctx.schema.slotConstInts?.get(sid)?.[slot]
+          const cv = ctx.schema.slotConstant(sid, slot)
           if (cv == null) return true                  // unknown const — keep (superset-sound)
           return typeof v === 'number' ? cv === v : !v.has(cv)
         })

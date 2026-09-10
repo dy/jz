@@ -627,6 +627,8 @@ export function reset(proto, globals, bridge) {
                               //   literal construction of a schema. null means
                               //   conflicting/non-constant; consumed only for
                               //   branch refinement, never as a value substitute.
+    slotRawBigint: new Map(), // schemaId → Set<slot>: actual untagged BigInt stores
+    slotConstUsed: new Map(), // schemaId → Set<slot>: discriminant proofs consumed by lowering
     slotIntLevels: new Map(),   // schemaId → Array<0|1|2 | undefined> — the int
                                 //   census's WORKING state (type.js lattice:
                                 //   1 integral, 2 strict-int32). Consumers read

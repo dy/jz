@@ -357,6 +357,11 @@ exports.rgb(100)                         // [100, 50, 20]
 exports.sum(new Float64Array([1, 2, 3])) // 6
 ```
 
+Structured host writes are checked against the compiled field representation,
+including typed-array storage and numeric refinements. Incompatible values throw
+`TypeError`. See the [host memory contract](STABILITY.md#host-memory-contract)
+for mutation, allocation, and view lifetime rules.
+
 For raw `instance.exports` calls, `memory.String`, `.Array`, typed-array
 methods, and `.Object` allocate on the WASM heap and return a pointer;
 `memory.read(ptr)` decodes a raw result. Keys passed to `memory.Object()` must

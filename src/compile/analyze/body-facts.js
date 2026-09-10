@@ -36,38 +36,15 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
  * Unified per-body analysis — see module header for slice overview.
  * Returns cached facts; DO NOT MUTATE the returned maps.
  *
- * NOTE on the cache (root A): entries are body-keyed and CAN read ctx that mutates
- * during narrowing (a `let x = f()` local's wasm type shifts when f's result
- * narrows). The cache is therefore *intentionally staleable* — invalidation
- * belongs at the phase boundaries where a stale read would matter, not
- * "everywhere". A recompute-vs-cache assertion was tried (JZ_DEBUG_CACHE) and
- * abandoned: it fires on benign staleness (the suite stays green through the
- * divergence), so it can't tell a real missing-invalidation from a harmless
- * one. See .work/archive/todo.md.
- *
- * Ownership: callers no longer
- * call invalidateLocalsCache directly — it stays exported only because the
- * seam primitives below (reanalyzeBody / setFuncBody / invalidateBodies /
- * invalidateAllBodyFacts) are themselves implemented on top of it. The two
- * bespoke plan/literals.js call sites (scalarize-
- * FunctionTypedArrays' post-loop flush, scalarizeFunctionObjectLiterals' pre-
- * rewrite drop) both predated setFuncBody (before this seam existed) and were never re-examined once it landed here; both are now fully
- * subsumed by setFuncBody's own invalidation of the node it
- * assigns — read-tested clean (full suite + JZ_DEBUG_INVARIANTS leg +
- * self-compile.js + kernel-parity, all green) — so they were deleted rather than
- * kept as ceremony. Every mutation of a function's AST now goes through
- * reanalyzeBody / setFuncBody / invalidateBodies / invalidateAllBodyFacts,
- * which fuse the mutation with its invalidation so there's no second call
- * left to forget. A narrower, targeted safety net catches what fusion can't:
- * a signature retype (param .type/.ptrKind/.ptrAux, sig.results/.ptrKind/
- * .ptrAux/.unsignedResult) surviving under a stale cache HIT is caught LIVE,
- * on every read (walk-count design B1, .work/archive/walk-count-design.md §2.4/§5
- * item 3 — promoted from a JZ_DEBUG_INVARIANTS-only assert-and-crash to an
- * always-on cache-coherence gate): a `sigFingerprint` mismatch on a hit
- * transparently invalidates and recomputes once inline instead of returning
- * the stale entry or a caller having to know to distrust it — see the gate
- * itself, right below, for why this is scoped to signatures and not the full
- * ambient staleness JZ_DEBUG_CACHE tried and failed at.
+ * Validity depends on the body, its signature, the program summary, global
+ * type/length facts, function overlays and schema numeric facts. Signature
+ * changes are checked on cache hits. Other changes invalidate at their owning
+ * mutation/phase seam before a dependent read; the fingerprint is not a proof
+ * that ambient facts are unchanged. See CONTRIBUTING.md's freshness table.
+ * Use reanalyzeBody for a changed overlay, setFuncBody for AST replacement,
+ * invalidateBodies for changed callees' dependents, and invalidateAllBodyFacts
+ * when program/schema facts settle or the phase changes. Returned maps are
+ * owned by this cache and must not be modified by consumers.
  */
 const EMPTY_BODY_FACT_MAP = new Map()
 const EMPTY_BODY_FACT_SET = new Set()
@@ -761,14 +738,9 @@ export function invalidateLocalsCache(body) {
  *     so a new phase boundary reaches for the existing primitive instead of
  *     re-deriving its own `for (const f of ctx.funcs.list) invalidateLocalsCache(f.body)`.
  *
- * Ambient-overlay staleness (ctx.func.localReps / ctx.func.typedElem /
- * ctx.schema.slotI32Certain changing WITHOUT a signature retype) stays the
- * documented "intentionally staleable" surface above analyzeBody — the live
- * sigFingerprint freshness gate (analyzeBody's cache-hit path) deliberately
- * does not cover it; see sigFingerprint's own doc for why. A pass that seeds
- * one of those overlays and needs a fresh read still routes through
- * reanalyzeBody, same as before — this slice changes WHO owns forgetting,
- * not what the overlay contract permits.
+ * An overlay change must use reanalyzeBody before its next dependent read.
+ * Program-wide fact changes use invalidateAllBodyFacts, including anonymous
+ * bodies that do not have an entry in ctx.funcs.list.
  */
 export function reanalyzeBody(body, read = () => analyzeBody(body)) {
   invalidateLocalsCache(body)
@@ -788,11 +760,11 @@ export function invalidateBodies(bodies) {
   for (const body of bodies) invalidateLocalsCache(body)
 }
 
-/** Invalidate every non-raw function body's bodyFacts entry — the
+/** Invalidate the complete bodyFacts store, including anonymous roots — the
  *  phase-boundary flush used when a signature-level fact just settled that
  *  arbitrarily many caller bodies may have read stale (narrowing's own
  *  callerLocals/valTypes lattices, or the final flush before emit begins).
  *  See the seam doc above. */
 export function invalidateAllBodyFacts() {
-  for (const func of ctx.funcs.list) if (func.body && !func.raw) invalidateLocalsCache(func.body)
+  resetBodyFactsCache()
 }

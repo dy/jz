@@ -1,5 +1,11 @@
 # Memory model
 
+> **Proposal — not the implemented v1 contract.** This document explores a
+> future design. It does not require regions, `release()`, selectable ABI tiers,
+> or retirement of `memory.reset()` for v1. [STABILITY.md](../STABILITY.md) and
+> the [README](../README.md) describe the supported surface; [PLAN.md](../PLAN.md)
+> tracks release requirements.
+
 One storage domain, linear memory, managed by regions. There is no garbage collector: no engine-scheduled pause, no nondeterministic release. Every function pays its own memory tax at its own exit, so a render callback that allocates nothing that escapes runs with zero release cost, and one that does releases exactly what it made.
 
 ## Regions

@@ -9,7 +9,7 @@
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
-import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
+import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -182,7 +182,7 @@ export default (ctx) => {
       // storedValueNarrow, NOT storedValue: this branch only runs when
       // `!shadow` (just checked above), so no dynamic reader can ever observe
       // these fields. See carrierF64Narrow's own doc comment (ir.js).
-      const emitted = values.map(storedValueNarrow)
+      const emitted = values.map((v, i) => storedFieldValue(v, schemaId, names[i], false))
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(v))
       if (slots.every(b => b !== null)) {
@@ -227,7 +227,7 @@ export default (ctx) => {
     // ir.js), so this substitution is a true no-op for the default build
     // regardless of which branch the fact picks.
     const fieldStoredValue = (i) =>
-      (ctx.schema.slotBigintBoxedBySid?.(schemaId, names[i]) ? storedValue : storedValueNarrow)(values[i])
+      storedFieldValue(values[i], schemaId, names[i])
     for (let i = 0; i < values.length; i++)
       body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(i)))
     body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
@@ -1158,7 +1158,7 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
       // isn't itself shadowed. No-op under CARRIER_BOX=off (storedValue and
       // storedValueNarrow are byte-identical then).
       if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti,
-        (ctx.schema.slotBigintBoxedBySid?.(schemaId, p[1]) ? storedValue : storedValueNarrow)(p[2])))
+        storedFieldValue(p[2], schemaId, p[1])))
     }
   }
 
