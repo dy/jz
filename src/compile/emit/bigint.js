@@ -112,6 +112,8 @@ function bigIntDomain(node) {
   const summaryOnlyNumberBigint = summaryBigint && [K.STRING, K.BOOL, K.TYPED,
     K.ARRAY, K.OBJECT, K.CLOSURE, K.MAP, K.SET, K.DATE, K.REGEX, K.HASH,
     K.BUFFER, K.NULLISH, K.ABSENT].every(kind => !hasTag(summaryKind, kind))
+  const hostField = Array.isArray(node) && node[0] === '.' &&
+    ctx.summary?.hostSchema(view?.objectSidOfExpr(node[1]))
   // Tagged storage does not add a BigInt member to a proven Number domain.
   // Captured Map reads can be Number|undefined while using a tagged carrier;
   // probing its tags invents a BigInt arm (also breaking ~ / ~~ on absence).
@@ -122,7 +124,7 @@ function bigIntDomain(node) {
   // runtime evidence an internal (non-exported) helper previously discarded,
   // causing arithmetic to reinterpret the box as a Number.
   if (summaryTag !== K.NUMBER && (isPlanTaggedBigint(node) ||
-      (summaryOnlyNumberBigint && isSchemaSlotBigintPossible(node)))) return 'tagged'
+      ((summaryOnlyNumberBigint || hostField) && isSchemaSlotBigintPossible(node)))) return 'tagged'
   if ((vt === VAL.BIGINT || summaryExactBigint) &&
       (censusMaybeUndefinedKind(node) === VAL.BIGINT || view?.mayBeNullishExpr(node))) return 'census'
   if (vt === VAL.BIGINT || summaryExactBigint) return 'bigint'

@@ -310,6 +310,7 @@ export function summaryQueries(facts) {
     resultContract,
     valOfKind: valOf,
     fieldKind,
+    hostSchema: sid => facts.hostSchemas.has(sid),
     fieldVal: (sid, prop) => valOf(fieldKind(sid, prop)),
     fieldTypedCtor: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
     fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },

@@ -56,8 +56,10 @@ reads.
 The host boundary carries plain `jz:fields` data alongside schema names. The
 summary supplies field families and typed/nested identities; schema analysis
 supplies numeric refinements and records only discriminant constants actually
-consulted by lowering. The shared field-store emitter records raw BigInt
-carriers; an ambiguous raw union rejects at the host boundary. Interop enforces
+consulted by lowering. Host-exposed schemas use tagged BigInt storage, including
+shapes shared by BigInts and numbers; private schemas retain their raw lanes.
+Returned object literals allocate independently, since host writes can outlive
+the call. Interop enforces
 that snapshot on structured ingress and writes, and uses it to decode scalar
 carriers. Retained arrays exposed to the host have open elements because their
 handles carry no element contract. Fresh returned arrays keep their construction

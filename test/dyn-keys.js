@@ -546,14 +546,14 @@ test('in: a deleted field written again through a static dot write is present', 
 // number addresses a schema slot only through its canonical-integer string,
 // so `node[1]` on a parameter of unknown kind (the AST walker's shape) reaches
 // the integer-named schemas alone. What the reach still gates: a constant
-// literal's shared static instance. A string key on an unknown receiver
-// reaches every schema (the fail-closed ALL).
-test('dyn-reach: a numeric key on an unknown receiver reaches only integer-named schemas', () => {
+// private literal's shared static instance. Host-visible literals must allocate
+// independently because memory.write can mutate them between calls.
+test('dyn-reach: host-visible literals allocate regardless of dynamic-key reach', () => {
   const lits = `export const mk = () => ({ x: 1, y: 2 })\nexport const mk1 = () => ({ 1: 10, 2: 20 })\n`
   const cases = [
-    ['numeric literal key', `export const first = (node) => node[1]`, false, true],
-    ['numeric counter key', `export const scan = (src) => { let n = 0; for (let i = 0; i < src.length; i++) if (src[i] === 40) n++; return n }`, false, true],
-    ['array receiver', `const T = [1, 2, 3]\nexport const at = (i) => T[i]`, false, false],
+    ['numeric literal key', `export const first = (node) => node[1]`, true, true],
+    ['numeric counter key', `export const scan = (src) => { let n = 0; for (let i = 0; i < src.length; i++) if (src[i] === 40) n++; return n }`, true, true],
+    ['array receiver', `const T = [1, 2, 3]\nexport const at = (i) => T[i]`, true, true],
     ['string key', `export const get = (o, k) => o[k]`, true, true],
   ]
   for (const [name, fn, mkAllocs, mk1Allocs] of cases) {

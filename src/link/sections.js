@@ -47,8 +47,12 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
         const row = used.has(sid) ? fieldContracts[sid] : []
         varint(fields, row.length)
         for (const [mask, detail, integer, value] of row) {
-          varint(fields, mask); varint(fields, detail + 1); varint(fields, integer)
-          encStr(fields, value == null ? '' : String(value))
+          // The low three bits mark optional refinements; ordinary tagged
+          // fields need only their family mask.
+          varint(fields, mask * 8 + (detail >= 0 ? 1 : 0) + (integer ? 2 : 0) + (value != null ? 4 : 0))
+          if (detail >= 0) varint(fields, detail)
+          if (integer) varint(fields, integer)
+          if (value != null) encStr(fields, String(value))
         }
       }
       custom('jz:fields', fields)

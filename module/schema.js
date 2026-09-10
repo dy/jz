@@ -496,6 +496,7 @@ export function initSchema(ctx) {
    *  flag is off — both degrade to the same asF64/boolBoxIR fallback). */
   ctx.schema.slotBigintBoxedBySid = (sid, prop) => {
     if (sid == null) return false
+    if (ctx.summary?.hostSchema(sid)) return true
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
     if (!hasTag(ctx.summary?.fieldKind(sid, prop) ?? 0, K.BIGINT)) return false

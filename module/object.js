@@ -178,7 +178,9 @@ export default (ctx) => {
     // literal a computed key can reach allocates fresh per evaluation (the
     // runtime path below).
     // A class instance (brand) is never one shared static instance: each `new` is its own identity.
-    if (!ctx.types.anyDelete && neverWritten && !shadow && !brand && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
+    // A host-visible literal inside a callable needs fresh storage. Top-level
+    // initialization outside loops runs once and can still use static data.
+    if ((!ctx.summary?.hostSchema(schemaId) || (ctx.func.atModuleScope && !ctx.func.stack.length)) && !ctx.types.anyDelete && neverWritten && !shadow && !brand && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       // storedValueNarrow, NOT storedValue: this branch only runs when
       // `!shadow` (just checked above), so no dynamic reader can ever observe
       // these fields. See carrierF64Narrow's own doc comment (ir.js).

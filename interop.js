@@ -357,8 +357,8 @@ export const memory = (src) => {
     for (let sid = 0; sid < count; sid++) {
       const row = [], n = r.varint()
       for (let i = 0; i < n; i++) {
-        const mask = r.varint(), detail = r.varint() - 1, integer = r.varint(), value = r.str(r.varint())
-        row.push([mask, detail, integer, value === '' ? null : Number(value)])
+        const header = r.varint()
+        row.push([header >>> 3, header & 1 ? r.varint() : -1, header & 2 ? r.varint() : 0, header & 4 ? Number(r.str(r.varint())) : null])
       }
       incomingFields.push(row)
     }
@@ -453,7 +453,8 @@ export const memory = (src) => {
 
   mem.wrapVal = function(v) {
     if (v === null || v === undefined) return coerce(v)
-    if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
+    if (typeof v === 'number') return v
+    if (typeof v === 'boolean') return v ? TRUE_NAN : FALSE_NAN
     if (typeof v === 'string') return mem.String(v)
     // A BigInt that is a NaN-box (jz's i64 carrier — e.g. a value pre-built via memory.String/
     // ptr/BigInt) passes straight through. A plain bigint VALUE has no per-slot host-ABI

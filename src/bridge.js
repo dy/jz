@@ -70,6 +70,7 @@ export const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIde
 
 // Schema storage owns the host decoder's raw-carrier evidence as well as boxing.
 export const storedFieldValue = (node, sid, prop, boxed = ctx.schema.slotBigintBoxedBySid(sid, prop)) => {
+  if (ctx.summary?.hostSchema(sid)) boxed = true
   if (sid != null && !boxed && valTypeOf(node) === VAL.BIGINT) {
     let slots = ctx.schema.slotRawBigint.get(sid)
     if (!slots) ctx.schema.slotRawBigint.set(sid, slots = new Set())

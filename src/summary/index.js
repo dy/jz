@@ -172,7 +172,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true } }
   const NO_SLOTS = []
   const openSchemas = new Set()
   const openSchema = sid => { if (!openSchemas.has(sid)) { openSchemas.add(sid); changed = true } }
@@ -201,6 +201,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // union-find over ids); a kind names a cell by any id in it, `canon` by the root.
   const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH) && paramOf(k) !== UNKNOWN
   const elems = []               // cell root → element kind
+  const hostSchemas = new Set() // host-visible objects store tagged fields
   const hostArrays = new Set()   // arrays exposed to host writes
   const retainedArrays = new Set() // arrays reachable across calls, through globals or captures
   const hostClosures = new Set() // callable results the host can receive
@@ -298,7 +299,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (p === UNKNOWN) return
     if (t === K.CLOSURE) { retain(k); for (const id of membersOf(p)) { if (!hostClosures.has(id)) { hostClosures.add(id); changed = true } escapeId(id) } }
     else if (t === K.ARRAY || t === K.MAP || t === K.HASH) { const c = cell(p); if (!seen.has(-1 - c)) { seen.add(-1 - c); escapeToHost(elems[c], seen); if (t === K.ARRAY) { escapeToHost(anyPropOf(k), seen); hostArrays.add(c); if (retainedArrays.has(c)) raiseElem(k, ANY) } } }
-    else if (t === K.OBJECT) { if (!seen.has(p)) { seen.add(p); for (const s of slots(p)) escapeToHost(s, seen) } }
+    else if (t === K.OBJECT && !seen.has(p) && !hostSchemas.has(p)) {
+      seen.add(p); hostSchemas.add(p); changed = true
+      const row = slots(p)
+      for (let i = 0; i < row.length; i++) { retain(row[i]); escapeToHost(row[i], seen) }
+    }
   }
   // Returning a fresh local array cannot change its earlier reads. Only a
   // retained alias (or an import, which may mutate during the call) opens its
@@ -1435,7 +1440,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, cells, jsonKinds, closuresByBody, unions,
     schemas: schemas.map(props => props.slice()), methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, openSchemas,
+    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, openSchemas, hostSchemas,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts)
@@ -1660,7 +1665,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   })
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
-    kinds.length = 0; incoming.length = 0; fields.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear()
     poisonedAll = 0; poisonedIndexed = 0
     seed(seeded)

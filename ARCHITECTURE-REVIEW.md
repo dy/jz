@@ -45,6 +45,17 @@ The follow-up keeps the existing pipeline and implements the review's bounded wo
 Validation and release evidence are recorded below. The implementation does not
 constitute independent expert approval or close the speed/size release gates.
 
+## Host-storage follow-up
+
+Host-exposed schemas now box BigInt fields consistently, including schemas shared
+by numbers and BigInts. Private schemas retain raw lanes; field-type contracts
+remain at the host boundary so typed methods keep their specialization. Boolean
+identity is preserved by the generic host marshaller. Fresh returned literals
+allocate separately; module initialization outside loops still permits static
+data. The field metadata encodes only present refinements. These changes require
+matching compiler/interop revisions; the historical verification below predates
+this follow-up. Final matrix/bootstrap verification remains pending.
+
 ## Architectural assessment
 
 **The decomposition is suitable for v1. The principal weakness is incomplete

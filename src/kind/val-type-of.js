@@ -393,6 +393,7 @@ VT['.'] = (args) => {
       // is the same never-written discipline slotTypedCtorAt already trusts
       // for raw typed loads; a named write to the prop on ANY receiver keeps
       // the veto (fail-closed).
+      if (ctx.summary?.hostSchema(sid)) return null
       const litNeverWritten = child.literal && !ctx.types?.writtenProps?.has(args[1])
       if (sid != null && !litNeverWritten && ctx.schema?.list?.[sid]?.indexOf(args[1]) >= 0) return null
       // `child.literal` (shapeOfObjectLiteralAst's scalar-leaf fallback):

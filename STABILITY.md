@@ -60,9 +60,11 @@ storage layouts, nested schemas, integer refinements, and discriminants used
 by lowering. Incompatible replacements throw `TypeError`; use matching values
 or change the source to admit the intended alternatives. Nullable fields admit
 their declared value family and nullish values. Decoding uses the same field
-contract, including raw BigInt and boolean carriers. A schema mixing raw BigInt
-bits with other carriers cannot be decoded unambiguously: host reads and writes
-reject it. Use distinct object shapes for those values.
+contract. Objects exposed by the compiled program use tagged BigInt fields, so
+BigInts and numbers can share a shape without ambiguous raw bits. Private raw
+schemas retain their experimental decoding restrictions. Returned object literals
+have independent storage; host mutation of one result cannot change later results.
+Booleans keep their identity in structured host construction and writes.
 
 Modules sharing a memory must agree on contracts for an existing schema; an
 incompatible module binding rejects rather than reinterpreting live objects.
@@ -96,7 +98,7 @@ listed flags keep their meaning.
 ## Experimental raw Wasm ABI
 
 The high-level wrapper API is the v1 embedder contract, but prebuilt binaries
-must currently be consumed by the same JZ version that produced them. Direct
+must currently use matching compiler and interop revisions. Direct
 consumption of raw Wasm is intentionally not frozen yet: emitted binaries carry
 no independent ABI version marker, and a future carrier/layout redesign
 (including wasm64) must not be trapped by an accidental pre-v1 promise.

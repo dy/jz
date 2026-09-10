@@ -971,13 +971,16 @@ test('host fields: scalar carriers decode and update consistently', () => {
   }
 })
 
-test('host fields: ambiguous raw BigInt slots reject instead of guessing their bits', () => {
+test('host fields: shared shapes keep BigInts and numbers distinct', () => {
   for (const optimize of [0, 2, 3]) {
     const m = jz('const a={x:1n};const b={x:2};export const get=()=>a;export const other=()=>b;export const value=()=>a.x', { optimize })
     const p = m.instance.exports.get()
-    throws(() => m.memory.read(p), /ambiguous raw BigInt/)
-    throws(() => m.memory.write(p, { x: 3 }), /ambiguous raw BigInt/)
-    is(m.exports.value(), 1n, 'rejection leaves the raw slot intact')
+    is(m.memory.read(p), { x: 1n })
+    is(m.exports.other(), { x: 2 })
+    m.memory.write(p, { x: 3 })
+    is(m.exports.value(), 3)
+    m.memory.write(p, { x: m.memory.BigInt(-3n) })
+    is(m.exports.value(), -3n)
     const n = jz('export const make=x=>({x})', { optimize })
     is(n.exports.make(3), { x: 3 }, 'generic tagged fields remain supported')
     is(n.exports.make('abc'), { x: 'abc' })
@@ -1046,4 +1049,32 @@ test('stateful DSP: reset reclaims block scratch while preserving filter state',
     pages ??= m.memory.buffer.byteLength
     is(m.memory.buffer.byteLength, pages, 'block scratch does not accumulate')
   }
+})
+
+
+test('host fields: returned literals have independent mutable storage', () => {
+  for (const optimize of [0, 2, 3]) {
+    const m = jz('export const make=()=>({a:1,b:2})', { optimize })
+    const first = m.instance.exports.make()
+    m.memory.write(first, { a: 7 })
+    is(m.exports.make(), { a: 1, b: 2 })
+    is(m.memory.read(first), { a: 7, b: 2 })
+  }
+})
+
+test('host fields: tagged unions preserve arithmetic domains', () => {
+  for (const optimize of [0, 2, 3]) {
+    const m = jz('const a={x:1n};const b={x:2};export const get=()=>a;export const other=()=>b;export const add=()=>a.x+1n', { optimize })
+    is(m.exports.add(), 2n)
+    m.memory.write(m.instance.exports.get(), { x: 3 })
+    throws(() => m.exports.add(), TypeError)
+  }
+})
+
+test('host memory: boolean tags survive structured construction and writes', () => {
+  const mem = jz.memory()
+  const p = mem.Array([true, false, 1, 0])
+  is(mem.read(p), [true, false, 1, 0])
+  mem.write(p, [false, true, 0, 1])
+  is(mem.read(p), [false, true, 0, 1])
 })

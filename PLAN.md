@@ -87,6 +87,16 @@ a new semantic IR or wholesale vectorizer rewrite is not a v1 prerequisite.
 
 ## Remaining semantic/lifetime work
 
+Host-exposed object schemas now use tagged BigInt fields; mixed Number/BigInt
+shapes no longer require raw-bit decoding guesses. Field-type and numeric
+contracts remain, preserving typed class methods. Host construction and writes
+preserve boolean identity. Returned literals allocate independently; top-level
+initializers outside loops keep static storage. Field metadata omits absent
+refinements. Full core verification reached 4,489 passes and one obsolete static
+allocation expectation; the corrected module-initialization distinction passes
+all 98 minimal-output and 76 host-memory tests. The final matrix and bootstrap
+still need verification on the combined optimizer revision.
+
 - The focused review’s reproduced boundary defects are repaired: standalone
   allocations round upward, recursive writes stage before acquiring their view,
   and plain field metadata enforces the representations used by lowering.
