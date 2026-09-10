@@ -350,3 +350,11 @@ budget. TinyGo coverage is missing (0/44 cases), native-lowering evidence remain
 stale, perf-fuzz fails, and two examples miss strict V8 wins. Timing was measured
 under development load; these failures remain visible and do not certify rankings.
 The remaining release blockers stay in PLAN.md; none are waived by this review.
+
+The completed [benchmark CI run](https://github.com/dy/jz/actions/runs/34427703791)
+on the pinned source passes 240 checks and fails 8: native-lowering reference
+`alpha`, AssemblyScript size comparisons for bezfit/fft/sdf/shapes/slices/wordcount,
+and Watr’s 300,000-byte budget. Available tools and rival versions differ from
+the local run. Self-compile, kernel-gate, test262, Watr and pages workflows also
+pass on that revision. These results close the review’s verification work;
+the remaining performance/evidence failures still block v1 readiness.

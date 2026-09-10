@@ -32,6 +32,9 @@ bounded callback work and reliable installation are the release outcome.
   do not treat this run as release evidence or relax the caps. The development
   benchmark run passes 242 gates and fails 24: runtime/size gaps, missing TinyGo
   coverage, stale native-lowering evidence, and two examples below strict wins.
+  The pinned revision’s CI benchmark run passes 240 checks and fails 8
+  (six AssemblyScript size losses, the Watr size budget and stale native
+  lowering evidence); its available rivals differ from the local run.
   CI’s separate claims job fails 13 of 20 checks: stale/invalid evidence,
   incomplete rival coverage and unproven runtime/size leadership. Keep that
   failure distinct from the passing correctness matrix. Failed timing commands
