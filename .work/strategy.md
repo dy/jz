@@ -20,21 +20,24 @@ non-audio path; audio moves are parked at the bottom of each phase, marked *(aud
 - [x] og image, hero install chip, ejectability FAQ line
 - [x] color-space used-by, MIT link, GitHub Discussions, npm/tag/release alignment, live versioning
 - [ ] REPL copy-link button (hash-state already works; the affordance is missing)
-- [ ] **Deploy the revised Pages workflow:** prepared and validated locally;
-  deploy browser assets after gallery/REPL/hero smoke checks, keeping full compiler,
-  self-host and benchmark gates separate. Avoid `npm ci`'s implicit self-build.
+- [x] **Deploy the revised Pages workflow:** deployed September 10 in
+  [run 34471751897](https://github.com/dy/jz/actions/runs/34471751897).
+  Browser assets, gallery, guide examples and REPL/hero smoke gate deployment;
+  full compiler, self-host and benchmark gates are separate. Installation skips
+  `npm ci`'s implicit self-build.
 - [x] **Publish Google verification HTML:** the existing Pages run succeeded;
   `google59e4244a98d93e54.html` returns HTTP 200 with the exact verification content
   (checked September 10). This deployment predates the local workflow changes.
 - [x] **Register Search Console:** owner confirmed registration; awaiting data.
 - [ ] **Use Search Console as data arrives:** inspect homepage/guide/gallery/bench
   canonical selection and indexing; submit the sitemap.
-- [x] **Prepared locally:** all 66 catalog entries rendered as static gallery links
+- [x] **Deployed static discovery:** all 66 catalog entries rendered as static gallery links
   and captions; page introduction; concise descriptive titles ending in `| JZ`;
-  product descriptor in homepage/gallery/bench footers. Deploy through Pages.
-- [x] **Prepared getting started:** `/get-started/` covers function → compile →
+  product descriptor in homepage/guide/gallery/bench footers.
+- [x] **Published getting started:** `/get-started/` covers function → compile →
   instantiate → call, typed-array interop and the original JS fallback. Links to
-  the maintained API, semantic differences and memory contract; ready to deploy.
+  the maintained API, semantic differences and memory contract. Live HTTP 200;
+  listed in the sitemap and linked from the README and site footers.
 - [ ] **Render benchmark evidence as HTML:** use the committed results snapshot;
   show measurement date, environments, commands, coverage and losses before JS
   runs. Preserve the optional live runner. This is separate from refreshing measurements.
