@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onKernel, onWasi, levels } from './_matrix.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 
 const run = (code, opts) => {
   const { exports, memory } = jz(code, opts)
@@ -428,4 +428,38 @@ test('unknown builtin method fails with a named error, not a host TypeError', ()
   try { jz(`export let f = () => new TextEncoder().fooBar(1)`).exports.f() } catch (e) { msg = e.message }
   ok(msg.includes(`'fooBar'`), `names the method: ${msg}`)
   ok(!msg.includes('Cannot read properties'), 'no raw host TypeError')
+})
+
+
+test('URLSearchParams: shared methods keep instance and iteration state independent', () => {
+  const sources = [
+    `() => { let a = new URLSearchParams(null); let b = new URLSearchParams(a); a.append('a','1'); b.append('b','2'); a.delete('a'); return a.size + ':' + b.toString() }`,
+    `() => { let a = new URLSearchParams('a=1&a=2'); let b = new URLSearchParams(a); b.set('a','3'); a.append('b','4'); return a.toString() + '|' + b.toString() + ':' + b.size }`,
+    `() => { let p = new URLSearchParams('a=1'); let s = ''; p.forEach((v,k,self) => { s += k + v; if (k === 'a') self.append('b','2') }); return s + ':' + p.size }`,
+    `() => new URLSearchParams({__usp: 1, a: '2'}).toString()`,
+    `() => { let p = new URLSearchParams('a=1&a=2&b=3'); p.delete('a','1'); p.set('b','4'); p.sort(); return p.toString() + ':' + p.size }`,
+    `() => new URLSearchParams('?&a=%&b=%2&c=%GG&d=%F0%9F%98%80&e=%EF%BB%BF&f=%FF').toString()`,
+    `() => new URLSearchParams('').toString()`,
+  ]
+  const calls = runMany(sources)
+  for (let i = 0; i < calls.length; i++) {
+    const expected = new Function('return (' + sources[i] + ')()')()
+    is(calls[i](), expected, sources[i])
+    is(calls[i](), expected, 'repeat ' + i)
+  }
+})
+
+test('URLSearchParams: lookup drops unused escaping methods', () => {
+  if (onKernel()) return
+  const src = `export function f(s) { return new URLSearchParams(s).get('a') }`
+  const wat = compile(src, { wat: true })
+  ok(!wat.includes('(func $__usp_esc'), 'get-only module does not retain percent encoding')
+})
+
+
+test('URLSearchParams: forEach observes live entries across callback growth and deletion', () => {
+  for (const body of [
+    `let p = new URLSearchParams('a=1'); let s = ''; p.forEach((v,k,self) => { s += k + v; if (k === 'a') self.append('b','2') }); return s + ':' + p.size`,
+    `let p = new URLSearchParams('a=1&b=2&c=3'); let s = ''; p.forEach((v,k,self) => { s += k + v; if (k === 'a') self.delete('b') }); return s + ':' + p.size`,
+  ]) is(run('export function f(){' + body + '}'), new Function(body)(), body)
 })

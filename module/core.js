@@ -21,7 +21,6 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
-import { dataLen } from '../src/static-data.js'
 import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../layout.js'
 import { initSchema } from './schema.js'
@@ -29,7 +28,7 @@ import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH
 import { hasDurableReset } from './collection/durable.js'
 import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
-import { registerErrorClasses } from './core/error-object.js'
+import { registerErrorClasses, throwErrorWat } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -1823,44 +1822,8 @@ export default (ctx) => {
   // interned-string constants at every unresolved `.length`; this emits the
   // same branded two-slot TypeError once while preserving in-wasm instanceof,
   // .name/.message and host decoding.
-  ctx.core.stdlib['__throw_property_nullish'] = () => {
-    const strBits = text => {
-      const ir = ctx.core.emit['str'](text)
-      if (!Array.isArray(ir) || ir[0] !== 'f64.const')
-        throw new Error('__throw_property_nullish requires a static string literal')
-      return ir[1]
-    }
-    // This template's $__mkptr call is raw WAT text below, not routed through
-    // mkPtrIR's node-tagging (see ctx.js's ctx.schema.namedUses doc) — name
-    // this function as TypeError's schema's construction site instead; live
-    // iff $__throw_property_nullish itself survives treeshake.
-    const sid = ctx.schema.errorSid('TypeError')
-    ctx.schema.namedUses.push({ sid, funcName: '__throw_property_nullish' })
-    const slots = ctx.abi.object.ops.allocSlots(2)
-    // This thunk can realize more than once (resolveIncludes' speculative
-    // autoDepsOf scan, reachableStdlib's own confirmatory walk, the final pull)
-    // while `$__length`/`$__length.value` — the only callers — are STILL only
-    // conservatively "might be reachable": the receiver's real type can resolve
-    // later, in optimizeModule, to something that never dispatches through here
-    // at all. Record the byte span these two interns own on the FIRST (real)
-    // realize — dedup makes every later call a no-op (dataLen() doesn't move) —
-    // so src/wat/assemble.js's stripDeadInternedSpans can reclaim it once
-    // treeshake's later verdict is known. Both constants are baked as literal
-    // NaN-boxed bit patterns directly below, not through any global, so a
-    // surviving reference can never be desynced by that reclaim (see its doc).
-    const spanStart = dataLen()
-    const msgBits = strBits('Cannot read properties of undefined')
-    const nameBits = strBits('TypeError')
-    if (dataLen() > spanStart) ctx.runtime.reclaimSpans.push({ fn: '$__throw_property_nullish', start: spanStart, end: dataLen() })
-    return `(func $__throw_property_nullish
-      (local $p i32) (local $e f64)
-      (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${slots})))
-      (f64.store (local.get $p) (f64.const ${msgBits}))
-      (f64.store (i32.add (local.get $p) (i32.const 8)) (f64.const ${nameBits}))
-      (local.set $e (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $p)))
-      (global.set $__jz_last_err_bits (i64.reinterpret_f64 (local.get $e)))
-      (throw $__jz_err (local.get $e)))`
-  }
+  ctx.core.stdlib['__throw_property_nullish'] = () => throwErrorWat(ctx,
+    '__throw_property_nullish', 'TypeError', 'Cannot read properties of undefined')
 
   const rawLengthPropArm = () => lengthNeedsDynArm()
     ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`

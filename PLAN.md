@@ -10,17 +10,30 @@ history. This file tracks only release evidence and unfinished work.
 
 ## Verification
 
-JZ pins Watr `c001a5f`. Exact cast simplification is shared between early
-lowering and the final optimizer; integer pools use canonical values. Record
-replacement preserves missing fields, own keys, BigInt and absent-array reads.
-Eight audit regressions pass 923 assertions across all optimization tiers.
-With the shared workspace's pending test consolidation, default passes 4,197
-checks (46,620 assertions); O0/O3/WASI pass 3,983/3,983/4,034 checks
-(38,652/38,973/39,048 assertions), each with one skip. Default's benchmark-anchor
-checks pass with their unchanged tolerance. Language/builtin conformance passes 3,151/869 cases.
-Functional self-hosting passes 34 checks (296 assertions). Watr rebuilt with
-this compiler passes its full Wasm suite. The VST results below predate the
-shape-consensus and shared-cast changes.
+JZ pins Watr `c001a5f`. Runtime JSON now shares decimal conversion with
+Number/parseFloat, canonicalizes object keys, and reuses schemas correctly.
+Schema-table growth preserves existing objects; representation exhaustion throws
+a branded RangeError. Core and JSON share its existing error materializer.
+URLSearchParams uses class methods through ordinary lowering and reachability.
+
+The complete matrix passes: default 4,185 checks / 46,723 assertions;
+O0 3,992 / 38,923; O3 3,992 / 39,244; WASI 4,043 / 39,319, each with one skip.
+Language/built-in conformance passes 3,151/869 cases. Functional self-hosting passes 34 checks
+(296 assertions). The focused JSON/number/web-global suites cover rounding,
+malformed-input recovery, duplicate/index keys, cache collisions, table growth
+and clear, schema-ID exhaustion, independent instances and live iteration.
+The VST and downstream Watr results below predate these runtime changes.
+
+The default-tier URL lookup probe shrinks 39,596→33,163 bytes; speed-tier output
+shrinks 47,381→36,711. Paired warm compile medians are 392→321 ms (lookup) and
+330→273 ms (literal input). A fixed creation workload uses 288→192 MiB peak
+linear memory; its runtime is within measurement noise. JSON correctness has a
+cost: standalone parse/stringify grows 13,058→25,761 bytes, mostly from sharing
+the full decimal conversion table. The corpus JSON checksum remains 2797819845:
+227 µs versus Node's 287 µs, with a 21.6 kB module versus the earlier 9.6 kB.
+A repeated-runtime-parse probe improves for short keys (32.0→15.4 µs), while
+long-key content verification costs more (14.0→18.5 µs). These are scoped probes,
+not replacement evidence for the open whole-corpus gates.
 
 The stateful VST fixture in `@audio/compile` passes 12,438 checks with each
 compiler (JZ reverified on this optimizer; Porffor verified previously): variable blocks, live parameters, independent overlapping instances,
@@ -35,7 +48,7 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 300,301 | 300,000 |
+   | Watr encoder | 300,408 | 300,000 |
    | FFT | 1,716 | 1,758 |
    | bezfit | 3,244 | 3,017 |
    | immutable | 1,478 | 1,481 |
@@ -51,6 +64,7 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    Tiny unprofitable literals no longer allocate pool records. Against `9b9b0bee`,
    encoder/FFT/bezfit/tokenizer/wordcount shrink 182/2/1/1/2 bytes; the other four
    measured cases are unchanged. No new pass or runtime representation is added.
+   The subsequent decimal grammar/rounding fixes add 107 encoder bytes.
    A paired self-build with unrelated workspace changes held constant grows
    15,255,422→15,256,927 bytes (+1,505). Paired warm compilation on six workloads
    is 0.997× after/before, effectively neutral; generated O0 bytes match exactly.
@@ -61,8 +75,8 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
 2. **Speed and evidence.** The stored reference fails leadership claims,
    including V8 losses on jessie and Watr, and is stale. After this consolidation,
-   the isolated self-compile timing gate still fails: warm 1.455×/1.500×/1.519×
-   against 1.03×, fresh 1.225× against 0.99×. Functional bootstrap passes.
+   the isolated self-compile timing gate still fails: warm 1.484×/1.483×/1.496×
+   against 1.03×, fresh 1.241× against 0.99×. Functional bootstrap passes.
    These are current gate results, not a paired before/after speed comparison.
    The last complete benchmark run, before tiny-constant specialization, passed
    247 checks and failed 19: eight fastest-Wasm comparisons, native resample,
@@ -84,6 +98,9 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    Boolean/Number, BigInt and lifetime boundaries. Rebuild downstream Wasm with
    matching compiler/interop revisions. Replace pinned parser/optimizer archives
    with published npm versions once they contain the required fixes.
+   Excess built-in arguments still need effect preservation: with `n = 0`,
+   `map.delete('x', n++)` leaves `n` at 0 instead of 1. Preserve evaluation
+   before discarding arguments outside an intrinsic's signature.
    A callable edge remains: `let p={x:1,y:2}; p={x:3}; p.y()`
    is rejected during compilation instead of throwing TypeError at runtime.
    Internal errors still use numeric codes (explicitly pinned in `test/errors.js`),

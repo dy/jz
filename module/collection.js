@@ -32,6 +32,29 @@ const SSO_BIT_I64 = ssoBitI64Hex()
 // content compares cost roughly 3× and can pull __str_eq. Larger tables keep the
 // shared dispatcher instead of multiplying a long linear chain at each site.
 const IN_SCHEMA_COMPARE_BUDGET = 16
+// Canonical decimal property index. Callers choose the storage/spec limit;
+// -1 is reserved for non-index keys, including leading zeros and overflow.
+export const stringIndexWat = (name, max) => `(func $${name} (param $key i64) (result i32)
+    (local $len i32) (local $i i32) (local $c i32) (local $n i64)
+    (local.set $len (call $__str_length (local.get $key)))
+    (if (i32.or (i32.eqz (local.get $len)) (i32.gt_u (local.get $len) (i32.const 10)))
+      (then (return (i32.const -1))))
+    (if (i32.and (i32.eq (call $__char_at (local.get $key) (i32.const 0)) (i32.const 48))
+                 (i32.gt_u (local.get $len) (i32.const 1)))
+      (then (return (i32.const -1))))
+    (block $bad
+      (loop $l
+        (if (i32.ge_u (local.get $i) (local.get $len))
+          (then
+            (if (i64.gt_u (local.get $n) (i64.const ${max})) (then (return (i32.const -1))))
+            (return (i32.wrap_i64 (local.get $n)))))
+        (local.set $c (i32.sub (call $__char_at (local.get $key) (local.get $i)) (i32.const 48)))
+        (br_if $bad (i32.gt_u (local.get $c) (i32.const 9)))
+        (local.set $n (i64.add (i64.mul (local.get $n) (i64.const 10)) (i64.extend_i32_u (local.get $c))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+    (i32.const -1))`
+
 // NaN-box bits of the SSO string 'length' — computed once; see the STRING
 // arm in __dyn_get_t_h and __length's property-fallback arm (module/core.js).
 // ssoEncode('length') never returns null (6 ASCII).
@@ -493,7 +516,7 @@ export default (ctx) => {
     const action = representationStorageWriteAction(ctx, node)
     return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
   } : storedValue
-  const collProbeDyn = (mapFn, setFn) => (collExpr, key, h) => {
+  const collProbeDyn = (mapFn, setFn, h) => (collExpr, key) => {
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
     const extra = h != null ? [['i32.const', h]] : []
@@ -514,7 +537,7 @@ export default (ctx) => {
   ctx.core.emit['.has'] = (collExpr, key) => {
     const h = litKeyHash(key)
     return h != null
-      ? collProbeDyn('__map_has_h', '__set_has_h')(collExpr, key, h)
+      ? collProbeDyn('__map_has_h', '__set_has_h', h)(collExpr, key)
       : collProbeDyn('__map_has', '__set_has')(collExpr, key)
   }
   ctx.core.emit['.delete'] = collProbeDyn('__map_delete', '__set_delete')
@@ -1492,26 +1515,7 @@ export default (ctx) => {
   // string-keyed dyn entry must classify before probing the props sidecar.
   // __char_at returns the true byte (0 only past the REAL length, which
   // $__str_length bounds first), so embedded-NUL keys can't false-match.
-  ctx.core.stdlib['__str_arr_idx'] = `(func $__str_arr_idx (param $key i64) (result i32)
-    (local $len i32) (local $i i32) (local $c i32) (local $n i64)
-    (local.set $len (call $__str_length (local.get $key)))
-    (if (i32.or (i32.eqz (local.get $len)) (i32.gt_u (local.get $len) (i32.const 10)))
-      (then (return (i32.const -1))))
-    (if (i32.and (i32.eq (call $__char_at (local.get $key) (i32.const 0)) (i32.const 48))
-                 (i32.gt_u (local.get $len) (i32.const 1)))
-      (then (return (i32.const -1))))
-    (block $bad
-      (loop $l
-        (if (i32.ge_u (local.get $i) (local.get $len))
-          (then
-            (if (i64.gt_u (local.get $n) (i64.const 2147483646)) (then (return (i32.const -1))))
-            (return (i32.wrap_i64 (local.get $n)))))
-        (local.set $c (i32.sub (call $__char_at (local.get $key) (local.get $i)) (i32.const 48)))
-        (br_if $bad (i32.gt_u (local.get $c) (i32.const 9)))
-        (local.set $n (i64.add (i64.mul (local.get $n) (i64.const 10)) (i64.extend_i32_u (local.get $c))))
-        (local.set $i (i32.add (local.get $i) (i32.const 1)))
-        (br $l)))
-    (i32.const -1))`
+  ctx.core.stdlib['__str_arr_idx'] = stringIndexWat('__str_arr_idx', 2147483646)
 
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj i64) (param $key i64) (result i64)
     (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`

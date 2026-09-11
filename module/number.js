@@ -21,11 +21,8 @@ import { ctx, inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
-// `__to_num` (Number coercion) and `__parseFloat` both scan a StrDecimalLiteral
-// significand + ExponentPart; keeping that scan as two verbatim-duplicated
-// copies is a "fix the same bug twice" hazard.
-// These named fragments are the common core, spliced into both bodies; the
-// produced WASM is unchanged, the source now has one place to fix.
+// Number, parseFloat and JSON.parse share decimal accumulation and rounding.
+// Each caller supplies its grammar checks and input position.
 // Required locals (every consumer declares them):
 //   $v i64 · $i $len $c $dot $seen $sigDigits $decExp $dropped $round
 //   $exp $expNeg $expDigits $sbase i32 · $mant i64 · $result f64
@@ -75,7 +72,7 @@ const chAtSafe = idx => `(if (result i32)
 
 // 18-significant-digit significand → $mant; $decExp tracks the base-10 exponent
 // of dropped/fractional digits; $round defers a single round-up.
-const DEC_SIGNIFICAND = `
+export const DEC_SIGNIFICAND = `
     (block $numDone (loop $numLoop
       (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $c ${chAt('(local.get $i)')})
@@ -129,7 +126,7 @@ const FINISH_SIGNIFICAND = `
 // ExponentPart scan: 'e'/'E' + optional sign + digits → $exp / $expDigits.
 // `tail` runs inside the e/E branch — Number rejects an empty exponent ("1e")
 // as NaN, parseFloat ignores it, so each caller passes its own resolution.
-const sciExponent = (tail) => `
+export const sciExponent = (tail) => `
     (local.set $c ${chAtSafe('(local.get $i)')})
     (if (i32.or
         (i32.eq (local.get $c) (i32.const 101))
@@ -137,9 +134,9 @@ const sciExponent = (tail) => `
       (then
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 45))
-          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-        (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 43))
-          (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))))
+          (else (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 43))
+            (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))))
         (block $expDone (loop $expLoop
           (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $c ${chAt('(local.get $i)')})
@@ -147,13 +144,19 @@ const sciExponent = (tail) => `
             (i32.or
               (i32.lt_s (local.get $c) (i32.const 48))
               (i32.gt_s (local.get $c) (i32.const 57))))
-          (local.set $exp
-            (i32.add
-              (i32.mul (local.get $exp) (i32.const 10))
-              (i32.sub (local.get $c) (i32.const 48))))
+          ;; Saturate while still consuming digits: an enormous exponent must not wrap.
+          (if (i32.or (i32.gt_u (local.get $exp) (i32.const 214748364))
+                (i32.and (i32.eq (local.get $exp) (i32.const 214748364)) (i32.gt_u (local.get $c) (i32.const 55))))
+            (then (local.set $exp (i32.const 2147483647)))
+            (else (local.set $exp (i32.add (i32.mul (local.get $exp) (i32.const 10))
+              (i32.sub (local.get $c) (i32.const 48))))))
           (local.set $expDigits (i32.add (local.get $expDigits) (i32.const 1)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $expLoop)))
+        ;; More than input length + 400 cannot cancel the significand's scale.
+        ;; Bound before adding/subtracting decExp so saturated exponents stay signed.
+        (if (i32.gt_u (local.get $exp) (i32.add (local.get $len) (i32.const 400)))
+          (then (local.set $exp (i32.add (local.get $len) (i32.const 400)))))
         ${tail}))`
 
 // Apply the accumulated base-10 exponent to $result via __pow10.
@@ -186,7 +189,7 @@ const POW10_SCALE = `
 // sciExponent finalizes $decExp, then calls $__dec_to_f64 with both.
 // Falls back to f64.convert_i64_u + POW10_SCALE when EL returns NaN (ambiguous).
 // The caller handles sign INSIDE this fragment (so the final return is the signed result).
-const EL_SCALE = `
+export const EL_SCALE = `
     (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
     (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
     (local.set $result (call $__dec_to_f64 (local.get $mant) (local.get $decExp)))
@@ -229,6 +232,8 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
     (local $a0 i32) (local $a1 i32) (local $b0 i32) (local $b1 i32)
     (local $t00 i64) (local $t01 i64) (local $t10 i64) (local $t11 i64)
     (local $mid i64) (local $mid_carry i64)
+    ;; An integral significand needs only the correctly rounded Wasm conversion.
+    (if (i32.eqz (local.get $exp10)) (then (return (f64.convert_i64_u (local.get $mant)))))
     ;; Zero check
     (if (i64.eqz (local.get $mant)) (then (return (f64.const 0))))
     ;; Compute bit length of mant (1..64) by normalizing to 64 bits via clz

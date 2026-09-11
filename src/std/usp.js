@@ -1,6 +1,6 @@
 /**
  * `jz:usp` – URLSearchParams as readable jz source: `new URLSearchParams(init)`
- * canonicalizes to `__usp_new`, a fixed-shape object with closure methods over
+ * canonicalizes to `__usp_new`, a class with shared methods over private
  * parallel key/value arrays. WHATWG semantics: forgiving percent decode ('+'
  * is space, malformed escapes pass through as literals, never a throw),
  * application/x-www-form-urlencoded escaping on toString (space→'+', only
@@ -55,19 +55,45 @@ export let __usp_esc = (s) => {
   }
   return out
 }
-export let __usp_new = (init) => {
-  let ks = []
-  let vs = []
-  let self = { __usp: 1, size: 0, get: undefined, getAll: undefined, has: undefined, append: undefined, set: undefined, delete: undefined, forEach: undefined, keys: undefined, values: undefined, entries: undefined, sort: undefined, toString: undefined }
-  let find = (k) => { for (let i = 0; i < ks.length; i++) { if (ks[i] === k) return i } return -1 }
-  self.get = (k) => { let i = find(String(k)); return i < 0 ? null : vs[i] }
-  self.getAll = (k) => { let key = String(k); let out = []; for (let i = 0; i < ks.length; i++) { if (ks[i] === key) out.push(vs[i]) } return out }
-  self.has = (k, v) => { let key = String(k); for (let i = 0; i < ks.length; i++) { if (ks[i] === key && (v === undefined || vs[i] === String(v))) return true } return false }
-  self.append = (k, v) => { ks.push(String(k)); vs.push(String(v)); self.size = ks.length; return undefined }
-  self.set = (k, v) => {
+export class __URLSearchParams {
+  #ks = []
+  #vs = []
+  constructor(init) {
+    if (init != null) {
+      if (typeof init === 'string') {
+        let s = init
+        if (s[0] === '?') s = s.slice(1)
+        if (s.length > 0) {
+          let parts = s.split('&')
+          for (let pi = 0; pi < parts.length; pi++) {
+            let part = parts[pi]
+            if (part.length > 0) {
+              let eq = part.indexOf('=')
+              if (eq < 0) this.append(__usp_dec(part), '')
+              else this.append(__usp_dec(part.slice(0, eq)), __usp_dec(part.slice(eq + 1)))
+            }
+          }
+        }
+      } else if (Array.isArray(init)) {
+        for (let pi = 0; pi < init.length; pi++) { let pair = init[pi]; this.append(pair[0], pair[1]) }
+      } else if (init instanceof __URLSearchParams) {
+        for (let i = 0; i < init.#ks.length; i++) this.append(init.#ks[i], init.#vs[i])
+      } else {
+        let es = Object.entries(init)
+        for (let ei = 0; ei < es.length; ei++) { let e = es[ei]; this.append(e[0], e[1]) }
+      }
+    }
+  }
+  get size() { return this.#ks.length }
+  #find(k) { let ks = this.#ks; for (let i = 0; i < ks.length; i++) { if (ks[i] === k) return i } return -1 }
+  get(k) { let vs = this.#vs; let i = this.#find(String(k)); return i < 0 ? null : vs[i] }
+  getAll(k) { let ks = this.#ks, vs = this.#vs; let key = String(k); let out = []; for (let i = 0; i < ks.length; i++) { if (ks[i] === key) out.push(vs[i]) } return out }
+  has(k, v) { let ks = this.#ks, vs = this.#vs; let key = String(k); for (let i = 0; i < ks.length; i++) { if (ks[i] === key && (v === undefined || vs[i] === String(v))) return true } return false }
+  append(k, v) { let ks = this.#ks, vs = this.#vs; ks.push(String(k)); vs.push(String(v)); return undefined }
+  set(k, v) { let ks = this.#ks, vs = this.#vs;
     let key = String(k)
-    let i = find(key)
-    if (i < 0) { self.append(key, v); return undefined }
+    let i = this.#find(key)
+    if (i < 0) { this.append(key, v); return undefined }
     vs[i] = String(v)
     let w = i + 1
     for (let r = i + 1; r < ks.length; r++) {
@@ -75,10 +101,9 @@ export let __usp_new = (init) => {
     }
     ks.splice(w)
     vs.splice(w)
-    self.size = ks.length
     return undefined
   }
-  self.delete = (k, v) => {
+  'delete'(k, v) { let ks = this.#ks, vs = this.#vs;
     let key = String(k)
     let w = 0
     for (let r = 0; r < ks.length; r++) {
@@ -86,14 +111,13 @@ export let __usp_new = (init) => {
     }
     ks.splice(w)
     vs.splice(w)
-    self.size = ks.length
     return undefined
   }
-  self.forEach = (fn) => { for (let i = 0; i < ks.length; i++) fn(vs[i], ks[i], self); return undefined }
-  self.keys = () => ks.slice()
-  self.values = () => vs.slice()
-  self.entries = () => { let out = []; for (let i = 0; i < ks.length; i++) out.push([ks[i], vs[i]]); return out }
-  self.sort = () => {
+  forEach(fn) { for (let i = 0; i < this.size; i++) fn(this.#vs[i], this.#ks[i], this); return undefined }
+  keys() { return this.#ks.slice() }
+  values() { return this.#vs.slice() }
+  entries() { let ks = this.#ks, vs = this.#vs; let out = []; for (let i = 0; i < ks.length; i++) out.push([ks[i], vs[i]]); return out }
+  sort() { let ks = this.#ks, vs = this.#vs;
     for (let i = 1; i < ks.length; i++) {
       let k = ks[i]
       let v = vs[i]
@@ -104,7 +128,7 @@ export let __usp_new = (init) => {
     }
     return undefined
   }
-  self.toString = () => {
+  toString() { let ks = this.#ks, vs = this.#vs;
     let out = ''
     for (let i = 0; i < ks.length; i++) {
       if (i > 0) out = out + '&'
@@ -112,30 +136,6 @@ export let __usp_new = (init) => {
     }
     return out
   }
-  if (init != null) {
-    if (typeof init === 'string') {
-      let s = init
-      if (s[0] === '?') s = s.slice(1)
-      if (s.length > 0) {
-        let parts = s.split('&')
-        for (let pi = 0; pi < parts.length; pi++) {
-          let part = parts[pi]
-          if (part.length > 0) {
-            let eq = part.indexOf('=')
-            if (eq < 0) self.append(__usp_dec(part), '')
-            else self.append(__usp_dec(part.slice(0, eq)), __usp_dec(part.slice(eq + 1)))
-          }
-        }
-      }
-    } else if (Array.isArray(init)) {
-      for (let pi = 0; pi < init.length; pi++) { let pair = init[pi]; self.append(pair[0], pair[1]) }
-    } else if (init.__usp === 1) {
-      init.forEach((v, k) => self.append(k, v))
-    } else {
-      let es = Object.entries(init)
-      for (let ei = 0; ei < es.length; ei++) { let e = es[ei]; self.append(e[0], e[1]) }
-    }
-  }
-  return self
 }
+export let __usp_new = (init) => new __URLSearchParams(init)
 `

@@ -2,6 +2,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
+import { instantiate, aux } from '../interop.js'
 import { run, cases } from './util.js'
 
 // === JSON.stringify ===
@@ -495,4 +496,113 @@ test('JSON.stringify: Date serializes as ISO string', () => {
   is(j(`export let f = () => JSON.stringify({t: new Date(0), n: 1})`), '{"t":"1970-01-01T00:00:00.000Z","n":1}')
   is(j(`export let f = () => JSON.stringify([new Date(5)])`), '["1970-01-01T00:00:00.005Z"]')
   is(j(`export let f = () => JSON.stringify(new Date(NaN))`), 'null')
+})
+
+
+test('JSON.parse: runtime decimals share Number rounding and reject incomplete tokens', () => {
+  const { f, p } = run(`
+    export function f(s) { return JSON.stringify(JSON.parse(s)) }
+    export function p(s) { return JSON.parse(s) }
+  `)
+  for (const src of ['0', '-0', '0.10000000000000001', '5e-324', '2.2250738585072014e-308',
+    '1.7976931348623157e308', '9007199254740993', '1152921504606847359',
+    '1e4294967296', '1e-4294967296', '100000000000000000000e2147483647', '0e9999', '[0.1,5e-324,-0]', 'null', '[]', '{}']) {
+    is(f(src), JSON.stringify(JSON.parse(src)), src)
+    is(f(src), JSON.stringify(JSON.parse(src)), 'repeat ' + src)
+  }
+  ok(Object.is(p('-0'), -0), 'negative zero survives parsing')
+  for (const src of ['', '-', '01', '1.', '1e', '1e+', '1e-', '1e-+2', '-.1', '[1.]']) {
+    throws(() => f(src), 'invalid token ' + src)
+    is(f('0'), '0', 'valid parse after ' + src)
+  }
+})
+
+test('JSON.parse: canonical object slots overwrite duplicate keys and order indices', () => {
+  const { f, prop, keys } = run(`
+    export function f(s) { return JSON.stringify(JSON.parse(s)) }
+    export function prop(s) { return JSON.parse(s).a }
+    export function keys(s) { return Object.keys(JSON.parse(s)).join('|') }
+  `)
+  const inputs = ['{}', '{"a":1,"a":2}', '{"a":1,"b":3,"a":2}',
+    '{"a":1,"\\u0061":2}', '{"longword":1,"longword":2}',
+    '{"2":2,"1":1}', '{"z":0,"4294967294":3,"2147483648":2,"0":4,"02":5,"4294967295":1}',
+    '{"-0":1,"00":2,"1":3,"":4,"__proto__":5}',
+    '{"a":{"x":1,"x":2},"b":[{"3":3,"0":0}]}',
+    '{"9":9,"8":8,"7":7,"6":6,"5":5,"4":4,"3":3,"2":2,"1":1,"0":0,"9":99}']
+  for (const src of inputs.concat(inputs)) {
+    is(f(src), JSON.stringify(JSON.parse(src)), src)
+    is(keys(src), Object.keys(JSON.parse(src)).join('|'), 'keys ' + src)
+  }
+  is(prop('{"a":1,"a":2}'), 2, 'property read uses overwritten slot')
+  // Let-bound inputs use the shaped parser; a noncanonical shape falls back.
+  cases(inputs.map(src => ['shaped ' + src,
+    `() => { let s = ${JSON.stringify(src)}; return JSON.stringify(JSON.parse(s)) }`,
+    JSON.stringify(JSON.parse(src))]))
+})
+
+
+test('JSON.parse: schema cache reuses decoded keys and rejects hash collisions', () => {
+  const j = instantiate(compile(`
+    export function object(s) { return JSON.parse(s) }
+    export function text(s) { return JSON.stringify(JSON.parse(s)) }
+  `))
+  const schema = s => aux(j.instance.exports.object(j.memory.String(s)))
+  const a = '{"longname":1,"2":2,"1":1}'
+  const id = schema(a)
+  for (const src of [a, '{"1":1,"2":2,"longname":2}',
+    '{"1":1,"2":2,"longname":2,"longname":3}', '{"1":1,"2":2,"long\\u006eame":4}']) {
+    is(schema(src), id, 'reuse ' + src)
+    is(j.exports.text(src), JSON.stringify(JSON.parse(src)), src)
+  }
+  // Both keys hash to 1297082294. Hash equality must still compare contents.
+  const x = '{"property_5e5gf5":1}', y = '{"property_-y7i35a":2}'
+  const xid = schema(x), yid = schema(y)
+  ok(xid !== yid, 'colliding strings have distinct schemas')
+  is(schema(x), xid, 'first collision entry remains reusable')
+  is(schema(y), yid, 'second collision entry remains reusable')
+  is(j.exports.text(x), x, 'first collision retains its key')
+  is(j.exports.text(y), y, 'second collision retains its key')
+  for (let i = 0; i < 100; i++) is(schema(a), id, 'repeated parses do not allocate schema IDs')
+})
+
+
+test('JSON.parse: growing schema tables preserve earlier objects and stop before ID overflow', () => {
+  const j = instantiate(compile(`
+    let saved
+    export function parse(s) {
+      const o = JSON.parse(s)
+      if (saved === undefined) saved = o
+      return JSON.stringify(o)
+    }
+    export function first() { return JSON.stringify(saved) }
+    export function user(n) { throw n }
+  `))
+  const { parse, first } = j.exports
+  let last, stopped = false
+  // Exceed the initial 256-slot reserve and finally the 15-bit schema ID.
+  for (let i = 0; i <= 32768; i++) {
+    const src = '{"field' + i + '":' + i + '}'
+    try { last = parse(src) }
+    catch (e) {
+      ok(i > 32000, 'capacity grows before the representation limit')
+      ok(/schema limit/.test(e.message), 'representation exhaustion is a clear error')
+      stopped = true
+      break
+    }
+    if (i === 255 || i === 256 || i === 1777 || i === 5000 || i === 32700) {
+      is(last, src, 'new object at ' + i)
+      is(first(), '{"field0":0}', 'retained object at ' + i)
+    }
+  }
+  ok(stopped, 'schema IDs never wrap into another object shape')
+  is(first(), '{"field0":0}', 'retained object survives the capacity error')
+  is(parse(last), last, 'cached schema remains usable after the capacity error')
+  j.instance.exports._clear()
+  is(parse('{"fresh":1}'), '{"fresh":1}', 'clear resets the table, capacity and schema IDs')
+  is(first(), '{"fresh":1}', 'clear resets retained module state')
+  for (let i = 0; i < 2000; i++) parse('{"other' + i + '":0}')
+  is(first(), '{"fresh":1}', 'table grows safely again after clear')
+  let thrown
+  try { j.exports.user(214) } catch (e) { thrown = e }
+  is(thrown.thrown, 214, 'runtime errors do not reserve user-thrown numbers')
 })

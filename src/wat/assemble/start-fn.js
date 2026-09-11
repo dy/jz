@@ -142,6 +142,10 @@ function buildSchemaInit() {
   if (needsSchemaTbl) {
     const nSchemas = ctx.schema.list.length
     const runtimeReserve = hasJpObj ? 256 : 0
+    if (runtimeReserve) {
+      declGlobal('__schema_cap', 'i32')
+      ctx.scope.globals.get('__schema_cap').init = nSchemas + runtimeReserve
+    }
     // Pre-eval tier 2: the schema NAME TABLE is compile-time data — every key is a
     // static string literal, every keys-array a constant, the table an array of
     // constant boxed pointers. Lay it out in the data segment (staticArrayPtr per

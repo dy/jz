@@ -4,11 +4,6 @@
  * plus ES 20.5.1.1 message coercion (ToString with jz's provable-closed-world
  * exceptions for BOOL/closed-object-literal/open-object receivers).
  *
- * Pure move out of module/core.js (pipeline-minimality core split) — a fully
- * self-contained leaf: every private helper here has exactly one call site,
- * and every one of those call sites is inside this same file. Zero coupling to
- * any other closure-scoped helper in core.js.
- *
  * @module core/error-object
  */
 import { typed, asF64, temp, tempI32, isUndef, truthyIR, toStrI64, mkPtrIR } from '../../src/ir.js'
@@ -16,7 +11,32 @@ import { emit } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { VAL } from '../../src/reps.js'
 import { ctx, err, inc, PTR } from '../../src/ctx.js'
+import { dataLen } from '../../src/static-data.js'
 import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
+
+// Shared lazy runtime throw: ordinary branded Error storage and transport.
+// Track literal data so dead helpers leave no strings in the final module.
+export function throwErrorWat(ctx, name, className, message) {
+  const strBits = text => {
+    const ir = ctx.core.emit['str'](text)
+    if (!Array.isArray(ir) || ir[0] !== 'f64.const') throw new Error(name + ' requires a static string literal')
+    return ir[1]
+  }
+  const sid = ctx.schema.errorSid(className)
+  ctx.schema.namedUses.push({ sid, funcName: name })
+  const slots = ctx.abi.object.ops.allocSlots(2)
+  const start = dataLen()
+  const msgBits = strBits(message), nameBits = strBits(className)
+  if (dataLen() > start) ctx.runtime.reclaimSpans.push({ fn: '$' + name, start, end: dataLen() })
+  return `(func $${name}
+    (local $p i32) (local $e f64)
+    (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${slots})))
+    (f64.store (local.get $p) (f64.const ${msgBits}))
+    (f64.store (i32.add (local.get $p) (i32.const 8)) (f64.const ${nameBits}))
+    (local.set $e (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $p)))
+    (global.set $__jz_last_err_bits (i64.reinterpret_f64 (local.get $e)))
+    (throw $__jz_err (local.get $e)))`
+}
 
 export const registerErrorClasses = () => {
   // Object-literal AST shape with NO 'toString'/'valueOf' key: a DEFINITIVE

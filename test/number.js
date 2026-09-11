@@ -271,3 +271,13 @@ test('Number: String() shortest round-trip (Ryū)', () => {
   is(f(4.35), '4.35')
   is(f(999999999.9), '999999999.9')
 })
+
+
+test('Number/parseFloat: saturated exponents and a single exponent sign', () => {
+  const { n, p } = run(`export function n(s) { return Number(s) }
+    export function p(s) { return parseFloat(s) }`)
+  for (const s of ['1e4294967296', '1e-4294967296', '0e9999', '1e-+2', '1e+-2', '1e+', '5e-324', '100000000000000000000e2147483647', '0.' + '0'.repeat(20000) + '1e20001']) {
+    is(Object.is(n(s), Number(s)), true, 'Number ' + s)
+    is(Object.is(p(s), parseFloat(s)), true, 'parseFloat ' + s)
+  }
+})

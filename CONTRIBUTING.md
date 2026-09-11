@@ -99,6 +99,19 @@ handles carry no element contract. Fresh returned arrays keep their construction
 proofs; typed buffers keep their storage policy. See the [host memory contract](README.md#host-memory-contract) for mutation
 and allocation failure behavior.
 
+JSON.parse shares decimal accumulation and rounding with Number/parseFloat;
+its own scanner checks the stricter JSON grammar. Integral significands bypass
+the decimal conversion table. Parsed objects overwrite duplicate keys and order
+array-index keys before registering a schema. The schema cache hashes decoded
+keys, verifies their contents, and grows its backing table while preserving IDs.
+Exhausting the pointer's schema-ID field raises a RangeError instead of corrupting
+another object. The ordinary module clear resets the table and cache together.
+
+URLSearchParams uses ordinary class lowering with shared methods and private
+key/value arrays. Unused methods disappear through existing reachability analysis.
+Its callback iterator rereads the live fields after each callback, including
+when appending entries grows their backing arrays.
+
 ### Body-fact freshness
 
 `analyzeBody` caches observations, not an immutable semantic snapshot. Its
