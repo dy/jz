@@ -13,7 +13,7 @@ import { VAL, repOf } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
 import { analyzeBody } from '../analyze.js'
 import { withValueOverlay } from '../flow-state.js'
-import { safeReads } from '../analyze-scans.js'
+import { arrayUsesSafe, scanBindingUses } from '../analyze-scans.js'
 import { ARR_RESIZE_METHODS } from './shared.js'
 
 // ————————————————————————— param neverGrown (cross-function) —————————————————————————
@@ -23,7 +23,7 @@ import { ARR_RESIZE_METHODS } from './shared.js'
 // function can't see its callers. The cross-function proof: during any
 // activation of f, the array a param holds can only relocate if some code
 // RUNNING WITHIN that activation grows an array it can reach — so a param is
-// never-grown iff (a) the body only ever purely READS it (safeReads: index /
+// never-grown iff (a) the body only ever purely READS it (arrayUsesSafe: index /
 // .length, no aliasing, no passing on), and (b) f's body and every transitive
 // callee are ARRAY-GROWTH-FREE: no resize-method call / .length write /
 // non-literal-key indexed write on a possibly-ARRAY receiver, and no call
@@ -137,9 +137,11 @@ export function analyzeParamNeverGrown(paramReps) {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw || poisoned.has(func.name) || !edges.has(func.name)) continue
     const params = func.sig?.params || []
+    if (!params.length) continue
+    const uses = scanBindingUses(func.body, new Set(params.map(p => p.name)))
     for (let k = 0; k < params.length; k++) {
       if (func.rest && k === params.length - 1) continue
-      if (!safeReads(func.body, params[k].name)) continue
+      if (!arrayUsesSafe(uses.get(params[k].name))) continue
       let reps = paramReps.get(func.name)
       if (!reps) paramReps.set(func.name, reps = new Map())
       const r = reps.get(k)

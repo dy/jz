@@ -194,6 +194,7 @@ export const USE = {
   BOOL_TEST: 10,     // operand of `!`/`typeof`/`void`, or an `if`/`while`/`?:` test
   DELETE_MEMBER: 11, // `delete name.member`
   BARE: 12,          // any other value position — the conservative catch-all
+  MEMBER_CALL: 13,   // receiver of a member call — never a plain property read
 }
 // Immutable singleton records for uses with no metadata. scanBindingUses
 // creates hundreds of thousands of these in self-hosted analysis; sharing by
@@ -213,25 +214,26 @@ const SIMPLE_USE = Array.from({ length: 13 }, (_, kind) => [kind])
 // comparison one per nullish-partner flag, a test one per operator. A body
 // reads the same few keys many times; the self-compile made one record per
 // occurrence (6.5 KB per body).
-const MEMBER_R_BY_KEY = new Map(), MEMBER_R_OPTIONAL_BY_KEY = new Map()
-const MEMBER_R_ANY = [USE.MEMBER_R, null, false, false], MEMBER_R_ANY_OPTIONAL = [USE.MEMBER_R, null, true, false]
-const MEMBER_R_COMPUTED = [USE.MEMBER_R, null, false, true]
-const memberRead = (key, optional) => {
-  if (key == null) return optional ? MEMBER_R_ANY_OPTIONAL : MEMBER_R_ANY
-  const byKey = optional ? MEMBER_R_OPTIONAL_BY_KEY : MEMBER_R_BY_KEY
-  let r = byKey.get(key)
-  if (r === undefined) byKey.set(key, r = [USE.MEMBER_R, key, optional, false])
+const MEMBER_READS = Array.from({ length: 8 }, () => new Map())
+const memberRead = (key, optional, indexed = false, called = false) => {
+  const row = MEMBER_READS[(optional ? 1 : 0) | (indexed ? 2 : 0) | (called ? 4 : 0)]
+  let r = row.get(key)
+  if (r === undefined) {
+    r = [called ? USE.MEMBER_CALL : USE.MEMBER_R, key, optional, indexed && key == null,
+      undefined, undefined, undefined, undefined, indexed ? '[]' : optional ? '?.' : '.']
+    row.set(key, r)
+  }
   return r
 }
-const MEMBER_W_BY_KEY = new Map(), MEMBER_W_COMPOUND_BY_KEY = new Map()
-const MEMBER_W_ANY = [USE.MEMBER_W, null, undefined, false, false], MEMBER_W_ANY_COMPOUND = [USE.MEMBER_W, null, undefined, false, true]
-const MEMBER_W_COMPUTED = [USE.MEMBER_W, null, undefined, true, false], MEMBER_W_COMPUTED_COMPOUND = [USE.MEMBER_W, null, undefined, true, true]
-const memberWrite = (key, computed, compound) => {
-  if (computed) return compound ? MEMBER_W_COMPUTED_COMPOUND : MEMBER_W_COMPUTED
-  if (key == null) return compound ? MEMBER_W_ANY_COMPOUND : MEMBER_W_ANY
-  const byKey = compound ? MEMBER_W_COMPOUND_BY_KEY : MEMBER_W_BY_KEY
-  let r = byKey.get(key)
-  if (r === undefined) byKey.set(key, r = [USE.MEMBER_W, key, undefined, false, compound])
+const MEMBER_WRITES = Array.from({ length: 4 }, () => new Map())
+const memberWrite = (key, indexed, compound) => {
+  const row = MEMBER_WRITES[(indexed ? 1 : 0) | (compound ? 2 : 0)]
+  let r = row.get(key)
+  if (r === undefined) {
+    r = [USE.MEMBER_W, key, undefined, indexed && key == null, compound,
+      undefined, undefined, undefined, indexed ? '[]' : '.']
+    row.set(key, r)
+  }
   return r
 }
 const CALL_ARG_BY_CALLEE = new Map(), CALL_ARG_ANY = []
@@ -324,7 +326,7 @@ export function scanBindingUses(body, trackNames) {
     }
     if (o === '[]' && typeof t[1] === 'string') {
       const k = litKey(t[2])
-      use(t[1], USE.MEMBER_W, memberWrite(k, k == null, compound))
+      use(t[1], USE.MEMBER_W, memberWrite(k, true, compound))
       if (t[2] != null) val(t[2])
       return
     }
@@ -384,7 +386,7 @@ export function scanBindingUses(body, trackNames) {
     }
     if (op === '[]') {
       const recv = node[1], k = litKey(node[2])
-      if (typeof recv === 'string') use(recv, USE.MEMBER_R, k == null ? MEMBER_R_COMPUTED : memberRead(k, false))
+      if (typeof recv === 'string') use(recv, USE.MEMBER_R, memberRead(k, false, true))
       else walk(recv)
       if (node[2] != null) val(node[2])
       return
@@ -403,7 +405,13 @@ export function scanBindingUses(body, trackNames) {
     if (op === '()') {
       const callee = node[1]
       if (typeof callee === 'string') use(callee, USE.CALL_CALLEE)
-      else walk(callee)
+      else if (Array.isArray(callee) && typeof callee[1] === 'string' &&
+          (callee[0] === '.' || callee[0] === '?.' || callee[0] === '[]' || callee[0] === '?.[]')) {
+        const indexed = callee[0] === '[]' || callee[0] === '?.[]'
+        use(callee[1], USE.MEMBER_CALL, memberRead(indexed ? litKey(callee[2]) : callee[2],
+          callee[0] === '?.' || callee[0] === '?.[]', indexed, true))
+        if (indexed) val(callee[2])
+      } else walk(callee)
       const argNode = node[2]
       if (argNode != null) {
         const args = (Array.isArray(argNode) && argNode[0] === ',') ? argNode.slice(1) : [argNode]
@@ -672,7 +680,7 @@ export function scanFlatObjects(body) {
 // receiver; `COMPARE` any comparison; `CONCAT`/`BOOL_TEST` the copy / test
 // positions. Any other kind (reassign, call arg, return, capture, bare alias)
 // escapes and disqualifies the binding.
-const _SLICE_VIEW_OK = new Set([USE.MEMBER_R, USE.MEMBER_W, USE.COMPARE, USE.CONCAT, USE.BOOL_TEST])
+const _SLICE_VIEW_OK = new Set([USE.MEMBER_R, USE.MEMBER_CALL, USE.MEMBER_W, USE.COMPARE, USE.CONCAT, USE.BOOL_TEST])
 
 const _isSliceCall = (n) =>
   Array.isArray(n) && n[0] === '()' && Array.isArray(n[1])
@@ -704,46 +712,27 @@ export function scanSliceViews(body) {
  * `escapes` map, which misses member-write RHS (`w.data = a`) and compound assigns. If
  * the analysis is wrong and the array IS relocated, a read through the stale base
  * corrupts memory — so any unrecognized use disqualifies. (Growing an INNER array,
- * `a[0].push(x)`, never relocates `a` itself, so `a` stays eligible — see safeReads.)
+ * `a[0].push(x)`, never relocates `a` itself, so `a` stays eligible — see arrayUsesSafe.)
  */
 const grownOrEscapes = (op) => MUTATE_OPS.has(op) || op === 'delete'
-export function safeReads(node, name) {
-  if (typeof node === 'string') return node !== name            // bare value use → escape
-  if (!Array.isArray(node)) return true
-  const op = node[0]
-  // `a(…)` / `a.m(…)` / `a[i](…)` — calling `a` or a method/element of it may grow/escape it.
-  if (op === '()') {
-    const c = node[1]
-    if (c === name) return false
-    if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.' || c[0] === '[]' || c[0] === '?.[]') && c[1] === name) return false
-  }
-  // write / update / delete on `a`, `a[..]`, or `a.x` (incl. `a.length = …` and compounds)
-  if (grownOrEscapes(op)) {
-    const t = node[1]
-    if (t === name) return false
-    if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name) return false
-  }
-  // declaration: check each initializer RHS (so `let b = a` aliasing disqualifies);
-  // the bound names themselves are definitions, not uses (skips `a`'s own decl).
-  if (op === 'let' || op === 'const' || op === 'var') {
-    for (let i = 1; i < node.length; i++) {
-      const d = node[i]
-      if (Array.isArray(d) && d[0] === '=' && !safeReads(d[2], name)) return false
-    }
-    return true
-  }
-  // the only safe forms: `a.length` read, and `a[i]` index read (recurse the index expr).
-  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
-  if (op === '[]' && node[1] === name) return safeReads(node[2], name)
-  if (op === '...' && node[1] === name) return false            // spread → escape
-  for (let i = 1; i < node.length; i++) if (!safeReads(node[i], name)) return false
-  return true
+/** Default-deny policies over the already-classified uses. Indexed reads of
+ * inner values are safe; a call on the array itself is a distinct use. */
+export function arrayUsesSafe(s, own = false) {
+  if (!s) return true
+  return s[BINDING_USE_USES].every(u => {
+    const kind = u[BINDING_USE_KIND], key = u[BINDING_USE_KEY], op = u[BINDING_USE_OP]
+    if (kind === USE.MEMBER_R) return key === 'length' || op === '[]'
+    if (!own) return false
+    if (kind === USE.RETURN) return true
+    if (kind === USE.MEMBER_CALL) return op === '.' && key === 'push'
+    return kind === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] && (key === 'length' || op === '[]')
+  })
 }
 
 /**
  * A rest parameter that never escapes is a view of the argument slots
  * (closure-emit.js): no array is built at entry, `rest.length` is the
- * argument count and `rest[i]` reads the slot. The proof is safeReads'
+ * argument count and `rest[i]` reads the slot. The proof admits pure reads
  * (every mention an element read or a length read) with two additions: a
  * mention inside a nested arrow escapes (the closure would capture a value
  * the view does not have), and `for…of`'s lowering (`let a = __iter_arr(rest)`,
@@ -800,93 +789,45 @@ export function restViewAliases(body, rest) {
 // flatObjectCandidate above.
 const freshArrayInit = (s) => s[BINDING_USE_DECLS] === 1 && Array.isArray(s[BINDING_USE_INIT])
   && (s[BINDING_USE_INIT][0] === '[' || (s[BINDING_USE_INIT][0] === '[]' && s[BINDING_USE_INIT].length <= 2))
-function neverGrownCandidate(name, s, body) {
+function neverGrownCandidate(s) {
   // Candidate: a single-declaration binding initialized from a fresh array literal.
-  return freshArrayInit(s) && safeReads(body, name)
+  return freshArrayInit(s) && arrayUsesSafe(s)
 }
 
 /**
  * Own-name-current array bindings — reads through them may skip the forwarding
  * follow like a neverGrown binding's, though the array DOES grow: every grow
  * runs through the binding's own name and writes the (possibly relocated)
- * pointer back to it, so the binding is never stale. Beyond safeReads' pure
+ * pointer back to it, so the binding is never stale. Beyond pure
  * reads this admits exactly the grow sites whose emitters persist the pointer:
  * `a.push(…)` (module/array.js writeBack), `a[i] = v` (emit-assign.js
  * persistBinding) and `a.length = n` (`__arr_set_length` with persist); and
  * `return a`, after which no read of this function follows. A bare alias, a
  * capture, a call argument, a store into a container — anything that could
- * grow the array through another name — disqualifies exactly as for safeReads.
+ * grow the array through another name — disqualifies as for read-only arrays.
  * The fact is NOT neverGrown: the header relocates, so no base hoists across a
  * grow (licm.js keys off neverGrown alone). A nested function holding the name
  * disqualifies too: it captures the pointer by value and a push inside it
  * would relocate behind this function's copy.
  */
-export function ownReads(node, name) {
-  if (typeof node === 'string') return node !== name
-  if (!Array.isArray(node)) return true
-  const op = node[0]
-  // A nested function captures the pointer by value (the binding is never
-  // reassigned, so it is not boxed): a push inside it relocates behind this
-  // function's copy. Any mention inside an arrow disqualifies.
-  if (op === '=>') return !refsName(node, name, REFS_IN_EXPR)
-  if (op === 'return' && node[1] === name) return true
-  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === name && node[1][2] === 'push')
-    return node.slice(2).every(a => ownReads(a, name))
-  if (op === '=' && Array.isArray(node[1]) && node[1][1] === name
-      && ((node[1][0] === '[]' && ownReads(node[1][2], name)) || (node[1][0] === '.' && node[1][2] === 'length')))
-    return ownReads(node[2], name)
-  if (op === '()') {
-    const c = node[1]
-    if (c === name) return false
-    if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.' || c[0] === '[]' || c[0] === '?.[]') && c[1] === name) return false
-  }
-  if (grownOrEscapes(op)) {
-    const t = node[1]
-    if (t === name) return false
-    if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name) return false
-  }
-  if (op === 'let' || op === 'const' || op === 'var') {
-    for (let i = 1; i < node.length; i++) {
-      const d = node[i]
-      if (Array.isArray(d) && d[0] === '=' && !ownReads(d[2], name)) return false
-    }
-    return true
-  }
-  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
-  if (op === '[]' && node[1] === name) return ownReads(node[2], name)
-  if (op === '...' && node[1] === name) return false
-  for (let i = 1; i < node.length; i++) if (!ownReads(node[i], name)) return false
-  return true
-}
-const ownCurrentCandidate = (name, s, body) => freshArrayInit(s) && ownReads(body, name)
+const ownCurrentCandidate = (s) => freshArrayInit(s) && arrayUsesSafe(s, true)
 
 export function scanNeverGrown(body) {
   const out = new Set()
-  for (const [name, s] of scanBindingUses(body)) if (neverGrownCandidate(name, s, body)) out.add(name)
+  for (const [name, s] of scanBindingUses(body)) if (neverGrownCandidate(s)) out.add(name)
   return out
 }
 
-/**
- * Fused single-traversal replacement for scanFlatObjects + scanSliceViews +
- * scanNeverGrown (walk-count design A1, .work/archive/walk-count-design.md §5 item 1
- * / §1.3: three independent post-overlay scans over the same
- * scanBindingUses(body) summary, no cross-dependency found between them).
- * Each per-name classification below is the exact original function's own
- * logic (flatObjectCandidate/sliceViewCandidate/neverGrownCandidate,
- * unchanged) — only the outer scanBindingUses(body) loop is now shared
- * instead of run three times. Byte-identical output to calling all three
- * separately, computed once. analyzeBody (analyze.js) calls this instead of
- * the three standalone scans; they stay exported for any other caller /
- * direct test coverage.
- */
+/** Classify object and array storage from one cached binding-use census.
+ * Array policies inspect each binding's uses, never rescan the whole body. */
 export function scanObjectArrayFacts(body) {
   let flatObjects = null, sliceViews = null, neverGrown = null, ownCurrent = null
   for (const [name, s] of scanBindingUses(body)) {
     const entry = flatObjectCandidate(name, s, body)
     if (entry) (flatObjects ||= new Map()).set(name, entry)
     if (sliceViewCandidate(s)) (sliceViews ||= new Set()).add(name)
-    if (neverGrownCandidate(name, s, body)) (neverGrown ||= new Set()).add(name)
-    else if (ownCurrentCandidate(name, s, body)) (ownCurrent ||= new Set()).add(name)
+    if (neverGrownCandidate(s)) (neverGrown ||= new Set()).add(name)
+    else if (ownCurrentCandidate(s)) (ownCurrent ||= new Set()).add(name)
   }
   return [flatObjects || EMPTY_SCAN_MAP, sliceViews || EMPTY_SCAN_SET, neverGrown || EMPTY_SCAN_SET, ownCurrent || EMPTY_SCAN_SET]
 }

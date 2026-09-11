@@ -74,6 +74,7 @@ export const VAL = {
  * @property {number[]} [range] closed integer hull of THIS binding's value — stamped by analyze
  *   for never-reassigned decls whose init has a finite intExprRange (masks, ternary hulls,
  *   bounded products). Feeds i32-provability (exprType `*`, div→shift strength reduction).
+ * @property {number}   [arrayCap] maximum builder length reserved at its literal initialization.
  * @property {number}   [arrayLen] fixed length of a whole-program internal plain array.
  * @property {string}  [arrayElemElemValType] nested element VAL.* kind (`X[i][j]`) for arrays of arrays.
  * @property {string}  [arrayElemTypedCtor] element TypedArray ctor (`new.Float32Array`) for an
@@ -110,7 +111,7 @@ export const VAL = {
  */
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
-  'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayHoles', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
+  'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayHoles', 'arrayElemRange', 'arrayLen', 'arrayCap', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
   'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped',
   'mayBeUndefined', 'presentVal', 'presence',
 ])

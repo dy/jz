@@ -311,6 +311,8 @@ export function assemble(ast, profiler) {
     delete programFacts[retiredParamRepsKey]
     const retiredArrayLengthsKey = 'arrayLengths'
     delete programFacts[retiredArrayLengthsKey]
+    const retiredArrayCapacitiesKey = 'arrayCapacities'
+    delete programFacts[retiredArrayCapacitiesKey]
   })
   // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones

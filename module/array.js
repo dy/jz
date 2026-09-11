@@ -13,7 +13,7 @@ import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPt
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral, walkAst } from '../src/ast.js'
+import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
@@ -25,6 +25,7 @@ import { DATA_VIEW_FLAG } from '../layout.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
+import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY } from '../src/compile/analyze-scans.js'
 import { restViewRead } from '../src/compile/rest-view.js'
 import { hoistArrayValue, makeCallback, callbackArgReps, idxArg } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
@@ -563,24 +564,28 @@ export default (ctx) => {
   // sequence inlined at each; the logical count n = ⌊len·8/strideB⌋ is exact
   // for every stride ≥ 8 (the ceil slack is under one cell).
   // `zero` clears the element first (a union member writes only its own
-  // lanes; the rest read as 0 by the carrier's contract).
-  ctx.core.stdlib['__arr_push_slot'] = `(func $__arr_push_slot (param $ptr i64) (param $strideB i32) (param $zero i32) (result f64 i32)
+  // lanes; the rest read as 0 by the carrier's contract). A proven fixed builder
+  // shares this layout logic but needs neither forwarding nor growth.
+  for (const fixed of [false, true]) {
+    const name = fixed ? '__arr_push_slot_fixed' : '__arr_push_slot'
+    ctx.core.stdlib[name] = `(func $${name} (param $ptr i64) (param $strideB i32) (param $zero i32) (result f64 i32)
     (local $p f64) (local $base i32) (local $n i32) (local $len i32) (local $slot i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (local.set $base (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    ${followForwardingWat('$base', { lowGuard: true })}
-    ${durableArrSnapIR('base')}
+    ${fixed ? '' : followForwardingWat('$base', { lowGuard: true })}
+    ${fixed ? '' : durableArrSnapIR('base')}
     (local.set $n (i32.div_u (i32.shl (i32.load (i32.sub (local.get $base) (i32.const 8))) (i32.const 3)) (local.get $strideB)))
     (local.set $len (i32.shr_u (i32.add (i32.mul (i32.add (local.get $n) (i32.const 1)) (local.get $strideB)) (i32.const 7)) (i32.const 3)))
-    (if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (local.get $len))
+    ${fixed ? '' : `(if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (local.get $len))
       (then
         (local.set $p (call $__arr_grow_known (local.get $ptr) (local.get $len)))
-        (local.set $base (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $p)) (i64.const ${LAYOUT.OFFSET_MASK}))))))
+        (local.set $base (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $p)) (i64.const ${LAYOUT.OFFSET_MASK}))))))`}
     (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $len))
     (local.set $slot (i32.add (local.get $base) (i32.mul (local.get $n) (local.get $strideB))))
     (if (local.get $zero) (then (memory.fill (local.get $slot) (i32.const 0) (local.get $strideB))))
     (local.get $p)
     (local.get $slot))`
+  }
 
   // arr.length = N. Truncation (N ≤ len) just rewrites the len word in place — no
   // relocation, so aliases keep their pointer. Growth past capacity relocates via
@@ -616,7 +621,7 @@ export default (ctx) => {
 
   // === Array literal ===
 
-  ctx.core.emit['['] = (...elems) => {
+  const arrayLiteral = (elems, capacity = 0) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
 
     // An element is a tagged slot: a BigInt element is stored boxed here as
@@ -677,7 +682,7 @@ export default (ctx) => {
       const minCap = configuredLiteralCap == null
         ? Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4)
         : Math.max(configuredLiteralCap | 0, 0)
-      const a = allocArray(len, Math.max(len, minCap))
+      const a = allocArray(len, Math.max(len, minCap, capacity))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
         body.push(['f64.store', slotAddr(a.local, i), emitElem(elems[i])])
@@ -691,6 +696,18 @@ export default (ctx) => {
     return spread(elems.map(e =>
       Array.isArray(e) && e[0] === '...' ? ['__spread', e[1]] : e))
   }
+
+  // Capacity is a settled builder fact; visible length still comes from the literal.
+  const arrayCapacity = name => {
+    const count = typeof name === 'string' ? ctx.func.localReps?.get(name)?.arrayCap : null
+    if (count == null) return null
+    const union = inlineArrayUnion(name), sid = inlineArraySid(name)
+    const cells = union ? Math.ceil(count * union.stride / 2)
+      : sid != null ? count * structInline(ctx.schema.list[sid].length, ctx.schema.inlineCellI32?.has(sid)).cpe : count
+    return cells <= 0x1ffffffe ? cells : null
+  }
+  ctx.core.emit['['] = (...elems) => arrayLiteral(elems)
+  ctx.core.emit['[capacity'] = (name, elems) => arrayLiteral(elems, arrayCapacity(name) ?? 0)
 
   // === Index read ===
 
@@ -1247,6 +1264,7 @@ export default (ctx) => {
     // statement-position hint now so a dropped `xs.push(v)` can skip computing
     // the JS return length while still performing the mutation/writeback.
     const void_ = ctx.func._expect === 'void'
+    const reserved = arrayCapacity(arr) != null
     // structInline Array<S>: `.push({S})` writes the K schema fields as
     // consecutive cells. Flatten the struct literal into K schema-ordered
     // field-value nodes and fall through to the general multi-value store path
@@ -1296,7 +1314,7 @@ export default (ctx) => {
     // Out-of-line fast path: single value, named known-ARRAY receiver. One call +
     // var update instead of ~30 inlined instructions — the dominant size cost of
     // push-heavy code (e.g. watr's WASM emitter).
-    if (vals.length === 1 && typeof arr === 'string' && lookupValType(arr) === VAL.ARRAY) {
+    if (!reserved && vals.length === 1 && typeof arr === 'string' && lookupValType(arr) === VAL.ARRAY) {
       inc('__arr_push1')
       const box = ctx.func.boxed?.get(arr)
       const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
@@ -1335,16 +1353,11 @@ export default (ctx) => {
     // of line and each site stores only its fields, instead of the grow-and-
     // index sequence expanded per literal site. A lone site keeps the inline
     // sequence (the helper alone outweighs it).
-    const pushSites = (name) => {
-      let n = 0
-      walkAst(ctx.func.body, { enter: x => {
-        if (x[0] === '=>') return false
-        if (x[0] === '()' && Array.isArray(x[1]) && x[1][0] === '.' && x[1][1] === name && x[1][2] === 'push') n++
-      } })
-      return n
-    }
+    const pushSites = name => scanBindingUses(ctx.func.body).get(name)?.[BINDING_USE_USES]
+      .filter(u => u[BINDING_USE_KIND] === USE.MEMBER_CALL && u[BINDING_USE_KEY] === 'push').length || 0
     if (inlineLen && (unionB || (inlSid != null && inlK > 1)) && typeof arr === 'string' && ctx.func.body && pushSites(arr) > 1) {
-      inc('__arr_push_slot')
+      const helper = reserved ? '__arr_push_slot_fixed' : '__arr_push_slot'
+      inc(helper)
       const strideB = unionB || inlCpe * 8
       const lanes = unionB ? inlUnion.stride : inlK
       const laneB = unionB || inlPacked ? 4 : 8
@@ -1356,7 +1369,7 @@ export default (ctx) => {
         // the element and the site skips them.
         const zero = unionB && vals.slice(e, e + lanes).some(isZeroLit) ? 1 : 0
         body.push(['local.set', `$${t}`, ['local.set', `$${slot}`,
-          ['call', '$__arr_push_slot', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', strideB], ['i32.const', zero]]]])
+          ['call', `$${helper}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', strideB], ['i32.const', zero]]]])
         for (let j = 0; j < lanes; j++) {
           if (zero && isZeroLit(vals[e + j])) continue
           const addr = j === 0 ? ['local.get', `$${slot}`] : ['i32.add', ['local.get', `$${slot}`], ['i32.const', j * laneB]]
@@ -1374,7 +1387,7 @@ export default (ctx) => {
     }
 
     const grow = inlineLen ? '__arr_grow_known' : '__arr_grow'
-    inc(grow)
+    if (!reserved) inc(grow)
 
     const body = [
       ['local.set', `$${t}`, va],
@@ -1395,6 +1408,8 @@ export default (ctx) => {
         ['local.set', `$${pushBase}`, baseOf()],
         ['local.set', `$${len}`,
           ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]]]],
+      )
+      if (!reserved) body.push(
         ['if',
           ['i32.lt_s',
             ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 4]]],

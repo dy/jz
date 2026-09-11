@@ -66,6 +66,7 @@ const SAMPLES = [
   ['loop',        'export let main = () => { let s = 0; for (let i = 0; i < 10; i++) s += i; return s }', 45],
   ['string-len',  'export let main = () => "hello world".length', 11],
   ['array-reduce','export let main = () => [1,2,3,4,5].reduce((a,b)=>a+b, 0)', 15],
+  ['array-capacity', 'function build(){const a=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];for(let i=0;i<20;i++)a.push(i);return a}export function main(){const a=build();return a.length*100+a[15]*10+a[35]}', 3769],
   ['closure',     'let mk = n => (x => x + n); let add5 = mk(5); export let main = () => add5(7)', 12],
   ['recursion',   'let fib = n => n < 2 ? n : fib(n-1) + fib(n-2); export let main = () => fib(10)', 55],
   // Math intrinsics whose emitters build WAT strings at compile time — guards the

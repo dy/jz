@@ -10,8 +10,44 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { _compileInProcess } from '../index.js'
 import { run, oracle } from './util.js'
+import { scanBindingUses, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_USES, BINDING_USE_KIND, USE } from '../src/compile/analyze-scans.js'
+
+test('array census: reads, calls, writes and escapes have distinct safety policies', () => {
+  _compileInProcess('export const empty = () => 0')
+  const index = (key = [null, 0]) => ['[]', 'a', key]
+  const prop = key => ['.', 'a', key]
+  const call = (callee, arg = [null, 1]) => ['()', callee, arg]
+  const rows = [
+    [null, true, true], [index(), true, true], [index(['str', 'extra']), true, true],
+    [prop('length'), true, true], [prop('extra'), false, false],
+    [call(prop('length')), false, false], [call(index()), false, false],
+    [call(prop('push')), false, true], [call(['?.', 'a', 'push']), false, false],
+    [call(['.', index(), 'push']), true, true],
+    [['=', index(), [null, 2]], false, true], [['+=', index(), [null, 2]], false, false],
+    [['=', prop('length'), [null, 0]], false, true],
+    [['=', prop('extra'), [null, 0]], false, false],
+    [['=', index(), 'a'], false, false], [index('a'), false, false],
+    [['return', 'a'], false, true], [['let', ['=', 'b', 'a']], false, false],
+    [call('consume', 'a'), false, false], [['...', 'a'], false, false],
+    [['=>', [], index()], false, false], [['delete', index()], false, false],
+  ]
+  for (const [node, read, own] of rows) {
+    const body = [';', ['let', ['=', 'a', ['[']]], node]
+    const census = scanBindingUses(body), uses = census.get('a')
+    is(scanBindingUses(body), census, 'the unchanged body reuses its census')
+    is(arrayUsesSafe(uses), read, JSON.stringify(node))
+    is(arrayUsesSafe(uses, true), own, 'own: ' + JSON.stringify(node))
+    const facts = scanObjectArrayFacts(body)
+    is(facts[2].has('a'), read, 'never-relocated classification')
+    is(facts[3].has('a'), own && !read, 'current-pointer classification')
+  }
+  const body = [';', call(prop('length'))]
+  const uses = scanBindingUses(body, new Set(['a'])).get('a')
+  is(uses[BINDING_USE_USES][0][BINDING_USE_KIND], USE.MEMBER_CALL, 'parameter member call is retained')
+  is(arrayUsesSafe(uses), false, 'parameter proof rejects a member call')
+})
 
 
 // The word-frequency shape: kernel reads `words[toks[i]]` per token while a

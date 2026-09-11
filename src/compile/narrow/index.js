@@ -125,6 +125,7 @@ export default function narrowSignatures(programFacts, ast) {
   const typedValueRanges = inferTypedValueRanges(paramReps)
   const internalArrayLengths = inferInternalArrayLengths(paramReps)
   programFacts.arrayLengths = internalArrayLengths.locals
+  programFacts.arrayCapacities = internalArrayLengths.capacities
   const intConstArg = (arg) => {
     let raw = null
     if (typeof arg === 'number') raw = arg

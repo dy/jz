@@ -146,6 +146,48 @@ export function result(){const a=make();return a.length+count(a)}`
   }
 })
 
+test('builders: reserved capacity preserves push results, layouts and repeated calls', () => {
+  const programs = [
+    ['const a=[];for(let i=0;i<40;i++)a.push(i);return a', 'a.length+a[39]', 79],
+    ['const a=[7];for(let i=0;i<5;i++)a.push(i,i+10);return a', 'a.length+a[0]+a[10]', 32],
+    ['const a=[];for(let i=0;i<0;i++)a.push(i);return a', 'a.length', 0],
+    ['const a=[];let n=0;for(let i=0;i<40;i++)n+=a.push(i);a.push(n);return a', 'a.length+a[40]', 861],
+    ['const a=[];for(let i=0;i<33;i++)a.push({x:i,y:i+1,z:i+2});return a', 'a.length+a[32].x+a[32].z', 99],
+    ['const a=[];for(let i=0;i<33;i++){if(i&1)a.push({k:1,x:i,y:i+1});else a.push({k:0,x:i})}return a', 'a.length+a[32].x+a[31].y', 97],
+  ]
+  for (const optimize of TIERS) for (const [body, value, expected] of programs) {
+    const src = `function build(){${body}} export function result(){const a=build();return ${value}}`
+    const { result } = jz(src, { optimize }).exports
+    for (let i=0;i<3;i++) is(result(), expected, 'fresh builder instance')
+    if (!onKernel()) {
+      const wat = compile(src, { optimize, wat: true })
+      ok(!/\$__arr_grow|\$__arr_push_slot(?:\s|\))|\$__arr_push1/.test(wat), 'proven builder has no growth helper')
+    }
+  }
+})
+
+test('builders: conditional growth, aliases, early exits and induction writes reject fixed capacity', () => {
+  const bodies = [
+    'const a=[];flag&&a.push(1);return a',
+    'const a=[];flag||a.push(1);return a',
+    'const a=[];(flag?null:0)??a.push(1);return a',
+    'const a=[];for(let i=(a.push(9),0);i<40;i++)a.push(i);return a',
+    'const a=[];try{if(flag)throw 1;a.push(3)}catch(e){a.push(4,5)}return a',
+    'const a=[];try{if(flag)return a;a.push(3)}finally{a.push(4)}return a',
+    'const a=[];for(let i=0;i<4;i++){if(flag)break;a.push(i)}return a',
+    'const a=[];const b=a;b.push(7);return a',
+    'const a=[];for(let i=0;i<4;i++){a.push(i);if(flag)i++}return a',
+    'const a=[];for(let i=0;i<4;i++){if(flag)continue;a.push(i)}return a',
+    'const a=[];for(let i=0;i<4;i++)a.push(i);a.length=1;return a',
+  ]
+  for (const optimize of TIERS) for (const body of bodies) {
+    const src = `function build(flag){${body}}export function result(flag){const a=build(flag);let n=a.length;for(let i=0;i<a.length;i++)n=(n*31+a[i])|0;return n}`
+    const native = new Function(src.replace('export function result', 'return function result'))()
+    const { result } = jz(src, { optimize }).exports
+    for (const flag of [true,true,false,true]) is(result(flag), native(flag), `${optimize}: ${body}, flag=${flag}`)
+  }
+})
+
 test('audit: nullable calls evaluate arguments before throwing and recover', () => {
   const prefix = 'let calls=0;function twice(x){return x*2}function tick(){calls++;return 4}function pick(){calls=calls*10+1;return twice}function mark(){calls=calls*10+2;return 4}'
   const cases = [

@@ -48,7 +48,7 @@ export function inferInternalArrayLengths(paramReps) {
   // by string and over-rejects — sound.
   const refs = (n, name) => refsName(n, name, REFS_THROUGH_ARROWS)
   const pushCount = (n, arr) => {
-    if (!Array.isArray(n)) return 0
+    if (!Array.isArray(n)) return n === arr ? null : 0
     if (n[0] === '=>') return refs(n, arr) ? null : 0
     if (n[0] === '()') {
       if (Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === arr)
@@ -56,6 +56,7 @@ export function inferInternalArrayLengths(paramReps) {
           ? callArgs(n).length : null
       if (callArgs(n).some(a => refs(a, arr)) || refs(n[1], arr)) return null
     }
+    if (n[0] === '&&' || n[0] === '||' || n[0] === '??' || n[0] === 'catch' || n[0] === 'finally') return refs(n, arr) ? null : 0
     if (n[0] === 'if' || n[0] === '?:') {
       if (refs(n[1], arr)) return null
       const a = pushCount(n[2], arr), b = pushCount(n[3], arr)
@@ -65,7 +66,7 @@ export function inferInternalArrayLengths(paramReps) {
       return refs(n, arr) ? null : 0
     if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue') return null
     if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') {
-      if (n[1] === arr || refs(n[1], arr) || refs(n[2], arr)) return null
+      if (n[1] === arr || refs(n[1], arr) || carriesName(n[2], arr)) return null
     }
     let total = 0
     for (let i = 1; i < n.length; i++) {
@@ -93,7 +94,7 @@ export function inferInternalArrayLengths(paramReps) {
     for (let i = 1; i < n.length; i++) if (mutatesName(n[i], name)) return true
     return false
   }
-  const funcLens = new Map()
+  const funcLens = new Map(), capacities = new Map()
   for (const f of ctx.funcs.list) {
     if (f.raw || !Array.isArray(f.body)) continue
     const arr = returnedName(f.body)
@@ -110,11 +111,12 @@ export function inferInternalArrayLengths(paramReps) {
           if (size != null) { len = size; defNode = d } else bad = true
         }
       }
-      if ((n[0] === 'if' || n[0] === '?:' || n[0] === 'while' || n[0] === 'do' || n[0] === 'switch') && refs(n, arr)) {
+      if ((n[0] === 'if' || n[0] === '?:' || n[0] === '&&' || n[0] === '||' || n[0] === '??' || n[0] === 'while' || n[0] === 'do' || n[0] === 'switch' || n[0] === 'catch' || n[0] === 'finally') && refs(n, arr)) {
         bad = true
         return false
       }
       if (n[0] === 'for' && n.length === 5 && refs(n[4], arr)) {
+        if (refs(n[1], arr) || refs(n[2], arr) || refs(n[3], arr)) { bad = true; return false }
         const initNames = new Set()
         const findIv = (x) => {
           if (!Array.isArray(x)) return
@@ -142,7 +144,12 @@ export function inferInternalArrayLengths(paramReps) {
           (n[1] === arr || refs(n[1], arr) || refs(n[2], arr))) { bad = true; return false }
       if (n[0] === 'return' && n[1] === arr) return false
     } })
-    if (!bad && len != null) { f.arrayLen = len; funcLens.set(f.name, len) }
+    if (!bad && len != null) {
+      f.arrayLen = len
+      funcLens.set(f.name, len)
+      if (defNode[2][0] === '[' && Number.isSafeInteger(len) && len >= 0 && len <= 0x1ffffffe)
+        capacities.set(f, new Map([[arr, len]]))
+    }
   }
   // Length-preserving parameter summaries let a caller retain a local length
   // fact across known reader helpers. Any alias, closure capture, return,
@@ -224,7 +231,7 @@ export function inferInternalArrayLengths(paramReps) {
     }
     locals.set(f, m)
   }
-  return { funcLens, locals, safeParams }
+  return { funcLens, locals, safeParams, capacities }
 }
 
 // Whole-program typed-element hulls for fresh local typed arrays. A callee

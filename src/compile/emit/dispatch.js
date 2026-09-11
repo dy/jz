@@ -450,7 +450,7 @@ function concatBufEligible(name) {
   const uses = scanBindingUses(body).get(name)
   if (!uses || uses[BINDING_USE_DECLS] !== 1) return false
   for (const u of uses[BINDING_USE_USES]) {
-    if (u[BINDING_USE_KIND] === USE.MEMBER_R && !u[BINDING_USE_OPTIONAL] &&
+    if ((u[BINDING_USE_KIND] === USE.MEMBER_R || u[BINDING_USE_KIND] === USE.MEMBER_CALL) && !u[BINDING_USE_OPTIONAL] &&
         !u[BINDING_USE_COMPUTED] && (u[BINDING_USE_KEY] === 'length' || u[BINDING_USE_KEY] === 'charCodeAt')) continue
     return false
   }
@@ -898,7 +898,11 @@ export function emitDecl(...inits) {
     const identityCapture = ambiguousIdentity && ctx.func.capturedNames?.has(name)
     let identityShadowName = null
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
-      if (!identityCapture) return emit(init)
+      if (!identityCapture) {
+        if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
+          return ctx.core.emit['[capacity'](name, init.slice(1))
+        return emit(init)
+      }
       identityShadowName = `${T}idbox_${name}`
       ctx.func.locals.set(identityShadowName, 'f64')
       // Single evaluation: emitIdentitySafe(init) runs exactly once, teed

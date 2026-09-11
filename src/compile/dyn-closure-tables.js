@@ -61,7 +61,7 @@ import { isExported } from './func-exports.js'
 // scanFlatObjects (analyze-scans.js): any use kind not explicitly allowed here
 // poisons the candidate.
 const safeTableUse = (u) =>
-  u[BINDING_USE_KIND] === USE.MEMBER_R ||
+  u[BINDING_USE_KIND] === USE.MEMBER_R || u[BINDING_USE_KIND] === USE.MEMBER_CALL ||
   (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] && u[BINDING_USE_COMPUTED])
 
 const isEmptyArrayLit = (rhs) =>
@@ -115,23 +115,11 @@ export function scanDynClosureTableCandidates(ast) {
 const isArrowArrayLit = (rhs) =>
   Array.isArray(rhs) && rhs[0] === '[' && rhs.length > 1 && rhs.slice(1).every(e => Array.isArray(e) && e[0] === '=>')
 
-// Strict per-name escape walk for the closure-TABLE call-site PARAM lattice
-// (below). Deliberately NOT scanBindingUses/safeTableUse: those classify
-// `V[idx]` uniformly as USE.MEMBER_R whether or not it's a call's own callee,
-// which is exactly right for devirt's funcIdx-IDENTITY proof (any read still
-// dispatches through the same runtime-checked body) but WRONG for a PARAM-KIND
-// proof — `let p = V[1]` is a MEMBER_R that reaches the identical compiled
-// body through an untracked call path (`p(...)`), and a body trusted numeric
-// from V's own call sites alone would skip that path's coercion. (This is the
-// dispatch-site lattice that was built and reverted once already — see
-// test/closures.js's alias/arity pin and the isGlobal decl comment in
-// emit.js.) Safe here means STRUCTURALLY narrower than safeTableUse: the ONLY
-// tolerated occurrence of `name` is as the receiver of `name[idx]` sitting in
-// the callee slot of an IMMEDIATELY enclosing call — everything else (a bare
-// read, `.length`, a member write, an export, a reassignment, a nested
-// closure mentioning it) disqualifies. Runs on the raw AST/body — same timing
-// scanDynClosureTableCandidates uses (post-plan, pre-emit) — so it sees
-// exactly the shapes emit will see.
+// Strict use proof for the closure-table parameter lattice. Unlike devirt's
+// runtime-guarded identity candidates, parameter narrowing must see every call:
+// an element read into an alias can reach the same closure with untracked args.
+// Only immediate indexed calls qualify; declarations are definitions, and index
+// expressions and arguments are checked recursively (including nested arrows).
 function everyUseIsIndexedCall(node, name) {
   if (!Array.isArray(node)) return true
   const op = node[0]
@@ -243,7 +231,7 @@ function mentionsName(node, name) {
 }
 
 // Extended occurrence walk for the closure-TABLE call-site PARAM lattice,
-// IMPERATIVE-CONSTRUCTION class: everyUseIsIndexedCall's exact strictness
+// Imperative construction: the indexed-call proof's exact strictness
 // (the sole tolerated READ is the indexed callee slot of an immediately
 // enclosing call) PLUS one new tolerated occurrence — a PLAIN (non-compound)
 // `name[key] = <arrow-literal>` WRITE. The RHS must be the closure literal
