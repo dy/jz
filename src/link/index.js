@@ -15,6 +15,7 @@
  *
  * @module link
  */
+import { DBG_INVARIANTS } from '../debug.js'
 import { resetTape, fromWat, toWat, verify } from '../ir/tape.js'
 import { treeshake } from './treeshake.js'
 import { schemaSections } from './sections.js'
@@ -28,7 +29,6 @@ import { foldLowWordMasks } from '../optimize/low-word-mask.js'
 import { arenaRewind } from '../optimize/arena-rewind.js'
 import { sortLocalsByUse } from '../optimize/sort-locals.js'
 
-const DBG = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
 const check = (root, when) => {
   const bad = verify(root)
@@ -39,13 +39,13 @@ export function link(module, facts) {
   const cfg = facts.optimize
   resetTape()
   const root = fromWat(module)
-  if (DBG) check(root, 'after decode')
+  if (DBG_INVARIANTS) check(root, 'after decode')
   // Fold before rotation; watr subsequently simplifies the resulting conditions.
   for (const f of funcs(root)) {
     if (!cfg || cfg.fusedRewrite !== false) fold(f)
     if (cfg && cfg.rotateLoops === true) rotateLoops(f)
   }
-  if (DBG) check(root, 'after the body passes')
+  if (DBG_INVARIANTS) check(root, 'after the body passes')
   if (!cfg || cfg.fusedRewrite !== false) foldLowWordMasks(root)
   if (!cfg || cfg.arenaRewind !== false) arenaRewind(root, facts)
   const callCount = treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })
@@ -55,6 +55,6 @@ export function link(module, facts) {
   if ((!cfg || cfg.sortLocalsByUse !== false) && !(cfg && cfg.watr)) sortLocalsByUse(root)
   orderFuncs(root, callCount)
   stripLocalRenameSuffixes(root)
-  if (DBG) check(root, 'after link')
+  if (DBG_INVARIANTS) check(root, 'after link')
   return toWat(root)
 }

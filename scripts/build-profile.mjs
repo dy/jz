@@ -8,7 +8,7 @@
  *
  * @param {object} [p]
  * @param {boolean} [p.debugInvariants] Bake DBG_INVARIANTS as this literal into
- *   the self-compiled src/ctx.js (source-literal injection — a live
+ *   the self-compiled src/debug.js (source-literal injection — a live
  *   JZ_DEBUG_INVARIANTS env var cannot be observed by the running wasm
  *   kernel). Default false: debug-only invariant code folds out of
  *   production kernels; callers opt in explicitly for an instrumented build.
@@ -60,6 +60,23 @@ import { resolveModuleGraph } from '../src/resolve.js'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const SELF_ENTRY = resolve(ROOT, 'scripts/self.js')
 
+// Specialize before either bundler analyzes imports, so diagnostic-only imports
+// and helpers are unreachable in both the JS bundle and the hosted compiler.
+export function specializeInvariants(source, enabled = false) {
+  const declaration = /^export const DBG_INVARIANTS = .+$/m
+  const marker = 'export const __JZ_DBG_LITERAL__ = false'
+  const hasDeclaration = declaration.test(source)
+  if (enabled) return source.replace(declaration, 'export const DBG_INVARIANTS = true')
+  source = source.replace(declaration, marker).replace(
+    /import\s*\{([^}]*)\}\s*from\s*(['"][^'"]*\/debug\.js['"])/g,
+    (whole, names, from) => {
+      const kept = names.split(',').map(x => x.trim()).filter(x => x && x !== 'DBG_INVARIANTS')
+      return kept.length ? `import { ${kept.join(', ')} } from ${from}` : ''
+    })
+  source = source.replace(/\bDBG_INVARIANTS\b/g, 'false')
+  return hasDeclaration ? source.replace(marker, 'export const DBG_INVARIANTS = false') : source
+}
+
 export function resolveSelfCompileBuild({
   debugInvariants = false,
   optimize = 1,
@@ -76,56 +93,12 @@ export function resolveSelfCompileBuild({
 } = {}) {
   const graph = resolveModuleGraph(SELF_ENTRY, { resolveNode: true })
 
-  const CTX_PATH = Object.keys(graph.modules).find(p => p.endsWith('/src/ctx.js'))
-  if (!CTX_PATH) throw new Error('resolveSelfCompileBuild: src/ctx.js not found in self.js module graph — DBG_INVARIANTS injection site missing')
+  const DEBUG_PATH = Object.keys(graph.modules).find(p => p.endsWith('/src/debug.js'))
+  if (!DEBUG_PATH) throw new Error('resolveSelfCompileBuild: src/debug.js not found in self.js module graph — DBG_INVARIANTS injection site missing')
 
-  // ── DBG_INVARIANTS injection — a build-time constant baked in as a
-  // source-text literal (webpack DefinePlugin / rustc cfg! precedent).
-  // Why injection instead of the env probe: ctx.js's declaration guards on
-  // `typeof process`, which jz — CORRECTLY, per spec §13.5.3 (prepare/index.js
-  // staticTypeofString/isUnresolvableBareIdent) — folds to the literal
-  // 'undefined' for ANY self-compile (`process` is never declared in jz's own
-  // source or GLOBALS), so a self-compiled kernel could never observe a live
-  // env var — wasm has no `process`. Native runs (`node index.js`, every
-  // test/*.js) read the real declaration, untouched.
-  // Always inject the literal, including false: leaving the process.env probe in
-  // a production self-compile graph keeps every debug-only branch and helper body
-  // reachable because the cross-module value is not folded early enough.
-  const dbgNeedle = 'export const DBG_INVARIANTS = typeof process !== \'undefined\' && process.env?.JZ_DEBUG_INVARIANTS === \'1\''
-  if (!graph.modules[CTX_PATH].includes(dbgNeedle))
-    throw new Error('resolveSelfCompileBuild: DBG_INVARIANTS declaration shape changed in src/ctx.js — update this self-compile injection to match')
-  const dbgDecl = `export const DBG_INVARIANTS = ${!!debugInvariants}`
-  graph.modules[CTX_PATH] = graph.modules[CTX_PATH].replace(dbgNeedle, dbgDecl)
-
-  if (!debugInvariants) {
-    // A literal declaration in ctx.js is not enough: after module lowering its
-    // imported binding is a wasm global, so consumers cannot constant-fold it
-    // and the entire diagnostic implementation survives in the production
-    // kernel. Specialize every self-compile source before compilation instead.
-    const dropDebugImport = (src) => src.replace(
-      /import\s*\{([^}]*)\}\s*from\s*(['"][^'"]*\/src\/ctx\.js['"])/g,
-      (whole, names, from) => {
-        const imported = names.split(',').map(x => x.trim()).filter(Boolean)
-        if (!imported.some(x => x.split(/\s+as\s+/)[0] === 'DBG_INVARIANTS')) return whole
-        const kept = imported.filter(x => x.split(/\s+as\s+/)[0] !== 'DBG_INVARIANTS')
-        return kept.length ? `import { ${kept.join(', ')} } from ${from}` : ''
-      })
-    const specialize = (src) => dropDebugImport(src).replace(/\bDBG_INVARIANTS\b/g, 'false')
-
-    // Keep ctx.js's exported declaration syntactically intact while replacing
-    // every use in its own body. Other modules have the named import removed
-    // before their uses become literal false.
-    const marker = 'export const __JZ_DBG_LITERAL__ = false'
-    graph.modules[CTX_PATH] = specialize(graph.modules[CTX_PATH].replace(dbgDecl, marker)).replace(marker, dbgDecl)
-    graph.code = specialize(graph.code)
-    for (const path of Object.keys(graph.modules)) if (path !== CTX_PATH)
-      graph.modules[path] = specialize(graph.modules[path])
-
-    const remaining = [graph.code, ...Object.values(graph.modules)]
-      .reduce((n, src) => n + (src.match(/\bDBG_INVARIANTS\b/g)?.length || 0), 0)
-    if (remaining !== 1)
-      throw new Error(`resolveSelfCompileBuild: DBG_INVARIANTS specialization left ${remaining} references (expected only ctx.js's export)`)
-  }
+  graph.code = specializeInvariants(graph.code, debugInvariants)
+  for (const path of Object.keys(graph.modules))
+    graph.modules[path] = specializeInvariants(graph.modules[path], debugInvariants)
 
   // ── snapshot.js host-capability specialization — same build-time-literal
   // technique as DBG_INVARIANTS. `WebAssembly` is a modeled HOST global

@@ -31,6 +31,7 @@
  * @module reps
  */
 
+import { DBG_INVARIANTS } from './debug.js'
 import { ctx } from './ctx.js'
 
 /** Value kinds — method dispatch, schema, carrier selection. */
@@ -116,7 +117,6 @@ export const REP_FIELDS = new Set([
   'mayBeUndefined', 'presentVal', 'presence',
 ])
 
-const DBG_REPS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 const assertRepFields = (name, fields) => {
   for (const k in fields)
     if (!REP_FIELDS.has(k))
@@ -127,7 +127,7 @@ const assertRepFields = (name, fields) => {
 export const repOf = name => ctx.func.localReps?.get(name)
 
 export const updateRep = (name, fields) => {
-  if (DBG_REPS) {
+  if (DBG_INVARIANTS) {
     assertRepFields(name, fields)
     // FunctionPlan freeze (Stage 2 exit): once a function's body emission
     // begins, its durable reps are read-only. Discovery belongs in plan
@@ -152,7 +152,7 @@ export const updateRep = (name, fields) => {
 export const repOfGlobal = name => ctx.scope.globalReps?.get(name)
 
 export const updateGlobalRep = (name, fields) => {
-  if (DBG_REPS) assertRepFields(name, fields)
+  if (DBG_INVARIANTS) assertRepFields(name, fields)
   const m = ctx.scope.globalReps ||= new Map()
   const prev = m.get(name)
   m.set(name, prev ? { ...prev, ...fields } : { ...fields })

@@ -45,8 +45,9 @@
 
 
 
+import { DBG_INVARIANTS } from '../../debug.js'
 import { findBodyStart, dollar } from '../../ir.js'
-import { warn, ctx, DBG_INVARIANTS } from '../../ctx.js'
+import { warn, ctx } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import { constNum, isI32Const } from './addr-model.js'
 import { tryChannelReduce } from './blur-channel.js'

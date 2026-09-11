@@ -10,10 +10,13 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync, readdirSync, statSync } from 'fs'
+import { spawnSync } from 'node:child_process'
 import { join, relative } from 'path'
 import jz, { compile } from '../index.js'
 import { compile as compileWat } from 'watr'
-import { ctx, reset, DBG_INVARIANTS } from '../src/ctx.js'
+import { ctx, reset } from '../src/ctx.js'
+import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
+import { createActiveFunction } from '../src/compile/active-function.js'
 import { analyzeBody, reanalyzeBody, setFuncBody, invalidateAllBodyFacts } from '../src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
@@ -1169,4 +1172,59 @@ test('invariant: in-process inspection preserves the selected execution compiler
     cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 30000,
   })
   is(r.status, 0, r.stderr || r.error?.message || 'inspection and execution keep their own compiler')
+})
+
+// Exercise developer diagnostics independently of the compiler's debug setting.
+test('debug lifecycle: repeated sessions, drift and failed-session recovery', () => {
+  const bridge = Object.fromEntries(['emit','flat','body','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
+  const fresh = () => ({
+    core: { includes: new Set(), emit: {} }, module: {}, scope: {},
+    funcs: { list: [], names: new Set(), map: new Map(), multiProp: new Map() },
+    func: createActiveFunction(), transform: {}, plans: {}, linkDemand: {},
+    features: { sso: true, blockingTimers: false, bigint: false, error: false, errorClasses: null, timers: false },
+  })
+  const begin = c => { resetInvariants(bridge); assertCtxInvariants(c, 'post-reset'); assertCtxInvariants(c, 'post-prepare') }
+  const end = c => { assertCtxInvariants(c, 'post-analyze'); assertCtxInvariants(c, 'pre-assemble'); assertCtxInvariants(c, 'post-compile') }
+  for (const sso of [true, true, false]) {
+    const c = fresh(); c.features.sso = sso
+    begin(c); assertFeatureWrite('bigint'); end(c)
+    throws(() => assertFeatureWrite('bigint'), /written after post-analyze/)
+    throws(() => assertLinkDemandWrite('external'), /written after pre-assemble/)
+  }
+  let c = fresh(); begin(c)
+  throws(() => assertCtxInvariants(c, 'post-prepare'), /phase out of order/)
+  c = fresh(); begin(c); c.features.sso = false
+  throws(() => end(c), /sso drifted/)
+  c = fresh(); c.features.errorClasses = new Set(['TypeError']); begin(c)
+  c.features.errorClasses.add('RangeError')
+  throws(() => end(c), /errorClasses drifted/)
+  c = fresh(); begin(c); delete c.features.errorClasses
+  throws(() => end(c), /errorClasses missing/)
+  c = fresh(); begin(c)
+  throws(() => assertCtxInvariants(c, 'pre-emit'), /func.current/)
+  c.func.current = { name: 'f' }; assertCtxInvariants(c, 'pre-emit')
+  throws(() => end(c), /active function record/)
+  throws(() => resetInvariants({}), /bridge hook 'emit' missing/)
+  c = fresh(); begin(c); end(c)
+  resetInvariants(bridge)
+  ok(true, 'a fresh empty session completes after every failure kind')
+})
+
+test('debug lifecycle: real compiles retain semantics across shape changes and errors', () => {
+  const entry = new URL('../index.js', import.meta.url).href
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import jz from ${JSON.stringify(entry)}
+    const sources = [
+      'export function f(){return 0}',
+      'export function f(){let p={x:1,y:2};p={x:3};return p.x}',
+      'export function f(){let p={x:1,y:2};p={x:3};p.y=4;return p.y}'
+    ]
+    const values = []
+    for (const i of [0,0,1,2]) values.push(jz(sources[i]).exports.f())
+    try { jz('export function f( {') } catch {}
+    values.push(jz(sources[0]).exports.f())
+    console.log(JSON.stringify(values))
+  `], { env: { ...process.env, JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 30000 })
+  is(child.status, 0, child.stderr)
+  is(JSON.parse(child.stdout), [0,0,3,4,0], 'A → A → different shapes → error → A')
 })

@@ -1,5 +1,6 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
-import { OPTF, DBG_INVARIANTS, ctx } from '../../ctx.js'
+import { DBG_INVARIANTS } from '../../debug.js'
+import { OPTF, ctx } from '../../ctx.js'
 import { ASSIGN_OPS, MUTATE_OPS } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf } from '../../kind.js'

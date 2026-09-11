@@ -23,11 +23,12 @@
  * tests below add stricter completeness checks, matching test/invariants.js's
  * existing gated-test convention.
  */
+import { DBG_INVARIANTS } from '../src/debug.js'
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
-import { DBG_INVARIANTS } from '../src/ctx.js'
+
 import { PTR } from '../layout.js'
 import { KIND_REGISTRY, CONTENT_IDENTITY_ORDER, eqIdentityChain, sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { KIND_REGISTRY as KIND_REGISTRY_DOC, FINDINGS } from '../layout-kinds-doc.js'

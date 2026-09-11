@@ -8,6 +8,7 @@
  *
  * @module optimize/driver
  */
+import { DBG_INVARIANTS } from '../debug.js'
 import { ctx } from '../ctx.js'
 import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
@@ -20,9 +21,6 @@ import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, n
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
-
-// Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
-const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
 /**
  * Run all per-function IR optimizations on a single function node.
@@ -45,7 +43,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // Entry verify attributes an invalid-IR failure to EMIT (already bad here)
   // vs an optimizer pass (bad only at the exit check) — the jzify free-name
   // `local.get $__it_drain` class was pinned this way. Debug-only cost.
-  if (DBG_IR) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] fn ${fn[1]} invalid at optimizeFunc ENTRY (emit-produced): ${bad}`) }
+  if (DBG_INVARIANTS) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] fn ${fn[1]} invalid at optimizeFunc ENTRY (emit-produced): ${bad}`) }
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantLoop === false &&
@@ -152,5 +150,5 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // An optimizer pass that emits a malformed local — the class that otherwise dies
   // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
   // here, pinned to the function and the bad name.
-  if (DBG_IR) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] optimize produced invalid IR in ${fn[1]}: ${bad}`) }
+  if (DBG_INVARIANTS) { const bad = verifyFn(fn); if (bad) throw new Error(`[ir verify] optimize produced invalid IR in ${fn[1]}: ${bad}`) }
 }

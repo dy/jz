@@ -4,10 +4,11 @@
  * @module compile/emit/dispatch
  */
 
+import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
-import { DBG_INVARIANTS, PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
+import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'

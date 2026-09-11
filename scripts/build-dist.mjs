@@ -25,7 +25,7 @@ import { stripWatTemplates } from './wat-strip.mjs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
-import { resolveSelfCompileBuild } from './build-profile.mjs'
+import { specializeInvariants, resolveSelfCompileBuild } from './build-profile.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = resolve(ROOT, 'dist')
@@ -41,12 +41,15 @@ const jsOut = resolve(OUT, 'jz.js')
 // sources stay documented. Whitespace-only for the WAT parser: outputs are
 // byte-identical (gated by the corpus compare in scripts/wat-strip.mjs's
 // header + the examples smoke below).
-const watStrip = {
-  name: 'wat-strip',
+const releaseSource = {
+  name: 'release-source',
   setup(b) {
-    b.onLoad({ filter: /\/module\/[^/]+\.js$/ }, (args) => ({
-      contents: stripWatTemplates(readFileSync(args.path, 'utf8')), loader: 'js',
-    }))
+    b.onLoad({ filter: /\.js$/ }, args => {
+      if (!args.path.startsWith(ROOT + '/') || args.path.includes('/node_modules/')) return
+      let source = specializeInvariants(readFileSync(args.path, 'utf8'))
+      if (/\/module\/[^/]+\.js$/.test(args.path)) source = stripWatTemplates(source)
+      return { contents: source, loader: 'js' }
+    })
   },
 }
 await build({
@@ -54,7 +57,7 @@ await build({
   bundle: true,
   minify: true,
   format: 'esm',
-  plugins: [watStrip],
+  plugins: [releaseSource],
   // neutral, not node: the primary consumers are browser <script type=module> tags
   // (landing/REPL). A node-platform bundle let an unguarded `process.env` debug line
   // ship and break every loop compile in every browser (test/web-smoke.js pins this).

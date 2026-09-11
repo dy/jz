@@ -1,3 +1,4 @@
+import { DBG_INVARIANTS, assertCtxInvariants } from '../../debug.js'
 /**
  * Synthetic `$__start` function — building it (module-init IR, boxed
  * autoBox/schema-table/string-pool/typeof/closure-env-side-table setup) and
@@ -12,7 +13,7 @@
  * `$__start` function.
  */
 
-import { ctx, inc, PTR, declGlobal, assertCtxInvariants } from '../../ctx.js'
+import { ctx, inc, PTR, declGlobal } from '../../ctx.js'
 import { T, walkAst } from '../../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../../compile/active-function.js'
@@ -234,7 +235,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   const moduleInits = []
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
     ctx.func.repsFrozen = true
-    assertCtxInvariants('pre-emit')
+    if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
     // Statement context, like the entry program below: a module init whose
     // last statement is an assignment must not leave its value on the stack.
     moduleInits.push(...normalizeEmittedIR(emitVoid(mi)))
@@ -242,7 +243,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // __start has no result: emit the top-level program in void context so a
   // single bare expression cannot leave a value on the start stack.
   ctx.func.repsFrozen = true
-  assertCtxInvariants('pre-emit')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
   const init = emitVoid(ast)
   ctx.func.repsFrozen = false
   ctx.func.atModuleScope = false

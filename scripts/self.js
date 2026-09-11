@@ -10,10 +10,11 @@
  * run); this is why the self-compile entry is its own minimal, interop-free module and
  * lives in the build layer rather than in the sealed compiler source.
  */
+import { DBG_INVARIANTS, assertCtxInvariants } from '../src/debug.js'
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, initWarnings, assertCtxInvariants, DBG_INVARIANTS } from '../src/ctx.js'
+import { ctx, initWarnings } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
 import { beginSession } from '../src/session.js'
@@ -84,13 +85,13 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
 function front(source, strict, sourceType) {
   return frontHalf(source, {
     strict, sourceType: sourceType || 'jz', jzify,
-    afterPrepare: DBG_INVARIANTS ? () => assertCtxInvariants('post-prepare') : undefined,
+    afterPrepare: DBG_INVARIANTS ? () => assertCtxInvariants(ctx, 'post-prepare') : undefined,
   })
 }
 
 function emitIR(ast) {
   const module = linkAssembled(assemble(ast, stageMarks), stageMarks)
-  if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-compile')
   return module
 }
 
@@ -248,7 +249,7 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host, 
   let assembled = assemble(ast, stageMarks)
   let cfg = ctx.transform.optimize
   let facts = tailFacts(cfg)
-  if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-compile')
   if (__heap_large(heapMark)) { const kept = checkpoint([assembled, cfg, facts]); assembled = kept[0]; cfg = kept[1]; facts = kept[2] }
   const module = linkAssembled(assembled, stageMarks)
   markStage(STAGE_EMIT)

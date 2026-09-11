@@ -1,7 +1,8 @@
 /** Whole-program integer range proofs for schema slots. */
+import { DBG_INVARIANTS } from '../../debug.js'
 import { MUTATE_OPS, walkAst } from '../../ast.js'
-import { ctx, err, getFactStore, DBG_INVARIANTS } from '../../ctx.js'
-import { K, hasTag } from '../../summary/kind.js'
+import { ctx, err, getFactStore } from '../../ctx.js'
+import { ANY, K, hasTag } from '../../summary/kind.js'
 import { repOf } from '../../reps.js'
 import { staticObjectProps } from '../../static.js'
 import { intLevelChecker } from '../../type.js'
@@ -193,7 +194,9 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   if (DBG_INVARIANTS) {
     for (const [sid, arr] of ctx.schema.slotI32Certain) {
       for (let i = 0; i < arr.length; i++) {
-        if (arr[i] === true && hasTag(ctx.summary?.fieldKind(sid, ctx.schema.list[sid][i]) ?? 0, K.BIGINT))
+        const kind = ctx.summary?.fieldKind(sid, ctx.schema.list[sid][i]) ?? 0
+        // An open summary admits every tag; it does not prove a BigInt write.
+        if (arr[i] === true && kind !== ANY && hasTag(kind, K.BIGINT))
           throw new Error(`P-carrier invariant: schema ${sid} slot ${i} is BOTH i32Certain and slotBigintObserved — a BIGINT write can never be strict-int32`)
       }
     }

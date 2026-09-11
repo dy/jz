@@ -86,16 +86,16 @@ test('self-compile-source: self-compile kernel is free of labeled-statement misp
 // folds the typeof dead, no import. (String/comment mentions are fine; this
 // scans PARSED source for a `globalThis` member-access base.)
 test('self-compile-source: build profile bakes debug invariants to a literal in both modes', () => {
-  const ctxSource = (profile) => profile.graph.modules[Object.keys(profile.graph.modules).find(p => p.endsWith('/src/ctx.js'))]
+  const debugSource = (profile) => profile.graph.modules[Object.keys(profile.graph.modules).find(p => p.endsWith('/src/debug.js'))]
   const prod = resolveSelfCompileBuild()
   const debug = resolveSelfCompileBuild({ debugInvariants: true })
   const prodGraph = [prod.graph.code, ...Object.values(prod.graph.modules)].join('\n')
   const debugGraph = [debug.graph.code, ...Object.values(debug.graph.modules)].join('\n')
-  ok(prod.defines.DBG_INVARIANTS === false && ctxSource(prod).includes('export const DBG_INVARIANTS = false'),
+  ok(prod.defines.DBG_INVARIANTS === false && debugSource(prod).includes('export const DBG_INVARIANTS = false'),
     'production self-compile graph bakes false so debug-only branches can be stripped')
   ok((prodGraph.match(/\bDBG_INVARIANTS\b/g) || []).length === 1,
-    'production graph specializes every use; only ctx.js\'s exported declaration remains')
-  ok(debug.defines.DBG_INVARIANTS === true && ctxSource(debug).includes('export const DBG_INVARIANTS = true'),
+    'production graph specializes every use; only debug.js\'s exported declaration remains')
+  ok(debug.defines.DBG_INVARIANTS === true && debugSource(debug).includes('export const DBG_INVARIANTS = true'),
     'debug self-compile graph bakes true explicitly')
   ok((debugGraph.match(/\bDBG_INVARIANTS\b/g) || []).length > 20,
     'debug graph retains invariant call sites and helper bodies')

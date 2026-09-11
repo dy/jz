@@ -1,4 +1,4 @@
-import { assembleView } from '../../session-views.js'
+import { ctx } from '../../ctx.js'
 import { nodeEqual as exprEq, walkAst } from '../../ast.js'
 import { collectWrites } from './addr-model.js'
 import { f64Zero, isArr, localGetName } from './node-utils.js'
@@ -428,7 +428,7 @@ export function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFm
   // Necessary-op gates keep scalar/compiler functions out of both recursive
   // SLP walkers. They only reject functions that cannot contain either seed.
   if (hasF64Mul) vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
-  if (f64Stores >= 2 && slp && !assembleView().linkDemand.typedView)
+  if (f64Stores >= 2 && slp && !ctx.linkDemand.typedView)
     slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
 }
 

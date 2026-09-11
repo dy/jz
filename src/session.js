@@ -15,7 +15,8 @@
  *
  * @module src/session
  */
-import { ctx, reset, initWarnings, assertCtxInvariants, optFlagsOf } from './ctx.js'
+import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
+import { ctx, reset, initWarnings, optFlagsOf } from './ctx.js'
 import { clearDollar } from './ir.js'
 import { clearStdlibParseCache } from './wat/assemble.js'
 import { resolveOptimize } from './optimize/index.js'
@@ -29,10 +30,6 @@ import { resetNameUids } from 'watr/optimize'
  * host they happen to come from today, so a third target (the 'gc' backend index.js
  * already reserves the error message for) adds a profile entry, not a new axis
  * threaded through every call site.
- *
- * Distinct from HOST_PROFILE (src/ctx.js) — that's the capabilities of the ENGINE
- * RUNNING THE COMPILER (currently empty); this is the policy of the wasm OUTPUT's
- * target host. Do not conflate the two (ctx.js says the same in the other direction).
  *
  * @typedef {Object} TargetProfile
  * @property {boolean} envImports     `env.*` host-JS bridge is available as a
@@ -273,6 +270,6 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   ctx.transform.optimize = resolveOptimize(optimize)
   ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
-  assertCtxInvariants('post-reset')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-reset')
   return ctx.transform.optimize
 }

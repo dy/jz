@@ -10,6 +10,7 @@
  * @module fn
  */
 
+import { DBG_INVARIANTS } from '../src/debug.js'
 import { typed, asF64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, ptrTypeEq, throwTypeErrorIR } from '../src/ir.js'
 import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { constNumExpr } from '../src/static.js'
@@ -18,7 +19,7 @@ import { findFreeVars } from '../src/compile/analyze.js'
 import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/representation-plan.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf } from '../src/reps.js'
-import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, DBG_INVARIANTS } from '../src/ctx.js'
+import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand } from '../src/ctx.js'
 
 // Republished on ctx.closure below for src/compile/closure-plan.js's
 // mintClosureEnvPlans — a pure function of `body` alone, safely re-derivable

@@ -1,3 +1,4 @@
+import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
 import { jsonShapeStrings } from '../kind/shape.js'
 import { OPTF } from '../ctx.js'
 import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
@@ -28,7 +29,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
-import { ctx, err, PTR, HEAP, assertCtxInvariants } from '../ctx.js'
+import { ctx, err, PTR, HEAP } from '../ctx.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
 import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
@@ -289,7 +290,7 @@ export function assemble(ast, profiler) {
   // past this point — was reclassified onto ctx.linkDemand). Extends the
   // post-prepare SESSION+PROGRAM snapshot with ANALYSIS (currently empty);
   // compared at 'pre-assemble' below.
-  assertCtxInvariants('post-analyze')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-analyze')
   // FunctionPlans now own every named-function fact needed by emission. Drop
   // the duplicate bodyFacts cache; any genuinely late consumer recomputes.
   invalidateAllBodyFacts()
@@ -479,7 +480,7 @@ export function assemble(ast, profiler) {
   // since their post-prepare/post-analyze snapshots, right before pullStdlib's
   // resolveIncludes() starts reading the DEMAND stratum (module template factories
   // + deps lambdas).
-  assertCtxInvariants('pre-assemble')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-assemble')
 
   // Snapshot export metadata before stdlib realization mutates module sections.
   const lateRest = []

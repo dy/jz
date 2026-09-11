@@ -7,13 +7,14 @@
  * @module object
  */
 
+import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { isReassigned, MUTATE_OPS, some, isBrand } from '../src/ast.js'
 import { staticObjectProps } from '../src/static.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
@@ -144,13 +145,8 @@ export default (ctx) => {
     if (target) {
       const merged = ctx.schema.resolve(target)
       if (merged && names.every(n => merged.includes(n))) schemaId = ctx.schema.idOf(target)
-      // Non-superset merged schema: the literal is authoritative for its own
-      // shape — schemaId stays litId for THIS allocation. The var's binding is
-      // plan state and already litId (plan-time literal binding; the stale
-      // cross-function collision this branch once repaired died with Stage-1
-      // binding totality). Assert-only tripwire (slice-4 P3 flip).
-      else if (names.length && DBG_INVARIANTS && ctx.schema.vars.get(target) !== litId)
-        throw new Error(`P3 literal-rebind drift: ${target} bound to sid=${ctx.schema.vars.get(target)}, literal is sid=${litId}`)
+      // Replacements can change shape. Without a compatible merged layout,
+      // this allocation uses its literal schema; locals need no global binding.
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')

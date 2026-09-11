@@ -1,6 +1,7 @@
+import { DBG_INVARIANTS } from '../../debug.js'
 import { ASSIGN_OPS, commaList, isLiteralStr, returnExprs } from '../../ast.js'
 import { staticPropertyKey } from '../../static.js'
-import { DBG_INVARIANTS } from '../../ctx.js'
+
 import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { K as SUMMARY_KIND, core as summaryCore, hasTag as summaryHasTag, tagOf as summaryTagOf, contractVal } from '../../summary/index.js'

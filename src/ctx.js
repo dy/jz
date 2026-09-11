@@ -12,7 +12,8 @@
  */
 
 import { makeAbi } from './abi/index.js'
-import { createActiveFunction, isInactiveFunction } from './compile/active-function.js'
+import { createActiveFunction } from './compile/active-function.js'
+import { DBG_INVARIANTS, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from './debug.js'
 import { HOT_PASSES } from './passes.js'
 import { INTRINSIC_ARITY } from './builtin-signatures.js'
 export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR, followForwardingWat } from '../layout.js'
@@ -380,26 +381,7 @@ export function getFactStore() { return ctx.facts }
 
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals, bridge) {
-  // Every session entry (index.js setupCtx, scripts/self.js kernel entries,
-  // raw-reset test harnesses) must bind the FULL bridge hook set — a missing
-  // hook surfaces as an empty-IR internal error deep inside a compile,
-  // hard to localize back to the missing binding. Fail loudly at session
-  // start instead, under the invariants leg.
-  if (DBG_INVARIANTS) for (const h of ['emit', 'flat', 'body', 'bool', 'idx', 'spread', 'emitIdentitySafe'])
-    if (typeof bridge?.[h] !== 'function') throw new Error(`reset: bridge hook '${h}' missing — every beginSession/reset caller must bind the full hook set (see bridge.js)`)
-  // FeaturePlan freeze tripwire state (see setFeature/assertCtxInvariants below): cleared
-  // HERE, not only at the optional 'post-reset' assertCtxInvariants call — `reset()` itself
-  // is the one entry point every caller uses, including raw-reset test harnesses
-  // (test/types.js's runAnalyze etc.) that never call beginSession/assertCtxInvariants at
-  // all. Clearing only on the phase call let a PRIOR compile's `_postAnalyze=true` leak
-  // into an unrelated later reset()-only test in the same warm process, false-tripping the
-  // tripwire on that test's own (legitimately pre-analyze) ctx.features writes.
-  _featureSnapshot = null
-  _postAnalyze = false
-  // linkDemand freeze tripwire state (setLinkDemand/assertCtxInvariants below) —
-  // same reasoning as _postAnalyze just above: cleared here so a raw-reset-only
-  // caller in the same warm process never inherits a PRIOR compile's `_preAssemble`.
-  _preAssemble = false
+  if (DBG_INVARIANTS) resetInvariants(bridge)
   // CompileSession record: each field below is mutated directly onto the
   // shared `ctx` binding in place (`ctx.X = {...}`) — see `export const
   // ctx`'s own doc above for why identity must never be reassigned. No
@@ -775,8 +757,6 @@ export function reset(proto, globals, bridge) {
                         // jsStringInterop, wasiShims, commandEntry, timerModel,
                         // preserveClosureTable), not on `host === 'wasi'` directly, so a third
                         // target adds a profile, not a new string comparison at every call site.
-                        // Distinct from HOST_PROFILE below (compiler-engine capabilities) — this is
-                        // the OUTPUT target's policy, not the engine running the compiler.
     inspect: false,     // when true, compile() additionally populates ctx.inspect with the inferred
                         // per-function signatures, locals, and JSON shapes — readable by editor
                         // hosts for inlay hints / hover types without re-running the analyzer.
@@ -798,7 +778,6 @@ export function reset(proto, globals, bridge) {
                                // Set/Map/HASH i32 probe lane and probe the entry-resident hash.
                                // Ordinary user outputs keep the faster lane layout.
     loopXformId: 0,     // monotonic id for the per-function loop transforms' generated locals
-    sessionPhase: null, // W1 lifecycle contract: last completed ordered phase (assertCtxInvariants)
     cseId: 0,           // monotonic id for CSE temps (freshCseName) — per-compile, so warm-process WAT text is deterministic
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.
@@ -819,36 +798,13 @@ export function reset(proto, globals, bridge) {
   // Advisory sink. Populated when compile() receives opts.warnings.
   ctx.warnings = null
 
-  // Feature flags: the frozen FeaturePlan (.work/evidence.md §FeaturePlan freeze).
-  // Every key here MUST be seeded, not an absent key: the self-compiled kernel's
-  // absent-dyn-key read misfires truthy, so a missing key silently turns a gate ON
-  // (the original bigint bug — pure-number programs exported subnormals as bigint
-  // carriers, -5e-324 → -1, data.js pins). Three strata, each with its own writer
-  // phase; assertCtxInvariants (below) snapshots SESSION+PROGRAM at 'post-prepare',
-  // extends the snapshot with ANALYSIS at 'post-analyze', and asserts all three
-  // unchanged (+ every key present) at 'pre-assemble' — a genuine freeze: nothing
-  // below writes ctx.features during emission any more (the DEMAND stratum that
-  // used to live here — external/typedarray/set/map/closure/f16/clamped — moved
-  // out to ctx.linkDemand, see its own doc a few lines down).
-  //
-  //   SESSION  — from opts, set once at reset(), stable for the whole compile:
-  //     sso, blockingTimers
-  //   PROGRAM  — prepare()'s universal per-node prescan, order-independent
-  //     (settled by post-prepare regardless of where the triggering node sits):
-  //     bigint, error, errorClasses, timers
-  //   ANALYSIS — settled by the per-function analyze pass (post-analyze), exact-
-  //     equality frozen like every other stratum, no exceptions. Currently no
-  //     members: `typedView` — the one candidate — turned out to be DEMAND-
-  //     shaped in practice (module/typedarray.js's view-constructing EMIT
-  //     handlers keep flipping it false→true past post-analyze, not just
-  //     analyze.js's static tracker) and was reclassified onto ctx.linkDemand
-  //     (.work/evidence.md §FeaturePlan freeze). Kept as a named stratum for
-  //     the next genuinely analyze-settled fact, not deleted.
+  // Features are seeded here and settled by prepare. Emission only reads them;
+  // facts discovered during emission belong to linkDemand below.
   ctx.abi = makeAbi()
 
   ctx.features = {
     // SESSION
-    sso: true,        // ≤4-ASCII string packing. Default on; flip off to A/B the heap-only path.
+    sso: true,        // Short ASCII string packing. Default on; flip off to A/B the heap-only path.
     blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
 
     // PROGRAM
@@ -973,43 +929,6 @@ export function reset(proto, globals, bridge) {
   for (const hook of RESET_HOOKS) hook()
 }
 
-/** Debug-mode invariant checks. Encodes the writers/readers contract documented
- *  above as runtime asserts so a bad refactor surfaces at the phase boundary
- *  instead of as a distant nondeterministic failure. No-op unless
- *  `JZ_DEBUG_INVARIANTS=1`; designed so phase-boundary callers can sprinkle
- *  `assertCtxInvariants('post-prepare')` without runtime cost in production.
- *
- *  Phases checked:
- *   - `post-reset`     : every sub-context exists; Maps/Sets initialized.
- *   - `post-prepare`   : module + scope populated; func.list possibly empty.
- *                        Also snapshots ctx.features' SESSION+PROGRAM strata
- *                        (FeaturePlan freeze, .work/evidence.md) for the
- *                        post-analyze/pre-assemble drift check below.
- *   - `pre-emit`       : func.current set; locals Map present — the per-
- *                        function-frame boundary right where `repsFrozen`
- *                        flips true, wired at every body-emission entry that
- *                        sets it (compile/index.js emitFunc's block/multi/
- *                        expression paths and emitClosureBody's block/
- *                        expression paths, wat/assemble.js buildStartFn's
- *                        per-moduleInit and main __start body). Unordered
- *                        w.r.t. PHASE_ORDER —
- *                        fires once per function frame, not once per compile.
- *   - `post-analyze`   : extends the post-prepare snapshot with ctx.features'
- *                        ANALYSIS stratum (currently empty — see the stratum
- *                        doc above ctx.abi) — fired once per compile, right
- *                        after the per-function analyze passes settle and
- *                        before any function emits. Unordered w.r.t. PHASE_ORDER
- *                        (like pre-emit): asserted host- and self-compile-uniformly
- *                        from inside compile/index.js's compile(), independent
- *                        of whether the caller ever reaches 'post-prepare'.
- *   - `pre-assemble`   : asserts every SESSION+PROGRAM+ANALYSIS key is present
- *                        AND unchanged since its post-prepare/post-analyze
- *                        snapshot — the frozen FeaturePlan facts must not drift
- *                        during emission. Fired once per compile, right before
- *                        resolveIncludes()/pullStdlib start reading the DEMAND
- *                        stratum. Unordered w.r.t. PHASE_ORDER, same reason.
- *   - `post-compile`   : no transient temps leaked (func.uniq stable across calls). */
-
 // Hot per-node pass flags flattened to ONE i32 bitmask (ctx.transform.optFlags,
 // set beside `optimize` at compile setup). Emit-path sites test a fixed-schema
 // integer slot instead of a property read on the ~84-key resolved cfg — on the
@@ -1017,15 +936,6 @@ export function reset(proto, globals, bridge) {
 // `cfg?.flag` read was a HASH probe; the same read is slot-cheap on V8, and
 // that asymmetry alone moved the warm self-compile ratio. Lives here (not
 // optimize/index.js) so ir.js/module consumers stay cycle-free.
-/** CompilerHostProfile (stage-4 seed): capabilities of the ENGINE RUNNING THE
- *  COMPILER, probed once at load. Consumers branch on named capabilities, not
- *  scattered environment probes — new host-capability gates land HERE. (The
- *  OUTPUT target's profile — host:'wasi'|'js' legalization — is a separate,
- *  future TargetProfile; do not conflate the two.) Currently empty — no named
- *  capability gate needs a host probe right now; keep the seed for the next one.
- */
-export const HOST_PROFILE = Object.freeze({})
-
 // Hot per-node pass flags come from THE registry (src/passes.js — zero imports,
 // so this direction is cycle-free too): one list generates both the bitmask
 // constants and the cfg→mask mapping, and the registry-membership assert in
@@ -1038,133 +948,16 @@ export const optFlagsOf = (cfg) => {
   return m
 }
 
-export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
-// Session wave W1 (stage 4): the lifecycle table above is an executable,
-// ORDERED contract — each named phase must follow its predecessor within one
-// compile session ('pre-emit', 'post-analyze', 'pre-assemble' are unordered:
-// 'pre-emit' is a per-function interleave; 'post-analyze'/'pre-assemble' fire
-// from inside compile/index.js's compile() itself — host- and self-compile-
-// uniform — independent of whether the caller wired the optional
-// 'post-prepare'/'post-compile' hooks around it (self.js does not today)).
-// A skipped or repeated ORDERED phase is a pipeline-wiring bug caught here
-// instead of as a distant stale-state failure.
-const PHASE_ORDER = ['post-reset', 'post-prepare', 'post-compile']
-
-// FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): ctx.features'
-// SESSION+PROGRAM+ANALYSIS strata must not drift after their settling phase.
-// Snapshotted at 'post-prepare' (SESSION+PROGRAM, when wired) and extended at
-// 'post-analyze' (+ANALYSIS, always); compared at 'pre-assemble'. Module-scope
-// (not on ctx) — reset() doesn't own it, 'post-reset' clears it below so a
-// stale snapshot from a PRIOR compile in the same warm process (self.js
-// compiles many modules per process) can never leak into this one's check.
-const FEATURE_STRATA = {
-  SESSION: ['sso', 'blockingTimers'],
-  PROGRAM: ['bigint', 'error', 'errorClasses', 'timers'],
-  ANALYSIS: [], // no members — typedView reclassified to ctx.linkDemand (DEMAND-shaped
-                // in practice); kept as a named stratum for the next genuinely
-                // analyze-settled fact.
-}
-let _featureSnapshot = null
-let _postAnalyze = false // true once 'post-analyze' has fired for the current compile
-const snapFeatureVal = (v) => v instanceof Set ? [...v].sort() : v
-const snapFeatureEq = (a, b) => Array.isArray(a)
-  ? Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i])
-  : a === b
-const snapshotFeatures = (keys, into) => { for (const k of keys) into[k] = snapFeatureVal(ctx.features[k]); return into }
-
-/** Emission-time write tripwire for ctx.features (.work/evidence.md §FeaturePlan
- *  freeze, Slice 2): every writer of a SESSION/PROGRAM/ANALYSIS key routes through
- *  here instead of assigning directly, so a write that lands after 'post-analyze'
- *  throws AT THE CALL SITE under JZ_DEBUG_INVARIANTS — naming the offending write
- *  instead of leaving the drift to surface generically at 'pre-assemble' (Slice 1's
- *  snapshot compare). Uniform, no exceptions: `typedView` — the one key that used
- *  to need a carve-out here, because it kept flipping false→true during emission —
- *  moved to ctx.linkDemand (DEMAND-shaped in practice), so every remaining
- *  ctx.features key really is frozen the instant post-analyze fires. */
+/** Features settle before emission; link demand settles before assembly. */
 export function setFeature(key, value) {
-  if (DBG_INVARIANTS && _postAnalyze)
-    throw new Error(`[ctx invariant] ctx.features.${key} written after post-analyze — frozen FeaturePlan facts must not change during emission (DEMAND writes belong on ctx.linkDemand)`)
+  if (DBG_INVARIANTS) assertFeatureWrite(key)
   ctx.features[key] = value
 }
 
-let _preAssemble = false // true once 'pre-assemble' has fired for the current compile
-
-/** Emission-time write tripwire for ctx.linkDemand, mirroring setFeature()
- *  exactly — the DEMAND stratum's own freeze
- *  point is 'pre-assemble', not 'post-analyze' (see ctx.linkDemand's own doc
- *  above reset(): every writer — emit, emit-assign, analyze's typed tracker,
- *  the module/* emit handlers — completes before assertCtxInvariants('pre-
- *  assemble'), which itself precedes resolveIncludes()/pullStdlib and
- *  optimizeModule, the DEMAND stratum's only readers). Monotone false→true by
- *  construction (every call site sets `true`; no caller ever needs to unset a
- *  flag), so there is no value param — a write past 'pre-assemble' would mean
- *  a reader has already started consuming a DEMAND fact that's about to change
- *  under it, the same "frozen facts drifting during emission" hazard
- *  setFeature's post-analyze freeze guards, one phase boundary later. */
 export function setLinkDemand(key) {
-  if (DBG_INVARIANTS && _preAssemble)
-    throw new Error(`[ctx invariant] ctx.linkDemand.${key} written after pre-assemble — DEMAND facts must be settled before resolveIncludes()/assemble read them`)
+  if (DBG_INVARIANTS) assertLinkDemandWrite(key)
   ctx.linkDemand[key] = true
-}
-
-// FIXME: what's this function? Is this needed?
-export function assertCtxInvariants(phase) {
-  if (!DBG_INVARIANTS) return
-  const fail = msg => { throw new Error(`[ctx invariant] ${phase}: ${msg}`) }
-  const must = (cond, msg) => { if (!cond) fail(msg) }
-  const po = PHASE_ORDER.indexOf(phase)
-  if (po >= 0) {
-    if (po > 0) must(ctx.transform.sessionPhase === PHASE_ORDER[po - 1],
-      `phase out of order (previous: '${ctx.transform.sessionPhase}', expected '${PHASE_ORDER[po - 1]}')`)
-    ctx.transform.sessionPhase = phase
-  }
-
-  must(ctx.core && ctx.module && ctx.scope && ctx.funcs && ctx.func && ctx.transform && ctx.features && ctx.linkDemand && ctx.plans,
-       'sub-contexts present')
-  if (phase !== 'pre-reset') {
-    must(ctx.core.includes instanceof Set, 'core.includes is Set')
-    must(ctx.core.emit && typeof ctx.core.emit === 'object', 'core.emit table')
-    must(Array.isArray(ctx.funcs.list), 'funcs.list array')
-    must(ctx.funcs.names instanceof Set, 'funcs.names Set')
-    must(ctx.funcs.map instanceof Map, 'funcs.map Map')
-    must(ctx.funcs.multiProp instanceof Map, 'funcs.multiProp Map')
-    must(ctx.func.locals instanceof Map, 'func.locals Map')
-    must(ctx.func.refinements === null || ctx.func.refinements instanceof Map, 'func.refinements Map or unallocated')
-  }
-  if (phase === 'pre-emit') {
-    must(ctx.func.current, 'func.current set before emit')
-    must(ctx.func.locals.size != null, 'locals open for writes')
-  }
-  if (phase === 'post-compile')
-    must(isInactiveFunction(ctx), 'active function record restored after analysis/emission')
-
-  // FeaturePlan freeze snapshot/compare (see FEATURE_STRATA above). Uniform exact
-  // equality across every stratum, no exceptions — SESSION+PROGRAM are genuinely
-  // settled by post-prepare (their only writers are prepare/index.js's per-node
-  // scan and autoload.js, both mid-prepare); ANALYSIS is currently empty (its one
-  // former member, typedView, turned out to be DEMAND-shaped — module/typedarray.js's
-  // view-constructing EMIT handlers kept flipping it past post-analyze — and was
-  // reclassified onto ctx.linkDemand, .work/evidence.md §FeaturePlan freeze).
-  if (phase === 'post-reset') { _featureSnapshot = null; _postAnalyze = false; _preAssemble = false }
-  if (phase === 'post-prepare') _featureSnapshot = snapshotFeatures([...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM], {})
-  if (phase === 'post-analyze') { snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {}); _postAnalyze = true }
-  if (phase === 'pre-assemble') {
-    _preAssemble = true
-    // Test own-key presence, not value presence. A seeded FeaturePlan value may
-    // legitimately be null (`errorClasses` before the first Error class is
-    // observed). The dynamic `in` emitter currently resolves OBJECT membership
-    // through __dyn_get and therefore cannot distinguish a present nullish slot
-    // from an absent property; Object.keys enumerates the schema itself and is
-    // exact for this debug-only phase check.
-    const present = new Set(Object.keys(ctx.features))
-    for (const k of [...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM, ...FEATURE_STRATA.ANALYSIS]) {
-      must(present.has(k), `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
-      if (_featureSnapshot && k in _featureSnapshot)
-        must(snapFeatureEq(_featureSnapshot[k], snapFeatureVal(ctx.features[k])),
-          `ctx.features.${k} drifted after its settling phase — frozen FeaturePlan facts must not change during emission`)
-    }
-  }
 }
 
 /** Enable compile-time advisories. Pass `opts.warnings` (mirrors `opts.profile`). */

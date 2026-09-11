@@ -1,4 +1,5 @@
-import { ctx, inc, PTR, declGlobal, assertCtxInvariants } from '../ctx.js'
+import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
+import { ctx, inc, PTR, declGlobal } from '../ctx.js'
 import { T, isBlockBody, isReassigned } from '../ast.js'
 import { hasAmbiguousBoolMerge } from '../kind.js'
 import { typedElemAux } from '../../layout.js'
@@ -280,7 +281,7 @@ export function emitClosureBody(cb, functionPlan) {
   }
 
   ctx.func.repsFrozen = true
-  assertCtxInvariants('pre-emit')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
   const bodyIR = block
     ? emitBlockBody(cb.body)
     // The closure ABI result is a boxed-value position; preserve a false atom

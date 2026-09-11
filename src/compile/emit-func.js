@@ -1,5 +1,6 @@
+import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
 import parseWat from 'watr/parse'
-import { ctx, PTR, LAYOUT, assertCtxInvariants } from '../ctx.js'
+import { ctx, PTR, LAYOUT } from '../ctx.js'
 import { isBlockBody, isReassigned, returnExprs } from '../ast.js'
 import { hasAmbiguousBoolMerge } from '../kind.js'
 import { VAL, updateRep } from '../reps.js'
@@ -293,7 +294,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   }
 
   ctx.func.repsFrozen = true   // FunctionPlan freeze: body emission begins — durable reps read-only
-  assertCtxInvariants('pre-emit')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
   if (block) {
     const stmts = emitBlockBody(body)
     // Hoist loop-invariant `__to_num(param)` coercions to a single entry rebind.

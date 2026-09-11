@@ -16,6 +16,7 @@
  *
  * @module param-reps
  */
+import { DBG_INVARIANTS } from './debug.js'
 
 /** Build `paramName → fact` lookup for a caller's already-narrowed param facts. */
 export const paramFactsOf = (paramReps, callerFunc, key) => {
@@ -183,13 +184,11 @@ export const joinKinds = (fact, key, observedSet) => {
 const REP_SET_FIELDS =Object.freeze(['possibleKinds'])
 const REP_SET_FIELDS_SET = new Set(REP_SET_FIELDS)
 
-const DBG_CLONE = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
-
 /** Copy Set-valued fields; debug builds reject an unregistered Set field. */
 export const cloneRep = (r) => {
   const c = { ...r }
   for (const k of REP_SET_FIELDS) if (r[k]) c[k] = new Set(r[k])
-  if (DBG_CLONE) {
+  if (DBG_INVARIANTS) {
     for (const k in r)
       if (r[k] instanceof Set && !REP_SET_FIELDS_SET.has(k))
         throw new Error(`cloneRep: field '${k}' is a Set but missing from REP_SET_FIELDS (param-reps.js) — add it there`)

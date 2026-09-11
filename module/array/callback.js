@@ -15,6 +15,7 @@
  *
  * @module array/callback
  */
+import { DBG_INVARIANTS } from '../../src/debug.js'
 import { typed, asF64, UNDEF_NAN, temp } from '../../src/ir.js'
 import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
@@ -22,7 +23,7 @@ import { typedCtorElemValType } from '../../src/kind-traits.js'
 import { plannedTypedStorageCtor } from '../../src/compile/typed-storage-plan.js'
 import { extractParams, refsName, REFS_IN_EXPR } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
-import { ctx, DBG_INVARIANTS } from '../../src/ctx.js'
+import { ctx } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
 
 export function hoistArrayValue(arr) {

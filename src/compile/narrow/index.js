@@ -19,7 +19,8 @@
  * @module compile/narrow/index
  */
 
-import { ctx, err, DBG_INVARIANTS } from '../../ctx.js'
+import { DBG_INVARIANTS } from '../../debug.js'
+import { ctx, err } from '../../ctx.js'
 import { withTypedElemOverlay } from '../flow-state.js'
 import { I32_MIN, I32_MAX } from '../../ir.js'
 import { staticArrayLen } from '../../static.js'

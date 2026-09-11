@@ -55,6 +55,9 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grids with no Node g
   for (const file of ['dist/jz.js', 'dist/interop.js', 'assets/sprae.js'])
     ok(built.stdout.includes(`wrote ${file}`), `${file} freshly built for Pages`)
   ok(!built.stdout.includes('wrote dist/jz.wasm'), 'browser build omits self-compilation')
+  const bundle = readFileSync(join(ROOT, 'dist/jz.js'), 'utf8')
+  ok(!bundle.includes('[ctx invariant]'), 'release bundle omits compiler lifecycle diagnostics')
+  ok(!bundle.includes('JZ_DEBUG_INVARIANTS'), 'release bundle has no invariant environment probe')
 
   const driver = `
     // Browser condition: no Node globals. Delete BEFORE the bundle loads so any

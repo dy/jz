@@ -11,7 +11,6 @@
  */
 
 import { ctx, warn } from '../../ctx.js'
-import { warningsView } from '../../session-views.js'
 import { isLiteralStr } from '../../ir.js'
 import { scanBoundedLoops } from '../../type.js'
 import { VAL, updateRep } from '../../reps.js'
@@ -157,7 +156,7 @@ export function applyJsstringBoundaryCarrier(paramReps, addressTaken) {
 
 /** Soft warnings when a string param could use the externref carrier but doesn't. */
 export function adviseJsstringCarrier(paramReps, addressTaken) {
-  if (!warningsView().warnings || !jsstringEnabled()) return
+  if (!ctx.warnings || !jsstringEnabled()) return
 
   for (const func of ctx.funcs.list) {
     if (func.raw || !isExported(func) || !func.body || func.rest) continue

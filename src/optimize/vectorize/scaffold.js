@@ -1,4 +1,5 @@
-import { DBG_INVARIANTS } from '../../ctx.js'
+
+import { DBG_INVARIANTS } from '../../debug.js'
 import { walkAst } from '../../ast.js'
 import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isLocalGet, matchExitBrIf, matchInc1, matchIncN } from './addr-model.js'
 import { isArr } from './node-utils.js'

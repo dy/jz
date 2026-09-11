@@ -41,12 +41,12 @@
  * @module jz
  */
 
+import { DBG_INVARIANTS, assertCtxInvariants } from './src/debug.js'
 import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
 import { snapshotInit } from "./src/snapshot.js";
 import watrPrint from "watr/print";
-import { ctx, err, warn, assertCtxInvariants, setLinkDemand } from './src/ctx.js'
-import { inspectView } from './src/session-views.js'
+import { ctx, err, warn, setLinkDemand } from './src/ctx.js'
 import { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
 import { beginSession } from './src/session.js'
@@ -567,7 +567,7 @@ const jzCompileInner = (code, opts = {}) => {
   // the kernel skipped preEval — audit P0 2026-07-25).
   let ast = frontHalf(code, {
     strict: opts.strict, sourceType: opts.sourceType || 'jz', jzify, time,
-    afterPrepare: () => assertCtxInvariants('post-prepare'),
+    afterPrepare: DBG_INVARIANTS ? () => assertCtxInvariants(ctx, 'post-prepare') : undefined,
     // Test-only (test/eager-stdlib-parity.js): force every stdlib module's
     // init(ctx) to run up front, the same eager load the region-arena front
     // round needs — proves module load alone (no region hooks involved) is
@@ -617,7 +617,7 @@ const jzCompileInner = (code, opts = {}) => {
   { const v = opts.toneMap !== undefined ? opts.toneMap : opts.experimentalToneMap; if (v !== undefined && ctx.transform.optimize) ctx.transform.optimize.toneMap = !!v }
 
   const module = time('compile', () => compile(ast, profiler))
-  assertCtxInvariants('post-compile')
+  if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-compile')
 
   // host: 'wasi' — error if the wasm would import any env.__ext_* helper. Those exist
   // only to defer to a JS host's value-aware semantics; in a wasmtime/wasmer/deno
@@ -660,14 +660,14 @@ const jzCompileInner = (code, opts = {}) => {
   try {
     if (opts.wat) {
       const wat = time('watrPrint', () => watrPrint(optimized))
-      return opts.inspect ? { wat, inspect: inspectView().inspect } : wat
+      return opts.inspect ? { wat, inspect: ctx.inspect } : wat
     }
     const wasm = snapshot instanceof Uint8Array ? snapshot : time('watrCompile', () => watrCompile(optimized))
     let bytes = wasm
     // opts.names emits a wasm `name` custom section (symbols for profilers/
     // debuggers). opts.profile.names is the older spelling — still honored.
     if (opts.names || opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
-    return opts.inspect ? { wasm: bytes, inspect: inspectView().inspect } : bytes
+    return opts.inspect ? { wasm: bytes, inspect: ctx.inspect } : bytes
   } catch (e) {
     // watr surfaces dangling identifiers as "Unknown local|func|global|table|memory $X".
     // That's always a jz codegen leak — we emitted IR that references something never

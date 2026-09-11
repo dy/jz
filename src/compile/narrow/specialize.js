@@ -8,7 +8,8 @@
  * @module compile/narrow/specialize
  */
 
-import { ctx, DBG_INVARIANTS } from '../../ctx.js'
+import { DBG_INVARIANTS } from '../../debug.js'
+import { ctx } from '../../ctx.js'
 import {
   ASSIGN_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME,
 } from '../../ast.js'
