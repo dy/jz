@@ -188,6 +188,14 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
   same-count/different-key refills. Host memory reset now invokes the compiled
   reset instead of bypassing its cache invalidation and state healing. Tests
   cover both collection layouts, growth, empty refills and repeated resets.
+- Latest verification: default/O0/O3/WASI all pass; conformance is 3,151
+  language + 869 built-in passes with zero unexpected failures; functional
+  self-hosting is 40/40 and recursive output is 14,698,363 B. Four-round paired
+  timings beat V8 for shapes, wordcount, dispatch and bezfit (JZ/V8 time ratios
+  0.396, 0.302, 0.960 and 0.931). Shapes still takes 1.210× AS time; its normalized
+  hot WAT is unchanged by preallocation. The self-compiler speed gates remain
+  red: warm ratios 1.442/1.472/1.501× against 1.03×, fresh 1.232× against 0.99×.
+  This does not certify v1 or replace the outstanding full-corpus speed gates.
 - Compare remaining byte gaps with Binaryen output and fix whole classes through
   existing folding/propagation. Binaryen shrinks several kernels but grows the
   encoder; adopting its entire pipeline is not justified.
