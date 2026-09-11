@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `8c866b1`.
+`package.json` and the lockfile pin the public watr source archive at `a3e8ef6`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -29,6 +29,8 @@ Condition chaining and boolean simplification also run in watr, including the
 fast tier; link no longer implements these generic body rewrites on the tape.
 Watr pools costly scalar literals after folding and inlining, before outlining
 prices repeated expressions.
+Its shared cost estimator counts alignment and offset bytes even when WAT omits
+them, so load reuse is judged against its encoded cost.
 Integer zero tests use Wasm eqz in the shared identity sweep; inequality uses
 two unary tests instead of a zero literal and comparison.
 Single-use, small-function and wrapper inlining share construction, parameter
@@ -160,6 +162,13 @@ unchanged accidentally.
 
 Historical `.work/` citations below refer to retired evidence, recoverable using
 [.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.
+
+Compiler lifecycle diagnostics live in `src/debug.js`. `JZ_DEBUG_INVARIANTS=1`
+enables phase, representation and mutation checks for development. Source builds
+use one flag; the browser and self-hosted release builds specialize it before
+import analysis, removing the diagnostic code. These checks report compiler bugs,
+not source-program warnings. Phase consumers read the owned context fields directly;
+wrapping those fields in temporary objects adds no protection.
 
 ## Code layout
 

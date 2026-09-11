@@ -10,108 +10,52 @@ history. This file tracks only release evidence and unfinished work.
 
 ## Verification
 
-JZ pins Watr `8c866b1`. Runtime JSON now shares decimal conversion with
-Number/parseFloat, canonicalizes object keys, and reuses schemas correctly.
-Schema-table growth preserves existing objects; representation exhaustion throws
-a branded RangeError. Core and JSON share its existing error materializer.
-URLSearchParams uses class methods through ordinary lowering and reachability.
+JZ pins Watr `a3e8ef6` and Subscript `0f65c86`. All default/O0/O3/WASI matrix
+legs pass. Language and built-in conformance pass
+3,151/869 cases with zero unexpected failures (8/45 expected failures remain).
+Functional self-hosting passes 40 checks / 2,283 assertions; the recursive gate
+also passes, producing a 14,683,818-byte compiler. This is functional evidence,
+not release certification or a speed pass.
 
-The complete matrix passes: default 4,194 checks / 57,881 assertions;
-O0 4,001 / 45,854; O3 4,001 / 46,175; WASI 4,052 / 50,477, each with one skip.
-Language/built-in conformance passes 3,151/869 cases. Functional self-hosting now passes 39 checks
-(2,281 assertions), including A → A → B decimal-parser compilation across the
-full exponent range. The focused JSON/number/web-global suites cover rounding,
-malformed-input recovery, duplicate/index keys, cache collisions, table growth
-and clear, schema-ID exhaustion, independent instances and live iteration.
-Downstream Watr passes its full source and rebuilt Wasm suites: 352 checks
-with two skips, 26 propagation checks, and 268 spec files with 20 skips in
-each backend. The VST fixture results below predate these runtime changes.
+The compiler's browser bundle is 2,426,136 bytes, down from 2,436,551 at the
+preceding checkout. Its Wasm artifact is 15,204,082 bytes, down from 15,218,730.
+Lifecycle diagnostics are isolated and removed from release bundles. The
+focused debug suites pass 49 lifecycle/structural checks and 10 audit regressions,
+including repeated compilation, changed shapes, frozen facts and error recovery.
+Watr's source and freshly rebuilt Wasm suites both pass: 352 public checks
+(two skips), optimizer/propagation tests, and 268 spec files (20 skips).
 
-The full recursive gate passes, including execution of a program compiled by
-the recursively built compiler. Named-function trampolines now reuse direct-call
-argument coercion: treating a narrowed object pointer as a numeric i32 had
-turned the parsed argument record into address zero. The regression is pinned
-by tiny function-property calls with empty, supplied, missing and excess args.
-The recursive output is 14,689,434 bytes, with a final heap cursor of
-1,519,148,904 bytes. The checkpoint reserves the full 4 GiB address space;
-the latest gate process peaks at 3,919 MiB RSS. This closes recursive correctness,
-not the remaining speed/evidence requirements.
-
-The default-tier URL lookup probe shrinks 39,596→33,163 bytes; speed-tier output
-shrinks 47,381→36,711. Paired warm compile medians are 392→321 ms (lookup) and
-330→273 ms (literal input). A fixed creation workload uses 288→192 MiB peak
-linear memory; its runtime is within measurement noise. JSON correctness has a
-cost that the shared decimal runtime now reduces: parsing and formatting use
-one 828-byte power-of-five seed table and shared unsigned 64×128 multiplication.
-A 245-byte correction stream replaces the 10,416-byte decimal table, with no
-runtime initialization or cache. Exact integer operands take one f64 operation
-for common decimal exponents. Every power entry and carry-boundary product is
-checked against BigInt; conversion tests cover all 651 decimal exponents,
-subnormals, overflow, invalid input, clears and shared-memory instances.
-The decimal/string changes shrink the compiler artifact
-15,277,390→15,215,485 bytes and reduce recursive final heap use by 6,039,032
-bytes. They shrink the size-tier JSON kernel 22,061→13,163 bytes and its
-speed artifact 29,977→21,080 bytes.
-
-JSON's generic and shape-specialized parsers now share one whitespace scanner
-instead of expanding its loop at every token boundary. An inline guard keeps
-compact input out of the helper. This further shrinks the speed/size artifacts
-to 12,857/10,730 bytes, below the unchanged 12,500-byte size backstop. The
-paired compact-input probe stays near parity; formatted input is about 3%
-slower. All 65,536 UTF-16 code units are checked against Node at trailing
-boundaries and inside active whitespace runs, with EOF and error recovery.
-The resulting compiler is 15,209,709 bytes. These probes do not establish
-whole-corpus performance leadership.
-
-The focused repeated-conversion probe improves common decimal parsing by
-5–23%, but extreme-exponent parsing remains 8–16% slower and formatting 1e100
-about 8% slower. This is a measured size/speed trade, not whole-corpus leadership.
-Heap-string equality compares four UTF-16 units per load and preserves view
-bounds; long equal-string probes improve, short-string throughput is near noise.
-FunctionPlan projections now copy only the three supported scalar/schema-array
-facts, removing the arbitrary recursive Map/Set/object cloner.
-
-The stateful VST fixture in `@audio/compile` passes 12,438 checks with each
-compiler (JZ reverified on this optimizer; Porffor verified previously): variable blocks, live parameters, independent overlapping instances,
-close/reopen and last-close reset agree exactly with JS and keep callback heaps
-fixed. The gain fixture passes 132 checks per compiler over 12,000 blocks.
-These are fixture proofs, not a public target builder or a real-time guarantee.
+Earlier stateful VST fixtures in `@audio/compile` pass 12,438 checks with each
+compiler: variable blocks, live parameters, independent overlapping instances,
+close/reopen and last-close reset agree with JS and keep callback heaps fixed.
+The gain fixture passes 132 checks per compiler over 12,000 blocks. These
+fixtures predate this compiler cleanup; they are not a public target builder
+or a real-time guarantee.
 
 ## Open gates
 
-1. **Size.** Keep the encoder cap at 300,000 bytes and strict per-case
-   AssemblyScript leadership. The audit follow-up measures:
+1. **Size.** All 60 compiled samples stay no larger after the latest pass.
+   JZ strictly beats AssemblyScript on 49/51 comparable cases; two remain open.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 290,151 | 300,000 |
-   | FFT | 1,685 | 1,758 |
+   | Watr encoder | 288,220 | 300,000 |
+   | JSON | 10,730 | 12,500 |
    | bezfit | 3,211 | 3,017 |
-   | immutable | 1,446 | 1,481 |
-   | sdf | 2,191 | 2,209 |
-   | shapes | 1,807 | 1,695 |
-   | slices | 1,595 | 1,657 |
-   | tokenizer | 1,520 | 1,551 |
-   | wordcount | 3,664 | 3,480 |
-   | dispatch | 1,853 | 1,614 |
-   | JSON (size artifact) | 10,730 | 12,500 |
+   | wordcount | 3,635 | 3,480 |
 
-   The encoder and JSON caps now pass. Equality is not a strict win. No benchmark sources or budgets changed.
-   Watr shares exact casts with JZ's early lowering, removes redundant
-   narrow-store casts/masks, and pools integer bits independently of spelling.
-   Binaryen `-Oz` on the resulting modules yields encoder 330,447, shapes 1,777,
-   tokenizer 1,500, wordcount 3,654 and bezfit 3,511 bytes. Its small kernel wins
-   justify individual general folds, not adding its entire pipeline.
-   The current zero-test encoding and simpler allocator reduce every sampled
-   module and close the SDF/tokenizer size gaps. The allocator retains its
-   growth ratios, exact-delta retry and byte-overflow guard; its old page-count
-   guard was unreachable. No new optimizer pass or runtime layout is added.
+   No benchmark sources or budgets changed. Binaryen grows several of these
+   modules; use its useful folds individually, not its entire pipeline.
 
 2. **Speed and evidence.** The stored reference fails leadership claims,
    including V8 losses on jessie and Watr, and is stale. After the decimal,
-   string and JSON reductions, isolated self-compile timing still fails:
-   warm 1.485×/1.535×/1.555× against 1.03×, fresh 1.222× against 0.99×.
-   Functional bootstrap passes.
+   string and JSON reductions, self-compile timing still fails: the latest
+   sample is warm 1.454×/1.475×/1.517× against 1.03×, fresh 1.236× against
+   0.99×. This sample overlapped WASI validation; it does not establish a
+   speed change. Functional bootstrap passes. A subsequent quiet paired
+   probe of the load-cost fix preserves checksums and gives shapes 0.998×
+   after/before runtime, with unchanged controls at 1.003–1.020×; no runtime
+   improvement is claimed.
    The complete benchmark run passes 250 checks and fails 16 (previously
    247/19). JSON's native comparison and the JSON/encoder size caps pass.
    Remaining failures: fastest-Wasm delayline, glyfparse, sdf, slices, lz,
@@ -167,49 +111,25 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
 ## Next reductions
 
-- Completed: array safety and push-site counts reuse the binding-use census;
-  member calls remain distinct from reads. Proven fixed builders reserve their
-  final capacity through ValueReps and the existing allocator/slot layout.
-  Short-circuit growth, exception handlers and array effects in loop headers
-  invalidate the length proof (regressions cover repeated calls and all tiers).
-  Shapes falls from 1,807 to 1,524 B at size (AS 1,695 B), and from 1,891 to
-  1,608 B at speed. Instrumenting the allocator global after the unchanged
-  workload shows retained allocation falling from 1,049,864 to 328,904 B;
-  checksums match. This is allocator usage, not process peak RSS.
-- Completed: the size preset no longer duplicates speculative function-table
-  arms beside an indirect fallback. Dispatch falls from 1,853 to 1,573 B
-  (AS 1,614 B); the speed preset is unchanged. Watr's size build falls from
-  290,151 to 288,223 B. Remaining AS size gaps are bezfit (3,211 vs 3,017 B)
-  and wordcount (3,635 vs 3,480 B). Folding the duplicate ephemeral dictionary
-  allocator into the ordinary zeroed allocator and combining adjacent clearing
-  spans removes 63 B, more than the builder's 34 B append-code increase. The
-  fixed builder also saves 4,048 B of retained allocation.
-- Completed: dictionary reuse invalidates its enumeration cache, including
-  same-count/different-key refills. Host memory reset now invokes the compiled
-  reset instead of bypassing its cache invalidation and state healing. Tests
-  cover both collection layouts, growth, empty refills and repeated resets.
-- Latest verification: default/O0/O3/WASI all pass; conformance is 3,151
-  language + 869 built-in passes with zero unexpected failures; functional
-  self-hosting is 40/40 and recursive output is 14,698,363 B. Four-round paired
-  timings beat V8 for shapes, wordcount, dispatch and bezfit (JZ/V8 time ratios
-  0.396, 0.302, 0.960 and 0.931). Shapes still takes 1.210× AS time; its normalized
-  hot WAT is unchanged by preallocation. The self-compiler speed gates remain
-  red: warm ratios 1.442/1.472/1.501× against 1.03×, fresh 1.232× against 0.99×.
-  This does not certify v1 or replace the outstanding full-corpus speed gates.
-- Compare remaining byte gaps with Binaryen output and fix whole classes through
-  existing folding/propagation. Binaryen shrinks several kernels but grows the
-  encoder; adopting its entire pipeline is not justified.
-- The encoder CPU profile exposed a repeated whole-function local census in
-  shared LICM. One incrementally maintained census cuts its per-function
-  optimization stage from roughly 720 to 350 ms, with identical output bytes
-  before the separate size folds. Compile benchmarking now includes Watr's
-  fast cleanup and measures total wall time rather than an incomplete phase sum.
-  O0 self-host sampling instead points to string equality/hashing and dynamic
-  property access; the LICM reduction does not resolve that timing gate.
-- Keep generic affine lane-local vectorization, alias/dependence checks and
-  scalar tails. Narrower butterfly/channel/tone-map recognizers and four-term
-  dot-product SLP remain; fold overlap into shared machinery when a measured
-  gap justifies it. They do not prove arbitrary-program V8 leadership.
+- Carry caller-proven affine index facts across internal helper calls using
+  the existing parameter summaries and bounds proofs. In the size build,
+  bezfit's `fitOnce` still takes offsets `o`/`co` as f64; its body is 928 B
+  versus AS's 612 B, with conversion and checked-index code. Preserve checks
+  for open inputs; no source hints or benchmark-specific rules.
+- Continue eliminating repeated compiler work through existing ownership.
+  The binding-use census now supplies array safety and push-site counts;
+  fixed builder lengths reserve capacity through ValueReps. Diagnostics use
+  one flag and one release specialization; pass-through context views and the
+  empty host-profile placeholder are removed. Watr's cost estimator now counts
+  implicit memory immediates, enabling profitable repeated-load CSE. These
+  changes remove code or improve existing passes without adding another pass.
+- String specialization must account for retained shared helpers. Fusing a
+  single-unit constructor into append increased wordcount by 100 B; rejected.
+  O0 self-host profiles still point to string equality/hashing and dynamic
+  property access. The shared LICM census reduction does not close that gate.
+- Keep generic lane vectorization, dependence checks, scalar tails and SLP.
+  Fold the remaining narrower recognizers only when a measured gap justifies
+  it; their presence does not prove arbitrary-program V8 leadership.
 
 A new semantic IR, wholesale context/vectorizer rewrite, region API, selectable
 representation tiers and frozen raw ABI are not prerequisites for v1.
