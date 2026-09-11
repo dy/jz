@@ -8,6 +8,7 @@
  *
  * @module optimize/peephole
  */
+import { simplifyCast } from 'watr/optimize'
 import { LAYOUT, ctx, FORWARDING_MASK } from '../ctx.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR } from '../ir.js'
 import { isLeaf, walkAst } from '../ast.js'
@@ -453,39 +454,15 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
     if (isTwo(a) && isCheapF64(b)) return ['f64.add', b, b]
     if (isTwo(b) && isCheapF64(a)) return ['f64.add', a, a]
   }
-  if (op === 'i32.trunc_sat_f64_s' && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return a[1]
-  }
-  if (op === 'i64.trunc_sat_f64_s' && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return ['i64.extend_i32_s', a[1]]
-    if (Array.isArray(a) && a[0] === 'f64.convert_i32_u' && a.length === 2) return ['i64.extend_i32_u', a[1]]
-  }
-  // rounding an integer-valued f64 (a converted i32) is the identity: the loop
-  // bound hoist's `ceil` over an i32 bound, then `trunc_sat(convert(x))` → x
-  if ((op === 'f64.ceil' || op === 'f64.floor' || op === 'f64.trunc' || op === 'f64.nearest') && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && (a[0] === 'f64.convert_i32_s' || a[0] === 'f64.convert_i32_u') && a.length === 2) return a
-  }
-  if (op === 'i32.trunc_sat_f64_s' && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return a[1]
-  }
+  // The early SIMD preparation and final optimizer share exact cast rules.
+  const cast = simplifyCast(node)
+  if (cast) return cast
   // Rep-specific folds (NaN-box layout-aware reinterpret/wrap simplifications under
-  // the nanbox preset). See abi/number/<rep>.js — each rep owns the rules that
-  // depend on its own carrier layout. The universal `i32.wrap_i64 (i64.extend_i32_*)`
-  // fold below stays here because it's pure WASM bit-pattern, ABI-agnostic.
+  // the nanbox preset). Each rep owns the rules depending on its carrier layout.
   if (op === 'i64.reinterpret_f64' || op === 'f64.reinterpret_i64' || op === 'i32.wrap_i64') {
     const repFold = ctx.abi?.number?.peephole(node)
     if (repFold != null) return repFold
   }
-  if (op === 'i32.wrap_i64' && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && (a[0] === 'i64.extend_i32_u' || a[0] === 'i64.extend_i32_s') && a.length === 2)
-      return a[1]
-  }
-
   // Push ToInt32 through integer expressions and conditionals. The universal value model
   // computes integer `+`/`-` and `?:` in f64, then ToInt32-clamps — emitting
   //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s [local.tee T] X)) FALLBACK COND)

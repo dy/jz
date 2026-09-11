@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `e146006`.
+`package.json` and the lockfile pin the public watr source archive at `c001a5f`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -40,6 +40,10 @@ Public adapters use the ordinary small-function inline budget; larger workers
 remain shared. Internal dispatch trampolines retain the speed-tier budget.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
 this policy with its existing `hoistConstantPool` option.
+Exact cast identities have one owner in watr: JZ calls `simplifyCast` during
+early SIMD preparation, and watr uses it in its final identity sweep. Narrow
+stores discard irrelevant casts and masks. Integer constant pooling uses
+canonical bits rather than source spellings and skips literals too cheap to pool.
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
