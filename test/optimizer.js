@@ -2279,7 +2279,8 @@ const loopSum = (lit) => `
 test('promoteIntArrayLiterals: float element disqualifies', () => {
   const src = loopSum('[1, 2, 3, 4, 5, 6, 7, 8.5]')
   const body = compileMain(src)
-  ok(/\(local \$xs f64\)/.test(body), 'float element keeps xs as f64 ARRAY')
+  // Propagation can remove the carrier local; the element lane must stay f64.
+  ok(/\(f64.load\b/.test(body) && !/i32x4\./.test(body), 'float elements retain f64 loads')
   const { main } = run(src)
   is(main(0), 36.5)
 })

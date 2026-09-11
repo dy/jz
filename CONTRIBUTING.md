@@ -15,14 +15,16 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `836ccd6`.
+`package.json` and the lockfile pin the public watr source archive at `6025256`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
 and integrity hash keep CI reproducible.
 
 Generic local propagation and merging run in watr after linking, including
-the fast tier. The duplicate JZ implementations and cleanup sweep are removed.
+the fast tier. Dominating small constants propagate into control flow using
+the existing binding-use census. This pass skips functions mixing numeric
+and named local references, which can alias. The duplicate JZ implementations and cleanup sweep are removed.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 Condition chaining and boolean simplification also run in watr, including the
