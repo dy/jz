@@ -16,8 +16,10 @@ git show 66e72c46:PLAN.md
 ```
 
 Old source comments citing a retired .work path refer to that historical
-snapshot. Raw data and unapplied patches remain available; a saved patch is
-not an instruction to merge it.
+snapshot. Superseded patches, optimizer experiments and trace dumps have also
+been removed. Tracked files remain recoverable from their Git history.
+The memory evidence used by the release gate lives in
+[../bench/memcheck-results.csv](../bench/memcheck-results.csv).
 
 Retained reference notes:
 

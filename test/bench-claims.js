@@ -245,13 +245,13 @@ const _liveInvalid = _liveState.swapUsedMB != null && _liveState.swapUsedMB >= S
 })
 
 // MEMORY freshness — same discipline as the FRESH test above, applied to the
-// separate GOAL-MEMORY evidence file (.work/memcheck-results.csv, the jz-wasmtime
+// separate GOAL-MEMORY evidence file (bench/memcheck-results.csv, the jz-wasmtime
 // vs moonrun peak-RSS comparison). It isn't part of results.json — regenerated on
 // its own cadence — so it carries its own `# commit:` header and needs its own
 // staleness check, or a compiler change could silently invalidate the memory goal
 // while results.json's freshness test stays green.
 test('claims: memory evidence is fresh (no compiler commits past memcheck-results.csv\'s commit)', () => {
-  const csv = readFileSync(join(ROOT, '.work/memcheck-results.csv'), 'utf8')
+  const csv = readFileSync(join(ROOT, 'bench/memcheck-results.csv'), 'utf8')
   const m = csv.match(/^#\s*commit:\s*([0-9a-f]{7,40})\s*$/m)
   ok(m, 'memcheck-results.csv missing a "# commit: <hash>" header — cannot verify freshness')
   const base = m[1]
@@ -264,7 +264,7 @@ test('claims: memory evidence is fresh (no compiler commits past memcheck-result
     return
   }
   const n = stale ? stale.split('\n').length : 0
-  ok(n === 0, `memory evidence is STALE: ${n} compiler-source commit(s) postdate memcheck-results.csv's commit ${base} — regenerate .work/memcheck-results.csv at HEAD:\n${stale.split('\n').slice(0, 8).join('\n')}`)
+  ok(n === 0, `memory evidence is STALE: ${n} compiler-source commit(s) postdate memcheck-results.csv's commit ${base} — regenerate bench/memcheck-results.csv at HEAD:\n${stale.split('\n').slice(0, 8).join('\n')}`)
 })
 
 const parityRows = rival => {
