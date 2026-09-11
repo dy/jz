@@ -399,8 +399,8 @@ export default (ctx) => {
           (else (call $__char_unit (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))))`)
 
   // Hot: ~53M calls in watr self-compile. Bit-eq covers identity. SSO/SSO with !bit-eq
-  // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs
-  // ⇒ bytes differ). Heap/heap uses raw load8_u — no per-byte function calls.
+  // guarantees content differs. Heap/heap compares UTF-16 units with word loads
+  // and a code-unit tail — no per-unit function calls.
   // Mixed SSO×heap is rare; falls back to __char_at.
   // Hot/cold split: the prefix every comparison runs (bit-eq, both-SSO,
   // both-canonical, heap length mismatch) is LOOP-FREE and small enough for
@@ -410,7 +410,7 @@ export default (ctx) => {
   // Size tier (`leanRuntime`): the same decision as the tiered pair below in one
   // loop-free prelude plus the byte walk through the encoding-agnostic accessors
   // the cold path already links (`__str_length`, `__char_at`). No hot/cold
-  // split, no canonical-interned arm, no 4-byte chunking: a third of the bytes.
+  // split, no canonical-interned arm, no word loads.
   wat('__str_eq', () => lean ? `(func $__str_eq (param $a i64) (param $b i64) (result i32)
     (local $len i32) (local $i i32)
     (if (i64.eq (local.get $a) (local.get $b))
