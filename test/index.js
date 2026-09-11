@@ -72,7 +72,6 @@ const TESTS = [
   'refactor-oracle',
   'layout-kinds',
   'struct-inline',
-  'bench-merge',
   'pow',
   'wat-invariants',
   'loop-square',
@@ -175,7 +174,6 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // constructor is now spec-correct (nullish iterable → empty set,
   // __iter_arr_ctor) and the whole exclusions burn-down is COMPLETE.
   'simd', 'optimizer', 'slot-hazards', 'struct-inline',
-  'bench-merge',   // drives bench/bench.mjs in subprocesses — host tooling, nothing to self-compile
   // 'objects','strings','spread' cleared 2026-07-23: reassigned-param val
   // poisoning fixed the Array.isArray const-fold class (analyze.js declared-
   // guard) — 14 kernel value bugs cleared in one fix; json keeps 2 structural
@@ -204,7 +202,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
 // a file on the command line runs it on any leg.
 const LEG_INVARIANT = new Set([
   'self-checkpoint', 'self-build', 'self-compile-source', 'kernel-marks', 'eager-stdlib-parity',
-  'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-svg', 'bench-merge', 'cli', 'native-lowering',
+  'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-svg', 'cli', 'native-lowering',
   'headline', 'site', 'guide', 'web-smoke',
 ])
 // Files that choose their own optimize levels (an explicit `optimize` on every
