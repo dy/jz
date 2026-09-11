@@ -52,6 +52,8 @@ const SAMPLES = [
   ['unicode-construction', 'export let main = () => String.fromCharCode(256, 0xD83D, 0xDE00) + String.fromCodePoint(0x1D800)', 'Ā😀𝠀'],
   ['unicode-unit-offset', 'export let main = () => "Ā😀".codePointAt(1)', 128512],
   ['hash-sentinels', String.raw`export function main(){const m=new Map();m.set(1.0000007154885675,42);m.set(1.0000007154885675,77);m.set(4294967294n,5);m.set('\u1234\u6fe3\ue84a',9);return m.size*1000+m.get(1.0000007154885675)+m.get(4294967294n)+m.get('\u1234\u6fe3\ue84a')}`, 3091],
+  ['integer-literals-beyond-i64', 'export function main(){return new Int32Array([1e30,9223372036854778000])[0] + new Int16Array([1e30,9223372036854778000])[1]}', 2048],
+  ['json-packed-keys', `const sources=['{"abcd":1}','{"abcd":3}']; function f(i){return JSON.parse(sources[i&1]).abcd} export function main(){return f(0)+f(0)+f(1)+f(0)}`, 6],
   ['typed-view-iterator', 'function* marker() {} function g([x]) { return x } export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); d.setUint8(1, 23); return g(new Int8Array(b, 1, 2)) }', 23],
   ['dataview-identity', 'export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); return (d instanceof DataView ? 1 : 0) + (d instanceof Int8Array ? 2 : 0) }', 1],
   ['dataview-properties', 'export let main = () => { let d = new DataView(new ArrayBuffer(4)); d.setUint8(0, 71); return [d.length, d[0], d.byteLength, d.getUint8(0)] }', [undefined, undefined, 4, 71]],

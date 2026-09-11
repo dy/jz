@@ -10,6 +10,10 @@ import { TYPED_ELEM_CODE } from '../layout.js'
 // A loop guard's relational operators.
 const RELATIONAL_OPS = new Set(['<', '<=', '>', '>='])
 
+// Compile-time ToInt32 must stay exact when this compiler runs as Wasm too:
+// its runtime bitwise conversion saturates outside i64, so reduce large inputs.
+export const int32 = n => (n > -0x100000000 && n < 0x100000000 ? n : n % 0x100000000) | 0
+
 // Byte width per TYPED_ELEM_CODE index (0..7) — parallel to module/typedarray.js's
 // own private SHIFT table (log2 of this), duplicated here (layout.js-adjacent, no
 // compiler-state dependency) since that module isn't importable from this leaf file.
@@ -71,7 +75,7 @@ export function constNumExpr(node, resolve) {
   if (node.length === 2) {
     if (op === 'u-' || op === '-') return -x
     if (op === 'u+' || op === '+') return +x
-    if (op === '~') return ~x
+    if (op === '~') return ~int32(x)
     return null
   }
   if (node.length !== 3) return null
@@ -84,12 +88,12 @@ export function constNumExpr(node, resolve) {
     case '/': return x / y
     case '%': return x % y
     case '**': return x ** y
-    case '&': return x & y
-    case '|': return x | y
-    case '^': return x ^ y
-    case '<<': return x << y
-    case '>>': return x >> y
-    case '>>>': return x >>> y
+    case '&': return int32(x) & int32(y)
+    case '|': return int32(x) | int32(y)
+    case '^': return int32(x) ^ int32(y)
+    case '<<': return int32(x) << int32(y)
+    case '>>': return int32(x) >> int32(y)
+    case '>>>': return int32(x) >>> int32(y)
     default: return null
   }
 }
@@ -527,7 +531,7 @@ export function staticValue(node) {
     if (op === 'u+' || op === '+') return +value
     if (op === 'u-' || op === '-') return -value
     if (op === '!') return !value
-    if (op === '~') return ~value
+    if (op === '~') return typeof value === 'bigint' ? ~value : ~int32(Number(value))
     return NO_VALUE
   }
 
@@ -542,12 +546,12 @@ export function staticValue(node) {
       case '/': return Number(left) / Number(right)
       case '%': return Number(left) % Number(right)
       case '**': return Number(left) ** Number(right)
-      case '&': return Number(left) & Number(right)
-      case '|': return Number(left) | Number(right)
-      case '^': return Number(left) ^ Number(right)
-      case '<<': return Number(left) << Number(right)
-      case '>>': return Number(left) >> Number(right)
-      case '>>>': return Number(left) >>> Number(right)
+      case '&': return int32(Number(left)) & int32(Number(right))
+      case '|': return int32(Number(left)) | int32(Number(right))
+      case '^': return int32(Number(left)) ^ int32(Number(right))
+      case '<<': return int32(Number(left)) << int32(Number(right))
+      case '>>': return int32(Number(left)) >> int32(Number(right))
+      case '>>>': return int32(Number(left)) >>> int32(Number(right))
       default: return NO_VALUE
     }
   }

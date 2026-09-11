@@ -49,7 +49,7 @@ const wrapIntIR = (v) => ['select',
 
 import { analyzeSimd, genSimdMap } from './typedarray/simd-map.js'
 import { dataAlign, dataPush, dataLen } from '../src/static-data.js'
-import { nonNegIntLiteral } from '../src/static.js'
+import { nonNegIntLiteral, int32 } from '../src/static.js'
 
 // Static typed storage: a constant-length typed array constructed at module
 // scope, in straight-line init (not inside a module-level loop), is built
@@ -1085,11 +1085,11 @@ export default (ctx) => {
           if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, asF64(emit(elems[k])))); continue }
           if (elemTypeS <= 5) {
             // ES ToIntN, not saturation: a constant wraps exactly at compile time
-            // (JS `| 0` IS ToInt32 for any magnitude; store8/16 keeps the low
-            // bits = the narrower modulo). A runtime element takes a temp and
+            // (including magnitudes outside i64 during self-hosting; store8/16
+            // keeps the narrower modulo). A runtime element takes a temp and
             // the wrapIntIR i64 route — asI32's saturating trunc clamps wrong.
             const e = emit(elems[k])
-            if (isLit(e)) { body.push([storeS, addr, ['i32.const', litVal(e) | 0]]); continue }
+            if (isLit(e)) { body.push([storeS, addr, ['i32.const', int32(litVal(e))]]); continue }
             const tv = temp('tfe')
             body.push(['local.set', `$${tv}`, asF64(e)],
               [storeS, addr, wrapIntIR(['local.get', `$${tv}`])])

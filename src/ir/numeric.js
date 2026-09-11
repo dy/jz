@@ -10,6 +10,7 @@ import { I32_MIN, I32_MAX, isLeaf } from '../ast.js'
 import { typed } from './tag.js'
 import { temp } from './locals.js'
 import { boxPtrIR, valKindToPtr } from './pointers.js'
+import { int32 } from '../static.js'
 
 /** Coerce node to f64. Pointer-kinded i32 offsets rebox via NaN-tag fusion, not numeric convert.
  *  The `unsigned` flag (set by `>>>` codegen) opts into `convert_i32_u` so the canonical
@@ -309,7 +310,7 @@ export const toI32 = n => {
   }
   if (Array.isArray(n) && n[0] === 'f64.const' && typeof n[1] === 'number') {
     const v = n[1]
-    return typed(['i32.const', Number.isFinite(v) ? v | 0 : 0], 'i32')   // JS `|0` is ToInt32
+    return typed(['i32.const', int32(v)], 'i32')
   }
   // General int-arithmetic narrowing: an exact-int f64 tree of {+,−,×,neg,/C}
   // computes in i32 (mod-2^32 ring) — no trunc/guard at all.

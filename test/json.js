@@ -197,6 +197,16 @@ test('JSON.parse: runtime-selected literal sources share shaped parser', () => {
   for (const i of [0, 0, 1, 0]) is(f(i), i ? 21 : 12, 'shaped parser: whitespace → repeat → compact → whitespace')
 })
 
+test('JSON.parse: packed keys cover UTF-16 chunk widths and repeated calls', () => {
+  const keys = ['', 'a', 'ab', 'abc', 'abcd', 'abcde', 'abcdef', 'abcdefg', 'abcdefgh', 'abcdefghi', '\u8000x\uD83D\uDE00']
+  const objects = [1, 2].map(scale => Object.fromEntries(keys.map((k, i) => [k, (i + 1) * scale])))
+  const src = `const sources = ${JSON.stringify(objects.map(o => JSON.stringify(o)))}
+    export function f(i) { const o = JSON.parse(sources[i & 1]); return ${keys.map(k => `o[${JSON.stringify(k)}]`).join('+')} }`
+  const { f } = run(src)
+  const sum = keys.length * (keys.length + 1) / 2
+  for (const i of [0, 0, 1, 0]) is(f(i), sum * (i + 1), `UTF-16 chunks source ${i}`)
+})
+
 test('JSON.parse: mixed-order literal sources stay generic', () => {
   const src = `
     const SOURCES = ['{"a":1,"b":2}', '{"b":20,"a":10}']

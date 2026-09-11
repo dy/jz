@@ -116,6 +116,8 @@ JSON.parse shares decimal accumulation and rounding with Number/parseFloat;
 its own scanner checks the stricter JSON grammar. Generic and shape-specialized
 parsers share one whitespace loop, with an inline guard for compact input. The
 scanner bounds each UTF-16 load and accepts only tab, LF, CR and space.
+Known key chunks are emitted directly as hexadecimal bytes, without intermediate
+Number or BigInt packing. This keeps native and self-hosted output identical.
 Integral significands bypass
 the decimal conversion table. Parsed objects overwrite duplicate keys and order
 array-index keys before registering a schema. The schema cache hashes decoded
@@ -143,6 +145,9 @@ preserve writes to existing bindings and introduce only private temporary locals
 so changing loop arithmetic does not require rescanning all nested closures.
 
 The interval interpreter also supplies call-argument and typed-store bounds.
+Compile-time bitwise and integer-store folds share exact ToInt32 conversion;
+large constants reduce modulo 2^32 before the compiler's runtime i64 boundary.
+Schema-tag masks reuse the numeric constant evaluator.
 Internal parameter ranges narrow only when every incoming call proves them;
 exports, indirect calls, missing arguments and unknown writes retain checks.
 The same ValueRep range feeds integer arithmetic and indexing after lowering.

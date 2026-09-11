@@ -1,7 +1,7 @@
 /** Exact integer tags in object literals, used to discriminate schema unions. */
 import { MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
-import { staticObjectProps } from '../../static.js'
+import { staticObjectProps, constNumExpr } from '../../static.js'
 
 export function collectSlotConstants(ast) {
   if (!ctx.schema?.register) return
@@ -62,19 +62,10 @@ export function collectSlotConstants(ast) {
     // Const-expression folding: the canonical mask spells `s & (NSHAPES - 1)`
     // with NSHAPES a module const — fold int arithmetic over resolvable parts.
     const litOf = (n) => {
-      const v = intLiteral(n) ?? (typeof n === 'string' ? ctx.scope.constInts?.get(n) ?? null : null)
-      if (v != null) return v
-      if (Array.isArray(n) && n.length === 3) {
-        const a = litOf(n[1]), b = litOf(n[2])
-        if (a == null || b == null) return null
-        switch (n[0]) {
-          case '+': return a + b; case '-': return a - b; case '*': return a * b
-          case '&': return a & b; case '|': return a | b; case '^': return a ^ b
-          case '<<': return a << b; case '>>': return a >> b
-        }
-      }
-      return null
+      const v = constNumExpr(n, name => ctx.scope.constInts?.get(name) ?? null)
+      return Number.isInteger(v) ? v : null
     }
+
     const note = (name, rhs) => {
       if (typeof name !== 'string') return
       let max = null

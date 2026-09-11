@@ -14,7 +14,6 @@ import { emit, bool, deps, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
-import { i64Hex } from '../layout.js'
 import { DEC_SIGNIFICAND, sciExponent, EL_SCALE } from './number.js'
 import { heapResetWat, stringIndexWat } from './collection.js'
 import { RESERVED as ATOM_RESERVED } from './symbol.js'
@@ -1306,48 +1305,21 @@ export default (ctx) => {
     // Compare known UTF-16LE text in 8/4/2-byte chunks after a unit bounds check.
     const expectText = (text) => {
       const bytes = stringBytes(text)
-      // Two packers, deliberately: the 8-byte chunk is a genuine 64-bit value and
-      // needs BigInt (fed to i64Hex, which formats it as a WAT hex literal STRING —
-      // never round-trips through Number()). The ≤4-byte chunks fit a plain i32
-      // (all bytes are ASCII, so bit 31 of a 4-byte pack is always 0 — no sign
-      // trouble) and MUST stay plain-Number arithmetic, not BigInt: `Number(bigint)`
-      // here would route through the self-compiled kernel's own ToNumber(BigInt),
-      // whose bigint-vs-genuine-carrier disambiguation is a whole-program
-      // ctx.features.bigint flag baked once at first module-inclusion — under
-      // self-compiling (this very file compiled BY the kernel) module-inclusion
-      // ordering can bake the flag before it sees this file's own 8-byte-chunk
-      // BigInt use, leaving ToNumber(BigInt) on its unguarded arm, which returns
-      // the raw i64 carrier bits reinterpreted as f64 instead of converting —
-      // producing a malformed `(i32.const 9.06...e-315)` WAT literal (banked,
-      // .work/archive/todo.md "JSON SHAPED-PARSER 'Bad int 9.067910317e-315'"). Avoiding
-      // BigInt entirely for the ≤4-byte packer sidesteps that arm rather than
-      // fixing it (the general fix is a separate, larger architectural task).
-      // Plain loop, NOT `arr.reduce((a, b, k) => …, 0n)`: a reduce routes the 0n
-      // seed and the bigint accumulator through the dynamic closure ABI's
-      // kind-erased f64 arg slots — the exact "collection/closure-boundary"
-      // flow class the strict BigInt contract refuses (and the boxed carrier
-      // existed to paper over). The loop keeps `a` a provable single-kind
-      // BIGINT local for its whole lifetime; identical left-to-right fold.
-      const le = (arr) => { let a = 0n; for (let k = 0; k < arr.length; k++) a = a | (BigInt(arr[k]) << BigInt(8 * k)); return a }
-      const leNum = (arr) => arr.reduce((a, b, k) => a | (b << (8 * k)), 0)
       const at = (i) => (i ? `offset=${i} ` : '') + '(local.get $kp)'
       const out = [`(if (i32.gt_u (i32.add (global.get $__jppos) (i32.const ${text.length})) (global.get $__jplen)) (then ${fail}))`, `(local.set $kp (i32.add (global.get $__jpstr) (i32.shl (global.get $__jppos) (i32.const 1))))`]
       let i = 0
-      for (; bytes.length - i >= 8; i += 8)
-        // BigInt(...) wraps le()'s already-BigInt return (no-op at runtime) so
-        // the self-compile kernel's own i64Hex call-site fixpoint proves this arg
-        // BIGINT — a local helper's return kind is opaque to that inference.
-        out.push(`(if (i64.ne (i64.load ${at(i)}) (i64.const ${i64Hex(BigInt(le(bytes.slice(i, i + 8))))})) (then ${fail}))`)
-      if (bytes.length - i >= 4) {
-        out.push(`(if (i32.ne (i32.load ${at(i)}) (i32.const ${leNum(bytes.slice(i, i + 4))})) (then ${fail}))`)
-        i += 4
+      // WAT needs the bit spelling, not a Number/BigInt carrier. UTF-16 text
+      // has an even byte length, so 8/4/2-byte loads consume it exactly.
+      for (const width of [8, 4, 2]) {
+        while (bytes.length - i >= width) {
+          let hex = '0x'
+          for (let j = i + width - 1; j >= i; j--) hex += bytes[j].toString(16).padStart(2, '0')
+          const type = width === 8 ? 'i64' : 'i32'
+          const load = width === 2 ? 'load16_u' : 'load'
+          out.push(`(if (${type}.ne (${type}.${load} ${at(i)}) (${type}.const ${hex})) (then ${fail}))`)
+          i += width
+        }
       }
-      if (bytes.length - i >= 2) {
-        out.push(`(if (i32.ne (i32.load16_u ${at(i)}) (i32.const ${leNum(bytes.slice(i, i + 2))})) (then ${fail}))`)
-        i += 2
-      }
-      if (i < bytes.length)
-        out.push(`(if (i32.ne (i32.load8_u ${at(i)}) (i32.const ${bytes[i]})) (then ${fail}))`)
       out.push(ADV(text.length))
       return out.join('\n    ')
     }

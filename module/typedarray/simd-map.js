@@ -28,6 +28,7 @@
 
 import { PTR } from '../../src/ctx.js'
 import { STRIDE, SHIFT, LOAD, STORE } from './elem-tables.js'
+import { int32 } from '../../src/static.js'
 
 // SIMD: vector width per element type (elements per v128)
 const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
@@ -38,22 +39,6 @@ const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
 // single authority on which element kinds this family actually reaches, so
 // simdOp/scalarOp's bitwise arms can stay i32-only unconditionally.
 const BITWISE_OPS = new Set(['and', 'or', 'xor', 'shl', 'shr', 'shru'])
-
-// Plain-number ECMAScript ToInt32 — the same fold `src/ir.js`'s `toI32` applies
-// to a literal `f64.const` (`Number.isFinite(v) ? v | 0 : 0`, "JS `|0` is
-// ToInt32"), mirrored here because this module hand-emits WAT text from bare
-// JS numbers, never IR nodes (toI32 itself walks an IR tree — wrong shape for
-// a raw AST constant). genSimdMap reuses this ONE function for both bitwise
-// value-conversion (and/or/xor: the ELEMENT undergoes ToInt32, so the constant
-// combined with it must too) and shift-count conversion (shl/shr/shru: JS
-// masks the count via ToUint32(c)&31) — WASM's shl/shr_s/shr_u instructions,
-// scalar AND i32x4 lane-wise alike, already reduce ANY i32 shift-count operand
-// modulo 32 at the instruction-semantics level (Core Spec "Numerics — Shifts":
-// k = i2 mod N), and ToInt32(c)'s bit pattern shares the same low 5 bits as
-// ToUint32(c)'s — so one conversion correctly serves both families; no
-// per-operator special case.
-const toI32Const = c => Number.isFinite(c) ? c | 0 : 0
-
 
 // === SIMD pattern detection ===
 
@@ -217,7 +202,7 @@ const SIMD_MAP_VALID_KINDS = {
   // vectorized form (WASM SIMD's only float→int lanes — i32x4.trunc_sat_*/
   // f64x2_*_zero — SATURATE out-of-range magnitudes instead of wrapping mod
   // 2^32 like ToInt32 does) — integer-only. A surviving constant is
-  // ToInt32-normalized below (toI32Const), independent of this table.
+  // ToInt32-normalized below (int32), independent of this table.
   and: I, or: I, xor: I, shl: I, shr: I, shru: I,
 
   // Two's-complement wraparound negation IS modular arithmetic mod 2^32 —
@@ -273,12 +258,12 @@ function genSimdMap(name, elemType, pattern) {
 
   // A surviving bitwise/shift constant is embedded VERBATIM into `i32.const`/
   // `i32x4.splat (i32.const …)` below (simdI32/scalarI32) — normalize it to
-  // ToInt32 first via toI32Const (see its comment above). Left as-is, the raw
+  // ToInt32 first via the shared int32 fold. Left as-is, the raw
   // JS AST literal (`1.5`, `-1.5`, `Infinity`, `2147483648.7`, …) isn't even
   // valid WAT integer syntax, so an unnormalized fractional/non-finite `c` is
   // not merely a wrong-value bug but a compile failure ("Bad int 1.5") — a
   // spurious REJECT of valid JS (`x & 1.5` ≡ `x & 1` per ECMAScript ToInt32).
-  if (BITWISE_OPS.has(op)) c = toI32Const(c)
+  if (BITWISE_OPS.has(op)) c = int32(c)
 
   const stride = STRIDE[elemType]
   const shift = SHIFT[elemType]

@@ -7,7 +7,7 @@
 import { ERR } from '../../../err-codes.js'
 import { ctx, err } from '../../ctx.js'
 import { asF64, asI32, emitNum, isLit, litVal, toI32, toNumF64, typed } from '../../ir.js'
-import { intExprRange, intLiteralValue } from '../../static.js'
+import { intExprRange, intLiteralValue, int32 } from '../../static.js'
 import { exprType } from '../../type.js'
 import {
   bigIntDomainsCanMix, bigIntJointDispatch, bigIntNumericOperand, bigIntOperand, bigIntShiftIR, bigIntUnary, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain,
@@ -78,7 +78,7 @@ export const bitwiseOps = {
         return emit(inner)
       }
       const iv = emit(inner)
-      return isLit(iv) ? emitNum(~~litVal(iv)) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
+      return isLit(iv) ? emitNum(int32(litVal(iv))) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
     }
     // BigInt complement is the i64 `x ^ -1` (all bits flipped), like emitNeg's i64.sub.
     // bigIntUnary: a maybeUndefined-BIGINT operand's real
@@ -87,7 +87,7 @@ export const bitwiseOps = {
     // The full summary kind keeps nullable BigInt producers on this branch.
     if (hasBigintDomain(a))
       return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1], computedBoxOf(self))
-    const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
+    const v = emit(a); return isLit(v) ? emitNum(~int32(litVal(v))) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
   },
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
@@ -115,7 +115,7 @@ export const bitwiseOps = {
     }
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) {
-      const la = litVal(va), lb = litVal(vb)
+      const la = int32(litVal(va)), lb = int32(litVal(vb))
       if (op === '&') return emitNum(la & lb); if (op === '|') return emitNum(la | lb)
       if (op === '^') return emitNum(la ^ lb); if (op === '<<') return emitNum(la << lb)
       if (op === '>>') return emitNum(la >> lb)
@@ -136,7 +136,7 @@ export const bitwiseOps = {
       'BigInt has no unsigned right shift (>>>) — TypeError in JS; convert with Number(x) first if you need an unsigned shift')
     const va = numeric(a) ?? emit(a), vb = numeric(b) ?? emit(b)
     if (isLit(va) && isLit(vb)) {
-      const r = litVal(va) >>> litVal(vb) // JS uint32 result ∈ [0, 2^32)
+      const r = int32(litVal(va)) >>> int32(litVal(vb)) // JS uint32 result ∈ [0, 2^32)
       // ≥ 2^31 doesn't fit signed i32: materialize the wrapped bits as an i32 const
       // tagged `.unsigned` so `asF64` lifts via `convert_i32_u`. Emitting `f64.const r`
       // here (the old foldConst path) would `trunc_sat_f64_s`-saturate to INT32_MAX

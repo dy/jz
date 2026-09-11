@@ -83,6 +83,7 @@
 
 import { extractParams, classifyParam, PARAM_NAME } from '../ast.js'
 import { ctx } from '../ctx.js'
+import { int32 } from '../static.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
 import * as bn from '../bignum.js'
 
@@ -315,12 +316,12 @@ function plainNumOp(op, a, b) {
     case '*': return a * b
     case '/': return a / b
     case '%': return a % b
-    case '&': return a & b
-    case '|': return a | b
-    case '^': return a ^ b
-    case '<<': return a << b
-    case '>>': return a >> b
-    case '>>>': return a >>> b
+    case '&': return int32(a) & int32(b)
+    case '|': return int32(a) | int32(b)
+    case '^': return int32(a) ^ int32(b)
+    case '<<': return int32(a) << int32(b)
+    case '>>': return int32(a) >> int32(b)
+    case '>>>': return int32(a) >>> int32(b)
   }
 }
 const NUM_ONLY_OPS = new Set(['-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
@@ -374,7 +375,7 @@ function foldUnary(op, a) {
   if (op === 'u-') { const L = toNumResult(a); return L && foldNumUnaryNeg(L) }
   if (op === 'u+') return toNumResult(a)
   if (op === '!') return boolResult(!toBoolean(a))
-  if (op === '~') return a.t === 'str' ? null : numResult(~toJSValue(a))
+  if (op === '~') { const n = a.t === 'str' ? null : toNumResult(a); return n && numResult(~int32(n.v)) }
   return null
 }
 

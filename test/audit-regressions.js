@@ -355,6 +355,27 @@ test('audit: Float32 SIMD preserves f64 arithmetic and store rounding', () => {
   }
 })
 
+test('audit: compile-time integer conversion wraps beyond i64 during self-hosting', () => {
+  const values = [1e30, -1e30, 2 ** 63 + 2048, -(2 ** 63 + 2048), 2 ** 64 + 8192, 1.5, Infinity, -Infinity, NaN]
+  const ctors = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array']
+  const literals = values.join(',')
+  const expressions = values.flatMap(v => [`(${v})|0`, `(${v})>>>0`, `1<<(${v})`, `~(${v})`])
+  const source = ctors.map((ctor, i) => `export function c${i}(){return new ${ctor}([${literals}])}`).join('\n') +
+    `\nexport function bits(){return [${expressions.join(',')}]}`
+  const expected = values.flatMap(v => [v | 0, v >>> 0, 1 << v, ~v])
+  for (const optimize of TIERS) {
+    const exports = jz(source, { optimize }).exports
+    for (let repeat = 0; repeat < 2; repeat++) {
+      for (let i = 0; i < ctors.length; i++) {
+        const actual = exports[`c${i}`](), want = new globalThis[ctors[i]](values)
+        for (let k = 0; k < values.length; k++) is(actual[k], want[k], `${ctors[i]} ${optimize} ${values[k]}`)
+      }
+      const actual = exports.bits()
+      for (let i = 0; i < expected.length; i++) is(actual[i], expected[i], `bitwise ${optimize} ${expressions[i]}`)
+    }
+  }
+})
+
 test('audit: standalone higher-order exports accept host callbacks', () => {
   if (onKernel()) return
   for (const decl of ['export function hof(n,f)', 'export const hof=(n,f)=>']) {
