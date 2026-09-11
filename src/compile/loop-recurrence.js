@@ -17,8 +17,7 @@
 // keeps the seed load in step with the original (which reads `arr[LO-1]` only when it iterates),
 // and falls back to the untouched loop on the empty range — sound for any trip count.
 
-import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards } from './loop-model.js'
-import { rewriteBlocks, closureMutatedVars } from './loop-model.js'
+import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards, rewriteBlocks } from './loop-model.js'
 import { cloneIR } from '../ir.js'
 import { walkAst, some } from '../ast.js'
 
@@ -149,8 +148,7 @@ function tryUnroll(stmt, cm) {
   return [['if', [cmpOp, cloneIR(LO), cloneIR(HI)], block, stmt]]
 }
 
-export function unrollRecurrence(body) {
-  const cm = closureMutatedVars(body)
+export function unrollRecurrence(body, cm) {
   return rewriteBlocks(body, stmt => tryUnroll(stmt, cm))
 }
 
@@ -238,8 +236,7 @@ function tryUnrollScalarChain(stmt, cm) {
 }
 
 /** Speed-tier pass: ×2-unroll every serial-chain scan loop in `body`. */
-export function unrollScalarChains(body) {
-  const cm = closureMutatedVars(body)
+export function unrollScalarChains(body, cm) {
   return rewriteBlocks(body, stmt => tryUnrollScalarChain(stmt, cm))
 }
 
@@ -354,8 +351,7 @@ function minusZeroSafe(body, vars) {
 
 /** Speed-tier pass: branchless select accumulation for disjoint-arm update
  *  chains inside loops (the square-tracing direction-step class). */
-export function selectArmUpdatesIn(body) {
-  const cm = closureMutatedVars(body)
+export function selectArmUpdatesIn(body, cm) {
   const memo = new Map()
   const zeroSafe = (vars) => {
     for (const v of vars) if (cm.has(v)) return false

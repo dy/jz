@@ -20,7 +20,7 @@
 // literal tests use `== null`; created literals are bare numbers.
 
 import { ASSIGN_OPS, MUTATE_OPS, walkAst } from '../ast.js'
-import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId, loopHazards } from './loop-model.js'
+import { litN, unitIncVar, normalizeLoop, rewriteBlocks, freshLoopId, loopHazards } from './loop-model.js'
 
 const isVar = (n) => typeof n === 'string'
 
@@ -200,7 +200,6 @@ function tryPeel(stmt, cm) {
   return init ? [init, seed, ...loops] : [seed, ...loops]
 }
 
-export function peelClampedStencil(body) {
-  const cm = closureMutatedVars(body)
+export function peelClampedStencil(body, cm) {
   return rewriteBlocks(body, stmt => tryPeel(stmt, cm))
 }

@@ -19,7 +19,7 @@
 // desync the counters). Number literals are sparse-array holes `[, v]` (n[0] is the
 // hole = undefined), so literal tests use `== null`; created literals are bare numbers.
 
-import { litN, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId, soleUnitInc, loopHazards } from './loop-model.js'
+import { litN, normalizeLoop, rewriteBlocks, freshLoopId, soleUnitInc, loopHazards } from './loop-model.js'
 
 const isMod = (n, i, w) => Array.isArray(n) && n[0] === '%' && n[1] === i && n[2] === w
 const isFloorDiv = (n, i, w) =>
@@ -96,7 +96,6 @@ function tryReduce(stmt, cm) {
   return [['if', ['&&', ['>', w, 0], ['>=', iv, 0]], ['{}', [';', seed, fast]], stmt]]
 }
 
-export function strengthReduceLoopDivMod(body) {
-  const cm = closureMutatedVars(body)
+export function strengthReduceLoopDivMod(body, cm) {
   return rewriteBlocks(body, stmt => tryReduce(stmt, cm))
 }

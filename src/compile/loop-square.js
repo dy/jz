@@ -23,7 +23,7 @@
 
 import { includeMods } from '../autoload.js'
 import { ctx } from '../ctx.js'
-import { loopLitVal, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, loopHazards, uniqueUnitIncOf } from './loop-model.js'
+import { loopLitVal, unitIncVar, normalizeLoop, rewriteBlocks, loopHazards, uniqueUnitIncOf } from './loop-model.js'
 
 const SQUARE_BOUND_MAX = 2 ** 30
 // The constant numeric value of a bound: a literal, OR a module const folded to an int
@@ -91,7 +91,6 @@ function tryNarrow(stmt, cm) {
     : ['while', rw(cond), rw(body)]]
 }
 
-export function narrowBoundedSquare(body) {
-  const cm = closureMutatedVars(body)
+export function narrowBoundedSquare(body, cm) {
   return rewriteBlocks(body, stmt => tryNarrow(stmt, cm))
 }

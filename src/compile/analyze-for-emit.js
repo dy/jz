@@ -18,7 +18,7 @@ import {
 } from './analyze.js'
 import { inferLocals } from './infer.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
-import { mintLoopPlans } from './loop-model.js'
+import { mintLoopPlans, closureMutatedVars } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
 import { mintRepresentationPlan, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
@@ -37,30 +37,18 @@ export function analyzeFuncForEmit(func, programFacts) {
   const { paramReps } = programFacts
   if (func.raw) return null
 
-  // Strength-reduce per-iteration `i % w` / `(i/w)|0` to incremental i32 counters
-  // (idempotent: a reduced loop has no modulo left to match). Before analyze so the
-  // counters are typed/narrowed like any i32 local. Off at L0 / `loopIVDivMod:false`.
   const _o = ctx.transform.optimize
-  if (_o && _o.loopIVDivMod !== false && isBlockBody(func.body)) func.body = strengthReduceLoopDivMod(func.body)
-  // Bounded-square narrowing: `i*i` under an `i*i < CONST` (CONST ≤ 2³⁰) guard → Math.imul,
-  // so the sieve's product/counter chain carries i32 instead of f64. Before analyze so the
-  // Math.imul typed/narrows like any i32. Off at L0 / `loopSquare:false`.
-  if (_o && _o.loopSquare !== false && isBlockBody(func.body)) func.body = narrowBoundedSquare(func.body)
-  // Array-recurrence unroll: a unit-stride DP/scan that reads arr[j-1] and writes arr[j] carries
-  // its value through memory (store→load) and re-pays loop overhead per cell — both of which V8
-  // hides but Cranelift/baseline don't. Scalar-replace the recurrence + unroll ×2 (clang's fix).
-  // Off at L0 / `unrollRecurrence:false`.
-  if (_o && _o.unrollRecurrence !== false && isBlockBody(func.body)) func.body = unrollRecurrence(func.body)
-  // Serial-chain ×2 unroll (crc/hash class): an address-carried scalar makes the
-  // loop non-vectorizable, so pairing iterations halves loop overhead with no
-  // recognizer downstream to blind. Speed/L3 only (`unrollScalarChain: true`).
-  if (_o && _o.unrollScalarChain === true && isBlockBody(func.body)) func.body = unrollScalarChains(func.body)
-  // Disjoint-arm update chains → branchless select accumulation (the square-
-  // tracing direction-step class: data-dependent arm choice defeats prediction).
-  if (_o && _o.selectArmUpdates === true && isBlockBody(func.body)) func.body = selectArmUpdatesIn(func.body)
-  // Edge-clamp peeling: split a clamped stencil loop into clamp-free interior + edges
-  // (the interior then lifts to SIMD). Before analyze so the new loops are analyzed.
-  if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)
+  if (_o && isBlockBody(func.body)) {
+    // Existing closure writes survive these rewrites; generated locals are private.
+    // Share the census, then let ordinary type analysis handle the new arithmetic.
+    const cm = closureMutatedVars(func.body)
+    if (_o.loopIVDivMod !== false) func.body = strengthReduceLoopDivMod(func.body, cm)
+    if (_o.loopSquare !== false) func.body = narrowBoundedSquare(func.body, cm)
+    if (_o.unrollRecurrence !== false) func.body = unrollRecurrence(func.body, cm)
+    if (_o.unrollScalarChain === true) func.body = unrollScalarChains(func.body, cm)
+    if (_o.selectArmUpdates === true) func.body = selectArmUpdatesIn(func.body, cm)
+    if (_o.clampPeel !== false) func.body = peelClampedStencil(func.body, cm)
+  }
 
   const { name, body, sig } = func
   const previousFrame = enterFunc(sig, body, { exported: isExported(func) })

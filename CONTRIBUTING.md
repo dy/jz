@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `33ec51b`.
+`package.json` and the lockfile pin the public watr source archive at `836ccd6`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -34,7 +34,8 @@ them, so load reuse is judged against its encoded cost.
 Integer zero tests use Wasm eqz in the shared identity sweep; inequality uses
 two unary tests instead of a zero literal and comparison.
 Consecutive constant shifts combine only when their separately masked counts
-sum to less than the word width.
+sum to less than the word width. Memory offsets fold only when unsigned value
+bounds prove that the original address addition cannot wrap.
 Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
@@ -135,6 +136,10 @@ omit forwarding/growth, while multi-site record pushes share the existing slot
 layout code. Conditional growth, exception handlers, escapes and induction/header
 mutations reject the proof.
 
+The source loop transforms share one closure-write census per function. They
+preserve writes to existing bindings and introduce only private temporary locals,
+so changing loop arithmetic does not require rescanning all nested closures.
+
 The interval interpreter also supplies call-argument and typed-store bounds.
 Internal parameter ranges narrow only when every incoming call proves them;
 exports, indirect calls, missing arguments and unknown writes retain checks.
@@ -148,6 +153,12 @@ guards; negative offsets participate in the lower bound.
 Ephemeral dictionaries use the same zeroed header allocator as other collections.
 Allocation and fixed probes share one capacity calculation; unrepresentable
 domain sizes retain the ordinary growing table instead of overflowing a hint.
+Hash words reserve unsigned values 0/1 for empty/deleted slots. Runtime,
+literal, interning and host-codec producers must agree, including negative i32
+bit patterns. Changes to this contract require rebuilding Wasm with matching interop.
+Collection entries and allocated headers lower fixed fields directly to memory
+offsets. Their layout proves the access; generic WAT address arithmetic retains
+its wrapping semantics unless the optimizer independently proves no wrap.
 Table reuse invalidates enumeration keys before clearing its contents. Host
 `memory.reset()` calls the compiled reset so heap rewind, cache invalidation and
 durable-state healing have one owner; JS-only memory retains its fallback.
