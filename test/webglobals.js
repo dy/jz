@@ -431,9 +431,28 @@ test('unknown builtin method fails with a named error, not a host TypeError', ()
 })
 
 
+test('URLSearchParams: constructor distinguishes omitted input from primitive values', () => {
+  // Web IDL's string union arm handles null and other primitives. Node versions
+  // differ on null, so pin the standard rather than the host's behavior.
+  // https://url.spec.whatwg.org/#interface-urlsearchparams
+  const rows = [
+    ['', ''], ['undefined', ''], ["''", ''], ['{}', ''], ['[]', ''],
+    ['null', 'null='], ['false', 'false='], ['0', '0='], ['-0', '0='],
+    ['1.5', '1.5='], ['1n', '1='],
+  ]
+  const calls = runMany(rows.map(([arg]) => `() => new URLSearchParams(${arg}).toString()`))
+  for (let repeat = 0; repeat < 2; repeat++)
+    for (let i = 0; i < rows.length; i++) is(calls[i](), rows[i][1], `${rows[i][0]} repeat ${repeat}`)
+  const [copy] = runMany([
+    `() => { let a = new URLSearchParams(null); let b = new URLSearchParams(a); a.append('a','1'); b.append('b','2'); a.delete('a'); return a.size + ':' + b.toString() }`,
+  ])
+  is(copy(), '1:null=&b=2')
+  is(copy(), '1:null=&b=2')
+})
+
 test('URLSearchParams: shared methods keep instance and iteration state independent', () => {
   const sources = [
-    `() => { let a = new URLSearchParams(null); let b = new URLSearchParams(a); a.append('a','1'); b.append('b','2'); a.delete('a'); return a.size + ':' + b.toString() }`,
+    `() => { let a = new URLSearchParams(); let b = new URLSearchParams(a); a.append('a','1'); b.append('b','2'); a.delete('a'); return a.size + ':' + b.toString() }`,
     `() => { let a = new URLSearchParams('a=1&a=2'); let b = new URLSearchParams(a); b.set('a','3'); a.append('b','4'); return a.toString() + '|' + b.toString() + ':' + b.size }`,
     `() => { let p = new URLSearchParams('a=1'); let s = ''; p.forEach((v,k,self) => { s += k + v; if (k === 'a') self.append('b','2') }); return s + ':' + p.size }`,
     `() => new URLSearchParams({__usp: 1, a: '2'}).toString()`,

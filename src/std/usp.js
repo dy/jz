@@ -59,9 +59,9 @@ export class __URLSearchParams {
   #ks = []
   #vs = []
   constructor(init) {
-    if (init != null) {
-      if (typeof init === 'string') {
-        let s = init
+    if (init !== undefined) {
+      if (init === null || (typeof init !== 'object' && typeof init !== 'function')) {
+        let s = '' + init
         if (s[0] === '?') s = s.slice(1)
         if (s.length > 0) {
           let parts = s.split('&')
