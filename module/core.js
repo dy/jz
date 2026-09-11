@@ -817,7 +817,7 @@ export default (ctx) => {
   // wrapper paid this per TOKEN). Cache the boxed key array keyed by
   // (table off, live len): an insert changes len, so it misses naturally with no
   // insert-side hook; the only len-preserving key-set change is delete-then-insert,
-  // so the HASH delete (genDelete, collection.js) clears the cache unconditionally;
+  // so HASH delete and table reuse (collection.js) clear the cache unconditionally;
   // `__clear` resets it (arena rewind can re-issue the cached off to a new table).
   // Grow/remint relocation is safe hook-free: reads resolve forwarding to the new
   // off (≠ cached), and a husk off is never re-issued within an arena epoch.

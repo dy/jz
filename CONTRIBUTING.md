@@ -121,6 +121,24 @@ key/value arrays. Unused methods disappear through existing reachability analysi
 Its callback iterator rereads the live fields after each callback, including
 when appending entries grows their backing arrays.
 
+Array read-only/current-pointer policies and multi-site push counts reuse the
+binding-use census. It distinguishes property reads from member calls, preserving
+indexed access, optional calls, writes, aliases and captures as separate evidence.
+The existing fixed-builder length proof also publishes reserved capacity into local
+ValueReps. Allocation converts that logical count using the settled record layout;
+push still updates visible length and returns its current value. Fixed builders
+omit forwarding/growth, while multi-site record pushes share the existing slot
+layout code. Conditional growth, exception handlers, escapes and induction/header
+mutations reject the proof.
+
+Ephemeral dictionaries use the same zeroed header allocator as other collections.
+Table reuse invalidates enumeration keys before clearing its contents. Host
+`memory.reset()` calls the compiled reset so heap rewind, cache invalidation and
+durable-state healing have one owner; JS-only memory retains its fallback.
+
+The size preset keeps indirect function-table calls instead of adding speculative
+direct arms alongside their fallback. The speed preset retains that expansion.
+
 ### Body-fact freshness
 
 `analyzeBody` caches observations, not an immutable semantic snapshot. Its

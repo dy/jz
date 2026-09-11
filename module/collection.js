@@ -266,12 +266,11 @@ export default (ctx) => {
     __hash_set_local_h: () => ['__str_eq', '__zomb_scan', ...slotLogDeps()],
     __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
-    __hash_slot_eph: ['__str_hash', '__str_eq', '__alloc_hash_eph', '__ptr_offset_fwd'],
+    __hash_slot_eph: ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_offset_fwd'],
     __hash_slot_eph_fixed: ['__str_hash', '__str_eq'],
-    __alloc_hash_eph: ['__alloc'],
-    __hash_new_eph: ['__alloc_hash_eph', '__mkptr'],
-    __hash_new_eph_cap: ['__alloc_hash_eph', '__mkptr'],
-    __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hash_eph', '__mkptr'],
+    __hash_new_eph: ['__alloc_hdr_n', '__mkptr'],
+    __hash_new_eph_cap: ['__alloc_hdr_n', '__mkptr'],
+    __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hdr_n', '__mkptr'],
     __slot_write: () => slotLogDeps(),
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
@@ -1227,34 +1226,11 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_new_small'] = `(func $__hash_new_small (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY + lane}))))`
-  // Fresh, non-escaping dictionaries in the normal layout key hot-probe
-  // occupancy off the compact hash lane; the self-compile compact profile uses
-  // the entry hash directly. __coll_order (core.js) and generic-HASH consumers
-  // (Object.keys/values/entries, for-in, spread, JSON, Map/Set algebra) always
-  // raw-scan the 24-byte entry region's own hash word (PTR.HASH tags both
-  // layouts identically). $__alloc's memory is virgin-zero ONLY when the bump
-  // pointer has never visited these bytes before — true for a plain
-  // monotonic-heap compile, FALSE once region-arena's region_exit can rewind
-  // the pointer and hand this same span back for a later allocation (see
-  // __hash_reuse_eph's own doc, this file, for the confirmed live trap this
-  // exact assumption caused — closure4232/wasm-function[3757] OOB,
-  // .work/evidence.md §Region arena). Clear the full entry region (not just
-  // the lane) so a recycled span reads as genuinely empty to EVERY consumer,
-  // not only lane-aware ones — cheap at the small caps this path allocates.
-  ctx.core.stdlib['__alloc_hash_eph'] = `(func $__alloc_hash_eph (param $len i32) (param $cap i32) (result i32)
-    (local $ptr i32) (local $data i32) (local $lanes i32)
-    (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY + lane})))))
-    (i64.store (local.get $ptr) (i64.const 0))
-    (i32.store offset=8 (local.get $ptr) (local.get $len))
-    (i32.store offset=12 (local.get $ptr) (local.get $cap))
-    (local.set $data (i32.add (local.get $ptr) (i32.const 16)))
-    (memory.fill (local.get $data) (i32.const 0) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY})))${lane ? `
-    (local.set $lanes (i32.add (local.get $data) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY}))))
-    (memory.fill (local.get $lanes) (i32.const 0) (i32.shl (local.get $cap) (i32.const 2)))` : ''}
-    (local.get $data))`
+  // Ephemeral dictionaries use the ordinary zeroed header allocator. Both
+  // entry hashes and the compact lane must be empty when arena memory is reused.
   ctx.core.stdlib['__hash_new_eph'] = `(func $__hash_new_eph (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hash_eph (i32.const 0) (i32.const ${smallCap}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY + lane}))))`
   ctx.core.stdlib['__hash_new_cap'] = `(func $__hash_new_cap (param $want i32) (result f64)
     (local $cap i32)
     (local.set $cap (i32.const 2))
@@ -1272,7 +1248,7 @@ export default (ctx) => {
       (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
       (br $grow)))
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hash_eph (i32.const 0) (local.get $cap))))`
+      (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const ${MAP_ENTRY + lane}))))`
   // A non-escaping lexical dictionary can retain its table across loop
   // iterations. First execution allocates, later executions reuse the same
   // capacity and avoid bump-allocation/page traffic.
@@ -1313,11 +1289,9 @@ export default (ctx) => {
                 (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
         (if (i32.ge_u (local.get $cap) (local.get $want))
           (then
+            (global.set $__enumc_off (i32.const 0))
             (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))
-            (memory.fill (local.get $off) (i32.const 0) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY})))${lane ? `
-            (memory.fill
-              (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY})))
-              (i32.const 0) (i32.shl (local.get $cap) (i32.const 2)))` : ''}
+            (memory.fill (local.get $off) (i32.const 0) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY + lane})))
             (return (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $off)))))))
     (local.set $cap (i32.const 2))
     (block $done (loop $grow
@@ -1325,7 +1299,7 @@ export default (ctx) => {
       (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
       (br $grow)))
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hash_eph (i32.const 0) (local.get $cap))))`
+      (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const ${MAP_ENTRY + lane}))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEqG, PTR.HASH)

@@ -116,8 +116,8 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    247/19). JSON's native comparison and the JSON/encoder size caps pass.
    Remaining failures: fastest-Wasm delayline, glyfparse, sdf, slices, lz,
    base64, shapes and wordcount; native resample; stored native-lowering
-   bands; strict AS size comparisons for bezfit, dispatch, shapes and
-   wordcount; perf-fuzz; and example speed (19/21 strict wins, with
+   bands; strict AS size comparisons for bezfit and wordcount
+   (dispatch/shapes closed by the reductions below); perf-fuzz; and example speed (19/21 strict wins, with
    raymarcher 0.92× and percolation 0.87× JS speed).
    The ecosystem run reports jessie/Watr at 2.173×/1.478× JS time; those
    tests report timings without enforcing leadership. Stored-claim checks
@@ -167,19 +167,27 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
 ## Next reductions
 
-- Reuse the binding-use census for array safety instead of rescanning a body
-  for each candidate in `safeReads`/`ownReads`. First distinguish member calls
-  from member reads in that census: `a.length()` must not acquire the proof
-  for `a.length`. Keep default-deny handling of captures, aliases and writes.
-- Extend the retained length/layout facts only where remaining WAT demonstrates
-  a gap. Fixed literals/builders and equal-count push branches now propagate
-  through local and parameter ValueReps; resizing, spread and escape invalidate
-  them. Shapes still exceeds AssemblyScript despite the removed length work.
-- Carry proven builder cardinality into allocation capacity where nonescape and
-  fixed growth permit it. The AS shapes reference explicitly preallocates its
-  fixed table; JZ already retains the final length but still grows the record
-  buffer through the generic push helper. This is allocation/lowering work,
-  not a missing SIMD pass or evidence that AS inferred the same JS source.
+- Completed: array safety and push-site counts reuse the binding-use census;
+  member calls remain distinct from reads. Proven fixed builders reserve their
+  final capacity through ValueReps and the existing allocator/slot layout.
+  Short-circuit growth, exception handlers and array effects in loop headers
+  invalidate the length proof (regressions cover repeated calls and all tiers).
+  Shapes falls from 1,807 to 1,524 B at size (AS 1,695 B), and from 1,891 to
+  1,608 B at speed. Instrumenting the allocator global after the unchanged
+  workload shows retained allocation falling from 1,049,864 to 328,904 B;
+  checksums match. This is allocator usage, not process peak RSS.
+- Completed: the size preset no longer duplicates speculative function-table
+  arms beside an indirect fallback. Dispatch falls from 1,853 to 1,573 B
+  (AS 1,614 B); the speed preset is unchanged. Watr's size build falls from
+  290,151 to 288,223 B. Remaining AS size gaps are bezfit (3,211 vs 3,017 B)
+  and wordcount (3,635 vs 3,480 B). Folding the duplicate ephemeral dictionary
+  allocator into the ordinary zeroed allocator and combining adjacent clearing
+  spans removes 63 B, more than the builder's 34 B append-code increase. The
+  fixed builder also saves 4,048 B of retained allocation.
+- Completed: dictionary reuse invalidates its enumeration cache, including
+  same-count/different-key refills. Host memory reset now invokes the compiled
+  reset instead of bypassing its cache invalidation and state healing. Tests
+  cover both collection layouts, growth, empty refills and repeated resets.
 - Compare remaining byte gaps with Binaryen output and fix whole classes through
   existing folding/propagation. Binaryen shrinks several kernels but grows the
   encoder; adopting its entire pipeline is not justified.

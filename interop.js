@@ -287,6 +287,7 @@ export const memory = (src) => {
   // once the heap grows past 2 GiB, matching jsAlloc's own already-unsigned return.
   const wasmAlloc = wasmExports?._alloc && (bytes => wasmExports._alloc(bytes) >>> 0)
   let alloc = wasmAlloc || jsAlloc
+  const reset = wasmExports?._clear || jsReset
   initHeapPtr()
 
   // Write 16-byte header matching WASM `__alloc_hdr`:
@@ -398,7 +399,7 @@ export const memory = (src) => {
     mem._schemaKeyToId = schemaKeyToId
     mem.errorSidToClass = errorSidToClass
     if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
-    mem.reset = jsReset   // post-init rewind — see the note at the first-enhance path
+    mem.reset = reset
     if (extMap) mem._extMap = extMap
     return mem
   }
@@ -766,14 +767,9 @@ export const memory = (src) => {
   }
 
   mem.alloc = alloc
-  // Rewind to the JS-captured post-init heap mark, NOT the wasm `_clear` (which
-  // rewinds to the static-data end and would clobber module-global heap values —
-  // a top-level `let o = {…}` — on the first alloc after reset). `jsReset`'s base
-  // is `$__heap` read after instantiation (start ran), i.e. exactly the high-water
-  // mark above all module-init allocations. Both share `$__heap`, so a wasm `_alloc`
-  // and this reset stay consistent. (Shared memory has no `$__heap` global → base
-  // is the fixed start, preserving prior behavior.)
-  mem.reset = jsReset
+  // The compiled reset owns the post-init mark, cache invalidation and durable
+  // state healing. A JS-only memory has no runtime state and just rewinds.
+  mem.reset = reset
 
   // TypedArray constructors: memory.Float64Array(data), etc.
   // Bulk-copy path: when input is a TypedArray whose element type matches

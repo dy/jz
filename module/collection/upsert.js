@@ -724,7 +724,7 @@ function genEphemeralSlotUpsert(name, entrySize) {
     (if (i32.ge_s (i32.shl (local.get $size) (i32.const 2)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
         ${nextCapIR()}
-        (local.set $newptr (call $__alloc_hash_eph (i32.const 0) (local.get $newcap)))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize + lane})))
         ${growBases}
         (local.set $i (i32.const 0))
         (block $rd (loop $rl

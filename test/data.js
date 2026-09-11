@@ -1923,6 +1923,26 @@ test('dictionary delete: removes own entries', () => {
 // once allocated LANE-LESS and let inserts write past the table: entries
 // "vanished" because probes read a foreign lane). Churn all of those paths and
 // compare against the host verbatim.
+test('dictionary allocation: entry scans and lookups stay empty after reuse and reset', () => {
+  const src = `export function f(n) {
+    let sum=0
+    for(let r=0;r<3;r++) {
+      const d={}
+      for(let i=0;i<n;i++) d['k'+(i+r*n)]=(d['k'+(i+r*n)]|0)+i+1
+      sum+=Object.keys(d).length
+      for(const k in d) sum+=d[k]
+    }
+    return sum
+  }`
+  for (const _compactCollections of [false, true]) for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { exports, memory } = jz(src, { optimize, _compactCollections })
+    for (const n of [40,40,0,3,40]) {
+      is(exports.f(n), 3*(n+n*(n+1)/2), `${optimize}, compact=${_compactCollections}, n=${n}`)
+      memory.reset()
+    }
+  }
+})
+
 test('hash lane: churn (from-pairs, delete-shift, grow, clear, dict) matches host', () => {
   const SRC = `export let f = () => {
     let out = ''
