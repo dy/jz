@@ -20,7 +20,7 @@ import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, materializeMulti } from './call-args.js'
-import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
+import { emit, emitCallArgs, emitIdentitySafe, callWithArgs } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { stringOps } from './shared.js'
 
@@ -178,12 +178,7 @@ function tryFnPropCall(callee, obj, method, parsed) {
       // a plain direct call: the caller holds one pointer, not N lanes.
       if (func.sig.results.length > 1) return materializeMulti(['()', fname, parsed.normal.length > 1 ? [',', ...parsed.normal] : parsed.normal[0]])
       const emittedArgs = emitCallArgs(parsed.normal, func.sig.params, func)
-      // Drop extras like the plain-call path (emit.js regular-call arm): the dyn
-      // closure ABI absorbed over-arity (`parse.enter?.(p, end)` on a 0-param
-      // hook), but a devirtualized direct call pushes exactly sig arity — extras
-      // would be stack leftovers (asi.js's parse.enter broke the self-compile here).
-      if (emittedArgs.length > func.sig.params.length) emittedArgs.length = func.sig.params.length
-      return attachSigMeta(typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0]), func.sig)
+      return attachSigMeta(typed(callWithArgs(fname, emittedArgs, func.sig), func.sig.results[0]), func.sig)
     }
   }
 }

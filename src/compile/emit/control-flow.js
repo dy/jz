@@ -646,7 +646,7 @@ export const controlFlowOps = {
           // one extent conjunct pair per (recv, a, slots) group: hi = a*maxIv+Σkᵢ·slotᵢ
           // +maxC < len, plus lo = a*entry+Σkᵢ·slotᵢ+minC ≥ 0 — folded when the static
           // start proves it, read from the live iv local otherwise (top level only)
-          const groups = new Map(), indGroups = new Map()
+          const groups = new Map(), indGroups = new Map(), cursorGroups = new Map()
           for (const c of vs.cands) {
             if (c.range != null) {
               // interval-hulled idx against a dynamic length (the affine fallback).
@@ -666,26 +666,26 @@ export const controlFlowOps = {
               continue
             }
             if (c.cursor != null) {
-              // MONOTONE CURSOR (glyfparse's `stream[r]`/`stream[r++]`): entryR (read
-              // once, at loop entry — same spot every other entry slot is read) plus
-              // K·trips plus the access's own K0 offset must clear len. trips reuses
-              // the level's own maxIv/entry (type.js's cursorIvOk admits only a
-              // unit-per-iteration iv, so trips is exactly the iteration count — no
-              // separate trips≥0 conjunct needed: a negative trips means the loop
-              // itself never runs, so no access happens regardless of the guard).
-              const eT = slotI64(c.cursor, 'i32')
-              conjs.push(['i64.ge_s', eT, i64c(0)])
-              const info = levelInfo.get(vs)
-              const trips = ['i64.add', ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()], i64c(1)]
-              let hi = ['i64.add', eT, ['i64.mul', i64c(c.K), trips]]
-              if (c.cConst) hi = ['i64.add', hi, i64c(c.cConst)]
-              conjs.push(['i64.lt_s', hi, len64Of(c.recv)])
+              const key = c.recv + '\x00' + c.cursor + '\x00' + c.K
+              const g = cursorGroups.get(key)
+              if (!g) cursorGroups.set(key, { ...c, minC: c.cConst, maxC: c.cConst })
+              else { g.minC = Math.min(g.minC, c.cConst); g.maxC = Math.max(g.maxC, c.cConst) }
               continue
             }
             const gk = c.recv + '\x00' + c.a + '\x00' + c.slots.map(t => t.k + '*' + slotKey(t.e)).join('+')
             const g = groups.get(gk)
             if (!g) groups.set(gk, { recv: c.recv, a: c.a, slots: c.slots, maxC: c.bConst, minC: c.bConst, anyPost: !!c.post })
             else { g.maxC = Math.max(g.maxC, c.bConst); g.minC = Math.min(g.minC, c.bConst); if (c.post) g.anyPost = true }
+          }
+          // A monotone cursor spans entry..entry+K*trips. Like affine groups,
+          // all offsets on one receiver need only the lowest and highest check.
+          for (const g of cursorGroups.values()) {
+            const entry = slotI64(g.cursor, 'i32'), info = levelInfo.get(vs)
+            const trips = ['i64.add', ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()], i64c(1)]
+            const lo = g.minC < 0 ? ['i64.add', entry, i64c(g.minC)] : entry
+            let hi = ['i64.add', entry, ['i64.mul', i64c(g.K), trips]]
+            if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
+            conjs.push(['i64.ge_s', lo, i64c(0)], ['i64.lt_s', hi, len64Of(g.recv)])
           }
           for (const g of groups.values()) {
             // extremes follow the SIGN of a: a·iv is maximal at maxIv for a ≥ 0

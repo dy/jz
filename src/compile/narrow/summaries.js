@@ -19,12 +19,97 @@ import {
   staticArrayElems, staticArrayLen, hull, typedValueLiteral, typedValueExprRange,
 } from '../../static.js'
 import { typedElemCtor, typedStaticLen } from '../../type.js'
+import { scanIntervalIdx } from '../../type/interval-proof.js'
+import { ensureParamRep } from '../../param-reps.js'
+import { enterActiveFunction, restoreActiveFunction } from '../active-function.js'
+import { isExported } from '../func-exports.js'
+import { analyzeBody } from '../analyze.js'
+import { VAL } from '../../reps.js'
+
+// Reuse the bounds interpreter at call sites. Start at unknown and refine only
+// when EVERY incoming site proves a hull. Each intermediate result is sound;
+// a bounded worklist budget can forgo precision without trusting an unfinished
+// optimistic fixpoint. Indirect/synthetic calls stay unknown.
+export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast) {
+  const outgoing = new Map(), incoming = new Map(), observed = new Map(), stores = new Map()
+  const hasKind = (f, kind) => {
+    for (const r of paramReps.get(f.name)?.values() ?? []) if (r.val === kind || r.presentVal === kind) return true
+    return false
+  }
+  for (const cs of callSites) {
+    const f = ctx.funcs.map.get(cs.callee)
+    if (!f?.body || f.raw || isExported(f) || addressTaken.has(f.name)) continue
+    if (!hasKind(f, VAL.NUMBER)) continue
+    if (!outgoing.has(cs.callerFunc)) outgoing.set(cs.callerFunc, [])
+    outgoing.get(cs.callerFunc).push(cs)
+    if (!incoming.has(f)) incoming.set(f, [])
+    incoming.get(f).push(cs)
+  }
+  // Existing kind/body facts rule out functions with no numeric-call or
+  // typed-store consumer. Walking their loops creates only discarded facts.
+  const queue = ctx.funcs.list.filter(f => f.body && !f.raw &&
+    (outgoing.has(f) || hasKind(f, VAL.TYPED) || analyzeBody(f.body).typedElems.size))
+  if (outgoing.has(null)) queue.push(null)
+  const queued = new Set(queue), visits = new Map()
+  for (let head = 0; head < queue.length; head++) {
+    const caller = queue[head], body = caller?.body ?? ast
+    queued.delete(caller)
+    const count = visits.get(caller) ?? 0
+    if (count >= 8) continue
+    visits.set(caller, count + 1)
+    const entry = new Map(), reps = paramReps.get(caller?.name)
+    for (let k = 0; k < (caller?.sig.params.length ?? 0); k++)
+      entry.set(caller.sig.params[k].name, reps?.get(k)?.range ?? null)
+    const calls = new Map((outgoing.get(caller) ?? []).filter(cs => !cs.synthetic).map(cs => [cs.node, undefined]))
+    const writes = new Map(), receivers = new Set(caller ? analyzeBody(body).typedElems.keys() : [])
+    for (let k = 0; k < (caller?.sig.params.length ?? 0); k++) {
+      const r = reps?.get(k)
+      if (r?.val === VAL.TYPED || r?.presentVal === VAL.TYPED) receivers.add(caller.sig.params[k].name)
+    }
+    if (receivers.size) walkAst(body, { enter: n => {
+      if (n[0] === '=>') return false
+      if (n[0] === '=' && Array.isArray(n[1]) && n[1][0] === '[]' && receivers.has(n[1][1])) writes.set(n, undefined)
+    } })
+    if (!calls.size && !writes.size) continue
+    const prev = enterActiveFunction(ctx, { sig: caller?.sig, body })
+    try {
+      ctx.func.locals = callerCtx.get(caller)?.callerLocals ?? new Map()
+      scanIntervalIdx(body, new Set(), () => null, null, calls, entry, writes)
+    } finally { restoreActiveFunction(ctx, prev) }
+    stores.set(caller, writes)
+    const targets = new Set()
+    for (const cs of outgoing.get(caller) ?? []) {
+      observed.set(cs, cs.synthetic ? null : calls.get(cs.node))
+      targets.add(ctx.funcs.map.get(cs.callee))
+    }
+    for (const f of targets) {
+      let changed = false
+      for (let k = 0; k < f.sig.params.length; k++) {
+        const p = f.sig.params[k]
+        if (f.defaults?.[p.name] != null || (f.rest && k === f.sig.params.length - 1) || isReassigned(f.body, p.name)) continue
+        let range = undefined
+        for (const cs of incoming.get(f)) {
+          const v = observed.get(cs)?.[k]
+          if (!v || !Number.isFinite(v[0]) || !Number.isFinite(v[1]) || v[0] < -2147483648 || v[1] > 2147483647) { range = null; break }
+          range = hull(range, v)
+        }
+        const r = ensureParamRep(paramReps, f.name, k)
+        if (range && (!r.range || range[0] !== r.range[0] || range[1] !== r.range[1])) {
+          r.range = range
+          changed = true
+        }
+      }
+      if (changed && (outgoing.has(f) || stores.has(f)) && !queued.has(f)) { queue.push(f); queued.add(f) }
+    }
+  }
+  return stores
+}
 
 // Fixed lengths of internal arrays built from a literal plus unconditional
 // pushes in canonical constant-trip loops. Any alias, unknown call, unequal
 // branch growth, indexed write, or control exit rejects the array. This captures table
 // builders without pretending mutable JS arrays are generally fixed-size.
-export function inferInternalArrayLengths(paramReps) {
+export function inferInternalArrayLengths() {
   const cint = (n) => {
     if (typeof n === 'number' && Number.isInteger(n)) return n
     if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1])) return n[1]
@@ -240,11 +325,9 @@ export function inferInternalArrayLengths(paramReps) {
 // general alias analysis: aliases, external calls, returns, unknown writes, and
 // closures poison the fact. The useful class is broad nevertheless — fill(a)
 // helpers followed by compute(a), common in codecs and generated kernels.
-export function inferTypedValueRanges(paramReps) {
-  // hull/literal/exprRange relocated to static.js (consistency-audit item 4) —
-  // see hull/typedValueLiteral/typedValueExprRange's own doc comments there
-  // for why they stay a separate, narrower pair rather than merging into
-  // constIntExpr/intExprRange.
+export function inferTypedValueRanges(storeRanges) {
+  // Store effects use flow intervals when available, with a context-free
+  // expression fallback for constant or intrinsically bounded values.
   const literal = typedValueLiteral, exprRange = typedValueExprRange
   // Model integer typed-array stores. A source interval that crosses the
   // element representation's wrap/clamp boundary widens to the full stored
@@ -300,7 +383,7 @@ export function inferTypedValueRanges(paramReps) {
           return
         }
         if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && ps.has(n[1][1])) {
-          const s = sum[ps.get(n[1][1])], r = n[0] === '=' ? exprRange(n[2]) : null
+          const s = sum[ps.get(n[1][1])], r = n[0] === '=' ? storeRanges.get(f)?.get(n) ?? exprRange(n[2]) : null
           s.writes = true
           if (!r) s.bad = true; else s.range = hull(s.range, r)
         }
@@ -387,7 +470,7 @@ export function inferTypedValueRanges(paramReps) {
         }
         if (ASSIGN_OPS.has(n[0])) {
           if (Array.isArray(n[1]) && n[1][0] === '[]' && ranges.has(n[1][1]))
-            merge(n[1][1], n[0] === '=' ? storedRange(ctors.get(n[1][1]), exprRange(n[2])) : null)
+            merge(n[1][1], n[0] === '=' ? storedRange(ctors.get(n[1][1]), storeRanges.get(f)?.get(n) ?? exprRange(n[2])) : null)
           for (const name of [...ranges.keys()]) {
             if (!freshDefs.has(n) && (n[1] === name || carries(n[2], name))) merge(name, null)
             if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) merge(name, null)

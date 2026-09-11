@@ -1,18 +1,14 @@
 /**
- * Static interval proof (`typedIdxProven` class 5): a tiny abstract interpreter
- * over integer INTERVALS for const-bound loop nests — the conv2d/blur shape
- * class, where every dimension folds to a literal and every index is a chain
- * of decls over induction variables. `scanIntervalIdx` is one function by
- * necessity (~15 mutually-closing helpers sharing threaded env state across a
- * 2-round widening fixpoint) — see `.work/archive/type-split.md` for why it stays
- * whole. `intervalProvenIdx`/`intervalIdxRanges` are the memoized per-body
- * accessors every other bounds-proof family (loop-versioning, clone) consults.
+ * Integer interval interpretation for index, call-argument and store proofs.
+ * The transfer functions share flow state and loop widening. Emission reads
+ * memoized per-body index proofs through intervalProvenIdx/intervalIdxRanges;
+ * parameter analysis supplies entry ranges and collects argument/store hulls.
  *
  * @module type/interval-proof
  */
 import {
   I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
-  walkAst, some, someDeep, REFS_THROUGH_ARROWS,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
@@ -37,27 +33,15 @@ const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
 // Initializer roots whose true result can carry range facts through a named const.
 const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 
-/** Walk one function body, recording proven `recv[idx]` keys into `out`.
- *  `lens(name)` → static element count or null. Guard-seeded proofs fail closed
- *  across repeated structural keys; the other sharp edge is keeping `env` honest
- *  (kills before loops/switch, closure writes, embedded assignments). */
-function scanIntervalIdx(body, out, lens, ranges) {
-  const env = new Map()   // name → [lo, hi] | null (unknown)
-  // A guard-seeded proof may not enter the legacy structural-key channel when
-  // that key occurs elsewhere: one guarded site would bless its unguarded twin.
-  // Count lazily (normally one key/function) so unaffected functions pay no walk.
-  const uniqueGuardKeyMemo = new Map()
-  const uniqueGuardKey = (key) => {
-    if (uniqueGuardKeyMemo.has(key)) return uniqueGuardKeyMemo.get(key)
-    let count = 0
-    walkAst(body, { enter: n => {
-      if (n[0] === '=>') return false
-      if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && idxKey(n[1], n[2]) === key) count++
-    } })
-    const unique = count === 1
-    uniqueGuardKeyMemo.set(key, unique)
-    return unique
-  }
+/** Walk one function body; lens(name) returns a static element count or null.
+ *  Optional calls/stores collect scalar hulls under the supplied entry ranges.
+ *  Those maps preseed requested AST nodes with undefined; null means unknown.
+ *  Repeated structural keys join conservatively across every occurrence. */
+export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null) {
+  const env = new Map(entry)   // name → [lo, hi] | null (unknown)
+  // Structural keys survive lowering clones, but each occurrence must prove
+  // its own bounds. One unchecked twin permanently rejects the shared proof.
+  const rejected = new Set()
   let guardProofContext = 0
   const underGuardProof = (guarded, fn) => {
     if (!guarded) return fn()
@@ -76,8 +60,9 @@ function scanIntervalIdx(body, out, lens, ranges) {
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
   const closureWrites = new Set()
+  const needed = calls || stores ? new Set() : null
   const collectClosureWrites = (n, inClosure) => {
-    if (!Array.isArray(n)) return
+    if (!Array.isArray(n)) return false
     const into = inClosure || n[0] === '=>'
     if (into && MUTATE_OPS.has(n[0])) {
       if (typeof n[1] === 'string') closureWrites.add(n[1])
@@ -85,7 +70,10 @@ function scanIntervalIdx(body, out, lens, ranges) {
       else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.')
         collectNames(n[1], closureWrites)
     }
-    for (let k = 1; k < n.length; k++) collectClosureWrites(n[k], into)
+    let used = calls?.has(n) || stores?.has(n)
+    for (let k = 1; k < n.length; k++) if (collectClosureWrites(n[k], into)) used = true
+    if (used && needed) needed.add(n)
+    return used
   }
   const collectNames = (n, set) => someDeep(n, x => { if (typeof x === 'string') set.add(x); return false })
   collectClosureWrites(body, false)
@@ -127,7 +115,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const constInt = (e) => {
     const n = intLiteralValue(e)
     if (n != null) return n
-    if (typeof e === 'string' && !closureWrites.has(e)) {
+    if (typeof e === 'string' && !env.has(e) && !closureWrites.has(e)) {
       const ci = ctx.scope?.constInts?.get?.(e)
       if (ci != null && isI32(ci)) return ci
     }
@@ -145,6 +133,9 @@ function scanIntervalIdx(body, out, lens, ranges) {
     // undefined coerces through ToInt32 to 0, inside every narrow range)
     if (op === '[]' && e.length === 3 && typeof x === 'string') {
       visit(e)   // record the access's own proof attempt
+      // Index arithmetic may coerce a missing element to zero. A scalar call
+      // argument must retain undefined, so it needs a separate presence proof.
+      if (calls || stores) return null
       const written = ctx.func.localReps?.get(x)?.arrayElemRange
       const r = written ?? NARROW_ELEM_RANGE[ctx.func.typedElem?.get(x)]
       return r ?? null
@@ -168,15 +159,18 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
     if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
       visit(x)
+      const saved = new Map(env)
       const rT = refine(x, false), rE = refine(x, true)
-      const sT = rT ? env.get(rT[0]) : null
       if (rT) env.set(rT[0], rT[1])
       const a = ev(e[2])
-      if (rT) env.set(rT[0], sT)
-      const sE = rE ? env.get(rE[0]) : null
+      const afterThen = new Map(env)
+      env.clear(); for (const [name, v] of saved) env.set(name, v)
       if (rE) env.set(rE[0], rE[1])
       const b = ev(e[3])
-      if (rE) env.set(rE[0], sE)
+      for (const name of new Set([...afterThen.keys(), ...env.keys()])) {
+        const t = afterThen.get(name), f = env.get(name)
+        env.set(name, t && f ? [Math.min(t[0], f[0]), Math.max(t[1], f[1])] : null)
+      }
       return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
     }
     // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
@@ -492,33 +486,54 @@ function scanIntervalIdx(body, out, lens, ranges) {
     // is an every-point invariant that covers break states)
     for (const s of lcF.breaks) hullInto(s)
   }
-  const visit = (n) => {
+  const visit = (n, wrapEntry = null) => {
     if (!Array.isArray(n) || n[0] === '=>') return
     if (n._rangeFacts) return visitWithFacts(n)
     const op = n[0]
+    if (op === ';' || op === '{}') {
+      let prior = null
+      for (let i = 1; i < n.length; i++) {
+        const st = n[i], next = visit(st, prior)
+        if (next) prior = next
+        // A wrap invariant survives independent, effect-free declarations
+        // between consecutive loop phases. Branches and calls drop it.
+        else if (prior && Array.isArray(st) && (st[0] === 'let' || st[0] === 'const') &&
+            st.slice(1).every(d => typeof d === 'string' || Array.isArray(d) && d[0] === '=' && pureExpr(d[2])) &&
+            prior.every(([name, h]) => !redeclaresName(st, name) && !redeclaresName(st, h.hiName))) continue
+        else prior = null
+      }
+      return
+    }
+    // Scalar analysis has explicit consumers. An unrelated loop contributes
+    // only unknown writes; do not allocate widening states that nobody reads.
+    if (needed && !needed.has(n) && (op === 'for' || op === 'while' || op === 'do')) {
+      killAssigned(n)
+      for (const name of env.keys()) if (ctx.scope?.globalTypes?.has(name)) { invalidateBool(name); env.set(name, null) }
+      symEnv.clear(); coupledEnv.clear()
+      return
+    }
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       const idxV = ev(n[2])
       if (!recording) return   // exploratory fixpoint pass: env effects only
       const L = lens(n[1]), k = idxKey(n[1], n[2])
       const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
       if (typeof process !== 'undefined' && process.env.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
-      if (proven && (!guardProofContext || uniqueGuardKey(k))) out.add(k)
+      if (!proven) { rejected.add(k); out.delete(k) }
+      else if (!rejected.has(k)) out.add(k)
       // A bounded idx against an UNKNOWN length is half a proof — export the hull
       // (joined over every sighting of this key) for the versioning guard to close
       // with a runtime `hi < len` conjunct (the wrap-cursor + dynamic-table class).
       // Provisional guard-seeded hulls stay local; structural export would let
       // one guarded occurrence bless an unrelated same-key access.
-      if (!proven && !guardProofContext && idxV && idxV[0] >= 0 && ranges) {
+      if (ranges) {
+        const h = !guardProofContext ? idxV && idxV[0] >= 0 ? idxV
+          : idxV == null && typeof n[2] === 'string' ? symEnv.get(n[2])?.h : null : null
         const prev = ranges.get(k)
-        ranges.set(k, prev ? [Math.min(prev[0], idxV[0]), Math.max(prev[1], idxV[1])] : idxV)
-      }
-      // symbolic wrap hull (`seq[si]` with si ∈ [0, SEQLEN-1], SEQLEN mutable):
-      // exported only while the cursor's pre-increment window is open; a numeric
-      // or conflicting prior sighting voids the key (one symbolic form per key)
-      else if (!proven && !guardProofContext && idxV == null && typeof n[2] === 'string' && symEnv.has(n[2]) && ranges) {
-        const h = symEnv.get(n[2]).h, prev = ranges.get(k)
-        if (prev == null) ranges.set(k, h)
-        else if (prev.hiName !== h.hiName || prev.hiBias !== h.hiBias) ranges.set(k, null)
+        ranges.set(k, !ranges.has(k) ? h ?? null : !prev || !h ? null
+          : Array.isArray(prev) && Array.isArray(h)
+            ? [Math.min(prev[0], h[0]), Math.max(prev[1], h[1])]
+            : prev.hiName && prev.hiName === h.hiName && prev.hiBias === h.hiBias
+              ? { ...h, lo: Math.min(prev.lo, h.lo), entryHi: Math.max(prev.entryHi, h.entryHi) } : null)
       }
       return
     }
@@ -544,25 +559,34 @@ function scanIntervalIdx(body, out, lens, ranges) {
       setEnv(n[1], ev(n[2]))
       return
     }
+    if (stores?.has(n) && op === '=' && Array.isArray(n[1]) && n[1][0] === '[]') {
+      visit(n[1])
+      const value = ev(n[2])
+      if (recording) {
+        const prev = stores.get(n)
+        stores.set(n, prev === undefined ? value : prev && value
+          ? [Math.min(prev[0], value[0]), Math.max(prev[1], value[1])] : null)
+      }
+      return
+    }
     if (MUTATE_OPS.has(op)) {
       if (typeof n[1] === 'string' && symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])
       if (typeof n[1] === 'string' && coupledEnv.get(n[1])?.incNode === n) coupledEnv.delete(n[1])
-      for (let k = 2; k < n.length; k++) visit(n[k])
       if (typeof n[1] === 'string') {
         // `x += K` / `x -= K` / `x++` / `x--` transfer exactly — a strided
         // accumulator keeps a computable back-edge for the loop fixpoint
         // (cond-clamped by the widening join); anything else is unknown
         const cur = env.get(n[1])
         let nv = null
-        if (cur) {
-          if (op === '++') nv = [cur[0] + 1, cur[1] + 1]
-          else if (op === '--') nv = [cur[0] - 1, cur[1] - 1]
-          else if (ARITH.has(op.slice(0, -1))) nv = ev([op.slice(0, -1), n[1], n[2]])
-        }
+        if (op === '++') nv = cur && [cur[0] + 1, cur[1] + 1]
+        else if (op === '--') nv = cur && [cur[0] - 1, cur[1] - 1]
+        else if (ARITH.has(op.slice(0, -1))) nv = ev([op.slice(0, -1), n[1], n[2]])
+        else for (let k = 2; k < n.length; k++) visit(n[k])
         setEnv(n[1], nv)
       }
       else {
         visit(n[1])   // records the member-write access proof (`out[idx] = …`)
+        for (let k = 2; k < n.length; k++) visit(n[k])
         if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
           const s = new Set(); collectNames(n[1], s); for (const x of s) { invalidateBool(x); env.set(x, null) }
         }
@@ -912,7 +936,9 @@ function scanIntervalIdx(body, out, lens, ranges) {
           const Cname = C == null && typeof b2[1][2] === 'string' ? b2[1][2] : null
           if ((C == null || C < 1) && Cname == null) continue
           const e0 = env.get(nm)
-          if (!e0 || e0[0] < 0 || (C != null && e0[1] > C - 1)) continue
+          const prior = Cname && wrapEntry?.find(([name, h]) => name === nm && h.hiName === Cname)?.[1]
+          if ((!e0 && !prior) || e0 && (e0[0] < 0 || (C != null && e0[1] > C - 1))) continue
+          if (Cname && !boundInvariant(Cname, wbody)) continue
           // the pair must be the only writes (2 exact: the add and the reset)
           let writes = 0
           walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++ } })
@@ -922,7 +948,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           // si ∈ [0, C-1] RELATIVE to C's runtime value — recorded as a symbolic
           // hull for reads BEFORE the increment (the versioning guard closes it
           // with `C ≥ entryHi+1 ∧ C ≤ len`); no numeric env seeding is possible
-          else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: e0[1] }, a2])
+          else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: prior?.entryHi ?? e0[1] }, a2])
         }
       }
       // Body fixpoint (loopFixpoint below): the monotone-iv/wrap/symWrap seeds
@@ -941,7 +967,10 @@ function scanIntervalIdx(body, out, lens, ranges) {
       if (iv) env.set(iv, [Math.min(entry[0], brange[0]), Math.max(entry[1], brange[1])])
       for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too
       for (const [nm] of symWraps) symEnv.delete(nm)
-      return
+      // The adjacent increment/reset pair also holds at exit. An unknown call
+      // could change the bound; only call-free phases export that theorem.
+      return symWraps.length && symWraps.every(([nm, h]) => !isReassigned(c, nm) && boundInvariant(h.hiName, c)) &&
+        !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
     }
     if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
         || op === 'switch' || op === 'try' || op === 'catch' || op === 'finally') {
@@ -990,6 +1019,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       }
       return
     }
+    if (op === '?:') { ev(n); return }
     // Short-circuit operands evaluate under the left side's verdict: `&&`'s rhs
     // runs only where lhs HELD (`child + 1 < n && a[child] < a[child + 1]` — the
     // lookahead read is bounds-guarded by its sibling conjunct), `||`'s rhs only
@@ -1011,7 +1041,15 @@ function scanIntervalIdx(body, out, lens, ranges) {
     }
     if (op === '()' && n.length === 2) { visit(n[1]); return }   // grouping, not a call
     if (op === '()' || op === 'new') {   // a call may reassign module globals
-      for (let k = 1; k < n.length; k++) visit(n[k])
+      if (calls?.has(n) && op === '()') {
+        visit(n[1])
+        const values = callArgs(n).map(ev)
+        if (recording) {
+          const prev = calls.get(n)
+          calls.set(n, prev ? values.map((v, k) => v && prev[k]
+            ? [Math.min(v[0], prev[k][0]), Math.max(v[1], prev[k][1])] : null) : values)
+        }
+      } else for (let k = 1; k < n.length; k++) visit(n[k])
       for (const [name, bd] of boolDefs) {
         for (const free of bd.free) if (ctx.scope?.globalTypes?.has?.(free)) { boolDefs.delete(name); break }
       }
@@ -1078,7 +1116,9 @@ export function intervalProvenIdx(ctx) {
   const out = new Set(), ranges = new Map()
   const lens = (name) => ctx.func.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
     ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
-  scanIntervalIdx(body, out, lens, ranges)
+  const entry = new Map()
+  for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
+  scanIntervalIdx(body, out, lens, ranges, null, entry)
   cache.set(body, out)
   getFactStore().ipRanges.set(body, ranges)
   return out

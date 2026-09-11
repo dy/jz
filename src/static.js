@@ -52,6 +52,20 @@ export function constNumExpr(node, resolve) {
   if (!Array.isArray(node)) return null
   if (node[0] == null) return typeof node[1] === 'number' ? node[1] : null
   const op = node[0]
+  if (op === '?:' && node.length === 4) {
+    const test = node[1]
+    let condition
+    if (Array.isArray(test) && test.length === 3 &&
+        (RELATIONAL_OPS.has(test[0]) || test[0] === '===' || test[0] === '!==')) {
+      const a = constNumExpr(test[1], resolve), b = constNumExpr(test[2], resolve)
+      if (a == null || b == null) return null
+      condition = test[0] === '<' ? a < b : test[0] === '<=' ? a <= b
+        : test[0] === '>' ? a > b : test[0] === '>=' ? a >= b
+        : test[0] === '===' ? a === b : a !== b
+    } else condition = constNumExpr(test, resolve)
+    if (condition == null) return null
+    return constNumExpr(node[condition ? 2 : 3], resolve)
+  }
   const x = constNumExpr(node[1], resolve)
   if (x == null) return null
   if (node.length === 2) {
@@ -137,6 +151,19 @@ export function intExprRange(n) {
     const a = intExprRange(n[2]), b = intExprRange(n[3])
     return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
   }
+  if (op === '|' && n.length === 3 && constIntExpr(n[2]) === 0) {
+    const x = n[1]
+    let a
+    if (Array.isArray(x) && x[0] === '/' && x.length === 3) {
+      const v = intExprRange(x[1]), d = constNumExpr(x[2])
+      if (!v || !Number.isFinite(d) || d === 0) return null
+      const lo = Math.trunc(v[0] / d), hi = Math.trunc(v[1] / d)
+      a = [Math.min(lo, hi), Math.max(lo, hi)]
+    } else a = intExprRange(x)
+    // ToInt32 is monotone only inside one signed word; a wrapped hull must
+    // stay unknown. Keeping the quotient bound also bounds its later products.
+    return a && a[0] >= I32_MIN && a[1] <= I32_MAX ? a : null
+  }
   if (op === '&' && n.length === 3) {
     const m = constIntExpr(n[1]) ?? constIntExpr(n[2])
     // `&` is ToInt32: for m ≥ 2^31 the mask bit is the SIGN bit, so the result
@@ -158,7 +185,8 @@ export function intExprRange(n) {
     if (sh != null) {
       const s = sh & 31
       const a = intExprRange(n[1])
-      return a ? [a[0] >> s, a[1] >> s] : [I32_MIN >> s, I32_MAX >> s]
+      return a && a[0] >= I32_MIN && a[1] <= I32_MAX
+        ? [a[0] >> s, a[1] >> s] : [I32_MIN >> s, I32_MAX >> s]
     }
   }
   if ((op === 'u-' || op === '-') && n.length === 2) {
@@ -206,42 +234,18 @@ export function intExprRange(n) {
  *  typed-value-range family below and any other range-lattice join. */
 export function hull(a, b) { return !a ? b && [...b] : !b ? [...a] : [Math.min(a[0], b[0]), Math.max(a[1], b[1])] }
 
-// Typed-value-range family (consistency-audit item 4): backs narrow.js's
-// inferTypedValueRanges' typed-array element-store inference. A purpose-built,
-// DELIBERATELY NARROWER sibling of intLiteralValue/constIntExpr/intExprRange
-// above, not a drop-in replacement for them — relocated here (from a hand-
-// rolled duplicate in narrow.js) for a single home, not merged into the
-// canonical resolver, because the two diverge in real, load-bearing ways:
-//   1. inferTypedValueRanges runs as the FIRST step of narrowSignatures, before
-//      that same pass's own fixpoint has populated per-function reps
-//      (`repOf(name)?.intConst`/`.range` — see narrow.js's mergeParamFact/
-//      paramFactsOf). constIntExpr/intExprRange consult `repOf` directly;
-//      doing that here would read stale-or-absent state, not a genuine
-//      constant — so this family never consults `repOf` at all, only
-//      `ctx.scope.constInts` (the module-global, always-live table).
-//   2. intLiteralValue enforces an I32_MIN/I32_MAX clamp (return null outside
-//      it); a typed-array element hull routinely needs a huge or out-of-i32
-//      intermediate value BEFORE storedRange (narrow.js) clamps it down to the
-//      element's own width (e.g. a Uint8Array store), so typedValueLiteral
-//      stays unclamped by design.
-//   3. intExprRange additionally resolves named-variable ranges (`repOf(n)?.
-//      range`, refinements), a typed-array `.length` bound, `>>`, and `++`/
-//      `--` as expression values — none of which typedValueExprRange
-//      attempts, for the same pipeline-ordering reason as (1).
-// Merging these into constIntExpr/intExprRange would let MORE expressions
-// resolve than before at this call site, changing which typed-array stores
-// get bound-narrowed — an observable codegen change a byte-identity-gated
-// refactor cannot make. Kept as a separate, colocated pair instead.
+// Dictionary allocation and fixed probes must use the same mask. The largest
+// admitted capacity (2^27) fits wasm32 even with 28-byte entries and a header.
+export function dictCapacity(length) {
+  if (!Number.isInteger(length) || length < 0 || length > 0x2000000) return null
+  return length ? 2 ** (32 - Math.clz32(length * 4 - 1)) : 2
+}
+
+// Store summaries run without a current function. Resolve only immutable
+// module bindings through the same numeric evaluator; never consult local reps.
 export function typedValueLiteral(n) {
-  if (typeof n === 'number' && Number.isInteger(n)) return n
-  if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1])) return n[1]
-  if (Array.isArray(n) && n[0] === 'u-' && typeof n[1] === 'number' && Number.isInteger(n[1])) return -n[1]
-  if (typeof n === 'string') return ctx.scope.constInts?.get(n) ?? null
-  if (Array.isArray(n) && n.length === 3 && (n[0] === '+' || n[0] === '-' || n[0] === '*')) {
-    const a = typedValueLiteral(n[1]), b = typedValueLiteral(n[2])
-    if (a != null && b != null) return n[0] === '+' ? a + b : n[0] === '-' ? a - b : a * b
-  }
-  return null
+  const value = constNumExpr(n, name => ctx.scope.constInts?.get(name) ?? null)
+  return Number.isInteger(value) ? value : null
 }
 
 /** Closed integer hull of an expression, restricted to typedValueLiteral's own

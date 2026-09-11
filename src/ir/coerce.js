@@ -14,7 +14,7 @@ import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { VAL, repOf, numericStorage } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode, numericDenied } from '../kind.js'
-import { objLiteralSchemaId } from '../static.js'
+import { objLiteralSchemaId, intExprRange } from '../static.js'
 import { K, bitOf, NULL_BITS, TAGS } from '../summary/kind.js'
 import { typed } from './tag.js'
 import { temp, tempI32, tempI64, block64, freshId } from './locals.js'
@@ -622,6 +622,11 @@ function coerceRest(node, v, vt) {
   // result, a loop counter) carries no NaN-box, so its ToString is just digits + sign.
   // ptrKind != null means it's an unboxed pointer (i32 offset), NOT a number — exclude.
   if (v.type === 'i32' && v.ptrKind == null) {
+    const range = intExprRange(node)
+    // A proven decimal digit uses the existing inline-string encoding and
+    // needs neither a formatter nor an allocation. Evaluate the value once.
+    if (range && range[0] >= 0 && range[1] <= 9)
+      return typed(['i64.add', ssoStrI64('0'), ['i64.extend_i32_u', v]], 'i64')
     inc('__i32_to_str')
     return typed(['i64.reinterpret_f64', ['call', '$__i32_to_str', v]], 'i64')
   }

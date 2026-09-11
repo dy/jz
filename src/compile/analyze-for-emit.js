@@ -155,6 +155,7 @@ export function analyzeFuncForEmit(func, programFacts) {
       if (r.arrayElemRange != null) updateRep(pname, { arrayElemRange: r.arrayElemRange })
       if (r.arrayLen != null) updateRep(pname, { arrayLen: r.arrayLen })
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
+      if (r.range != null && !reassigned) updateRep(pname, { range: r.range })
       // Cross-function never-relocation proof (analyzeParamNeverGrown) — the
       // raw-base array read (module/array.js arrBase) keys off this rep.
       if (r.neverGrown) updateRep(pname, { neverGrown: true })

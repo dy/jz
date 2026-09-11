@@ -12,7 +12,8 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { LEVELS, levelKey, runSpec, hashBuffer } from '../scripts/refactor-oracle.mjs'
+import { fileURLToPath } from 'node:url'
+import { LEVELS, levelKey, runSpec, hashBuffer, buildCorpus } from '../scripts/refactor-oracle.mjs'
 
 // A tiny, self-contained 3-specimen corpus — deliberately independent of
 // bench/examples/kernel-parity so this test has no directory-layout
@@ -49,4 +50,13 @@ test('refactor-oracle: two consecutive snapshots of the same tree are byte-ident
 test('refactor-oracle: hashBuffer is a pure function of its bytes', () => {
   const buf = new Uint8Array([1, 2, 3, 4, 5])
   is(hashBuffer(buf), hashBuffer(new Uint8Array([1, 2, 3, 4, 5])), 'same bytes, same hash')
+})
+
+test('refactor-oracle: Web Audio uses the benchmark library graph and host boundary', async () => {
+  const specs = await buildCorpus(fileURLToPath(new URL('..', import.meta.url)))
+  const spec = specs.find(s => s.name === 'bench:webaudio')
+  is(spec.opts.jzify, true, 'library lowering is enabled')
+  is(Object.keys(spec.opts.modules).some(p => p.endsWith('/web-audio-api/index.js')), true, 'audio engine source is resolved')
+  is(Object.keys(spec.opts.imports).some(p => p.includes('AudioWorklet')), true, 'unused worklet host stays external')
+  is(WebAssembly.validate(compile(spec.code, { ...spec.opts, optimize: 3 })), true, 'the complete audit specimen compiles')
 })

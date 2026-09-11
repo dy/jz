@@ -293,6 +293,23 @@ export function emitCallArgs(argNodes, params, func) {
     coerceArg(argIR(a), params[k], a, representationCallArgAction(ctx, a, func, k))), params)
 }
 
+/** Discard excess argument values only after evaluating their effects, in
+ *  source order. The usual matching-arity call needs no temporary storage. */
+export function callWithArgs(name, args, sig) {
+  const n = sig.params.length
+  if (args.length <= n) return ['call', `$${name}`, ...args]
+  const seq = [], accepted = []
+  for (let k = 0; k < n; k++) {
+    const local = `${T}arg${freshId(ctx)}`
+    ctx.func.locals.set(local, sig.params[k].type)
+    seq.push(['local.set', `$${local}`, args[k]])
+    accepted.push(['local.get', `$${local}`])
+  }
+  for (let k = n; k < args.length; k++) seq.push(['drop', args[k]])
+  return ['block', ...(sig.results.length ? [['result', ...sig.results]] : []),
+    ...seq, ['call', `$${name}`, ...accepted]]
+}
+
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
  *  each leaf ONCE to an i64 string box (left-to-right — JS ToString order),
  *  measure each with __str_length, allocate the [hash=0][len][bytes]
@@ -660,7 +677,7 @@ export function emitDecl(...inits) {
         const argList = commaList(init[2])
         if (match && targets.length === n && !argList.some(a => Array.isArray(a) && a[0] === '...')) {
           const emittedArgs = emitCallArgs(argList, func.sig.params, func)
-          result.push(['call', `$${init[1]}`, ...emittedArgs])
+          result.push(callWithArgs(init[1], emittedArgs, func.sig))
           for (let k = n - 1; k >= 0; k--)
             result.push(['local.set', `$${targets[k]}`])
           ii += n

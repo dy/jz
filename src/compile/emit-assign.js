@@ -14,7 +14,7 @@ import { OPTF } from '../ctx.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, walkAst, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith } from './emit/class-dispatch.js'
-import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
+import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, dictCapacity } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
@@ -217,10 +217,9 @@ function tryHashRmwFusion(arr, idx, val) {
   // The no-growth probe is valid only when analysis proved the source domain's
   // length immutable. A runtime `.length` preallocation hint alone is not a
   // finite-domain proof: the source array may grow while keys are inserted.
-  const fixed = domainLen != null
+  const capHint = dictCapacity(domainLen)
+  const fixed = capHint != null
   const slotFn = fixed ? '$__hash_slot_eph_fixed' : lean ? '$__hash_slot_eph' : '$__hash_slot'
-  let capHint = 0
-  if (fixed) { capHint = 2; while (capHint < domainLen * 4) capHint *= 2 }
   const slotCall = (obj, key) => ['call', slotFn, obj, key,
     ...(fixed ? [['i32.const', capHint]] : [])]
   // __dyn_set is only reachable below via the non-HASH fallback arm (line ~328);

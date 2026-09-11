@@ -184,6 +184,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     else if (n[0] === 'for' && n.length === 5) allLoopBodies.push(n[4])
   } })
   const keptBodies = new Set(keep.map(L => L.bodyNode))
+  const covered = new Set(keep.filter(L => L.top).flatMap(L => L.cands.map(c => idxKey(c.recv, c.idx))))
   const cursors = []
   for (const [name, w] of cursorWrites) {
     if (w == null) continue
@@ -201,6 +202,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     const scanC = (n) => {
       if (n === w.node) { seenWrite = true }
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[2] === name
+          && !covered.has(idxKey(n[1], n[2]))
           && ctx.func.typedElem?.has(n[1])
           && !isReassigned(body, n[1]) && !redeclaresName(body, n[1]))
         cands.push({ recv: n[1], idx: n[2], post: seenWrite })

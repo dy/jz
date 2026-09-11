@@ -20,7 +20,7 @@ import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, materializeMulti, parseCallArgs } from './call-args.js'
-import { TYPED_HI_MASK, argIR, coerceArg, emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
+import { TYPED_HI_MASK, argIR, coerceArg, emit, emitCallArgs, emitIdentitySafe, emitVoid, callWithArgs } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
 
@@ -47,6 +47,7 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
       slots.push(null)  // arity pad — fresh per use below
     }
   }
+  for (let k = params.length; k < argNodes.length; k++) seq.push(...emitVoid(argNodes[k]))
   const get = (k) => slots[k]
     ? typed(['local.get', `$${slots[k].local}`], slots[k].type)
     : params[k].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr()
@@ -176,25 +177,18 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   const spec = func && ctx.types.specFns?.get(callee)
   if (spec && func.sig.results.length === 1 && spec.guards.every(g => g.k < parsed.normal.length))
     return emitSpeculativeCall(callee, spec, parsed.normal, func)
-  // Pad missing args with `undefined` so default-param init triggers per spec
-  // (only undefined, not null, should trigger defaults). Drop extras to match
-  // JS calling convention — emitting them anyway produces an invalid call
-  // when the callee is a fixed-arity import (e.g. `_interp`-registered host
-  // stubs) since wasm validates arg count. Use ?? rather than || so a
-  // legitimate 0-arity callee isn't bypassed.
-  const params = func?.sig.params ?? []
-  const args = func ? emitCallArgs(parsed.normal, params, func)
-                    : parsed.normal.map(a => coerceArg(argIR(a), undefined, a))
-  if (func && args.length > params.length) args.length = params.length
+  // Missing arguments are padded; excess arguments retain their effects.
   // Multi-value return: materialize as heap array (caller expects single pointer).
   // Reuse the canonical comma-wrapped arg slot — materializeMulti re-reads args
   // via commaList(node[2]); a spread-form `[…, ...parsed.normal]` would drop every
   // argument past the first.
   if (func?.sig.results.length > 1) return materializeMulti(['()', callee, callArgs])
+  const args = func ? emitCallArgs(parsed.normal, func.sig.params, func)
+                    : parsed.normal.map(a => coerceArg(argIR(a), undefined, a))
   // attachSigMeta also handles the unsigned-uint32 flag (every tail was `>>>`),
   // so consumer's asF64 uses `f64.convert_i32_u` instead of `_s` ([0, 2^32) range).
-  const callIR = attachSigMeta(typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64'), func?.sig)
-  return callIR
+  return attachSigMeta(typed(func ? callWithArgs(callee, args, func.sig)
+    : ['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64'), func?.sig)
 }
 
 /** Const-bound, non-escaping closure — direct call to its body, skipping

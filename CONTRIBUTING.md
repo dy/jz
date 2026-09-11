@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `a3e8ef6`.
+`package.json` and the lockfile pin the public watr source archive at `33ec51b`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -33,6 +33,8 @@ Its shared cost estimator counts alignment and offset bytes even when WAT omits
 them, so load reuse is judged against its encoded cost.
 Integer zero tests use Wasm eqz in the shared identity sweep; inequality uses
 two unary tests instead of a zero literal and comparison.
+Consecutive constant shifts combine only when their separately masked counts
+sum to less than the word width.
 Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
@@ -133,7 +135,19 @@ omit forwarding/growth, while multi-site record pushes share the existing slot
 layout code. Conditional growth, exception handlers, escapes and induction/header
 mutations reject the proof.
 
+The interval interpreter also supplies call-argument and typed-store bounds.
+Internal parameter ranges narrow only when every incoming call proves them;
+exports, indirect calls, missing arguments and unknown writes retain checks.
+The same ValueRep range feeds integer arithmetic and indexing after lowering.
+Typed-store summaries account for element wrapping and fresh zeroed storage.
+Truncated division preserves its quotient range only when it cannot wrap i32.
+Structural index proofs require every occurrence to succeed. Loop versioning
+groups cursor offsets by their shared extent and omits already-covered nest
+guards; negative offsets participate in the lower bound.
+
 Ephemeral dictionaries use the same zeroed header allocator as other collections.
+Allocation and fixed probes share one capacity calculation; unrepresentable
+domain sizes retain the ordinary growing table instead of overflowing a hint.
 Table reuse invalidates enumeration keys before clearing its contents. Host
 `memory.reset()` calls the compiled reset so heap rewind, cache invalidation and
 durable-state healing have one owner; JS-only memory retains its fallback.

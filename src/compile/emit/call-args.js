@@ -14,7 +14,7 @@ import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType } from '../../reps.js'
 import { persistBindingPtr } from '../emit-assign.js'
 import { withExpectedValue } from '../flow-state.js'
-import { emit, emitCallArgs } from './dispatch.js'
+import { emit, emitCallArgs, callWithArgs } from './dispatch.js'
 
 
 /** Stamp a `call` IR with the pointer-ABI / sign metadata its signature carries.
@@ -39,7 +39,7 @@ export function materializeMulti(callNode) {
   const emittedArgs = emitCallArgs(argList, func.sig.params, func)
   const temps = Array.from({ length: n }, () => temp())
   const out = allocPtr({ type: 1, len: n, tag: 'marr' })
-  const ir = [out.init, ['call', `$${name}`, ...emittedArgs]]
+  const ir = [out.init, callWithArgs(name, emittedArgs, func.sig)]
   for (let k = n - 1; k >= 0; k--) ir.push(['local.set', `$${temps[k]}`])
   for (let k = 0; k < n; k++)
     ir.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])

@@ -129,6 +129,9 @@ export function emitFunc(func, functionPlan, programFacts) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
       const pname = sig.params[k].name
+      // A missing argument carries the undefined atom; numeric uses must
+      // produce numeric NaN rather than retaining that atom's payload bits.
+      if (r.mayBeUndefined || r.missArg) (ctx.func.maybeNullish ??= new Set()).add(pname)
       // Same entry-vs-body-reassignment hazard analyzeFuncForEmit guards against
       // (see its comment): r.val/r.typedCtor/r.schemaId describe the CALLER's
       // argument, sound only while the body never writes the name. This step

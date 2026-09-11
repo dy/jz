@@ -2,8 +2,255 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
+import { funcWat, oracle } from './util.js'
+import { ctx } from '../src/ctx.js'
+import { dictCapacity } from '../src/static.js'
 
 const TIERS = levels(0, 2, 'speed', 'size')
+
+test('audit: repeated access keys cannot borrow another occurrence\'s bounds', () => {
+  const src = `export function run(n){
+    const a=new Uint8Array(4),b=new Uint8Array(4);b[0]=77;
+    let p=0;while(p<4){a[p++]=1;let rep=n;while(rep>0){a[p++]=2;rep--}}
+    return b[0]*1000+a[3]
+  }
+  export function twins(n){const a=new Uint8Array(4),b=new Uint8Array(4);b[0]=77;
+    let i=0;a[i]=1;i=n;a[i]=2;return b[0]*1000+a[0]}
+  export function reversed(n){const a=new Uint8Array(4),b=new Uint8Array(4);b[0]=77;
+    let i=n;a[i]=2;i=0;a[i]=1;return b[0]*1000+a[0]}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['run', 'twins', 'reversed'])
+      for (const n of [0, 1, 3, 4, 31, 32, 64, 64, 0])
+        is(wasm[name](n), js[name](n), `${optimize}: ${name}(${n}) preserves adjacent storage`)
+  }
+})
+
+test('audit: affine integer bounds cross helper chains', () => {
+  const src = `function pair(a,o){return a[o*2]+a[o*2+1]}
+    function forward(a,o){return pair(a,o+1)}
+    export function run(){const a=new Float64Array(32);for(let i=0;i<32;i++)a[i]=i;
+      let s=0;for(let r=0;r<8;r++)s+=forward(a,r);return s}`
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.run(), 152)
+  if (!onKernel()) {
+    const worker = funcWat(compile(src, { optimize: 0, wat: true }), 'pair')
+    ok(worker.includes('(param $o i32)'), 'closed helper uses an integer offset')
+    ok(!/trunc|convert|__typed_idx/.test(worker), 'proven accesses need no numeric round trips or checked helper')
+  }
+})
+
+test('audit: proven decimal digits render inline without changing open conversions', () => {
+  const src = `function label(n){return 'x'+n}
+    export function run(){let s='';for(let i=0;i<10;i++)s+=label(i);return s}`
+  const js = oracle(src)
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.run(), js.run())
+  if (!onKernel()) {
+    const wat = compile(src, { optimize: 'speed', wat: true })
+    ok(!/__i32_to_str|__itoa|__ftoa/.test(wat), 'digit-only conversions retain no numeric formatter')
+  }
+  const open = `export function f(n){return 'x'+n}
+    export function effects(){let n=0;const a='x'+n++;return a+','+n}`
+  const ref = oracle(open)
+  for (const optimize of TIERS) {
+    const wasm = jz(open, { optimize }).exports
+    for (const n of [-1, -0, 0, 9, 10, 0.5, 2147483648, NaN, Infinity]) is(wasm.f(n), ref.f(n), `${optimize}: ${n}`)
+    is(wasm.effects(), ref.effects(), 'conversion evaluates its source once')
+  }
+})
+
+test('audit: truncated quotient bounds preserve fixed-point remainders and wrapping', () => {
+  for (const divisor of [256, -256, 3, 0, 0.000001]) {
+    const src = `export function f(x){const n=(x&65535)-32768;
+      const q=(n/${divisor})|0;return n-q*${divisor}}`
+    const js = oracle(src)
+    for (const optimize of TIERS) {
+      const wasm = jz(src, { optimize }).exports
+      for (const x of [0, 1, 32767, 32768, 32769, 65535]) is(wasm.f(x), js.f(x), `${optimize}: divisor ${divisor}, x=${x}`)
+    }
+  }
+  const src = `export function f(x){const n=(x&65535)+123456;const q=(n/256)|0;return n-q*256}
+    export function wrap(x){const n=(x&65535)+2147480000;const q=n>>4;return q*16}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const x of [0, 1, 32767, 65535]) {
+      is(wasm.f(x), js.f(x))
+      is(wasm.wrap(x), js.wrap(x), 'signed-shift hull spans the wrap boundary')
+    }
+  }
+  if (!onKernel()) {
+    const wat = funcWat(compile(src, { optimize: 'speed', wat: true }), 'f')
+    ok(!/f64\.(mul|sub)/.test(wat), 'fixed-point remainder stays in integer arithmetic')
+  }
+})
+
+test('audit: cursor guards join offsets and retain negative-offset checks', () => {
+  const src = `function scan(a,n,start){let r=start|0,s=0;
+      for(let i=0;i<n;i++){s+=a[r+-1]+a[r]+a[r+1];r++}return s}
+    export function run(n,len,start){const a=new Float64Array(len);
+      for(let i=0;i<len;i++)a[i]=i+1;return scan(a,n,start)}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const args of [[0, 0, 0], [0, 4, 1], [1, 4, 0], [1, 4, 1], [2, 4, 1], [3, 4, 1], [4, 9, 2], [1, 4, -1]])
+      is(wasm.run(...args), js.run(...args), `${optimize}: ${args}`)
+  }
+  if (!onKernel()) {
+    const wat = funcWat(compile(src, { optimize: 'speed', wat: true }), 'scan')
+    is((wat.match(/i64\.lt_s/g) || []).length, 1, 'one upper extent for all cursor offsets')
+    is((wat.match(/i64\.ge_s/g) || []).length, 1, 'one lower extent for all cursor offsets')
+  }
+})
+
+test('audit: wrap invariants cross loop phases but stop at writes, branches and calls', () => {
+  for (const between of ['', 'si=12;', 'if(flag)si=12;', 'bound=2;', 'change();']) {
+    const src = `let bound=5;function change(){bound=2}
+      export function run(n,flag){bound=n;const a=new Float64Array(8);
+        for(let i=0;i<8;i++)a[i]=i+1;
+        let si=0,wi=0,s=0;while(wi<3){s+=a[si];si=si+1;if(si>=bound)si=0;wi++}
+        ${between}
+        let t=0,ai=0;while(ai<7){t+=a[si];si=si+1;if(si>=bound)si=0;ai++}
+        return s+t}`
+    const js = oracle(src)
+    for (const optimize of TIERS) {
+      const wasm = jz(src, { optimize }).exports
+      for (const n of [0, 1, 2, 5, 8, 9]) for (const flag of [false, true])
+        is(wasm.run(n, flag), js.run(n, flag), `${optimize}: ${between} n=${n}, flag=${flag}`)
+    }
+  }
+})
+
+test('audit: parameter bounds cover all sites, effects and open inputs', () => {
+  const src = `function twice(x){return x*2}
+    function mutate(x){x=0.5;return x*2}
+    function fallback(x=0.5){return x*2}
+    function rec(x,n){return n?rec(x+1,n-1):x*2}
+    export function run(flag,n){
+      let x=1; const v=flag?(x=0.5):(x=3);
+      let a=twice(x)+twice(v)+twice(n)+mutate(1)+fallback()+rec(1,3);
+      const xs=new Uint8Array(0); a+=twice(xs[0]); return a;
+    }
+    export function effects(flag){let x=1;let y=twice(x++)+twice(x); const v=flag?(x=0.5):(x=3);return y+twice(x)+v}
+    export function empty(n){let s=0;for(let i=0;i<n;i++)s+=twice(i);return s}
+    export function large(){return twice(1073741824)}
+    export function fraction(){return twice(0.25)}
+    export function missing(){return twice()}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const flag of [false, true]) {
+      is(wasm.run(flag, 0.25), js.run(flag, 0.25), `${optimize}: missing typed element remains NaN`)
+      is(wasm.effects(flag), js.effects(flag), `${optimize}: conditional writes and argument order`)
+    }
+    for (const n of [0, 1, 4]) is(wasm.empty(n), js.empty(n))
+    for (const name of ['large', 'fraction', 'missing']) is(wasm[name](), js[name]())
+  }
+})
+
+test('audit: call range census preserves evaluation order and poisons unknown sites', () => {
+  if (onKernel()) return
+  const rows = [
+    ['site union', 'return h(-3)+h(7)', [], [-3, 7]],
+    ['conditional expression', 'let x=1; const v=flag?(x=2):(x=7); return h(x)+v', [true], [2, 7]],
+    ['conditional statement', 'let x=1; flag?(x=2):(x=7); return h(x)', [false], [2, 7]],
+    ['compound RHS evaluated once', 'let x=1; x+=++x; return h(x)', [], [3, 3]],
+    ['ordered arguments', 'let x=1; return h(x++,h(x++))+h(x)', [], [1, 3]],
+    ['unknown forwarded value', 'return h(flag)', [0.25], null],
+    ['unknown extra site', 'h(3); return h(flag)', [0.25], null],
+    ['missing argument', 'return h()', [], null],
+    ['fractional branch', 'let x=1; flag?(x=0.5):(x=7); return h(x)', [true], null],
+    ['captured write', 'let x=1; const change=()=>{x=0.5}; change(); return h(x)', [], null],
+    ['missing narrow load', 'const a=new Uint8Array(0); const x=a[0];return h(x)', [], null],
+    ['positive product overflow', 'return h(1073741823)', [], [1073741823, 1073741823]],
+    ['negative product overflow', 'return h(-1073741824)', [], [-1073741824, -1073741824]],
+  ]
+  for (const [name, body, args, range] of rows) {
+    const src = `function h(n){return n*4} export function f(flag){${body}}`
+    const wasm = jz(src, { optimize: 0 }).exports
+    const rep = ctx.plans.programIndex.parameterAbiOf(ctx.funcs.map.get('h'))?.get(0)
+    is(rep?.range ?? null, range, name)
+    is(wasm.f(...args), oracle(src).f(...args), `${name}: JS parity`)
+  }
+})
+
+test('audit: fixed calls evaluate excess arguments before entering the callee', () => {
+  const src = `function zero(){return 10} function one(x){return x}
+    function pair(x){return [x,x+1]} function host(){} host.method=x=>x;
+    function boom(){throw 7}
+    export function run(){let n=1; const a=one(n++,n++),z=zero(n++);
+      const [b,c]=pair(n++,n++);const m=host.method(n++,n++);
+      return a+z+b+c+m+n}
+    export function throwing(){let n=0;try{one(n++,boom())}catch(e){return n+e}}
+    export function missing(){return one()*4}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['run', 'throwing', 'missing']) is(wasm[name](), js[name](), `${optimize}: ${name}`)
+    is(wasm.run(), js.run(), `${optimize}: repeated call after failure`)
+  }
+})
+
+test('audit: constant conditional lengths cross calls without folding unknown conditions', () => {
+  const src = `const A=5,B=9;
+    function scan(a){return a.length+a[7]}
+    export function run(){const a=new Float64Array(A>B?A:B);a[7]=3;return scan(a)}`
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.run(), 12)
+  if (!onKernel()) {
+    const worker = funcWat(compile(src, { optimize: 0, wat: true }), 'scan')
+    ok(!/\(if|__typed_idx|i32\.load/.test(worker), 'constant conditional size eliminates length and bounds loads')
+  }
+  const dynamic = `const A=5,B=9;
+    function scan(a){return a.length+a[7]}
+    export function run(flag){let n=0;const a=new Float64Array((n++,flag)?A:B);return scan(a)+n}
+    ` + 'export function boolText(){return `value=${A>B}`}'
+  const js = oracle(dynamic)
+  for (const optimize of TIERS) {
+    const wasm = jz(dynamic, { optimize }).exports
+    for (const flag of [true, false]) is(wasm.run(flag), js.run(flag), `${optimize}: unknown/effectful condition`)
+    is(wasm.boolText(), js.boolText(), `${optimize}: comparisons retain boolean identity`)
+  }
+})
+
+test('audit: dictionary capacity hints round non-power-of-two domains and preserve reuse', () => {
+  for (const keys of [[], ['a'], ['a','b'], ['a','b','c','d','e']]) {
+    const src = `export function run(n){const keys=${JSON.stringify(keys)};let sum=0;
+      for(let t=0;t<n;t++){const counts={};for(let i=0;i<keys.length;i++){
+        const k=keys[i];counts[k]=(counts[k]||0)+t+i+1;sum+=counts[k]}
+        for(let i=0;i<keys.length;i++)sum+=counts[keys[i]]}return sum}`
+    const js = oracle(src)
+    for (const optimize of TIERS) {
+      const wasm = jz(src, { optimize }).exports
+      for (const n of [0, 1, 3, 3, 1, 0]) is(wasm.run(n), js.run(n), `${optimize}: ${keys.length} keys, ${n} iterations`)
+    }
+  }
+  for (const length of [0, 1, 2, 5, 0x2000000]) {
+    const cap = dictCapacity(length)
+    ok(cap >= Math.max(2, length * 4) && !(cap & (cap - 1)), 'capacity covers the domain with a power-of-two mask')
+    ok(cap * 28 + 16 < 0x100000000, 'entry storage and header cannot wrap wasm32')
+  }
+  for (const length of [null, -1, 0.5, 0x2000001, 0x20000000, Infinity])
+    is(dictCapacity(length), null, 'unrepresentable capacity keeps ordinary growth')
+})
+
+test('audit: fill-helper intervals retain typed-store coercion and unknown-write guards', () => {
+  const src = `const N=260;
+    function fill(a,n){for(let i=0;i<n;i++)a[i]=i-130}
+    function gather(table,indices){let s=0;for(let i=0;i<indices.length;i++)s+=table[indices[i]];return s}
+    function overwrite(a,x){a[0]=x}
+    export function run(x){const a=new Uint8Array(N>256?N:256),t=new Float64Array(256);
+      for(let i=0;i<t.length;i++)t[i]=i;fill(a,N);overwrite(a,x);return gather(t,a)}
+    export function miss(x){const a=new Int32Array(4),t=new Float64Array(4);
+      fill(a,4);overwrite(a,x);return gather(t,a)}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const x of [0, -1, 255, 256, 0.5]) {
+      is(wasm.run(x), js.run(x), `${optimize}: wrapped stores, unknown overwrite ${x}`)
+      is(wasm.miss(x), js.miss(x), `${optimize}: negative gather remains checked ${x}`)
+    }
+  }
+})
 const vec = `
 function vec(x,y){return {x,y}}
 function add(a,b){return vec(a.x+b.x,a.y+b.y)}

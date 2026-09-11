@@ -16,7 +16,7 @@ import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { isReassigned, MUTATE_OPS, some, isBrand } from '../src/ast.js'
-import { staticObjectProps } from '../src/static.js'
+import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR } from '../layout.js'
 
@@ -104,8 +104,8 @@ export default (ctx) => {
         // over/underestimate cannot affect semantics) — unproven length
         // degrades to the default cap, never a runtime read.
         const domainLen = domain ? repOf(domain)?.arrayLen : null
-        const want = ['i32.const', domainLen > 0 ? domainLen * 4 : 8]
-        return typed(['call', '$__hash_reuse_eph', old, want], 'f64')
+        const cap = dictCapacity(domainLen) ?? 8
+        return typed(['call', '$__hash_reuse_eph', old, ['i32.const', cap]], 'f64')
       }
       // Register the empty schema so schemaId always indexes a real schema.list
       // entry — __json_obj and dyn-get load keys via $__schema_tbl[sid] and would

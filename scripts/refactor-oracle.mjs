@@ -69,9 +69,8 @@
  * — any nondeterminism (Map/Set iteration over unordered construction, Date,
  * Math.random, host-dependent float folding) is a compiler bug, not
  * something this tool works around. test/refactor-oracle.js pins this on a
- * 3-specimen mini corpus. That test is NOT registered in test/index.js —
- * that file is held by another in-flight session; run it standalone
- * (`node test/refactor-oracle.js`) until it's wired in.
+ * 3-specimen mini corpus. The test runs in the default suite and standalone
+ * (`node test/refactor-oracle.js`).
  *
  * # What this does NOT prove
  * Byte-identity of compiled output says nothing about the runtime behavior
@@ -103,6 +102,7 @@ import { join, dirname, resolve as pathResolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
+import { GRAPH_CASES, graphSources } from '../bench/_lib/graph.js'
 import { BIGINT_TYPED_STORE_SOURCE } from '../test/_bigint-typed-store-corpus.js'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -113,7 +113,6 @@ const parseLevel = (k) => /^O\d+$/.test(k) ? +k.slice(1) : k
 // The one specimen that blows the "few minutes" speed budget on its own
 // (compiling the WHOLE compiler through itself — see header). Opt in with --full.
 const SELFHOST_CASES = new Set(['jz'])
-const GRAPH_CASES = new Set(['jessie', 'jz'])
 
 const hashBuffer = (buf) => createHash('sha256').update(buf).digest('hex')
 
@@ -216,10 +215,11 @@ function makeBenchSpec(root, resolveModuleGraph, id) {
   const isGraph = GRAPH_CASES.has(id)
   // Resolve the graph / read the source ONCE per spec (level-independent);
   // only opts.optimize varies per compile call.
-  let code, modules
+  let code, modules, hostImports
   if (isGraph) {
-    const g = resolveModuleGraph(js, { resolveNode: id === 'jz' })
+    const g = graphSources({ id, js }, resolveModuleGraph)
     code = g.code
+    hostImports = g.imports
     modules = { ...g.modules, [pathResolve(root, 'bench/_lib/benchlib.js')]: benchlibHostSource(root) }
   } else {
     code = readFileSync(js, 'utf8')
@@ -231,7 +231,7 @@ function makeBenchSpec(root, resolveModuleGraph, id) {
     opts: {
       jzify: isWatr || isGraph,
       modules,
-      imports: { env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } },
+      imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } },
       alloc: false,
     },
   }

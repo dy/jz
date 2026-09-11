@@ -12,7 +12,7 @@
  *
  *   node scripts/reachability-probe.mjs [--only <substring>] [--full]
  *
- * Exits 1 when any specimen reports an unsound function.
+ * Exits 1 when any specimen fails to compile or reports an unsound function.
  */
 import { pathToFileURL } from 'node:url'
 import { join, dirname } from 'node:path'
@@ -49,4 +49,4 @@ for (const spec of specs) {
   }
 }
 console.log(`[reachability-probe] ${compiled} specimens compiled, ${failed} compile errors, ${unsoundTotal} unsound functions`)
-process.exit(unsoundTotal ? 1 : 0)
+process.exit(unsoundTotal || failed ? 1 : 0)

@@ -33,7 +33,7 @@ import { inferArrElemSchemaSet } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, seedResultKinds, narrowPointerResults, narrowReturnArrayElemSets } from './results.js'
-import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
+import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength, inferNumericRanges } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { isExported } from '../func-exports.js'
 
@@ -123,8 +123,9 @@ export default function narrowSignatures(programFacts, ast) {
   // callerCtx[null] (top-level) uses module globals for locals.
   const phase = createPhaseState()
   const { callerCtx } = phase
-  const typedValueRanges = inferTypedValueRanges(paramReps)
-  const internalArrayLengths = inferInternalArrayLengths(paramReps)
+  const storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast)
+  const typedValueRanges = inferTypedValueRanges(storeRanges)
+  const internalArrayLengths = inferInternalArrayLengths()
   programFacts.arrayLengths = internalArrayLengths.locals
   programFacts.arrayCapacities = internalArrayLengths.capacities
   const intConstArg = (arg) => {
@@ -290,7 +291,7 @@ export default function narrowSignatures(programFacts, ast) {
         // turns nullable. Distinct from the unknown-caller nullable — only
         // proven-possible misses pay the coercion.
         if (r.wasm === null) return
-        const wt = argWasmType(arg, state)
+        const wt = r.range ? 'i32' : argWasmType(arg, state)
         if (state._lastArgMiss && !r.missArg) { r.missArg = true; latticeMeet.changed = true }
         if (r.wasm === undefined) { if (wt !== undefined) { r.wasm = wt; latticeMeet.changed = true } }
         else if (r.wasm !== wt) { r.wasm = null; latticeMeet.changed = true }

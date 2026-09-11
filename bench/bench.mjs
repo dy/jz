@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { GRAPH_CASES, HOST_ADAPTERS, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
@@ -128,19 +129,6 @@ const CASE_NAMES = {
   webaudio: 'Web Audio graph render (web-audio-api engine)',
 }
 
-// Cases whose source pulls in a real multi-file library: the whole relative-
-// import graph resolves to canonical absolute-path keys (same as the CLI).
-// `jz` additionally resolves bare node_modules specifiers (watr) — its
-// workload IS the compiler (scripts/self.js), so the jz row runs the full
-// self-compile: jz.wasm compiling JavaScript.
-const GRAPH_CASES = new Set(['jessie', 'jz', 'webaudio'])
-// A library case's host adapters: the device and codec packages a render never
-// calls. jz compiles them as host imports (run-jz-host.mjs answers each
-// `undefined`); the JS-engine bundle aliases them to a null-export stub. The
-// worklet host module is a jz external as well: its async private method is
-// outside jz's parser today, and an offline render never loads a worklet.
-const HOST_ADAPTERS = { webaudio: ['@audio/decode', '@audio/decode-ape', '@audio/speaker', '@audio/mic', 'pcm-convert'] }
-const JZ_EXTERNALS = { webaudio: [...HOST_ADAPTERS.webaudio, 'src/AudioWorklet.js'] }
 const HOST_STUB = join(BENCH_DIR, '_lib', 'host-stub.js')
 // The LAB set (imported — one definition in assets/headline.js): self-referential
 // 'compiler' cases (jz/watr/jessie compiling code) plus the JS-only intrinsic
@@ -155,13 +143,6 @@ const HIDDEN_FROM_GEOMEAN = LAB
 // webaudio stays out too: its host-adapter imports need the stubs
 // run-jz-host.mjs wires, which the page's instantiate does not.
 const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio'])
-const graphSources = (c) => {
-  const g = resolveModuleGraph(c.js, { resolveNode: c.id === 'jz' || c.id in JZ_EXTERNALS, external: JZ_EXTERNALS[c.id] })
-  // Every name a declared external exports is a host import (the boundary ABI: any arity)
-  const imports = {}
-  for (const [k, v] of Object.entries(g.externals ?? {})) imports[k] = Object.fromEntries(v.map(n => [n, { params: 8 }]))
-  return { code: g.code, modules: g.modules, imports }
-}
 // Non-jz cases get the 1-page wasm default — plenty for a bench kernel's own
 // data. The `jz` CASE (self-compile: jz compiling itself) is its own path
 // entirely — see compileJzSelfIsolated / bench/_lib/compile-jz-self.mjs below,
@@ -523,7 +504,7 @@ const compileJzAt = (c, optimize) => {
   const isGraph = GRAPH_CASES.has(c.id)
   let code, modules, hostImports = {}
   if (isGraph) {
-    ;({ code, modules, imports: hostImports } = graphSources(c))
+    ;({ code, modules, imports: hostImports } = graphSources(c, resolveModuleGraph))
     modules[resolve(LIB, 'benchlib.js')] = benchlibHostSource()
   } else {
     code = readFileSync(c.js, 'utf8')
@@ -1662,7 +1643,7 @@ function emitWebWasm(caseIds) {
       const isGraph = GRAPH_CASES.has(c.id)
       let code, modules
       if (isGraph) {
-        ;({ code, modules } = graphSources(c))
+        ;({ code, modules } = graphSources(c, resolveModuleGraph))
         modules[resolve(LIB, 'benchlib.js')] = readFileSync(join(LIB, 'benchlib.js'), 'utf8')
       } else {
         code = readFileSync(c.js, 'utf8')
