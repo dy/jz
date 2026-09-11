@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, extractParams, isBrand, isLiteralStr, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
+import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { VAL } from '../reps.js'
 import { builtinCalleeVal, methodValType } from '../kind-traits.js'

@@ -37,6 +37,9 @@ jobs:
         with:
           node-version: 24
       - run: npm install
+      - name: check source cleanup
+        if: matrix.variant == 'default'
+        run: npm run lint:imports && npm run audit:files
       - name: test (${{ matrix.variant }})
         run: |
           case "${{ matrix.variant }}" in

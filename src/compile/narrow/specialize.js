@@ -10,7 +10,7 @@
 
 import { ctx, DBG_INVARIANTS } from '../../ctx.js'
 import {
-  ASSIGN_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, some,
+  ASSIGN_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME,
 } from '../../ast.js'
 import { typedElemCtor } from '../../type.js'
 import { typedElemAux } from '../../../layout.js'

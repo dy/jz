@@ -12,7 +12,7 @@
  * @module collection
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, extractF64Bits, boolBoxIR, freshId } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, boolBoxIR, freshId } from '../src/ir.js'
 import { emit, deps, call, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { REP_EDGE_REJECT, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { valTypeOf } from '../src/kind.js'

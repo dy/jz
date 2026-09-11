@@ -1,5 +1,5 @@
 import { walkAst } from '../../ast.js'
-import { hasImpureCall, isI32Const, isLocalGet, matchInc1, matchIncN } from './addr-model.js'
+import { isI32Const, isLocalGet, matchInc1, matchIncN } from './addr-model.js'
 import { LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 import { CMP_LANE, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'

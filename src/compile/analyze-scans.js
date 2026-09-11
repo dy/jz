@@ -265,15 +265,9 @@ export const BINDING_USE_USES = 2
 // getFactStore().bindingUses, NOT a private module-level WeakMap, for that
 // reason.
 //
-// No surgical invalidation (session.js DEPS table) — by design, not gap: this
-// cache is body-keyed with no widen/narrow-in-place hazard like bodyFacts',
-// because nothing ever mutates a body's binding-use SHAPE without also
-// changing the body's own AST identity first. Every pass that restructures a
-// function's AST does so through analyze.js's setFuncBody, which assigns a
-// NEW func.body reference — so a caller reading scanBindingUses(func.body)
-// after a rewrite is, by construction, keying off a fresh node this WeakMap
-// has never seen. Stale entries for orphaned old bodies just sit unreachable
-// until GC; nothing ever reads them.
+// Replacing a body through setFuncBody selects a fresh cache key. In-place
+// rewrites must call invalidateBindingUsesCache before the next census query;
+// compile/index.js does this after function and closure analysis.
 export function resetBindingUsesCache() { getFactStore().bindingUses = new WeakMap() }
 export function invalidateBindingUsesCache(body) { getFactStore().bindingUses.delete(body) }
 const _CMP_OPS = new Set(['==', '!=', '===', '!==', '<', '>', '<=', '>='])

@@ -12,7 +12,6 @@
 
 import { ctx, warn } from '../../ctx.js'
 import { warningsView } from '../../session-views.js'
-import { some } from '../../ast.js'
 import { isLiteralStr } from '../../ir.js'
 import { scanBoundedLoops } from '../../type.js'
 import { VAL, updateRep } from '../../reps.js'

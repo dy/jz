@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
+  applyBigintRepresentationAction, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'

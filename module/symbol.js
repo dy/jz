@@ -19,7 +19,6 @@
  */
 
 import { mkPtrIR } from '../src/ir.js'
-import { emit } from '../src/bridge.js'
 import { err, inc, PTR } from '../src/ctx.js'
 
 // fix/wrong-values-3: exported — module/json.js's __json_omit needs this

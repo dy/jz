@@ -49,6 +49,9 @@
     "jz": "cli.js"
   },
   "scripts": {
+    "lint:imports": "eslint '*.js' src jzify module",
+    "lint:imports:fix": "npm run lint:imports -- --fix",
+    "audit:files": "knip --no-progress",
     "test": "node test/index.js",
     "test:opt0": "JZ_TEST_OPTIMIZE=0 node test/index.js",
     "test:opt1": "JZ_TEST_OPTIMIZE=1 node test/index.js",
@@ -57,7 +60,7 @@
     "test:wasm": "JZ_TEST_TARGET=jz.wasm node test/index.js",
     "test:types": "tsc test/public-types.ts --noEmit --strict --module NodeNext --moduleResolution NodeNext --target ES2022 --lib ES2022,DOM --skipLibCheck false",
     "test:matrix": "npm test && npm run test:opt0 && npm run test:opt3 && npm run test:wasi",
-    "test:bench": "node test/bench.js && node test/ecosystem-perf.js",
+    "test:bench": "node test/bench.js && node test/ecosystem-perf.js && node test/bench-merge.js",
     "test:claims": "node test/bench-claims.js",
     "test:fuzz": "node test/fuzz.js --count=5000",
     "test:ratchet": "node test/perf-ratchet.js",
@@ -124,6 +127,9 @@
   ],
   "devDependencies": {
     "esbuild": "^0.28.0",
+    "eslint": "^10.10.0",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "knip": "^6.35.1",
     "sprae": "^13.3.8",
     "tst": "^9.4.0",
     "typescript": "^5.8.2",

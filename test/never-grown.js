@@ -128,7 +128,7 @@ export let main = () => {
 
 test('never-grown: fail-closed when the param itself escapes', () => {
   // words leaks into a module global (directly or through the inlined helper)
-  // — an alias the activation can't police, so safeReads must disqualify.
+  // — an alias the activation can't police, so arrayUsesSafe must disqualify.
   const src = `
 let sink2 = null
 const grab = (a) => { sink2 = a; return a.length }

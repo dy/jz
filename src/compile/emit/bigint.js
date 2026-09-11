@@ -7,7 +7,7 @@
 import { fold } from 'watr/optimize'
 import { ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
-import { ctx, err, PTR } from '../../ctx.js'
+import { ctx, err } from '../../ctx.js'
 import {
   asF64, asI64, boxBigInt, coerceNullishToNum, deferBigintBox, fromI64, rawBigInt, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
 } from '../../ir.js'

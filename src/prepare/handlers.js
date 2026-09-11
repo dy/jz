@@ -35,7 +35,7 @@ import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedCons
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, conditionalSpreadGroupPrepare, inferAssignSchema, objLiteralSid } from './schema.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
-import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_ARRAYS, STATIC_CONSTS, STATIC_STRINGS, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
+import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
 
 
 // Avoid materializing `node.slice(1)` at every recursive dispatch. Nearly all

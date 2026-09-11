@@ -17,7 +17,7 @@ import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
 import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/representation-plan.js'
 import { T } from '../src/ast.js'
-import { lookupValType, repOf, VAL } from '../src/reps.js'
+import { lookupValType, repOf } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, DBG_INVARIANTS } from '../src/ctx.js'
 
 // Republished on ctx.closure below for src/compile/closure-plan.js's

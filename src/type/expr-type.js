@@ -14,7 +14,7 @@ import { ctx } from '../ctx.js'
 import { K, hasTag } from '../summary/kind.js'
 import { VAL, lookupValType } from '../reps.js'
 import {
-  hasAmbiguousBoolMerge, censusShapedNode, censusMaybeUndefinedKind,
+  hasAmbiguousBoolMerge, censusShapedNode,
 } from '../kind.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
 import { NO_VALUE, staticValue, intExprRange, constIntExpr } from '../static.js'

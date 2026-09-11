@@ -225,7 +225,7 @@ export default function plan(ast, profiler, summarize) {
       addressTaken: programFacts.programIndex.addressTaken,
     }))
     // Cross-function neverGrown for read-only array PARAMS (growth-free callee
-    // closure + safeReads) — the raw-base element read skips __ptr_offset.
+    // closure + arrayUsesSafe) — the raw-base element read skips __ptr_offset.
     if (optimizing()) t('analyzeParamNeverGrown', () => analyzeParamNeverGrown(programFacts.paramReps))
     // Whole-program alias sweep for in-place replace-stores (`arr[i] = {lit}` →
     // overwrite the old element's slots) — needs the settled arrayElemSchema

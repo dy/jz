@@ -3,7 +3,7 @@
  * @module jzify/transform
  */
 
-import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, paramList, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../layout.js'

@@ -161,7 +161,7 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (global.set $__enumc_off (i32.const 0))
             (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL}))))) ` : ''
 
-// An own-name-current array binding (scanObjectArrayFacts ownReads): grown only
+// An own-name-current array binding (scanObjectArrayFacts): grown only
 // through its own name with every grow written back, so the local always holds
 // the live pointer and reads through it need no forwarding follow.
 const currentBinding = (name) => ctx.func.localReps?.get(name)?.ownCurrent === true
@@ -964,7 +964,7 @@ export default (ctx) => {
       // post-header offset `wrap(reinterpret(ptr) & OFFSET_MASK)`, no __ptr_offset call.
       // Memory-safe ONLY under that proof — a relocated array read through this stale
       // base would corrupt memory (see scanNeverGrown's default-deny rationale).
-      // An own-name-current binding (scanObjectArrayFacts ownReads: every grow
+      // An own-name-current binding (scanObjectArrayFacts: every grow
       // runs through this name and writes the pointer back) is never stale
       // either, so its reads take the raw base too; its header may relocate
       // between reads, which only neverGrown rules out (no base hoists here).

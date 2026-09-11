@@ -12,7 +12,7 @@ import { includeForStringValue } from '../autoload.js'
 import { ctx } from '../ctx.js'
 import { MUTATING_ARRAY_METHODS, stringValue } from './const-fold.js'
 import { isDeclared, resolveScope } from './scope.js'
-import { STATIC_ARRAYS, STATIC_CONSTS, STATIC_STRINGS, mutatedArrayNames, scopes, staticConstScopes } from './state.js'
+import { STATIC_ARRAYS, STATIC_STRINGS, mutatedArrayNames, scopes, staticConstScopes } from './state.js'
 
 // Operators that end in `=` without assigning.
 const EQ_LIKE_OPS = new Set(['==', '===', '!=', '!==', '<=', '>='])

@@ -1,5 +1,5 @@
 import { cloneNode, walkAst } from '../../ast.js'
-import { constNum, firstAccess, hasGlobalSet, isI32Const, isLocalGet } from './addr-model.js'
+import { constNum, firstAccess, isI32Const, isLocalGet } from './addr-model.js'
 import { LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { liftFail } from './lift.js'
 import { isArr } from './node-utils.js'

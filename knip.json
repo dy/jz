@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip/schema.json",
+  "entry": [
+    "*.d.ts",
+    "scripts/*.{js,mjs}",
+    "test/*.{js,mjs,ts}",
+    "examples/**/*.{js,mjs}",
+    "bench/**/*.{js,mjs}",
+    "assets/*.js"
+  ],
+  "project": ["*.js", "*.d.ts", "src/**/*.js", "jzify/**/*.js", "module/**/*.js"],
+  "include": ["files"]
+}

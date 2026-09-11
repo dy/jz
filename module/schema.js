@@ -9,10 +9,9 @@
 
 import { typed, asF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
-import { valTypeOf } from '../src/kind.js'
 import { K, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { err, inc } from '../src/ctx.js'
+import { inc } from '../src/ctx.js'
 import { isBrand } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 

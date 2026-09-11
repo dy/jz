@@ -49,7 +49,6 @@ import {
   BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES,
   BINDING_USE_KIND, BINDING_USE_COMPOUND, BINDING_USE_COMPUTED, scanBindingUses, USE,
 } from './analyze-scans.js'
-import { VAL } from '../reps.js'
 import { isExported } from './func-exports.js'
 
 // A candidate table may safely appear as: a `V[idx]` READ (any key — call

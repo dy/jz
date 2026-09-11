@@ -28,58 +28,28 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
-import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, HEAP, assertCtxInvariants } from '../ctx.js'
-import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
-import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan, retireFunctionPlan } from './function-plan.js'
-import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
-import { i64Hex, FIELD } from '../../layout.js'
-import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo, walkAst } from '../ast.js'
-import { valTypeOf, hasAmbiguousBoolMerge } from '../kind.js'
-import { intLiteralValue } from '../static.js'
-import { intCertainMap } from '../type.js'
+import { ctx, err, PTR, HEAP, assertCtxInvariants } from '../ctx.js'
+import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
+import { FIELD } from '../../layout.js'
+import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import {
-  analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
-  structInlinePass, unionInlinePass, reanalyzeBody, invalidateAllBodyFacts,
+  structInlinePass, unionInlinePass, invalidateAllBodyFacts,
 } from './analyze.js'
-import { typedElemAux } from '../../layout.js'
 import { invalidateBindingUsesCache, resetBindingUsesCache } from './analyze-scans.js'
-import { VAL, updateRep } from '../reps.js'
-import { inferLocals } from './infer.js'
-import { optimizeFunc } from '../optimize/index.js'
-import { strengthReduceLoopDivMod } from './loop-divmod.js'
-import { mintLoopPlans } from './loop-model.js'
-import { mintClosureEnvPlans } from './closure-plan.js'
-import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationReturnAction } from './representation-plan.js'
-import { mintTypedStoragePlan } from './typed-storage-plan.js'
+import { VAL } from '../reps.js'
+import { representationHostBoxesParam } from './representation-plan.js'
 import { unboxAdmittedCursors } from './analyze/ptr-eligibility.js'
-import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
-import { cloneRep, paramValTrustworthy } from '../param-reps.js'
-import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
-import { peelClampedStencil } from './peel-stencil.js'
-import { cseLoads } from './cse-load.js'
 import {
-  scanDynClosureTableCandidates, recordParamClosureDefault, recordDirectReturnClosure, resolveDynFnTables,
+  scanDynClosureTableCandidates, resolveDynFnTables,
   scanClosureTableLatticeCandidates, scanImperativeClosureTableLatticeCandidates,
 } from './dyn-closure-tables.js'
 
 
-import { emit, emitter, emitVoid, emitBlockBody, emitIdentitySafe, resolveClosureTableParamLattice, toBool } from './emit.js'
-import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
+import { resolveClosureTableParamLattice } from './emit.js'
+import { JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
-  typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64, ptrTypeEq,
-  NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
   MAX_CLOSURE_ARITY,
-  isLit, litVal, isNullishLit, emitNum,
-  temp,
-  isConst, boxedAddr, readVar, writeVar, isNullish, isUndef,
-  slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
-  multiCount, loopTop, flat, reconstructArgsWithSpreads,
-  findBodyStart, tcoTailRewrite,
-  carrierF64,
-  applyBigintRepresentationAction,
-  freshId,
 } from '../ir.js'
 import plan from './plan/index.js'
 import { foldModuleConstants } from './plan/scope.js'
@@ -95,13 +65,11 @@ import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
-import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
-import { paramAllUsesNumeric, paramNeverString, paramValueOnly } from './param-numeric.js'
+import { paramValueOnly } from './param-numeric.js'
 import { ensureThrowRuntime } from './throw-runtime.js'
 import { buildInternTable } from './intern-table.js'
 import { captureFuncInspect } from './func-inspect.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
-import { hoistInvariantParamCoercions, hoistUnionCursorUnbox } from './coercion-hoist.js'
 import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc } from './emit-func.js'
 import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'

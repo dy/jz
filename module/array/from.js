@@ -10,7 +10,7 @@
  * @module array/from
  */
 import { typed, asF64, asI64, temp, tempI32, allocPtr, elemStore, resolveValType, ptrTypeEq, freshId, throwTypeErrorIR, cloneIR } from '../../src/ir.js'
-import { emit, spread } from '../../src/bridge.js'
+import { emit } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { staticPropertyKey } from '../../src/static.js'
 import { VAL, lookupValType } from '../../src/reps.js'

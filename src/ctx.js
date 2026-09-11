@@ -1108,6 +1108,7 @@ export function setLinkDemand(key) {
   ctx.linkDemand[key] = true
 }
 
+// FIXME: what's this function? Is this needed?
 export function assertCtxInvariants(phase) {
   if (!DBG_INVARIANTS) return
   const fail = msg => { throw new Error(`[ctx invariant] ${phase}: ${msg}`) }

@@ -17,7 +17,7 @@ import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
 import { stringBytes } from '../src/string-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
-import { ctx, inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
+import { inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────

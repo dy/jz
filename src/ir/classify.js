@@ -13,7 +13,6 @@
 
 import { isI32, some, REFS_THROUGH_ARROWS } from '../ast.js'
 import { typed } from './tag.js'
-import { temp } from './locals.js'
 
 /** Max arity of inline closure slots. Closures are compiled with signature
  *  (env f64, argc i32, a0..a{MAX-1} f64) → f64 — no per-call heap alloc.

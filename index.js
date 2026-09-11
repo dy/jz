@@ -45,24 +45,16 @@ import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
 import { snapshotInit } from "./src/snapshot.js";
 import watrPrint from "watr/print";
-import watOptimize from "watr/optimize";
-// Required capability since watr ^5.7.11 (locked): determinism of warm
-// recompiles depends on this reset — a missing export must fail LOUDLY at
-// import, not silently degrade (the pre-5.7.11 optional-property fallback
-// masked exactly that hole).
-import { ctx, reset, err, warn, assertCtxInvariants, setLinkDemand } from './src/ctx.js'
+import { ctx, err, warn, assertCtxInvariants, setLinkDemand } from './src/ctx.js'
 import { inspectView } from './src/session-views.js'
-import prepare, { GLOBALS } from './src/prepare/index.js'
+import { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
 import { beginSession } from './src/session.js'
 import compile, { tailFacts } from './src/compile/index.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
-import { resolveOptimize } from './src/optimize/index.js'
 import { resolveWatrOpts, watrTail } from './src/optimize/watr-tail.js'
 export { resolveWatrOpts }
-import { VAL } from './src/reps.js'
 import jzify from './jzify/index.js'
-import { T } from './src/ast.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime, toModule,
 } from './interop.js'

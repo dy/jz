@@ -12,7 +12,7 @@ import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchS
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { VAL, updateRep } from '../../reps.js'
 import { intLiteralValue, intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
-import { exprType, intCertainMap, intLevelMap } from '../../type.js'
+import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import {

@@ -9,7 +9,7 @@
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
-import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../src/bridge.js'
+import { emit, storedValue, storedFieldValue } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'

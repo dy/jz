@@ -8,7 +8,6 @@
  */
 
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
-import { parse } from '../src/parse.js'
 import { createAsyncLowering } from './async.js'
 import { STD_GLOBALS } from '../src/std/index.js'
 import { createNames } from './names.js'

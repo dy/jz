@@ -10,11 +10,11 @@ import { OPTF } from '../src/ctx.js'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR, throwTypeErrorIR, boxBigInt, unboxBigInt, isPlanTaggedBigint } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, isPlanTaggedBigint } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
-import { T, ACCESSOR_GET, isBrand } from '../src/ast.js'
+import { ACCESSOR_GET, isBrand } from '../src/ast.js'
 import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
 import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'

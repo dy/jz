@@ -6,9 +6,7 @@
 
 import { ERR } from '../../../err-codes.js'
 import { ctx, err } from '../../ctx.js'
-import { asF64, asI32, emitNum, fromI64, isLit, litVal, toI32, toNumF64, typed } from '../../ir.js'
-import { valTypeOf } from '../../kind.js'
-import { VAL, repOf } from '../../reps.js'
+import { asF64, asI32, emitNum, isLit, litVal, toI32, toNumF64, typed } from '../../ir.js'
 import { intExprRange, intLiteralValue } from '../../static.js'
 import { exprType } from '../../type.js'
 import {

@@ -1,6 +1,6 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
 import { OPTF, DBG_INVARIANTS, ctx } from '../../ctx.js'
-import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS } from '../../ast.js'
 import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'

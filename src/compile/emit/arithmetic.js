@@ -4,13 +4,13 @@
  * @module compile/emit/arithmetic
  */
 
-import { ctx, err, inc, LAYOUT } from '../../ctx.js'
+import { ctx, inc, LAYOUT } from '../../ctx.js'
 import {
-  FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, boxBigInt, emitNum, f64rem, fromI64, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
+  FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
 } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, numericDenied, valTypeOf } from '../../kind.js'
-import { VAL, repOf } from '../../reps.js'
+import { VAL } from '../../reps.js'
 import { K, hasTag, tagsOf, isPostfixRecovery } from '../../summary/kind.js'
 import { exprType } from '../../type.js'
 import {

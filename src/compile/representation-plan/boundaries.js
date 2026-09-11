@@ -7,7 +7,7 @@
  */
 import { isReassigned } from '../../ast.js'
 import { VAL } from '../../reps.js'
-import { K as SUMMARY_KIND, hasTag as summaryHasTag, tagOf as summaryTagOf, isNullable as summaryNullable, CARRIER } from '../../summary/index.js'
+import { K as SUMMARY_KIND, tagOf as summaryTagOf, isNullable as summaryNullable, CARRIER } from '../../summary/index.js'
 import {
   ANY_BIGINT, BIGINT_DEMAND_RAW_OK, BIGINT_DEMAND_TAG_REQUIRED, BOXED_BIGINT, EDGE_KIND, NO_BIGINT, RAW_BIGINT,
   REP_EDGE_REJECT, SEM_CLOSED_BIT, bitOfKind, canBeBigint, canBeOther, contractRep, edgeAction, excludesBigint,

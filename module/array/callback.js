@@ -15,7 +15,7 @@
  *
  * @module array/callback
  */
-import { typed, asF64, UNDEF_NAN, temp, truthyIR } from '../../src/ir.js'
+import { typed, asF64, UNDEF_NAN, temp } from '../../src/ir.js'
 import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
