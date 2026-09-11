@@ -155,6 +155,26 @@ test('string !=: different contents compare unequal', () => {
   is(run('export let f = () => "module" != "memory"').f(), true)
 })
 
+test('string equality: UTF-16 word boundaries and unaligned views', () => {
+  const src = `export function eq(a,b){return a===b}
+    export function view(a,b,start,n){return a.slice(start,start+n)===b}`
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { eq, view } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 33]) {
+      const a = Array.from({ length: n }, (_, i) => '\u0100\0\ud800\udc00\uffff'[i % 5]).join('')
+      is(eq(a, a), true, `equal ${n} units`)
+      is(eq(a, a + 'x'), false, 'unequal lengths')
+      for (const start of [1, 2, 3])
+        is(view('x'.repeat(start) + a + 'y', a, start, n), true, `view at unit ${start}, length ${n}`)
+      for (let i = 0; i < n; i++) {
+        const b = a.slice(0, i) + String.fromCharCode(a.charCodeAt(i) ^ 1) + a.slice(i + 1)
+        is(eq(a, b), false, `mismatch at unit ${i}/${n}`)
+      }
+      is(eq(a, a), true, 'equal after unequal comparisons')
+    }
+  }
+})
+
 // === string ordering: < > <= >= ===
 // Pre-fix, NaN-boxed string pointers fell into f64.lt/gt which always returns 0
 // (NaN comparisons in IEEE 754 are false). cmpOp now routes both-STRING operands
@@ -1263,4 +1283,36 @@ test('UTF-16 object keys survive UTF-8 schema metadata', () => {
   is(e.f(),Object.fromEntries(keys.map((key,i)=>[key,i+1])))
   is(m.memory.read(m.instance.exports.g(m.memory.Hash({'\uD800':42}))),42)
   is(e.dictionary(0xD800),42); is(e.map(0xD800),42)
+})
+
+test('string slices: interning uses UTF-16 offsets in copies and views', () => {
+  const source = `
+    export const marker = () => 'function'
+    export const copy = (s, a, b) => s.slice(a, b)
+    export const sub = (s, a, b) => s.substring(a, b)
+    export function view(s, a, b) {
+      const t = s.slice(a, b)
+      let sum = 0
+      for (let i = 0; i < t.length; i++) sum = (sum * 31 + t.charCodeAt(i)) | 0
+      return sum
+    }`
+  const hash = s => { let n = 0; for (let i = 0; i < s.length; i++) n = (n * 31 + s.charCodeAt(i)) | 0; return n }
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { copy, sub, view, marker } = run(source, { optimize })
+    is(marker(), 'function', 'the static intern candidate remains present')
+    const inputs = [
+      ['........functionkeysExpr', 16, 24], // old byte offset falsely matched the earlier static word
+      ['........functionkeysExpr', 16, 24],
+      ['........keysExprfunction', 16, 24], // real candidate at the requested code-unit offset
+      ['', 0, 0], ['abcdef', 1, 6], ['abcdef', 6, 6],
+      ['Ā\0\ud800\udc00xĀ', 1, 5], ['ĀfunctionkeysExpr', 9, 17],
+      ['01234567function', -8, 100], ['01234567function', 15, 8],
+      ['!'.repeat(33) + 'function', 1, 33], ['!'.repeat(33) + 'function', 1, 34],
+    ]
+    for (const [s, a, b] of inputs) {
+      is(copy(s, a, b), s.slice(a, b), `copy ${a}:${b}`)
+      is(sub(s, a, b), s.substring(a, b), `substring ${a}:${b}`)
+      is(view(s, a, b), hash(s.slice(a, b)), `view ${a}:${b}`)
+    }
+  }
 })

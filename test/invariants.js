@@ -12,6 +12,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative } from 'path'
 import jz, { compile } from '../index.js'
+import { compile as compileWat } from 'watr'
 import { ctx, reset, DBG_INVARIANTS } from '../src/ctx.js'
 import { analyzeBody, reanalyzeBody, setFuncBody, invalidateAllBodyFacts } from '../src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
@@ -24,6 +25,53 @@ import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
 
 // === Helper: compile with WAT output for structural inspection ===
+
+test('invariant: shared power generator reconstructs every decimal entry exactly', () => {
+  if (onKernel()) return  // native helper inspection; bootstrap decimal semantics have a separate full-range pin
+  const expected = []
+  for (let q = -342; q <= 308; q++) {
+    const p = 10n ** BigInt(Math.abs(q)), bits = p.toString(2).length
+    expected.push(q < 0 ? (1n << BigInt(127 + bits)) / p
+      : bits <= 128 ? p << BigInt(128 - bits) : p >> BigInt(bits - 128))
+  }
+  for (const op of ['Number', 'Number', 'parseFloat']) {
+    compile(`export const f = s => ${op}(s)`)
+    const spans = ctx.runtime.lazySpans
+    const corrections = spans.find(s => s.global === '__el_tbl').bytes
+    const powers = spans.find(s => s.global === '__ryu_tbl').bytes
+    is(corrections.length, 245, 'three correction bits for every exponent')
+    is(powers.length, 828, 'one shared power table, including parser-only modules')
+    const esc = Array.from(powers, x => '\\' + x.toString(16).padStart(2, '0')).join('')
+    const helper = ctx.core.stdlib.__ryu_pow5
+    const bytes = compileWat(`(module
+      (memory 1) (global $__ryu_tbl i32 (i32.const 0)) (data (i32.const 0) "${esc}")
+      ${ctx.core.stdlib.__ryu_mulhi} ${ctx.core.stdlib.__umul128} ${typeof helper === 'function' ? helper() : helper}
+      (export "entry" (func $__ryu_pow5)) (export "mul" (func $__umul128)))`)
+    const { entry, mul } = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports
+    const limbs = [0n, 1n, 0xFFFFFFFFn, 0x100000000n, 0x8000000000000000n, 0xFFFFFFFFFFFFFFFFn]
+    for (const m of limbs) for (const lo of limbs) for (const hi of limbs) {
+      const product = mul(m, lo, hi).reduce((sum, word, i) => sum | BigInt.asUintN(64, word) << BigInt(i * 64), 0n)
+      is(product, m * (lo | hi << 64n), `unsigned 64×128: ${m}, ${lo}, ${hi}`)
+    }
+    const power = (i, inv) => {
+      const [lo, hi] = entry(i, inv)
+      return BigInt.asUintN(64, lo) | BigInt.asUintN(64, hi) << 64n
+    }
+    const view = new DataView(corrections.buffer, corrections.byteOffset, corrections.byteLength)
+    for (let i = 0; i < expected.length; i++) {
+      const q = i - 342, bit = i * 3
+      const correction = BigInt(view.getUint16(bit >> 3, true) >> (bit & 7) & 7)
+      const base = power(Math.abs(q), q < 0 ? 1 : 0) << 3n
+      is(q < 0 ? base - correction - 1n : base + correction, expected[i], `${op}: exact 10^${q}`)
+    }
+    // Formatting reaches positive powers beyond the parser's maximum exponent.
+    for (let i = 309; i <= 325; i++) {
+      const p = 5n ** BigInt(i), bits = p.toString(2).length
+      is(power(i, 0), p >> BigInt(bits - 125), `formatter: exact 5^${i}`)
+    }
+    is(power(0, 1), (1n << 125n) + 1n, 'inverse zero seed retains its rounding convention')
+  }
+})
 
 // ============================================================================
 // Const enforcement invariants
@@ -413,7 +461,7 @@ test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async
 test('invariant: FunctionPlan transfers collections once and keeps projections detached', async () => {
   const { createFunctionPlan, functionPlanRepField, installFunctionPlan } = await import('../src/compile/function-plan.js')
   const { isMapOverlay, makeMapOverlay } = await import('../src/compile/map-overlay.js')
-  const wideRep = { schemaId: 7, arrayElemSchema: { id: 1, elems: [1, 2] }, kinds: new Set(['a']) }
+  const wideRep = { schemaId: 7, arrayElemSchema: 0, arrayElemSchemaSet: [1, 2], intCertain: false }
   const facts = {
     block: false,
     locals: new Map([['w', wideRep], ['n', 5], ['nil', null]]),
@@ -427,9 +475,16 @@ test('invariant: FunctionPlan transfers collections once and keeps projections d
   }
   const { ctx } = await import('../src/ctx.js')
   const plan = createFunctionPlan(ctx, facts)
-  const projected = functionPlanRepField(ctx, plan, 'w', 'arrayElemSchema')
-  projected.elems.push(3)
-  is(wideRep.arrayElemSchema.elems.length, 2, 'cross-function projection is detached')
+  is(functionPlanRepField(ctx, plan, 'w', 'arrayElemSchema'), 0)
+  is(functionPlanRepField(ctx, plan, 'w', 'intCertain'), false)
+  const projected = functionPlanRepField(ctx, plan, 'w', 'arrayElemSchemaSet')
+  projected.push(3)
+  is(wideRep.arrayElemSchemaSet, [1, 2], 'cross-function projection is detached')
+  is(functionPlanRepField(ctx, plan, 'w', 'arrayElemSchemaSet'), [1, 2], 'a repeated read sees canonical facts')
+  wideRep.arrayElemSchemaSet = []
+  is(functionPlanRepField(ctx, plan, 'w', 'arrayElemSchemaSet'), [], 'empty arrays remain present')
+  is(functionPlanRepField(ctx, plan, 'missing', 'arrayElemSchemaSet'), undefined)
+  throws(() => functionPlanRepField(ctx, plan, 'w', 'schemaId'), /Unknown FunctionPlan projection/)
 
   const data = installFunctionPlan(ctx, plan)
   is(data.locals, facts.locals, 'analysis collection ownership transfers without cloning')
@@ -438,6 +493,7 @@ test('invariant: FunctionPlan transfers collections once and keeps projections d
   ok(data.cellTypes.has('w'))
   ok(isMapOverlay(data.typedElem), 'MapOverlay stays an overlay, not flattened')
   is(ctx.plans.functionData.has(plan), false, 'install consumes canonical storage immediately')
+  is(functionPlanRepField(ctx, plan, 'w', 'arrayElemSchemaSet'), undefined, 'consumed plans expose no facts')
   throws(() => installFunctionPlan(ctx, plan), /already-consumed FunctionPlan/)
 })
 

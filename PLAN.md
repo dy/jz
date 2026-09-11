@@ -16,10 +16,11 @@ Schema-table growth preserves existing objects; representation exhaustion throws
 a branded RangeError. Core and JSON share its existing error materializer.
 URLSearchParams uses class methods through ordinary lowering and reachability.
 
-The complete matrix passes: default 4,187 checks / 46,738 assertions;
-O0 3,994 / 38,938; O3 3,994 / 39,259; WASI 4,045 / 39,334, each with one skip.
-Language/built-in conformance passes 3,151/869 cases. Functional self-hosting passes 38 checks
-(304 assertions). The focused JSON/number/web-global suites cover rounding,
+The complete matrix passes: default 4,193 checks / 57,857 assertions;
+O0 4,000 / 45,842; O3 4,000 / 46,163; WASI 4,051 / 50,453, each with one skip.
+Language/built-in conformance passes 3,151/869 cases. Functional self-hosting now passes 39 checks
+(2,281 assertions), including A → A → B decimal-parser compilation across the
+full exponent range. The focused JSON/number/web-global suites cover rounding,
 malformed-input recovery, duplicate/index keys, cache collisions, table growth
 and clear, schema-ID exhaustion, independent instances and live iteration.
 Downstream Watr passes its full source and rebuilt Wasm suites: 352 checks
@@ -31,21 +32,34 @@ the recursively built compiler. Named-function trampolines now reuse direct-call
 argument coercion: treating a narrowed object pointer as a numeric i32 had
 turned the parsed argument record into address zero. The regression is pinned
 by tiny function-property calls with empty, supplied, missing and excess args.
-The recursive output is 14,757,111 bytes, with a final heap cursor of
-1,525,655,368 bytes. The checkpoint reserves the full 4 GiB address space;
-the gate process peaks at 4,121 MiB RSS. This closes recursive correctness,
+The recursive output is 14,695,203 bytes, with a final heap cursor of
+1,519,616,336 bytes. The checkpoint reserves the full 4 GiB address space;
+the gate process peaks at 2,084 MiB RSS. This closes recursive correctness,
 not the remaining speed/evidence requirements.
 
 The default-tier URL lookup probe shrinks 39,596→33,163 bytes; speed-tier output
 shrinks 47,381→36,711. Paired warm compile medians are 392→321 ms (lookup) and
 330→273 ms (literal input). A fixed creation workload uses 288→192 MiB peak
 linear memory; its runtime is within measurement noise. JSON correctness has a
-cost: standalone parse/stringify grows 13,058→25,761 bytes, mostly from sharing
-the full decimal conversion table. The corpus JSON checksum remains 2797819845:
-227 µs versus Node's 287 µs, with a 21.6 kB module versus the earlier 9.6 kB.
-A repeated-runtime-parse probe improves for short keys (32.0→15.4 µs), while
-long-key content verification costs more (14.0→18.5 µs). These are scoped probes,
-not replacement evidence for the open whole-corpus gates.
+cost that the shared decimal runtime now reduces: parsing and formatting use
+one 828-byte power-of-five seed table and shared unsigned 64×128 multiplication.
+A 245-byte correction stream replaces the 10,416-byte decimal table, with no
+runtime initialization or cache. Exact integer operands take one f64 operation
+for common decimal exponents. Every power entry and carry-boundary product is
+checked against BigInt; conversion tests cover all 651 decimal exponents,
+subnormals, overflow, invalid input, clears and shared-memory instances.
+The compiler artifact shrinks 15,277,390→15,215,485 bytes and recursive final
+heap use falls by 6,039,032 bytes. The size-tier JSON kernel shrinks
+22,061→13,163 bytes; its 12,500-byte backstop remains open. A direct
+before/after build gives 29,977→21,080 bytes for the speed artifact.
+
+The focused repeated-conversion probe improves common decimal parsing by
+5–23%, but extreme-exponent parsing remains 8–16% slower and formatting 1e100
+about 8% slower. This is a measured size/speed trade, not whole-corpus leadership.
+Heap-string equality compares four UTF-16 units per load and preserves view
+bounds; long equal-string probes improve, short-string throughput is near noise.
+FunctionPlan projections now copy only the three supported scalar/schema-array
+facts, removing the arbitrary recursive Map/Set/object cloner.
 
 The stateful VST fixture in `@audio/compile` passes 12,438 checks with each
 compiler (JZ reverified on this optimizer; Porffor verified previously): variable blocks, live parameters, independent overlapping instances,
@@ -60,7 +74,7 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 300,260 | 300,000 |
+   | Watr encoder | 290,151 | 300,000 |
    | FFT | 1,685 | 1,758 |
    | bezfit | 3,211 | 3,017 |
    | immutable | 1,446 | 1,481 |
@@ -70,12 +84,12 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    | tokenizer | 1,520 | 1,551 |
    | wordcount | 3,664 | 3,480 |
    | dispatch | 1,853 | 1,614 |
-   | JSON (speed artifact) | 22,016 | 12,500 |
+   | JSON (size artifact) | 13,163 | 12,500 |
 
-   Equality is not a strict win. No benchmark sources or budgets changed.
+   The encoder cap now passes. Equality is not a strict win. No benchmark sources or budgets changed.
    Watr shares exact casts with JZ's early lowering, removes redundant
    narrow-store casts/masks, and pools integer bits independently of spelling.
-   Binaryen `-Oz` on the resulting modules yields encoder 340,540, shapes 1,777,
+   Binaryen `-Oz` on the resulting modules yields encoder 330,447, shapes 1,777,
    tokenizer 1,500, wordcount 3,654 and bezfit 3,511 bytes. Its small kernel wins
    justify individual general folds, not adding its entire pipeline.
    The current zero-test encoding and simpler allocator reduce every sampled
@@ -84,20 +98,26 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
    guard was unreachable. No new optimizer pass or runtime layout is added.
 
 2. **Speed and evidence.** The stored reference fails leadership claims,
-   including V8 losses on jessie and Watr, and is stale. After this consolidation,
-   the isolated self-compile timing gate still fails: warm 1.444×/1.469×/1.501×
+   including V8 losses on jessie and Watr, and is stale. Before this pass,
+   the isolated self-compile timing gate failed: warm 1.444×/1.469×/1.501×
    against 1.03×, fresh 1.229× against 0.99×. Functional bootstrap passes.
-   These are current gate results, not a paired before/after speed comparison.
+   Those timing results predate the decimal/string pass; a fresh full run is due.
    The complete benchmark run before the closure-adapter correction passes
    247 checks and fails 19: eight
    fastest-Wasm comparisons, native resample/JSON, stored native-lowering bands,
    four strict AS size comparisons, JSON/encoder caps, perf-fuzz and example
    speed. Dispatch and JSON size failures reproduce before this pass; their
    size-tier modules shrink 1,883→1,853 and 22,101→22,061 bytes respectively.
-   All eleven sampled module sizes are unchanged by the adapter correction.
    The ecosystem run reports jessie/Watr at 2.164×/1.386× JS time; those tests
    report timings without enforcing leadership. Stored evidence has 58 stale
    JZ rows and an invalid 15.8 GB swap sample; it cannot certify the release.
+   The O3 compiler exposed a UTF-16 migration defect: copying substring interning
+   added a character offset as bytes and could return an unrelated static token.
+   Copy/view interning now shares its address calculation; the unreachable old
+   SSO copy branch is removed. The minimal false-hit/true-hit regression and
+   O3 parser/recursive probes pass. A paired six-case probe gives about 6% faster
+   warm compilation for a 13% larger compiler artifact; the production build
+   profile remains unchanged. This exploratory comparison is not gate certification.
    No sources, conformance floors or performance caps were relaxed.
    Repair the remaining codegen gaps, then refresh complete runtime, memory,
    native-lowering and rival evidence on a quiet machine. TinyGo 0.42 builds

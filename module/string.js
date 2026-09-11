@@ -120,16 +120,17 @@ const sliceSsoPackWat = () => `
           (i64.shl (i64.extend_i32_u (local.get $nlen)) (i64.const 42)))
           (local.get $sp64)))))))`
 
-// Probe the static intern index (buildInternTable, compile/index.js): a 5..32
-// byte slice whose content equals a static literal returns the CANONICAL
+// Probe the static intern index (buildInternTable, compile/index.js): a heap
+// slice of at most 32 UTF-16 units whose content equals a static literal returns the CANONICAL
 // static pointer, making every later comparison a bit-eq hit. Emitted only
 // when the table exists ($__internBase declared — the stdlib body is a thunk
 // evaluated at pullStdlib, after buildInternTable). FNV-1a must match
-// __str_hash's heap branch. Locals: $ip src ptr, $h, $j, $slot, $cand, $k.
-const internProbeWat = (ipExpr, guard = '(i32.const 1)') => ctx.scope.globals.has('__internBase') ? `
-    (if (i32.and (i32.le_u (local.get $nlen) (i32.const 32)) ${guard})
+// __str_hash's heap branch. Both slice paths supply a heap $srcOff and code-unit $start.
+// Locals: $ip src ptr, $h, $j, $slot, $cand, $k.
+const internProbeWat = () => ctx.scope.globals.has('__internBase') ? `
+    (if (i32.le_u (local.get $nlen) (i32.const 32))
       (then
-        (local.set $ip ${ipExpr})
+        (local.set $ip (i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1))))
         (local.set $h (i32.const 0x811c9dc5))
         (local.set $j (i32.const 0))
         (block $hd (loop $hl
@@ -491,10 +492,8 @@ export default (ctx) => {
     (local.set $ssoB (i32.and
       (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT})))
       (i32.const ${LAYOUT.SSO_BIT})))
-    ;; Both heap STRING fast path: inline len from header. Chunk by 4 bytes via unaligned
-    ;; i32.load (wasm guarantees unaligned-OK), then byte-tail. Most string comparisons fail
-    ;; early on the first 4-byte word, so this collapses the per-byte branch overhead into a
-    ;; single 32-bit equality.
+    ;; Compare four UTF-16 units per unaligned load, then the remaining units.
+    ;; Every load stays within the logical string, including substring views.
     (if (i32.and
           (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING})) (i32.eqz (local.get $ssoA)))
           (i32.and (i32.eq (local.get $tb) (i32.const ${PTR.STRING})) (i32.eqz (local.get $ssoB))))
@@ -506,22 +505,22 @@ export default (ctx) => {
         (if (i32.ne (local.get $len) (local.get $lenB))
           (then (return (i32.const 0))))
         (local.set $len (i32.shl (local.get $len) (i32.const 1)))
-        (local.set $lenB (i32.and (local.get $len) (i32.const -4)))
+        (local.set $lenB (i32.and (local.get $len) (i32.const -8)))
         (block $d4 (loop $l4
           (br_if $d4 (i32.ge_s (local.get $i) (local.get $lenB)))
-          (if (i32.ne
-                (i32.load (i32.add (local.get $offA) (local.get $i)))
-                (i32.load (i32.add (local.get $offB) (local.get $i))))
+          (if (i64.ne
+                (i64.load (i32.add (local.get $offA) (local.get $i)))
+                (i64.load (i32.add (local.get $offB) (local.get $i))))
             (then (return (i32.const 0))))
-          (local.set $i (i32.add (local.get $i) (i32.const 4)))
+          (local.set $i (i32.add (local.get $i) (i32.const 8)))
           (br $l4)))
         (block $dh (loop $lh
           (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
           (if (i32.ne
-                (i32.load8_u (i32.add (local.get $offA) (local.get $i)))
-                (i32.load8_u (i32.add (local.get $offB) (local.get $i))))
+                (i32.load16_u (i32.add (local.get $offA) (local.get $i)))
+                (i32.load16_u (i32.add (local.get $offB) (local.get $i))))
             (then (return (i32.const 0))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (local.set $i (i32.add (local.get $i) (i32.const 2)))
           (br $lh)))
         (return (i32.const 1))))
     ;; Mixed (SSO×heap) or anything else: compute len per side then per-byte via __char_at.
@@ -588,11 +587,11 @@ export default (ctx) => {
 
   // === WAT: string methods ===
 
-  // SSO source uses an unrolled byte-extract loop (len ≤ 4); heap source uses memory.copy
-  // (single bulk op instead of nlen × __char_at).
+  // Short ASCII results return directly from the packing path. Every remaining
+  // source is memory-backed: probe the intern table, then copy UTF-16 units.
   wat('__str_slice', () => `(func $__str_slice (param $ptr i64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $nlen i32) (local $off i32) (local $i i32)
-    (local $srcOff i32) (local $isSso i32) (local $sb i32) (local $sp i32) (local $sp64 i64)
+    (local $srcOff i32) (local $isSso i32) (local $sb i32) (local $sp64 i64)
     (local $ip i32) (local $h i32) (local $j i32) (local $slot i32) (local $cand i32) (local $k i32)
     (local.set $len (call $__str_length (local.get $ptr)))
     (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
@@ -601,26 +600,13 @@ export default (ctx) => {
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
     (local.set $nlen (i32.sub (local.get $end) (local.get $start)))
     ${sliceSsoPackWat()}
-    ${internProbeWat('(i32.add (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ' + LAYOUT.OFFSET_MASK + '))) (local.get $start))', '(i32.eqz (local.get $isSso))')}
+    (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${internProbeWat()}
     (local.set $off (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $nlen) (i32.const 1)))))
     (i32.store (local.get $off) (i32.const 0))
     (i32.store offset=4 (local.get $off) (local.get $nlen))
     (local.set $off (i32.add (local.get $off) (i32.const 8)))
-    (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $isSso (i32.wrap_i64 (i64.shr_u
-      (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64}))
-      (i64.const ${LAYOUT.AUX_SHIFT}))))
-    (if (local.get $isSso)
-      (then
-        (block $done (loop $loop
-          (br_if $done (i32.ge_s (local.get $i) (local.get $nlen)))
-          (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (i32.and (i32.shr_u (local.get $srcOff)
-              (i32.shl (i32.add (local.get $start) (local.get $i)) (i32.const 3)))
-              (i32.const 0xFF)))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $loop))))
-      (else
-        (memory.copy (local.get $off) (i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1))) (i32.shl (local.get $nlen) (i32.const 1)))))
+    (memory.copy (local.get $off) (i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1))) (i32.shl (local.get $nlen) (i32.const 1)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`)
 
   // No-copy slice: returns a VIEW into the receiver's buffer instead of copying
@@ -653,7 +639,7 @@ export default (ctx) => {
           (i32.le_u (local.get $nlen) (i32.const ${LAYOUT.SLICE_LEN_MASK})))
       (then
         (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
-        ${internProbeWat('(i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1)))')}
+        ${internProbeWat()}
         (return (call $__mkptr
           (i32.const ${PTR.STRING})
           (i32.or (i32.const ${LAYOUT.SLICE_BIT}) (local.get $nlen))

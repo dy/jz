@@ -299,6 +299,25 @@ test('shared memory: no static string collision', async () => {
   is(a.memory.read(aPtr), 'hello')
 })
 
+test('shared decimal powers: parser and formatter instances keep separate table bases', () => {
+  if (onKernel()) return  // shared host memory wiring is outside the single-source kernel API
+  const memory = new WebAssembly.Memory({ initial: 1 })
+  const a = jz('let text="5e-324"; let boot=Number(text); export const initial=()=>boot; export const num=s=>Number(s)', { memory })
+  is(a.exports.initial(), 5e-324, 'decimal conversion during module initialization')
+  is(a.exports.num('1e200'), 1e200, 'parser before another instance initializes')
+  const b = jz('export const text=n=>String(n)', { memory })
+  for (const input of ['5e-324', '2.2250738585072014e-308', '3e23', '1.7976931348623157e308']) {
+    is(b.exports.text(Number(input)), String(Number(input)), 'formatter after shared-memory initialization')
+    is(a.exports.num(input), Number(input), 'parser table survives formatter initialization and calls')
+  }
+  const own = jz('export const num=s=>Number(s); export const text=n=>String(n)')
+  for (let i = 0; i < 3; i++) {
+    is(own.exports.num('5e-324'), 5e-324, 'subnormal parsing after clear')
+    is(own.exports.text(1e200), '1e+200', 'formatting after clear')
+    own.instance.exports._clear()
+  }
+})
+
 test('mem.read: WASM object → JS object', async () => {
   const r = await run(`export let make = (a, b) => { let o = {x: a, y: b}; return o }`)
   const m = jz.memory(r)

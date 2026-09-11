@@ -214,6 +214,9 @@ and parameter ValueReps, then FunctionPlan owns them during emission. Spread,
 conflicting growth, resizing, and escaping uses invalidate the proof. Equal
 push counts across branches preserve it. Cold argument-free array builders stay callable
 through inference; shared Watr inlining can remove their frame after lowering.
+Cross-function FunctionPlan queries expose only the scalar facts and schema-ID
+arrays their callers need. Scalars pass through; arrays are copied. There is no
+recursive projection of arbitrary representation objects.
 Record scalar replacement uses one validator for field access, nonescape and
 whole-record replacement. Replacement values evaluate before any field changes;
 aliases, captures, differing field sets and observed record values keep storage.
@@ -223,10 +226,24 @@ allocation sizes and addresses count bytes. Short ASCII strings retain the
 six-unit SSO representation. UTF-8 encoding belongs to byte APIs and Wasm text
 metadata; host string marshalling preserves lone surrogates. Schema property
 names use JSON escaping inside UTF-8 metadata to preserve every code unit.
+Heap-string equality compares four code units per load with a code-unit tail;
+substring views never require loads beyond their logical length.
 
 Static data uses owned `Uint8Array` chunks (`src/static-data.js`). Producers write
 bytes directly; relocation adjusts those bytes, and only WAT escaping converts
 them to text. Never use `String.fromCharCode` as a binary serialization layer.
+Substring interning shares one UTF-16 address calculation between copied slices
+and views. Short ASCII slices return directly as SSO; the remaining copy path
+always has a memory-backed source and copies whole code units.
+
+Decimal parsing and shortest float formatting share the power-of-five generator
+and its 828-byte seed table. A 245-byte correction stream restores all 651 exact
+128-bit powers of ten needed by parsing. The generator returns two i64 lanes;
+formatting reuses them directly instead of storing and reloading scratch memory.
+No initialization state or second full power table is needed.
+The shared unsigned 64×128 product supplies all three rounding limbs. Decimal
+inputs whose significand and power of ten are exact f64 operands use one
+multiply or divide; the full integer algorithm handles the remaining range.
 
 Function-local layouts belong in `localReps`, carried by the function plan.
 Do not publish inferred local or parameter schemas in `ctx.schema.vars`:

@@ -1671,109 +1671,13 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
     `${name}: expected ${expected}±${tol} bytes, got ${actual}`)
 })
 
-// Baseline 4644→5216: __to_num/__skipws/__parseFloat scan a confirmed non-SSO
-// string with an inline i32.load8_u fast path (chAt) instead of always calling
-// the ~95-instr __char_at helper; chAtSafe keeps the OOB-safe contract where a
-// read isn't already bounds-guarded. Costs stdlib bytes, speeds up Number()/
-// parseFloat string parsing — off the jessie parse path (parse emits no
-// __char_at calls). Deliberate size↔speed trade.
-// 5216→5669: __ftoa's large-value path now recovers and emits the fractional digits
-// (so `String(1073741824.5)` keeps its fraction) and clamps the big-integer digit
-// extraction so values below 1e21 no longer trap. A correctness fix that costs bytes.
-// 5669→8669: the untyped `x * 2` coercion pulls __to_num, which now links the
-// correctly-rounded Eisel-Lemire decimal→f64 path (__dec_to_f64 + a 2 KB trimmed
-// power-of-10 table, exp10 ∈ [-65,65]). ~3 KB total; a full-range EL table would be
-// ~11 KB — trimmed to the realistic constant span (module/number.js). Typed programs
-// that never coerce a string keep their size (no __to_num).
-// 8669→9857: String()/template coercion now formats through the Ryū shortest
-// round-trip core (__ftoa_shortest + $__ryu_pow5 + an 828-byte seed table,
-// small-table variant) — ES-spec-exact String(number) instead of the 9-digit
-// truncation. A correctness feature that costs ~1.2 KB wherever __ftoa links.
-// 9857→18335: full-range Eisel-Lemire table (exp10 ∈ [-342..308], 10.4 KB vs
-// the 2 KB trim). The trimmed table flushed |exp10| > 308 literals to 0 via the
-// overflowing 10^e fallback and double-rounded the subnormal boundary — the
-// self-compiled watr.wasm failed official float_literals/const on real parses.
-// Correctness owns the trade; size-recovery follow-up recorded in todo (derive
-// the reciprocal half at init via 256÷128 long division instead of shipping it).
-// 18335→55: `x` is numeric-compatible (src/summary numeric demand): `x * 2` converts,
-// `x + 1` and the slot reads `p.x + p.y` are `+` operands, which JS converts for
-// every kind but a string or an object (README.md#experimental-abi, the guarded ABI's numeric
-// contract). The parameter arrives as f64, the record is three scalars, and nothing
-// links a string.
+// Numeric-compatible fields stay in scalar lanes without linking string coercion.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)
-// Baseline 7789→8196: an empty literal `{}` grown by computed `p[k]=…` carries
-// per-object dyn props the literal's static schema doesn't enumerate. Reads
-// (`p[k]` after the write, `Object.keys`/`values`/`entries`, `JSON.stringify`,
-// spread) now route through the schema∪dyn-props merge when the var is in
-// `ctx.types.dynKeyVars` (the program-facts `mayHaveDynProps` predicate). That
-// pulls __dyn_get_any/__dyn_set + the small hash they share. Required for
-// correctness: a metacircular pass grows ctx.* dicts this way and then
-// enumerates them.
-// Baseline 8196→8673: STR_INTERN_BIT machinery — canonical statics carry a
-// 4-byte cached-hash header and __str_eq/__eq/__str_hash gain the interned
-// short-circuits (bit-ne canonicals answer without touching bytes). Pure-size
-// cost at L2; 'size' preset keeps internStrings off and its own pins.
-// 8673→9146: the ≤6-ASCII⇒SSO invariant (module/string.js) — concat/mkstr gain
-// the 6-char pack paths and the dyn_get/dyn_set schema-key compares inline a
-// one-SSO⇒ne bit test before the __str_eq fallback, so SSO-keyed miss steps
-// skip the call entirely. Size cost buys the bare-i64.eq string-compare class.
-// 9146→9710 (measured 9250→9710, +460): the durable-receiver dyn-props policy
-// (module/collection.js heapResetWat + module/core.js/object.js/json.js's
-// durable-vs-ephemeral dual-check) — __dyn_get_t_h/__dyn_set/__dyn_del each
-// gain a header-arm split (ephemeral: off-16 sidecar as before; durable: check
-// the global __dyn_props table first, then the sidecar for untouched init-time
-// keys) so a receiver's dyn-prop lifetime matches its storage lifetime across
-// `_clear()` instead of dangling a round-arena sidecar off a surviving durable
-// header. Correctness fix (test/self-compile.js 'warm-instance reuse'); pure size
-// cost here since this program's receivers are all ephemeral.
-// 9710→10652: warm-reuse durable-heal machinery (__durable_slot_log/__durable_fwd_log/
-// __is_eph_bits + the zombie-aware __hash_get_local_h split) rides along with __dyn_set —
-// collection writes on durable receivers log for _clear()-time healing. Correctness
-// machinery for warm instance reuse; pure size cost on this ephemeral-only program.
-// 10652→9738: the dictionary-mode/RMW work slimmed the pulled dyn-helper set
-// for this shape (the p.b static write keeps p an OBJECT; the p[k] write now
-// routes dynSetCall directly instead of the runtime key-kind dispatch chain).
-// 9738→10665: array-index element semantics on the generic dyn path —
-// __dyn_get/expr/set/del gained ARRAY integer-key element arms + the
-// __str_arr_idx canonical-index parser (a[i]/a['1'] on an unproven receiver
-// address ELEMENTS, not the props sidecar, matching JS and the proven path).
-// Rides along with every dyn read/write pull; pure size on this object-only
-// program, correctness (arr['1'], dyn-write/static-read unification) corpus-wide.
-// 10665→12285: Ryū shortest String(number) (same ~1.2 KB __ftoa_shortest cost as
-// the known-shape pin, plus the dyn path's extra __to_str call sites).
-// 12285→13009: the probe HASH LANE (collection.js) — every table carries an i32
-// hash lane the probes walk (C's 4-byte-stride footprint; wordcount +9%, dict
-// +64% rel, immutable +72% rel on the CI runner). Lane maintenance across the
-// 8 upsert/lookup/delete templates + the shared cold $__zomb_scan ride along
-// with every dyn pull; pure size on this object-only program.
-// 13009→13689: nextCapIR's tiered grow-capacity policy (collection.js,
-// GROW_QUAD_CAP) — the shared genUpsert/genUpsertGrow/genSlotUpsert/
-// genEphemeralSlotUpsert doubling formula gained a runtime `select` that
-// switches from 2x to 4x growth once a table's capacity crosses 8192
-// entries, cutting the abandoned-generation bytes a large Map/Set/Hash
-// leaves behind under the shipped (no-reclaim) config from ~1.00x its final
-// size to ~0.33x. This program's dynamic key (`p[k]`) pulls BOTH
-// __hash_set_local and __ihash_set_local (string-key and pointer-key dyn-
-// props writes) — each embeds the wider comparison, ~340 bytes/function.
-// Correctness/behavior unchanged below the tier (every table this program
-// or the kernel-oracle/parity corpus builds stays far under 8192 entries);
-// a self-hosted compiler's own multi-hundred-thousand-entry tables are
-// exactly what the tier targets (.work/evidence.md, map-growth campaign).
+// Computed keys retain dynamic-property storage and schema-aware lookup.
 golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 13689)
-// 3719→6736: this parser reads chars from an untyped string receiver and does
-// `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
-// `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js
-// `keyType !== VAL.NUMBER` guard) — a shrink in isolation. (2) The relational ops
-// emit a runtime string-vs-number dispatch when one operand is untyped and the
-// other a string literal (emit.js cmpOp): previously they compiled to an f64
-// compare of NaN-boxed string bits — always false — so the parser silently
-// returned 0. Correct codegen pulls in `__str_cmp` (lexicographic three-way) plus
-// `__to_num` (string ToNumber) and their transitive stdlib, which dominates. The
-// growth is the cost of the parser actually working.
-// 6736→7149: same __ftoa fraction-recovery + big-int-clamp correctness fix as the
-// known-shape pin above (this program pulls in number→string via its stdlib).
-// 14375→22856: full-range EL table (see the known-shape history above).
-golden('closure-heavy parser', `export let f = (s) => {
+// Parsing and formatting now share the power generator and unsigned product.
+// Keep this closure/string-dispatch fixture's behavior beside its tighter size pin.
+const parserFixture = `export let f = (s) => {
   let i = 0, n = s.length
   let peek = () => i < n ? s[i] : ''
   let next = () => { let c = peek(); i++; return c }
@@ -1781,12 +1685,13 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 22856) // 7149→10315: same Eisel-Lemire __dec_to_f64 + trimmed table cost as the known-shape pin above
-// 12623→14375: Ryū shortest String(number) (__ftoa_shortest + seed table), as above.
-// 10315→12623: ES own-prop shadowing on unknown receivers (the builtin-shadow sidecar probe,
-// session 7) — a closure-heavy parser is all unknown-receiver method calls. Timing pins stayed
-// green; the jessie-campaign levers (namespace SRoA, descriptor devirt) re-type these receivers
-// and are expected to claw the probe bytes back.
+}`
+golden('closure-heavy parser', parserFixture, 13234)
+test('closure-heavy parser: behavior behind the size pin', () => {
+  const { f } = jz(parserFixture).exports
+  for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])
+    is(f(input), expected, JSON.stringify(input))
+})
 // Baseline 985→1062: the for-loop `buf.length` is hoisted into a pre-loop
 // local only when nothing in the body can mutate `buf` (no writes to it, no
 // calls — any call may reach `buf` through an alias the compiler can't track).

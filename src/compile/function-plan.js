@@ -9,27 +9,6 @@
  * projections below.
  */
 
-function cloneProjection(value) {
-  if (value == null || typeof value !== 'object') return value
-  if (value instanceof Map) {
-    const out = new Map()
-    for (const [key, item] of value) out.set(key, cloneProjection(item))
-    return out
-  }
-  if (value instanceof Set) {
-    const out = new Set()
-    for (const item of value) out.add(cloneProjection(item))
-    return out
-  }
-  if (Array.isArray(value)) return value.map(cloneProjection)
-  const out = { ...value }
-  for (const key in out) {
-    const item = out[key]
-    if (item != null && typeof item === 'object') out[key] = cloneProjection(item)
-  }
-  return out
-}
-
 export function createFunctionPlan(ctx, facts) {
   const plan = {}
   ctx.plans.functionData.set(plan, facts)
@@ -87,9 +66,15 @@ export function forEachFunctionPlanRep(ctx, plan, visit) {
   for (const name of reps.keys()) visit(name)
 }
 
-/** Return one detached ValueRep field for cross-function planning. */
+/** Read the scalar facts and schema-ID arrays needed by cross-function planning.
+ * @param {'arrayElemSchema'|'arrayElemSchemaSet'|'intCertain'} field
+ */
 export function functionPlanRepField(ctx, plan, name, field) {
-  return cloneProjection(ctx.plans.functionData.get(plan)?.localReps?.get(name)?.[field])
+  const rep = ctx.plans.functionData.get(plan)?.localReps?.get(name)
+  if (field === 'arrayElemSchema') return rep?.arrayElemSchema
+  if (field === 'intCertain') return rep?.intCertain
+  if (field === 'arrayElemSchemaSet') return rep?.arrayElemSchemaSet?.slice()
+  throw new Error(`Unknown FunctionPlan projection: ${field}`)
 }
 
 /**

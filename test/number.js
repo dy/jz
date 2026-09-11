@@ -4,6 +4,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { run, cases } from './util.js'
+import { levels } from './_matrix.js'
 
 // === toString ===
 
@@ -279,5 +280,27 @@ test('Number/parseFloat: saturated exponents and a single exponent sign', () => 
   for (const s of ['1e4294967296', '1e-4294967296', '0e9999', '1e-+2', '1e+-2', '1e+', '5e-324', '100000000000000000000e2147483647', '0.' + '0'.repeat(20000) + '1e20001']) {
     is(Object.is(n(s), Number(s)), true, 'Number ' + s)
     is(Object.is(p(s), parseFloat(s)), true, 'parseFloat ' + s)
+  }
+})
+
+
+test('Number/parseFloat: full decimal exponent range and high-product carries', () => {
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { num, parse } = run('export const num=s=>Number(s); export const parse=s=>parseFloat(s)', { optimize })
+    for (let q = -342; q <= 308; q++) for (const mant of ['1', '2505210838544172', '9007199254740991']) {
+      const input = `${mant}e${q}`, expected = Number(input)
+      is(num(input), expected, `Number(${input})`)
+      is(parse(input), expected, `parseFloat(${input})`)
+    }
+    for (const mant of ['3', '9007199254740991', '9007199254740992', '9007199254740993', '9007199254740995'])
+      for (const q of [-23, -22, -1, 0, 1, 22, 23]) {
+        const input = `${mant}e${q}`
+        is(num(input), Number(input), `exact-operand boundary: Number(${input})`)
+        is(parse(input), parseFloat(input), `exact-operand boundary: parseFloat(${input})`)
+      }
+    is(num(''), 0, 'empty input')
+    is(parse(''), NaN, 'empty parseFloat input')
+    is(num('invalid'), NaN, 'invalid input')
+    is(num('5e-324'), 5e-324, 'minimum subnormal after invalid input')
   }
 })

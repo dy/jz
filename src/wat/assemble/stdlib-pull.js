@@ -217,8 +217,8 @@ export function pullStdlib(sec) {
   // are pulled in on demand, never eagerly, so they're already minimal and never pruned
   // here (guarding against any reachability blind spot in a dotted-name template).
   for (const n of [...ctx.core.includes]) if (n.startsWith('__') && !reachable.has(n)) ctx.core.includes.delete(n)
-  // Lazy data-table injection — Eisel-Lemire decimal→f64 (~2KB) and Ryū
-  // float→decimal (~9.7KB), module/number.js. Each table is appended only when
+  // Lazy data-table injection — decimal corrections (245 B) and shared
+  // power-of-five seeds (828 B), module/number.js. Each table is appended only when
   // its owning function survived pruning, and its base global declared at the
   // offset. Must run HERE so dataPages (below) accounts for the addition; keeps
   // the tables out of programs that never convert decimals at runtime.
@@ -247,7 +247,7 @@ export function pullStdlib(sec) {
   }
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
   if (injectTable('__dec_to_f64', '__el_tbl', ctx.runtime.elTable)) ctx.runtime.elTable = null
-  if (injectTable('__ftoa_shortest', '__ryu_tbl', ctx.runtime.ryuTable)) ctx.runtime.ryuTable = null
+  if (injectTable('__ryu_pow5', '__ryu_tbl', ctx.runtime.ryuTable)) ctx.runtime.ryuTable = null
   // CR-pow log2/exp2 breakpoint tables (module/math.js's $math.pow_transcend) — both gated on
   // the SAME owning function since the shared kernel always needs both tables together.
   if (injectTable('math.pow_transcend', 'math.pow_log2_tbl', ctx.runtime.powLog2Table)) ctx.runtime.powLog2Table = null

@@ -115,6 +115,19 @@ for (const [label, src, expected] of SAMPLES) {
   })
 }
 
+test('self-compile: shared decimal powers survive repeated compilation', () => {
+  const inputs = Array.from({ length: 651 }, (_, i) => `1e${i - 342}`)
+  inputs.push('5e-324', '2.2250738585072014e-308', '1.7976931348623157e308',
+    '1.7976931348623159e308', '-0', '', 'invalid')
+  for (const op of ['Number', 'Number', 'parseFloat']) {
+    const bytes = compileViaSelf(`export const main = s => ${op}(s)`)
+    const { main } = instantiate(bytes).exports
+    const oracle = op === 'Number' ? Number : parseFloat
+    for (const input of inputs) is(main(input), oracle(input), `${op}(${JSON.stringify(input)})`)
+    is(main('5e-324'), 5e-324, 'subnormal after empty and invalid inputs')
+  }
+})
+
 // The SAMPLES above round-trip at optimize:false (compileViaSelf passes no optJSON),
 // so they never reach watr's single-call inliner. This pins the LEVEL-2 inliner path:
 // inlineOnce grew large enough that the self-compile kernel mis-compiled its `pinned` Set
