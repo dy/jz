@@ -123,6 +123,7 @@ const LEVEL_PRESETS = Object.freeze({
     unswitchStringRepLoop: false, // duplicates the scan loop for SSO/heap — speed-only
     speculateSchemaBranches: false, // duplicates the dynamic fallback body — speed-only tagged-union PIC
     devirtIndirect: false,    // guards + duplicated args grow bytes — speed-only trade
+    devirtFnArrays: false,    // speculative table arms retain the indirect fallback and duplicate bodies
     internStrings: false,     // the intern index costs ~16 B per eligible literal — speed-only trade
     promoteGlobals: false,    // snapshots a multi-read global into an entry local — pure speed (V8 can't CSE a mutable global); the snapshot is dead size weight at -Os
     hoistInvariantLoop: false,// LICM: hoists loop-invariants to entry temps — a speed/latency trade whose entry cost outweighs the per-iter saving in bytes

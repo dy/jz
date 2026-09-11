@@ -542,6 +542,22 @@ test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct
   is(f(0, 5, 3), 8); is(f(1, 5, 3), 6); is(f(2, 5, 3), -2)
 })
 
+test('size: function tables retain one indirect path without speculative arm copies', () => {
+  if (onKernel()) return
+  const src = `const ops=[(x,k)=>(x+k)|0,(x,k)=>x^k,(x,k)=>(k-x)|0];
+    export function f(sel,x,k){return ops[sel](x,k)}`
+  const compact = { optimize: 'size' }, expanded = { optimize: { level: 'size', devirtFnArrays: true } }
+  ok(compile(src, compact).length < compile(src, expanded).length, 'retaining both paths costs bytes')
+  ok(!compile(src, { ...compact, wat: true }).includes('br_table'), 'size omits speculative dispatch')
+  ok(compile(src, { optimize: 'speed', wat: true }).includes('br_table'), 'speed retains direct arms')
+  for (const options of [compact, expanded]) {
+    const { f } = run(src, options)
+    for (const sel of [0,0,1,2,0]) is(f(sel,5,3), [8,6,-2][sel])
+    for (const sel of [-1,3]) throws(() => f(sel,5,3), TypeError, 'missing element still throws')
+    is(f(0,5,3), 8, 'valid call after errors')
+  }
+})
+
 test('hoistIndexedConstLiterals: `[consts][i]` reads one shared data segment — no per-evaluation alloc', () => {
   // The Sierpinski-floatbeat shape: three chord tables read per SAMPLE, each a
   // fresh 144 B alloc + stores because the '[' static lowering is module-scope
