@@ -106,7 +106,10 @@ proofs; typed buffers keep their storage policy. See the [host memory contract](
 and allocation failure behavior.
 
 JSON.parse shares decimal accumulation and rounding with Number/parseFloat;
-its own scanner checks the stricter JSON grammar. Integral significands bypass
+its own scanner checks the stricter JSON grammar. Generic and shape-specialized
+parsers share one whitespace loop, with an inline guard for compact input. The
+scanner bounds each UTF-16 load and accepts only tab, LF, CR and space.
+Integral significands bypass
 the decimal conversion table. Parsed objects overwrite duplicate keys and order
 array-index keys before registering a schema. The schema cache hashes decoded
 keys, verifies their contents, and grows its backing table while preserving IDs.

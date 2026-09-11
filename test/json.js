@@ -4,6 +4,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { instantiate, aux } from '../interop.js'
 import { run, cases } from './util.js'
+import { levels } from './_matrix.js'
 
 // === JSON.stringify ===
 
@@ -178,7 +179,7 @@ test('JSON.parse: stable let source uses shaped runtime parser', () => {
 test('JSON.parse: runtime-selected literal sources share shaped parser', () => {
   const src = `
     const SOURCES = [
-      '{"items":[{"id":1,"kind":2,"value":10}],"meta":{"scale":7,"bias":11}}',
+      ' \\t{ "items" : [ { "id" : 1, "kind" : 2, "value" : 10 } ], "meta" : { "scale" : 7, "bias" : 11 } }\\r\\n',
       '{"items":[{"id":4,"kind":1,"value":8}],"meta":{"scale":5,"bias":17}}',
     ]
     export let f = (i) => {
@@ -192,8 +193,8 @@ test('JSON.parse: runtime-selected literal sources share shaped parser', () => {
   // Shaped → schema'd object → slot-read field access (no __dyn_get); robust to
   // the shared shape parser being inlined. See the stable-let test above.
   ok(!/\$__dyn_get/.test(fMatch[0]), 'shaped: fields are slot reads, not __dyn_get')
-  is(run(src).f(0), 12)
-  is(run(src).f(1), 21)
+  const { f } = run(src)
+  for (const i of [0, 0, 1, 0]) is(f(i), i ? 21 : 12, 'shaped parser: whitespace → repeat → compact → whitespace')
 })
 
 test('JSON.parse: mixed-order literal sources stay generic', () => {
@@ -605,4 +606,30 @@ test('JSON.parse: growing schema tables preserve earlier objects and stop before
   let thrown
   try { j.exports.user(214) } catch (e) { thrown = e }
   is(thrown.thrown, 214, 'runtime errors do not reserve user-thrown numbers')
+})
+
+
+test('JSON whitespace: every UTF-16 unit, EOF and repeated error recovery', () => {
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { valid } = run('export function valid(s) { try { JSON.parse(s); return 1 } catch(e) { return 0 } }', { optimize })
+    const failures = []
+    let checked = 0
+    for (let c = 0; c < 65536 && failures.length < 8; c++) {
+      const unit = String.fromCharCode(c)
+      for (const source of ['0' + unit, '[ \t' + unit + '0]']) {
+        let expected = 1
+        try { JSON.parse(source) } catch { expected = 0 }
+        const actual = valid(source)
+        if (actual !== expected) failures.push({ unit: c, source, expected, actual })
+        checked++
+      }
+    }
+    is(failures, [], 'trailing scans and active whitespace runs reject all non-JSON whitespace, including bit-shift aliases')
+    is(checked, 131072, 'every code unit checked in both positions')
+    for (const source of ['', ' ', '\t\n\r ', '0', '0', '[]', '{}', 'null', '{"x":\t0}', '[ 0 ,\n1 ]']) {
+      let expected = 1
+      try { JSON.parse(source) } catch { expected = 0 }
+      is(valid(source), expected, JSON.stringify(source))
+    }
+  }
 })

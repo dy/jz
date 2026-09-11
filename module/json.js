@@ -202,13 +202,13 @@ export default (ctx) => {
     // silently yields nothing under self-compile (test/self-compile-includes.js).
     __jput_num: ['__ftoa', '__jput_str'],
     __jput_str: ['__char_at', '__str_length', '__jput'],
-    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_length'],
-    __jp_val: ['__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
+    __jp: ['__jp_ws', '__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_length'],
+    __jp_val: ['__jp_ws', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
     __jp_str: ['__sso_char', '__char_at', '__str_length', '__hex4', '__ishex', '__sso_norm'],
     __hex4: ['__hex1'],
     __jp_num: ['__pow10', '__dec_to_f64', '__char_at'],
-    __jp_arr: ['__jp_val'],
-    __jp_obj: ['__jp_val', '__jp_str', '__jp_schema_get', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx'],
+    __jp_arr: ['__jp_ws', '__jp_val'],
+    __jp_obj: ['__jp_ws', '__jp_val', '__jp_str', '__jp_schema_get', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx'],
     __jp_schema_get: ['__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__str_hash', '__jp_schema_limit'],
     __jp_schema_limit: ['__alloc_hdr', '__mkptr'],
     __jp_key_idx: ['__str_length', '__char_at'],
@@ -820,24 +820,20 @@ export default (ctx) => {
   const PEEK = `(if (result i32) (i32.lt_u (global.get $__jppos) (global.get $__jplen)) (then (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (global.get $__jppos) (i32.const 1))))) (else (i32.const -1)))`
   const ADV = (n) => `(global.set $__jppos (i32.add (global.get $__jppos) (i32.const ${n})))`
 
-  // Whitespace skip — inlined at every call site as a tight loop. Compact
-  // JSON often has zero whitespace between tokens, so the dominant case is
-  // a single peek + break. Per the JSON grammar only tab (9), LF (10), CR
-  // (13) and space (32) are JSONWhitespace; every other byte — including
-  // other control chars and non-ASCII Unicode spaces — ends the run, so a
-  // stray VT/FF or U+2028 surfaces to the value dispatcher as a syntax
-  // error. The sentinel byte (PEEK returns -1) matches none of the four and
-  // ends the run too, so EOF needs no separate guard.
-  let WS_ID = 0
-  const WS = () => {
-    const id = WS_ID++
-    return `(block $jpws_d${id} (loop $jpws_l${id}
-      (br_if $jpws_d${id} (i32.eqz (i32.or
-        (i32.or (i32.eq ${PEEK} (i32.const 32)) (i32.eq ${PEEK} (i32.const 9)))
-        (i32.or (i32.eq ${PEEK} (i32.const 10)) (i32.eq ${PEEK} (i32.const 13))))))
+  // One scanner for both generic and shape-specialized JSON parsing.
+  ctx.core.stdlib['__jp_ws'] = `(func $__jp_ws
+    (local $ch i32)
+    (block $done (loop $next
+      (local.set $ch (i32.sub ${PEEK} (i32.const 9)))
+      ;; Bits 0,1,4,23 select tab, LF, CR, space; the unsigned bound rejects
+      ;; every other code unit, including EOF and modulo-32 aliases.
+      (br_if $done (i32.eqz (i32.and
+        (i32.le_u (local.get $ch) (i32.const 23))
+        (i32.shr_u (i32.const 0x800013) (local.get $ch)))))
       ${ADV(1)}
-      (br $jpws_l${id})))`
-  }
+      (br $next))))`
+  // Compact JSON stays inline; only a possible whitespace run needs the scanner.
+  const WS = `(if (i32.le_u ${PEEK} (i32.const 32)) (then (call $__jp_ws)))`
 
   // Parse string after consuming its opening quote. Pack short ASCII strings
   // directly; longer strings copy or decode into the canonical string storage.
@@ -1005,12 +1001,12 @@ export default (ctx) => {
     ;; __alloc_hdr returns (already past the 16-byte header) — every store
     ;; site below drops the old scheme's extra +8 offset.
     (local.set $ptr (call $__alloc_hdr (i32.const 0) (local.get $cap)))
-    ${WS()}
+    ${WS}
     (if (i32.eq ${PEEK} (i32.const 93))
       (then ${ADV(1)}
         (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))))
     (block $d (loop $l
-      ${WS()}
+      ${WS}
       ;; Grow if needed: fresh __alloc_hdr buffer + a plain data copy. This
       ;; array is purely function-local until the final mkptr below — no
       ;; other pointer can alias it mid-construction, so (unlike
@@ -1024,7 +1020,7 @@ export default (ctx) => {
           (local.set $ptr (local.get $new))))
       (f64.store (i32.add (local.get $ptr) (i32.shl (local.get $len) (i32.const 3))) (call $__jp_val))
       (local.set $len (i32.add (local.get $len) (i32.const 1)))
-      ${WS()}
+      ${WS}
       (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 93)))
       ;; After an element only a comma (more) or close-bracket (done) is
@@ -1149,7 +1145,7 @@ export default (ctx) => {
     (local $at i32) (local $idx i32) (local $prior i32)
     (local.set $kcap (i32.const 8))
     (local.set $kbuf (call $__alloc (i32.shl (local.get $kcap) (i32.const 4))))
-    ${WS()}
+    ${WS}
     ;; Empty object — alloc an empty OBJECT with sid 0 (schema slot 0 may be
     ;; empty/unused; downstream Object.keys handles 0-length names array).
     (if (i32.eq ${PEEK} (i32.const 125))
@@ -1158,14 +1154,14 @@ export default (ctx) => {
         (return (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid)
           (call $__alloc_hdr (i32.const 0) (i32.const 1))))))
     (block $d (loop $l
-      ${WS()}
+      ${WS}
       (if (i32.eq ${PEEK} (i32.const 34))
         (then ${ADV(1)}))
       (local.set $key (i64.reinterpret_f64 (call $__jp_str)))
-      ${WS()}
+      ${WS}
       (if (i32.eq ${PEEK} (i32.const 58))
         (then ${ADV(1)}))
-      ${WS()}
+      ${WS}
       (local.set $val (i64.reinterpret_f64 (call $__jp_val)))
       ;; Keep one slot per property. Overwrites preserve its position; array
       ;; indices precede other strings in ascending unsigned order.
@@ -1204,7 +1200,7 @@ export default (ctx) => {
         (i64.store (i32.add (local.get $kbuf) (i32.shl (local.get $at) (i32.const 4))) (local.get $key))
         (i64.store offset=8 (i32.add (local.get $kbuf) (i32.shl (local.get $at) (i32.const 4))) (local.get $val))
         (local.set $kn (i32.add (local.get $kn) (i32.const 1))))
-      ${WS()}
+      ${WS}
       (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 125)))
       ;; After a member only a comma (more) or close-brace (done) is
@@ -1254,7 +1250,7 @@ export default (ctx) => {
   // Main value dispatcher
   ctx.core.stdlib['__jp_val'] = `(func $__jp_val (result f64)
     (local $ch i32)
-    ${WS()}
+    ${WS}
     (local.set $ch ${PEEK})
     (if (i32.eq (local.get $ch) (i32.const 34))
       (then ${ADV(1)} (return (call $__jp_str))))
@@ -1387,25 +1383,25 @@ export default (ctx) => {
       // plan hook missed fails closed via a null-kinds entry.
       const hzLive = ctx.schema.slotWriteHazards
       if (hzLive && !hzLive.kindSafeSids.has(sid)) hzLive.kindSafeSids.set(sid, null)
-      let body = `${WS()}
+      let body = `${WS}
     ${expect(123)}
     (local.set $${obj} (call $__alloc_hdr (i32.const 0) (i32.const ${Math.max(1, keys.length)})))`
       keys.forEach((k, i) => {
         body += `
-    ${WS()}
+    ${WS}
     ${expect(34)}
     ${expectText(k)}
     ${expect(34)}
-    ${WS()}
+    ${WS}
     ${expect(58)}
-    ${WS()}
+    ${WS}
     ${parse(v[k], val)}
     (f64.store (i32.add (local.get $${obj}) (i32.const ${i * 8})) (local.get $${val}))
-    ${WS()}
+    ${WS}
     ${expect(i === keys.length - 1 ? 125 : 44)}`
       })
       if (keys.length === 0) body += `
-    ${WS()}
+    ${WS}
     ${expect(125)}`
       return `${body}
     (local.set $${out} (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $${obj})))`
@@ -1417,7 +1413,7 @@ export default (ctx) => {
       const val = local('aval', 'f64')
       const next = local('anew', 'i32')
       const id = uniq++
-      return `${WS()}
+      return `${WS}
     ${expect(91)}
     (local.set $${cap} (i32.const 8))
     ;; Alloc via the canonical header allocator (NOT a hand-rolled
@@ -1429,7 +1425,7 @@ export default (ctx) => {
     ;; __alloc_hdr returns (already past the 16-byte header) — every store
     ;; site below drops the old scheme's extra +8 offset.
     (local.set $${ptr} (call $__alloc_hdr (i32.const 0) (local.get $${cap})))
-    ${WS()}
+    ${WS}
     (if (i32.eq ${PEEK} (i32.const 93))
       (then
         ${ADV(1)}
@@ -1450,12 +1446,12 @@ export default (ctx) => {
           ${parse(elem, val)}
           (f64.store (i32.add (local.get $${ptr}) (i32.shl (local.get $${len}) (i32.const 3))) (local.get $${val}))
           (local.set $${len} (i32.add (local.get $${len}) (i32.const 1)))
-          ${WS()}
+          ${WS}
           (local.set $ch ${PEEK})
           (br_if $ad${id} (i32.eq (local.get $ch) (i32.const 93)))
           (if (i32.ne (local.get $ch) (i32.const 44)) (then ${fail}))
           ${ADV(1)}
-          ${WS()}
+          ${WS}
           (br $al${id})))
         ${ADV(1)}
         ;; Patch final length into the header (cap is already correct from
@@ -1467,7 +1463,7 @@ export default (ctx) => {
 
     const out = local('out', 'f64')
     const body = `${parse(parsed, out)}
-    ${WS()}
+    ${WS}
     (if (i32.ne ${PEEK} (i32.const -1)) (then ${fail}))
     (local.get $${out})`
     const localDecls = [...locals].map(([n, t]) => `    (local $${n} ${t})`).join('\n')
@@ -1490,7 +1486,7 @@ ${localDecls}
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))
     ${body})`
-    ctx.core.stdlibDeps[name] = ['__jp', '__jp_num', '__jp_str', '__str_length', '__alloc', '__ptr_aux', '__sso_char', '__ptr_offset', '__alloc_hdr', '__mkptr']
+    ctx.core.stdlibDeps[name] = ['__jp_ws', '__jp', '__jp_num', '__jp_str', '__str_length', '__alloc', '__ptr_aux', '__sso_char', '__ptr_offset', '__alloc_hdr', '__mkptr']
     ctx.runtime.jsonShapeParsers.set(sig, name)
     return name
   }
@@ -1531,7 +1527,7 @@ ${localDecls}
     (global.set $__jp_err (i32.const 0))
     (local.set $r (call $__jp_val))
     ;; Any non-whitespace byte after the top-level value is a syntax error.
-    ${WS()}
+    ${WS}
     (if (i32.ne ${PEEK} (i32.const -1)) (then (global.set $__jp_err (i32.const 1))))
     (if (global.get $__jp_err) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.JSON_PARSE_SYNTAX}))) (throw $__jz_err (f64.const ${ERR.JSON_PARSE_SYNTAX}))))
     (local.get $r))`

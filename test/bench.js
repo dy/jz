@@ -279,7 +279,7 @@ const SIZE_GEOMEAN_MAX = { as: 1.05 }  // jz/target geomean ceiling; ratchet `as
 const WASMOPT_SLACK_MIN = 0.90
 
 // Absolute byte backstop — catches gross codegen bloat independent of competitors.
-// (Sizes here are the default-optimize bench.mjs build, not `optimize:'size'`.)
+// The benchmark table reports the size-tier artifact; timings use its separate speed build.
 // `watr` pin is calibrated against the current watr lib version pinned in package.json:
 // it sat ~205 kB at watr 4.6.10; the STR_INTERN_BIT machinery (per-string
 // cached-hash headers + the literal-eq inline at every tag-compare site) costs
