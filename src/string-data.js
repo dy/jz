@@ -10,5 +10,5 @@ export function stringBytes(str) {
 export function stringHash(str) {
   let h = 0x811c9dc5 | 0
   for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 0x01000193) | 0
-  return (h <= 1 ? h + 2 : h) >>> 0
+  return ((h >>> 0) <= 1 ? h + 2 : h) >>> 0
 }

@@ -142,7 +142,7 @@ export function mapHashBigintArm() {
   return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
           (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
       (then (local.set $h (call $__hash (i64.load (call $__ptr_offset (local.get $v)))))
-        (return (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
+        (return (if (result i32) (i32.le_u (local.get $h) (i32.const 1))
           (then (i32.add (local.get $h) (i32.const 2)))
           (else (local.get $h))))))`
 }

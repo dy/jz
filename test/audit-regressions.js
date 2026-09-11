@@ -5,8 +5,81 @@ import { onKernel, levels } from './_matrix.js'
 import { funcWat, oracle } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dictCapacity } from '../src/static.js'
+import { stringHash } from '../src/string-data.js'
 
 const TIERS = levels(0, 2, 'speed', 'size')
+
+test('audit: collection fields lower to explicit layout offsets', () => {
+  if (onKernel()) return
+  const wat = compile('export function f(k){const m=new Map();m.set(k,42);return m.get(k)}', { optimize: 0, wat: true })
+  for (const name of ['__map_get', '__map_set']) {
+    const body = funcWat(wat, name)
+    ok(body.includes('offset=8'), `${name}: key field uses its slot offset`)
+    ok(body.includes('offset=16'), `${name}: value field uses its slot offset`)
+  }
+  const header = funcWat(wat, '__alloc_hdr_n')
+  ok(header.includes('offset=8') && header.includes('offset=12'), 'allocated header fields need no address additions')
+})
+
+// FNV-1a preimages of the two reserved words and their signed neighbours.
+const hashStrings = [[4660, 57487, 23428], [4660, 17474, 50024],
+  [4660, 28643, 59466], [4660, 12245, 35047]].map(units => String.fromCharCode(...units))
+
+test('audit: hash sentinels are unsigned words', () => {
+  for (let i = 0; i < hashStrings.length; i++) {
+    let h = 0x811c9dc5
+    for (const ch of hashStrings[i]) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193)
+    is(h, [0, 1, -2, -1][i], 'fixture reaches the raw hash boundary')
+    is(stringHash(hashStrings[i]), [2, 3, 4294967294, 4294967295][i])
+  }
+})
+
+test('audit: reserved-neighbour hashes survive collection lifecycles', () => {
+  const keys = [1.0000007154885675, 1.0000007154885677, 0, -0, NaN,
+    0n, 1n, 4294967294n, 4294967295n, ...hashStrings]
+  const literal = k => typeof k === 'bigint' ? `${k}n` : typeof k === 'number' ? String(k) : JSON.stringify(k)
+  const src = `export function lifecycle(k) {
+    if(typeof k==='bigint')k+=0n;
+    const m=new Map(),s=new Set();
+    let out=''+m.has(k)+','+s.has(k);
+    m.set(k,42);m.set(k,77);s.add(k);s.add(k);
+    out+=','+m.size+','+m.get(k)+','+s.size;
+    for(let i=0;i<40;i++){m.set('fill'+i,i);s.add('fill'+i)}
+    out+=','+m.get(k)+','+m.size+','+s.has(k)+','+s.size;
+    let total=0;for(const [key,value] of m)total+=value;
+    let count=0;for(const value of s)count++;
+    out+=','+total+','+count+','+m.delete(k)+','+s.delete(k);
+    out+=','+m.has(k)+','+s.has(k)+','+m.delete(k)+','+s.delete(k);
+    m.set(k,99);s.add(k);
+    return out+','+m.get(k)+','+s.has(k)+','+m.size+','+s.size
+  }
+  ${keys.map((k, i) => `export function literal${i}(k){if(typeof k==='bigint')k+=0n;const m=new Map();m.set(${literal(k)},42);m.set(k,77);return m.size*1000+m.get(${literal(k)})}`).join('\n')}`
+  const js = oracle(src)
+  for (const optimize of TIERS) for (const _compactCollections of [false, true]) {
+    const wasm = jz(src, { optimize, _compactCollections }).exports
+    for (const k of [...keys, ...keys.slice().reverse()])
+      is(wasm.lifecycle(k), js.lifecycle(k), `${optimize}, compact=${_compactCollections}: ${String(k)}`)
+    keys.forEach((k, i) => is(wasm[`literal${i}`](k), 1077, 'literal and runtime hashes agree'))
+  }
+})
+
+test('audit: sentinel-neighbour UTF-16 hashes agree across literals, slices and host dictionaries', () => {
+  const src = `export function lookup(o,k){return o[k]}
+    export function slices(s){const k=s.slice(1,-1),m=new Map();m.set(k,42);
+      return m.get(k)+','+k}
+    ${hashStrings.map((k, i) => `export function literal${i}(s){const m=new Map();m.set(${JSON.stringify(k)},42);return m.get(s.slice(1,-1))}`).join('\n')}`
+  for (const optimize of TIERS) {
+    const { exports, memory } = jz(src, { optimize })
+    const obj = Object.fromEntries(hashStrings.map((k, i) => [k, i + 42]))
+    const ptr = memory.Hash(obj)
+    for (let i = 0; i < hashStrings.length; i++) {
+      const k = hashStrings[i]
+      is(exports.lookup(ptr, k), obj[k], 'host hash lane matches compiled probing')
+      is(exports.slices('[' + k + ']'), '42,' + k, 'runtime slice retains its exact code units')
+      is(exports[`literal${i}`]('[' + k + ']'), 42, 'runtime and interned literal agree')
+    }
+  }
+})
 
 test('audit: repeated access keys cannot borrow another occurrence\'s bounds', () => {
   const src = `export function run(n){
@@ -30,9 +103,9 @@ test('audit: repeated access keys cannot borrow another occurrence\'s bounds', (
 test('audit: affine integer bounds cross helper chains', () => {
   const src = `function pair(a,o){return a[o*2]+a[o*2+1]}
     function forward(a,o){return pair(a,o+1)}
-    export function run(){const a=new Float64Array(32);for(let i=0;i<32;i++)a[i]=i;
+    export function calculate(){const a=new Float64Array(32);for(let i=0;i<32;i++)a[i]=i;
       let s=0;for(let r=0;r<8;r++)s+=forward(a,r);return s}`
-  for (const optimize of TIERS) is(jz(src, { optimize }).exports.run(), 152)
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.calculate(), 152)
   if (!onKernel()) {
     const worker = funcWat(compile(src, { optimize: 0, wat: true }), 'pair')
     ok(worker.includes('(param $o i32)'), 'closed helper uses an integer offset')
@@ -42,9 +115,9 @@ test('audit: affine integer bounds cross helper chains', () => {
 
 test('audit: proven decimal digits render inline without changing open conversions', () => {
   const src = `function label(n){return 'x'+n}
-    export function run(){let s='';for(let i=0;i<10;i++)s+=label(i);return s}`
+    export function calculate(){let s='';for(let i=0;i<10;i++)s+=label(i);return s}`
   const js = oracle(src)
-  for (const optimize of TIERS) is(jz(src, { optimize }).exports.run(), js.run())
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.calculate(), js.calculate())
   if (!onKernel()) {
     const wat = compile(src, { optimize: 'speed', wat: true })
     ok(!/__i32_to_str|__itoa|__ftoa/.test(wat), 'digit-only conversions retain no numeric formatter')
@@ -178,7 +251,7 @@ test('audit: fixed calls evaluate excess arguments before entering the callee', 
   const src = `function zero(){return 10} function one(x){return x}
     function pair(x){return [x,x+1]} function host(){} host.method=x=>x;
     function boom(){throw 7}
-    export function run(){let n=1; const a=one(n++,n++),z=zero(n++);
+    export function calculate(){let n=1; const a=one(n++,n++),z=zero(n++);
       const [b,c]=pair(n++,n++);const m=host.method(n++,n++);
       return a+z+b+c+m+n}
     export function throwing(){let n=0;try{one(n++,boom())}catch(e){return n+e}}
@@ -186,16 +259,16 @@ test('audit: fixed calls evaluate excess arguments before entering the callee', 
   const js = oracle(src)
   for (const optimize of TIERS) {
     const wasm = jz(src, { optimize }).exports
-    for (const name of ['run', 'throwing', 'missing']) is(wasm[name](), js[name](), `${optimize}: ${name}`)
-    is(wasm.run(), js.run(), `${optimize}: repeated call after failure`)
+    for (const name of ['calculate', 'throwing', 'missing']) is(wasm[name](), js[name](), `${optimize}: ${name}`)
+    is(wasm.calculate(), js.calculate(), `${optimize}: repeated call after failure`)
   }
 })
 
 test('audit: constant conditional lengths cross calls without folding unknown conditions', () => {
   const src = `const A=5,B=9;
     function scan(a){return a.length+a[7]}
-    export function run(){const a=new Float64Array(A>B?A:B);a[7]=3;return scan(a)}`
-  for (const optimize of TIERS) is(jz(src, { optimize }).exports.run(), 12)
+    export function calculate(){const a=new Float64Array(A>B?A:B);a[7]=3;return scan(a)}`
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.calculate(), 12)
   if (!onKernel()) {
     const worker = funcWat(compile(src, { optimize: 0, wat: true }), 'scan')
     ok(!/\(if|__typed_idx|i32\.load/.test(worker), 'constant conditional size eliminates length and bounds loads')

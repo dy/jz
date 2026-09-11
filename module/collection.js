@@ -95,9 +95,9 @@ import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durabl
 export { heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode }
 
 
-// Clamp to the >=2 convention (0=empty slot, 1=tombstone) — shared by every hash
-// producer (SSO mix, byte-FNV, __jp_str, buildInternTable) so they all clamp identically.
-const clampHash = (h) => (h <= 1 ? (h + 2) | 0 : h)
+// Reserve unsigned hash words 0 (empty) and 1 (tombstone). Negative i32
+// hashes are ordinary keys; comparing them as signed would create sentinels.
+const clampHash = (h) => ((h >>> 0) <= 1 ? (h + 2) | 0 : h)
 
 // SSO mix: 7 ops over the packed NaN-box lo/hi (see __str_hash's SSO branch,
 // module/collection.js below, for the WAT twin — both MUST compute the same value).
@@ -127,7 +127,7 @@ export function numHashLiteral(n) {
   if (Object.is(n, 0) || Object.is(n, -0)) return 2
   HASH_F64[0] = n
   const h = (HASH_U32[0] ^ HASH_U32[1]) | 0
-  return h <= 1 ? (h + 2) | 0 : h
+  return clampHash(h)
 }
 
 function numConstLiteral(expr) {
@@ -153,12 +153,12 @@ const litKeyHash = (key) => {
 // distinct NaN payloads — fall through to the full compare, never the reverse).
 const keyEq = (fullEq) =>
   `(if (result i32)
-        (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
+        (i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))
         (then (i32.const 1))
         (else ${fullEq}))`
-const strEqG = keyEq('(call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))')
-const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))')
-const bitEq = '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
+const strEqG = keyEq('(call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key))')
+const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
+const bitEq = '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
 
 import { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP, genUpsert, genLookup, genDelete, genUpsertGrow, genSlotUpsert, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genLookupStrictPrehashed, genUpsertStrictPrehashed } from './collection/upsert.js'
 // Re-exported from their new home (module/collection/upsert.js — the
@@ -412,7 +412,7 @@ export default (ctx) => {
     (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $f) (local.get $f)))
       (then (return (i32.const 3))))
     (local.set $h (call $__hash (local.get $v)))
-    (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
+    (if (result i32) (i32.le_u (local.get $h) (i32.const 1))
       (then (i32.add (local.get $h) (i32.const 2)))
       (else (local.get $h))))`
 
@@ -875,10 +875,10 @@ export default (ctx) => {
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
       (if (i32.and
             (i64.ne (i64.load (local.get $slot)) (i64.const 0))
-            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
-        (then (i64.store (i32.add (local.get $slot) (i32.const 16))
+            (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN})))
+        (then (i64.store offset=16 (local.get $slot)
           (i64.reinterpret_f64 (call $__sclone_rec
-            (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 16))))
+            (f64.reinterpret_i64 (i64.load offset=16 (local.get $slot)))
             (local.get $memo))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l))))`
@@ -977,10 +977,10 @@ export default (ctx) => {
           (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
           (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
             (then (drop (call $__map_set (i64.reinterpret_f64 (local.get $out))
-              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 8)))) (local.get $memo)))
-              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 16)))) (local.get $memo))))))
+              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load offset=8 (local.get $slot))) (local.get $memo)))
+              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load offset=16 (local.get $slot))) (local.get $memo))))))
             (else (drop (call $__set_add (i64.reinterpret_f64 (local.get $out))
-              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load (i32.add (local.get $slot) (i32.const 8)))) (local.get $memo)))))))
+              (i64.reinterpret_f64 (call $__sclone_rec (f64.reinterpret_i64 (i64.load offset=8 (local.get $slot))) (local.get $memo)))))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $cl)))
         (return (local.get $out))))
@@ -1082,8 +1082,8 @@ export default (ctx) => {
           (br_if $dm (i32.ge_s (local.get $i) (local.get $n)))
           (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
           (local.set $map (call $__map_set (local.get $map)
-            (i64.load (i32.add (local.get $slot) (i32.const 8)))
-            (i64.load (i32.add (local.get $slot) (i32.const 16)))))
+            (i64.load offset=8 (local.get $slot))
+            (i64.load offset=16 (local.get $slot))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $lm))))
       (else (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
@@ -1138,7 +1138,7 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $lh)))))
     ;; Ensure >= 2 (0=empty, 1=tombstone)
-    (if (i32.le_s (local.get $h) (i32.const 1))
+    (if (i32.le_u (local.get $h) (i32.const 1))
       (then (local.set $h (i32.add (local.get $h) (i32.const 2)))))
     (local.get $h))` : `(func $__str_hash (param $s i64) (result i32)
     (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $aux i32) (local $w i32) (local $hi i32) (local $cs i32)
@@ -1190,7 +1190,7 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $lh)))))
     ;; Ensure >= 2 (0=empty, 1=tombstone)
-    (if (i32.le_s (local.get $h) (i32.const 1))
+    (if (i32.le_u (local.get $h) (i32.const 1))
       (then (local.set $h (i32.add (local.get $h) (i32.const 2)))))
     ;; fill the lazy hash cell (post-clamp, so 0 stays unambiguous "uncomputed")
     (if (local.get $cs) (then (i32.store (local.get $cs) (local.get $h))))
@@ -1205,7 +1205,7 @@ export default (ctx) => {
     (local.set $end (i32.add (local.get $off) (i32.mul (local.get $cap) (local.get $es))))
     (block $d (loop $l
       (br_if $d (i32.ge_u (local.get $slot) (local.get $end)))
-      (br_if $d (i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
+      (br_if $d (i64.eq (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN})))
       (local.set $slot (i32.add (local.get $slot) (local.get $es)))
       (br $l)))
     (select (local.get $off) (local.get $slot) (i32.ge_u (local.get $slot) (local.get $end))))`
@@ -1301,8 +1301,8 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_del_local'] = genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
   // Outer __dyn_props hash: keyed by object offset (i32 as f64 bits), value is per-object props hash.
   // Uses bit-hash + i64.eq — no string allocation for the unique integer key.
-  ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH)
-  ctx.core.stdlib['__ihash_set_local'] = () => genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH, true)
+  ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))', PTR.HASH)
+  ctx.core.stdlib['__ihash_set_local'] = () => genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))', PTR.HASH, true)
 
   // Inline __ptr_offset (forwarding-aware) and __hash_get_local body — dyn_get is the
   // single hottest stdlib symbol in watr self-compile (~95M calls). props returned by
@@ -1723,8 +1723,8 @@ export default (ctx) => {
         ;; hash-first: slot stores the key's hash in its low 32 bits — one i32
         ;; compare rejects collision steps without walking key bytes.
         (if (i32.eq (i32.load (local.get $slot)) (local.get $h))
-          (then (if (call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
-            (then (return (i64.load (i32.add (local.get $slot) (i32.const 16))))))))
+          (then (if (call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key))
+            (then (return (i64.load offset=16 (local.get $slot)))))))
         (local.set $slot (i32.add (local.get $slot) (i32.const ${MAP_ENTRY})))
         (if (i32.ge_u (local.get $slot) (local.get $pend)) (then (local.set $slot (local.get $poff))))
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))

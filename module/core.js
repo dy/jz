@@ -1005,8 +1005,8 @@ export default (ctx) => {
     (local $ptr i32)
     (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 3)))))
     (i64.store (local.get $ptr) (i64.const 0))
-    (i32.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $len))
-    (i32.store (i32.add (local.get $ptr) (i32.const 12)) (local.get $cap))
+    (i32.store offset=8 (local.get $ptr) (local.get $len))
+    (i32.store offset=12 (local.get $ptr) (local.get $cap))
     (i32.add (local.get $ptr) (i32.const 16)))`
 
   // Generic header allocator for non-8 strides: Set (16), Map probe (24), TypedArray raw (1).
@@ -1020,8 +1020,8 @@ export default (ctx) => {
     (local $ptr i32)
     (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (local.get $stride)))))
     (i64.store (local.get $ptr) (i64.const 0))
-    (i32.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $len))
-    (i32.store (i32.add (local.get $ptr) (i32.const 12)) (local.get $cap))
+    (i32.store offset=8 (local.get $ptr) (local.get $len))
+    (i32.store offset=12 (local.get $ptr) (local.get $cap))
     (memory.fill (i32.add (local.get $ptr) (i32.const 16)) (i32.const 0) (i32.mul (local.get $cap) (local.get $stride)))
     (i32.add (local.get $ptr) (i32.const 16)))`
 

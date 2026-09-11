@@ -511,7 +511,7 @@ export const memory = (src) => {
   // marshaling copies and silently vanishes — a params-bag must be a real hash.
   // Hash twins of module/collection.js (clampHash / ssoMix / unitFnv) — MUST agree
   // with __str_hash or wasm probes start at the wrong home slot and miss.
-  const clampHash = (h) => (h <= 1 ? (h + 2) | 0 : h)
+  const clampHash = (h) => ((h >>> 0) <= 1 ? (h + 2) | 0 : h)
   const jzStrHash = (box) => {
     const b = bits(box)
     if ((b >> 32n) & BigInt(LAYOUT.SSO_BIT)) {   // SSO: fixed-cost mix over payload

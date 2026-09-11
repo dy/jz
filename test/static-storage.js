@@ -9,6 +9,8 @@ import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { onKernel, levels } from './_matrix.js'
+import parse from 'watr/parse'
+import { walkAst } from '../src/ast.js'
 
 const DSP = `const a = new Float64Array(64); const b = new Float64Array(64)
 export let f = (x) => {
@@ -33,12 +35,21 @@ test('static storage: module-scope constant-length typed arrays need no allocato
   }
 })
 
-test('static storage: bases stay 16-byte aligned through the prefix strip and fold into memargs', () => {
+test('static storage: bases stay 16-byte aligned through the prefix strip', () => {
   const wat = compile(DSP, { optimize: 'size', wat: true })
   ok(!/\$__start/.test(wat), 'no start function: the bindings are constants')
-  ok(!/global\.get/.test(wat), 'no global reads: every base is a memarg offset')
-  const offsets = [...wat.matchAll(/f64\.(?:load|store) offset=(\d+)/g)].map(m => Number(m[1]))
-  ok(offsets.length >= 4, `memarg offsets: ${offsets.join(' ')}`)
+  ok(!/global\.get/.test(wat), 'no global reads: static bases are immediates')
+  const offsets = []
+  walkAst(parse(wat), { enter: n => {
+    if (n[0] !== 'f64.load' && n[0] !== 'f64.store') return
+    const memarg = n.find(x => typeof x === 'string' && x.startsWith('offset='))
+    if (memarg) { offsets.push(Number(memarg.slice(7))); return }
+    // Wrapping address arithmetic stays explicit without an independent range proof.
+    const addr = n[n.length - (n[0] === 'f64.store' ? 2 : 1)]
+    const base = addr?.[0] === 'i32.add' && addr.slice(1).find(x => x[0] === 'i32.const')
+    if (base) offsets.push(Number(base[1]))
+  } })
+  ok(offsets.length >= 4, `static bases: ${offsets.join(' ')}`)
   for (const off of offsets) is(off % 16, 0, `base ${off}`)
 })
 

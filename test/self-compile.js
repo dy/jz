@@ -51,6 +51,7 @@ const SAMPLES = [
   ['unicode-template', 'export let main = () => `\\u{D83D}\\uDE00`', '😀'],
   ['unicode-construction', 'export let main = () => String.fromCharCode(256, 0xD83D, 0xDE00) + String.fromCodePoint(0x1D800)', 'Ā😀𝠀'],
   ['unicode-unit-offset', 'export let main = () => "Ā😀".codePointAt(1)', 128512],
+  ['hash-sentinels', String.raw`export function main(){const m=new Map();m.set(1.0000007154885675,42);m.set(1.0000007154885675,77);m.set(4294967294n,5);m.set('\u1234\u6fe3\ue84a',9);return m.size*1000+m.get(1.0000007154885675)+m.get(4294967294n)+m.get('\u1234\u6fe3\ue84a')}`, 3091],
   ['typed-view-iterator', 'function* marker() {} function g([x]) { return x } export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); d.setUint8(1, 23); return g(new Int8Array(b, 1, 2)) }', 23],
   ['dataview-identity', 'export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); return (d instanceof DataView ? 1 : 0) + (d instanceof Int8Array ? 2 : 0) }', 1],
   ['dataview-properties', 'export let main = () => { let d = new DataView(new ArrayBuffer(4)); d.setUint8(0, 71); return [d.length, d[0], d.byteLength, d.getUint8(0)] }', [undefined, undefined, 4, 71]],

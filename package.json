@@ -100,7 +100,7 @@
   "license": "MIT",
   "dependencies": {
     "subscript": "https://codeload.github.com/dy/subscript/tar.gz/0f65c867269c2dc9c26ac98a7bc91d26c327e9b1",
-    "watr": "https://codeload.github.com/dy/watr/tar.gz/33ec51b3952e6c5fd418fce93ac1f8c3ca2db5db"
+    "watr": "https://codeload.github.com/dy/watr/tar.gz/836ccd60e6d450b4e86d2aa3ee1bf8d6b6d1201b"
   },
   "keywords": [
     "javascript",
@@ -126,7 +126,7 @@
     "performance"
   ],
   "devDependencies": {
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.10.0",
     "eslint-plugin-unused-imports": "^4.4.1",
     "knip": "^6.35.1",

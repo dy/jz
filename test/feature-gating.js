@@ -216,8 +216,7 @@ test('features.set ON: new Set pulls set stdlibs', () => {
 
 test('collection: literal keys prehash; probes bit-eq before the equality call', () => {
   // #1 prehash: a literal Map/Set key folds its hash at compile time → the `_h` probe, so
-  // there is NO per-access __map_hash. (Non-ASCII strings can't fold an equal hash, so they
-  // keep the generic path — covered by the correctness suite, not here.)
+  // there is NO per-access __map_hash. Unicode keys are covered by the correctness suite.
   const g = wat(`export let f = (m) => m.get('k')`)
   ok(hasDef(g, '__map_get_h'))
   is(hasDef(g, '__map_hash'), false)
@@ -229,7 +228,7 @@ test('collection: literal keys prehash; probes bit-eq before the equality call',
   // the distinctive `… (then (i32.const 1)) (else (call $__same_value_zero …` probe shape.
   const flat = g.replace(/\s+/g, ' ')
   // the slot address reaches the first key load as a get or as the tee propagation sinks there
-  ok(/\(i64\.eq \(i64\.load \(i32\.add \(local\.(get|tee) \$slot\b/.test(flat))
+  ok(/\(i64\.eq \(i64\.load offset=8 \(local\.(get|tee) \$slot\b/.test(flat))
   ok(flat.includes('(then (i32.const 1)) (else (call $__same_value_zero'))
 })
 

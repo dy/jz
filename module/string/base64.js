@@ -241,8 +241,8 @@ export const registerBase64 = () => {
     (i64.store (local.get $base) (i64.const 0))
     (local.set $rw (call $__b64_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 16)) (i32.const 2147483647) (local.get $url)))
     (local.set $n (i32.wrap_i64 (local.get $rw)))
-    (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $n))
-    (i32.store (i32.add (local.get $base) (i32.const 12)) (local.get $n))
+    (i32.store offset=8 (local.get $base) (local.get $n))
+    (i32.store offset=12 (local.get $base) (local.get $n))
     (call $__mkptr (i32.const ${PTR.TYPED}) (i32.const 1) (i32.add (local.get $base) (i32.const 16))))`)
 
   wat('__b64_set', `(func $__b64_set (param $dst i64) (param $s i64) (param $url i32) (result i64)
@@ -299,8 +299,8 @@ export const registerBase64 = () => {
     (i64.store (local.get $base) (i64.const 0))
     (local.set $rw (call $__hex_dec_raw (local.get $s) (i32.add (local.get $base) (i32.const 16)) (i32.const 2147483647)))
     (local.set $n (i32.wrap_i64 (local.get $rw)))
-    (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $n))
-    (i32.store (i32.add (local.get $base) (i32.const 12)) (local.get $n))
+    (i32.store offset=8 (local.get $base) (local.get $n))
+    (i32.store offset=12 (local.get $base) (local.get $n))
     (call $__mkptr (i32.const ${PTR.TYPED}) (i32.const 1) (i32.add (local.get $base) (i32.const 16))))`)
 
   wat('__hex_set', `(func $__hex_set (param $dst i64) (param $s i64) (result i64)

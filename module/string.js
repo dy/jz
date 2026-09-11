@@ -140,7 +140,7 @@ const internProbeWat = () => ctx.scope.globals.has('__internBase') ? `
             (i32.const 0x01000193)))
           (local.set $j (i32.add (local.get $j) (i32.const 1)))
           (br $hl)))
-        (if (i32.le_s (local.get $h) (i32.const 1))
+        (if (i32.le_u (local.get $h) (i32.const 1))
           (then (local.set $h (i32.add (local.get $h) (i32.const 2)))))
         (local.set $j (i32.and (local.get $h) (global.get $__internMask)))
         (block $missI (loop $plI

@@ -298,7 +298,7 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   const jzHash = (bits) => {
     const lo = bits & 0xFFFFFFFFn, hi = (bits >> 32n) & 0xFFFFFFFFn
     let h = Number((lo ^ hi) & 0xFFFFFFFFn) | 0
-    return (h <= 1 ? h + 2 : h) >>> 0
+    return ((h >>> 0) <= 1 ? h + 2 : h) >>> 0
   }
   const hTarget = jzHash(craftedBits)
   const idxTarget = hTarget & (cap - 1)
@@ -324,7 +324,7 @@ test('golden[mapHashStringArm]: $__map_hash\'s generated STRING arm matches the 
 })
 
 test('golden[mapHashBigintArm]: $__map_hash\'s generated BIGINT arm matches the captured hand-written text', () => {
-  is(mapHashBigintArm(), "(if (i32.and (f64.ne (local.get $f) (local.get $f))\n          (i32.eq (local.get $t) (i32.const 5)))\n      (then (local.set $h (call $__hash (i64.load (call $__ptr_offset (local.get $v)))))\n        (return (if (result i32) (i32.le_s (local.get $h) (i32.const 1))\n          (then (i32.add (local.get $h) (i32.const 2)))\n          (else (local.get $h))))))")
+  is(mapHashBigintArm(), "(if (i32.and (f64.ne (local.get $f) (local.get $f))\n          (i32.eq (local.get $t) (i32.const 5)))\n      (then (local.set $h (call $__hash (i64.load (call $__ptr_offset (local.get $v)))))\n        (return (if (result i32) (i32.le_u (local.get $h) (i32.const 1))\n          (then (i32.add (local.get $h) (i32.const 2)))\n          (else (local.get $h))))))")
 })
 
 test('golden: BIGINT arm text is IDENTICAL between eqIdentityChain and sameValueZeroIdentityChain (the one shared sub-fragment)', () => {

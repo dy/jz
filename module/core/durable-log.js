@@ -70,8 +70,8 @@ export const registerDurableLog = () => {
     (if (i32.ge_s (local.get $n) (i32.const 256)) (then (unreachable)))
     (local.set $base (i32.add (global.get $__durable_fwd_buf) (i32.mul (local.get $n) (i32.const 12))))
     (i32.store (local.get $base) (local.get $off))
-    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $len))
-    (i32.store (i32.add (local.get $base) (i32.const 8)) (local.get $cap))
+    (i32.store offset=4 (local.get $base) (local.get $len))
+    (i32.store offset=8 (local.get $base) (local.get $cap))
     (global.set $__durable_fwd_n (i32.add (local.get $n) (i32.const 1))))`
   ctx.core.stdlib['__durable_fwd_heal'] = `(func $__durable_fwd_heal
     (local $i i32) (local $n i32) (local $base i32) (local $off i32)
@@ -80,8 +80,8 @@ export const registerDurableLog = () => {
       (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
       (local.set $base (i32.add (global.get $__durable_fwd_buf) (i32.mul (local.get $i) (i32.const 12))))
       (local.set $off (i32.load (local.get $base)))
-      (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.load (i32.add (local.get $base) (i32.const 4))))
-      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load (i32.add (local.get $base) (i32.const 8))))
+      (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.load offset=4 (local.get $base)))
+      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=8 (local.get $base)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (global.set $__durable_fwd_n (i32.const 0))
@@ -127,9 +127,9 @@ export const registerDurableLog = () => {
     (memory.copy (local.get $shadow) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $n) (i32.const 16))))
     (i32.store (local.get $base) (local.get $off))
-    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $len))
-    (i32.store (i32.add (local.get $base) (i32.const 8)) (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (i32.store (i32.add (local.get $base) (i32.const 12)) (local.get $shadow))
+    (i32.store offset=4 (local.get $base) (local.get $len))
+    (i32.store offset=8 (local.get $base) (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (i32.store offset=12 (local.get $base) (local.get $shadow))
     (global.set $__durable_arr_n (i32.add (local.get $n) (i32.const 1))))`
   ctx.core.stdlib['__durable_arr_heal'] = `(func $__durable_arr_heal
     (local $i i32) (local $n i32) (local $base i32) (local $off i32) (local $len i32) (local $shadow i32)
@@ -138,10 +138,10 @@ export const registerDurableLog = () => {
       (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
       (local.set $base (i32.add (global.get $__durable_arr_buf) (i32.mul (local.get $i) (i32.const 16))))
       (local.set $off (i32.load (local.get $base)))
-      (local.set $len (i32.load (i32.add (local.get $base) (i32.const 4))))
+      (local.set $len (i32.load offset=4 (local.get $base)))
       (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len))
-      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load (i32.add (local.get $base) (i32.const 8))))
-      (local.set $shadow (i32.load (i32.add (local.get $base) (i32.const 12))))
+      (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=8 (local.get $base)))
+      (local.set $shadow (i32.load offset=12 (local.get $base)))
       (memory.copy (local.get $off) (local.get $shadow) (i32.shl (local.get $len) (i32.const 3)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
@@ -195,7 +195,7 @@ export const registerDurableLog = () => {
     (if (i32.ge_s (local.get $slot) (i32.const 1024)) (then (unreachable)))
     (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $slot) (i32.const 3))))
     (i32.store (local.get $base) (local.get $addr))
-    (i32.store (i32.add (local.get $base) (i32.const 4)) (local.get $tbl))
+    (i32.store offset=4 (local.get $base) (local.get $tbl))
     (if (i32.eq (local.get $slot) (local.get $n))
       (then (global.set $__durable_slot_n (i32.add (local.get $n) (i32.const 1))))))`
   // A durable-slot log entry names a PHYSICAL address (the entry slot, or a value
@@ -273,7 +273,7 @@ export const registerDurableLog = () => {
       (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
       (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $i) (i32.const 3))))
       (local.set $a (i32.load (local.get $base)))
-      (local.set $tbl (i32.load (i32.add (local.get $base) (i32.const 4))))
+      (local.set $tbl (i32.load offset=4 (local.get $base)))
       ;; addr 0 marks a CANCELLED entry (__durable_slot_cancel, above) — a delete
       ;; this round removed the logged target before heal ever ran; skip it.
       (if (local.get $a) (then
