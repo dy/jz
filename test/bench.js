@@ -199,7 +199,7 @@ const SIZE = {
   slices:         { as: 'todo' },
   trace:          { as: 'todo' },
   bezfit:         { as: 'todo' },
-  sdf:            { as: 'todo' },
+  sdf:            { as: 'win' },
   resample:       { as: 'todo' },
   delayline:      { as: 'todo' },
   glyfparse:      { as: 'todo' },
@@ -209,7 +209,7 @@ const SIZE = {
   biquad:         { as: 'todo' },
   mandelbrot:     { as: 'win' },
   bitwise:        { as: 'win' },
-  tokenizer:      { as: 'todo' },
+  tokenizer:      { as: 'win' },
   // aos/sort were re-pinned after checked-by-default typed indexing (Root F):
   // JS-exact OOB semantics cost bytes per unproven site that AS's trap
   // doesn't pay. Restored by three engine waves: -Os lean lowering (if-form

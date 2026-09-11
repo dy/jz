@@ -69,18 +69,19 @@ const optionsFor = id => ({
 const runOnce = (id) => {
   const code = readFileSync(join(BENCH, id, `${id}.js`), 'utf8')
   const profile = {}
+  const start = performance.now()
   const wasm = compile(code, { ...optionsFor(id), profile })
+  const total = performance.now() - start
   const t = profile.totals || {}
   const plan = t.plan || 0
   const compileTotal = t.compile || 0
   return {
-    total: (t.parse || 0) + (t.jzify || 0) + (t.prepare || 0) + compileTotal +
-      (t.watOptimize || 0) + (t.watrPrint || 0) + (t.watrCompile || 0),
+    total,
     parse: t.parse || 0,
     prepare: t.prepare || 0,
     plan,
     emit: Math.max(0, compileTotal - plan),
-    watr: (t.watOptimize || 0) + (t.watrPrint || 0) + (t.watrCompile || 0),
+    watr: (t.watOptimize || 0) + (t.watCleanup || 0) + (t.watrPrint || 0) + (t.watrCompile || 0),
     bytes: wasm.byteLength ?? Buffer.byteLength(wasm),
   }
 }

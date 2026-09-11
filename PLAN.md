@@ -10,19 +10,31 @@ history. This file tracks only release evidence and unfinished work.
 
 ## Verification
 
-JZ pins Watr `c001a5f`. Runtime JSON now shares decimal conversion with
+JZ pins Watr `8c866b1`. Runtime JSON now shares decimal conversion with
 Number/parseFloat, canonicalizes object keys, and reuses schemas correctly.
 Schema-table growth preserves existing objects; representation exhaustion throws
 a branded RangeError. Core and JSON share its existing error materializer.
 URLSearchParams uses class methods through ordinary lowering and reachability.
 
-The complete matrix passes: default 4,185 checks / 46,723 assertions;
-O0 3,992 / 38,923; O3 3,992 / 39,244; WASI 4,043 / 39,319, each with one skip.
-Language/built-in conformance passes 3,151/869 cases. Functional self-hosting passes 34 checks
-(296 assertions). The focused JSON/number/web-global suites cover rounding,
+The complete matrix passes: default 4,187 checks / 46,738 assertions;
+O0 3,994 / 38,938; O3 3,994 / 39,259; WASI 4,045 / 39,334, each with one skip.
+Language/built-in conformance passes 3,151/869 cases. Functional self-hosting passes 38 checks
+(304 assertions). The focused JSON/number/web-global suites cover rounding,
 malformed-input recovery, duplicate/index keys, cache collisions, table growth
 and clear, schema-ID exhaustion, independent instances and live iteration.
-The VST and downstream Watr results below predate these runtime changes.
+Downstream Watr passes its full source and rebuilt Wasm suites: 352 checks
+with two skips, 26 propagation checks, and 268 spec files with 20 skips in
+each backend. The VST fixture results below predate these runtime changes.
+
+The full recursive gate passes, including execution of a program compiled by
+the recursively built compiler. Named-function trampolines now reuse direct-call
+argument coercion: treating a narrowed object pointer as a numeric i32 had
+turned the parsed argument record into address zero. The regression is pinned
+by tiny function-property calls with empty, supplied, missing and excess args.
+The recursive output is 14,757,111 bytes, with a final heap cursor of
+1,525,655,368 bytes. The checkpoint reserves the full 4 GiB address space;
+the gate process peaks at 4,121 MiB RSS. This closes recursive correctness,
+not the remaining speed/evidence requirements.
 
 The default-tier URL lookup probe shrinks 39,596→33,163 bytes; speed-tier output
 shrinks 47,381→36,711. Paired warm compile medians are 392→321 ms (lookup) and
@@ -48,41 +60,44 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 
    | Case | JZ bytes | Limit / AS bytes |
    |---|---:|---:|
-   | Watr encoder | 300,408 | 300,000 |
-   | FFT | 1,716 | 1,758 |
-   | bezfit | 3,244 | 3,017 |
-   | immutable | 1,478 | 1,481 |
-   | sdf | 2,224 | 2,209 |
-   | shapes | 1,839 | 1,695 |
-   | slices | 1,628 | 1,657 |
-   | tokenizer | 1,555 | 1,551 |
-   | wordcount | 3,704 | 3,480 |
+   | Watr encoder | 300,260 | 300,000 |
+   | FFT | 1,685 | 1,758 |
+   | bezfit | 3,211 | 3,017 |
+   | immutable | 1,446 | 1,481 |
+   | sdf | 2,191 | 2,209 |
+   | shapes | 1,807 | 1,695 |
+   | slices | 1,595 | 1,657 |
+   | tokenizer | 1,520 | 1,551 |
+   | wordcount | 3,664 | 3,480 |
+   | dispatch | 1,853 | 1,614 |
+   | JSON (speed artifact) | 22,016 | 12,500 |
 
    Equality is not a strict win. No benchmark sources or budgets changed.
-   Watr `c001a5f` shares exact casts with JZ's early lowering, removes redundant
+   Watr shares exact casts with JZ's early lowering, removes redundant
    narrow-store casts/masks, and pools integer bits independently of spelling.
-   Tiny unprofitable literals no longer allocate pool records. Against `9b9b0bee`,
-   encoder/FFT/bezfit/tokenizer/wordcount shrink 182/2/1/1/2 bytes; the other four
-   measured cases are unchanged. No new pass or runtime representation is added.
-   The subsequent decimal grammar/rounding fixes add 107 encoder bytes.
-   A paired self-build with unrelated workspace changes held constant grows
-   15,255,422→15,256,927 bytes (+1,505). Paired warm compilation on six workloads
-   is 0.997× after/before, effectively neutral; generated O0 bytes match exactly.
-   These scoped measurements do not close the speed or memory gates.
-   Binaryen `-Oz` on the resulting modules yields encoder 340,600, shapes 1,805,
-   tokenizer 1,534, wordcount 3,696 and bezfit 3,540 bytes. Its small kernel wins
+   Binaryen `-Oz` on the resulting modules yields encoder 340,540, shapes 1,777,
+   tokenizer 1,500, wordcount 3,654 and bezfit 3,511 bytes. Its small kernel wins
    justify individual general folds, not adding its entire pipeline.
+   The current zero-test encoding and simpler allocator reduce every sampled
+   module and close the SDF/tokenizer size gaps. The allocator retains its
+   growth ratios, exact-delta retry and byte-overflow guard; its old page-count
+   guard was unreachable. No new optimizer pass or runtime layout is added.
 
 2. **Speed and evidence.** The stored reference fails leadership claims,
    including V8 losses on jessie and Watr, and is stale. After this consolidation,
-   the isolated self-compile timing gate still fails: warm 1.484×/1.483×/1.496×
-   against 1.03×, fresh 1.241× against 0.99×. Functional bootstrap passes.
+   the isolated self-compile timing gate still fails: warm 1.444×/1.469×/1.501×
+   against 1.03×, fresh 1.229× against 0.99×. Functional bootstrap passes.
    These are current gate results, not a paired before/after speed comparison.
-   The last complete benchmark run, before tiny-constant specialization, passed
-   247 checks and failed 19: eight fastest-Wasm comparisons, native resample,
-   stored native-lowering bands, six strict AS size comparisons, the encoder cap,
-   perf-fuzz and example speed. Immutable's size comparison is now fixed by the
-   measured specialization above; the complete rival reference still needs renewal.
+   The complete benchmark run before the closure-adapter correction passes
+   247 checks and fails 19: eight
+   fastest-Wasm comparisons, native resample/JSON, stored native-lowering bands,
+   four strict AS size comparisons, JSON/encoder caps, perf-fuzz and example
+   speed. Dispatch and JSON size failures reproduce before this pass; their
+   size-tier modules shrink 1,883→1,853 and 22,101→22,061 bytes respectively.
+   All eleven sampled module sizes are unchanged by the adapter correction.
+   The ecosystem run reports jessie/Watr at 2.164×/1.386× JS time; those tests
+   report timings without enforcing leadership. Stored evidence has 58 stale
+   JZ rows and an invalid 15.8 GB swap sample; it cannot certify the release.
    No sources, conformance floors or performance caps were relaxed.
    Repair the remaining codegen gaps, then refresh complete runtime, memory,
    native-lowering and rival evidence on a quiet machine. TinyGo 0.42 builds
@@ -130,6 +145,13 @@ These are fixture proofs, not a public target builder or a real-time guarantee.
 - Compare remaining byte gaps with Binaryen output and fix whole classes through
   existing folding/propagation. Binaryen shrinks several kernels but grows the
   encoder; adopting its entire pipeline is not justified.
+- The encoder CPU profile exposed a repeated whole-function local census in
+  shared LICM. One incrementally maintained census cuts its per-function
+  optimization stage from roughly 720 to 350 ms, with identical output bytes
+  before the separate size folds. Compile benchmarking now includes Watr's
+  fast cleanup and measures total wall time rather than an incomplete phase sum.
+  O0 self-host sampling instead points to string equality/hashing and dynamic
+  property access; the LICM reduction does not resolve that timing gate.
 - Keep generic affine lane-local vectorization, alias/dependence checks and
   scalar tails. Narrower butterfly/channel/tone-map recognizers and four-term
   dot-product SLP remain; fold overlap into shared machinery when a measured

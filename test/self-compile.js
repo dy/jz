@@ -57,6 +57,12 @@ const SAMPLES = [
   ['iterator-destructuring', `export let main = () => { let [a, b, ...c] = '😀éab'; return a + '|' + b + '|' + c.join('') }`, '😀|é|ab'],
   ['arithmetic',  'export let main = () => 3 + 4 * 5', 23],
   ['function',    'let inc = x => x + 1; export let main = () => inc(10)', 11],
+  // Method dispatch passes its parsed-argument record through a function table.
+  // The trampoline must extract a narrowed pointer, never numeric-convert its box.
+  ['function-property-empty', 'function fn() {} fn.p = () => 1; export let main = () => fn.p()', 1],
+  ['function-property-args', 'function fn() {} fn.p = (a,b) => a+b; export let main = () => fn.p(3,4)', 7],
+  ['function-property-padding', 'function fn() {} fn.p = (a,b) => a+b; export let main = () => fn.p(3)', NaN],
+  ['function-property-extra', 'function fn() {} fn.p = (a,b) => a+b; export let main = () => fn.p(3,4,5)', 7],
   ['loop',        'export let main = () => { let s = 0; for (let i = 0; i < 10; i++) s += i; return s }', 45],
   ['string-len',  'export let main = () => "hello world".length', 11],
   ['array-reduce','export let main = () => [1,2,3,4,5].reduce((a,b)=>a+b, 0)', 15],

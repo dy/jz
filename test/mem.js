@@ -456,6 +456,45 @@ test('compile({ memory: pages }): emits owned memory with initial page count', (
   is(inst.exports.memory.buffer.byteLength, 3 * 65536)
 })
 
+test('allocator: page boundaries, exact-growth fallback, and unsigned overflow', () => {
+  if (onKernel()) return // memory limits are host compile options
+  const { instance } = instantiate(compile('export let f=n=>new Uint8Array(n)', { memory: 1, maxMemory: 3 }))
+  const { _alloc, __heap, memory } = instance.exports
+  const start = __heap.value
+  is(_alloc(0), start)
+  is(__heap.value, start, 'zero work leaves the heap unchanged')
+  _alloc(65536 - start - 8)
+  is(memory.buffer.byteLength, 65536)
+  _alloc(8)
+  is(memory.buffer.byteLength, 65536, 'allocation ending at a page boundary needs no growth')
+  _alloc(8)
+  is(memory.buffer.byteLength, 2 * 65536)
+  _alloc(65536)
+  is(memory.buffer.byteLength, 3 * 65536, 'geometric growth retries the exact delta at the declared maximum')
+  const saved = __heap.value
+  throws(() => _alloc(65536), WebAssembly.RuntimeError)
+  is(__heap.value, saved, 'failed growth preserves the bump pointer')
+  __heap.value = -8 // 0xfffffff8: test byte-address overflow without reserving 4 GiB
+  throws(() => _alloc(8), WebAssembly.RuntimeError)
+  is(__heap.value, -8)
+  __heap.value = saved
+  is(_alloc(0), saved, 'allocator remains usable after failure')
+})
+
+test('allocator: geometric growth changes at the documented page thresholds', () => {
+  if (onKernel()) return
+  const src = 'export let f=n=>new Uint8Array(n)'
+  for (const pages of [2047, 2048, 4095, 4096]) {
+    const { instance } = instantiate(compile(src, { memory: pages, maxMemory: 8192 }))
+    const { _alloc, __heap, memory } = instance.exports
+    // Reserve address space only: no large array is filled or read.
+    __heap.value = pages * 65536 - 8
+    _alloc(16)
+    const floor = pages < 2048 ? pages : pages < 4096 ? pages >>> 1 : pages >>> 4
+    is(memory.buffer.byteLength / 65536, pages + floor)
+  }
+})
+
 test('shared memory: inst.memory is the same object passed in', () => {
   const memory = jz.memory()
   const a = jz('export let f = () => 42', { memory })

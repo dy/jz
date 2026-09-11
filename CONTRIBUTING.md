@@ -15,7 +15,7 @@ Subscript is pinned to public source revision `0f65c86` for surrogate-pair
 escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
 Replace the archive pin with an npm release once it includes this fix.
 
-`package.json` and the lockfile pin the public watr source archive at `c001a5f`.
+`package.json` and the lockfile pin the public watr source archive at `8c866b1`.
 It contains the 5.10.2 safety fixes and retains plain instruction arrays and
 cloning. A clean install needs no sibling checkout. Switch to a published npm
 version once it contains these changes; until then the archive's full commit
@@ -29,7 +29,8 @@ Condition chaining and boolean simplification also run in watr, including the
 fast tier; link no longer implements these generic body rewrites on the tape.
 Watr pools costly scalar literals after folding and inlining, before outlining
 prices repeated expressions.
-Integer equality to zero uses Wasm eqz in the shared identity sweep.
+Integer zero tests use Wasm eqz in the shared identity sweep; inequality uses
+two unary tests instead of a zero literal and comparison.
 Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
@@ -38,6 +39,8 @@ Unwritten parameters with a shared tiny constant substitute directly at every
 read, including loop reads, without creating a local or a cleanup sweep.
 Public adapters use the ordinary small-function inline budget; larger workers
 remain shared. Internal dispatch trampolines retain the speed-tier budget.
+Named-function trampolines use direct-call argument coercion, so narrowed pointer
+parameters extract their offset instead of numerically converting a NaN box.
 Known-local arithmetic folds in the same propagation pass; JZ only selects
 this policy with its existing `hoistConstantPool` option.
 Exact cast identities have one owner in watr: JZ calls `simplifyCast` during
@@ -68,6 +71,9 @@ conservative about memory and calls. Proofs are invocation-local callbacks over
 Wasm instructions, never properties attached to instruction arrays. JZ still calls
 the shared engine before and after address rewriting; watr calls it after inlining.
 Those distinct maturity points remain necessary for current lowering patterns.
+The shared engine counts local references once per function and updates that
+census when deduplication removes copies or introduces a temporary. Each loop
+checks private writes against it without rescanning the whole function.
 JZ uses watr's instruction-effect classifier for every memory-write family;
 unknown write targets block alias-dependent motion. Buffer origins follow
 single-definition locals and closed scalar recurrences; other origins remain

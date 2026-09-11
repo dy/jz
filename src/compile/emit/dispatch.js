@@ -4,6 +4,7 @@
  * @module compile/emit/dispatch
  */
 
+import print from 'watr/print'
 import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { DBG_INVARIANTS, PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
@@ -1561,13 +1562,12 @@ export function emit(node, expect) {
             `(local.set $__roff (call $__alloc_hdr (local.get $__rlen) (local.get $__rlen))) ` +
             stores.join(' ') + ' '
         }
-        // Forward fixed slots (i32 via trunc_sat); the rest slot → packed array ptr.
+        // The closure ABI carries boxed values. Use the direct-call coercion:
+        // an i32 parameter can be a pointer offset, not just an integer.
         const fwd = sigParams.map((p, i) =>
           i === restIdx
             ? `(call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $__roff))`
-            : p.type === 'i32'
-              ? `(i32.trunc_sat_f64_s (local.get $__a${i}))`
-              : `(local.get $__a${i})`).join(' ')
+            : print(coerceArg(typed(['local.get', `$__a${i}`], 'f64'), p))).join(' ')
         if ((func?.sig.results.length || 1) > 1) {
           const n = func.sig.results.length
           const arr = `${T}retarr`

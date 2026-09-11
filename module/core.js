@@ -525,13 +525,13 @@ export default (ctx) => {
   // to the bare minimum. `$need` is the TOTAL pages required to cover $next,
   // computed as a page count (`next >>> 16` plus a partial page) so nothing
   // overflows i32 at the wasm32 max of 65536 pages (4 GiB); the byte capacity
-  // itself lives in the i64 `__heap_end64`.
+  // itself lives in the i64 `__heap_end64`. This sum is at most 65536:
+  // allocation's byte-addition guard, not a page-count check, detects overflow.
   ctx.core.stdlib['__memgrow'] = `(func $__memgrow (param $next i32)
     (local $cur i32) (local $need i32) (local $floor i32)
     (local.set $need (i32.add (i32.shr_u (local.get $next) (i32.const 16)) (i32.ne (i32.and (local.get $next) (i32.const 65535)) (i32.const 0))))
     (if (i32.gt_u (local.get $need) (memory.size))
       (then
-        (if (i32.gt_u (local.get $need) (i32.const 65536)) (then (unreachable)))
         (local.set $cur (i32.sub (local.get $need) (memory.size)))            ;; minimum delta
         ;; Geometric floor: 2x below 2048 pages (128 MiB), 1.5x to 4096 pages
         ;; (256 MiB), 1.0625x (1/16) above. Committed memory is a high-water
@@ -544,11 +544,10 @@ export default (ctx) => {
         ;; engines reserve wasm address space up front, so memory.grow commits
         ;; pages without copying — the old per-page O(n^2) hazard this floor
         ;; exists to avoid never involved copy-free growth counts this small.
-        (local.set $floor (memory.size))
-        (if (i32.ge_u (memory.size) (i32.const 2048))
-          (then (local.set $floor (i32.shr_u (memory.size) (i32.const 1)))))
-        (if (i32.ge_u (memory.size) (i32.const 4096))
-          (then (local.set $floor (i32.shr_u (memory.size) (i32.const 4)))))
+        (local.set $floor (i32.shr_u (memory.size)
+          (select (i32.const 4)
+            (i32.ge_u (memory.size) (i32.const 2048))
+            (i32.ge_u (memory.size) (i32.const 4096)))))
         (if (i32.lt_u (local.get $cur) (local.get $floor)) (then (local.set $cur (local.get $floor))))  ;; geometric
         ;; a floor past the wasm32 ceiling or the engine's limit fails; the exact delta retries
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
@@ -563,14 +562,12 @@ export default (ctx) => {
     // TRULY-shared memory (opts.sharedMemory → ctx.memory.atomic): the bump is a
     // CAS retry loop — a plain load/store pair would hand two racing threads the
     // same block. Plain imported memory keeps the cheap non-atomic bump.
-    // $next's `(ptr+bytes+7)&~7` is plain i32 math — once memory.size() has grown to
-    // the wasm32 ceiling (65536 pages), __memgrow's own `$need > 65536 → unreachable`
-    // guard (above) can never fire again (memory.size() IS 65536, so no $need exceeds
-    // it), leaving THIS addition as the only thing standing between a ptr near 4 GiB
-    // and silent unsigned wraparound (next < ptr) — which would corrupt the bump
+    // $next's `(ptr+bytes+7)&~7` is plain i32 math. Check this addition before
+    // __memgrow receives the already-wrapped offset. Unsigned wraparound
+    // (next < ptr) would corrupt the bump
     // pointer backward and hand out a ptr the caller then writes past. The classic
     // unsigned-overflow idiom (`sum < addend` ⇒ wrapped) catches it for one cheap
-    // extra compare on the hot path — cheaper than __memgrow's i64 widening, and
+    // extra compare on the hot path, and
     // this is the ONLY overflow-prone add in __alloc (bytes/ptr are both already
     // valid non-negative i32 offsets, so `next < ptr` cannot false-positive).
     ctx.core.stdlib['__alloc'] = ctx.memory.atomic ? `(func $__alloc (param $bytes i32) (result i32)
@@ -617,11 +614,8 @@ export default (ctx) => {
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
-    // See the shared-memory __alloc above for why the unsigned-wraparound guard
-    // (`next < ptr`) is needed here too: once memory.size() organically reaches the
-    // wasm32 ceiling (65536 pages — real compiles can get there, e.g. the self-compile
-    // kernel on a large graph), __memgrow's own ceiling check goes permanently dead
-    // and this addition becomes the last line of defense.
+    // Own-memory twin: reject unsigned wraparound here too, before __memgrow
+    // sees an offset that has already wrapped below the live heap.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
