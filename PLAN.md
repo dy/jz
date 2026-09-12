@@ -67,16 +67,18 @@ typed-array aliasing forges the existing `undefined` tag identically on
 `7c1111f8`, where jz reports `typeof` as `"undefined"` and the host reports
 `"number"`. It belongs with the README's documented divergences.
 
-Two pre-existing defects surfaced during this work, neither introduced by it and
-neither fixed here:
+Two pre-existing defects surfaced during this work, neither introduced by it:
 
-- `o.length` on an unproven receiver crashes the compiler under shared or
+- `o.length` on an unproven receiver crashed the compiler under shared or
   imported memory: `__throw_property_nullish requires a static string literal`.
-  The lazy helper bakes its message through static data that a shared build
-  cannot extend, and the length helper calls it without the gate the other
-  canonical-TypeError sites use.
+  The helper unwrapped raw bits and rejected anything else, but a memory whose
+  start-function copy length is already fixed cannot extend static data, so its
+  string emitter yields a runtime construction. The helper now prints whatever
+  the emitter yields, as the catch decoder already did. Own-memory output is
+  byte-identical across six programs at three tiers, and a static literal still
+  records the span that reclaims its bytes when the helper dies. Fixed.
 - A closure capturing a catch binding fails to compile (`'ef1_1' is not in
-  scope`).
+  scope`). Not fixed; it rejects at compile time rather than miscompiling.
 
 ## Verification
 
@@ -85,7 +87,7 @@ scratchpad; the rows below are the runs those logs record, not earlier drafts.
 
 | Check | Result |
 |---|---|
-| Default suite | 4,240 tests / 64,162 assertions pass, one skip, zero failures |
+| Default suite | 4,241 tests / 64,167 assertions pass, one skip, zero failures |
 | Full opt matrix | O0 4,046 / O3 4,046 / WASI 4,098 tests pass; zero failures |
 | Functional self-host suite | 46 tests / 2,295 assertions pass |
 | Language conformance | 3,151 pass; zero fail; 8 expected; zero negative-accepts |

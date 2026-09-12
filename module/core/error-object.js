@@ -6,6 +6,7 @@
  *
  * @module core/error-object
  */
+import print from 'watr/print'
 import { typed, asF64, temp, tempI32, isUndef, truthyIR, toStrI64, mkPtrIR } from '../../src/ir.js'
 import { emit } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
@@ -17,22 +18,23 @@ import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 // Shared lazy runtime throw: ordinary branded Error storage and transport.
 // Track literal data so dead helpers leave no strings in the final module.
 export function throwErrorWat(ctx, name, className, message) {
-  const strBits = text => {
-    const ir = ctx.core.emit['str'](text)
-    if (!Array.isArray(ir) || ir[0] !== 'f64.const') throw new Error(name + ' requires a static string literal')
-    return ir[1]
-  }
+  // Print whatever the string emitter yields. An own-memory build yields a
+  // static literal, and the span below reclaims its bytes when the helper dies;
+  // a shared or imported memory cannot extend static data after the start
+  // function's copy length is fixed, so it yields a runtime construction
+  // instead, which this helper must carry rather than reject.
+  const strWat = text => print(ctx.core.emit['str'](text))
   const sid = ctx.schema.errorSid(className)
   ctx.schema.namedUses.push({ sid, funcName: name })
   const slots = ctx.abi.object.ops.allocSlots(2)
   const start = dataLen()
-  const msgBits = strBits(message), nameBits = strBits(className)
+  const msgWat = strWat(message), nameWat = strWat(className)
   if (dataLen() > start) ctx.runtime.reclaimSpans.push({ fn: '$' + name, start, end: dataLen() })
   return `(func $${name}
     (local $p i32) (local $e f64)
     (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${slots})))
-    (f64.store (local.get $p) (f64.const ${msgBits}))
-    (f64.store (i32.add (local.get $p) (i32.const 8)) (f64.const ${nameBits}))
+    (f64.store (local.get $p) ${msgWat})
+    (f64.store (i32.add (local.get $p) (i32.const 8)) ${nameWat})
     (local.set $e (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $p)))
     (global.set $__jz_last_err_bits (i64.reinterpret_f64 (local.get $e)))
     (throw $__jz_err (local.get $e)))`

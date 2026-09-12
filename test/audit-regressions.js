@@ -687,6 +687,24 @@ test('audit: shared-memory catches materialize Error fields', () => {
   is(f(), ['RangeError','Invalid index',true])
 })
 
+test('audit: canonical TypeErrors link where static data cannot grow', () => {
+  if (onKernel()) return
+  // A shared or imported memory cannot extend static data after the start
+  // function's copy length is fixed, so the lazy helper carries whatever the
+  // string emitter yields there instead of demanding a static literal.
+  const src = 'export function f(o){ return o.length }'
+  const memory = new WebAssembly.Memory({ initial: 16, maximum: 64, shared: true })
+  for (const opts of [{ sharedMemory: true, memory }, { importMemory: true }, {}])
+    for (const optimize of levels(0, 2)) {
+      const bytes = compile(src, { ...opts, optimize })
+      ok(bytes.byteLength > 0, `links under ${JSON.stringify(Object.keys(opts))} ${optimize}`)
+    }
+  // The nullish read still reaches the host as a TypeError on an ordinary build.
+  for (const optimize of TIERS)
+    is(jz('export function f(o){ try { return o.length } catch(e){ return [e.name, e instanceof TypeError] } }', { optimize })
+      .exports.f(undefined), ['TypeError', true], `nullish length ${optimize}`)
+})
+
 test('audit: an unresolved coercion slot is not an absent method', () => {
   const src = `export function f(){
     let check=()=>0
