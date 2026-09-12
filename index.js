@@ -41,6 +41,7 @@
  * @module jz
  */
 
+import { captureRuntimeInspect } from './src/compile/func-inspect.js'
 import { DBG_INVARIANTS, assertCtxInvariants } from './src/debug.js'
 import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
@@ -398,6 +399,7 @@ jz.pool = async function pool(source, opts = {}) {
  *   entropy explicitly. The randomness syscall is emitted only when `Math.random` is used.
  * @param {boolean} [opts.inspect] - When true, return `{ wasm, inspect }`
  *   (or `{ wat, inspect }` with `opts.wat`) instead of the bare output.
+ *   `inspect.runtime` adds conservative allocation, host-call and work proofs.
  *   `inspect` carries per-function inferred shapes (params, locals, JSON shapes,
  *   cross-call paramReps) for editor hosts to drive inlay hints / hover types
  *   without re-running the analyzer. Pays a small serialization cost; off by default.
@@ -657,6 +659,7 @@ const jzCompileInner = (code, opts = {}) => {
     snapshot = time('snapshotInit', () => snapshotInit(optimized, watrCompile, !opts.wat))
     if (!snapshot && opts.warnings) warn('snapshot-declined', 'init snapshot declined (host-touching, timer, or shared-memory init) — compiled without it')
   }
+  if (opts.inspect) ctx.inspect.runtime = captureRuntimeInspect(optimized, ctx.memory.atomic)
   try {
     if (opts.wat) {
       const wat = time('watrPrint', () => watrPrint(optimized))

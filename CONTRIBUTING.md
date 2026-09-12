@@ -147,6 +147,11 @@ so changing loop arithmetic does not require rescanning all nested closures.
 The interval interpreter also supplies call-argument and typed-store bounds.
 Compile-time bitwise and integer-store folds share exact ToInt32 conversion;
 large constants reduce modulo 2^32 before the compiler's runtime i64 boundary.
+Runtime typed stores, DataView, Atomics values and UTF-16 unit construction
+share exact ToInt32 lowering. Proven ranges keep direct conversions; unknown
+values recover their low word from the IEEE significand beyond the i64 range.
+Intrinsic and user calls share excess-argument sequencing. Collection probes
+retain precomputed literal hashes while using the same boxed-value conversion.
 Schema-tag masks reuse the numeric constant evaluator.
 Internal parameter ranges narrow only when every incoming call proves them;
 exports, indirect calls, missing arguments and unknown writes retain checks.
@@ -504,3 +509,20 @@ the corpus *is* the guarantee, so widen it toward the code you actually ship.
 ## Commits
 
 Small, focused commits. Describe what and why, not how.
+
+### Runtime inspection
+
+`compile(source, { inspect: true }).inspect.runtime` describes final Wasm exports,
+including reachable helpers. `noAllocation`, `noHostCalls` and `boundedWork` are
+`true` only when proved; `null` means unknown. `maxInstructions` is a conservative
+instruction-count upper bound, not a latency estimate. Recognized constant-bound
+integer loops currently use a full i32-domain bound; many SIMD, dynamic-bound and
+recursive shapes remain unknown. Shared-memory writes leave allocation unknown.
+These facts exclude initialization and host marshalling and do not certify an
+audio deadline. Inspection does not alter output bytes.
+
+The speed tier carries integer accumulators in guarded i64 loops where ToInt32
+reads can be removed. It restores f64 on exit or before leaving the exact-integer
+range. Exception handlers, negative-zero constants, numeric local aliases and
+live guard temporaries decline the transformation. The default and size tiers
+retain one loop; their structural size/work budgets are unchanged.

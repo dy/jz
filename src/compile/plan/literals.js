@@ -45,15 +45,19 @@ import { isExported } from '../func-exports.js'
 
 // === Loop unrolling & scalarization ===
 
-// AST for the store coercion a typed-array element does on write (`arr[i] = v`).
-// All expressible with operators jz already lowers post-plan (no module deps).
+// AST for the store coercion a typed-array element does on write (`arr[i] = v`):
+// `(v % 2³²) | 0` is the exact ToInt32 idiom the `|` emitter lowers to one
+// conversion — a bare `v | 0` would inherit the |v| ≥ 2⁶³ dialect boundary —
+// and the narrower kinds keep its low bits. All expressible with operators jz
+// already lowers post-plan (no module deps).
 const coerceAST = (kind, expr) => {
-  if (kind === 'i32') return ['|', expr, [null, 0]]
-  if (kind === 'i16') return ['>>', ['<<', expr, [null, 16]], [null, 16]]
-  if (kind === 'u16') return ['&', expr, [null, 0xffff]]
-  if (kind === 'i8') return ['>>', ['<<', expr, [null, 24]], [null, 24]]
-  if (kind === 'u8') return ['&', expr, [null, 0xff]]
-  return expr
+  if (!kind) return expr
+  const int = ['|', ['%', expr, [null, 4294967296]], [null, 0]]
+  if (kind === 'i32') return int
+  if (kind === 'i16') return ['>>', ['<<', int, [null, 16]], [null, 16]]
+  if (kind === 'u16') return ['&', int, [null, 0xffff]]
+  if (kind === 'i8') return ['>>', ['<<', int, [null, 24]], [null, 24]]
+  return ['&', int, [null, 0xff]]
 }
 const maxScalarTypedLoopUnroll = () => ctx.transform.optimize?.scalarTypedLoopUnroll ?? 16
 const maxScalarTypedNestedUnroll = () => ctx.transform.optimize?.scalarTypedNestedUnroll ?? 128

@@ -1,6 +1,6 @@
 /**
  * f64/i32/i64 coercions, int-narrowing range analysis (narrowI32/f64Range),
- * and the ToInt32-wrap / ToNumber-adjacent numeric primitives (toI32, f64rem).
+ * and the ToInt32-wrap / ToNumber-adjacent numeric primitives (toI32, toInt32, f64rem).
  *
  * @module ir/numeric
  */
@@ -294,12 +294,12 @@ export const f64Range = (n, get) => {
   return r(n)
 }
 
-/** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
- *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
- *  and -∞ correctly, but +∞ saturates to i64_max which wraps to -1 — guard +∞ via
- *  branchless `select`. For non-leaf inputs `n` is stashed in a temp f64 local so it's
- *  evaluated exactly once (avoid side-effect re-execution and bytecode duplication). */
-export const toI32 = n => {
+/** The compile-time ToInt32 lowerings every conversion shares: an i32-backed
+ *  value peels, a literal folds, an exact-int tree computes in the i32 ring, and
+ *  a finite-range proof retires the runtime guard (in i32 range one trunc_sat is
+ *  exact; within ±2^63 the i64 wrap is the modulus). Null when only the runtime
+ *  conversion of an unknown f64 remains. */
+const i32Narrowed = n => {
   if (n.type === 'i32') return n
   // Peephole: i32.wrap_i64(i64.trunc_sat_f64_s(f64.convert_i32_*(x))) === x for all i32
   // inputs (both signed and unsigned variants round-trip identically). The argument of
@@ -330,6 +330,17 @@ export const toI32 = n => {
     if (rng.lo >= -9223372036854775808 && rng.hi < 9223372036854775808)
       return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
   }
+  return null
+}
+
+/** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
+ *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
+ *  and -∞ correctly, but +∞ saturates to i64_max which wraps to -1 — guard +∞ via
+ *  branchless `select`. For non-leaf inputs `n` is stashed in a temp f64 local so it's
+ *  evaluated exactly once (avoid side-effect re-execution and bytecode duplication). */
+export const toI32 = n => {
+  const narrowed = i32Narrowed(n)
+  if (narrowed) return narrowed
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
   // `i32.wrap_i64(i64.trunc_sat_f64_s x)` is exact ToInt32 for |x| < 2^63 (the
   // overwhelming common range), maps NaN/−∞→0, and +∞ is guarded to 0 by the
@@ -345,6 +356,19 @@ export const toI32 = n => {
     ['i32.const', 0],
     ['f64.ne', ['local.get', `$${t}`], ['f64.const', Infinity]]
   ], 'i32')
+}
+
+/** Exact ES ToInt32 for element stores (SetValueInBuffer / SetViewValue) and
+ *  Atomics values: the value mod 2^32 for EVERY finite f64, NaN/±∞ → 0. toI32's
+ *  `|0` dialect saturates at |x| ≥ 2^63 (the documented boundary); a typed store
+ *  has no such exception, so the unknown tail calls the __to_int32 kernel
+ *  (module/core.js), which recovers the low word from the significand beyond
+ *  the i64 range. Same compile-time lowerings; the call evaluates `n` once. */
+export const toInt32 = n => {
+  const narrowed = i32Narrowed(n)
+  if (narrowed) return narrowed
+  inc('__to_int32')
+  return typed(['call', '$__to_int32', n], 'i32')
 }
 
 /** Extract i64 from BigInt-as-f64. */

@@ -9,8 +9,9 @@
  */
 
 import { ctx, err } from '../ctx.js'
-import { walkAst } from '../ast.js'
+import { T, walkAst } from '../ast.js'
 import { typed } from './tag.js'
+import { freshId } from './locals.js'
 
 /** Whole-fn structural refcount: walks `fn`, counting how many times each
  *  array node is referenced. Used by optimizer passes to skip shared subtrees
@@ -272,4 +273,21 @@ export function reconstructArgsWithSpreads(normal, spreads) {
     }
   }
   return combined
+}
+
+/** Discard excess argument values only after evaluating their effects, in
+ *  source order. The usual matching-arity call needs no temporary storage. */
+export function callWithArgs(name, args, sig) {
+  const n = sig.params.length
+  if (args.length <= n) return ['call', `$${name}`, ...args]
+  const seq = [], accepted = []
+  for (let k = 0; k < n; k++) {
+    const local = `${T}arg${freshId(ctx)}`
+    ctx.func.locals.set(local, sig.params[k].type)
+    seq.push(['local.set', `$${local}`, args[k]])
+    accepted.push(['local.get', `$${local}`])
+  }
+  for (let k = n; k < args.length; k++) seq.push(['drop', args[k]])
+  return ['block', ...(sig.results.length ? [['result', ...sig.results]] : []),
+    ...seq, ['call', `$${name}`, ...accepted]]
 }

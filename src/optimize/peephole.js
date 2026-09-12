@@ -493,6 +493,15 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
       if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', inner]
     }
   }
+  // The exact element-store conversion (toInt32's `call $__to_int32 X`) folds the
+  // same two ways: an integer-valued X takes its i32 form, a provably finite
+  // i32-ranged X one trunc_sat — both identical ToInt32 on every value.
+  if (op === 'call' && node[1] === '$__to_int32' && node.length === 3) {
+    const i = toI32(node[2])
+    if (i) return i
+    const rng = f64Range(node[2], get)
+    if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', node[2]]
+  }
   // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left
   // after the fold above, so the accumulator update is a bare i32.add the recognizer matches.
   if (op === 'i32.or' && node.length === 3) {

@@ -10,7 +10,7 @@ import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../../reps.js'
@@ -291,23 +291,6 @@ function padArgs(args, params) {
 export function emitCallArgs(argNodes, params, func) {
   return padArgs(argNodes.map((a, k) =>
     coerceArg(argIR(a), params[k], a, representationCallArgAction(ctx, a, func, k))), params)
-}
-
-/** Discard excess argument values only after evaluating their effects, in
- *  source order. The usual matching-arity call needs no temporary storage. */
-export function callWithArgs(name, args, sig) {
-  const n = sig.params.length
-  if (args.length <= n) return ['call', `$${name}`, ...args]
-  const seq = [], accepted = []
-  for (let k = 0; k < n; k++) {
-    const local = `${T}arg${freshId(ctx)}`
-    ctx.func.locals.set(local, sig.params[k].type)
-    seq.push(['local.set', `$${local}`, args[k]])
-    accepted.push(['local.get', `$${local}`])
-  }
-  for (let k = n; k < args.length; k++) seq.push(['drop', args[k]])
-  return ['block', ...(sig.results.length ? [['result', ...sig.results]] : []),
-    ...seq, ['call', `$${name}`, ...accepted]]
 }
 
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate

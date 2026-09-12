@@ -12,7 +12,7 @@
  *
  * @module atomics
  */
-import { typed, asI64, asI32, toNumF64, freshId } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toInt32, toNumF64, temp, freshId } from '../src/ir.js'
 import { valTypeOf } from '../src/kind.js'
 import { emit, deps } from '../src/bridge.js'
 import { inc, err, PTR } from '../src/ctx.js'
@@ -65,12 +65,13 @@ export default (ctx) => {
     err(`Atomics: receiver must be a proven Int32Array or BigInt64Array (shared-memory v1 contract) — got ${typeof arr === 'string' ? `'${arr}' (${ctor ?? 'unproven'})` : 'an expression'}`)
   }
 
-  const addr = (arr, i, w) => {
+  const addr = (arr, i, w, arrIR = emit(arr), idxIR = emit(i)) => {
     inc(w === 'i64' ? '__atomics_addr64' : '__atomics_addr')
     ctx.runtime.throws = true
-    return ['call', w === 'i64' ? '$__atomics_addr64' : '$__atomics_addr', asI64(emit(arr)), asI32(toNumF64(i, emit(i)))]
+    return ['call', w === 'i64' ? '$__atomics_addr64' : '$__atomics_addr', asI64(arrIR), asI32(toNumF64(i, idxIR))]
   }
-  const i32val = (v) => asI32(toNumF64(v, emit(v)))
+  // The lane takes the value's ToInt32 (exact: 4e9 wraps, 1e30 stores 0).
+  const i32val = (v) => toInt32(toNumF64(v, emit(v)))
   // BigInt64 lanes carry raw i64 — the value must be a proven BigInt expression.
   const i64val = (v) => {
     if (valTypeOf(v) !== VAL.BIGINT) err('Atomics on a BigInt64Array takes BigInt values — wrap with BigInt(…)')
@@ -86,15 +87,34 @@ export default (ctx) => {
     return out([`${w}.atomic.load`, addr(arr, i, w)], w)
   }
 
-  // store returns the stored value (spec: the coerced input)
+  // store returns the coerced input: the BigInt itself, or ToIntegerOrInfinity
+  // of a number (NaN → 0, else the truncation) while the lane takes its ToInt32.
   ctx.core.emit['Atomics.store'] = (arr, i, v) => {
     const w = recvWidth(arr)
-    const t = `atst${freshId(ctx)}`
-    ctx.func.locals.set(t, w)
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, val(v, w)],
-      [`${w}.atomic.store`, addr(arr, i, w), ['local.get', `$${t}`]],
-      out(['local.get', `$${t}`], w)], 'f64')
+    const ar = temp('atar'), ix = temp('atix')
+    const prefix = [
+      ['local.set', `$${ar}`, asF64(emit(arr))],
+      ['local.set', `$${ix}`, asF64(emit(i))],
+    ]
+    const address = () => addr(arr, i, w, typed(['local.get', `$${ar}`], 'f64'), typed(['local.get', `$${ix}`], 'f64'))
+    if (w === 'i64') {
+      const t = `atst${freshId(ctx)}`
+      ctx.func.locals.set(t, w)
+      return typed(['block', ['result', 'f64'], ...prefix,
+        ['local.set', `$${t}`, i64val(v)],
+        ['i64.atomic.store', address(), ['local.get', `$${t}`]],
+        out(['local.get', `$${t}`], w)], 'f64')
+    }
+    const t = temp('atst'), tv = typed(['local.get', `$${t}`], 'f64')
+    const p = `atp${freshId(ctx)}`
+    ctx.func.locals.set(p, 'i32')
+    return typed(['block', ['result', 'f64'], ...prefix,
+      ['local.set', `$${t}`, asF64(emit(v))],
+      ['local.set', `$${p}`, address()],
+      ['local.set', `$${t}`, asF64(toNumF64(v, tv))],
+      ['local.set', `$${t}`, ['select', ['f64.const', 0], ['f64.add', ['f64.trunc', tv], ['f64.const', 0]], ['f64.ne', tv, tv]]],
+      ['i32.atomic.store', ['local.get', `$${p}`], toInt32(tv)],
+      tv], 'f64')
   }
 
   // RMW family — each returns the OLD value.

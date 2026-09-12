@@ -6,7 +6,7 @@
 
 import { ERR } from '../../../err-codes.js'
 import { ctx, err } from '../../ctx.js'
-import { asF64, asI32, emitNum, isLit, litVal, toI32, toNumF64, typed } from '../../ir.js'
+import { asF64, asI32, emitNum, isLit, litVal, toI32, toInt32, toNumF64, typed } from '../../ir.js'
 import { intExprRange, intLiteralValue, int32 } from '../../static.js'
 import { exprType } from '../../type.js'
 import {
@@ -112,6 +112,14 @@ export const bitwiseOps = {
     if (op === '|') {  // `(x / y) | 0` integer-division idiom → i32.div_s
       const divN = intLiteralValue(b) === 0 ? a : intLiteralValue(a) === 0 ? b : null
       if (Array.isArray(divN) && divN[0] === '/') { const r = tryIntDivTrunc(divN[1], divN[2]); if (r) return r }
+      // `(x % 2³²) | 0` is exact ToInt32 for every x — the remainder keeps x's
+      // residue below 2³², where `|0` has no boundary — so it lowers to the one
+      // exact conversion, no __rem. The scalar typed-array plan writes its
+      // integer element stores in this form (plan/literals.js coerceAST).
+      if (Array.isArray(divN) && divN[0] === '%' && Array.isArray(divN[2]) && divN[2][0] == null && divN[2][1] === 4294967296) {
+        const vx = emit(divN[1])
+        return typed(toInt32(isI32Num(vx) || isLit(vx) ? vx : toNumF64(divN[1], vx)), 'i32')
+      }
     }
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) {

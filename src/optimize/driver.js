@@ -20,6 +20,7 @@ import {
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
+import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
 
 /**
@@ -84,6 +85,8 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
+  // After the peephole walk: it matches the ToInt32 sinks in their final shape.
+  if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr

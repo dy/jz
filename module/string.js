@@ -21,7 +21,7 @@
  * @module string
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, emitIdentitySafe, argIR, bool, method, deps, general, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -2172,29 +2172,18 @@ export default (ctx) => {
         (local.get $sp)))))
     (local.get $s))`)
 
-  // ToUint16: at exponent >= 68 every finite f64 is a multiple of 65536.
-  // Between 63 and 67, recover the low bits from the significand instead of
-  // saturating an i64 conversion. NaN/infinities take the same zero arm.
-  wat('__to_uint16', `(func $__to_uint16 (param $x f64) (result i32)
-    (local $bits i64) (local $exp i32) (local $v i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
-    (local.set $exp (i32.and (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 52))) (i32.const 2047)))
-    (if (i32.ge_u (local.get $exp) (i32.const 1091)) (then (return (i32.const 0))))
-    (if (i32.lt_u (local.get $exp) (i32.const 1086))
-      (then (return (i32.and (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $x))) (i32.const 65535)))))
-    (local.set $v (i32.shl (i32.wrap_i64 (local.get $bits)) (i32.sub (local.get $exp) (i32.const 1075))))
-    (if (f64.lt (local.get $x) (f64.const 0)) (then (local.set $v (i32.sub (i32.const 0) (local.get $v)))))
-    (i32.and (local.get $v) (i32.const 65535)))`)
-
   // Evaluate arguments first, then coerce from left to right. UTF-16 units
-  // are retained exactly; code points above the BMP emit a surrogate pair.
+  // are retained exactly (ToUint16 is ToInt32's low half); code points above
+  // the BMP emit a surrogate pair.
   const fromCodes = (codes, charCodes) => {
     if (!codes.length) return emit(['str', ''])
     const make = charCodes ? '__char_unit' : '__codepoint_string'
-    const convert = charCodes ? '__to_uint16' : '__codePoint_value'
-    inc(make, convert)
-    if (!charCodes) ctx.runtime.throws = true
-    const one = (node, ir) => ['call', `$${make}`, ['call', `$${convert}`, toNumF64(node, ir)]]
+    inc(make)
+    if (!charCodes) { inc('__codePoint_value'); ctx.runtime.throws = true }
+    const unit = (ir) => charCodes
+      ? ['i32.and', toInt32(ir), ['i32.const', 65535]]
+      : ['call', '$__codePoint_value', ir]
+    const one = (node, ir) => ['call', `$${make}`, unit(toNumF64(node, ir))]
     if (codes.length === 1) return typed(one(codes[0], emit(codes[0])), 'f64')
     inc('__str_concat_raw')
     const raw = codes.map(() => temp('cu'))

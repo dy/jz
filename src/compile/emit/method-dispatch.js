@@ -4,6 +4,7 @@
  * @module compile/emit/method-dispatch
  */
 
+import { callWithArgs } from '../../ir.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
@@ -20,7 +21,7 @@ import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, materializeMulti } from './call-args.js'
-import { emit, emitCallArgs, emitIdentitySafe, callWithArgs } from './dispatch.js'
+import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { stringOps } from './shared.js'
 

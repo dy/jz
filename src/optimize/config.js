@@ -62,7 +62,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed', inlinePtrOffsetFast: false })
+const L2_PRESET = Object.freeze({ ...ALL_ON, wideAccumulator: false, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed', inlinePtrOffsetFast: false })
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
@@ -114,6 +114,7 @@ const LEVEL_PRESETS = Object.freeze({
     forInUnroll: false,       // one body copy per schema key — speed-only
     clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
     versionTypedBounds: false,// typed-bounds loop versioning duplicates every proven nest (guarded fast arm + checked twin, ×1.5-3 on small kernels) — the branchless checked reads alone are the size-tier lowering; speed-only trade
+    wideAccumulator: false,   // i64-carried accumulator versions the loop (guarded fast clone + the f64 original) — speed-only
     sourceInlineDup: false,   // a looped kernel with several call sites stays one function; splicing it per site is ×sites bytes (resample's pass ×2) — speed-only trade
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
     leanRuntime: true,        // `__str_eq`/`__str_hash` link their plain byte walks (the hot/cold split, the 4-byte chunking and the per-probe hash fast arms are speed-for-size)

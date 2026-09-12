@@ -887,6 +887,26 @@ export default (ctx) => {
     (if (f64.ne (local.get $v) (local.get $v)) (then (return (i32.const 0))))
     (i32.trunc_sat_f64_u (f64.nearest (f64.min (f64.max (local.get $v) (f64.const 0)) (f64.const 255)))))`
 
+  // ES ToInt32 of any f64 (integer element stores, DataView setters, Atomics
+  // values; String.fromCharCode masks its low 16 bits): the value mod 2^32 as a
+  // signed word, NaN and ±Infinity → 0. Below 2^63 in magnitude the saturating
+  // i64 truncation is exact and the wrap is the modulus. Otherwise split on the
+  // biased IEEE exponent: from 1107 (|x| ≥ 2^84) every finite double is a
+  // multiple of 2^32, and NaN/Infinity (2047) share that zero arm; between, the
+  // low word is the significand's low bits shifted by exponent − 1075 (11..31)
+  // — the implicit leading bit lands at 52 + shift, above the word — negated
+  // for a negative sign. A narrower store keeps this word's low 8/16 bits: the
+  // narrower modulus.
+  ctx.core.stdlib['__to_int32'] = `(func $__to_int32 (param $x f64) (result i32)
+    (local $bits i64) (local $exp i32) (local $v i32)
+    (if (f64.lt (f64.abs (local.get $x)) (f64.const 9223372036854775808))
+      (then (return (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $x))))))
+    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
+    (local.set $exp (i32.and (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 52))) (i32.const 2047)))
+    (if (i32.ge_u (local.get $exp) (i32.const 1107)) (then (return (i32.const 0))))
+    (local.set $v (i32.shl (i32.wrap_i64 (local.get $bits)) (i32.sub (local.get $exp) (i32.const 1075))))
+    (select (i32.sub (i32.const 0) (local.get $v)) (local.get $v) (i64.lt_s (local.get $bits) (i64.const 0))))`
+
   // Hot (~85M calls in watr self-compile). Type/offset extraction inlined; forwarding
   // loop only entered for ARRAY. ARRAY fast path dominates (nodes?.length, out.length …).
   ctx.core.stdlib['__len'] = `(func $__len (param $ptr i64) (result i32)

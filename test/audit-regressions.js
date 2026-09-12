@@ -376,6 +376,46 @@ test('audit: compile-time integer conversion wraps beyond i64 during self-hostin
   }
 })
 
+test('audit: runtime integer conversion is exact for every element store', () => {
+  // The exact ToInt32 kernel's regions: |x| < 2⁶³ (saturating i64 truncation is
+  // exact), the shifted-significand band up to 2⁸⁴, multiples of 2³² beyond,
+  // plus fractions, signed zero and nonfinite inputs — each stored through every
+  // integer element kind, DataView setter, Atomics lane and String.fromCharCode.
+  const values = [1e30, -1e30, 4e9, -4e9, 2 ** 63, 2 ** 63 + 2048, -(2 ** 63 + 2048), 2 ** 63 - 1024, 2 ** 64 + 8192,
+    3e19, 2 ** 83 + 2 ** 31, -(2 ** 83 + 2 ** 31), 2 ** 84, 2 ** 84 + 2 ** 32 + 1, 2 ** 53 + 2, 2 ** 31, 2 ** 32 - 1, 2 ** 32,
+    1.5, -1.5, 255.9, -0.9, 0, -0, Infinity, -Infinity, NaN]
+  const ctors = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array']
+  const ops = ['store', 'fill', 'from', 'set', 'map']
+  const src = ctors.map((ctor, i) => `
+    export function store${i}(x){const a=new ${ctor}(2);a[1]=x;return a[1]}
+    export function fill${i}(x){return new ${ctor}(3).fill(x)[2]}
+    export function from${i}(x){return ${ctor}.from([x,x])[1]}
+    export function set${i}(x){const a=new ${ctor}(2);a.set([x],1);return a[1]}
+    export function map${i}(x){return new ${ctor}(2).map(()=>x)[1]}`).join('\n') + `
+    function put(a,x){a[0]=x;return a[0]}
+    export function generic(k,x){return put(k?new Int16Array(1):new Uint8Array(1),x)}
+    let calls=0
+    function next(x){calls++;return x}
+    export function once(x){const a=new Int8Array(1);calls=0;a[0]=next(x);return a[0]*1000+calls}
+    export function dv(x,le,off){const d=new DataView(new ArrayBuffer(16));d.setInt32(off,x,le);d.setUint16(off+8,x,le);return [d.getInt32(off,le),d.getUint16(off+8,le),d.getUint8(off)]}
+    export function atomic(x){const a=new Int32Array(2);const r=Atomics.store(a,1,x);return [a[1],r,Atomics.add(a,1,x),a[1]]}
+    export function unit(x){const s=String.fromCharCode(x,x+1);return s.charCodeAt(0)*65536+s.charCodeAt(1)}`
+  const want = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (let repeat = 0; repeat < 2; repeat++) for (const x of values) {
+      for (let i = 0; i < ctors.length; i++) for (const op of ops)
+        is(got[`${op}${i}`](x), want[`${op}${i}`](x), `${ctors[i]}.${op} ${optimize} ${x}`)
+      for (const k of [0, 1]) is(got.generic(k, x), want.generic(k, x), `generic ${k} ${optimize} ${x}`)
+      is(got.once(x), want.once(x), `side effect once ${optimize} ${x}`)
+      for (const le of [true, false]) for (const off of [0, 3])
+        is(got.dv(x, le, off), want.dv(x, le, off), `dataview le=${le} off=${off} ${optimize} ${x}`)
+      is(got.atomic(x), want.atomic(x), `atomics ${optimize} ${x}`)
+      is(got.unit(x), want.unit(x), `fromCharCode ${optimize} ${x}`)
+    }
+  }
+})
+
 test('audit: standalone higher-order exports accept host callbacks', () => {
   if (onKernel()) return
   for (const decl of ['export function hof(n,f)', 'export const hof=(n,f)=>']) {
@@ -556,5 +596,24 @@ test('audit: nullable calls evaluate arguments before throwing and recover', () 
     const { result } = jz('function twice(x){return x*2}export function result(key){const table={twice};return table[key](4)}', { optimize }).exports
     throws(() => result('missing'), TypeError, 'missing entry reaches the host as a TypeError')
     is(result('twice'), 8, 'host error does not poison the next call')
+  }
+})
+
+test('audit: Atomics.store evaluates receiver, index and value in order', () => {
+  const src = `export function f(){let n=0;const a=new Int32Array(1);Atomics.store(a,n++,n++);return n*10+a[0]}`
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.f(), 21)
+})
+
+test('audit: intrinsic calls retain excess argument effects before the operation', () => {
+  const src = `
+    export function f(){let n=0;const m=new Map();m.set('x',1);const r=m.delete('x',n++,m.set('x',2));return [n,r,m.has('x')]}
+    export function g(){let n=0;const m=new Map();m.set('x',1);try{m.delete('x',bad())}catch(e){n++}return [n,m.has('x')]}
+    function bad(){throw 1}
+    export function h(){let n=0;const s=new Set();s.add(1);const r=s.has(1,n++,s.delete(1));return [n,r]}
+  `
+  const expected = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const name of ['f', 'g', 'h']) is(got[name](), expected[name](), `${name} ${optimize}`)
   }
 })

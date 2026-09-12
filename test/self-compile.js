@@ -53,6 +53,9 @@ const SAMPLES = [
   ['unicode-unit-offset', 'export let main = () => "Ā😀".codePointAt(1)', 128512],
   ['hash-sentinels', String.raw`export function main(){const m=new Map();m.set(1.0000007154885675,42);m.set(1.0000007154885675,77);m.set(4294967294n,5);m.set('\u1234\u6fe3\ue84a',9);return m.size*1000+m.get(1.0000007154885675)+m.get(4294967294n)+m.get('\u1234\u6fe3\ue84a')}`, 3091],
   ['integer-literals-beyond-i64', 'export function main(){return new Int32Array([1e30,9223372036854778000])[0] + new Int16Array([1e30,9223372036854778000])[1]}', 2048],
+  // Runtime (unknown-value) stores take the exact __to_int32 kernel; `k` keeps
+  // the values out of constant folding.
+  ['integer-stores-beyond-i64', 'let k=0; export function main(){k++;const x=k*1e30,y=k*9223372036854778000,z=k*3e19;const a=new Int16Array(2),b=new Int32Array(2);a[1]=x;b[1]=y;const d=new DataView(new ArrayBuffer(4));d.setInt32(0,z);return [a[1],b[1],d.getInt32(0),String.fromCharCode(z).charCodeAt(0)]}', [0, 2048, -1648885760, 0]],
   ['json-packed-keys', `const sources=['{"abcd":1}','{"abcd":3}']; function f(i){return JSON.parse(sources[i&1]).abcd} export function main(){return f(0)+f(0)+f(1)+f(0)}`, 6],
   ['typed-view-iterator', 'function* marker() {} function g([x]) { return x } export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); d.setUint8(1, 23); return g(new Int8Array(b, 1, 2)) }', 23],
   ['dataview-identity', 'export let main = () => { let b = new ArrayBuffer(4); let d = new DataView(b); return (d instanceof DataView ? 1 : 0) + (d instanceof Int8Array ? 2 : 0) }', 1],

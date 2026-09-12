@@ -1,5 +1,4 @@
 import { registerResetHook } from '../../ctx.js'
-import { nodeEqual as exprEq } from '../../ast.js'
 import { hasBranchOrReturn, hasSideEffect, isI32Const, matchMirrorAddr } from './addr-model.js'
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
@@ -509,7 +508,7 @@ export function liftExprV(expr, ctx) {
   if (ctx.laneType === 'i32') {
     const av = liftAddSubOfConverts(expr, ctx)
     if (av) return av
-    if (op === 'select') {
+    if (op === 'select' || op === 'call') {
       const peeled = peelNarrowConv(expr, 'i32')
       const pv = peeled && liftAddSubOfConverts(peeled, ctx)
       if (pv) return pv
@@ -725,8 +724,9 @@ export function liftExprV(expr, ctx) {
 // store{8,16}, never saturates). Returns the store stmt or null (unsupported).
 // Peel the scalar narrowing conversion off a store value, returning the inner float
 // expr to lift (narrowStore then applies the SIMD narrow). f32 store: f32.demote_f64(X).
-// int store: toI32's guarded select, wrapIntIR's ToIntN select (module/typedarray.js),
-// or a bare trunc_sat. The inner X is the f64/f32 lane value computed before the cast.
+// int store: toI32's guarded select, the exact element-store conversion call
+// (toInt32, src/ir/numeric.js), or a bare trunc_sat. The inner X is the f64/f32
+// lane value computed before the cast.
 export function peelNarrowConv(val, sty) {
   if (!isArr(val)) return null
   if (sty === 'f32') return val[0] === 'f32.demote_f64' ? val[1] : null
@@ -742,17 +742,9 @@ export function peelNarrowConv(val, sty) {
     if (isArr(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]   // peel to the tee's VALUE
     return inner
   }
-  // wrapIntIR (module/typedarray.js) — the unified ES ToIntN store idiom (same
-  // outer shape as toI32's guarded select, sign-branched inner):
-  //   (select (i32.wrap_i64 (select (sat_s X) (sat_u X) (lt X 0))) (i32.const 0) (ne X Inf))
+  // The exact ES ToIntN element-store conversion `(call $__to_int32 X)`;
   // narrowStore's f32→i8/i16 pack re-establishes the +Inf→0 lane semantics.
-  if (val[0] === 'select' && val.length === 4 && isI32Const(val[2]) && val[2][1] === 0 &&
-      isArr(val[1]) && val[1][0] === 'i32.wrap_i64' && isArr(val[1][1]) && val[1][1][0] === 'select') {
-    const sel = val[1][1]
-    const s = isArr(sel[1]) && sel[1][0] === 'i64.trunc_sat_f64_s' ? sel[1][1] : null
-    const u = isArr(sel[2]) && sel[2][0] === 'i64.trunc_sat_f64_u' ? sel[2][1] : null
-    if (s && u && exprEq(s, u)) return s
-  }
+  if (val[0] === 'call' && val[1] === '$__to_int32' && val.length === 3) return val[2]
   if (val[0] === 'i32.trunc_sat_f64_s' || val[0] === 'i32.trunc_sat_f64_u') return val[1]
   // Bare wrap-through-i64 (asI32's boundary coercion — ES ToInt32 wrap, no guard).
   if (val[0] === 'i32.wrap_i64' && isArr(val[1]) && val[1][0] === 'i64.trunc_sat_f64_s') return val[1][1]

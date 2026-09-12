@@ -84,6 +84,8 @@ const TESTS = [
   'slp',
   'cond-vectorize',
   'unswitch-typed-param',
+  'wide-accumulator',
+  'runtime-inspect',
   'differential',
   'fuzz',
   'determinism',

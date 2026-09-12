@@ -71,6 +71,9 @@ export { buildPureFuncMap, foldStrDispatchF64 } from './pure-funcs.js'
 // internal — driver.js is its only caller, same as upstream.)
 export { unswitchTypedParamLoop } from './unswitch.js'
 
+// Wide integer accumulation (wideAccumulator) — see src/optimize/wide-accumulator.js.
+export { wideAccumulator } from './wide-accumulator.js'
+
 // Devirtualization family (devirtSchemaReads, foldStaticConstArrayReads,
 // devirtConstFnArrayCalls) — see src/optimize/devirt.js for the full doc.
 export { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'

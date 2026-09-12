@@ -9,7 +9,7 @@
  */
 
 import { ctx, emitter, registerName } from './ctx.js'
-import { typed, asF64, asI32, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow } from './ir.js'
+import { callWithArgs, typed, undefExpr, asF64, asI32, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow } from './ir.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from './compile/representation-plan.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
 import { VAL } from './reps.js'
@@ -197,7 +197,7 @@ const cast = { I: asI64, F: asF64, i: asI32 }
 // an 'I'-sig stdlib arg (any `call()`/`method()` registration) collapsed the
 // same way the 16 named sites did.
 const coerce = (sig, nodes) =>
-  sig.split('').map((c, i) => c === 'I'
+  sig.split('').map((c, i) => nodes[i] === undefined ? cast[c](undefExpr()) : c === 'I'
     ? asI64(storedValue(nodes[i]))
     : cast[c](emit(nodes[i])))
 
@@ -207,10 +207,22 @@ const wrap = (fmt, call) => {
   return typed(call, 'f64')
 }
 
+// Intrinsic calls share the direct-call rule for excess argument effects.
+// Matching arity retains the bare call and allocates no signature or temporaries.
+const intrinsicCall = (stdlib, sig, ret, nodes) => {
+  const args = coerce(sig, nodes)
+  if (nodes.length <= sig.length) return ['call', `$${stdlib}`, ...args]
+  for (let i = sig.length; i < nodes.length; i++) args.push(emit(nodes[i]))
+  return callWithArgs(stdlib, args, {
+    params: sig.split('').map(c => ({ type: c === 'I' ? 'i64' : c === 'i' ? 'i32' : 'f64' })),
+    results: [ret],
+  })
+}
+
 /** `(…args) → call($stdlib, coerced…)`. fmt: f64 · i64 · i32 */
 export const call = (stdlib, sig, fmt = 'f64') => {
   const h = emitter([stdlib], (...nodes) =>
-    wrap(fmt, ['call', `$${stdlib}`, ...coerce(sig, nodes)]))
+    wrap(fmt, intrinsicCall(stdlib, sig, fmt, nodes)))
   h.argc = sig.length
   return h
 }
@@ -218,7 +230,7 @@ export const call = (stdlib, sig, fmt = 'f64') => {
 /** method `(recv, …args) → call($stdlib, …)`. sig: I · F · i per arg. */
 export const method = (stdlib, sig, ret = 'f64') => {
   const h = emitter([stdlib], (...nodes) => {
-    const c = ['call', `$${stdlib}`, ...coerce(sig, nodes)]
+    const c = intrinsicCall(stdlib, sig, ret, nodes)
     return typed(ret === 'i32' ? ['f64.convert_i32_s', c] : c, 'f64')
   })
   h.argc = sig.length

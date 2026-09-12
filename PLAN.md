@@ -46,15 +46,43 @@ were relaxed.
 | bezfit | 2,814 | 3,017 |
 | wordcount | 3,303 | 3,480 |
 
+## Recovery work — 2026-09-11
+
+The interrupted work is recovered without importing its full session history.
+
+- Exact runtime ToInt32 is shared by typed stores, DataView, Atomics and UTF-16
+  unit construction. Unknown values no longer saturate beyond i64; known ranges
+  retain direct lowering. Atomics.store also preserves argument evaluation order.
+- The speed tier carries eligible integer accumulators as guarded i64 values.
+  Exception handlers, negative-zero constants, numeric aliases and live guard
+  temporaries decline the rewrite. The default/size tiers retain one loop.
+  The original default-tier operation-count ratchet passes without rebasing.
+- `inspect.runtime` reports proved absence of allocation/host calls and finite
+  instruction bounds for recognized counter loops. Unknowns remain null. The
+  full-i32-domain loop bounds are conservative, not audio deadline guarantees;
+  SIMD/dynamic-bound loops and recursion can remain unknown.
+- Intrinsic calls share user-call excess-argument handling. Collection methods
+  use the same boxed-value conversion and retain precomputed hashes, removing
+  their duplicate conversion/argument paths. Missing arguments become undefined.
+
+Focused native checks pass (247 tests), as do focused self-host regressions
+(33 tests). The functional self-host suite passes 44 tests / 2,291 assertions.
+The full matrix passes: default 4,229 tests / 64,051 assertions,
+O0 and O3 4,035 tests each, WASI 4,087; one skip per leg.
+Conformance remains 3,151 language / 869 builtin passes, zero unexpected failures.
+The runtime-inspection boundary suite passes three tests / 24 assertions;
+hexadecimal/underscored counter immediates cannot manufacture a termination proof.
+The final self-host speed gates still fail: warm 1.465×/1.527×/1.533× (cap 1.03×),
+fresh 1.155× (cap 0.99×). No threshold or benchmark source was relaxed.
+The size campaign wins all 51 AssemblyScript pairs (geomean 0.7783×): Watr
+288,571 bytes, JSON 10,764, bezfit 2,814, wordcount 3,221. Paired speed-tier
+accumulator ablations give on/off ratios 0.068× and 0.126× on seeds 15/29, at
+254/309 bytes versus 130/172 bytes. These are diagnostic under load, not release
+certification. Current swap usage is 16,668 MB, above the 4,096 MB validity cap.
+
 ## Release blockers
 
-1. **Runtime integer stores.** Compile-time conversion is fixed, but dynamic
-   integer stores still saturate beyond the i64/u64 conversion range.
-   `export function f(x){const a=new Int16Array(1);a[0]=x;return a[0]}`
-   returns -1 for `f(1e30)`; JS returns 0. Share exact runtime conversion across
-   typed stores and DataView before claiming this boundary is covered.
-
-2. **Speed, memory and evidence.** Final self-compile timings fail: warm
+1. **Speed, memory and evidence.** Final self-compile timings fail: warm
    1.511×/1.584×/1.593× against the 1.03× cap; fresh 1.204× against 0.99×.
    This machine has about 15 GB of swap in use, above the 4 GiB validity limit.
    These timings are diagnostic. Re-measure on quiet reference hardware.
@@ -73,14 +101,13 @@ were relaxed.
    alpha ratio: 3.52× against 3.50×. CI's fresh timing ratios are informational;
    they cannot replace reference-hardware release evidence.
 
-3. **Compatibility edges.** Preserve effects of excess intrinsic arguments:
-   `map.delete('x', n++)` currently loses the increment. A replaced record's
+2. **Compatibility edges.** A replaced record's
    missing callable field (`p={x:3}; p.y()`) is rejected instead of throwing
    TypeError at runtime. Caught internal numeric error codes can report
    `name === 'TypeError'` while `e instanceof TypeError` is false. Preserve
    the README's existing dialect; do not silently add exceptions to it.
 
-4. **VST product path.** Implement the public `@audio/compile-vst` builder
+3. **VST product path.** Implement the public `@audio/compile-vst` builder
    with compiler selection and matching ABI adapters. Existing stateful
    fixtures in `@audio/compile` pass 12,438 checks per compiler; the gain
    fixture passes 132 checks per compiler across 12,000 blocks. They predate
@@ -88,25 +115,20 @@ were relaxed.
    Extend coverage to concurrent audio threads and within-block automation.
    Porffor's shared arena stays live until the last instance closes.
 
-5. **Independent review and release provenance.** Give a reviewer the pinned
+4. **Independent review and release provenance.** Give a reviewer the pinned
    candidate and gate logs; implementation work is not expert approval.
    Produce attested recursive speed/memory evidence. Replace archive pins
    with npm releases once those releases contain the required fixes.
 
 ## Next measured reductions
 
-- **Guarded wide integer accumulation.** Use existing loop/range facts to
-  carry i64 accumulators while every intermediate stays in JS's exact-integer
-  range, retaining f64 for other inputs. Target the repeated conversions in
-  mixed perf-fuzz; prove zero trips, fractional bounds, overflow, negative zero
-  and nonfinite inputs before measuring. This remains a candidate.
 - **Self-host allocation and dispatch.** Profiles point to string equality,
   hashing and dynamic property access. Shared censuses and demanded range
   analysis remove repeated work, but do not close the speed/memory gate.
   Profile surviving operations before adding another cache or pass.
-- **Useful audio guarantees.** Explore proving absence of allocation and
-  host calls, plus work bounds, from existing effect/range facts. Publish only
-  facts actually proved; no such general callback guarantee exists yet.
+- **Tighter callback work bounds.** Reuse entry-range facts to replace the
+  conservative i32-domain count, and extend proofs to SIMD and dynamic block
+  lengths without accepting unproved loops or host calls.
 
 A new semantic IR, wholesale context/vectorizer rewrite, region API,
 representation tiers and frozen raw ABI are not prerequisites for v1.

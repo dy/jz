@@ -12,9 +12,8 @@
  * @module collection
  */
 
-import { typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, boolBoxIR, freshId } from '../src/ir.js'
-import { emit, deps, call, storedValue, storedValuePlanned } from '../src/bridge.js'
-import { REP_EDGE_REJECT, representationStorageWriteAction } from '../src/compile/representation-plan.js'
+import { typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, boolBoxIR, freshId } from '../src/ir.js'
+import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
@@ -473,10 +472,7 @@ export default (ctx) => {
       ['local.get', `$${setL}`]], 'f64')
   }
 
-  ctx.core.emit['.add'] = (setExpr, member) => {
-    inc('__set_add')
-    return typed(['f64.reinterpret_i64', ['call', '$__set_add', asI64(emit(setExpr)), asI64(taggedColl(member))]], 'f64')
-  }
+  ctx.core.emit['.add'] = call('__set_add', 'II', 'i64')
 
   // `.has` / `.delete` exist on BOTH Set and Map, which differ only in entry
   // stride (16 vs 24). A receiver of unproven kind (e.g. a Map read off a nested
@@ -508,11 +504,7 @@ export default (ctx) => {
   // and the probe side (.get/.has/.delete) — a key stored tagged must probe
   // tagged or SameValueZero on bits misses. Mirrors slice 4c's array-literal
   // helper; REJECT (or a bigint-free program) falls back to storedValue.
-  const taggedColl = ctx.features?.bigint ? (node) => {
-    const action = representationStorageWriteAction(ctx, node)
-    return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
-  } : storedValue
-  const collProbeDyn = (mapFn, setFn, h) => (collExpr, key) => {
+  const collProbeDyn = (mapFn, setFn, h) => (collExpr, key, ...ignored) => {
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
     const extra = h != null ? [['i32.const', h]] : []
@@ -523,34 +515,29 @@ export default (ctx) => {
       // the probe must produce the SAME bits or SameValueZero misses. (An
       // unproven-receiver O0 miss exists independently of this — banked in
       // .work/archive/todo.md 2026-08-19, all key kinds, pre-dates this slice.)
-      ['local.set', `$${k}`, asI64(taggedColl(key))],
+      ['local.set', `$${k}`, asI64(storedValue(key))],
+      ...ignored.map(node => ['drop', asF64(emit(node))]),
       boolBoxIR(typed(['if', ['result', 'i32'],
         ptrTypeEq(['local.get', `$${o}`], PTR.MAP),
         ['then', ['call', `$${mapFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]],
         ['else', ['call', `$${setFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]]], 'i32'))], 'f64')
   }
   // `.has` on an unproven receiver: a literal key folds its hash and uses the _h probes.
-  ctx.core.emit['.has'] = (collExpr, key) => {
+  ctx.core.emit['.has'] = (collExpr, key, ...ignored) => {
     const h = litKeyHash(key)
     return h != null
-      ? collProbeDyn('__map_has_h', '__set_has_h', h)(collExpr, key)
-      : collProbeDyn('__map_has', '__set_has')(collExpr, key)
+      ? collProbeDyn('__map_has_h', '__set_has_h', h)(collExpr, key, ...ignored)
+      : collProbeDyn('__map_has', '__set_has')(collExpr, key, ...ignored)
   }
   ctx.core.emit['.delete'] = collProbeDyn('__map_delete', '__set_delete')
-  // Typed Set.has: literal key → prehashed __set_has_h, else the generic probe.
-  ctx.core.emit[`.${VAL.SET}:has`] = (collExpr, key) => {
+  // Literal probes retain the precomputed hash; calls share argument effects
+  // and boxed-value conversion with every other intrinsic.
+  ctx.core.emit[`.${VAL.SET}:has`] = (collExpr, key, ...ignored) => {
     const h = litKeyHash(key)
-    if (h == null) {
-      inc('__set_has')
-      return typed(['f64.convert_i32_s', ['call', '$__set_has', asI64(emit(collExpr)), asI64(taggedColl(key))]], 'f64')
-    }
-    inc('__set_has_h')
-    return typed(['f64.convert_i32_s', ['call', '$__set_has_h', asI64(emit(collExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
+    return h == null ? call('__set_has', 'II', 'i32')(collExpr, key, ...ignored)
+      : call('__set_has_h', 'IIi', 'i32')(collExpr, key, [null, h], ...ignored)
   }
-  ctx.core.emit[`.${VAL.SET}:delete`] = (collExpr, key) => {
-    inc('__set_delete')
-    return typed(['f64.convert_i32_s', ['call', '$__set_delete', asI64(emit(collExpr)), asI64(taggedColl(key))]], 'f64')
-  }
+  ctx.core.emit[`.${VAL.SET}:delete`] = call('__set_delete', 'II', 'i32')
 
   // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
   // exists on Map/Set in JS, so a single generic emitter is unambiguous; the
@@ -675,35 +662,22 @@ export default (ctx) => {
     return typed(['call', '$__map_from', asI64(emit(iterExpr))], 'f64')
   }
 
-  ctx.core.emit['.set'] = (mapExpr, key, val) => {
-    inc('__map_set')
-    // Keys and values are boxed-value slots — booleans cross as their atom so
-    // set(true, …)/get(true) agree on bits and stored values keep identity.
-    const value = val === undefined ? asI64(undefExpr()) : asI64(taggedColl(val))
-    return typed(['f64.reinterpret_i64', ['call', '$__map_set', asI64(emit(mapExpr)), asI64(taggedColl(key)), value]], 'f64')
-  }
+  ctx.core.emit['.set'] = call('__map_set', 'III', 'i64')
   ctx.core.emit[`.${VAL.MAP}:set`] = ctx.core.emit['.set']
 
-  const emitMapGet = (mapExpr, key) => {
+  const emitMapGet = (mapExpr, key, ...ignored) => {
     const h = litKeyHash(key)
-    if (h != null) {
-      inc('__map_get_h')
-      return typed(['f64.reinterpret_i64', ['call', '$__map_get_h', asI64(emit(mapExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
-    }
-    inc('__map_get')
-    // Key is a boxed-value slot — a bool key probes with the same atom bits .set stored.
-    return typed(['f64.reinterpret_i64', ['call', '$__map_get', asI64(emit(mapExpr)), asI64(taggedColl(key))]], 'f64')
+    return h == null ? call('__map_get', 'II', 'i64')(mapExpr, key, ...ignored)
+      : call('__map_get_h', 'IIi', 'i64')(mapExpr, key, [null, h], ...ignored)
   }
 
   ctx.core.emit['.get'] = emitMapGet
   ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
 
-  // Typed Map.has: literal key → prehashed __map_has_h, else the generic probe.
-  ctx.core.emit[`.${VAL.MAP}:has`] = (collExpr, key) => {
+  ctx.core.emit[`.${VAL.MAP}:has`] = (collExpr, key, ...ignored) => {
     const h = litKeyHash(key)
-    if (h == null) return call('__map_has', 'II', 'i32')(collExpr, key)
-    inc('__map_has_h')
-    return typed(['f64.convert_i32_s', ['call', '$__map_has_h', asI64(emit(collExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
+    return h == null ? call('__map_has', 'II', 'i32')(collExpr, key, ...ignored)
+      : call('__map_has_h', 'IIi', 'i32')(collExpr, key, [null, h], ...ignored)
   }
   ctx.core.emit[`.${VAL.MAP}:delete`] = call('__map_delete', 'II', 'i32')
 

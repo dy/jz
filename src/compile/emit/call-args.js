@@ -4,6 +4,7 @@
  * @module compile/emit/call-args
  */
 
+import { callWithArgs } from '../../ir.js'
 import { T, commaList } from '../../ast.js'
 import { includeForArrayLiteral, includeForStringOnly } from '../../autoload.js'
 import { PTR, ctx, emitArity, inc } from '../../ctx.js'
@@ -14,7 +15,7 @@ import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType } from '../../reps.js'
 import { persistBindingPtr } from '../emit-assign.js'
 import { withExpectedValue } from '../flow-state.js'
-import { emit, emitCallArgs, callWithArgs } from './dispatch.js'
+import { emit, emitCallArgs } from './dispatch.js'
 
 
 /** Stamp a `call` IR with the pointer-ABI / sign metadata its signature carries.

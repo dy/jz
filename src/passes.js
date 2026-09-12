@@ -27,6 +27,7 @@ export const PASS_NAMES = [
   'hoistInvariantPtrOffset',
   'hoistInvariantLoop',       // unified LICM (subsumes the former ToInt32/PtrOffsetLoop/CellLoads hoists)
   'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
+  'wideAccumulator',          // f64 integer accumulator carried as i64 under a runtime magnitude guard (versioned loop)
   'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
   // Pre-analyze loop-shape transforms — applied in compile/index.js (NOT this pass pipeline), but
   // gated by these flags. Listing them here is load-bearing: ALL_OFF sets them false so level 0/1

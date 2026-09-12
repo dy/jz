@@ -4,6 +4,7 @@
  * @module compile/emit/call
  */
 
+import { callWithArgs } from '../../ir.js'
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
   PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, walkAst,
@@ -20,7 +21,7 @@ import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, materializeMulti, parseCallArgs } from './call-args.js'
-import { TYPED_HI_MASK, argIR, coerceArg, emit, emitCallArgs, emitIdentitySafe, emitVoid, callWithArgs } from './dispatch.js'
+import { TYPED_HI_MASK, argIR, coerceArg, emit, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
 
