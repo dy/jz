@@ -12,7 +12,7 @@ import { valTypeOf } from '../../src/kind.js'
 import { VAL } from '../../src/reps.js'
 import { ctx, err, inc, PTR } from '../../src/ctx.js'
 import { dataLen } from '../../src/static-data.js'
-import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
+import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 
 // Shared lazy runtime throw: ordinary branded Error storage and transport.
 // Track literal data so dead helpers leave no strings in the final module.
@@ -123,8 +123,8 @@ export const registerErrorClasses = () => {
     ctx.module.include('collection')
     ctx.runtime.throws = true
     return ['block',
-      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ERROR_MESSAGE_OBJECT]]],
-      ['throw', '$__jz_err', ['f64.const', ERR.ERROR_MESSAGE_OBJECT]]]
+      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ERROR_MESSAGE_OBJECT)]]],
+      ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ERROR_MESSAGE_OBJECT)]]]
   }
 
   // Error constructor message coercion — ES 20.5.1.1: argument absent OR its

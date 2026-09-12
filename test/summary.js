@@ -333,6 +333,7 @@ test('summary codegen: a method called through an array of instances, an exporte
       process() { const b = this.buf, g = this.gain; for (let i = 0; i < b.length; i++) b[i] = b[i] * g; return b[0] } }
     export const run = (n, gain) => { const g = new Gain(n, gain); g.buf[0] = 2; g.process(); return g.process() }`
   if (OPT_LEVEL === 2) ok(!/__to_str/.test(compile(cls, { wat: true })), 'no string machinery: the gain slot is read only as a number')
+  if (OPT_LEVEL === 2) ok(!WebAssembly.Module.exports(new WebAssembly.Module(compile(cls))).some(e => e.name === '__jz_last_err_bits'), 'dead generated guards retain no host error signal')
   is(jz(cls).exports.run(8, 0.5), 0.5)
   is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
   if (OPT_LEVEL === 2) ok(compile(cls).length < 2000, `bytes: ${compile(cls).length}`)

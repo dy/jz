@@ -6,8 +6,9 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
+  materializeErrorIR, applyBigintRepresentationAction, asParamType, asPtrOffset, block64, carrierF64Narrow, freshId, nullableBoolBoxIR, tcoTailRewrite, temp, tempI32, tempI64, typed, undefExpr,
 } from '../../ir.js'
+import { REFS_THROUGH_ARROWS, refsName } from '../../ast.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { staticPropertyKey } from '../../static.js'
@@ -173,6 +174,13 @@ export const statementOps = {
     const id = freshId(ctx)
     ctx.func.locals.set(errName, 'f64')
     const bodyIR = withTryState(true, () => emitVoid(body))
+    // Coded transport only becomes observable through the binding. A handler
+    // that never reads it keeps the raw value and links no decoder; the scan
+    // descends into closures and counts a same-named string, so it errs toward
+    // materializing. Narrower than prepare's registration, which asks only
+    // whether a binding exists — so every materialized class is registered.
+    const caughtIR = errName != null && refsName(handler, errName, REFS_THROUGH_ARROWS)
+      ? materializeErrorIR(typed(['local.get', `$${errName}`], 'f64')) : null
     const handlerIR = emitVoid(handler)
     return typed(['block', `$outer${id}`, ['result', 'f64'],
       ['block', `$catch${id}`, ['result', 'f64'],
@@ -193,6 +201,7 @@ export const statementOps = {
       // marker again via the 'throw' emitter above, so escaping-throw decode is
       // unaffected.
       ['global.set', '$__jz_last_err_bits', ['i64.const', 0]],
+      ...(caughtIR ? [['local.set', `$${errName}`, caughtIR]] : []),
       ...handlerIR,
       ['f64.const', 0]], 'f64')
   },

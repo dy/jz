@@ -17,7 +17,7 @@ import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { isReassigned, MUTATE_OPS, some, isBrand } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
-import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
+import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR } from '../layout.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
@@ -288,7 +288,7 @@ export default (ctx) => {
   const requireCoercible = (node) => {
     if (!isNullishLiteral(node)) return null
     ctx.runtime.throws = true
-    return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.OBJECT_NULLISH]]], ['throw', '$__jz_err', ['f64.const', ERR.OBJECT_NULLISH]]], 'f64')
+    return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.OBJECT_NULLISH)]]], 'f64')
   }
 
   // Arrays and (coerced) strings expose their indices as own enumerable
@@ -703,7 +703,7 @@ export default (ctx) => {
       ['local.set', `$${kt}`, asF64(emit(key))],
       ['local.set', `$${d}`, asF64(emit(desc))],
       ['if', emit(['||', ['!==', ['.', d, 'get'], [, undefined]], ['!==', ['.', d, 'set'], [, undefined]]]),
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ACCESSOR_DESCRIPTOR]]], ['throw', '$__jz_err', ['f64.const', ERR.ACCESSOR_DESCRIPTOR]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ACCESSOR_DESCRIPTOR)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ACCESSOR_DESCRIPTOR)]]]],
       // a descriptor without `value` leaves the property as it is
       ['if', asI32(emit(['in', ['str', 'value'], d])),
         ['then', ['drop', asF64(emit(['=', ['[]', t, kt], ['.', d, 'value']]))]]],

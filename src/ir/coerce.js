@@ -10,8 +10,9 @@
  */
 
 import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
-import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
+import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
+import { stringHash } from '../string-data.js'
 import { VAL, repOf, numericStorage } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode, numericDenied } from '../kind.js'
 import { objLiteralSchemaId, intExprRange } from '../static.js'
@@ -21,7 +22,7 @@ import { temp, tempI32, tempI64, block64, freshId } from './locals.js'
 import { ptrOffsetIR, ptrTypeEq } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
 import { isPlanTaggedBigint, materializeDeferredBigint, readI64 } from './bigint.js'
-import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
+import { NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
 /** ToPrimitive sidecar probe (ES2024 7.1.1): an own `valueOf`/`toString` data
@@ -59,35 +60,18 @@ export function sidecarOverride(objIR, nameIR, onOverride, onFallback) {
       ['else', onFallback(o)]])
 }
 
-/** Resolve the slot index of a ToPrimitive method (`valueOf`/`toString`) on an
- *  OBJECT operand — from a schema-bound variable or an inline object literal.
- *  Returns -1 when the method is absent. */
+/** Fixed slot, proven absence (-1), or unresolved layout (null).
+ *  A failed fixed-offset proof never proves that the property is absent. */
 function primMethodIdx(node, name) {
-  if (typeof node === 'string') return ctx.schema.slotOf(node, name)
-  const sid = objLiteralSchemaId(node)
-  const props = sid != null ? ctx.schema.list[sid] : null
-  return props ? props.indexOf(name) : -1
+  const sid = typeof node === 'string' ? ctx.schema.idOf(node) : objLiteralSchemaId(node)
+  if (sid != null) return ctx.schema.list[sid].indexOf(name)
+  const slot = typeof node === 'string' ? ctx.schema.slotOf(node, name) : -1
+  return slot >= 0 ? slot : null
 }
 
-/** Emit the ES `OrdinaryToPrimitive` method-fallback chain for an OBJECT operand,
- *  returning an i64 IR node holding the resulting primitive. Missing own methods
- *  fall through to Object.prototype.valueOf/toString; `order` is the method-try order
- *  (number hint → [valueOf,toString]; string hint → [toString,valueOf]). Each
- *  present method is called in turn: a primitive result short-circuits out, a
- *  non-primitive (object) result falls through to the next method, and if every
- *  method yields a non-primitive a TypeError is thrown — the spec algorithm.
- *  `present` (from primMethodIdx) only proves the property NAME exists in the
- *  object's schema — a schema slot's stored VALUE can be anything (`{toString:
- *  void 0}` is a completely ordinary object literal), so each slot is guarded
- *  by a PTR.CLOSURE check before being called: GetMethod (ES 7.3.11), which
- *  OrdinaryToPrimitive calls for each method name, treats a non-callable
- *  value the SAME as an absent one (skip to the next method in the chain) —
- *  it does not invoke it. Without this guard a `toString`/`valueOf` slot
- *  holding `undefined` (or any other non-closure value) was loaded and handed
- *  straight to ctx.closure.call as if it were a real closure pointer —
- *  confirmed live as a WebAssembly "table index is out of bounds" trap
- *  (String({valueOf:()=>'42', toString: void 0}), which per spec must skip
- *  the non-callable toString and fall through to valueOf). */
+/** OrdinaryToPrimitive tries callable own methods in hint order, skipping
+ *  non-callable values and object results. Only proven absence selects an
+ *  inherited method; unresolved layouts use the ordinary presence probe. */
 const inheritedObjectTag = () => asI64(ctx.core.emit['str']('[object Object]'))
 function inheritedObjectString(value) {
   return typed(['block', ['result', 'i64'],
@@ -96,40 +80,55 @@ function inheritedObjectString(value) {
 
 function toPrimitiveChain(node, v, order) {
   const methods = order.map(name => ({ name, idx: primMethodIdx(node, name) }))
-  const present = methods.filter(m => m.idx >= 0)
+  const present = methods.filter(m => m.idx !== -1)
   // With no own methods, Object.prototype.valueOf returns the receiver and
   // Object.prototype.toString supplies the first primitive. If string-hint
   // order reaches an absent own toString first, the inherited method wins
   // before any own valueOf, exactly as property lookup requires.
-  if (!present.length || methods[0].name === 'toString' && methods[0].idx < 0)
+  if (!present.length || methods[0].name === 'toString' && methods[0].idx === -1)
     return inheritedObjectString(v)
 
-  const ownToString = methods.some(m => m.name === 'toString' && m.idx >= 0)
+  const ownToString = methods.some(m => m.name === 'toString' && m.idx !== -1)
   if (ownToString) ctx.runtime.throws = true
   inc('__is_object')
   const blk = `$tp${freshId(ctx)}`
   const prim = tempI64('prim')
   const optr = tempI32('op')
   const mslot = temp('tpm')
+  const dynamic = methods.some(m => m.idx == null)
+  const obj = dynamic ? temp('tpo') : null
+  if (dynamic) {
+    ctx.module.include('collection')
+    ctx.module.include('string')
+    ctx.runtime.schemaTblConsumed = true
+    inc('__dyn_get_t_hm')
+  }
   // Resolve the object's data pointer once — `v` may carry side effects and is
   // referenced once per method slot below.
-  const body = [['result', 'i64'],
-    ['local.set', `$${optr}`, ptrOffsetIR(v, VAL.OBJECT)]]
+  const body = [['result', 'i64']]
+  if (dynamic) body.push(['local.set', `$${obj}`, asF64(v)])
+  body.push(['local.set', `$${optr}`, ptrOffsetIR(dynamic ? typed(['local.get', `$${obj}`], 'f64') : v, VAL.OBJECT)])
   for (const { name, idx } of methods) {
-    if (idx < 0) {
+    if (idx === -1) {
       // The inherited valueOf returns the object and therefore cannot finish
       // OrdinaryToPrimitive. The inherited toString returns the canonical tag.
       if (name === 'toString') body.push(['br', blk, inheritedObjectTag()])
       continue
     }
-    const method = typed(ctx.abi.object.ops.load(['local.get', `$${optr}`], idx), 'f64')
+    const method = typed(idx != null ? ctx.abi.object.ops.load(['local.get', `$${optr}`], idx)
+      : ['f64.reinterpret_i64', ['call', '$__dyn_get_t_hm',
+          ['i64.reinterpret_f64', ['local.get', `$${obj}`]], asI64(ctx.core.emit.str(name)),
+          ['i32.const', PTR.OBJECT], ['i32.const', stringHash(name)]]], 'f64')
     // NOT `br_if`: br_if's block-result operand stays on the stack when its
     // condition is false (WASM's `[t i32] -> [t]` typing — that's how a
     // fallthrough sees the value at all), so nesting one inside a void `if`
     // (this method's callability guard) only balances on the taken path —
     // the not-taken path leaves a stray i64 the void `if` can't account for.
+    body.push(['local.set', `$${mslot}`, method])
+    if (idx == null && name === 'toString') body.push(
+      ['if', ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${mslot}`]], ['i64.const', TOMB_NAN]],
+        ['then', ['br', blk, inheritedObjectTag()]]])
     body.push(
-      ['local.set', `$${mslot}`, method],
       ['if', ptrTypeEq(['local.get', `$${mslot}`], PTR.CLOSURE),
         ['then',
           ['local.set', `$${prim}`, asI64(ctx.closure.call(typed(['local.get', `$${mslot}`], 'f64'), []))],
@@ -139,7 +138,7 @@ function toPrimitiveChain(node, v, order) {
   // An own toString shadows Object.prototype.toString. If every own callable
   // method returned an object (or was non-callable), no primitive exists.
   if (ownToString)
-    body.push(['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.TO_PRIMITIVE]]], ['throw', '$__jz_err', ['f64.const', ERR.TO_PRIMITIVE]])
+    body.push(['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.TO_PRIMITIVE)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.TO_PRIMITIVE)]])
   return typed(['block', blk, ...body], 'i64')
 }
 

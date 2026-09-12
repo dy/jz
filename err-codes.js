@@ -1,29 +1,7 @@
-/**
- * Central registry of `$__jz_err` runtime throw-site codes.
- *
- * Every one of jz's ~48 in-stdlib `(throw $__jz_err (f64.const N))` sites used
- * to throw the SAME sentinel `0` — a TypeError, a RangeError, a JSON.parse
- * SyntaxError and a bounds check were all indistinguishable to anything that
- * caught them (in-wasm `catch`, or the host boundary). This table gives each
- * site its own small integer, grouped by ECMAScript error class:
- *
- *   1xx  TypeError-class   — coercion, receiver-shape, callability checks
- *   2xx  RangeError-class  — bounds, size, precision
- *   3xx  SyntaxError/URIError-class — JSON.parse, decodeURI, base64/hex decode
- *
- * `fs.js` is NOT in this table: its throws forward real POSIX errno values
- * (OS-defined, not jz's own), untouched by this registry.
- *
- * LEAF MODULE — no imports. interop.js (the host boundary, outside the
- * compiler) pulls ERR_INFO to resolve a caught code to a message without
- * dragging in any compile machinery; module/*.js and src/ir.js (emit sites)
- * pull ERR for the numeric constants. Never import compile/emit/ir modules
- * here — that coupling is the one this file exists to avoid.
- *
- * Codes are part of neither the language surface nor a stability contract for
- * external consumers — they're an internal diagnostic aid. Renumbering is
- * safe; keep names stable within a session since messages are matched by
- * eye in the ledger, not machine-checked.
+/** Runtime error registry shared by emitters, catch materialization and interop.
+ *  Codes are private diagnostics; source observes ordinary Error objects.
+ *  Internal throws encode a reserved atom, so user-thrown numbers cannot collide.
+ *  fs.js forwards POSIX errno values independently of this registry.
  */
 
 /** The 7 built-in Error classes jz models. Class identity is carried by the
@@ -187,29 +165,8 @@ export const ERR_INFO = {
   [ERR.HEX_INVALID_DIGIT]: { name: 'SyntaxError', message: 'Invalid hex character' },
 }
 
-/** class name → contiguous [lo,hi] code runs, derived from ERR_INFO's sorted keys — not
- *  hand-picked "1xx/2xx/3xx" boundaries, so future ERR insertions/renumbering (licensed
- *  above: "Renumbering is safe") stay correct with no edit here.
- *
- *  NOT currently consumed by `instanceof` (audit-#8 P0-2, 2026-08-03, design-error
- *  correction): src/compile/emit.js's emitErrorInstanceof used to test an internally-
- *  thrown NUMBER code against these ranges and call a match "instanceof <Class>" —
- *  unsound, because a jz-internal code and a user's own `throw <sameNumber>` are
- *  bit-identical numbers with no tag to distinguish them (`export let f = x => x
- *  instanceof SyntaxError; f(300)` answered `true` for an arbitrary caller int). The
- *  range arm was deleted; internal-code catches are honestly `instanceof`-false now.
- *  Kept here, unused, as the exact data a future catch-site materialization (error-
- *  object-design.md §7 Slice C — build a real Error OBJECT for a caught internal code,
- *  instead of testing the raw number) would key off of to pick the right class/name. */
-export const ERR_CODE_RANGES = (() => {
-  const out = {}, sorted = Object.keys(ERR_INFO).map(Number).sort((a, b) => a - b)
-  let run = null
-  for (const code of sorted) {
-    const name = ERR_INFO[code].name
-    if (run && run.name === name && code === run.hi + 1) { run.hi = code; continue }
-    run = { name, lo: code, hi: code }
-    ;(out[name] ??= []).push(run)
-  }
-  for (const name of ERR_CLASS_NAMES) out[name] ??= []
-  return out
-})()
+/** Internal exception transport. Reserved atom 3 carries a code in its low word;
+ *  catch materializes an ordinary branded Error before source can observe it.
+ *  User-thrown numbers remain numbers, including values equal to these codes. */
+export const ERROR_CODE_HI = 0x7ff80003
+export const errorCodeLiteral = code => 'nan:0x80003' + code.toString(16).padStart(8, '0')

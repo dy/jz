@@ -12,6 +12,8 @@
  * @module ir/sentinels
  */
 
+import print from 'watr/print'
+import { ERROR_CODE_HI, ERR_CLASS_NAMES, ERR_INFO } from '../../err-codes.js'
 import { ctx, inc, PTR, LAYOUT } from '../ctx.js'
 import { VAL, lookupValType } from '../reps.js'
 import { valTypeOf } from '../kind.js'
@@ -290,6 +292,38 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
   bits => constI32(bits === NULL_NAN),
   (e) => typed(['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', NULL_NAN]], 'i32'))
 
+/** Catch is the only Wasm boundary where coded transport becomes observable.
+ *  Build one demanded decoder; ordinary thrown values pass through unchanged. */
+export function materializeErrorIR(value) {
+  ctx.module.include('string')
+  if (!ctx.core.stdlib.__catch_error) {
+    const arms = Object.entries(ERR_INFO).map(([code, info]) => {
+      // A name outside the modeled classes (btoa's InvalidCharacterError) still
+      // brands as Error, so `instanceof Error` holds as it does on the host,
+      // while the stored name keeps the real one the host also reports.
+      const sid = ctx.schema.errorSid(ERR_CLASS_NAMES.includes(info.name) ? info.name : 'Error')
+      ctx.schema.namedUses.push({ sid, funcName: '__catch_error' })
+      const msg = print(ctx.core.emit.str(info.message))
+      const name = print(ctx.core.emit.str(info.name))
+      return `(if (i32.eq (local.get $code) (i32.const ${code})) (then
+        (local.set $msg ${msg}) (local.set $name ${name})
+        (local.set $sid (i32.const ${sid})) (br $found)))`
+    }).join('')
+    ctx.core.stdlib.__catch_error = `(func $__catch_error (param $v f64) (result f64)
+      (local $code i32) (local $sid i32) (local $p i32) (local $msg f64) (local $name f64)
+      (if (i32.ne (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $v)) (i64.const 32)))
+                 (i32.const ${ERROR_CODE_HI})) (then (return (local.get $v))))
+      (local.set $code (i32.wrap_i64 (i64.reinterpret_f64 (local.get $v))))
+      (block $found ${arms} (return (local.get $v)))
+      (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${ctx.abi.object.ops.allocSlots(2)})))
+      (f64.store (local.get $p) (local.get $msg))
+      (f64.store offset=8 (local.get $p) (local.get $name))
+      (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid) (local.get $p)))`
+  }
+  inc('__catch_error', '__alloc_hdr', '__mkptr')
+  return typed(['call', '$__catch_error', value], 'f64')
+}
+
 /** Throw a schema-branded Error using the ordinary constructor and transport.
  * A numeric code cannot distinguish runtime errors from user-thrown numbers.
  * Call the registered intrinsic directly: a source binding may shadow its name.
@@ -306,6 +340,16 @@ export function throwErrorIR(className, message) {
 }
 
 export function throwTypeErrorIR(kind = 'read') {
+  // Own-memory literals belong to the lazy helper, so dead guards cannot
+  // leave their message data behind in an otherwise live caller.
+  if (!ctx.memory.shared) {
+    const helper = kind === 'call' ? '__throw_not_callable' : '__throw_property_nullish'
+    ctx.runtime.throws = true
+    ctx.module.include('string')
+    ctx.schema.errorSid('TypeError')
+    inc(helper)
+    return typed(['block', ['result', 'f64'], ['call', '$' + helper], ['unreachable']], 'f64')
+  }
   return throwErrorIR('TypeError', kind === 'call' ? 'is not a function' : 'Cannot read properties of undefined')
 }
 

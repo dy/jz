@@ -18,11 +18,10 @@ import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
-import { dataLen } from '../src/static-data.js'
 import { stringHash } from '../src/string-data.js'
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG } from '../layout.js'
 import { ssoEncode } from './string.js'
-import { ERR, ERR_INFO } from '../err-codes.js'
+import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { withControlFrame } from '../src/compile/flow-state.js'
 
@@ -193,21 +192,6 @@ export default (ctx) => {
   // self-compile's auto-scan would otherwise drop these helpers and every
   // kernel-compiled `.delete()` would trap.
   const relogDeps = () => needsDurableFwdLog() ? ['__durable_slot_relog', '__durable_slot_cancel'] : []
-  // Slice C (.message/.name on an in-wasm-caught INTERNAL error code — a raw
-  // f64 $__jz_err sentinel, never boxed into a real Error object; see
-  // module/core.js's buildErrorObject for the boxed-object twin of this
-  // table, and interop.js's decodeThrown for the host-side twin of __err_prop
-  // itself, same err-codes.js ERR_INFO source, same text). True exactly when
-  // module/core.js's emitDynGetExprTyped/emitDynGetAnyTyped saw a .message/
-  // .name read reach the dynamic dispatch on an own-memory build (the sole
-  // inc('__err_prop') site) — a program that never does pays nothing, and a
-  // shared-memory build never sets the flag at all (see that call site).
-  // errPropArm splices the WAT call; errPropDep mirrors it for the deps graph
-  // (belt-and-suspenders alongside the auto-derived regex scan — see ifExt).
-  const errPropArm = () => ctx.core.includes.has('__err_prop')
-    ? '(call $__err_prop (local.get $obj) (local.get $key) (local.get $h))'
-    : `(i64.const ${UNDEF_NAN})`
-  const errPropDep = () => ctx.core.includes.has('__err_prop') ? ['__err_prop'] : []
   deps({
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
@@ -271,20 +255,12 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    // errPropDep: Slice C (.message/.name on an in-wasm-caught internal error
-    // code) — the three real-number bail-out arms below call $__err_prop only
-    // when errPropArm's own inc('__err_prop') gate fired (module/core.js's
-    // emitDynGetExprTyped/emitDynGetAnyTyped, own-memory builds only). The
-    // auto-derived regex scan (resolveIncludes) already finds a conditionally
-    // spliced `(call $__err_prop …)` once it's actually in the realized text —
-    // this explicit edge is the same belt-and-suspenders precedent as the
-    // other conditional entries in this table (e.g. __dyn_get_any_t below).
-    __dyn_get_t_h: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...errPropDep()],
-    __dyn_get_t_hm: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...errPropDep()],
+    __dyn_get_t_h: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
+    __dyn_get_t_hm: () => ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
-    __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h', ...errPropDep()],
+    __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
     __dyn_get_expr_h: ['__dyn_get_expr_t_h', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
@@ -293,9 +269,8 @@ export default (ctx) => {
       ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd']
       : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_any_t_h: () => [
-      '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []), ...errPropDep(),
+      '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
     ],
-    __err_prop: ['__str_eq'],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
@@ -791,7 +766,7 @@ export default (ctx) => {
       // spec GroupBy step 2: IsCallable(callbackfn) — throw before iterating,
       // not an indirect-call trap mid-loop
       ['if', ['i32.eqz', ptrTypeEq(typed(['local.get', `$${cb}`], 'f64'), PTR.CLOSURE)],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.GROUP_BY_CALLBACK]]], ['throw', '$__jz_err', ['f64.const', ERR.GROUP_BY_CALLBACK]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.GROUP_BY_CALLBACK)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.GROUP_BY_CALLBACK)]]]],
       ['local.set', `$${result}`, initResult],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
@@ -885,7 +860,7 @@ export default (ctx) => {
       (then (return (local.get $v))))
     ;; functions / host handles: DataCloneError
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.CLONE_UNCLONEABLE}))) (throw $__jz_err (f64.const ${ERR.CLONE_UNCLONEABLE}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.CLONE_UNCLONEABLE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.CLONE_UNCLONEABLE)}))))
     ;; already cloned? (cycle / diamond sharing) — __map_get yields raw i64 bits
     (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
     (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
@@ -1294,25 +1269,6 @@ export default (ctx) => {
   // template at module-init froze hasSchemas to false and dropped the arm
   // for any schema registered later in the compile (the common case for
   // anonymous-literal arguments crossing call boundaries).
-  // Schema-arm key compare uses i64.eq instead of __str_eq: schema keys and
-  // the call-site key both come from the interned string pool (same NaN-box
-  // bits for identical literals), so bit-equality is correct and skips a
-  // per-iter function call. Real-world strings sharing prefix bytes are not
-  // a concern here — keys are static literals from the source program.
-  // Schema-arm key compare: i64.eq first for the static-shape case (compile-time
-  // schemas hold pool-interned keys with identical NaN-box bits as call-site
-  // literals — single bit-eq decides). Falls back to __str_eq when bits differ
-  // so runtime-registered schemas (e.g. JSON.parse OBJECTs whose keys are
-  // freshly heap-allocated by __jp_str) still resolve correctly.
-  // If-expression, NOT i32.or: `or` evaluates both arms, calling __str_eq even
-  // when the bit-eq already decided — that bare call per schema-key step was
-  // the hottest __str_eq producer in the self-compile (the kernel includes __jp
-  // for optJSON, so the fallback arm is always compiled in).
-  // The __str_eq fallback (JSON-parsed heap keys) is prefixed by an inline
-  // one-SSO⇒ne test when SSO is on: any SSO operand with unequal bits cannot
-  // content-match (≤6-ASCII⇒SSO invariant, module/string.js), so the call —
-  // the hottest __str_eq producer in the self-compile — is skipped for every
-  // SSO-keyed miss step; only heap-vs-heap candidates still pay it.
   // Types allocated via __alloc_hdr/__alloc_hdr_n (see core.js) reserve a 16-byte
   // header with a propsPtr slot at off-16: ARRAY, OBJECT, TYPED, SET, MAP. HASH is
   // its own storage (no sidecar — handled by its own dedicated arm). Every OTHER
@@ -1460,21 +1416,15 @@ export default (ctx) => {
   const dynGetBody = (name, missNan, sidecarGet) => {
     const presence = missNan !== UNDEF_NAN
     const miss = `(i64.const ${missNan})`
-    // err_prop reads undefined for a key it does not decode: the presence probe
-    // reports that as a miss.
-    const errProp = !presence ? errPropArm()
-      : `(block (result i64) (local.set $val ${errPropArm()})
-          (select (i64.const ${TOMB_NAN}) (local.get $val) (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))))`
     return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals(presence)}
     ;; Real-number receiver, f===f since pointers are NaN-boxed, has no props: bail
     ;; before treating its bits as a heap offset -- a number's own dot/bracket
-    ;; read stays undefined, not OOB. err_prop below decodes .message/.name for
-    ;; a caught internal error code; every other key still reads undefined.
+    ;; read stays undefined, not OOB.
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then (return ${errProp})))
+      (then (return ${miss})))
     ;; STRING receiver + 'length' key → code-unit length directly. Strings are
     ;; primitives — they can never carry dyn props, yet an SSO string's packed
     ;; chars LOOK like a tiny durable heap offset, so \`op.length\` in a parser
@@ -1769,16 +1719,13 @@ export default (ctx) => {
 
   // Prehashed variant of __dyn_get_expr_t for constant string keys: the FNV hash
   // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
-  // Thunked (not a plain string) so errPropArm reads ctx.core.includes at pull
-  // time, after emission has settled whether .message/.name was ever reached.
   ctx.core.stdlib['__dyn_get_expr_h'] = `(func $__dyn_get_expr_h (param $obj i64) (param $key i64) (param $h i32) (result i64)
     (call $__dyn_get_expr_t_h (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (local.get $h)))`
 
   ctx.core.stdlib['__dyn_get_expr_t_h'] = () => `(func $__dyn_get_expr_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
     ;; Real-number receiver -- no props; guard the HASH arm OOB, see __dyn_get_expr_t.
-    ;; err_prop decodes .message/.name for a caught internal error code below.
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then (return ${errPropArm()})))
+      (then (return (i64.const ${UNDEF_NAN}))))
     ;; HASH receivers first — same wasted-chain argument as __dyn_get_expr_t.
     (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
       (then (return (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))))
@@ -1858,9 +1805,8 @@ export default (ctx) => {
     return `(func $__dyn_get_any_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
     (local $val i64)
     ;; Real-number receiver -- no dynamic props, see __dyn_get_any_t; guard the OOB.
-    ;; err_prop decodes .message/.name for a caught internal error code below.
     (if (result i64) (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then ${errPropArm()})
+      (then (i64.const ${UNDEF_NAN}))
       (else
         (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
           (then (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))
@@ -1870,65 +1816,6 @@ export default (ctx) => {
               (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
               (then (local.get $val))
               (else ${extArm})))))))`
-  }
-
-  // Slice C of the error-object model (.work/archive/todo.md): .message/.name on a
-  // real-number receiver that a catch(e) bound to an in-wasm-caught INTERNAL
-  // $__jz_err code (err-codes.js's ERR/ERR_INFO -- module/json.js's JSON.parse
-  // throw is one of ~48 sites). A user-thrown Error is a real PTR.OBJECT with
-  // its own schema (module/core.js's buildErrorObject) and never reaches this
-  // arm at all; a builtin code is a bare f64 sentinel with no such object, so
-  // .message/.name used to fall through the real-number bail-out above and
-  // read undefined -- exactly like `(5).foo`, then crash if the caller chained
-  // a further method call onto that undefined (a separate, pre-existing gap,
-  // not this table's job to close). This table makes the two properties read
-  // the same text interop.js's host-side decodeThrown already resolves the
-  // SAME code to (identical err-codes.js ERR_INFO source), so an in-wasm catch
-  // and an escaping throw agree.
-  //
-  // Only ever called from the real-number arms above, and only spliced in at
-  // all when errPropArm's own inc('__err_prop') fired (module/core.js) -- an
-  // own-memory build where some .message/.name read reached the dynamic
-  // dispatch. ctx.core.emit['str'] is called directly here (the raw handler,
-  // not the emit() dispatcher, which assumes an active function context this
-  // pull-time thunk doesn't have); an own-memory string literal always folds
-  // to a plain f64.const constant, so its hex text splices straight into the
-  // template below -- no data-segment offset arithmetic to hand-format.
-  ctx.core.stdlib['__err_prop'] = () => {
-    const strBits = (text) => ctx.core.emit['str'](text)[1]
-    // Same coarse-vs-final-reachability gap as __throw_property_nullish
-    // (module/core.js, see its own doc): this thunk realizes whenever SOME
-    // .message/.name read reached the dynamic dispatch during emission
-    // (maybeIncErrProp), which can still resolve to a receiver type that never
-    // dispatches through here once optimizeModule finishes. Every key string
-    // below (up to ~2×|ERR_INFO|, the largest single interning site in the
-    // stdlib) is baked as a literal NaN-boxed bit pattern into THIS function's
-    // own body only — record the span so stripDeadInternedSpans can reclaim it
-    // once __err_prop's real liveness is known; a no-op on any re-realize
-    // (dataDedup already holds every string, dataLen() doesn't move).
-    const spanStart = dataLen()
-    const msgHash = strHashLiteral('message')
-    const nameHash = strHashLiteral('name')
-    const msgKeyBits = strBits('message')
-    const nameKeyBits = strBits('name')
-    const codeArms = Object.entries(ERR_INFO).map(([code, info]) => `
-    (if (f64.eq (local.get $f) (f64.const ${code}))
-      (then (return (select
-        (i64.reinterpret_f64 (f64.const ${strBits(info.message)}))
-        (i64.reinterpret_f64 (f64.const ${strBits(info.name)}))
-        (local.get $isMessage)))))`).join('')
-    if (dataLen() > spanStart) ctx.runtime.reclaimSpans.push({ fn: '$__err_prop', start: spanStart, end: dataLen() })
-    return `(func $__err_prop (param $obj i64) (param $key i64) (param $h i32) (result i64)
-    (local $f f64) (local $isMessage i32) (local $isName i32)
-    (local.set $f (f64.reinterpret_i64 (local.get $obj)))
-    (if (i32.eq (local.get $h) (i32.const ${msgHash}))
-      (then (local.set $isMessage (call $__str_eq (local.get $key) (i64.reinterpret_f64 (f64.const ${msgKeyBits}))))))
-    (if (i32.eqz (local.get $isMessage))
-      (then (if (i32.eq (local.get $h) (i32.const ${nameHash}))
-        (then (local.set $isName (call $__str_eq (local.get $key) (i64.reinterpret_f64 (f64.const ${nameKeyBits}))))))))
-    (if (i32.eqz (i32.or (local.get $isMessage) (local.get $isName)))
-      (then (return (i64.const ${UNDEF_NAN}))))${codeArms}
-    (i64.const ${UNDEF_NAN}))`
   }
 
   // Hot for `node.loc = pos` patterns (e.g. watr's parser tags every nested level).
@@ -2520,7 +2407,7 @@ export default (ctx) => {
     const ptrType = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'], bind,
       ['if', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ITERATE_NULLISH]]], ['throw', '$__jz_err', ['f64.const', ERR.ITERATE_NULLISH]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]]],
       ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.SET]],
         ['then', collKeysFromTemp(t, SET_ENTRY)],
         ['else', ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.MAP]],

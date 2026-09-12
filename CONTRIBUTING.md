@@ -88,6 +88,22 @@ unknown. Allocating
 helpers cannot be speculated before zero-trip loops or crossed by allocator-global
 reads.
 
+Internal exceptions carry a private tagged code until a source catch materializes
+an ordinary branded Error. User-thrown numbers remain numbers. Property dispatch
+has no error-code lookup: caught errors use the same fields and class checks as
+constructed errors. Canonical TypeErrors share lazy runtime helpers, so dead
+guards can shed both their code and message data. A catch without a binding
+consumes the transport directly, without constructing an unobservable Error.
+Unused generated error signals disappear at link; explicit source throws retain
+the host channel. Generated Wasm and interop must
+be rebuilt together when this internal transport changes.
+
+Coercion distinguishes a fixed method slot, proven absence and an unresolved
+layout. Only proven absence selects an inherited method; unresolved layouts use
+the existing property-presence probe. Calls evaluate their receiver, property and
+arguments once, in source order, before checking callability. Nullish member reads
+throw before arguments run.
+
 Prepare uses one shape-consensus check for declarations and assignments.
 Source shapes remain separate from layouts extended by property writes or
 `Object.assign`: replacing a record cannot inherit the earlier instance's

@@ -26,7 +26,7 @@
 
 import { wasi, attachTimers } from './wasi.js'
 import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux } from './layout.js'
-import { ERR_INFO } from './err-codes.js'
+import { ERROR_CODE_HI, ERR_INFO } from './err-codes.js'
 
 // UTF-8 codecs for Wasm metadata. String values use lossless UTF-16 marshalling.
 const TEXT_ENC = new TextEncoder()
@@ -1030,7 +1030,9 @@ export const wrap = (memSrc, inst, state) => {
     if (lastErrBitsWritable) lastErrBits.value = 0n
     // Memoryless module: the thrown value is a number/atom/SSO string — decode it
     // from bits. (A heap Error/string can only exist when the module has memory.)
-    const value = mem ? mem.read(errBits) : decode(errBits)
+    const code = Number(errBits >> 32n) === ERROR_CODE_HI ? Number(errBits & 0xffffffffn) : null
+    const info = code == null ? undefined : ERR_INFO[code]
+    const value = code == null ? (mem ? mem.read(errBits) : decode(errBits)) : code
     if (value instanceof Error) throw value
     // A real jz Error object (audit-#9 P0-2 brand redesign, error-object-
     // design.md §1: PTR.OBJECT, schema ['message','name']) decodes via
@@ -1056,15 +1058,8 @@ export const wrap = (memSrc, inst, state) => {
         throw wrapped
       }
     }
-    // A plain NUMBER matching the $__jz_err code registry (src/err-codes.js) is a
-    // jz-internal runtime throw (bounds/coercion/parse — piece 1's per-site codes,
-    // fs.js's real errno is NOT in the registry and falls to the generic branch
-    // below); resolve it to the real ECMAScript error class it models — a genuine
-    // `instanceof SyntaxError`/`TypeError`/etc., not a generic Error with a
-    // prefixed message. `wrapped.thrown` always keeps the ORIGINAL code — an
-    // in-wasm catch (or a caller inspecting `.thrown`) still sees the raw number,
-    // undecoded.
-    const info = typeof value === 'number' ? ERR_INFO[value] : undefined
+    // Only the private transport tag identifies an internal code. A user
+    // number, including a colliding code, retains the generic thrown-value API.
     const Ctor = info ? (globalThis[info.name] ?? Error) : Error
     const wrapped = info ? new Ctor(info.message)
       : new Error(typeof value === 'string' ? value : String(value))

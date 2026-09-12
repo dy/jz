@@ -20,7 +20,7 @@ import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
-import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, materializeMulti } from './call-args.js'
+import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable, materializeMulti } from './call-args.js'
 import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { stringOps } from './shared.js'
@@ -728,7 +728,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
     if (!closureOnly) { inc('__ext_call'); setLinkDemand('external') }
     // The closure leg passes its arguments inline (the closure ABI's slots);
     // only a spread call, or the host leg's `__ext_call`, needs them as an
-    // array. With both legs the arguments are evaluated once into temps,
+    // array. Arguments are evaluated once before the callability check,
     // after the receiver and the property read (JS order), and each leg
     // reads the temps: the array is built inside the host leg alone.
     const setup = []
@@ -739,48 +739,58 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
       setup.push(['local.set', `$${arrTmp}`, asF64(arrayIR)])
       closureArgs = [typed(['local.get', `$${arrTmp}`], 'f64')]
       extArrayIR = ['local.get', `$${arrTmp}`]
-    } else if (closureOnly) closureArgs = parsed.normal
-    else {
+    } else {
       const tmps = parsed.normal.map((a, i) => { const t = temp('marg'); setup.push(['local.set', `$${t}`, ctx.closure.argIR(a)]); return t })
       closureArgs = tmps.map(t => typed(['local.get', `$${t}`], 'f64'))
-      const arr = allocPtr({ type: PTR.ARRAY, len: tmps.length, tag: 'margs' })
-      extArrayIR = ['block', ['result', 'f64'], arr.init,
-        ...tmps.map((t, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], ['local.get', `$${t}`]]),
-        arr.ptr]
+      if (!closureOnly) {
+        const arr = allocPtr({ type: PTR.ARRAY, len: tmps.length, tag: 'margs' })
+        extArrayIR = ['block', ['result', 'f64'], arr.init,
+          ...tmps.map((t, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], ['local.get', `$${t}`]]),
+          arr.ptr]
+      }
     }
-    const extFallback = closureOnly ? undefExpr()
-      : ['if', ['result', 'f64'],
-          ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
+    const missing = throwTypeErrorIR('call')
+    const fallback = closureOnly ? missing
+      : ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
           ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
             ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
             ['i64.reinterpret_f64', asF64(emit(['str', method]))],
             ['i64.reinterpret_f64', extArrayIR]]]],
-          ['else', undefExpr()]]
-    const nativeCall = ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread)
+          ['else', missing]]
+    const dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
+      ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread)],
+      ['else', fallback]]
     return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
+      ...(slot < 0 && (vt == null || censusMaybeUndefined(obj))
+        ? [['if', isNullish(typed(['local.get', `$${objTmp}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]]]
+        : []),
       ['local.set', `$${propTmp}`, propRead],
-      ...setup,
-      ['if', ['result', 'f64'],
-        ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
-        ['then', nativeCall],
-        ['else', extFallback]])
+      ...setup, dispatch)
   }
 }
 
 // 12. Unknown callee — assume external method. Total: always returns.
 function externalMethodFallback({ obj, method, parsed }) {
-  // A receiver with a KNOWN jz-native kind (linear-memory value) has no host
-  // prototype behind it — every native strategy above declined, so the method
-  // is simply missing and __ext_call could only marshal garbage / return
-  // undefined at runtime. Fail at compile in every mode, like strict does.
-  // OBJECT/HASH are exempt: their property sets are user data, not a closed
-  // builtin table — `o.x()` may resolve to a closure slot at runtime (and when
-  // it doesn't, the documented lowering is undefined, host's TypeError shape).
-  // (Host values carry no static kind, so a null kind keeps the fallback.)
+  // Missing builtins remain unsupported; missing own record methods throw.
+  // Unknown receivers may still be host objects, dispatched below.
   const vt = typeof obj === 'string' ? (lookupValType(obj) ?? valTypeOf(obj)) : valTypeOf(obj)
   if (vt != null && vt !== VAL.OBJECT && vt !== VAL.HASH)
     err(`\`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` — '${method}' is not implemented for a ${vt} receiver, and jz-native values have no host fallthrough (the call could only yield undefined). Check the method name; if it's a real JS API, it's a missing jz builtin.`)
+  if (vt === VAL.OBJECT || vt === VAL.HASH) {
+    // GetV(obj, method) on a nullish base throws during the property read, so
+    // the arguments stay unevaluated on that arm; a present receiver evaluates
+    // them and then throws for the non-callable member. Both arms throw, so the
+    // test costs nothing a run reaches — no maybe-undefined census gates it,
+    // and that census under-approximates an out-of-bounds element read anyway.
+    const rt = temp('mrecv')
+    const recv = () => typed(['local.get', `$${rt}`], 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${rt}`, asF64(emit(obj))],
+      ['if', ['result', 'f64'], isNullish(recv()),
+        ['then', throwTypeErrorIR()],
+        ['else', emitNonCallable(obj, parsed, recv())]]], 'f64')
+  }
   if (ctx.transform.strict)
     err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
   // RequireObjectCoercible (ES 13.3 — the nullish-receiver

@@ -18,7 +18,7 @@ import { stringBytes } from '../src/string-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
-import { ERR } from '../err-codes.js'
+import { errorCodeLiteral, ERR } from '../err-codes.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
 // Number, parseFloat and JSON.parse share decimal accumulation and rounding.
@@ -542,7 +542,7 @@ export default (ctx) => {
     (local $buf i32) (local $pos i32) (local $neg i32) (local $iv i64) (local $r i64) (local $rf f64)
     (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32) (local $rv f64)
     (if (i32.or (i32.lt_s (local.get $radix) (i32.const 2)) (i32.gt_s (local.get $radix) (i32.const 36)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.NUMBER_RADIX}))) (throw $__jz_err (f64.const ${ERR.NUMBER_RADIX}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.NUMBER_RADIX)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.NUMBER_RADIX)}))))
     (if (i32.or (f64.ne (local.get $val) (local.get $val)) (f64.eq (f64.abs (local.get $val)) (f64.const inf)))
       (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
     (local.set $buf (call $__alloc (i32.const 360)))
@@ -1497,7 +1497,7 @@ export default (ctx) => {
     ;; aux 0, so type==0 && aux>=16 uniquely identifies a Symbol.
     (if (i32.and (i32.eqz (local.get $t))
                  (i32.ge_u (call $__ptr_aux (local.get $v)) (i32.const 16)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.SYMBOL_TO_NUMBER}))) (throw $__jz_err (f64.const ${ERR.SYMBOL_TO_NUMBER}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.SYMBOL_TO_NUMBER)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.SYMBOL_TO_NUMBER)}))))
     ;; Dynamic BigInt is always tagged; ToNumber reads its mathematical i64
     ;; payload. Raw BigInt is confined to statically-proven paths.
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
@@ -1604,7 +1604,7 @@ export default (ctx) => {
     (if (i32.eqz (i32.and
           (f64.eq (local.get $n) (f64.trunc (local.get $n)))
           (f64.lt (f64.abs (local.get $n)) (f64.const inf))))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.NUMBER_TO_BIGINT_RANGE}))) (throw $__jz_err (f64.const ${ERR.NUMBER_TO_BIGINT_RANGE}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.NUMBER_TO_BIGINT_RANGE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.NUMBER_TO_BIGINT_RANGE)}))))
     (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $n))))`
 
   // StringToBigInt (ES2024 7.1.14): the whole trimmed string must be a single
@@ -1703,7 +1703,7 @@ export default (ctx) => {
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (f64.reinterpret_i64 (i64.load (call $__ptr_offset (local.get $v)))))))
     (if (i32.or (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_NULLISH}))) (throw $__jz_err (f64.const ${ERR.BIGINT_NULLISH}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_NULLISH)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_NULLISH)}))))
     (if (i64.eq (local.get $v) (i64.const ${TRUE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 1)))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
@@ -1712,8 +1712,8 @@ export default (ctx) => {
     (local.set $status)
     (local.set $result)
     (if (local.get $status)
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.convert_i32_s (local.get $status))))
-        (throw $__jz_err (f64.convert_i32_s (local.get $status)))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.reinterpret_i64 (i64.or (i64.const 0x7ff8000300000000) (i64.extend_i32_u (local.get $status))))))
+        (throw $__jz_err (f64.reinterpret_i64 (i64.or (i64.const 0x7ff8000300000000) (i64.extend_i32_u (local.get $status)))))))
     (f64.reinterpret_i64 (local.get $result)))`
 
   // IsLooselyEqual (ES2024 7.2.14) with a BigInt on one side, its payload

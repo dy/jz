@@ -80,6 +80,7 @@ export default (ctx) => {
     __length_prop_num: () => ['__to_num',
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
+    __throw_not_callable: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
@@ -1459,21 +1460,6 @@ export default (ctx) => {
       : useUntyped(receiver)
   }
 
-  // Slice C of the error-object model (.work/archive/todo.md): a .message/.name read
-  // whose receiver's kind isn't proven reaches the dynamic dispatch below,
-  // which is also the ONLY place a real-number receiver (a catch(e)-bound
-  // internal $__jz_err code, never boxed into an Error object) can decode its
-  // class's message/name text (module/collection.js's __err_prop, gated on
-  // this inc()). Own-memory builds only: __err_prop bakes its message/name
-  // table via ctx.core.emit['str'] at stdlib-pull time, after shared memory's
-  // __start byte-copy length is already fixed (see __err_prop's own comment).
-  // Conservative per the design's own scope: fires on the PROP NAME alone,
-  // not on proof the receiver could be one of jz's ~48 internal codes — same
-  // granularity src/autoload.js's includeForProperty already uses program-
-  // wide, so an ordinary object's own .message/.name field costs nothing
-  // extra (the table itself is reachability-pruned when never referenced).
-  const maybeIncErrProp = (prop) => { if ((prop === 'message' || prop === 'name') && !ctx.memory.shared) inc('__err_prop') }
-
   function emitDynGetExprTyped(base, key, vt, prop) {
     // Constant string key: fold the FNV hash at compile time and call the
     // prehashed body — no __str_hash on every access.
@@ -1481,7 +1467,6 @@ export default (ctx) => {
       ctx.module.include('collection')
       ctx.module.include('array')
       inc('__dyn_get_expr_t_h')
-      maybeIncErrProp(prop)
       return withReceiverTag(base, vt, (receiver, typeTag) => {
         const call = ['call', '$__dyn_get_expr_t_h', receiver, key, typeTag, ['i32.const', strHashLiteral(prop)]]
         // Schema-set devirt marker, with the same contract as emitDynGetAnyTyped below
@@ -1514,7 +1499,6 @@ export default (ctx) => {
     // prehashed body — no __str_hash on every access (hot for `parse.step` etc).
     if (typeof prop === 'string') {
       inc('__dyn_get_any_t_h')
-      maybeIncErrProp(prop)
       return withReceiverTag(base, vt, (receiver, typeTag) => {
         const call = ['call', '$__dyn_get_any_t_h', receiver, key, typeTag, ['i32.const', strHashLiteral(prop)]]
         // Schema-set devirt marker: the optimizer (devirtSchemaReads) rewrites this
@@ -1838,6 +1822,8 @@ export default (ctx) => {
   // .name/.message and host decoding.
   ctx.core.stdlib['__throw_property_nullish'] = () => throwErrorWat(ctx,
     '__throw_property_nullish', 'TypeError', 'Cannot read properties of undefined')
+  ctx.core.stdlib['__throw_not_callable'] = () => throwErrorWat(ctx,
+    '__throw_not_callable', 'TypeError', 'is not a function')
 
   const rawLengthPropArm = () => lengthNeedsDynArm()
     ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`

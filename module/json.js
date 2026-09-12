@@ -18,7 +18,7 @@ import { DEC_SIGNIFICAND, sciExponent, EL_SCALE } from './number.js'
 import { heapResetWat, stringIndexWat } from './collection.js'
 import { RESERVED as ATOM_RESERVED } from './symbol.js'
 import { throwErrorWat } from './core/error-object.js'
-import { ERR } from '../err-codes.js'
+import { errorCodeLiteral, ERR } from '../err-codes.js'
 
 function jsonConstString(ctx, expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
@@ -458,11 +458,11 @@ export default (ctx) => {
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (global.get $__jsp)))
       (if (i64.eq (i64.load (i32.add (local.get $st) (i32.shl (local.get $i) (i32.const 3)))) (local.get $val))
-        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.JSON_CIRCULAR}))) (throw $__jz_err (f64.const ${ERR.JSON_CIRCULAR}))))
+        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.JSON_CIRCULAR)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.JSON_CIRCULAR)}))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     ;; A structure deeper than the buffer is treated as non-serializable.
-    (if (i32.ge_s (global.get $__jsp) (i32.const 256)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.JSON_TOO_DEEP}))) (throw $__jz_err (f64.const ${ERR.JSON_TOO_DEEP}))))
+    (if (i32.ge_s (global.get $__jsp) (i32.const 256)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.JSON_TOO_DEEP)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.JSON_TOO_DEEP)}))))
     (i64.store (i32.add (local.get $st) (i32.shl (global.get $__jsp) (i32.const 3))) (local.get $val))
     (global.set $__jsp (i32.add (global.get $__jsp) (i32.const 1))))`
 
@@ -541,7 +541,7 @@ export default (ctx) => {
     ;; throws for statically-proven BigInt; this arm covers the dynamic case, a
     ;; tagged box reaching the runtime walker from a kind-merge in any position.
     (if (i32.eq (local.get $type) (i32.const ${PTR.BIGINT}))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.JSON_BIGINT}))) (throw $__jz_err (f64.const ${ERR.JSON_BIGINT}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.JSON_BIGINT)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.JSON_BIGINT)}))))
     ;; Unknown type → null
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`
@@ -1501,7 +1501,7 @@ ${localDecls}
     ;; Any non-whitespace byte after the top-level value is a syntax error.
     ${WS}
     (if (i32.ne ${PEEK} (i32.const -1)) (then (global.set $__jp_err (i32.const 1))))
-    (if (global.get $__jp_err) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.JSON_PARSE_SYNTAX}))) (throw $__jz_err (f64.const ${ERR.JSON_PARSE_SYNTAX}))))
+    (if (global.get $__jp_err) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.JSON_PARSE_SYNTAX)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.JSON_PARSE_SYNTAX)}))))
     (local.get $r))`
 
   // === Emitters ===
@@ -1532,7 +1532,7 @@ ${localDecls}
       const lv = literalValue(x)
       if (valTypeOf(x) === VAL.BIGINT || (lv !== NOT_LIT && literalHasBigInt(lv))) {
         ctx.runtime.throws = true
-        return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.JSON_BIGINT]]], ['throw', '$__jz_err', ['f64.const', ERR.JSON_BIGINT]]], 'f64')
+        return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.JSON_BIGINT)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.JSON_BIGINT)]]], 'f64')
       }
     }
     const folded = foldStringify(x, replacer, space)

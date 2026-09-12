@@ -28,7 +28,7 @@ import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { dataAlign, dataPush, dataLen, strPoolPush } from '../src/static-data.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
-import { ERR } from '../err-codes.js'
+import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { stringBytes, stringHash } from '../src/string-data.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { registerUri } from './string/uri.js'
@@ -1755,7 +1755,7 @@ export default (ctx) => {
   const regexpSearchGuard = (search) => {
     if (valTypeOf(search) !== VAL.REGEX) return null
     ctx.runtime.throws = true
-    return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.STRING_SEARCH_REGEX]]], ['throw', '$__jz_err', ['f64.const', ERR.STRING_SEARCH_REGEX]]], 'f64')
+    return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.STRING_SEARCH_REGEX)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.STRING_SEARCH_REGEX)]]], 'f64')
   }
 
   bind('.string:includes', (str, search, from) => {
@@ -2206,7 +2206,7 @@ export default (ctx) => {
             (f64.ne (f64.trunc (local.get $cpf)) (local.get $cpf))
             (f64.lt (local.get $cpf) (f64.const 0)))
           (f64.gt (local.get $cpf) (f64.const 0x10FFFF)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.FROM_CODE_POINT_RANGE}))) (throw $__jz_err (f64.const ${ERR.FROM_CODE_POINT_RANGE}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.FROM_CODE_POINT_RANGE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.FROM_CODE_POINT_RANGE)}))))
     (i32.trunc_sat_f64_s (local.get $cpf)))`)
 
   wat('__codepoint_string', `(func $__codepoint_string (param $cp i32) (result f64)

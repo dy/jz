@@ -5,7 +5,7 @@
  */
 
 import { fold } from 'watr/optimize'
-import { ERR } from '../../../err-codes.js'
+import { errorCodeLiteral, ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
 import { ctx, err } from '../../ctx.js'
 import {
@@ -177,8 +177,8 @@ export function bigIntNumericOperand(node, code, what) {
   const isBig = domain === 'tagged' ? isBigIntBox(get, t) : ['i32.eqz', isUndef(get)]
   ctx.runtime.throws = true
   const throwIR = typed(['block', ['result', 'f64'],
-    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
-    ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(code)]]],
+    ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(code)]]], 'f64')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
     ['if', ['result', 'f64'], isBig,
@@ -306,8 +306,8 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, numGeneri
   const flagA = partnerA ? null : fta ? ['local.get', `$${fta}`] : flagIR(domA, getA)
   const flagB = partnerB ? null : ftb ? ['local.get', `$${ftb}`] : flagIR(domB, getB)
   const throwIR = typed(['block', ['result', 'f64'],
-    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
-    ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]], 'f64')
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]]],
+    ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]]], 'f64')
   // Per-operand CARRIER_BOX unbox, scoped to EXACTLY the 'census' domain
   // (a dict/Map value census-classified BIGINT — the container's own live
   // carrier for a real BigInt is a boxed PTR.BIGINT pointer under
@@ -432,8 +432,8 @@ export function bigIntOperand(node) {
     ['local.set', `$${t}`, asF64(v)],
     ['if', isUndef(['local.get', `$${t}`]),
       ['then',
-        ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
-        ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]]]],
+        ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]]],
+        ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]]]],
     bits], 'i64')
 }
 

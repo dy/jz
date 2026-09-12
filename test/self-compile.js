@@ -47,6 +47,8 @@ test('self-compile: build a fresh compiler', () => {
 // [label, source, expected-main()-result]. Picked to cover the major
 // emit paths (arith, calls, loops, strings, arrays, objects, closures).
 const SAMPLES = [
+  ['caught-error-brand', `export function main(){try{JSON.parse('x')}catch(e){return e instanceof SyntaxError}}`, true],
+  ['thrown-code-number', `export function main(){try{throw 300}catch(e){return e===300 && e.message===undefined && !(e instanceof Error)}}`, true],
   ['unicode-escapes', String.raw`export let main = () => "\xff\u0100\uD83D\uDE00\u{1F600}"`, 'ÿĀ😀😀'],
   ['unicode-template', 'export let main = () => `\\u{D83D}\\uDE00`', '😀'],
   ['unicode-construction', 'export let main = () => String.fromCharCode(256, 0xD83D, 0xDE00) + String.fromCodePoint(0x1D800)', 'Ā😀𝠀'],

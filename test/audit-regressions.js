@@ -1,8 +1,9 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { instantiate } from '../interop.js'
 import { onKernel, levels } from './_matrix.js'
-import { funcWat, oracle } from './util.js'
+import { funcWat, oracle, agree } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dictCapacity } from '../src/static.js'
 import { stringHash } from '../src/string-data.js'
@@ -615,5 +616,141 @@ test('audit: intrinsic calls retain excess argument effects before the operation
   for (const optimize of TIERS) {
     const got = jz(src, { optimize }).exports
     for (const name of ['f', 'g', 'h']) is(got[name](), expected[name](), `${name} ${optimize}`)
+  }
+})
+
+
+test('audit: missing record methods throw after argument evaluation', () => {
+  for (const optimize of TIERS) for (const init of [
+    'let p={x:1,y:()=>2};p={x:3}',
+    'let p={x:3}',
+    'let p={y:42}',
+    'let p={y:()=>2};p.y=undefined',
+  ]) {
+    agree(`export function f(){let n=0;${init};try{p.y(n++,n+=2)}catch(e){return [n,e instanceof TypeError]}}`, 'f', [], { optimize })
+    agree(`export function f(){let n=0;${init};try{p.y(...[n++,n+=2])}catch(e){return [n,e instanceof TypeError]}}`, 'f', [], { optimize })
+    agree(`export function f(){${init};try{p.y((()=>{throw 42})())}catch(e){return e}}`, 'f', [], { optimize })
+  }
+})
+
+test('audit: caught internal errors use ordinary Error identity', () => {
+  const src = `
+    function fail(mode) {
+      if(mode===0) JSON.parse('x')
+      if(mode===1) { const a=[1]; a.with(2,0) }
+      if(mode===2) BigInt('z')
+      if(mode===3) decodeURIComponent('%')
+      if(mode===4) { const a=new Int32Array(1); Atomics.load(a,-1) }
+      if(mode===5) throw 300
+      if(mode===6) throw null
+      if(mode===7) throw NaN
+      if(mode===8) throw -0
+      if(mode===10) { const o={a:1}; o.b=o; JSON.stringify(o) }
+      if(mode===11) { let a=null; const [x]=a }
+      if(mode===12) btoa('\u{1F600}')
+    }
+    export function f(mode) {
+      let first, n=0
+      try {
+        try { fail(mode) } catch(e) { first=e; throw e }
+        finally { n++ }
+      } catch(e) {
+        return [n,Object.is(first,e),typeof e,e instanceof Error,
+          e instanceof SyntaxError,e instanceof RangeError,e instanceof URIError,
+          // TypeError-class codes, and btoa's name outside the modeled classes,
+          // must reach the host with the same identity the host itself gives them.
+          e instanceof TypeError]
+      }
+      return [n]
+    }
+    export function distinct() {
+      let a,b
+      try { JSON.parse('x') } catch(e) { a=e }
+      try { JSON.parse('x') } catch(e) { b=e }
+      a.message='changed'
+      return [a!==b,a.message,b.message,a instanceof SyntaxError,b instanceof SyntaxError]
+    }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const mode of [0,0,1,2,3,4,5,6,7,8,9,10,11,12,0]) is(wasm.f(mode), js.f(mode), `opt=${optimize}, mode=${mode}`)
+    is(wasm.distinct(), [true,'changed','Unexpected token in JSON',true,true])
+  }
+})
+
+
+test('audit: shared-memory catches materialize Error fields', () => {
+  if (onKernel()) return
+  const memory = new WebAssembly.Memory({ initial: 32, maximum: 128, shared: true })
+  const { f } = jz(`export function f(){try{let a=[1];a.with(5,2)}catch(e){return [e.name,e.message,e instanceof RangeError]}}`, { sharedMemory: true, memory }).exports
+  is(f(), ['RangeError','Invalid index',true])
+  is(f(), ['RangeError','Invalid index',true])
+})
+
+test('audit: an unresolved coercion slot is not an absent method', () => {
+  const src = `export function f(){
+    let check=()=>0
+    check.same=(a,b)=>{if(a!==b)throw 'mismatch'}
+    var object={valueOf:()=> '1',toString:()=>0}
+    check.same(Number(object),1)
+    var object={valueOf:()=>({}),toString:()=> '0'}
+    check.same(Number(object),0)
+    return Number(object)
+  }`
+  for (const optimize of TIERS) agree(src, 'f', [], { optimize })
+  const variants = [
+    'o={valueOf:()=>({})}',
+    'o={valueOf:()=>({}),toString:undefined}',
+    'o={valueOf:()=>({}),toString:()=>"42"}',
+  ]
+  for (const replacement of variants) for (const optimize of TIERS) {
+    agree(`export function f(){let o={valueOf:()=>1,toString:()=>"2"};${replacement};try{return [Number(o),String(o)]}catch(e){return e instanceof TypeError}}`, 'f', [], { optimize })
+  }
+})
+
+
+test('audit: nullish member reads fail before call arguments', () => {
+  const src='export function f(p){let n=0;const q=()=>1;if(p===1)return q();try{p.y(n++)}catch(e){return [n,e instanceof TypeError]}}'
+  for (const optimize of TIERS) for (const p of [null,undefined,11,1]) agree(src, 'f', [p], { optimize })
+})
+
+
+test('audit: a catch links the error decoder only when its binding is read', () => {
+  if (onKernel()) return
+  // Coded transport is observable only through the binding, so a handler that
+  // never reads it must link no decoder: no class names, no message table.
+  const body = 'try { return JSON.parse(x).a } catch'
+  const linked = (src) => {
+    const bytes = Buffer.from(compile(`export function f(x){ ${src} }`, { optimize: 'size' }))
+    return ['SyntaxError', 'Unexpected token in JSON', 'is not a function']
+      .some(t => bytes.includes(Buffer.from(t, 'utf16le')))
+  }
+  for (const handler of ['{ return 0 }', '(e) { return 0 }', '(e) { return x.length }'])
+    ok(!linked(`${body} ${handler}`), `no decoder: catch ${handler}`)
+  for (const handler of ['(e) { return e.message }', '(e) { return e instanceof SyntaxError }', '(e) { throw e }'])
+    ok(linked(`${body} ${handler}`), `decoder linked: catch ${handler}`)
+  // The narrowing is size-only: catching, and every Error identity, still hold.
+  const src = 'export function f(x){ let n=0; try { JSON.parse(x) } catch(e) { n=1 } try { JSON.parse(x) } catch(e) { return [n, e.name, e instanceof SyntaxError] } }'
+  for (const optimize of TIERS) is(jz(src, { optimize }).exports.f('{bad'), [1, 'SyntaxError', true], `identity ${optimize}`)
+})
+
+test('audit: dead class-call guards leave no error-message data', () => {
+  if (onKernel()) return
+  const src='class Box{run(x){return x+1}} export function f(n){const a=[];for(let i=0;i<n;i++)a.push(new Box());let v=0;for(let i=0;i<a.length;i++)v=a[i].run(v);return v}'
+  for (const optimize of [2, 'size', 3]) {
+    const bytes=compile(src, {optimize})
+    for (const text of ['Cannot read properties', 'is not a function', 'TypeError'])
+      ok(!Buffer.from(bytes).includes(Buffer.from(text,'utf16le')), 'dead '+text)
+    agree(src, 'f', [3], {optimize})
+  }
+})
+
+test('audit: catch without a binding does not materialize an Error', () => {
+  const src='export function f(s){try{JSON.parse(s);return 1}catch{return 7}}'
+  for (const optimize of TIERS) {
+    const bytes=compile(src, {optimize})
+    const {f}=instantiate(bytes).exports
+    for (const s of ['', '', '{}', '{', '{}']) is(f(s), s==='{}' ? 1 : 7, 'empty/repeated/error/success recovery')
+    if (!onKernel()) ok(!compile(src, {optimize,wat:true}).includes('$__catch_error'), 'no error materializer')
   }
 })

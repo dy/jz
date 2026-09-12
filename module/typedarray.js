@@ -18,7 +18,7 @@ import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, mayBeUndefined, repOf } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
 import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
-import { ERR } from '../err-codes.js'
+import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor, plannedTypedStorageInfo } from '../src/compile/typed-storage-plan.js'
 
@@ -451,7 +451,7 @@ export default (ctx) => {
     (if (i32.or
           (f64.lt (local.get $n) (f64.const 0))
           (f64.ge (local.get $n) (f64.const 2147483640)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ARRAY_BUFFER_LENGTH}))) (throw $__jz_err (f64.const ${ERR.ARRAY_BUFFER_LENGTH}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_BUFFER_LENGTH)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_BUFFER_LENGTH)}))))
     (i32.trunc_f64_s (local.get $n)))`
 
   // new ArrayBuffer(n) → allocate n bytes, return as BUFFER pointer.
@@ -748,7 +748,7 @@ export default (ctx) => {
     (if (i32.or
           (f64.lt (local.get $idx) (f64.const 0))
           (f64.gt (local.get $idx) (f64.const 9007199254740991)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.DATAVIEW_INDEX_RANGE}))) (throw $__jz_err (f64.const ${ERR.DATAVIEW_INDEX_RANGE}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)}))))
     (i32.trunc_sat_f64_s (local.get $idx)))`
 
   // ToIndex the DV byte offset, throwing RangeError on a negative/oversized value.
@@ -789,14 +789,14 @@ export default (ctx) => {
         ['if', ['i32.or',
             ['i32.lt_s', ['local.get', `$${idxT}`], ['i32.const', 0]],
             ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]]],
-          ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.DATAVIEW_OFFSET_OOB_FAST]]], ['throw', '$__jz_err', ['f64.const', ERR.DATAVIEW_OFFSET_OOB_FAST]]]],
+          ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB_FAST)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB_FAST)]]]],
         ['local.get', `$${idxT}`]], 'i32')
     }
     inc('__dv_index')
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${idxT}`, typed(['call', '$__dv_index', toNumF64(offNode, offIR)], 'i32')],
       ['if', ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.DATAVIEW_OFFSET_OOB]]], ['throw', '$__jz_err', ['f64.const', ERR.DATAVIEW_OFFSET_OOB]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_OFFSET_OOB)]]]],
       ['local.get', `$${idxT}`]], 'i32')
   }
 
@@ -1163,8 +1163,8 @@ export default (ctx) => {
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (if (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG}))
       (then
-        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.DATAVIEW_INDEX_WRITE})))
-        (throw $__jz_err (f64.const ${ERR.DATAVIEW_INDEX_WRITE}))))
+        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_WRITE)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_WRITE)}))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
@@ -1179,8 +1179,8 @@ export default (ctx) => {
               (f64.ne (local.get $v) (local.get $v))
               (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $v))) (i32.const ${PTR.BIGINT})))
           (then
-            (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_UNDEF_MIX})))
-            (throw $__jz_err (f64.const ${ERR.BIGINT_UNDEF_MIX}))))
+            (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))
+            (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)}))))
         ;; ToNumber for NaN-boxed values (spec: typed element writes coerce).
         ;; true/false/null atoms store 1/0/0; other boxes (undefined, string,
         ;; object) store canonical NaN. Skipped on the BigInt arm above — raw
@@ -1241,14 +1241,14 @@ export default (ctx) => {
         ;; raw BigInt.
         (if (i32.ne (local.get $domain) (i32.const 1))
           (then
-            (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_UNDEF_MIX})))
-            (throw $__jz_err (f64.const ${ERR.BIGINT_UNDEF_MIX}))))
+            (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))
+            (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)}))))
         (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $v)))
         (return (local.get $v))))
     (if (i32.eq (local.get $domain) (i32.const 1))
       (then
-        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_UNDEF_MIX})))
-        (throw $__jz_err (f64.const ${ERR.BIGINT_UNDEF_MIX}))))
+        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)}))))
     (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $v)))`
 
   // .fill(value, start?, end?) for typed arrays. The plain-array __arr_fill gates
@@ -1945,8 +1945,8 @@ export default (ctx) => {
         const vt = temp('tw'), bits = tempI64('twb')
         const get = typed(['local.get', `$${vt}`], 'f64')
         const mismatch = [
-          ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
-          ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]],
+          ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]]],
+          ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)]],
         ]
         return typed(void_ ? ['block', ...pre,
           ['local.set', `$${vt}`, asF64(valIR)],
@@ -2877,7 +2877,7 @@ export default (ctx) => {
       ['if', ['i32.or',
           ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
           ['i32.ge_s', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.TYPED_WITH_INDEX]]], ['throw', '$__jz_err', ['f64.const', ERR.TYPED_WITH_INDEX]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.TYPED_WITH_INDEX)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.TYPED_WITH_INDEX)]]]],
       ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${c}`]],
         ['local.get', `$${idx}`], asF64(emit(value))]],
       ['local.get', `$${c}`]], 'f64')

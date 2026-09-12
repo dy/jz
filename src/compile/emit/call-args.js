@@ -9,7 +9,7 @@ import { T, commaList } from '../../ast.js'
 import { includeForArrayLiteral, includeForStringOnly } from '../../autoload.js'
 import { PTR, ctx, emitArity, inc } from '../../ctx.js'
 import {
-  SPREAD_MUTATORS, allocPtr, asF64, block64, dispatchByPtrType, freshId, multiCount, reconstructArgsWithSpreads, temp, tempI32,
+  SPREAD_MUTATORS, throwTypeErrorIR, allocPtr, asF64, block64, dispatchByPtrType, freshId, multiCount, reconstructArgsWithSpreads, temp, tempI32,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType } from '../../reps.js'
@@ -17,6 +17,17 @@ import { persistBindingPtr } from '../emit-assign.js'
 import { withExpectedValue } from '../flow-state.js'
 import { emit, emitCallArgs } from './dispatch.js'
 
+
+/** A proven non-callable value still evaluates its arguments before TypeError.
+ *  `recvIR` supplies a receiver a caller's nullish guard already evaluated, so
+ *  the arguments stay on the arm where the property read actually succeeds. */
+export function emitNonCallable(callee, parsed, recvIR = null) {
+  const receiver = recvIR ?? asF64(emit(callee))
+  const args = parsed.hasSpread
+    ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
+    : parsed.normal.map(a => emit(a))
+  return block64(['drop', receiver], ...args.map(a => ['drop', asF64(a)]), throwTypeErrorIR('call'))
+}
 
 /** Stamp a `call` IR with the pointer-ABI / sign metadata its signature carries.
  *  Returns `callIR` for chaining. Centralizes the three-property copy every

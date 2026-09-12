@@ -115,24 +115,8 @@ function emitErrorInstanceof(a, rhs) {
       return foldInstanceof(emit(a), rhs === 'Error' || ctx.schema.errorClassOf(sid) === rhs)
     }
   }
-  // A provably non-OBJECT LHS can never be our Error schema. This INCLUDES NUMBER:
-  // INVARIANT: no numeric-range arm may live here — one was deleted
-  // below — an internally-thrown coded value (JSON.parse failure, OOB Array#with,
-  // …) is caught as a raw NUMBER (.work/archive/todo.md §deletion-sweep §3(b)), bit-identical to
-  // a user's own `throw <sameNumber>`. Comparing that NUMBER against err-codes.js's
-  // ERR_CODE_RANGES and calling a match "instanceof SyntaxError" meant ANY
-  // caller-supplied number landing in a class's internal range answered `true`
-  // (`export let f = x => x instanceof SyntaxError; f(300)` → `true`, since 300
-  // sits in the derived range — a real repro, not a hypothetical). No numeric
-  // range can distinguish "the compiler threw this code" from "the user threw
-  // this number"; recovering `instanceof` for a caught internal code needs a
-  // materialized Error object at the catch site instead (.work/archive/todo.md §deletion-sweep
-  // §7 Slice C, deliberately deferred — not landed here). Until then, internal-
-  // code catches are honestly `instanceof`-false for every Error class, same as
-  // any other non-Error value (§3(c)).
   const vt = valTypeOf(a)
   if (vt != null && vt !== VAL.OBJECT) return foldInstanceof(emit(a), false)
-
   // Runtime: real Error object only — tag+sid compare (rhs === 'Error') or an
   // OR-chain over every class the program actually constructs (base 'Error'), or
   // a single tag+sid compare for one specific class. `used` (ctx.features.errorClasses,

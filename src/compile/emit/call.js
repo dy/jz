@@ -20,7 +20,7 @@ import { K, core, tagOf, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
-import { attachSigMeta, buildArrayWithSpreads, materializeMulti, parseCallArgs } from './call-args.js'
+import { attachSigMeta, buildArrayWithSpreads, emitNonCallable, materializeMulti, parseCallArgs } from './call-args.js'
 import { TYPED_HI_MASK, argIR, coerceArg, emit, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
@@ -437,6 +437,10 @@ export const callOps = {
       const direct = tryDirectClosureCall(callee, parsed)
       if (direct) return direct
     }
+
+    const calleeKind = valTypeOf(callee)
+    if (calleeKind != null && calleeKind !== VAL.CLOSURE &&
+        (typeof callee !== 'string' || isBoundName(callee))) return emitNonCallable(callee, parsed)
 
     if (ctx.closure.call) return emitGenericClosureCall(callee, parsed)
 

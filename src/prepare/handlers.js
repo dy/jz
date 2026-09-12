@@ -96,6 +96,14 @@ export function prep(node) {
     // above, so it never needs the guard.
     ;(ctx.features.errorClasses ??= new Set()).add(ctorCallee)
   }
+  // A bound catch may materialize any class, so every class joins the census
+  // before the first function emits. A binding-less catch observes nothing and
+  // registers nothing. Emission narrows further, to a binding actually read.
+  if (Array.isArray(node) && node[0] === 'try' &&
+      node.some(c => Array.isArray(c) && c[0] === 'catch' && typeof c[1] === 'string')) {
+    setFeature('error', true)
+    for (const cls of ERR_CLASS_SET) (ctx.features.errorClasses ??= new Set()).add(cls)
+  }
   // Implicit runtime errors must join the census before any function emits:
   // catch/instanceof/stringification may precede the throwing function.
   // Over-approximate possibility here; actual construction is demand-linked.

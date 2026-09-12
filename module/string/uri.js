@@ -14,7 +14,7 @@ import { emit, wat, bind } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { VAL } from '../../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err } from '../../src/ctx.js'
-import { ERR } from '../../err-codes.js'
+import { errorCodeLiteral, ERR } from '../../err-codes.js'
 
 export const registerUri = () => {
   // Percent-codec char classes (ECMA-262 19.2.2–19.2.5). Both encoders share one
@@ -63,8 +63,8 @@ export const registerUri = () => {
           (if (i32.or (i32.or (i32.ge_u (local.get $c) (i32.const 0xDC00))
                 (i32.ge_u (local.get $i) (local.get $units)))
                 (i32.ne (i32.and (local.get $next) (i32.const 0xFC00)) (i32.const 0xDC00)))
-            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CODEPOINT})))
-              (throw $__jz_err (f64.const ${ERR.URI_BAD_CODEPOINT}))))))
+            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_BAD_CODEPOINT)})))
+              (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_BAD_CODEPOINT)}))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $check)))
     (local.set $bytes (call $__alloc (i32.mul (local.get $units) (i32.const 3))))
     (local.set $slen (i32.wrap_i64 (i64.shr_u
@@ -146,11 +146,11 @@ export const registerUri = () => {
       (if (i32.eq (local.get $c) (i32.const 37))
         (then
           (if (i32.ge_s (i32.add (local.get $i) (i32.const 2)) (local.get $len))
-            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_TRUNC_ESCAPE}))) (throw $__jz_err (f64.const ${ERR.URI_TRUNC_ESCAPE}))))
+            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_TRUNC_ESCAPE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_TRUNC_ESCAPE)}))))
           (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
           (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2)))))
           (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
-            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_HEX}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_HEX}))))
+            (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_BAD_HEX)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_BAD_HEX)}))))
           (local.set $c (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
           ${keepReserved ? uriKeepReserved : ''}
           (local.set $i (i32.add (local.get $i) (i32.const 3)))
@@ -171,22 +171,22 @@ export const registerUri = () => {
                       (local.set $n (i32.const 4))
                       (local.set $cp (i32.and (local.get $c) (i32.const 0x07)))
                       (local.set $min (i32.const 0x10000)))
-                    (else (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_LEAD_BYTE}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_LEAD_BYTE}))))))))
+                    (else (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_BAD_LEAD_BYTE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_BAD_LEAD_BYTE)}))))))))
 
               (local.set $j (i32.const 1))
               (block $seqDone (loop $seq
                 (br_if $seqDone (i32.ge_s (local.get $j) (local.get $n)))
                 (if (i32.ge_s (i32.add (local.get $i) (i32.const 2)) (local.get $len))
-                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_TRUNC_CONT_ESCAPE}))) (throw $__jz_err (f64.const ${ERR.URI_TRUNC_CONT_ESCAPE}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_TRUNC_CONT_ESCAPE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_TRUNC_CONT_ESCAPE)}))))
                 (if (i32.ne (call $__char_at (local.get $s) (local.get $i)) (i32.const 37))
-                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_MISSING_CONT_PERCENT}))) (throw $__jz_err (f64.const ${ERR.URI_MISSING_CONT_PERCENT}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_MISSING_CONT_PERCENT)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_MISSING_CONT_PERCENT)}))))
                 (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
                 (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2)))))
                 (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
-                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CONT_HEX}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CONT_HEX}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_BAD_CONT_HEX)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_BAD_CONT_HEX)}))))
                 (local.set $b (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
                 (if (i32.or (i32.lt_u (local.get $b) (i32.const 0x80)) (i32.gt_u (local.get $b) (i32.const 0xBF)))
-                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CONT_BYTE}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CONT_BYTE}))))
+                  (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_BAD_CONT_BYTE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_BAD_CONT_BYTE)}))))
                 (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $b) (i32.const 0x3F))))
 
                 (local.set $i (i32.add (local.get $i) (i32.const 3)))
@@ -195,7 +195,7 @@ export const registerUri = () => {
               (if (i32.or
                     (i32.or (i32.lt_u (local.get $cp) (local.get $min)) (i32.gt_u (local.get $cp) (i32.const 0x10FFFF)))
                     (i32.and (i32.ge_u (local.get $cp) (i32.const 0xD800)) (i32.le_u (local.get $cp) (i32.const 0xDFFF))))
-                (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.URI_BAD_CODEPOINT}))) (throw $__jz_err (f64.const ${ERR.URI_BAD_CODEPOINT}))))
+                (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.URI_BAD_CODEPOINT)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.URI_BAD_CODEPOINT)}))))
               (if (i32.gt_u (local.get $cp) (i32.const 0xFFFF))
                 (then
                   (local.set $cp (i32.sub (local.get $cp) (i32.const 0x10000)))

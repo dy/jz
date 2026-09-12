@@ -2,7 +2,7 @@
 import { ctx, inc, PTR, err, setLinkDemand } from '../../src/ctx.js'
 import { bind, wat, emit } from '../../src/bridge.js'
 import { typed, asI32, asI64, asF64, UNDEF_NAN, temp, tempI32, tempI64, toStrI64 } from '../../src/ir.js'
-import { ERR } from '../../err-codes.js'
+import { errorCodeLiteral, ERR } from '../../err-codes.js'
 
 export function registerEncoding() {
   const label = value => {
@@ -127,18 +127,18 @@ export function registerEncoding() {
             (if (i32.eq (local.get $b) (i32.const 240)) (then (local.set $lo (i32.const 144))))
             (if (i32.eq (local.get $b) (i32.const 244)) (then (local.set $hi (i32.const 143))))))
         (if (i32.eqz (local.get $n)) (then (if (i32.and (local.get $flags) (i32.const 2))
-              (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.TEXT_DECODE}))) (throw $__jz_err (f64.const ${ERR.TEXT_DECODE}))))
+              (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE)}))))
             (local.set $cp (i32.const 65533))))
         (block $bad (loop $cont
           (br_if $bad (i32.eqz (local.get $n)))
           (if (i32.ge_u (local.get $i) (local.get $len))
             (then (if (i32.and (local.get $flags) (i32.const 2))
-              (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.TEXT_DECODE}))) (throw $__jz_err (f64.const ${ERR.TEXT_DECODE}))))
+              (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE)}))))
             (local.set $cp (i32.const 65533)) (br $bad)))
           (local.set $b (i32.load8_u (i32.add (local.get $src) (local.get $i))))
           (if (i32.or (i32.lt_u (local.get $b) (local.get $lo)) (i32.gt_u (local.get $b) (local.get $hi)))
             (then (if (i32.and (local.get $flags) (i32.const 2))
-              (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.TEXT_DECODE}))) (throw $__jz_err (f64.const ${ERR.TEXT_DECODE}))))
+              (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE)}))))
             (local.set $cp (i32.const 65533)) (br $bad)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $b) (i32.const 63))))
@@ -164,7 +164,7 @@ export function registerEncoding() {
       (then (return (call $__utf8_decode (i32.const 0) (i32.const 0) (local.get $flags)))))
     (if (i32.and (i32.ne (call $__ptr_type (local.get $arr)) (i32.const ${PTR.BUFFER}))
           (i32.ne (call $__ptr_type (local.get $arr)) (i32.const ${PTR.TYPED})))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.TEXT_DECODE_INPUT}))) (throw $__jz_err (f64.const ${ERR.TEXT_DECODE_INPUT}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE_INPUT)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.TEXT_DECODE_INPUT)}))))
     (call $__utf8_decode (call $__typed_data (local.get $arr)) (call $__byte_length (local.get $arr)) (local.get $flags)))`)
 
   bind('.decode', (obj, value, options) => {
@@ -183,8 +183,8 @@ export function registerEncoding() {
   wat('__str_encode_into', `(func $__str_encode_into (param $s i64) (param $dst i64) (result i64)
     (if (i32.or (i32.ne (call $__ptr_type (local.get $dst)) (i32.const ${PTR.TYPED}))
           (i32.ne (i32.and (call $__ptr_aux (local.get $dst)) (i32.const 119)) (i32.const 1)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.ENCODE_INTO_RECEIVER})))
-        (throw $__jz_err (f64.const ${ERR.ENCODE_INTO_RECEIVER}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ENCODE_INTO_RECEIVER)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ENCODE_INTO_RECEIVER)}))))
     (call $__utf8_encode (local.get $s) (call $__typed_data (local.get $dst)) (call $__byte_length (local.get $dst))))`)
   bind('.encodeInto', (obj, str, dst) => {
     ctx.runtime.throws = true

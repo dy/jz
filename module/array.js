@@ -20,7 +20,7 @@ import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
-import { ERR } from '../err-codes.js'
+import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { DATA_VIEW_FLAG } from '../layout.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
@@ -2247,7 +2247,7 @@ export default (ctx) => {
       ['if', ['i32.or',
         ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['i32.ge_s', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ARRAY_WITH_INDEX]]], ['throw', '$__jz_err', ['f64.const', ERR.ARRAY_WITH_INDEX]]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ARRAY_WITH_INDEX)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ARRAY_WITH_INDEX)]]]],
       ['f64.store',
         ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${idx}`], ['i32.const', 3]]],
         storedValue(value)],

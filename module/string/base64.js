@@ -9,7 +9,7 @@
 import { typed, asI64, UNDEF_NAN } from '../../src/ir.js'
 import { emit, wat, bind } from '../../src/bridge.js'
 import { ctx, inc, PTR } from '../../src/ctx.js'
-import { ERR } from '../../err-codes.js'
+import { errorCodeLiteral, ERR } from '../../err-codes.js'
 
 export const registerBase64 = () => {
   // === base64 / hex codecs ===
@@ -102,10 +102,10 @@ export const registerBase64 = () => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $loop)))
       ;; after complete padding only whitespace may follow
-      (if (local.get $done) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_TRAILING_CHAR}))) (throw $__jz_err (f64.const ${ERR.BASE64_TRAILING_CHAR}))))
+      (if (local.get $done) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BASE64_TRAILING_CHAR)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BASE64_TRAILING_CHAR)}))))
       (if (i32.eq (local.get $c) (i32.const 61)) ;; '='
         (then
-          (if (i32.lt_s (local.get $cnt) (i32.const 2)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_EARLY_PAD}))) (throw $__jz_err (f64.const ${ERR.BASE64_EARLY_PAD}))))
+          (if (i32.lt_s (local.get $cnt) (i32.const 2)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BASE64_EARLY_PAD)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BASE64_EARLY_PAD)}))))
           (local.set $pads (i32.add (local.get $pads) (i32.const 1)))
           (if (i32.eq (i32.add (local.get $cnt) (local.get $pads)) (i32.const 4))
             (then ;; flush the padded partial chunk: 2 chars → 1 byte, 3 → 2
@@ -125,7 +125,7 @@ export const registerBase64 = () => {
               (local.set $done (i32.const 1)))))
         (else
           ;; a value char while padding is open ("AB=C") is malformed
-          (if (local.get $pads) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_CHAR_AFTER_PAD}))) (throw $__jz_err (f64.const ${ERR.BASE64_CHAR_AFTER_PAD}))))
+          (if (local.get $pads) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BASE64_CHAR_AFTER_PAD)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BASE64_CHAR_AFTER_PAD)}))))
           (local.set $v (i32.const -1))
           (if (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
             (then (local.set $v (i32.sub (local.get $c) (i32.const 65)))))
@@ -140,7 +140,7 @@ export const registerBase64 = () => {
             (else
               (if (i32.eq (local.get $c) (i32.const 43)) (then (local.set $v (i32.const 62))))
               (if (i32.eq (local.get $c) (i32.const 47)) (then (local.set $v (i32.const 63))))))
-          (if (i32.lt_s (local.get $v) (i32.const 0)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_INVALID_CHAR}))) (throw $__jz_err (f64.const ${ERR.BASE64_INVALID_CHAR}))))
+          (if (i32.lt_s (local.get $v) (i32.const 0)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BASE64_INVALID_CHAR)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BASE64_INVALID_CHAR)}))))
           (local.set $acc (i32.or (i32.shl (local.get $acc) (i32.const 6)) (local.get $v)))
           (local.set $cnt (i32.add (local.get $cnt) (i32.const 1)))
           (if (i32.eq (local.get $cnt) (i32.const 4))
@@ -165,8 +165,8 @@ export const registerBase64 = () => {
     (if (i32.eqz (local.get $stopped))
       (then
         (if (i32.and (i32.ne (local.get $pads) (i32.const 0)) (i32.eqz (local.get $done)))
-          (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_UNTERMINATED_PAD}))) (throw $__jz_err (f64.const ${ERR.BASE64_UNTERMINATED_PAD}))))
-        (if (i32.eq (local.get $cnt) (i32.const 1)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BASE64_LEFTOVER_CHAR}))) (throw $__jz_err (f64.const ${ERR.BASE64_LEFTOVER_CHAR}))))
+          (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BASE64_UNTERMINATED_PAD)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BASE64_UNTERMINATED_PAD)}))))
+        (if (i32.eq (local.get $cnt) (i32.const 1)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BASE64_LEFTOVER_CHAR)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BASE64_LEFTOVER_CHAR)}))))
         (if (i32.gt_s (local.get $cnt) (i32.const 1))
           (then
             (local.set $n (i32.sub (local.get $cnt) (i32.const 1)))
@@ -190,7 +190,7 @@ export const registerBase64 = () => {
     (if (i32.or
           (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
           (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 7)) (i32.const 1)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.U8_RECEIVER}))) (throw $__jz_err (f64.const ${ERR.U8_RECEIVER}))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.U8_RECEIVER)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.U8_RECEIVER)}))))
     (call $__typed_data (local.get $ptr)))`)
 
   wat('__btoa', `(func $__btoa (param $v i64) (result f64)
@@ -202,7 +202,7 @@ export const registerBase64 = () => {
       (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
       (local.set $c (call $__char_at (local.get $s) (local.get $i)))
       (if (i32.gt_u (local.get $c) (i32.const 255))
-        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BTOA_CHARACTER}))) (throw $__jz_err (f64.const ${ERR.BTOA_CHARACTER}))))
+        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BTOA_CHARACTER)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BTOA_CHARACTER)}))))
       (i32.store8 (i32.add (local.get $buf) (local.get $i)) (local.get $c))
       (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $copy)))
     (call $__b64_enc (local.get $buf) (local.get $len) (i32.const 0) (i32.const 1)))`)
@@ -272,14 +272,14 @@ export const registerBase64 = () => {
   wat('__hex_dec_raw', `(func $__hex_dec_raw (param $s i64) (param $dst i32) (param $cap i32) (result i64)
     (local $slen i32) (local $i i32) (local $hi i32) (local $lo i32) (local $written i32)
     (local.set $slen (call $__str_length (local.get $s)))
-    (if (i32.and (local.get $slen) (i32.const 1)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.HEX_ODD_LENGTH}))) (throw $__jz_err (f64.const ${ERR.HEX_ODD_LENGTH}))))
+    (if (i32.and (local.get $slen) (i32.const 1)) (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.HEX_ODD_LENGTH)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.HEX_ODD_LENGTH)}))))
     (block $stop (loop $l
       (br_if $stop (i32.ge_s (local.get $i) (local.get $slen)))
       (br_if $stop (i32.ge_s (local.get $written) (local.get $cap)))
       (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (local.get $i))))
       (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
       (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
-        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.HEX_INVALID_DIGIT}))) (throw $__jz_err (f64.const ${ERR.HEX_INVALID_DIGIT}))))
+        (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.HEX_INVALID_DIGIT)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.HEX_INVALID_DIGIT)}))))
       (i32.store8 (i32.add (local.get $dst) (local.get $written))
         (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
       (local.set $written (i32.add (local.get $written) (i32.const 1)))

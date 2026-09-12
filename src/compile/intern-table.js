@@ -19,7 +19,7 @@ export function buildInternTable() {
   if (ctx.memory.shared || !ctx.runtime.dataDedup?.size) return
   const entries = []
   // buildStartFn's schema-table construction (the only reclaimSpans producer that
-  // can have already run by this point — __throw_property_nullish/__err_prop's
+  // can have already run by this point — __throw_property_nullish's
   // spans are pushed later, inside pullStdlib, well after this function returns)
   // may have interned strings that stripDeadInternedSpans later truncates off the
   // data-segment tail once real reachability is known. This probe table is raw

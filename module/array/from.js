@@ -15,7 +15,7 @@ import { valTypeOf } from '../../src/kind.js'
 import { staticPropertyKey } from '../../src/static.js'
 import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, inc, err, PTR, setLinkDemand } from '../../src/ctx.js'
-import { ERR } from '../../err-codes.js'
+import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { makeCallback, idxArg } from './callback.js'
 
 // Array.from(items, mapfn): spec step 2 — if mapfn is not undefined and
@@ -38,8 +38,8 @@ const isNonCallableMapFn = (n) => {
 const arrayFromThrow = code => {
   ctx.runtime.throws = true
   return [
-    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
-    ['throw', '$__jz_err', ['f64.const', code]],
+    ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(code)]]],
+    ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(code)]],
   ]
 }
 

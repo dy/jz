@@ -488,14 +488,13 @@ test('WASI: optional-chain prop access on unknown-type receiver — no env impor
   is(envImports(wasm).length, 0)
 })
 
-test('WASI: typed-fallback method dispatch returns undefined on non-callable', () => {
-  // Closure-only dispatch: when the resolved property isn't a CLOSURE, return undefined
-  // rather than __ext_call'ing it. JSON-derived shape, so the prop resolves to a number.
+test('WASI: non-callable own methods throw TypeError', () => {
+  // JSON-derived shape: a non-callable field is a runtime TypeError.
   const wasm = compile(`
     export let f = () => {
       const o = JSON.parse('{"x":1}')
-      const r = o.x()
-      return r === undefined ? 1 : 0
+      try { o.x() } catch(e) { return e instanceof TypeError ? 1 : 0 }
+      return 0
     }
   `, { host: 'wasi' })
   const mod = new WebAssembly.Module(wasm)
