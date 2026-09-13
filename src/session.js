@@ -59,6 +59,11 @@ import { resetNameUids } from 'watr/optimize'
  *   the `$ftN` call_indirect type) live even when this compile's own scan finds no
  *   `call_indirect` — a wasi build's embedder may supply table-calling host
  *   functions the in-module scan can't see.
+ * @property {boolean} exportClosureTable  export the closure table as
+ *   `__jz_table` so an embedder can call closures from outside. Off for 'native':
+ *   a wasm2c embedding calls exports only, and a table nothing outside can reach
+ *   is closed, which lets the final-Wasm inspection resolve every `call_indirect`
+ *   to the table's own entries instead of reporting unknown.
  * @property {boolean} noTailCall     emit ordinary `call` in tail position instead
  *   of `return_call` (src/ir.js tcoTailRewrite) — off for js/wasi (every JS engine
  *   and wasmtime/wasmer/deno already ship the tail-call proposal); on for 'native':
@@ -74,12 +79,12 @@ const TARGET_PROFILES = Object.freeze({
   js: Object.freeze({
     envImports: true, jsStringInterop: true, wasiShims: false,
     commandEntry: false, timerModel: 'host', preserveClosureTable: false,
-    noTailCall: false,
+    exportClosureTable: true, noTailCall: false,
   }),
   wasi: Object.freeze({
     envImports: false, jsStringInterop: false, wasiShims: true,
     commandEntry: true, timerModel: 'blocking', preserveClosureTable: true,
-    noTailCall: false,
+    exportClosureTable: true, noTailCall: false,
   }),
   // wasm2c/native-lowering lane (scripts/native/): same module shape as 'js'
   // (env imports present, even if the native host's env-stubs.c services them
@@ -94,7 +99,7 @@ const TARGET_PROFILES = Object.freeze({
   native: Object.freeze({
     envImports: true, jsStringInterop: true, wasiShims: false,
     commandEntry: false, timerModel: 'host', preserveClosureTable: false,
-    noTailCall: true,
+    exportClosureTable: false, noTailCall: true,
   }),
 })
 

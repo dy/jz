@@ -54,3 +54,33 @@ test('runtime inspection: nondecimal counter immediates cannot forge a work proo
   is(inspectLoop(2, '0xffffffff'), null)
   is(inspectLoop('1_000', 4294967295), null)
 })
+
+test('runtime inspection: a closed closure table resolves indirect calls to its entries', () => {
+  const mod = (body = [], table = ['table', 1, 'funcref'], entry = ['f64.const', 1]) => ['module',
+    ['type', '$t', ['func', ['result', 'f64']]],
+    table,
+    ['elem', ['i32.const', 0], 'func', '$entry'],
+    ['func', '$entry', ['type', '$t'], entry],
+    ['func', '$f', ['export', '"f"'], ['drop', ['call_indirect', ['type', '$t'], ['i32.const', 0]]], ...body]]
+  // func 1 + drop 1 + call_indirect 1 + index 1 + the widest entry (func 1 + const 1).
+  is(captureRuntimeInspect(mod()).f, { noAllocation: true, noHostCalls: true, boundedWork: true, maxInstructions: 6 })
+  const open = (m) => captureRuntimeInspect(m).f
+  is(open(mod([], ['table', ['export', '"t"'], 1, 'funcref'])).noAllocation, null, 'an exported table is open')
+  is(open(mod([], ['table', ['import', '"env"', '"t"'], 1, 'funcref'])).noAllocation, null, 'an imported table is open')
+  is(open(mod([['table.set', ['i32.const', 0], ['ref.func', '$entry']]])).noHostCalls, null, 'a written table is open')
+  is(open(mod([], ['table', 1, 'funcref'], ['call', '$__alloc'])).noAllocation, null, 'an allocating entry reaches every indirect call')
+  is(open(mod([], ['table', 1, 'funcref'], ['f64.convert_i32_s', ['memory.grow', ['i32.const', 1]]])).noAllocation, null)
+  is(open(['module', ['func', '$f', ['export', '"f"'], ['call_indirect', ['type', '$t'], ['i32.const', 0]]]]).boundedWork, null, 'no table at all')
+})
+
+test('runtime inspection: the native host keeps its closure table closed', () => {
+  if (onKernel()) return
+  const src = 'export const make = (k) => (x) => x * k\nlet f = make(2)\nexport function apply(x){ return f(x) }\nexport function swap(k){ f = make(k) }'
+  const native = inspect(src, { host: 'native' }), js = inspect(src)
+  is(native.apply.noAllocation, true, 'native: the closure call resolves through the closed table')
+  is(native.apply.noHostCalls, true)
+  is(js.apply.noAllocation, null, 'js: the exported table stays reachable from outside')
+  const wat = compile(src, { host: 'native', wat: true })
+  ok(!/__jz_table/.test(wat), 'native exports no table')
+  ok(/__jz_table/.test(compile(src, { wat: true })), 'js still exports it')
+})

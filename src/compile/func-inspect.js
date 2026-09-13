@@ -68,23 +68,44 @@ export function captureFuncInspect(func, facts, programFacts) {
  */
 export function captureRuntimeInspect(module, sharedMemory = false) {
   const funcs = new Map(), exports = [], records = new Map()
+  // The closure table is closed when nothing outside the module can reach or
+  // change it: declared here, neither imported nor exported, never written. A
+  // call_indirect then lands on one of its elem entries, so the entries stand
+  // in for the target. Any other table shape, a raw funcref, or call_ref stays
+  // unknown. With no table at all the call traps; that is not certified either.
+  let table = false, tableOpen = false
+  const entries = new Set()
   for (const n of module) {
     if (!Array.isArray(n)) continue
     if (n[0] === 'func') {
       funcs.set(n[1], n)
       for (const c of n) if (Array.isArray(c) && c[0] === 'export') exports.push([JSON.parse(c[1]), n[1]])
     } else if (n[0] === 'export' && n[2]?.[0] === 'func') exports.push([JSON.parse(n[1]), n[2][1]])
+    else if (n[0] === 'export' && n[2]?.[0] === 'table') tableOpen = true
+    else if (n[0] === 'table') {
+      table = true
+      if (n.some(c => Array.isArray(c) && (c[0] === 'export' || c[0] === 'import'))) tableOpen = true
+    } else if (n[0] === 'import' && n.some(c => Array.isArray(c) && c[0] === 'table')) tableOpen = true
   }
+  for (const n of module) if (Array.isArray(n) && n[0] === 'elem')
+    for (const c of n) if (typeof c === 'string' && funcs.has(c)) entries.add(c)
   for (const [name, fn] of funcs) {
-    const rec = { calls: new Set(), allocation: false, indirect: false }
+    const rec = { calls: new Set(), allocation: false, unknown: false, indirect: false }
     walkAst(fn, { enter: n => {
       const op = n[0]
       if (op === 'call' || op === 'return_call') rec.calls.add(n[1])
-      if (op === 'import' || /^(return_)?call_(indirect|ref)$/.test(op)) rec.indirect = true
+      if (op === 'import' || /^(return_)?call_ref$/.test(op)) rec.unknown = true
+      if (/^(return_)?call_indirect$/.test(op)) rec.indirect = true
+      if (/^table\.(set|grow|fill|copy|init)$/.test(op) || op === 'ref.func') tableOpen = true
       if (op === 'memory.grow' || op === 'table.grow' || op === 'global.set' && /^\$__heap(?:_|$)/.test(n[1]) ||
           sharedMemory && isMemWrite(op)) rec.allocation = true
     } })
     records.set(name, rec)
+  }
+  const closed = table && !tableOpen
+  for (const rec of records.values()) if (rec.indirect) {
+    if (closed) for (const e of entries) rec.calls.add(e)
+    else rec.unknown = true
   }
   const costs = new Map()
   const cost = (name, visiting = new Set()) => {
@@ -95,9 +116,11 @@ export function captureRuntimeInspect(module, sharedMemory = false) {
       if (!Array.isArray(n)) return 0
       const op = n[0]
       if (['param', 'result', 'local', 'export', 'type'].includes(op)) return 0
-      if (op === 'import' || /^(return_)?call_(indirect|ref)$/.test(op) ||
+      if (op === 'import' || /^(return_)?call_ref$/.test(op) ||
           /^(try|catch|throw|rethrow|delegate)/.test(op) ||
           /^(memory|table)\.(copy|fill|init|grow)$/.test(op) || /atomic\.wait/.test(op)) return null
+      const indirect = /^(return_)?call_indirect$/.test(op)
+      if (indirect && (!closed || !entries.size)) return null
       let total = 1
       for (let i = 1; i < n.length; i++) {
         const c = count(n[i])
@@ -108,6 +131,16 @@ export function captureRuntimeInspect(module, sharedMemory = false) {
         const c = cost(n[1], visiting)
         if (c == null) return null
         total += c
+      }
+      if (indirect) {
+        // Any entry may be the target: the widest one bounds the call.
+        let widest = 0
+        for (const e of entries) {
+          const c = cost(e, visiting)
+          if (c == null) return null
+          widest = Math.max(widest, c)
+        }
+        total += widest
       }
       if (op === 'loop') {
         if (!finiteCounterLoop(n)) return null
@@ -131,7 +164,7 @@ export function captureRuntimeInspect(module, sharedMemory = false) {
       if (seen.has(name)) continue
       seen.add(name)
       const rec = records.get(name)
-      if (!rec || rec.indirect) { noHostCalls = null; noAllocation = null }
+      if (!rec || rec.unknown) { noHostCalls = null; noAllocation = null }
       if (rec?.allocation) noAllocation = null
       if (rec) for (const c of rec.calls) pending.push(c)
     }

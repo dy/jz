@@ -16,6 +16,8 @@ README owns the public contract; CONTRIBUTING owns compiler invariants.
 - Iterator destructuring and stateful VST lifecycle fixtures for both compilers.
 - Optional final-Wasm inspection of allocation, host calls and finite work.
   Unknown proofs remain null; current loop bounds are deliberately conservative.
+  Closure calls resolve through the table when nothing outside the module can
+  reach it, which the native host guarantees by exporting no table.
 
 ## Compatibility and simplification — 2026-09-11
 
@@ -110,6 +112,14 @@ Watr remains pinned at `6025256`, Subscript at `0f65c86`.
 ## Release blockers
 
 1. **Speed, memory and valid evidence.** Self-host time gates remain unpassed.
+   The guarded i64 accumulator is on only at level 3 and `speed`; the perf-fuzz
+   gate and the codegen ratchet compile at level 2, so its measured effect never
+   reaches the tier the gate reads. On this machine, back to back: mixed geomean
+   1.79× at level 2 against 1.16× at level 3 (cap 1.25×); mixed max 7.57× against
+   2.03× (cap 2.25×). Float stays 1.10× at both because its slowest seeds are
+   `acc = acc + (1)`, excluded by the pass's sink requirement, and
+   `acc = acc + (acc)`, which has no integer step. Enabling the pass at level 2
+   needs the ratchet to stop counting the cold fallback loop and a re-baseline.
    Previous warm ratios were 1.465×/1.527×/1.533× (cap 1.03×), fresh 1.155×
    (cap 0.99×). Current swap is 16,572 MB, above the 4,096 MB validity cap.
    Obtain quiet reference-hardware measurements; do not relax the caps.
@@ -129,10 +139,32 @@ Watr remains pinned at `6025256`, Subscript at `0f65c86`.
    `/private/tmp/jz-plan-complete-warm.cpuprofile` is diagnostic evidence,
    not a valid release timing run.
 
-2. **Public VST builder.** Implement `@audio/compile-vst` with compiler selection,
-   matching ABI adapters and the actual atom contract. The gain/stateful tools
-   are fixtures, not this API. Add within-block automation checks. Porffor's
-   shared arena stays live until the last instance closes.
+2. **Public VST builder.** `@audio/compile-vst` now exists (`packages/compile-vst`
+   in `@audio/compile`): `toVst3(atom)` derives identity, parameters, buses,
+   latency and tail from the manifest; `build()` compiles with JZ, gates the
+   compiled atom in plain Node (heap cursor and memory size fixed across
+   hundreds of blocks with every host import stubbed to throw), links one fixed
+   native shell against a generated data header and writes a signed macOS
+   bundle. Bundles for the gain, stateful and a mixed-parameter atom load in the
+   repo's host and match the atoms sample for sample across sample rates and
+   block sizes; two workers process one bundle concurrently. 25 tests.
+
+   Remaining: the Porffor backend (its native output is one global program, so
+   the shim needs a state-object ABI as the fixture's does); mono buses in the
+   native build, refused until the speaker-arrangement constant is checked
+   against the SDK header; a restart hook, since the vendored interface header
+   declares no `IComponentHandler`, so restart-flagged edits take effect at the
+   host's next `setupProcessing` or activation; within-block automation, which
+   the shell interpolates but the host's single-point queue cannot exercise;
+   and a root re-export once the workspace dependency is wired.
+
+   The static allocation proof stays `null` for every contract-shaped atom: a
+   process closure entered through the table keeps untyped parameters, so its
+   dynamic property arms remain reachable in the static graph although the
+   gate shows they never run. The next compiler step is call-site parameter
+   propagation through a closed table, or single-target closure
+   devirtualization; the closed-table resolution landed with this work already
+   certifies `noHostCalls` for atoms whose closures reach no import.
 
 3. **Independent review and release provenance.** Provide the pinned candidate
    and gate logs for independent review; implementation is not expert approval.

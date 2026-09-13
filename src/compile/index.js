@@ -428,7 +428,7 @@ export function assemble(ast, profiler) {
   // Memory section deferred — emitted after resolveIncludes() when __alloc is needed
 
   if (ctx.closure.table?.length)
-    sec.table.push(['table', ...(ctx.transform.alloc === false ? [] : [['export', '"__jz_table"']]),
+    sec.table.push(['table', ...(ctx.transform.alloc === false || !ctx.transform.targetProfile.exportClosureTable ? [] : [['export', '"__jz_table"']]),
       ctx.closure.table.length, 'funcref'])
 
   sec.funcs.push(...closureFuncs, ...funcs)

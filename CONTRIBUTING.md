@@ -531,7 +531,11 @@ Small, focused commits. Describe what and why, not how.
 `compile(source, { inspect: true }).inspect.runtime` describes final Wasm exports,
 including reachable helpers. `noAllocation`, `noHostCalls` and `boundedWork` are
 `true` only when proved; `null` means unknown. `maxInstructions` is a conservative
-instruction-count upper bound, not a latency estimate. Recognized constant-bound
+instruction-count upper bound, not a latency estimate. A `call_indirect` resolves
+to the closure table's own entries when that table is closed — declared here,
+neither imported nor exported, never written — and stays unknown otherwise. The
+`native` host exports no table, so its closure calls resolve; `js` and `wasi`
+export `__jz_table` for their embedders and keep them unknown. Recognized constant-bound
 integer loops currently use a full i32-domain bound; many SIMD, dynamic-bound and
 recursive shapes remain unknown. Shared-memory writes leave allocation unknown.
 These facts exclude initialization and host marshalling and do not certify an
