@@ -194,6 +194,10 @@ not supported
 
 - **Numbers.** Numbers are `f64`. Proven integers use `i32` and wrap at ±2³¹.
   Applying `x | 0` to an f64 with |x| ≥ 2⁶³ saturates instead of ES-wrapping.
+  Values are NaN-boxed: a NaN whose payload spells an internal tag, which only
+  typed-array aliasing can construct (`new Float64Array(u32.buffer)`), reads as
+  that tagged value, whether `undefined`, a pointer or an internal error, where
+  JS sees a plain NaN.
 - **BigInt.** BigInt is a signed 64-bit integer, not arbitrary precision; it
   wraps past its range. Security cryptography is outside the scope.
 - **Math.** Basic operations are IEEE-exact. Transcendentals use JZ's own kernels
