@@ -11,8 +11,9 @@ README owns the public contract; CONTRIBUTING owns compiler invariants.
   folding and LICM machinery. No additional semantic IR or optimizer layer.
 - UTF-16 strings; exact integer conversion shared by typed stores, DataView,
   Atomics and string construction. Proven ranges keep direct lowering.
-- Proven builder capacities and array lengths; guarded i64 accumulators in the
-  speed tier. Default/size tiers retain one loop and the original ratchet.
+- Proven builder capacities and array lengths; guarded i64 accumulators at
+  level 2 and above. The size tier retains one loop; the ratchet counts the
+  guarded clone, not its cold fallback.
 - Iterator destructuring and stateful VST lifecycle fixtures for both compilers.
 - Optional final-Wasm inspection of allocation, host calls and finite work.
   Unknown proofs remain null; current loop bounds are deliberately conservative.
@@ -112,14 +113,17 @@ Watr remains pinned at `6025256`, Subscript at `0f65c86`.
 ## Release blockers
 
 1. **Speed, memory and valid evidence.** Self-host time gates remain unpassed.
-   The guarded i64 accumulator is on only at level 3 and `speed`; the perf-fuzz
-   gate and the codegen ratchet compile at level 2, so its measured effect never
-   reaches the tier the gate reads. On this machine, back to back: mixed geomean
-   1.79× at level 2 against 1.16× at level 3 (cap 1.25×); mixed max 7.57× against
-   2.03× (cap 2.25×). Float stays 1.10× at both because its slowest seeds are
-   `acc = acc + (1)`, excluded by the pass's sink requirement, and
-   `acc = acc + (acc)`, which has no integer step. Enabling the pass at level 2
-   needs the ratchet to stop counting the cold fallback loop and a re-baseline.
+   The guarded i64 accumulator now runs at level 2 and above, and no longer
+   requires a ToInt32 read: the carried update alone shortens the loop-carried
+   chain. Measured on this machine, back to back at level 2: float perf-fuzz
+   geomean 1.11× → 0.76× (cap 0.9×), mixed 1.79× → 0.98× (cap 1.25×), mixed max
+   7.57× → 2.02× (cap 2.25×), int unchanged; no size-tier case moved. The one
+   remaining perf-fuzz failure is the float blow-up ceiling on `acc = acc + (acc)`,
+   a doubling with no integer step, 2.06× against 1.25×. The codegen ratchet no
+   longer counts the cold fallback loop; its baseline rose by the header checks
+   in float and mixed and fell in five other categories where the clone drops
+   several conversions per loop. This machine's timings are diagnostic only;
+   the ratios above are paired runs, not release evidence.
    Previous warm ratios were 1.465×/1.527×/1.533× (cap 1.03×), fresh 1.155×
    (cap 0.99×). Current swap is 16,572 MB, above the 4,096 MB validity cap.
    Obtain quiet reference-hardware measurements; do not relax the caps.

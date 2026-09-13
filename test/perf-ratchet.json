@@ -1,12 +1,12 @@
 {
   "int": 659,
-  "float": 565,
-  "mixed": 971,
+  "float": 796,
+  "mixed": 1149,
   "cond": 593,
-  "buf": 14539,
-  "nest": 22532,
-  "slice": 69424,
-  "ring": 51440,
-  "condref": 89502,
+  "buf": 14364,
+  "nest": 22087,
+  "slice": 68424,
+  "ring": 51400,
+  "condref": 88861,
   "fgather": 9840
 }

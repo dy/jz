@@ -37,14 +37,28 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // Pure int/float/mixed/cond/fgather totals are unchanged. This structural
 // baseline includes string runtime work; timing and binary-size gates do not move.
 
+// Wide accumulation at level 2 (2026-09-13): the guarded i64 clone adds its
+// header check (about eight nodes per versioned loop) and removes the f64
+// truncation and guard of each ToInt32 read. With the pass off, float and mixed
+// still count exactly 565 and 971; on, the clones alone count 796 and 1149
+// (21 and 28 of the 40 seeds versioned). Measured on this machine, back to back:
+// float perf-fuzz geomean 1.11× → 0.76×, mixed 1.79× → 0.98×. The proxy rises
+// where the measurement falls; re-baselined here. The same update lowered buf,
+// nest, slice, ring and condref, which the pass never versions: those had
+// improved under earlier commits and sat below a stale-high baseline.
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
+// A wide-accumulator versioning (src/optimize/wide-accumulator.js) keeps the
+// original loop as the cold fallback, the last child of its `$__wa…d` block:
+// the per-iteration cost this proxies is the guarded clone's, so the fallback
+// is not counted. The clone's header check is real per-iteration work and is.
 const loopBodyOps = (wat) => {
   let count = 0
   const walk = (n, inLoop) => {
     if (!Array.isArray(n)) return
     const here = inLoop || n[0] === 'loop'
     if (here && typeof n[0] === 'string') count++
-    for (let i = 1; i < n.length; i++) walk(n[i], here)
+    const end = n[0] === 'block' && /^\$__wa\d+d$/.test(n[1]) ? n.length - 1 : n.length
+    for (let i = 1; i < end; i++) walk(n[i], here)
   }
   walk(parseWat(wat), false)
   return count

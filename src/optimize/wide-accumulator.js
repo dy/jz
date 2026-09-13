@@ -36,7 +36,9 @@
  * a `local.tee`), updated inside a nested loop, or when a branch leaves the
  * loop past its enclosing block (the restore would be skipped). V8's JIT
  * speculates such accumulators as int32 from feedback; this is the ahead-of-
- * time proof of the same thing. Speed tiers only: the loop body is duplicated.
+ * time proof of the same thing. Level 2 and above: the loop body is duplicated,
+ * so the size tier keeps one loop. The win does not need a ToInt32 read: the
+ * carried update alone takes an f64 add off the loop-carried chain.
  *
  * @module optimize/wide-accumulator
  */
@@ -139,7 +141,7 @@ export function wideAccumulator(fn) {
     if (!names.length) return
     const wide = new Map(names.map(name => [name, `$__wa${id++}`]))
     // Rewrite a clone: every read of a candidate must be its own update or sit under a sink.
-    let ok = true, sinkLeaves = 0, sinks = 0
+    let ok = true, sinkLeaves = 0
     const dropped = new Map()   // guard temps whose only read was the select's re-read
     const accOf = (n) => !isArr(n) ? null
       : n[0] === 'local.get' ? (wide.has(n[1]) ? n[1] : null)
@@ -165,7 +167,6 @@ export function wideAccumulator(fn) {
         const name = accOf(v), t = name != null && intTree(v, name)
         if (t?.self) {
           if (e[0] === 'local.tee') dropped.set(e[1], (dropped.get(e[1]) ?? 0) + 1)
-          sinks++
           sinkLeaves = Math.max(sinkLeaves, t.k)
           return mk32(v)
         }
@@ -181,7 +182,7 @@ export function wideAccumulator(fn) {
     for (const [t, count] of dropped) if (reads.get(t) !== count) ok = false
     // K integer leaves per iteration: at least one (a step), few enough to keep the bound.
     const K = Math.max(...names.map(name => leaves.get(name))) + sinkLeaves
-    if (!ok || !sinks || K < 1 || K > 2 ** 16) return
+    if (!ok || K < 1 || K > 2 ** 16) return
     // |acc| bound at the top of an iteration: the iteration's K integer steps stay ≤ 2⁵³.
     const C = 2 ** 53 - K * 2 ** 32, C64 = String(C), C64x2 = String(2 * C), Cf = C
     const exit = `$__wa${id++}x`, slow = `$__wa${id++}s`, done = `$__wa${id++}d`

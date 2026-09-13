@@ -541,8 +541,8 @@ recursive shapes remain unknown. Shared-memory writes leave allocation unknown.
 These facts exclude initialization and host marshalling and do not certify an
 audio deadline. Inspection does not alter output bytes.
 
-The speed tier carries integer accumulators in guarded i64 loops where ToInt32
-reads can be removed. It restores f64 on exit or before leaving the exact-integer
+Levels 2 and above carry integer accumulators in guarded i64 loops, whether or
+not a ToInt32 read is present: the carried update alone shortens the chain. It restores f64 on exit or before leaving the exact-integer
 range. Exception handlers, negative-zero constants, numeric local aliases and
 live guard temporaries decline the transformation. The default and size tiers
 retain one loop; their structural size/work budgets are unchanged.

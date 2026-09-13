@@ -58,6 +58,9 @@ test('wide accumulator: the clone converts nothing per iteration; the size tier 
     ok(/i64\.(add|sub)/.test(versioned), `${name}: integer update`)
     ok(!/\$__wa\d+/.test(compile(src, { optimize: 'size', wat: true })), `${name}: size tier is not versioned`)
   }
+  // Level 2 versions on its own; a step without any ToInt32 read still qualifies.
+  ok(/\$__wa\d+/.test(compile(PROGRAMS.seed29, { optimize: 2, wat: true })), 'level 2 versions the loop')
+  ok(/\$__wa\d+/.test(compile(fn('let acc=0;for(let i=0;i<n;i++)acc=acc+1;return acc'), { optimize: { level: 2, watr: false }, wat: true })), 'a constant step alone qualifies')
   // A plain f64 read of the accumulator inside the loop declines the whole loop.
   const plainRead = fn('let acc=0,s=0;for(let i=0;i<n;i++){acc=acc+((p^i)|0);s+=acc*0.5}return s+(acc|0)')
   ok(!/\$__wa\d+/.test(compile(plainRead, { optimize: 2, wat: true })), 'declined: f64 read')
