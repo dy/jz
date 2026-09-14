@@ -1,6 +1,21 @@
 import { ctx } from '../ctx.js'
 import { enterActiveFunction } from './active-function.js'
 import { nullExpr } from '../ir.js'
+import { VAL, updateRep } from '../reps.js'
+
+// Direct and closure bodies consume the same settled call-site facts. Keep
+// their boxed ABI; this publishes value/layout knowledge, not a new carrier.
+export function seedSummaryParam(name, summary) {
+  if (!summary || ctx.func.localReps?.get(name)?.val) return
+  const val = summary.valOf(name)
+  const sid = summary.sidOf(name), ctor = summary.typedCtorOf(name)
+  if (sid != null) updateRep(name, { schemaId: sid, val: VAL.OBJECT })
+  else if (ctor) {
+    (ctx.func.typedElem ||= new Map()).set(name, ctor)
+    updateRep(name, { val: VAL.TYPED })
+  }
+  else if (val === VAL.NUMBER || val === VAL.ARRAY || val === VAL.STRING) updateRep(name, { val })
+}
 
 // Replace the complete active-function authority at a real function boundary.
 // Top-level funcs start `uniq` at 0; closures pass a higher base so their

@@ -12,6 +12,26 @@ import { T } from '../src/ast.js'
 // jz() wires host imports needed by dynamic-property and full-runtime paths.
 const runHost = (code, opts) => jz(code, opts).exports
 
+test('closed closure calls retain proven parameter representations', () => {
+  const source = `const make = k => (a, p) => a[0] * p.gain + k
+    let fn = make(1)
+    const a = new Float32Array([2]), p = {gain: 3}
+    export function f() { return fn(a, p) }`
+  is(runHost(source).f(), 7)
+  if (!onKernel()) {
+    const { inspect } = compile(source, { host: 'native', inspect: true })
+    is(inspect.runtime.f.noAllocation, true, 'typed and shaped arguments remove allocating dynamic fallbacks')
+    is(inspect.runtime.f.noHostCalls, true)
+  }
+  is(runHost(`const make = k => (a, p, s) => a[0] * p.gain + s.length + k
+    let fn = make(1); export function f() { return fn([2], {gain:3}, 'ab') }`).f(), 9, 'array and string arguments')
+  is(runHost(`const make = () => (p) => { p = {gain:'x'}; return p.gain }
+    let fn = make(); export function f() { return fn({gain:3}) }`).f(), 'x', 'body reassignment widens the parameter')
+  const mixed = runHost(`const make = () => (p) => p == null ? 5 : p.gain
+    let fn = make(); export function f() { return fn({gain:3}) + fn(null) + fn() }`)
+  is(mixed.f(), 13, 'null and missing arguments remain boxed')
+})
+
 const fnBody = (w, name) => {
   const re = new RegExp(`\\(func \\$${name}(?:\\$exp)?(?:\\s|$)`)
   const m = w.match(re)

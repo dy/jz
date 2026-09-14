@@ -5,10 +5,9 @@ import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
 import { paramValTrustworthy } from '../param-reps.js'
-import { K, tagOf, isNullable } from '../summary/index.js'
 import { I32_MIN, I32_MAX } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
-import { enterFunc } from './func-entry.js'
+import { enterFunc, seedSummaryParam } from './func-entry.js'
 import { isExported } from './func-exports.js'
 import { paramAllUsesNumeric, paramNeverString } from './param-numeric.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
@@ -171,12 +170,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   const summary = ctx.summary?.at(sig)
   if (summary) for (const p of sig.params) {
     if (p.rest || func.defaults?.[p.name] || ctx.func.localReps?.get(p.name)?.val || isReassigned(body, p.name)) continue
-    const k = summary.kindOf(p.name)
-    if (isNullable(k)) continue
-    const sid = summary.sidOf(p.name), ctor = summary.typedCtorOf(p.name)
-    if (sid != null) updateRep(p.name, { schemaId: sid, val: VAL.OBJECT })
-    else if (ctor) { (ctx.func.typedElem ||= new Map()).set(p.name, ctor); updateRep(p.name, { val: VAL.TYPED }) }
-    else if (tagOf(k) === K.NUMBER) updateRep(p.name, { val: VAL.NUMBER })
+    seedSummaryParam(p.name, summary)
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
   // site omits its position (narrow's missing rule poisons r.val) or when callers

@@ -21,9 +21,9 @@ import {
 } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
-import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './func-entry.js'
+import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummaryParam } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
-import { K, tagOf, isNullable, unbounded } from '../summary/index.js'
+import { unbounded } from '../summary/index.js'
 
 const normalizeClosureBody = cb => {
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
@@ -105,12 +105,8 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   // unknown code keeps its parameters boxed.
   const summary = ctx.summary?.at(cb.scope)
   for (const p of cb.params) {
-    if (ctx.func.localReps?.get(p)?.val || cb.defaults?.[p]) continue
-    const k = summary?.kindOf(p) ?? 0
-    if (isNullable(k)) continue
-    const ctor = summary?.typedCtorOf(p)
-    if (ctor) { updateRep(p, { val: VAL.TYPED }); (ctx.func.typedElem ||= new Map()).set(p, ctor) }
-    else if (tagOf(k) === K.NUMBER) updateRep(p, { val: VAL.NUMBER })
+    if (cb.defaults?.[p] || isReassigned(cb.body, p)) continue
+    seedSummaryParam(p, summary)
   }
   // Usage-only numeric proof for a parameter the call lattice never saw. A
   // parameter it did see keeps the summary's kind: no entry coercion backs
