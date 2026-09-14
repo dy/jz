@@ -124,6 +124,9 @@ export function collectLoopDeclNames(node, out = new Set()) {
           bindingNames(Array.isArray(d) && d[0] === '=' ? d[1] : d, out)
         }
       }
+      // Catch bindings lower to handler-local declarations during prepare.
+      // Include them before lowering so module loops allocate fresh cells too.
+      else if (n[0] === 'catch' && n.length === 3) bindingNames(n[1], out)
     },
   })
   return out

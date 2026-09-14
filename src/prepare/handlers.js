@@ -18,7 +18,7 @@
 
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
-import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, walkAst } from '../ast.js'
+import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -457,11 +457,11 @@ const handlers = {
     const catchClause = clauses.find(c => Array.isArray(c) && c[0] === 'catch')
     const finallyClause = clauses.find(c => Array.isArray(c) && c[0] === 'finally')
     const tryBody = prep(body)
-    // A pattern catch param (`catch ({ x })`) binds via a minted temp + a
-    // destructuring decl prepended to the handler (mirrors defFunc's param
-    // patterns) — the raw pattern node is not a bindable catch local.
+    // Bind observable catch parameters through ordinary declarations so capture,
+    // mutation and destructuring share analysis and cell lifetime. An unread
+    // binding must not acquire a synthetic read that demands error decoding.
     let cParam = catchClause?.[1], cHandler = catchClause?.[2]
-    if (catchClause && isDestructPattern(cParam)) {
+    if (catchClause && (isDestructPattern(cParam) || typeof cParam === 'string' && refsName(cHandler, cParam, REFS_THROUGH_ARROWS))) {
       const tmp = `${T}cp${freshPrepareId()}`
       const declStmt = ['let', ['=', cParam, tmp]]
       cHandler = Array.isArray(cHandler) && cHandler[0] === '{}'

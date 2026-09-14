@@ -46,11 +46,27 @@ export function findFreeVars(node, bound, free, scope) {
     return
   }
   if (op === 'catch') {
-    findFreeVars(node[1], bound, free, scope)
-    const errName = node[2]
-    const handlerBound = typeof errName === 'string' && errName
-      ? new Set(bound).add(errName) : bound
-    findFreeVars(node[3], handlerBound, free, scope)
+    // IIFE lifting sees parser catch clauses; closure planning sees lowered
+    // catches with the protected body prepended.
+    const lowered = node.length === 4
+    if (lowered) findFreeVars(node[1], bound, free, scope)
+    const handlerBound = new Set(bound)
+    collectParamName(node[lowered ? 2 : 1], handlerBound)
+    if (!lowered) {
+      // Pattern defaults and computed keys execute in the handler's scope;
+      // property names and binding targets are not free references.
+      const pattern = p => {
+        if (!Array.isArray(p)) return
+        if (p[0] === '=') { findFreeVars(p[2], handlerBound, free, scope); pattern(p[1]); return }
+        if (p[0] === ':') {
+          if (Array.isArray(p[1])) findFreeVars(p[1], handlerBound, free, scope)
+          pattern(p[2]); return
+        }
+        for (let i = 1; i < p.length; i++) pattern(p[i])
+      }
+      pattern(node[1])
+    }
+    findFreeVars(node[lowered ? 3 : 2], handlerBound, free, scope)
     return
   }
   if (op === 'let' || op === 'const') {

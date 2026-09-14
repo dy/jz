@@ -1036,6 +1036,23 @@ test('errors: non-Error throws are unchanged (number/string still legal)', () =>
   is(j(`export let f = () => { try { throw 'str' } catch (e) { return e } }`), 'str')
 })
 
+test('catch bindings share lexical closure capture and lifetime', () => {
+  const j = (body) => jz(`export function f() { ${body} }`).exports.f()
+  is(j(`try { JSON.parse('{') } catch(e) { return (() => e.name)() }`), 'SyntaxError', 'immediate capture of an internal error')
+  is(j(`let g; try { JSON.parse('{') } catch(e) { g = () => e.name } return g()`), 'SyntaxError', 'capture survives handler exit')
+  is(j(`let g; try { throw 3 } catch(e) { g = () => e; e = 7 } return g()`), 7, 'capture observes reassignment')
+  is(j(`let e = 9, g; try { throw 3 } catch(e) { g = () => e } return e * 10 + g()`), 93, 'catch shadows an outer binding')
+  is(j(`let gs = []; for(let i=0;i<3;i++) { try { throw i } catch(e) { gs.push(() => e); e += 10 } } return gs[0]()*100 + gs[1]()*10 + gs[2]()`), 1122, 'each handler entry owns its mutated capture')
+  is(jz(`const gs=[]; for(let i=0;i<3;i++) { try { throw i } catch(e) { gs.push(() => e); e += 10 } }
+    export function f() { return gs[0]()*100 + gs[1]()*10 + gs[2]() }`).exports.f(), 1122, 'module-loop handler entries also own fresh cells')
+  is(j(`let g; try { throw 1 } catch(e) { try { throw 2 } catch(e) { g=()=>e } e=3 } return g()`), 2, 'nested catches keep distinct bindings')
+  is(j(`try { throw {x: 4} } catch({x}) { return (() => x)() }`), 4, 'destructured immediate capture')
+  is(j(`return (() => { try { throw 5 } catch(e) { return e } })()`), 5, 'a lifted body owns its catch binding')
+  is(j(`let y=7; return (() => { try { throw {} } catch({x=y}) { return x } })()`), 7, 'lifting captures a catch-pattern default')
+  is(j(`let key='x'; return (() => { try { throw {x:7} } catch({[key]:x}) { return x } })()`), 7, 'lifting captures a computed catch-pattern key')
+  is(j(`let y; y=7; return (()=>y)()`), 7, 'ordinary function frames include uninitialized declarations')
+})
+
 test('errors: internal errors materialize at catch without reinterpreting user numbers', () => {
   const j = (code) => jz(code).exports.f()
   ok(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e } }`) instanceof SyntaxError, 'returned catch value is a branded Error')

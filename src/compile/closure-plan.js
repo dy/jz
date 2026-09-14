@@ -79,10 +79,7 @@ import { repOf } from '../reps.js'
 // reader here assumes a miss (fail-open, per invariant 1 above).
 const freshClosureId = () => ctx.transform.closureId++
 
-// Names a destructuring pattern binds (mirrors src/prepare/lift-iife.js's own
-// private collectPatternNames — small enough, and layered differently enough
-// (compile-phase vs. prepare-phase), that a local copy beats a cross-layer
-// import for one 4-line pure recursor).
+// Collect names from a destructuring pattern for closure planning.
 const collectPatternNames = (pat, out) => {
   if (typeof pat === 'string') { out.add(pat); return }
   if (!Array.isArray(pat)) return

@@ -27,7 +27,7 @@
  *
  * @module prepare/lift-iife
  */
-import { T, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, walkAst } from '../ast.js'
+import { T, extractParams, classifyParam, collectParamName, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, walkAst } from '../ast.js'
 import { findFreeVars, findMutations } from '../compile/analyze-scans.js'
 
 // Build a comma-list operand node (the parser's shape) from an array of nodes.
@@ -63,27 +63,17 @@ const plainParamNames = (arrow) => {
 // within a frame is safe — a free ident only resolves to one of these if it's
 // actually in scope at the reference. Used to scope captures to enclosing LOCALS
 // (module-level names stay global refs in the lifted body, never captured).
-const collectDeclNames = (decl, out) => {
-  if (!Array.isArray(decl)) return
-  if (decl[0] === '=' && typeof decl[1] === 'string') out.add(decl[1])
-  else if (decl[0] === '=' && Array.isArray(decl[1])) collectPatternNames(decl[1], out)
-  else if (typeof decl[1] === 'string') out.add(decl[1])
-}
-const collectPatternNames = (pat, out) => {
-  if (typeof pat === 'string') { out.add(pat); return }
-  if (!Array.isArray(pat)) return
-  for (let i = 1; i < pat.length; i++) collectPatternNames(pat[i], out)
-}
 function functionLocals(paramNodes, body) {
   const names = new Set()
   for (const p of paramNodes) {
     const c = classifyParam(p)
     if (typeof c[PARAM_NAME] === 'string') names.add(c[PARAM_NAME])
-    else if (c[PARAM_PATTERN]) collectPatternNames(c[PARAM_PATTERN], names)
+    else if (c[PARAM_PATTERN]) collectParamName(c[PARAM_PATTERN], names)
   }
   walkAst(body, { enter: n => {
     if (n[0] === '=>') return false
-    if (n[0] === 'let' || n[0] === 'const') for (const d of n.slice(1)) collectDeclNames(d, names)
+    if (n[0] === 'function') { if (typeof n[1] === 'string') names.add(n[1]); return false }
+    if (n[0] === 'let' || n[0] === 'const') for (const d of n.slice(1)) collectParamName(d, names)
   } })
   return names
 }
@@ -104,10 +94,18 @@ export function liftIIFEs(ast) {
   const visit = (node, locals) => {
     if (!Array.isArray(node)) return node
 
-    // Descend into an arrow body with the frame extended by this arrow's locals.
-    if (node[0] === '=>') {
+    if (node[0] === 'catch') {
       const inner = new Set(locals)
-      for (const n of functionLocals(extractParams(node[1]), node[2])) inner.add(n)
+      collectParamName(node[1], inner)
+      const handler = visit(node[2], inner)
+      return handler === node[2] ? node : copyMeta(['catch', node[1], handler], node)
+    }
+
+    // Both source function forms establish a frame before jzify runs.
+    if (node[0] === '=>' || node[0] === 'function') {
+      const inner = new Set(locals)
+      const p = node[0] === 'function' ? 2 : 1
+      for (const n of functionLocals(extractParams(node[p]), node[p + 1])) inner.add(n)
       let changed = false
       const out = node.map((c, i) => { if (i === 0) return c; const v = visit(c, inner); if (v !== c) changed = true; return v })
       return changed ? copyMeta(out, node) : node
