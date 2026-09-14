@@ -146,6 +146,11 @@ key/value arrays. Unused methods disappear through existing reachability analysi
 Its callback iterator rereads the live fields after each callback, including
 when appending entries grows their backing arrays.
 
+Dynamic object reads, writes, presence and deletion share one schema-slot search.
+The search classifies a short or canonical interned query once, outside the scan;
+other keys retain content equality. It uses the existing schema table and adds no
+cache or allocation. Size mode retains the single content-comparison loop.
+
 Array read-only/current-pointer policies and multi-site push counts reuse the
 binding-use census. It distinguishes property reads from member calls, preserving
 indexed access, optional calls, writes, aliases and captures as separate evidence.

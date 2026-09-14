@@ -11,6 +11,27 @@ import { oracle } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('schema lookup preserves content equality and slot lifetime for every key form', () => {
+  const fields = { '': 1, a: 2, abcdef: 3, abcdefg: 4, é: 5, '😀': 6, 'a\0b': 7, secondLong: 8 }
+  const src = `export function f(k, json) {
+    if (typeof k === 'number') k = ['abcdefg', 'secondLong', 'absentLong'][k];
+    const o = json ? JSON.parse(json) : ${JSON.stringify(fields)};
+    let s = '' + o[k] + ':' + (k in o);
+    o[k] = undefined; s += '|' + o[k] + ':' + (k in o);
+    delete o[k]; s += '|' + o[k] + ':' + (k in o);
+    o[k] = 9; return s + '|' + o[k] + ':' + (k in o) + '|' + Object.keys(o).length;
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const json of ['', '{}', JSON.stringify(fields)])
+      for (const key of [...Object.keys(fields), 'absent', 'abcdefX', 'abcdeg', '', 0, 1, 2]) {
+        is(f(key, json), expected(key, json), `${optimize}: ${JSON.stringify(key)} on ${json || 'static schema'}`)
+        is(f(key, json), expected(key, json), 'repeated call retains equality and presence')
+      }
+  }
+})
+
 test('Map value analysis follows aliases and calls without leaking between compiles', () => {
   for (const value of ['7', '"seven"', '7n']) {
     const src = `const m = new Map(); const alias = m;
