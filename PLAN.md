@@ -36,49 +36,73 @@ README owns the public contract; CONTRIBUTING owns compiler invariants.
   points, endpoint interpolation, zero-frame flushes and scalar fallback.
 - The audio umbrella exposes VST under Node and preserves its browser entry.
   The empirical build gate rejects zero-work/invalid-size configurations.
+- Dynamic object reads, writes, presence and deletion share one schema-slot
+  search. Query representation checks move outside the scan; canonical keys
+  compare by bits, while host/slice/JSON keys retain content equality. No cache,
+  new layout or allocation. Size mode keeps one content-comparison loop.
+
+The final direct paired self-host comparison is 8.8% faster than `e3e750af`
+(0.912× geomean; all six cases improve). The isolated changes measured 0.949×
+for shared short-key lookup, then 0.960× for canonical long keys.
+The compiler artifact is 15,400,914 bytes versus 15,402,610. Hash hot/cold
+splitting did not improve the workload and was discarded. These are diagnostic
+measurements, not valid-hardware release attestations; logs use the
+`/private/tmp/jz-gap-` prefix. Functional candidate verification passes.
 
 Watr is pinned to `d6d140d`; Subscript remains at `0f65c86`.
 
 ## Candidate verification — 2026-09-13
 
-Functional verification passes on compiler commit `dddf30d6`; release performance
-and evidence gates remain open. Logs are `/private/tmp/jz-priorities-verified-*`,
-`/private/tmp/watr-priorities-verified-*` and
-`/private/tmp/audio-priorities-verified.log`.
+Functional verification passes on compiler commit `e194a7eb`; release performance
+and evidence gates remain open. Current logs are `/private/tmp/jz-gap-*`.
 
 | Gate | Evidence |
 |---|---|
-| Core suite | 4,244 tests / 64,199 assertions pass; one skip |
-| Opt0/opt3/WASI matrix | 4,050 / 4,050 / 4,102 tests pass; 49,196 / 49,514 / 56,793 assertions; one skip per leg |
+| Core suite | 4,245 tests / 64,379 assertions pass; one skip |
+| Opt0/opt3/WASI matrix | 4,051 / 4,051 / 4,103 tests pass; 49,376 / 49,694 / 56,973 assertions; one skip per leg |
 | Functional bootstrap | 46 tests / 2,295 assertions pass |
+| Recursive self-compile | Pass on an attested build; 14,894,077 output bytes; runnable probe returns 19 |
 | Language conformance | 3,151 pass; 4,045 negative rejects; zero failures/negative accepts; 8 expected failures |
 | Built-in conformance | 867 pass; zero failures; 47 expected failures |
 | Size vs AssemblyScript | 51/51 strict wins; geomean 0.7782× |
-| Size ceilings | Watr 290,158 / 300,000 bytes; JSON 10,764 / 12,500 bytes |
+| Size ceilings | Watr 290,091 / 300,000 bytes; JSON 10,764 / 12,500 bytes |
 | Class-based gain size | 1,812 bytes vs AssemblyScript 1,903 |
 | Audio suites | 29 VST + 22 WAM pass; zero skips |
 | Watr compiled-Wasm suite | Pass, including differential local-propagation and spec suites |
-| Perf-fuzz | Final-tree diagnostic pass: int 0.93×, float 0.72×, mixed 0.94×; maxima 1.07×, 0.95×, 1.92×; no competing test jobs, but swap exceeds the release validity cap |
-| Self-host timing | Structural pins pass; both timing gates fail: warm 1.506× / 1.523× / 1.539× (cap 1.03×), fresh 1.191× (cap 0.99×) |
+| Perf-fuzz | Final-tree diagnostic pass: int 0.93×, float 0.71×, mixed 0.94×; maxima 1.07×, 0.94×, 1.88×; no competing test jobs, but swap exceeds the release validity cap |
+| Self-host timing | Structural pins pass; both timing gates fail: warm 1.409× / 1.418× / 1.443× (cap 1.03×), fresh 1.133× (cap 0.99×) |
 
 ## Remaining release work
 
 1. **Self-host speed and valid runtime/memory evidence.** Final-tree diagnostic
-   warm ratios are 1.506×/1.523×/1.539× against the 1.03× cap; fresh is 1.191×
+   warm ratios are 1.409×/1.418×/1.443× against the 1.03× cap; fresh is 1.133×
    against 0.99×. These ran serially after the functional suites. Current swap
-   is 18,890 MB, above the 4,096 MB validity cap, so they are not release
+   is 17,164 MB, above the 4,096 MB validity cap, so they are not release
    measurements; the timing failures remain unresolved. Obtain quiet reference
    hardware; do not relax the gates. Profile schema string comparisons,
    Map hashing and dynamic dispatch before adding another cache or pass.
-   Previous recursive compilation used 1,528,831,688 heap bytes without an
-   attestation; produce current recursive timing/memory attestations.
+   Recursive compilation now passes on attested commit `e194a7eb`: 56.49 s,
+   1,563,773,600 heap bytes, 3,729.6 MiB peak process RSS, 14,894,077 output
+   bytes. The 4 GiB Wasm address space includes the checkpoint's reserved lane.
+   `/private/tmp/jz-gap-recursive.json` records provenance and the incomplete
+   memory verdict: no compatible baseline manifest, so no relative memory
+   claim. Obtain a current same-machine Porffor comparison as well.
 
 2. **Current comparison evidence.** Committed benchmark and memory rows remain
    stale. The current claims audit passes 7 checks and fails 13, with incomplete
    rival coverage (including 43 comparable Porffor cases where 44 are required).
-   The earlier runtime campaign lost fastest-Wasm cases in glyfparse, sdf,
-   trace, lz, shapes and wordcount. Re-measure the candidate and fix remaining
-   losses using general techniques and unchanged benchmark sources. Historical
+   A fresh four-round paired diagnostic beats Clang Wasm on lz (0.788×) and
+   shapes (0.292×); Clang losses remain in glyfparse (1.401×), sdf (1.171×),
+   trace (1.063×) and wordcount (1.061×). AssemblyScript also wins sdf (1.055×)
+   and shapes (1.127×); lz is the only case of these six ahead of both rivals.
+   All six match their reference checksums. Re-measure on valid hardware and fix remaining
+   losses using general techniques and unchanged benchmark sources. SDF WAT
+   shows checked scratch-array reads and repeated conversions where Clang keeps
+   loaded indices and their products in integer form. Investigate existing
+   cached-load temporaries and their presence proofs: the existing summary
+   already gives SDF's scratch parameter the range [0,383], but its cached
+   load is nullable and carries no scalar range into arithmetic. Preserve
+   out-of-bounds behavior when recovering those facts. Historical
    size losses must not be confused with the fresh 51/51 size wins above.
    Keep TinyGo 0.42.0 in the comparison.
 
