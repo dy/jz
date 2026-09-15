@@ -398,8 +398,8 @@ const containsEffect = (n) => some(n, n => (n[0] === '()' && !pureSIMDCall(n)) |
 // + count. Statement HEADERS that are expression positions (for-init/update, while/if test)
 // are left untouched: there's no sound place for a hoisted decl there, so those calls just
 // stay outlined. Conservatively leaves unrecognized statement shapes alone.
-const hoistNestedCalls = (body, blockNames, bodies = null) => {
-  if (!blockNames.size || !Array.isArray(body)) return { node: body, changed: false }
+const hoistNestedCalls = (body, bodies) => {
+  if (!bodies.size || !Array.isArray(body)) return { node: body, changed: false }
   let changed = false
   const seq = (stmts) => stmts.length === 1 ? stmts[0] : [';', ...stmts]
   // Lifting a call to the pre-decl block moves its evaluation to the TOP of the statement.
@@ -446,7 +446,7 @@ const hoistNestedCalls = (body, blockNames, bodies = null) => {
     return out
   }
   const hNode = (n, pre, cond, eff) => {
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1]) && commutes(n[1], eff)) {
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && bodies.has(n[1]) && commutes(n[1], eff)) {
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, effState()))]
       const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
@@ -476,7 +476,7 @@ const hoistNestedCalls = (body, blockNames, bodies = null) => {
   // `const X = call` / `X = call` paths — hoisting it would be redundant and (for an
   // object/array-literal `{}`-bodied factory) would break the post-inline alias chain.
   // Only hoist NESTED calls; leave a top-level direct call to those paths.
-  const directCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string' && blockNames.has(e[1])
+  const directCall = (e) => Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string' && bodies.has(e[1])
   const hStmt = (s) => {  // → array of statements (hoisted decls prepended)
     if (!Array.isArray(s)) return [s]
     switch (s[0]) {
@@ -727,7 +727,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   }
 
   let changed = false
-  const exportedCandidates = new Map()
+  const exportedCandidates = new Map(), exportedExprCandidates = new Map()
   for (const func of candidates.values()) {
     const name = func.name
     const sites = sitesByCallee.get(name)
@@ -736,7 +736,10 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // Forwarders cross into an exported caller too: the tier-up rationale that
     // keeps candidates out of exports concerns relocated loop kernels, not
     // these tiny leaves — and inlining one devirtualizes a closure dispatch.
-    if (fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) exportedCandidates.set(name, func)
+    if (fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) {
+      exportedCandidates.set(name, func)
+      if (exprOnlyCandidates.has(name)) exportedExprCandidates.set(name, func)
+    }
   }
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
@@ -758,9 +761,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const isExprBody = !Array.isArray(func.body) || func.body[0] !== '{}'
     // Expression-position pass takes the leaf-safe subset for exports — the same tier-up
     // rationale as the statement path (leaves into exports are fine; relocated kernels are not).
-    const exprActive = isExported(func)
-      ? new Map([...exprOnlyCandidates].filter(([n]) => exportedCandidates.has(n)))
-      : exprOnlyCandidates
+    const exprActive = isExported(func) ? exportedExprCandidates : exprOnlyCandidates
     // Iterate to a (bounded) fixpoint: inlining a call whose args are themselves candidate calls
     // binds those args to temps (`t0 = grad(a)`); the next pass folds the candidate into the temp
     // decl. Depth is bounded by call nesting (a small constant), capped here so a pathological
@@ -771,13 +772,14 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // shape. Restricted to LEAVES (no own loop): a loop kernel called in expression
     // position (e.g. a 2-site `reduce`) was deliberately staying outlined for V8 tier-up,
     // and hoisting it would pull the loop into a cold caller.
-    const blockNames = new Set()
-    for (const n of activeCandidates.keys()) if (leaves.has(n) && !exprActive.has(n)) blockNames.add(n)
+    const blockBodies = new Map()
+    if (speedTier && !isExprBody) for (const f of activeCandidates.values())
+      if (leaves.has(f.name) && !exprActive.has(f.name)) blockBodies.set(f.name, f.body)
     let body = func.body, bodyChanged = false
     for (let iter = 0; iter < 4; iter++) {
       let iterChanged = false
-      if (speedTier && !isExprBody && blockNames.size) {
-        const h = hoistNestedCalls(body, blockNames, new Map([...activeCandidates].filter(([n]) => blockNames.has(n)).map(([n, f]) => [n, f.body])))
+      if (blockBodies.size) {
+        const h = hoistNestedCalls(body, blockBodies)
         if (h.changed) { body = h.node; iterChanged = true }
       }
       if (isExprBody) {
@@ -908,15 +910,14 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   const hoistable = (info) => Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}'
     && !some(info.arrow[2], n => LOOP_OPS.has(n[0])) && nodeSize(info.arrow[2]) <= 48
   for (;;) {
-    const stmtCands = new Map(), exprCands = new Map(), hoistNames = new Set()
+    const stmtCands = new Map(), exprCands = new Map(), bodies = new Map()
     for (const [name, info] of decls) {
       (Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}' ? stmtCands : exprCands).set(name, asFunc(info))
-      if (hoistable(info)) hoistNames.add(name)
+      if (hoistable(info)) bodies.set(name, info.arrow[2])
     }
     let out = body, didChange = false
-    if (hoistNames.size) {
-      const bodies = new Map([...decls].filter(([name]) => hoistNames.has(name)).map(([name, info]) => [name, info.arrow[2]]))
-      const h = hoistNestedCalls(out, hoistNames, bodies)
+    if (bodies.size) {
+      const h = hoistNestedCalls(out, bodies)
       if (h.changed) { out = h.node; didChange = true }
     }
     if (stmtCands.size) { const r = inlineInStmt(out, stmtCands); if (r) { out = r.node; didChange = true } }
@@ -930,7 +931,7 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
     let retry = false
     for (const [name, info] of decls) {
       if (!newStmts.some(s => s !== info.stmt && refsName(s, name, REFS_IN_EXPR))) dead.add(info.stmt)
-      else if (hoistNames.has(name)) { decls.delete(name); retry = true }
+      else if (bodies.has(name)) { decls.delete(name); retry = true }
     }
     if (retry) { if (!decls.size) return false; continue }
     if (dead.size) out = removeStmts(out, dead) ?? [';']

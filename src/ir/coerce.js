@@ -13,7 +13,7 @@ import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { VAL, repOf, numericStorage } from '../reps.js'
-import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode, numericDenied } from '../kind.js'
+import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied } from '../kind.js'
 import { intExprRange } from '../static.js'
 import { K, bitOf, NULL_BITS, TAGS } from '../summary/kind.js'
 import { typed } from './tag.js'
@@ -230,27 +230,10 @@ export function toNumF64(node, v) {
     // same asF64(v) call, no new branch taken.
     if ((vt === VAL.NUMBER || censusNum) &&
         (typeof node === 'string' && ctx.func.maybeNullish?.has(node) || censusMaybeUndefined(node))) {
-      // coerceNullishToNum's OWN contract (its doc comment above): `valIR`
-      // "must be side-effect-free... it is duplicated". True for the dict/
-      // Map direct-read shape (censusShapedNode) and a bare name (a local
-      // read) — both pure. NOT true for kind.js's call-result arm
-      // (censusMaybeUndefinedKind's `callResultMayBeUndefinedKind` fallback,
-      // .work/archive/todo.md §deletion-sweep §5 criterion 3): an arbitrary
-      // function call can have real side effects, and cloneIR's triplication
-      // would fire them 3x — a captured-mutation counter would increment 3x
-      // instead of once when its value flows through a non-inlined callee's
-      // return before reaching `+`. INVARIANT: hoist into a temp
-      // FIRST so cloneIR only triplicates a cheap `local.get` — one
-      // evaluation, sound for every node shape, byte-identical to before for
-      // the two ORIGINAL (pure) arms since this branch is skipped for them.
-      // Kept even though currently unreachable: `vt === VAL.NUMBER` for a
-      // call node requires `func.valResult` to have already settled NUMBER
-      // for a census-shaped return tail, which itself requires the
-      // VT['[]']/['.']/['()'] promotion that stays dormant (see kind.js's
-      // dict-value-census consumer) — so this whole branch is
-      // sound-but-inert today, same status as kind.js's
-      // callResultMayBeUndefinedKind it protects.
-      if (typeof node !== 'string' && !censusShapedNode(node)) {
+      // A computed read can invoke a key's conversion hook; even a pure
+      // Map/dictionary probe is costly to repeat. Evaluate every expression
+      // once, then duplicate only its local read in the sentinel branches.
+      if (typeof node !== 'string') {
         const t = temp('cnn')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, asF64(v)],
@@ -426,13 +409,8 @@ export function toStrI64(node, v) {
   // full dynamic dispatch call.
   const censusStr = vt == null && censusMaybeUndefinedKind(node) === VAL.STRING
   if ((vt === VAL.STRING || censusStr) && censusMaybeUndefined(node)) {
-    // Same triplication-safety concern toNumF64's own widening documents: a
-    // direct census-shaped read or a bare-name copy-through is pure
-    // (cloneIR-safe to duplicate inside coerceNullishToStr's if/else), but
-    // the call-result arm (censusMaybeUndefinedKind's `callResultMayBeUndefinedKind`
-    // fallback) can carry real side effects — hoist into a temp first so
-    // only a cheap `local.get` gets duplicated.
-    if (typeof node !== 'string' && !censusShapedNode(node)) {
+    // As above, key conversion and lookup run once before sentinel tests.
+    if (typeof node !== 'string') {
       const t = tempI64('cns')
       return typed(['block', ['result', 'i64'],
         ['local.set', `$${t}`, asI64(v)],

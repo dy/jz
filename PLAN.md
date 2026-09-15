@@ -22,10 +22,15 @@ contract; CONTRIBUTING owns compiler invariants.
   sets, collection cells and positional rest facts. Pending effects propagate
   only when changed; the redundant layout-set census is removed.
   Construction and layout IDs index field rows directly instead of hashing them.
+  Tuple positions retain nested shapes through array literals, rest arguments
+  and collection entries. A mixed dynamic read, mutation, union or host escape
+  exposes their identities to effects; constructing the tuple alone does not.
 - All prepared, imported, synthesized and specialized functions share one
   constructor. Variant queue entries are records. Function registries and
   active frames use the same constructors initially and at reset; registry
-  lookups no longer allocate intermediate entry arrays unnecessarily.
+  lookups and export queries no longer allocate intermediate entry arrays.
+  Inlining builds its exported subset once per pass and reuses body maps for
+  membership and nested-call hoisting.
 - Array-pattern parameters use the existing positional initialization path
   for ordinary functions and generators, avoiding synthetic rest allocation.
   Object-only patterns retain their existing lowering; generalizing that path
@@ -33,6 +38,12 @@ contract; CONTRIBUTING owns compiler invariants.
 - Concatenations retain cached hashes, Map/Set probes reuse their capacity
   load when following relocation, wide schemas use a static key index, and
   dynamic reads beyond the specialization budget retain an inline cache.
+  Numeric/pointer hashes mix into low bucket bits, avoiding the quadratic
+  clustering of consecutive integer-valued doubles. Dictionary slot updates
+  share Map/Set's upsert implementation, removing a duplicate grow/probe loop.
+  Map reads depend on hashing/equality directly instead of mutation helpers.
+  Slot fusion declines throwing/effectful RHS and object key coercion. Nullable
+  coercion reads once, avoiding duplicated key conversions and table probes.
 - Schema indexes write binary words directly, preserving capacities and signed
   relative offsets through self-compilation. JSON's schema cache explicitly
   clears reused arena storage; repeated object-form compiler options stay intact.
@@ -45,58 +56,61 @@ to `d6d140d`; Subscript to `0f65c86`.
 
 ## Candidate verification — September 15
 
-Final core: 4317 pass, one skip, zero failures (65806 assertions). The matrix
-passed all four legs; its O0/O3 legs each passed 4122 tests, WASI 4175. The last
-field-table refactor was followed by a fresh full core and affected summary
-checks across the matrix settings. The old nullish-read expectations now
-require TypeError. The structural golden and ratchet updates are
-isolated to required receiver checks: omitting only `requireReceiverWat`
-restores all ten prior loop counts; the typed class example returns from 3132
-bytes to 3060. Its size-class ceiling retains the previous 40-byte slack.
+Final core: 4324 pass, one skip, zero failures (68956 assertions). The prior
+full matrix passed all four legs. This continuation passed 559 affected tests
+at O0, O3 and WASI after the tuple/hash changes, collection checks after the
+upsert fold, and 252 affected tests in each leg after the final coercion fixes.
 Product timing, Watr/JSON size and memory caps are unchanged.
 
-Fresh self-host functional suite: 50 passes, 2329 assertions. Language
-conformance: 3151 positive passes, 4045 negative rejections, 8 expected failures;
-built-ins: 874 passes, 45 expected failures. Both report zero failures.
-Import lint and public types pass. Kernel provenance, byte parity, recursive
-compilation, reuse and error recovery pass. The memory gate now excludes the
-deliberately invalid source from compilation comparisons (the sequence gate
-still checks rejection, and process peaks cover it). All 28 comparable rows
-stay within the existing 10% memory band against the preceding candidate.
-The final manifest is `/private/tmp/jz-finish-candidate.json`; recursive
-compilation uses 1556383816 heap bytes and emits 15330661 wasm bytes.
+Final self-host functional suite: 50 passes, 2329 assertions. Earlier in this
+continuation, language conformance reported 3151 positive passes, 4045 negative
+rejections and 8 expected failures; built-ins reported 874 passes and 45
+expected failures, both with zero failures. The final coercion fixes pass
+objects, ToPrimitive and optimizer tests (432 cases). Import lint passes.
+Public types passed on the preceding candidate; no public signatures changed.
 
-The fresh size sweep beats AssemblyScript on all 51 comparable cases at
-0.778× bytes. Watr is 297238 bytes against 300000; JSON is 10772 against 12500.
-This standalone sweep does not refresh committed benchmark rows.
-Evidence logs use `/private/tmp/jz-finish-`.
+The final kernel passes provenance, byte parity, recursive compilation, reuse,
+error recovery and all 28 memory comparisons within the existing 10% band.
+The manifest is `/private/tmp/jz-rest-final-candidate.json`, compared against
+`/private/tmp/jz-finish-candidate.json`. Recursive compilation uses 1555927920
+heap bytes and emits 15308343 wasm bytes. The shared upsert removes roughly
+21 KB from the kernel; paired warm timing is unchanged (1.002×).
 
-Final self-host timing: warm 1.080×/1.103×/1.120× against 1.03× (fails),
-fresh 0.913× against 0.99× (passes).
-The indexed field tables are 0.987× the preceding kernel's time in a paired
-diagnostic. Packed Int32 field rows did not improve timing and were discarded.
-The direct forwarding-helper experiment was slower (1.124×) and was discarded.
-A shared private nullish-throw helper did not reduce the emitted size and
-was discarded. These diagnostic measurements are not release attestations:
-current swap is 13022 MB, above the 4096 MB validity cap.
+The prior full size sweep beat AssemblyScript on all 51 comparable cases at
+0.778× bytes. Current affected size checks keep Watr below 300000 bytes and
+JSON below 12500. This does not refresh committed benchmark rows.
+Evidence logs use `/private/tmp/jz-rest-`.
 
-The earlier stateful native VST fixture passed 12438 checks and 4000
-concurrent blocks with zero sample error and fixed callback heaps. It has
-not been rerun for these compiler changes and does not prove deadlines.
+Final self-host timing: warm 1.088×/1.129×/1.129× against 1.03× (fails), fresh
+0.877× against 0.99× (passes). Tuple precision, inline-map
+reuse and export enumeration showed no meaningful paired timing improvement.
+The numeric hash removes a separate severe defect: isolated Map fill/read
+workloads improved about 5–51× for 128–4096 sequential keys, while aggregate
+warm compilation remained unchanged. The audit's Map counter still took
+1.383× V8 time (1.298 ms versus 0.936 ms for 100000 updates); it repeats a
+get/set probe for each update.
+These are diagnostics, not release attestations: the latest swap reading
+is 12365 MB, above the 4096 MB validity cap. No cap was relaxed.
+
+The current compiler passed the stateful native VST fixture: 12438 checks,
+4000 concurrent blocks, zero sample error and fixed callback heaps. The public
+compile-vst package's 29 tests also pass, including three real bundle builds.
+These tests do not prove callback deadlines.
 
 ## Remaining release work
 
-1. **Warm self-host speed.** Close the remaining roughly 5–9% gap without
-   changing the 1.03× cap. Uniform function records are implemented, and
-   `ctx.funcs` now has an exact physical layout; `createFunction().sig` and
-   `ctx.func.current` still join to unknown. Trace mixed Map/tuple value flow
-   before adding another analysis: constructing Map-entry tuples merges the
-   string key with the object value and escapes its shape before a positional
-   read can use it. Preserve tuple positions without hiding effects of a later
-   dynamic index, mutation, escape or union. This remains conservative today.
+1. **Warm self-host speed.** Close the remaining roughly 6–10% gap without
+   changing the 1.03× cap. Uniform function records and positional collection
+   flow are implemented. `ctx.funcs` has an exact layout; `createFunction().sig`
+   and `ctx.func.current` still join to unknown. The next observed loss comes
+   through the unknown `programFacts`/function-order result passed into export
+   queries. Isolating profiling wrappers at call sites did not restore that
+   precision and was discarded; do not assume it is the sole cause.
    The previous profile attributes about 14% to Map/Set probes and 5% to
-   pointer decoding. The retained changes reduce dispatch and allocation;
-   blanket forwarding inlining is not established as a win.
+   pointer decoding. A general get/set fusion could reuse the shared slot
+   upsert, but must prove intrinsic method identity and a non-observable,
+   non-throwing RHS before inserting a missing entry early. Blanket forwarding
+   inlining was measured slower and discarded.
 
 2. **Fresh speed, size and memory evidence.** The committed claims audit
    reports 6 passes and 14 failures: compiler/memory provenance is stale,
@@ -123,7 +137,7 @@ not been rerun for these compiler changes and does not prove deadlines.
    class IDs. Mono remains refused until its arrangement constant is verified
    against SDK headers. Restart-flagged edits take effect on the next setup;
    active host restart needs the component-handler interface. Events and wider
-   layouts remain refused. Re-run the stateful fixture on the pinned candidate.
+   layouts remain refused. The stateful fixture has been rerun on this candidate.
 
 4. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation/work proofs unknown. Empirical block checks establish

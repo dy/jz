@@ -30,6 +30,7 @@ import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../bridg
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
+import { K, tagOf } from '../summary/kind.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -182,16 +183,23 @@ export { persistBindingPtr }
 // slot 0 and takes the untouched generic path.
 const _rmwStructEq = (a, b) => a === b ||
   (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => _rmwStructEq(x, b[i])))
-// rhs allowlist: value ops only — a call could insert into the receiver (growing
-// the table under the held slot address), an assignment or closure likewise.
+// A slot upsert inserts before evaluating the RHS. Only primitive value ops
+// commute with that insertion: a throw would leave an extra key, and implicit
+// ToPrimitive can call user code that grows the table under the held address.
+const _rmwPrimitive = n => {
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(n)
+  const t = k == null ? K.ANY : tagOf(k)
+  return t === K.NUMBER || t === K.BOOL || t === K.STRING || t === K.NULLISH || t === K.ABSENT
+}
+const _rmwOps = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>', '~', '!',
+  '&&', '||', '??', '?', '?:', ',', '==', '===', '!=', '!==', '<', '<=', '>', '>=', 'u-', 'u+', 'void', 'typeof'])
 const _rmwSafe = (n, readNode) => {
-  if (!Array.isArray(n)) return true
-  if (_rmwStructEq(n, readNode)) return true
+  if (!Array.isArray(n)) return typeof n !== 'string' || _rmwPrimitive(n)
+  if (_rmwStructEq(n, readNode)) return _rmwPrimitive(n)
   const op = n[0]
-  if (op == null || op === 'str') return true
-  if (op === '()' || op === '=>' || op === 'new' || typeof op !== 'string') return false
-  if (op === '=' || op.endsWith('=') && op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>=') return false
-  if (op === '++' || op === '--') return false
+  if (op == null) return typeof n[1] !== 'bigint'
+  if (op === 'str') return true
+  if (!_rmwOps.has(op)) return false
   for (let i = 1; i < n.length; i++) if (!_rmwSafe(n[i], readNode)) return false
   return true
 }
@@ -209,7 +217,7 @@ function tryHashRmwFusion(arr, idx, val) {
   // A proven string probes directly; an unknown key is normalized once.
   const keyStr = (typeof idx === 'string' && valTypeOf(idx) === VAL.STRING) || isLiteralStr(idx)
   const keyUnknown = typeof idx === 'string' && valTypeOf(idx) == null
-  if (!keyStr && !keyUnknown) return null
+  if (!keyStr && (!keyUnknown || !_rmwPrimitive(idx))) return null
   const readNode = ['[]', arr, idx]
   let reads = 0
   walkAst(val, { enter: n => {

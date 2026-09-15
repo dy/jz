@@ -2098,6 +2098,93 @@ test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
   ok(slotWat.includes('call $__ptr_offset_fwd'), 'forward hop stays behind the -1 sentinel')
 })
 
+test('dictionary RMW fusion: throws and implicit coercions retain JS effects', () => {
+  // WASI reserves zero-argument `run` for a command entry with no result.
+  const cases = [
+    [`export function check() {
+      const d = {}, k = 'x'
+      try { d[k] = (d[k] | 0) + undefined.x } catch (e) {}
+      return Object.keys(d).length
+    }`, 0],
+    [`export function check() {
+      const d = {}, k = 'x'
+      try { d[k] = (d[k] | 0) + null[0] } catch (e) {}
+      return Object.keys(d).length
+    }`, 0],
+    [`export function check() {
+      const d = {}, k = 'x'
+      let seen = -1
+      const rhs = { valueOf() { seen = Object.keys(d).length; throw new Error('stop') } }
+      try { d[k] = (d[k] | 0) + rhs } catch (e) {}
+      return seen * 10 + Object.keys(d).length
+    }`, 0],
+    [`export function check() {
+      const d = {}, k = 'x'
+      d[k] = { valueOf() { for (let i = 0; i < 32; i++) d['n' + i] = 1; return 3 } }
+      d[k] = (d[k] | 0) + 1
+      return d[k] + Object.keys(d).length
+    }`, 37],
+  ]
+  for (const optimize of levels(0, 2, 3)) for (const [src, expected] of cases) {
+    const { exports } = jz(src, { optimize })
+    is(exports.check(), expected, `O${optimize}: effects precede insertion/store`)
+    is(exports.check(), expected, `O${optimize}: repeated call`)
+  }
+})
+
+test('dictionary coercion: computed-key hooks run once per read or write', () => {
+  const update = `function update(d, k) { d[k] = (d[k] | 0) + 1 }
+    export function run(flag) {
+      let calls = 0
+      const key = { toString() { calls++; return 'k' } }, d = {}
+      update(d, flag ? 'k' : key)
+      return calls * 10 + Object.keys(d).length
+    }`
+  const stringify = `export function run(flag, present) {
+    let calls = 0
+    const key = { toString() { calls++; return 'k' } }, d = {}
+    const name = flag ? 'other' : 'k'
+    if (present) d[name] = 'ok'
+    const result = String(d[flag ? 'other' : key])
+    return calls + ':' + result + ':' + Object.keys(d).length
+  }`
+  for (const optimize of levels(0, 2, 3)) {
+    const counter = jz(update, { optimize }).exports.run
+    for (const flag of [0, 1, 0]) is(counter(flag), flag ? 1 : 21, `O${optimize}: two property-key conversions`)
+    const string = jz(stringify, { optimize }).exports.run
+    for (const present of [0, 1, 0]) for (const flag of [0, 1])
+      is(string(flag, present), (flag ? '0:' : '1:') + (present ? 'ok:1' : 'undefined:0'),
+        `O${optimize}: one string-read conversion, present=${present}`)
+  }
+})
+
+test('dictionary RMW fusion: shared upsert preserves aliases, growth and reinsertion order', () => {
+  const src = `export function run(n) {
+    const dict = {}, alias = dict
+    let key = 'k' + 0
+    dict[key] = 7
+    for (let i = 1; i <= n; i++) {
+      key = 'k' + i
+      dict[key] = (dict[key] | 0) + 1
+      alias[key] = (alias[key] | 0) + 2
+    }
+    key = 'k' + 0
+    delete alias[key]
+    dict[key] = (dict[key] | 0) + 5
+    let sum = 0
+    for (const k of Object.keys(alias)) sum += alias[k]
+    return Object.keys(dict).join(',') + ':' + sum
+  }`
+  for (const optimize of levels(0, 2)) for (const compactCollections of [false, true]) {
+    const { exports } = jz(src, { optimize, compactCollections })
+    for (const n of [0, 1, 6, 7, 64, 1024, 0, 7]) {
+      const keys = Array.from({ length: n }, (_, i) => 'k' + (i + 1)).concat('k0')
+      is(exports.run(n), keys.join(',') + ':' + (n * 3 + 5),
+        `O${optimize} compact=${compactCollections} n=${n}: alias values and order`)
+    }
+  }
+})
+
 test('spread merge: enumeration sees the spread keys, not just the literal ones', () => {
   // resolveSchema of a spread-bearing literal must be emitObjectSpread's MERGE
   // (spreadLiteralSchema), not the ':'-entries filter — the filter made

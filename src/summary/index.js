@@ -348,12 +348,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const hostArrays = new Set()   // arrays exposed to host writes
   const retainedArrays = new Set() // arrays reachable across calls, through globals or captures
   const hostClosures = new Set() // callable results the host can receive
-  const tuples = new Map()       // cell root → immutable literal positions; null after mutation or union
+  const tuples = new Map()       // cell root → positional kinds; null after mutation, union or a mixed read
   const cellUp = []              // cell id → its parent; a root is its own
   const cells = new Map()        // construction node (an array literal, a `new Map`) → cell id
   const cell = (id) => { while (cellUp[id] !== id) id = cellUp[id] = cellUp[cellUp[id]]; return id }
   const canon = (k) => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
-  const elemOf = (k) => celled(k) ? elems[cell(paramOf(k))] : ANY
+  const elemOf = (k) => {
+    if (!celled(k)) return ANY
+    const id = cell(paramOf(k)), elem = elems[id]
+    // A dynamic read uses the joined element. Only now can a heterogeneous
+    // tuple lose the identities its positional reads still follow.
+    if (paramOf(elem) === UNKNOWN) invalidateTuple(k)
+    return elem
+  }
   // A cell, closure or schema past the parameter's range is one the kind cannot name: it escapes.
   const cellOf = (node, tag, elem) => {
     let id = cells.get(node)
@@ -372,7 +379,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (count) {
       const source = ks[base], t = tagOf(source)
       if (t === K.ARRAY || t === K.SET) value = elemOf(source)
-      else if (t === K.MAP) { const pair = arrayOf(pairNodeOf(node), K.NONE); raiseElem(pair, merge(keysOf(source), elemOf(source))); tuplePair(pair, keysOf(source), elemOf(source)); value = pair }
+      else if (t === K.MAP) { const pair = tuplePair(node, keysOf(source), elemOf(source)); value = pair }
       else if (t === K.STRING) value = STRING
       else if (t !== K.NONE && t !== K.NULLISH && t !== K.ABSENT) value = ANY
     }
@@ -404,15 +411,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const invalidateTuple = arr => {
     if (!celled(arr)) return
-    const id = cell(paramOf(arr))
-    if (tuples.get(id) !== null) { tuples.set(id, null); changed = true }
+    const id = cell(paramOf(arr)), row = tuples.get(id)
+    if (row !== null) {
+      tuples.set(id, null); changed = true
+      if (row && paramOf(elems[id]) === UNKNOWN) for (const k of row) lose(k)
+    }
   }
   const raiseElem = (arr, k, literal = false, keyed = false) => {
     if (!celled(arr)) return
     const id = cell(paramOf(arr))
     if (hostArrays.has(id) && retainedArrays.has(id)) { retain(k); escapeToHost(k); k = ANY; literal = false }
     if (!literal) invalidateTuple(arr)
-    const nk = merge(elems[id], k)
+    const nk = merge(elems[id], k, !!tuples.get(id))
     if (nk !== elems[id]) { elems[id] = nk; changed = true }
     // A keyed dictionary's entry stored under a name the summary does not see.
     if (!keyed && hasTag(arr, K.HASH) && keyedCells.has(id)) raiseWildCell(id, k)
@@ -461,14 +471,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const c = cell(paramOf(map)), old = mapKeys.get(c) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { mapKeys.set(c, nk); changed = true }
   }
-  const pairNodes = new Map(), pairCells = new Set()   // an entries() call → its pair array's cell key
+  const pairNodes = new Map()   // an entries() call → its pair array's cell key
   const pairNodeOf = (node) => { let p = pairNodes.get(node); if (!p) pairNodes.set(node, p = ['pair', node]); return p }
-  const tuplePair = (pair, kk, vk) => {
+  const tuplePair = (node, kk, vk) => {
+    const pair = arrayOf(pairNodeOf(node), K.NONE)
+    if (!celled(pair)) { escape(kk); escape(vk); return pair }
     const c = cell(paramOf(pair))
-    if (!pairCells.has(c)) { pairCells.add(c); tuples.set(c, []) }
+    if (!tuples.has(c)) tuples.set(c, [])
     const row = tuples.get(c)
-    if (!row) return
-    for (const [i, k] of [[0, kk], [1, vk]]) { const next = merge(row[i] ?? K.NONE, k); if (next !== row[i]) { row[i] = next; changed = true } }
+    for (let i = 0; i < 2; i++) {
+      const k = i ? vk : kk
+      if (row) { const next = merge(row[i] ?? K.NONE, k); if (next !== row[i]) { row[i] = next; changed = true } }
+      raiseElem(pair, k, true)
+    }
+    return pair
   }
   /** An array's entry under a key of kind `ik`: elements by a number, dictionary entries by a string, everything by an unknown key. */
   const entryOf = (arr, ik) => { const t = tagOf(ik); if (paramOf(arr) === UNKNOWN) return ANY; return t === K.NUMBER ? elemOf(arr) : t === K.STRING ? anyPropOf(arr) : t === K.NONE ? K.NONE : join(elemOf(arr), anyPropOf(arr)) }
@@ -505,7 +521,21 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const t = tagOf(k), p = paramOf(k)
     if (p === UNKNOWN) return
     if (t === K.CLOSURE) { retain(k); for (const id of membersOf(p)) { if (!hostClosures.has(id)) { hostClosures.add(id); changed = true } escapeId(id) } }
-    else if (celled(k)) { const c = cell(p); if (!seen.has(-1 - c)) { seen.add(-1 - c); escapeToHost(elems[c], seen); for (const sid of shapesInCell(c)) escapeToHost(kind(K.OBJECT, sid), seen); if (t === K.MAP) escapeToHost(mapKeys.get(c) ?? K.NONE, seen); if (t === K.ARRAY) { escapeToHost(anyPropOf(k), seen); hostArrays.add(c); if (retainedArrays.has(c)) raiseElem(k, ANY) } } }
+    else if (celled(k)) {
+      const c = cell(p)
+      if (seen.has(-1 - c)) return
+      seen.add(-1 - c)
+      for (const v of tuples.get(c) ?? []) escapeToHost(v, seen)
+      escapeToHost(elems[c], seen)
+      for (const sid of shapesInCell(c)) escapeToHost(kind(K.OBJECT, sid), seen)
+      if (t === K.MAP) escapeToHost(mapKeys.get(c) ?? K.NONE, seen)
+      if (t === K.ARRAY) {
+        for (const v of cellProps.get(c)?.values() ?? []) escapeToHost(v, seen)
+        escapeToHost(cellWild.get(c) ?? K.NONE, seen)
+        hostArrays.add(c)
+        if (retainedArrays.has(c)) raiseElem(k, ANY)
+      }
+    }
     else if (t === K.OBJECT) for (const sid of shapesOf(p)) {
       if (seen.has(sid) || hostSchemas.has(sid)) continue
       seen.add(sid); hostSchemas.add(sid); changed = true
@@ -532,7 +562,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const c = cell(p)
       if (seen.has(-1 - c)) return
       seen.add(-1 - c)
-      retain(elems[c], seen); retain(anyPropOf(k), seen); if (t === K.MAP) retain(mapKeys.get(c) ?? K.NONE, seen)
+      for (const v of tuples.get(c) ?? []) retain(v, seen)
+      retain(elems[c], seen)
+      for (const v of cellProps.get(c)?.values() ?? []) retain(v, seen)
+      retain(cellWild.get(c) ?? K.NONE, seen)
+      if (t === K.MAP) retain(mapKeys.get(c) ?? K.NONE, seen)
       for (const sid of shapesInCell(c)) retain(kind(K.OBJECT, sid), seen)
       retainedArrays.add(c)
       if (hostArrays.has(c)) raiseElem(k, ANY)
@@ -718,7 +752,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           const out = arrayOf(node, K.NONE)
           if (t === K.SET) raiseElem(out, elemOf(src))
           else if (t === K.STRING) raiseElem(out, STRING)
-          else { const pair = arrayOf(pairNodeOf(node), K.NONE); raiseElem(pair, merge(keysOf(src), elemOf(src))); tuplePair(pair, keysOf(src), elemOf(src)); raiseElem(out, pair) }
+          else { const pair = tuplePair(node, keysOf(src), elemOf(src)); raiseElem(out, pair) }
           return out
         }
         if (t === K.MAP) { escape(keysOf(src)); escape(elemOf(src)) }
@@ -1083,7 +1117,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const out = arrayOf(node, K.NONE)
         if (name === 'keys') raiseElem(out, keysOf(recv))
         else if (name === 'values') raiseElem(out, elemOf(recv))
-        else { const pair = arrayOf(pairNodeOf(node), K.NONE); raiseElem(pair, merge(keysOf(recv), elemOf(recv))); tuplePair(pair, keysOf(recv), elemOf(recv)); raiseElem(out, pair) }
+        else { const pair = tuplePair(node, keysOf(recv), elemOf(recv)); raiseElem(out, pair) }
         return out
       }
       if (name === 'forEach') {
@@ -1104,7 +1138,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (name === 'values' || name === 'keys' || name === 'entries') {
         if (!node) { escape(elemOf(recv)); return kind(K.ARRAY) }
         const out = arrayOf(node, K.NONE)
-        if (name === 'entries') { const pair = arrayOf(pairNodeOf(node), K.NONE); raiseElem(pair, elemOf(recv)); tuplePair(pair, elemOf(recv), elemOf(recv)); raiseElem(out, pair) }
+        if (name === 'entries') { const pair = tuplePair(node, elemOf(recv), elemOf(recv)); raiseElem(out, pair) }
         else raiseElem(out, elemOf(recv))
         return out
       }
@@ -1342,14 +1376,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '[') {
       const arr = arrayOf(n, K.NONE), id = paramOf(arr)
       if (id !== UNKNOWN && !tuples.has(cell(id))) tuples.set(cell(id), [])
-      let elem = K.NONE
       for (let i = 1; i < n.length; i++) {
         const k = expr(n[i]), row = id === UNKNOWN ? null : tuples.get(cell(id))
         if (Array.isArray(n[i]) && n[i][0] === '...') invalidateTuple(arr)
         else if (row) { const next = merge(row[i - 1] ?? K.NONE, k); if (next !== row[i - 1]) { row[i - 1] = next; changed = true } }
-        elem = merge(elem, k)
+        raiseElem(arr, k, true)
       }
-      raiseElem(arr, elem, true)
       return arr
     }
     if (op === '.' || op === '?.') {
@@ -1463,7 +1495,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'await') return expr(n[1]) === K.NONE ? K.NONE : ANY
     // A spread reads its source's elements (an array's, a typed array's, a
     // string's characters); a source of another kind is iterated by code the summary does not model.
-    if (op === '...') { const k = expr(n[1]), t = tagOf(k); if ((t === K.ARRAY || t === K.SET) && celled(k)) return elemOf(k); if (t === K.MAP && celled(k)) { const pair = arrayOf(pairNodeOf(n), K.NONE); raiseElem(pair, merge(keysOf(k), elemOf(k))); tuplePair(pair, keysOf(k), elemOf(k)); return pair } if (t === K.TYPED) return typedElemKind(k); if (t === K.STRING) return STRING; if (t === K.NONE) return K.NONE; escape(k); return ANY }
+    if (op === '...') { const k = expr(n[1]), t = tagOf(k); if ((t === K.ARRAY || t === K.SET) && celled(k)) return elemOf(k); if (t === K.MAP && celled(k)) { const pair = tuplePair(n, keysOf(k), elemOf(k)); return pair } if (t === K.TYPED) return typedElemKind(k); if (t === K.STRING) return STRING; if (t === K.NONE) return K.NONE; escape(k); return ANY }
     for (let i = 1; i < n.length; i++) stmt(n[i])
     return ANY
   }

@@ -28,6 +28,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
+import { numHashLiteral, MAP_ENTRY } from '../module/collection.js'
 
 import { PTR } from '../layout.js'
 import { KIND_REGISTRY, CONTENT_IDENTITY_ORDER, eqIdentityChain, sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
@@ -295,12 +296,9 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   const craftedBits = 0x3ff20000ffffffffn
   ok(craftedBits === craftedBits, 'sanity: this is a real BigInt bit pattern')
 
-  const jzHash = (bits) => {
-    const lo = bits & 0xFFFFFFFFn, hi = (bits >> 32n) & 0xFFFFFFFFn
-    let h = Number((lo ^ hi) & 0xFFFFFFFFn) | 0
-    return ((h >>> 0) <= 1 ? h + 2 : h) >>> 0
-  }
-  const hTarget = jzHash(craftedBits)
+  const numberBits = new DataView(new ArrayBuffer(8))
+  numberBits.setBigInt64(0, craftedBits, true)
+  const hTarget = numHashLiteral(numberBits.getFloat64(0, true)) >>> 0
   const idxTarget = hTarget & (cap - 1)
   const targetEntryAddr = off + idxTarget * SET_ENTRY
   dv.setBigInt64(targetEntryAddr, hashWord, true)
@@ -317,6 +315,36 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   // an unboxed number, breaking `=== true` bit-comparisons on the same value elsewhere).
   is(ex.hasQ(sBits, craftedBits), 9221120254220959744n, '$__same_value_zero: no false-positive AND no OOB trap on the forced collision')
   is(ex.eqQ(craftedBits, keyBits), 9221120254220959744n, '$__eq agrees (false), unaffected — sanity cross-check')
+})
+
+test('Map hashes spread consecutive numeric keys and agree with literal probes', () => {
+  const { instance } = instantiate(compile('export function make(n) { const m = new Map(); m.set(n, 1); return m }', { host: 'js', optimize: 0 }))
+  const ex = instance.exports, bits = new DataView(new ArrayBuffer(8))
+  const hashOf = n => {
+    bits.setFloat64(0, n, true)
+    const off = Number(ex.make(bits.getBigInt64(0, true)) & 0xffffffffn)
+    const memory = new DataView(ex.memory.buffer), cap = memory.getInt32(off - 4, true)
+    for (let i = 0; i < cap; i++) {
+      const hash = memory.getUint32(off + i * MAP_ENTRY, true)
+      if (hash > 1) return hash
+    }
+    throw new Error('inserted Map key has no slot')
+  }
+  for (const stride of [1, 64, 0.5]) {
+    const buckets = new Set()
+    for (let i = 1; i <= 1024; i++) {
+      const n = i * stride, h = hashOf(n)
+      is(h, numHashLiteral(n) >>> 0, `runtime/literal hash of ${n}`)
+      buckets.add(h & 2047)
+    }
+    ok(buckets.size > 512, `${stride}-spaced numeric keys reach ${buckets.size}/2048 buckets`)
+  }
+  // The last two nonzero numbers mix to 0 and 1 before sentinel clamping.
+  for (const n of [0, -0, -1, -0.5, 2 ** 31, 2 ** 32, Number.MAX_SAFE_INTEGER, Number.MIN_VALUE, Number.MAX_VALUE,
+    1.0000002381857485, 1.374272578e-314])
+    is(hashOf(n), numHashLiteral(n) >>> 0, `numeric boundary ${n}`)
+  is(numHashLiteral(1.0000002381857485), 2, 'empty hash word is reserved')
+  is(numHashLiteral(1.374272578e-314), 3, 'tombstone hash word is reserved')
 })
 
 test('golden[mapHashStringArm]: $__map_hash\'s generated STRING arm matches the captured hand-written text', () => {

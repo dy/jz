@@ -218,6 +218,11 @@ members. A read or store through a nullish receiver, a call of a name no
 shape holds and a property read on a primitive outside its prototype are
 throwing or undefined, not unknown. A declared local takes the summary's
 exact shape as a parameter does.
+Literal arrays, rest arguments and collection entries keep their positions
+without escaping objects merely because another position has a different kind.
+Dynamic mixed-element reads, mutation and cell union invalidate that precision
+and expose the stored identities. Host escape and retention walk the positions
+as well as the aggregate, so mixed tuples cannot hide objects or callables.
 Construction and physical-layout IDs index ordinary arrays of field rows;
 missing rows read as NONE. Those dense numeric identities need no hash table.
 
@@ -233,6 +238,22 @@ callback arguments into a synthetic rest array. The legacy object-pattern and
 actual `arguments` paths retain argument-list packing.
 Map/Set lookups share insertion's
 capacity/forwarding check, without a separate general pointer decode.
+Numeric and pointer hashes mix both words into low table buckets; XOR alone
+clusters consecutive integer-valued doubles. Folded numeric-key hashes use the
+same mix as the runtime, including the reserved empty/tombstone hash values.
+Dictionary read/modify/write slots use the same upsert generator as Map/Set:
+only a missing slot receives undefined; hits retain their value for the caller.
+Growth preserves header metadata, aliases, insertion order and durable logs.
+Slot fusion requires primitive keys/operands and non-throwing value operations:
+property reads, implicit user coercions and BigInt operations can observe early
+insertion or invalidate a held slot. Nullable number/string coercion evaluates
+an expression once before its sentinel checks; a computed read can run key
+conversion hooks and is never duplicated just because its stored kind is known.
+Lookup dependencies name hashing/equality directly, not mutation helpers.
+
+Source inlining builds the exported expression subset once per pass. Nested-call
+hoisting uses its body map for membership too, and reuses that map through the
+current function's rounds, before the function record's body is replaced.
 
 Concatenation results carry the lazy hash cell; the Map hash mixes a packed
 short string and loads a cached heap hash in place. Speed modes lay out a key

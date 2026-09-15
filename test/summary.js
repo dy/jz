@@ -573,6 +573,40 @@ test('summary: joins that never read through a value keep its shapes', () => {
     export const f = (n) => { const cfg = { list: [1, 2], name: 'a' }; must(cfg, 'x'); must(n > 1, 'n'); return cfg.list.length + n }`).exports.f(5), 7)
 })
 
+test('summary: tuple positions keep nested records through literals, rest and collection entries', () => {
+  for (const expression of [
+    "['key', record][1]",
+    "rest('key', record)[1]",
+    "[...new Map([['key', record]])][0][1]",
+    "[...new Map([['key', record]]).entries()][0][1]",
+    "[...new Set(new Map([['key', record]]))][0][1]",
+    "[...new Set([record]).entries()][0][1]",
+  ]) {
+    const src = `const rest = (...args) => args
+      export const store = (o, k, v) => { o[k] = v }
+      export const f = () => {
+        const record = { sig: { params: [2] } }
+        const got = ${expression}
+        return got.sig.params[0]
+      }`
+    summarize(src)
+    const sid = sidOf(['sig'])
+    is(tagOf(ctx.summary.fieldKind(sid, 'sig')), K.OBJECT, expression)
+    for (const level of levels(0, 2, 3)) is(jz(src, { optimize: level }).exports.f(), 2, `O${level}: ${expression}`)
+  }
+})
+
+test('summary: tuples expose nested objects and callables to host effects', () => {
+  summarize(`function identity(v) { return v }
+    const state = ['key', { items: [1], call: identity }]
+    export function get() { return state }
+    export function read() { return state[1].items[0] }
+    export function seed() { return identity(2) }`)
+  ok(ctx.summary.hostSchema(sidOf(['items', 'call'])), 'a nested tuple record uses host-visible field storage')
+  ok(ctx.summary.escaped.has('identity'), 'a tuple callable can receive host arguments')
+  is(tagOf(ctx.summary.resultOf('read')), K.ANY, 'a retained nested array can be changed between calls')
+})
+
 test('summary: a decided condition prunes its dead arm; a nullish receiver read throws', () => {
   // `x === undefined` on a binding that is never nullish walks only the live
   // arm, so a defaulted destructuring keeps the argument's shape. A read

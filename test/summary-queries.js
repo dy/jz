@@ -241,6 +241,7 @@ const contractProgram = () => {
   const ast = [';',
     ['const', ['=', 'value', 'valued']],                 // `valued` read as a value: its callers are unknown
     ['const', ['=', 'cb', closure]],
+    ['const', ['=', 'other', ['=>', 'unused', lit(3)]]],
     ['const', ['=', 'set', ['?:', lit(true), closure, numberClosure]]],
     ['const', ['=', 'table', ['[', closure, numberClosure]]],
     ['()', 'cb', lit(1)], ['()', 'set', lit(1)], ['()', ['[]', 'table', 'index'], lit(1)],
@@ -300,7 +301,7 @@ test('summary contract: a closure set with Number and BigInt members, a BigInt b
   is(summary.resultContract(numberParams).carrier, CARRIER.F64)
   is(summary.kindOfExpr(['()', ['[]', 'table', 'index'], lit(1)]), join(kind(K.BIGINT), kind(K.NUMBER)), 'a call through a callee expression joins the set\'s results')
   is(summary.calleeContract(['()', ['[]', 'table', 'index'], lit(1)]), set, 'the table holds the set the solver interned')
-  is(summary.calleeOf(['()', ['?:', lit(true), 'cb', 'set'], lit(1)]), null, 'a pair the solver never joined is no set')
+  is(summary.calleeOf(['()', ['?:', lit(true), 'other', 'set'], lit(1)]), null, 'a pair the solver never joined is no set')
   const mixed = summary.resultContract('mixed')
   is(mixed.carrier, CARRIER.BOXED); is(contractVal(mixed), null)
   is(summary.resultContract('unbounded').carrier, CARRIER.ANY, 'an unbounded result names no carrier')
@@ -390,6 +391,26 @@ test('summary tuples: aliases, mutation and unions invalidate positional kinds',
     for (const optimize of levels(0, 2, 3)) {
       const f = instantiate(compile(source, {optimize})).exports.f
       for (const n of [0, 1]) is(f(n), js(n), `O${optimize}: ${change}, n=${n}`)
+    }
+  }
+})
+
+test('summary tuples: dynamic reads and mutation expose nested field writes', () => {
+  for (const change of [
+    "const picked = pair[n]; if (n === 0) picked.sig = { n: 'changed' }",
+    "const alias = pair; if (n) alias.reverse(); if (!n) alias[0].sig = { n: 'changed' }",
+    "pair = n ? [{ sig: { n: 'other' } }, 'key'] : pair",
+    "const alias = pair; if (n) alias[0] = { sig: { n: 'replaced' } }",
+  ]) {
+    const source = `export function f(n) {
+      let pair = [{ sig: { n: 2 } }, 'key']
+      ${change}
+      return typeof pair[0] === 'object' ? pair[0].sig.n : pair[0]
+    }`
+    const js = oracle(source).f
+    for (const optimize of levels(0, 2, 3)) {
+      const { f } = instantiate(compile(source, { optimize })).exports
+      for (const n of [0, 1, 0]) is(f(n), js(n), `O${optimize}: ${change}, n=${n}`)
     }
   }
 })

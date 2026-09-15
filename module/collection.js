@@ -125,8 +125,9 @@ const HASH_U32 = new Uint32Array(HASH_BUF)
 export function numHashLiteral(n) {
   if (Object.is(n, 0) || Object.is(n, -0)) return 2
   HASH_F64[0] = n
-  const h = (HASH_U32[0] ^ HASH_U32[1]) | 0
-  return clampHash(h)
+  let h = HASH_U32[0] ^ HASH_U32[1]
+  h = Math.imul(h ^ (h >>> 16), 0x85EBCA6B)
+  return clampHash(h ^ (h >>> 13))
 }
 
 function numConstLiteral(expr) {
@@ -159,7 +160,7 @@ const strEqG = keyEq('(call $__str_eq (i64.load offset=8 (local.get $slot)) (loc
 const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
 const bitEq = '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
 
-import { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP, genUpsert, genLookup, genDelete, genUpsertGrow, genSlotUpsert, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genLookupStrictPrehashed, genUpsertStrictPrehashed } from './collection/upsert.js'
+import { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genLookupStrictPrehashed, genUpsertStrictPrehashed } from './collection/upsert.js'
 // Re-exported from their new home (module/collection/upsert.js — the
 // hash-table probe/upsert/lookup/delete pipeline, pure-moved out of this
 // file) so module/core.js's `collectionLaneBytes` import and
@@ -223,7 +224,7 @@ export default (ctx) => {
     __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
     __map_set_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
-    __map_get: () => ctx.linkDemand.external ? ['__ext_prop', '__map_set', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_set', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_get: () => ctx.linkDemand.external ? ['__ext_prop', '__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_get_h: () => ctx.linkDemand.external ? ['__ext_prop', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     // Prehashed has-probes: caller folds the hash, so no __map_hash dependency.
@@ -349,10 +350,16 @@ export default (ctx) => {
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
   // Hash function: simple f64 → i32 hash
+  // Mix high mantissa bits into low buckets. XOR alone sends consecutive
+  // integer-valued doubles to the same probe chain in power-of-two tables.
+  // numHashLiteral above uses the same mix for prehashed numeric keys.
   ctx.core.stdlib['__hash'] = `(func $__hash (param $v i64) (result i32)
-    (i32.wrap_i64 (i64.xor
+    (local $h i32)
+    (local.set $h (i32.wrap_i64 (i64.xor
       (local.get $v)
-      (i64.shr_u (local.get $v) (i64.const 32)))))`
+      (i64.shr_u (local.get $v) (i64.const 32)))))
+    (local.set $h (i32.mul (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 16))) (i32.const 0x85EBCA6B)))
+    (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 13))))`
   inc('__hash')
 
   ctx.core.stdlib['__same_value_zero'] = `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
@@ -1241,7 +1248,7 @@ export default (ctx) => {
   // comment; module load order isn't otherwise settled at the time this string
   // would eagerly evaluate (same reasoning as module/core.js's __obj_clone).
   ctx.core.stdlib['__hash_set_local'] = () => genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
-  ctx.core.stdlib['__hash_slot'] = () => genSlotUpsert('__hash_slot', MAP_ENTRY, '$__str_hash', strEqG)
+  ctx.core.stdlib['__hash_slot'] = () => genUpsert('__hash_slot', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
   ctx.core.stdlib['__hash_slot_eph'] = genEphemeralSlotUpsert('__hash_slot_eph', MAP_ENTRY)
   ctx.core.stdlib['__hash_slot_eph_fixed'] = genEphemeralFixedSlot('__hash_slot_eph_fixed', MAP_ENTRY)
   // The RMW fusion's value update — the store plus the durable-heal protocol

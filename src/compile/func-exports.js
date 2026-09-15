@@ -31,8 +31,10 @@ import { ctx } from '../ctx.js'
  *  public name. */
 export const isExportedIn = (funcs, f) => {
   if (f?.exported) return true
-  for (const val of Object.values(funcs.exports || {})) {
-    if (val === f?.name) return true
+  // The registry owns a null-prototype table. Iterate its keys directly so
+  // repeated ABI queries need no temporary values array.
+  for (const key in funcs.exports) {
+    if (funcs.exports[key] === f?.name) return true
   }
   return false
 }
@@ -43,7 +45,8 @@ export const isExported = f => isExportedIn(ctx.funcs, f)
  *  JS-visible name, since the host (interop.js wrap) keys by export name. */
 export function exportNamesOf(funcName) {
   const names = []
-  for (const [key, val] of Object.entries(ctx.funcs.exports)) {
+  for (const key in ctx.funcs.exports) {
+    const val = ctx.funcs.exports[key]
     if ((val === true && key === funcName) || val === funcName) names.push(key)
   }
   return names
