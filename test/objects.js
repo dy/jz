@@ -2175,12 +2175,12 @@ test('dictionary RMW fusion: shared upsert preserves aliases, growth and reinser
     for (const k of Object.keys(alias)) sum += alias[k]
     return Object.keys(dict).join(',') + ':' + sum
   }`
-  for (const optimize of levels(0, 2)) for (const compactCollections of [false, true]) {
-    const { exports } = jz(src, { optimize, compactCollections })
+  for (const optimize of levels(0, 2)) for (const _compactCollections of [false, true]) {
+    const { exports } = jz(src, { optimize, _compactCollections })
     for (const n of [0, 1, 6, 7, 64, 1024, 0, 7]) {
       const keys = Array.from({ length: n }, (_, i) => 'k' + (i + 1)).concat('k0')
       is(exports.run(n), keys.join(',') + ':' + (n * 3 + 5),
-        `O${optimize} compact=${compactCollections} n=${n}: alias values and order`)
+        `O${optimize} compact=${_compactCollections} n=${n}: alias values and order`)
     }
   }
 })

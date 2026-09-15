@@ -39,8 +39,9 @@ contract; CONTRIBUTING owns compiler invariants.
   load when following relocation, wide schemas use a static key index, and
   dynamic reads beyond the specialization budget retain an inline cache.
   Numeric/pointer hashes mix into low bucket bits, avoiding the quadratic
-  clustering of consecutive integer-valued doubles. Dictionary slot updates
-  share Map/Set's upsert implementation, removing a duplicate grow/probe loop.
+  clustering of consecutive integer-valued doubles. Dictionary and proven Map
+  updates share one lowering and upsert implementation, removing a duplicate
+  grow/probe loop and repeated get/set probes.
   Map reads depend on hashing/equality directly instead of mutation helpers.
   Slot fusion declines throwing/effectful RHS and object key coercion. Nullable
   coercion reads once, avoiding duplicated key conversions and table probes.
@@ -56,20 +57,24 @@ to `d6d140d`; Subscript to `0f65c86`.
 
 ## Candidate verification — September 15
 
-Final core: 4324 pass, one skip, zero failures (68956 assertions). The prior
+Current core: 4329 pass, one skip, zero failures (69377 assertions). The prior
 full matrix passed all four legs. This continuation passed 559 affected tests
 at O0, O3 and WASI after the tuple/hash changes, collection checks after the
 upsert fold, and 252 affected tests in each leg after the final coercion fixes.
-Product timing, Watr/JSON size and memory caps are unchanged.
+The Map update change passes 676 affected tests; eight focused cases pass
+at O0, O3 and WASI, covering method identity, coercion, key/value carriers,
+growth, insertion order and arena resets. The compact dictionary test now
+uses the actual internal build option. Product timing, size and memory caps
+are unchanged.
 
-Final self-host functional suite: 50 passes, 2329 assertions. Earlier in this
+Current self-host functional suite: 51 passes, 2331 assertions. Earlier in this
 continuation, language conformance reported 3151 positive passes, 4045 negative
 rejections and 8 expected failures; built-ins reported 874 passes and 45
 expected failures, both with zero failures. The final coercion fixes pass
 objects, ToPrimitive and optimizer tests (432 cases). Import lint passes.
 Public types passed on the preceding candidate; no public signatures changed.
 
-The final kernel passes provenance, byte parity, recursive compilation, reuse,
+The preceding kernel passes provenance, byte parity, recursive compilation, reuse,
 error recovery and all 28 memory comparisons within the existing 10% band.
 The manifest is `/private/tmp/jz-rest-final-candidate.json`, compared against
 `/private/tmp/jz-finish-candidate.json`. Recursive compilation uses 1555927920
@@ -81,14 +86,17 @@ The prior full size sweep beat AssemblyScript on all 51 comparable cases at
 JSON below 12500. This does not refresh committed benchmark rows.
 Evidence logs use `/private/tmp/jz-rest-`.
 
-Final self-host timing: warm 1.088×/1.129×/1.129× against 1.03× (fails), fresh
-0.877× against 0.99× (passes). Tuple precision, inline-map
+Current self-host timing: warm 1.102×/1.144×/1.144× against 1.03× (fails), fresh
+0.870× against 0.99× (passes). Tuple precision, inline-map
 reuse and export enumeration showed no meaningful paired timing improvement.
 The numeric hash removes a separate severe defect: isolated Map fill/read
 workloads improved about 5–51× for 128–4096 sequential keys, while aggregate
-warm compilation remained unchanged. The audit's Map counter still took
-1.383× V8 time (1.298 ms versus 0.936 ms for 100000 updates); it repeats a
-get/set probe for each update.
+warm compilation remained unchanged. The Map counter now uses one probe per update, sharing dictionary fusion's
+effect proof and the ordinary upsert generator. In an alternating paired run
+of 100000 updates, fusion reduced time from 1.226 to 0.699 ms (0.570×); V8
+took 0.882 ms (JZ/V8 0.793×). Both compiler variants and V8 returned 4799685.
+The same source shrank from 29183 to 28835 bytes. These are local diagnostics,
+not refreshed benchmark evidence. Logs use `/private/tmp/jz-map-fusion-`.
 These are diagnostics, not release attestations: the latest swap reading
 is 12365 MB, above the 4096 MB validity cap. No cap was relaxed.
 
@@ -99,7 +107,7 @@ These tests do not prove callback deadlines.
 
 ## Remaining release work
 
-1. **Warm self-host speed.** Close the remaining roughly 6–10% gap without
+1. **Warm self-host speed.** Close the remaining roughly 7–11% gap without
    changing the 1.03× cap. Uniform function records and positional collection
    flow are implemented. `ctx.funcs` has an exact layout; `createFunction().sig`
    and `ctx.func.current` still join to unknown. The next observed loss comes
@@ -107,10 +115,10 @@ These tests do not prove callback deadlines.
    queries. Isolating profiling wrappers at call sites did not restore that
    precision and was discarded; do not assume it is the sole cause.
    The previous profile attributes about 14% to Map/Set probes and 5% to
-   pointer decoding. A general get/set fusion could reuse the shared slot
-   upsert, but must prove intrinsic method identity and a non-observable,
-   non-throwing RHS before inserting a missing entry early. Blanket forwarding
-   inlining was measured slower and discarded.
+   pointer decoding. General primitive get/set fusion is now implemented; it
+   requires unchanged Map methods and a non-observable, non-throwing RHS.
+   Object-building and effectful updates retain ordinary probes. Blanket
+   forwarding inlining was measured slower and discarded.
 
 2. **Fresh speed, size and memory evidence.** The committed claims audit
    reports 6 passes and 14 failures: compiler/memory provenance is stale,

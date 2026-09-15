@@ -720,6 +720,41 @@ test('_clear() heals ephemeral values written into DURABLE collection slots', ()
   is(exports.main(), 7, 'round 2: healed entry reads undefined → memo rebuilds, no stale read')
 })
 
+test('fused Map updates clear ephemeral keys and values across reset', () => {
+  const src = `
+    const cache = new Map([['seed', 'initial long string'], ['value', undefined]])
+    export function update(n) {
+      cache.set('value', (cache.get('value') || '') + 'long runtime update')
+      for (let i = 0; i < n; i++) {
+        const k = 'key' + i
+        cache.set(k, (cache.get(k) || '') + 'long runtime value')
+      }
+      return cache.size
+    }
+    export let seed = () => cache.get('seed')
+    export let existing = () => cache.get('value')
+    export let value = () => cache.get('key0')
+    export let size = () => cache.size
+    export let churn = n => new Float64Array(n).length
+  `
+  for (const optimize of levels(1, 2, 3)) for (const _compactCollections of [false, true]) {
+    const { exports: e } = jz(src, { optimize, _compactCollections })
+    for (const n of [0, 1, 6, 7, 64, 64, 0]) {
+      is(e.update(n), n + 2, 'update inserts each missing key once')
+      is(e.update(n), n + 2, 'a second update retains size')
+      is(e.existing(), 'long runtime updatelong runtime update', 'existing entry gets both updates')
+      is(e.value(), n ? 'long runtime valuelong runtime value' : undefined, 'new string gets both updates')
+      e._clear()
+      e.churn(1024)
+      is(e.size(), 2, 'reset removes inserted entries across table growth')
+      is(e.seed(), 'initial long string', 'reset preserves the untouched initial value')
+      is(e.existing(), undefined, 'reset clears the overwritten ephemeral value')
+      is(e.value(), undefined, 'reset leaves no pointer into the reused arena')
+      e._clear()
+    }
+  }
+})
+
 test('durable slot log reuses repeated writes and cancelled entries before _clear', () => {
   const source = `
     const cache = new Map([['seed', [7]]])

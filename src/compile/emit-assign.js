@@ -12,9 +12,9 @@ import { OPTF } from '../ctx.js'
  */
 
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
-import { T, walkAst, ACCESSOR_SET } from '../ast.js'
+import { T, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith } from './emit/class-dispatch.js'
-import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, dictCapacity } from '../static.js'
+import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
@@ -23,14 +23,14 @@ import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
-  usesDynProps, needsDynShadow, mkPtrIR, isNumericIR, undefExpr,
+  usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
   freshId, boxBigInt,
 } from '../ir.js'
 import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
-import { K, tagOf } from '../summary/kind.js'
+import { trySlotUpdate } from './slot-update.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -109,7 +109,7 @@ function ensureDynSetAllowed(arr) {
  *  bitwise-coerced, every write discarded; see analyze.js) stores its VALUES as raw
  *  i32 bits in the slot's low 32 bits, not NaN-boxed f64 — the read fast path
  *  (module/array.js's i32HashLocals arm) does a bare `i32.wrap_i64` with no
- *  unboxing. tryHashRmwFusion (emit-assign.js) honors this for `o[k]=f(o[k])`
+ *  unboxing. trySlotUpdate (slot-update.js) honors this for `o[k]=f(o[k])`
  *  writes; a PLAIN write `o[k]=v` (no self-read, so RMW fusion declines) used to
  *  fall through here and box `v` as f64 regardless — write/read format mismatch,
  *  silently truncating every stored value to its low 32 bits reinterpreted as
@@ -171,118 +171,6 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, valueDomain, pe
  *  Order matters: literal-key fast paths shadow generic stores; SRoA shadow before
  *  schema; typed-array element write before generic f64.store. */
 export { persistBindingPtr }
-
-// `o[k] = f(o[k])` on a (possibly-)HASH receiver — the dictionary-counting idiom
-// (histogram, wordcount, group-by). The generic lowering pays the string hash,
-// probe, equality and dispatch TWICE per statement (a full dyn get plus a full
-// dyn set). Fuse: __hash_slot probes ONCE (inserting `undefined` on miss — what
-// the read of a missing key yields), the rhs computes against the loaded slot
-// value, __slot_write stores back with the durable-heal protocol. Sound across
-// growth (the receiver box never changes — forwarding header) and across memory
-// growth (linear memory never moves). A non-HASH receiver at runtime returns
-// slot 0 and takes the untouched generic path.
-const _rmwStructEq = (a, b) => a === b ||
-  (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => _rmwStructEq(x, b[i])))
-// A slot upsert inserts before evaluating the RHS. Only primitive value ops
-// commute with that insertion: a throw would leave an extra key, and implicit
-// ToPrimitive can call user code that grows the table under the held address.
-const _rmwPrimitive = n => {
-  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(n)
-  const t = k == null ? K.ANY : tagOf(k)
-  return t === K.NUMBER || t === K.BOOL || t === K.STRING || t === K.NULLISH || t === K.ABSENT
-}
-const _rmwOps = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>', '~', '!',
-  '&&', '||', '??', '?', '?:', ',', '==', '===', '!=', '!==', '<', '<=', '>', '>=', 'u-', 'u+', 'void', 'typeof'])
-const _rmwSafe = (n, readNode) => {
-  if (!Array.isArray(n)) return typeof n !== 'string' || _rmwPrimitive(n)
-  if (_rmwStructEq(n, readNode)) return _rmwPrimitive(n)
-  const op = n[0]
-  if (op == null) return typeof n[1] !== 'bigint'
-  if (op === 'str') return true
-  if (!_rmwOps.has(op)) return false
-  for (let i = 1; i < n.length; i++) if (!_rmwSafe(n[i], readNode)) return false
-  return true
-}
-function tryHashRmwFusion(arr, idx, val) {
-  if (typeof arr !== 'string') return null
-  // valTypeOf consults the decl-site FLOW overlay, which stamps a dictionary-
-  // mode `{}` binding OBJECT (the literal node's kind) even though the
-  // dictionary lowering just repped it VAL.HASH — honor the rep, else the
-  // fusion never fires on exactly the bindings it exists for (`counts[w] =
-  // (counts[w]|0)+1` on a computed-key dictionary).
-  const at = repOf(arr)?.val === VAL.HASH ? VAL.HASH : valTypeOf(arr)
-  // Fusion is a dictionary operation. An unknown receiver may be a typed
-  // array; its numeric writes need the ordinary element-store dispatcher.
-  if (at !== VAL.HASH) return null
-  // A proven string probes directly; an unknown key is normalized once.
-  const keyStr = (typeof idx === 'string' && valTypeOf(idx) === VAL.STRING) || isLiteralStr(idx)
-  const keyUnknown = typeof idx === 'string' && valTypeOf(idx) == null
-  if (!keyStr && (!keyUnknown || !_rmwPrimitive(idx))) return null
-  const readNode = ['[]', arr, idx]
-  let reads = 0
-  walkAst(val, { enter: n => {
-    if (n[0] === '[]' && _rmwStructEq(n, readNode)) { reads++; return false }
-  } })
-  if (!reads || !_rmwSafe(val, readNode)) return null
-  const subst = (n) => !Array.isArray(n) ? n
-    : (n[0] === '[]' && _rmwStructEq(n, readNode)) ? oldT
-    : n.map((c, i) => i === 0 ? c : subst(c))
-  const lean = ctx.func.leanHashLocals?.has(arr)
-  const i32Values = lean && ctx.func.i32HashLocals?.has(arr)
-  // i32-lean values compute in i32 end to end: the old value is the raw cell
-  // and the rhs narrows through the ring (`(v | 0) + 1` is one `i32.add`),
-  // no f64 round trip between the load and the store.
-  const oT = temp('rmo'), kT = temp('rmk'), oldT = i32Values ? tempI32('rmold') : temp('rmold'), resT = i32Values ? tempI32('rmres') : temp('rmres')
-  const slotT = tempI32('rms')
-  const domain = lean ? ctx.func.leanHashDomains?.get(arr) : null
-  const domainLen = domain ? repOf(domain)?.arrayLen : null
-  // The no-growth probe is valid only when analysis proved the source domain's
-  // length immutable. A runtime `.length` preallocation hint alone is not a
-  // finite-domain proof: the source array may grow while keys are inserted.
-  const capHint = dictCapacity(domainLen)
-  const fixed = capHint != null
-  const slotFn = fixed ? '$__hash_slot_eph_fixed' : lean ? '$__hash_slot_eph' : '$__hash_slot'
-  const slotCall = (obj, key) => ['call', slotFn, obj, key,
-    ...(fixed ? [['i32.const', capHint]] : [])]
-  inc(fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot')
-  const resIR = i32Values ? asI32(emit(subst(val))) : asF64(emit(subst(val)))
-  // Statically-numeric result (isNumericIR — the counting idiom's
-  // `(o[k]|0)+1`): a plain number is never an ephemeral pointer, so
-  // __slot_write's durable-heal barrier is provably dead — store bare and
-  // skip the call + per-token __is_eph_bits test it wraps.
-  const bare = i32Values || isNumericIR(resIR)
-  if (!bare) inc('__slot_write')
-  const writeBack = bare
-    ? ['i64.store', ['local.get', `$${slotT}`], ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
-    : ['call', '$__slot_write', ['local.get', `$${slotT}`],
-      ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
-  // A proven dictionary has a slot for every normalized key. Normalize
-  // once, then probe, load, compute and store through that slot.
-  if (!keyStr) inc('__to_str')
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${oT}`, asF64(emit(arr))],
-    ['local.set', `$${kT}`, asF64(emit(idx))],
-    ...(!keyStr ? [['if',
-      ['i32.eqz', ['i32.and',
-        ['f64.ne', ['local.get', `$${kT}`], ['local.get', `$${kT}`]],
-        ['i64.eq',
-          ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
-            ['i64.const', String(LAYOUT.TAG_SHIFT)]], ['i64.const', String(LAYOUT.TAG_MASK)]],
-          ['i64.const', String(PTR.STRING)]]]],
-      ['then', ['local.set', `$${kT}`,
-        ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]]]]]] : []),
-    ['local.set', `$${slotT}`, slotCall(
-      ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
-      ['i64.reinterpret_f64', ['local.get', `$${kT}`]])],
-    ['local.set', `$${oldT}`, i32Values
-      ? ['i32.load', ['local.get', `$${slotT}`]]
-      : ['f64.load', ['local.get', `$${slotT}`]]],
-    ['local.set', `$${resT}`, resIR],
-    i32Values
-      ? ['i32.store', ['local.get', `$${slotT}`], ['local.get', `$${resT}`]]
-      : writeBack,
-    i32Values ? ['f64.convert_i32_s', ['local.get', `$${resT}`]] : ['local.get', `$${resT}`]], 'f64')
-}
 
 /** In-place replace-store: `arr[i] = {lit}` at a site the whole-program alias
  *  sweep proved safe (src/compile/inplace-store.js) overwrites the OLD
@@ -524,7 +412,7 @@ export function emitElementAssign(arr, idx, val) {
   // would corrupt cell memory — this arm is the only sound lowering.
   const sIn = tryStructInlineReplaceStore(arr, idx, val)
   if (sIn) return sIn
-  const rmw = (ctx.transform.optFlags & OPTF.hashRmwFusion) ? tryHashRmwFusion(arr, idx, val) : null
+  const rmw = trySlotUpdate(arr, idx, val)
   if (rmw) return rmw
   const inplace = (ctx.transform.optFlags & OPTF.inplaceStore) ? tryInplaceReplaceStore(arr, idx, val) : null
   if (inplace) return inplace
@@ -998,11 +886,10 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
     // propsPtr at off-16 — same path as object-literal dyn shadow writes
     // (module/object.js). __hash_set assumes HASH bucket layout and would
     // corrupt OBJECT memory.
-    if (usesDynProps(objType) || objType === VAL.OBJECT) {
-      inc('__dyn_set')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
-    }
-    if (ctx.funcs.names.has(obj) && !isBoundName(obj)) {
+    if (usesDynProps(objType) || objType === VAL.OBJECT || (ctx.funcs.names.has(obj) && !isBoundName(obj))) {
+      // Builtin property names can preload only their method owner. A dynamic
+      // store also needs the array-index arm of __dyn_set, even on a Map.
+      ctx.module.include('array')
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }

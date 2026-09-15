@@ -18,7 +18,7 @@ export const PASS_NAMES = [
   // disables them; L1 keeps them (pre-existing tier behavior — they ran at every
   // truthy cfg).
   'inlineToNum',              // inline NaN-check ToNumber fast path (O0: compact __to_num call)
-  'hashRmwFusion',            // lean-dict layout + d[k]=f(d[k]) single-probe RMW fusion (one representation feature)
+  'hashRmwFusion',            // lean-dict layout + dictionary/Map single-probe updates
   'inplaceStore',             // in-place replace store on the inline-cell layout
   'devirtClosureTables',      // dyn fn-table candidates: scan + call-site tags + resolve
   'devirtDynProps',           // megamorphic prop-read devirt markers (dvProp/dvObject)

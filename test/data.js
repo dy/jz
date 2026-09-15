@@ -7,6 +7,115 @@ import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle } from './util.js'
 
+test('Map updates use one probe and preserve growth, aliases and insertion order', () => {
+  const src = `export function f(n) {
+    const m = new Map(), alias = m
+    let same = true
+    for (let i = 0; i < n; i++) {
+      same = m.set(i, (m.get(i) || 0) + 1) === m && same
+      alias.set(i, (alias.get(i) || 0) + 2)
+    }
+    if (n) { alias.delete(0); m.set(0, (m.get(0) || 0) + 5) }
+    let sum = 0, order = ''
+    for (const [k, v] of alias) { sum += v; order += k + ',' }
+    return same + ':' + m.size + ':' + sum + ':' + order
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
+    const f = jz(src, { optimize, _compactCollections }).exports.f
+    for (const n of [0, 1, 6, 7, 64, 1024, 1024, 0, 7])
+      is(f(n), js(n), `O${optimize}, compact=${_compactCollections}, n=${n}`)
+  }
+  const simple = `export function f(n) {
+    const m = new Map()
+    for (let i = 0; i < n; i++) m.set(i, (m.get(i) || 0) + 1)
+    return m.size
+  }`
+  const w = compile(simple, { wat: true, optimize: 1 })
+  is((w.match(/call \$__map_slot\b/g) || []).length, 1, 'one probe for the update')
+  ok(!/call \$__map_(?:get|set)\b/.test(w), 'no separate lookup and insertion')
+})
+
+test('Map fused updates preserve key identity and primitive value representations', () => {
+  const src = `export function f(n) {
+    const a = {}, b = {}, m = new Map()
+    const keys = [false, true, 0, -0, NaN, NaN, null, undefined, 'x', '長い文字列 key', a, b, a, 1n, 1n]
+    for (let t = 0; t < n; t++) for (const k of keys) m.set(k, (m.get(k) || 0) + 1)
+    let out = ''
+    for (const k of keys) out += m.get(k) + ','
+    return m.size + ':' + out
+  }`
+  const variants = [
+    ['false', '!m.get(k)'],
+    ["''", "(m.get(k) || '') + 'x'"],
+    ['0', '(m.get(k) ?? 0) + 1'],
+    ['false', 'm.get(k) === false ? 1 : false'],
+    ['1', '(m.get(k) || 0) + (m.get(k) || 0) + 1'],
+  ]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f, js = oracle(src).f
+    for (const n of [0, 1, 2, 2, 0]) is(f(n), js(n), `O${optimize}, n=${n}: key identity`)
+    for (const [initial, update] of variants) {
+      const source = `export function f(n) {
+        const m = new Map(), k = 'key'
+        m.set(k, ${initial})
+        for (let i = 0; i < n; i++) m.set(k, ${update})
+        const v = m.get(k)
+        return typeof v + ':' + v
+      }`
+      const f = jz(source, { optimize }).exports.f, js = oracle(source).f
+      for (const n of [0, 1, 2, 3]) is(f(n), js(n), `O${optimize}: ${update}, n=${n}`)
+    }
+  }
+})
+
+test('Map update fusion leaves observable and throwing evaluation in source order', () => {
+  const bodies = [
+    `try { m.set(k, (m.get(k) || 0) + undefined.x) } catch (e) { log += e.name }`,
+    `try { m.set(k, (m.get(k) || 0) + 1n) } catch (e) { log += e.name }`,
+    `const v = { valueOf() { log += m.has(k); throw new Error('stop') } }
+     try { m.set(k, (m.get(k) || 0) + v) } catch (e) { log += e.name }`,
+    `const v = { valueOf() { for (let i=0;i<32;i++) m.set(i,i); return 7 } }
+     m.set(k,v); m.set(k,(m.get(k) || 0)+1)`,
+    `function key() { log += m.size; return k }
+     m.set(key(),(m.get(key()) || 0)+1)`,
+    `function extra() { log += m.has(k); return 0 }
+     m.set(k,(m.get(k) || 0)+1,extra())`,
+    `function extra() { log += m.has(k); return 0 }
+     m.set(k,(m.get(k,extra()) || 0)+1)`,
+  ]
+  for (const body of bodies) {
+    const src = `export function f() {
+      const m = new Map(), k = 'key'
+      let log = ''
+      ${body}
+      return log + ':' + m.size + ':' + m.get(k)
+    }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, { optimize }).exports.f, js = oracle(src).f
+      for (let i=0;i<2;i++) is(f(), js(), `O${optimize}: ${body}`)
+    }
+  }
+})
+
+test('Map update fusion requires builtin get and set identities', () => {
+  for (const method of ['get', 'set']) {
+    const src = `export function f(override) {
+      const m = new Map(), k = 'key'
+      let log = ''
+      if (override) m.${method} = ${method === 'get'
+        ? "key => { log += 'get'; return 4 }"
+        : "(key, value) => { log += 'set' + value; return m }"}
+      const result = m.set(k,(m.get(k) || 0)+1)
+      return log + ':' + m.size + ':' + (result === m)
+    }`
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const f = jz(src, { optimize }).exports.f, js = oracle(src).f
+      for (const override of [0, 1, 1, 0]) is(f(override), js(override), `O${optimize}, ${method}, override=${override}`)
+    }
+  }
+})
+
 test('Map/Set lookups follow aliased growth and preserve misses after deletion', () => {
   const src = `
     function fill(m, s, n) { for (let i=0;i<n;i++) { m.set(i, i+1); s.add(i) } }

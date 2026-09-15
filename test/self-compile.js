@@ -56,6 +56,7 @@ const SAMPLES = [
   ['unicode-template', 'export let main = () => `\\u{D83D}\\uDE00`', '😀'],
   ['unicode-construction', 'export let main = () => String.fromCharCode(256, 0xD83D, 0xDE00) + String.fromCodePoint(0x1D800)', 'Ā😀𝠀'],
   ['unicode-unit-offset', 'export let main = () => "Ā😀".codePointAt(1)', 128512],
+  ['map-update', `export function main(){const m=new Map();for(let i=0;i<80;i++){const k=i%13;m.set(k,(m.get(k)||0)+1)}let s=0;for(const [k,v]of m)s+=k*v;return s}`, 469],
   ['hash-sentinels', String.raw`export function main(){const m=new Map();m.set(1.0000007154885675,42);m.set(1.0000007154885675,77);m.set(4294967294n,5);m.set('\u1234\u6fe3\ue84a',9);return m.size*1000+m.get(1.0000007154885675)+m.get(4294967294n)+m.get('\u1234\u6fe3\ue84a')}`, 3091],
   ['integer-literals-beyond-i64', 'export function main(){return new Int32Array([1e30,9223372036854778000])[0] + new Int16Array([1e30,9223372036854778000])[1]}', 2048],
   // Runtime (unknown-value) stores take the exact __to_int32 kernel; `k` keeps

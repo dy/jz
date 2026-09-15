@@ -24,6 +24,7 @@ import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat } from './core/error-object.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
+import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { withControlFrame } from '../src/compile/flow-state.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -253,6 +254,7 @@ export default (ctx) => {
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: () => ['__str_eq', '__zomb_scan', ...slotLogDeps()],
     __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_slot: () => ['__map_hash', '__same_value_zero', '__alloc_hdr_n', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_slot_eph: ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_offset_fwd'],
     __hash_slot_eph_fixed: ['__str_hash', '__str_eq'],
@@ -653,7 +655,9 @@ export default (ctx) => {
   }
 
   ctx.core.emit['.set'] = call('__map_set', 'III', 'i64')
-  ctx.core.emit[`.${VAL.MAP}:set`] = ctx.core.emit['.set']
+  ctx.core.emit[`.${VAL.MAP}:set`] = (map, key, value, ...ignored) =>
+    (!ignored.length && value != null && trySlotUpdate(map, key, value, true)) ||
+    ctx.core.emit['.set'](map, key, value, ...ignored)
 
   const emitMapGet = (mapExpr, key, ...ignored) => {
     const h = litKeyHash(key)
@@ -1003,6 +1007,7 @@ export default (ctx) => {
   }
 
   // Generated Map probe functions
+  ctx.core.stdlib['__map_slot'] = () => genUpsert('__map_slot', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, true)
   ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
   // Region-arena rebuild fix — see __set_add_h's own comment for the full
   // mechanism; this is its MAP-shaped (hasVal) sibling.

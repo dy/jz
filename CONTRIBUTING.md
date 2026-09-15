@@ -241,12 +241,17 @@ capacity/forwarding check, without a separate general pointer decode.
 Numeric and pointer hashes mix both words into low table buckets; XOR alone
 clusters consecutive integer-valued doubles. Folded numeric-key hashes use the
 same mix as the runtime, including the reserved empty/tombstone hash values.
-Dictionary read/modify/write slots use the same upsert generator as Map/Set:
+Dictionary and Map read/modify/write slots use the ordinary upsert generator:
 only a missing slot receives undefined; hits retain their value for the caller.
 Growth preserves header metadata, aliases, insertion order and durable logs.
-Slot fusion requires primitive keys/operands and non-throwing value operations:
-property reads, implicit user coercions and BigInt operations can observe early
-insertion or invalidate a held slot. Nullable number/string coercion evaluates
+One shared lowering recognizes both `d[k] = f(d[k])` and
+`m.set(k, f(m.get(k)))`, proving safety and counting reads in one walk.
+Map methods must retain their builtin identities; Map keys keep their boxed
+identity, while dictionary keys must normalize without user code. Operands
+must be primitive and value operations non-throwing: other property reads,
+implicit user coercions and BigInt operations can observe early insertion or
+invalidate a held slot. Map updates return the receiver; assignments return
+the stored value. Nullable number/string coercion evaluates
 an expression once before its sentinel checks; a computed read can run key
 conversion hooks and is never duplicated just because its stored kind is known.
 Lookup dependencies name hashing/equality directly, not mutation helpers.
