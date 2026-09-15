@@ -9,7 +9,7 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef, isNullish, toStrI64 } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
@@ -21,13 +21,16 @@ import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDema
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { DATA_VIEW_FLAG } from '../layout.js'
+import { requireReceiverWat } from './core/error-object.js'
+import { DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
+
+const NAN_BITS = nanPrefixHex()
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
 import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY } from '../src/compile/analyze-scans.js'
 import { restViewRead } from '../src/compile/rest-view.js'
-import { hoistArrayValue, makeCallback, callbackArgReps, idxArg } from './array/callback.js'
+import { hoistArrayValue, makeCallback, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
 
@@ -202,7 +205,7 @@ export default (ctx) => {
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_typed_set_idx: () => ['__ptr_type', '__ptr_aux', '__len', '__arr_set_idx_ptr',
       representationProgramHasBigint(ctx) ? '__typed_set_idx_tagged' : '__typed_set_idx'],
-    __arr_typed_obj_set_idx: () => ['__arr_typed_set_idx', '__ptr_type', '__dyn_set', '__i32_to_str',
+    __arr_typed_obj_set_idx: () => ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set', '__i32_to_str',
       ...(ctx.linkDemand.external ? ['__ext_set'] : [])],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -510,6 +513,7 @@ export default (ctx) => {
     return `(func $__arr_typed_obj_set_idx (param $ptr i64) (param $i i32) (param $val f64)${domainParam} (result f64)
     (local $t i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
+    ${requireReceiverWat('(local.get $ptr)')}
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
                 (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
       (then (return (call $__arr_typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)${domainArg}))))
@@ -745,6 +749,18 @@ export default (ctx) => {
       return wrapped
     }
     const keyType = typeof idx === 'string' ? lookupValType(idx) : valTypeOf(idx)
+    // An object key needs ToPropertyKey even when produced by an expression.
+    // Primitive keys keep the checked atom/BigInt and numeric-index paths below.
+    if (keyType != null && keyType !== VAL.STRING && keyType !== VAL.NUMBER &&
+        keyType !== VAL.BOOL && keyType !== VAL.BIGINT) {
+      const key = temp('key'), value = storedValue(idx)
+      const setup = [['local.set', `$${key}`, value]]
+      if (valTypeOf(arr) == null)
+        setup.push(['if', isNullish(asF64(emit(arr))), ['then', ['drop', throwTypeErrorIR()]]])
+      setup.push(['local.set', `$${key}`, ['f64.reinterpret_i64', toStrI64(idx, typed(['local.get', `$${key}`], 'f64'))]])
+      ctx.func.localValTypesOverlay.set(key, VAL.STRING)
+      return typed(['block', ['result', 'f64'], ...setup, asF64(ctx.core.emit['[]'](arr, key))], 'f64')
+    }
     const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
     // A proven count/histogram dictionary stores only each value's observable
     // ToInt32 bits. All reads were proven bitwise-coerced, so wrap the standard
@@ -1505,10 +1521,14 @@ export default (ctx) => {
       : ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
-      ['local.set', `$${len}`, ['i32.sub', rawLen, ['i32.const', 1]]],
-      ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
-      ['f64.load',
-        ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]], 'f64')
+      ['local.set', `$${len}`, rawLen],
+      ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${len}`]],
+        ['then', undefExpr()],
+        ['else',
+          ['local.set', `$${len}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
+          ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
+          ['f64.load',
+            ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]]]], 'f64')
   }
 
   // .shift() → remove first element, shift remaining left, return removed
@@ -1829,14 +1849,14 @@ export default (ctx) => {
   ctx.core.emit['.map'] = (arr, fn) => {
     // .filter(f).map(g) → single loop: test f, apply g if passes
     const up = detectUpstream(arr)
-    if (up && up.method === 'filter' && isPureCallback(fn)) {
+    if (up && up.method === 'filter' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb')
       const upReps = callbackArgReps(up.source)
       const filterCb = makeCallback(up.fn, upReps), mapCb = makeCallback(fn, upReps)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fm' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
+        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i), arrArg(filterCb, recv.value)])),
           ['then',
             elemStore(out.local, count, asF64(mapCb.stored([item, idxArg(mapCb, count)]))),
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -1858,7 +1878,7 @@ export default (ctx) => {
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'mo' })
     // Reuse the precomputed len local in arrayLoop (skip its internal load).
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      elemStore(out.local, i, asF64(cb.stored([item, idxArg(cb, i)])))
+      elemStore(out.local, i, asF64(cb.stored([item, idxArg(cb, i), arrArg(cb, recv.value)])))
     ], len, base)
     inc('__ptr_offset')
     return typed(['block', ['result', 'f64'],
@@ -1874,14 +1894,14 @@ export default (ctx) => {
   ctx.core.emit['.filter'] = (arr, fn) => {
     // .map(f).filter(g) → single loop: apply f, test g, store if passes
     const up = detectUpstream(arr)
-    if (up && up.method === 'map' && isPureCallback(fn)) {
+    if (up && up.method === 'map' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb'), mapped = temp('mv')
       const upReps = callbackArgReps(up.source)
       const mapCb = makeCallback(up.fn, upReps), filterCb = makeCallback(fn)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'mf' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i)]))],
+        ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
         ['if', truthyIR(filterCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(filterCb, i)])),
           ['then',
             ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], ['local.get', `$${mapped}`]],
@@ -1902,7 +1922,7 @@ export default (ctx) => {
     const cb = makeCallback(fn, callbackArgReps(arr))
     const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fo' })
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
+      ['if', truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
         ['then',
           ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], item],
           ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -1933,7 +1953,7 @@ export default (ctx) => {
   ctx.core.emit['.reduce'] = (arr, fn, init) => {
     const up = detectUpstream(arr)
     // .map(f).reduce(g, init) → single loop: apply f, accumulate with g
-    if (up && up.method === 'map') {
+    if (up && up.method === 'map' && !callbackReadsArray(fn, 3)) {
       const recv = hoistArrayValue(up.source)
       const acc = temp('ra'), mapped = temp('mv')
       const upReps = callbackArgReps(up.source)
@@ -1945,7 +1965,7 @@ export default (ctx) => {
       const loop = arrayLoop(recv.value, (_p, len, i, item) => {
         inputLen = len
         return [
-          ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i)]))],
+          ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
           // No-init: seed accumulator with the first mapped element (see base path).
           init !== undefined ? fold(i)
             : ['if', ['i32.eqz', ['local.get', `$${i}`]],
@@ -1959,7 +1979,7 @@ export default (ctx) => {
         ...loop, reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
     }
     // .filter(f).reduce(g, init) → single loop: test f, accumulate with g if passes
-    if (up && up.method === 'filter') {
+    if (up && up.method === 'filter' && !callbackReadsArray(fn, 3)) {
       const recv = hoistArrayValue(up.source)
       const acc = temp('ra')
       // No-init: seed is the first *passing* element, whose index isn't known
@@ -1984,7 +2004,7 @@ export default (ctx) => {
           : fold(item),
         ...bump]
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
+        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i), arrArg(filterCb, recv.value)])),
           ['then', accumulate(item)]]
       ])
       return typed(['block', ['result', 'f64'],
@@ -2001,12 +2021,12 @@ export default (ctx) => {
     // and next iteration. Its kind can change during the fold.
     const reps = callbackArgReps(arr)
     const accRep = { tagged: true }
-    const cb = makeCallback(fn, [accRep, reps[0], { val: VAL.NUMBER }])
+    const cb = makeCallback(fn, [accRep, reps[0], { val: VAL.NUMBER }, reps[2]])
     // No initial value: JS seeds the accumulator with element 0 and folds from
     // index 1 — NOT a 0 seed folded over every element. A 0 seed is invisible
     // for `+` (additive identity) but wrong for `*` (→0) and corrupts non-numeric
     // folds (string reduce emits a bare `0` in the joined result). Seed at i==0.
-    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
+    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2), arrArg(cb, recv.value, 3)]))]
     let inputLen
     const loop = arrayLoop(recv.value, (_ptr, len, i, item) => {
       inputLen = len
@@ -2032,9 +2052,9 @@ export default (ctx) => {
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
     const reps = callbackArgReps(arr)
-    const cb = makeCallback(fn, [{ tagged: true }, reps[0], { val: VAL.NUMBER }])
+    const cb = makeCallback(fn, [{ tagged: true }, reps[0], { val: VAL.NUMBER }, reps[2]])
     // No-init: reverse walk seeds with the last element (i == len-1), folds down.
-    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2)]))]
+    const fold = (item, i) => ['local.set', `$${acc}`, asF64(cb.stored([typed(['local.get', `$${acc}`], 'f64'), item, idxArg(cb, i, 2), arrArg(cb, recv.value, 3)]))]
     let inputLen
     const loop = arrayLoop(recv.value, (_ptr, len, i, item) => {
       inputLen = len
@@ -2054,24 +2074,24 @@ export default (ctx) => {
   ctx.core.emit['.forEach'] = (arr, fn) => {
     // .map(f).forEach(g) → single loop: apply f, call g — no intermediate array
     const up = detectUpstream(arr)
-    if (up && up.method === 'map' && isPureCallback(fn)) {
+    if (up && up.method === 'map' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const mapped = temp('mv'), tmp = temp('ft')
       const upReps = callbackArgReps(up.source)
       const mapCb = makeCallback(up.fn, upReps), forCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
+        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
         ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(forCb, i)]))]
       ])
       return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
     }
-    if (up && up.method === 'filter') {
+    if (up && up.method === 'filter' && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const tmp = temp('ft')
       const upReps = callbackArgReps(up.source)
       const filterCb = makeCallback(up.fn, upReps), forCb = makeCallback(fn, upReps)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
+        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i), arrArg(filterCb, recv.value)])),
           ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxArg(forCb, i)]))]]]
       ])
       return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
@@ -2080,7 +2100,7 @@ export default (ctx) => {
     const tmp = temp('ft')
     const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i)]))]
+      ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)]))]
     ])
     return typed(['block', ['result', 'f64'], recv.setup, cb.setup, ...loop, ['f64.const', 0]], 'f64')
   }
@@ -2320,18 +2340,32 @@ export default (ctx) => {
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
+  // Array.prototype.includes compares by SameValueZero (23.1.3.16): NaN finds
+  // NaN, unlike indexOf. A number-NaN is only ever the canonical pattern, so
+  // for a proven-number search value the NaN case is one bit compare.
   ctx.core.emit['.includes'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
-    const vv = val === undefined ? undefExpr() : storedValue(val)
-    const eq = arrEqIR(val)
+    const vv = temp('icv')
+    const vget = typed(['local.get', `$${vv}`], 'f64')
+    let eq
+    if (resolveValType(val, valTypeOf, lookupValType) === VAL.NUMBER) {
+      eq = (item) => ['i32.or', ['f64.eq', item, vget],
+        ['i32.and', ['i64.eq', ['i64.reinterpret_f64', item], ['i64.const', NAN_BITS]],
+                    ['i64.eq', ['i64.reinterpret_f64', vget], ['i64.const', NAN_BITS]]]]
+    } else {
+      ctx.module.include('collection')
+      inc('__same_value_zero')
+      eq = (item) => ['call', '$__same_value_zero', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vget]]
+    }
     const result = tempI32('ic')
     const exit = `$exit${freshId(ctx)}`
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', eq(item, vv),
+      ['if', eq(item),
         ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ['local.set', `$${vv}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
       ['local.set', `$${result}`, ['i32.const', 0]],
       ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')

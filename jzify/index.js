@@ -18,7 +18,6 @@ import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
-import { lowerIteratorParams } from '../src/iterator-pattern.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS } from '../src/ast.js'
 
 const names = createNames()
@@ -166,8 +165,7 @@ const buildBuiltinScopes = root => {
   visit(root, program, true)
   return map
 }
-const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names,
-  params => iterProto.on ? lowerIteratorParams(params, names.genTemp) : [params, []])
+const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
 
 let lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses, transformSwitch
 let transform, transformScope

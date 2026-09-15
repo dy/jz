@@ -14,6 +14,7 @@ import {
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../../reps.js'
+import { seedSummaryShape } from '../func-entry.js'
 import { toNumF64 } from '../../ir/coerce.js'
 import { nonNegIntLiteral } from '../../static.js'
 import { exprType, isTerminator } from '../../type.js'
@@ -334,6 +335,13 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   // (STRING/OBJECT/BOOL/NUMBER) or unknown-through-__to_str. BIGINT joins
   // numerically elsewhere — bail so the existing lowering keeps its path.
   for (const l of leaves) if (valTypeOf(l) === VAL.BIGINT) return null
+  // Flattening turns each leaf into ToString. An object may instead produce a
+  // number through ToPrimitive(default), or mutate a later operand during it.
+  // Preserve the pairwise evaluation when either conversion method can run.
+  if (ctx.funcs.runtimeRoots.has('__jz_tp_num') && leaves.some(l => {
+    const vt = valTypeOf(l)
+    return vt == null || vt === VAL.OBJECT
+  })) return null
   const asBuf = bufTarget != null && headAccum == null
   if (asBuf) inc('__alloc')
   else inc('__alloc', '__mkptr', '__sso_norm')
@@ -938,6 +946,8 @@ export function emitDecl(...inits) {
     // downstream `arrVar[i]`/`.length` in the loop then takes the ARRAY-known fast path
     // instead of falling to the generic __typed_idx/__length dispatch.
     setFlowVal(name, valTypeOf(init), init)
+    // The summary's exact shape for the binding, as a parameter takes it.
+    if (!isGlobal(name)) seedSummaryShape(name, ctx.summary?.at(ctx.func.current))
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
     // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
     // isReassigned is conservative across nested arrow shadows — we miss the optimization

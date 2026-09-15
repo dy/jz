@@ -43,6 +43,15 @@ test('ablation: pass off → the polymorphic param loop does NOT vectorize', () 
   ok(!/v128|f64x2/.test(off), 'control: scalar polymorphic loop with pass OFF (the deopt this pass removes)')
 })
 
+test('unswitch: the object-capable store keeps dictionary receivers in the fallback', () => {
+  consistent('dictionary fallback', `${POLY_MAP}
+    export function run() {
+      const a = { 0: 1, 1: 2, 2: 3, 3: 4 }
+      process(a, 4)
+      return a[0] * 1000 + a[1] * 100 + a[2] * 10 + a[3]
+    }`, 3579)
+})
+
 // Runtime bit-exactness. Export-boundary mutations don't reflect back into a JS typed
 // array (interop copies), so an INTERNAL driver creates the array, calls the polymorphic
 // `process`, and returns a wasm-computed checksum. The fast path (Float64Array) and every

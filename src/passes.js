@@ -63,6 +63,7 @@ export const PASS_NAMES = [
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'unswitchStringRepLoop',    // leaf char scans: hoist invariant SSO/heap selection out of the byte loop
   'propagateLocals',          // watr local propagation after link, including the fast cleanup profile
+  'coalesceLocals',           // watr shares non-overlapping local slots, including level 1
   'promoteGlobals',          // read-only global.get → local for multi-read globals
   'sortLocalsByUse',
   'specializeMkptr',

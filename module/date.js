@@ -9,6 +9,7 @@
  * @module date
  */
 
+import { ssoAux } from './string.js'
 import { typed, asF64, toNumF64, allocPtr, temp, NULL_WAT } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -58,6 +59,7 @@ export default (ctx) => {
     __date_invalid_string: ['__alloc', '__mkstr'],
     __date_to_date_string: ['__mkstr', '__alloc', '__itoa', '__date_invalid_string', '__date_wd_name', '__date_mon_name', '__date_weekday', '__date_month_from_time', '__date_date_from_time', '__date_year_from_time', '__date_write2', '__date_write4'],
     __date_to_time_string: ['__mkstr', '__alloc', '__date_invalid_string', '__date_hour_from_time', '__date_min_from_time', '__date_sec_from_time', '__date_write2'],
+    __date_to_string: ['__date_to_date_string', '__date_to_time_string', '__date_invalid_string', '__str_concat', '__mkptr'],
     __date_to_json: ['__date_to_iso_string'],
   })
 
@@ -479,6 +481,17 @@ export default (ctx) => {
     (local.set $p (i32.add (local.get $p) (i32.const 2)))
     (call $__mkstr (local.get $buf) (i32.shr_u (i32.sub (local.get $p) (local.get $buf)) (i32.const 1))))`
 
+  // ── toString ──────────────────────────────────────────────────────────────
+  // Date.prototype.toString (21.4.4.41): DateString, a space, TimeString with
+  // the UTC zone jz dates live in.
+  ctx.core.stdlib['__date_to_string'] = `(func $__date_to_string (param $t f64) (result f64)
+    (if (f64.ne (local.get $t) (local.get $t)) (then (return (call $__date_invalid_string))))
+    (call $__str_concat
+      (i64.reinterpret_f64 (call $__str_concat
+        (i64.reinterpret_f64 (call $__date_to_date_string (local.get $t)))
+        (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (i32.const 32)))))
+      (i64.reinterpret_f64 (call $__date_to_time_string (local.get $t)))))`
+
   // ── toUTCString ───────────────────────────────────────────────────────────
 
   ctx.core.stdlib['__date_to_utc_string'] = `(func $__date_to_utc_string (param $t f64) (result f64)
@@ -682,28 +695,28 @@ export default (ctx) => {
   }
 
   ctx.core.emit['.getUTCFullYear'] = dateGetter('__date_year_from_time')
-  ctx.core.emit[`.${VAL.DATE}:getUTCFullYear`] = dateGetter('__date_year_from_time')
+  ctx.core.emit[`.${VAL.DATE}:getUTCFullYear`] = ctx.core.emit['.getUTCFullYear']
 
   ctx.core.emit['.getUTCMonth'] = dateGetter('__date_month_from_time')
-  ctx.core.emit[`.${VAL.DATE}:getUTCMonth`] = dateGetter('__date_month_from_time')
+  ctx.core.emit[`.${VAL.DATE}:getUTCMonth`] = ctx.core.emit['.getUTCMonth']
 
   ctx.core.emit['.getUTCDate'] = dateGetter('__date_date_from_time')
-  ctx.core.emit[`.${VAL.DATE}:getUTCDate`] = dateGetter('__date_date_from_time')
+  ctx.core.emit[`.${VAL.DATE}:getUTCDate`] = ctx.core.emit['.getUTCDate']
 
   ctx.core.emit['.getUTCDay'] = dateGetter('__date_weekday')
-  ctx.core.emit[`.${VAL.DATE}:getUTCDay`] = dateGetter('__date_weekday')
+  ctx.core.emit[`.${VAL.DATE}:getUTCDay`] = ctx.core.emit['.getUTCDay']
 
   ctx.core.emit['.getUTCHours'] = dateGetter('__date_hour_from_time')
-  ctx.core.emit[`.${VAL.DATE}:getUTCHours`] = dateGetter('__date_hour_from_time')
+  ctx.core.emit[`.${VAL.DATE}:getUTCHours`] = ctx.core.emit['.getUTCHours']
 
   ctx.core.emit['.getUTCMinutes'] = dateGetter('__date_min_from_time')
-  ctx.core.emit[`.${VAL.DATE}:getUTCMinutes`] = dateGetter('__date_min_from_time')
+  ctx.core.emit[`.${VAL.DATE}:getUTCMinutes`] = ctx.core.emit['.getUTCMinutes']
 
   ctx.core.emit['.getUTCSeconds'] = dateGetter('__date_sec_from_time')
-  ctx.core.emit[`.${VAL.DATE}:getUTCSeconds`] = dateGetter('__date_sec_from_time')
+  ctx.core.emit[`.${VAL.DATE}:getUTCSeconds`] = ctx.core.emit['.getUTCSeconds']
 
   ctx.core.emit['.getUTCMilliseconds'] = dateGetter('__date_ms_from_time')
-  ctx.core.emit[`.${VAL.DATE}:getUTCMilliseconds`] = dateGetter('__date_ms_from_time')
+  ctx.core.emit[`.${VAL.DATE}:getUTCMilliseconds`] = ctx.core.emit['.getUTCMilliseconds']
 
   // UTC-backed local getters. Full timezone-aware local time is intentionally
   // staged separately; these aliases make deterministic/server Date use cases
@@ -837,6 +850,15 @@ export default (ctx) => {
       d => typed(['call', '$__date_to_utc_string', dateLoadIR(d)], 'f64'))
   }
   ctx.core.emit[`.${VAL.DATE}:toUTCString`] = ctx.core.emit['.toUTCString']
+
+  ctx.core.emit[`.${VAL.DATE}:toString`] = (dateExpr, ...ignored) => {
+    inc('__date_to_string')
+    return withIgnoredDateArgs(dateExpr, ignored,
+      d => typed(['call', '$__date_to_string', dateLoadIR(d)], 'f64'))
+  }
+  // Date.prototype.valueOf (21.4.4.44): the time value.
+  ctx.core.emit[`.${VAL.DATE}:valueOf`] = (dateExpr, ...ignored) =>
+    withIgnoredDateArgs(dateExpr, ignored, d => dateLoadIR(d))
 
   ctx.core.emit['.toDateString'] = (dateExpr, ...ignored) => {
     inc('__date_to_date_string')

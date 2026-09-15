@@ -721,13 +721,15 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
         && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && pureFlattenExpr(s[1][2]))
   }
   const exprOnlyCandidates = new Map()
-  for (const [name, func] of candidates) {
+  for (const func of candidates.values()) {
+    const name = func.name
     if (!Array.isArray(func.body) || func.body[0] !== '{}' || flattenableBody(func)) exprOnlyCandidates.set(name, func)
   }
 
   let changed = false
   const exportedCandidates = new Map()
-  for (const [name, func] of candidates) {
+  for (const func of candidates.values()) {
+    const name = func.name
     const sites = sitesByCallee.get(name)
     const fixedSiteExported = hasFixedTypedArraySites(func, sites) &&
       !sites.some(site => isExported(site.callerFunc) && site.callerFunc.body && containsNode(site.callerFunc.body, site.node))
@@ -1043,7 +1045,7 @@ export const specializeFixedRestCalls = (programFacts) => {
       origin: func, key: cloneName, name: cloneName, kind: 'fixed-rest',
       sig: { params: [...fixedParams, ...restParams.map(name => ({ name, type: 'f64' }))], results: [...func.sig.results] },
       body: rewritten.node,
-      cloneFields: { rest: null },
+      rest: null,
       eligibleSites: sites, fallback: func,
     })
 

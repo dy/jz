@@ -59,8 +59,12 @@ export function judgeMemory({ rows, peaks, baseline, size, levels, profile, tole
   const mem = { status: 'incomplete', rows, peakRssMiB: peaks, tolerance }
   if (!rows.length) { mem.why = 'no gate with heap figures ran'; return mem }
   if (!baseline) { mem.why = 'no --baseline manifest: figures recorded, nothing judged'; return mem }
-  const baseRows = baseline.gates?.memory?.rows
-  if (!Array.isArray(baseRows) || !baseRows.length) { mem.why = 'the baseline manifest has no memory rows'; return mem }
+  const recorded = baseline.gates?.memory?.rows
+  if (!Array.isArray(recorded) || !recorded.length) { mem.why = 'the baseline manifest has no memory rows'; return mem }
+  // The sequence's deliberately invalid source is checked by the functional
+  // gate; it can never complete compilation. Process peaks still cover it.
+  const baseRows = recorded.filter(r => !(r.gate === 'sequences' && r.name === 'source error'))
+  if (!baseRows.length) { mem.why = 'the baseline manifest has no compilation memory rows'; return mem }
   const key = r => `${r.gate}/${r.name}/${r.level}`
   const mine = new Map(rows.map(r => [key(r), r]))
   const compat = baseline.corpus === size && JSON.stringify(baseline.levels) === JSON.stringify(levels) && JSON.stringify(baseline.runnerProvenance?.profile) === JSON.stringify(profile)

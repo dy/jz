@@ -58,6 +58,7 @@ export function createActiveFunction({
     finallyStack: null,
     pendingLabel: null,
     refinements: null,
+    versioned: null,      // Set<loop body> already typed-bounds versioned under this frame
     flowValBlocked: null,
 
     repsFrozen: false,

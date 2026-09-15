@@ -18,6 +18,7 @@
 
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
+import { createFunction } from '../function.js'
 import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
@@ -33,7 +34,7 @@ import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternI
 import { boundSafeCalls, mintLocal, scanReassignedTopLevel, writesReceiver } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
-import { bindSchema, censusUnknownInitDecl, conditionalSpreadGroupPrepare, inferAssignSchema, objLiteralSid } from './schema.js'
+import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_CONSTS, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
 
@@ -826,7 +827,7 @@ const handlers = {
       }
       return null
     }
-    // export default expr → mark 'default' export, rewrite to assignment
+    // export default expr → declare its captured value
     if (Array.isArray(decl) && decl[0] === 'default') {
       const val = decl[1]
       // export default name → export existing name as 'default'
@@ -842,7 +843,7 @@ const handlers = {
       // export default expr → create global 'default'
       declGlobal('default', 'f64')
       ctx.scope.userGlobals.add('default')
-      return ['=', 'default', prep(val)]
+      return ['const', ['=', 'default', prep(val)]]
     }
     return prep(decl)
   },
@@ -1151,7 +1152,10 @@ const handlers = {
     }
 
     includeForObjectLiteral()
-    if (args.length === 0 || inner == null) return ['{}']
+    if (args.length === 0 || inner == null) {
+      ctx.schema.register([])
+      return ['{}']
+    }
     // The parser emits one comma-grouped child `['{}', [',', p1, p2]]`, but prep's
     // own output is spread `['{}', p1, p2]` (see `result` below). Accept both so
     // prep stays idempotent: the destructuring-assignment lowering ('=' handler)
@@ -1207,13 +1211,14 @@ const handlers = {
       && typeof p[1] !== 'string' && staticPropertyKey(p[1]) == null
     if (items.some(isComputed)) {
       const tmp = `${T}o${freshPrepareId()}`
+      // These expressions re-enter prep: keys use parser literals, not lowered strings.
       const assigns = items.map(p => {
         if (Array.isArray(p) && p[0] === '...')
           return ['()', ['.', 'Object', 'assign'], [',', tmp, p[1]]]
-        if (typeof p === 'string') return ['=', ['[]', tmp, ['str', p]], p]
+        if (typeof p === 'string') return ['=', ['[]', tmp, [, p]], p]
         if (Array.isArray(p) && p[0] === ':') {
           const staticKey = typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1])
-          if (staticKey != null) return ['=', ['[]', tmp, ['str', staticKey]], p[2]]
+          if (staticKey != null) return ['=', ['[]', tmp, [, staticKey]], p[2]]
           const keyExpr = Array.isArray(p[1]) && p[1][0] === '[]' ? p[1][1] : p[1]
           return ['=', ['[]', tmp, keyExpr], p[2]]
         }
@@ -1242,10 +1247,7 @@ const handlers = {
     }
     let prepped = items.map(prop)
     const result = ['{}', ...prepped]
-    // Register schema so property access works for function params (duck typing)
-    const names = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-    const props = names.filter(n => !isBrand(n)), brand = names.find(isBrand) ?? null
-    if ((props.length || brand) && ctx.schema.register) ctx.schema.register(props, brand)
+    objLiteralSid(result)
     return result
   },
 
@@ -2292,39 +2294,8 @@ function prepDecl(op, ...inits) {
       }
       // Track object schemas (after prefix so schema is keyed to final name)
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
-        const props = []
-        const seen = new Set()
-        let allKnown = true
-        // Dedupe every key (explicit AND spread-sourced) so a `k: v` that overrides
-        // a spread-provided key doesn't push a duplicate — that would shift the
-        // indices of later keys past emitObjectSpread's deduped slot assignment
-        // (its `addName` dedupes both), making `decl.laterKey` read the wrong slot.
-        // A conditional-spread group's key colliding with anything else (see
-        // conditionalSpreadGroupPrepare below) bails `allKnown` instead of
-        // deduping — mirrors module/object.js mergeSpreadNames' identical bail.
-        let brand = null
-        const addProp = (n) => {
-          if (seen.has(n)) return
-          seen.add(n); props.push(n)
-        }
-        for (const p of normed.slice(1)) {
-          if (Array.isArray(p) && p[0] === ':') { if (isBrand(p[1])) brand = p[1]; else addProp(p[1]) }
-          else if (Array.isArray(p) && p[0] === '...') {
-            // Conditional presence needs HASH insertion; do not bind a fixed
-            // schema that would conflate absent with present-undefined.
-            if (conditionalSpreadGroupPrepare(p[1])) { allKnown = false; continue }
-            const srcSchema = typeof p[1] === 'string' && ctx.schema.resolve(p[1])
-            if (srcSchema) for (const n of srcSchema) addProp(n)
-            else allKnown = false
-          }
-        }
-        // An unknown spread source makes the value a runtime HASH (see
-        // emitObjectSpread). Binding a static schema would compile `decl.prop`
-        // to a fixed slot load that misreads the hash, so leave reads dynamic.
-        if (allKnown && (props.length || brand) && ctx.schema.register) {
-          const sid = ctx.schema.register(props, brand)
-          bindSchema(declName, sid)
-        }
+        const sid = objLiteralSid(normed)
+        if (sid != null) bindSchema(declName, sid)
         else censusUnknownInitDecl(declName)
       } else if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '()' &&
                  typeof normed[1] === 'string' && ERR_CLASS_SET.has(normed[1]) && ctx.schema.errorSid) {
@@ -2601,8 +2572,7 @@ function defFunc(name, node) {
   // Sub-module `export let X` is just a re-importable symbol — staying internal
   // unlocks treeshake + type specialization once main stops referencing it.
   const exported = !!ctx.funcs.exports[name] && ctx.module.moduleStack.length === 0
-  const funcInfo = { name, body, exported, sig, ...(hasDefaults && { defaults }) }
-  if (hasRest.length) funcInfo.rest = hasRest[0]  // track rest param name
+  const funcInfo = createFunction(name, body, sig, exported, hasDefaults ? defaults : null, hasRest[0] ?? null)
   ctx.funcs.list.push(funcInfo)
   ctx.funcs.names.add(name)
   return true

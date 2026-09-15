@@ -135,6 +135,10 @@ export function analyzeClosureBodyForEmit(cb) {
   const prevSchemaVars = ctx.schema.vars
   const prevTypedElems = ctx.func.typedElem
   const previousFrame = enterClosureFrame(cb)
+  // The closure body being emitted names the closures minted inside it (the
+  // wasm name section only); the frame carries no name authority.
+  const prevEmitting = ctx.closure.emitting
+  ctx.closure.emitting = cb.name
   try {
     const parentBoxedCaptures = seedClosureFrame(cb, prevSchemaVars, prevTypedElems)
     const block = isBlockBody(cb.body)
@@ -211,6 +215,7 @@ export function analyzeClosureBodyForEmit(cb) {
       mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, { generic: true })
     return publishPreparedFunctionPlan(ctx, cb, ctx.func)
   } finally {
+    ctx.closure.emitting = prevEmitting
     ctx.schema.vars = prevSchemaVars
     restoreActiveFunction(ctx, previousFrame)
   }

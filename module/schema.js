@@ -12,13 +12,12 @@ import { emit } from '../src/bridge.js'
 import { K, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { inc } from '../src/ctx.js'
-import { isBrand } from '../src/ast.js'
+import { isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
 export function initSchema(ctx) {
   // key → schemaId for O(1) dedupe; prop → [{id, slot}] for O(matches) structural find.
-  // \x01 delimiter avoids collision with any legal JS identifier character.
   const byKey = new Map()
   const byProp = new Map()
   ctx.schema._byKey = byKey
@@ -26,19 +25,12 @@ export function initSchema(ctx) {
 
   // `salt` (optional): forces a schema id DISTINCT from every other registration
   // of the identical prop list, without adding a source-visible property to
-  // that list. Used by the Error-class brand below and by a user class's
-  // brand (ast.js BRAND) — every other caller omits it, so their
-  // dedupe-by-content key is byte-identical to before this parameter
-  // existed. \x02 can't collide with a real prop name landing in the
-  // \x01-joined content prefix: prop names are validated identifiers/string
-  // keys, and even a pathological one contributes to the segment BEFORE any
-  // \x02, never straddling it (the length-prefix discipline above already
-  // established this class of non-collision for \x01).
+  // that list. Used by Error classes and user classes (ast.js BRAND).
   const brandBySid = new Map(), sidByBrand = new Map()   // a class brand and its schema id, both ways
   ctx.schema.register = (props, salt) => {
-    // Length prefix disambiguates [] from [''] (both join to '') and any
-    // shorter prop list from a longer one whose extra entries are empty.
-    const key = props.length + '\x01' + props.join('\x01') + (salt ? '\x02' + salt : '')
+    // Slot order is enumeration order: array-index keys first, ascending.
+    props = canonicalKeyOrder(props)
+    const key = schemaKey(props, salt)
     const existing = byKey.get(key)
     if (existing != null) return existing
     const id = ctx.schema.list.push(props) - 1
@@ -229,6 +221,15 @@ export function initSchema(ctx) {
    *  more distinct schemas sharing the name (bucket.length > 1) is left to
    *  dynamic dispatch — a multi-way guard chases diminishing returns the
    *  common case (a genuine program-wide-unique field name) doesn't need. */
+  /** The {sid, slot} guards for `prop` over the member shapes of a receiver
+   *  (summary shapesOfExpr): the shapes naming it, in set order. Null when no
+   *  member names it or the set is too wide to test one by one. */
+  ctx.schema.guardsFor = (shapes, prop) => {
+    if (!shapes || shapes.length > 8) return null
+    const guards = []
+    for (const sid of shapes) { const slot = ctx.schema.list[sid]?.indexOf(prop) ?? -1; if (slot >= 0) guards.push({ sid, slot }) }
+    return guards.length ? guards : null
+  }
   ctx.schema.guardedSlotOf = (prop) => {
     const bucket = byProp.get(prop)
     if (!bucket || bucket.length !== 1) return null
@@ -440,6 +441,14 @@ export function initSchema(ctx) {
       shadowedSidsKey = dyn
     }
     return shadowedSidsCache.has(sid)
+  }
+
+  // An alias or helper parameter inherits writes to its schema even when its
+  // own binding name never appears on the left of a property assignment.
+  ctx.schema.mayGrow = (name) => {
+    const hz = ctx.schema.slotWriteHazards, targets = hz?.pointsTo, sid = ctx.schema.idOf(name)
+    return targets == null || targets === 'ALL' || sid == null || targets.has(sid)
+      || hz.numeric && ctx.schema.list[sid].some(isArrayIndexKey)
   }
 
   /** Per-schema READ-reach (dyn-reach slice): true iff schema `sid` might be

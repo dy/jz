@@ -12,13 +12,14 @@
  *
  * @module optimize/devirt
  */
-import { LAYOUT, ctx } from '../ctx.js'
+import { LAYOUT, ctx, declGlobal } from '../ctx.js'
 import { nextLocalId, cloneIR, isPureIR } from '../ir.js'
 import { walkAst } from '../ast.js'
-import { PTR } from '../../layout.js'
+import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, i64Hex } from '../../layout.js'
 import { inlinePureCallExpr } from './vectorize.js'
 
 const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
+const OBJECT_TAG_MASK = i64Hex(BigInt(OBJECT_SCHEMA_HI_MASK) ^ (BigInt(LAYOUT.AUX_MASK) << BigInt(LAYOUT.AUX_SHIFT)))
 
 /** `o.x` on a statically-unknown receiver — the megamorphic property read
  *  (shapes bench: 8 record variants at one site, every field load a ~50-op
@@ -34,7 +35,7 @@ const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
 export function devirtSchemaReads(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const schemas = ctx.schema?.list
-  if (!schemas || !schemas.length || schemas.length > 24) return
+  if (!schemas || !schemas.length) return
   if (!ctx.core.includes.has('__ptr_type')) return
   let uid = null
   const newDecls = []
@@ -65,6 +66,8 @@ export function devirtSchemaReads(fn) {
   const sidInit = []
   const recvReads = new Map()  // receiver local name → tagged-read count (pre-scan)
   const recvAllObject = new Map() // every tagged read already proves OBJECT by static VAL
+  const isObjectBits = bits => ['i64.eq', ['i64.and', bits, ['i64.const', OBJECT_TAG_MASK]],
+    ['i64.const', objectSchemaGuardHex(0)]]
   // select(aux, -1, tag==OBJECT) — both operands pure, no branch
   const sidExprFor = (bits, objectKnown = false) => objectKnown
     ? ['i32.wrap_i64', ['i64.and',
@@ -75,11 +78,7 @@ export function devirtSchemaReads(fn) {
           ['i64.shr_u', cloneIR(bits), ['i64.const', LAYOUT.AUX_SHIFT]],
           ['i64.const', LAYOUT.AUX_MASK]]],
         ['i32.const', -1],
-        ['i32.eq',
-          ['i32.wrap_i64', ['i64.and',
-            ['i64.shr_u', cloneIR(bits), ['i64.const', LAYOUT.TAG_SHIFT]],
-            ['i64.const', LAYOUT.TAG_MASK]]],
-          ['i32.const', PTR.OBJECT]]]
+        isObjectBits(cloneIR(bits))]
   // ≥2 reads on the receiver: amortize into an entry-hoisted local. A single
   // read inlines the select at its site instead — an eager entry compute would
   // tax every call of a function whose lone read sits on a cold path (the
@@ -111,6 +110,9 @@ export function devirtSchemaReads(fn) {
     : PURE_I64.has(n[0]) ? n.slice(1).every(pureOp)
     : isPureIR(n)
   const rewrite = (parent, i) => {
+    // A schema fast path retains the generic call as its fallback. Size mode
+    // shares that call instead of adding dispatch arms; read reuse still runs.
+    if (ctx.transform.optimize.leanRuntime) return
     const node = parent[i]
     const prop = node.dvProp
     const withProp = []
@@ -118,7 +120,11 @@ export function devirtSchemaReads(fn) {
       const slot = schemas[sid].indexOf(prop)
       if (slot >= 0) withProp.push([sid, slot])
     }
+    // Price the schemas this property can reach, not unrelated module shapes.
     if (!withProp.length) return
+    const sparse = withProp[withProp.length - 1][0] - withProp[0][0] + 1 > withProp.length * 2
+    // Past the dispatch budget the site keeps an inline cache instead.
+    const useCache = withProp.length > 24 || (sparse && withProp.length > 4)
     // `local.tee` operands (propagateLocals sinks shared tag/CSE
     // locals into the FIRST read's call, possibly nested) are hoisted to
     // standalone sets before the dispatch, innermost first — the original call
@@ -148,6 +154,32 @@ export function devirtSchemaReads(fn) {
     // per use — IR nodes must not alias), or the spill
     const recvBits = () => stable ? cloneIR(stable.bits) : ['local.get', rT]
     const out = `$__dsro${id}`, dflt = `$__dsrd${id}`
+    // Inline cache: the generic read records the static schema slot it
+    // resolved (module/collection.js buildObjectSchemaArm) in two shared
+    // globals; the site copies them into its own pair, and a later receiver of
+    // that schema loads the slot behind one high-word compare. Runtime-
+    // registered schemas (their ids are reused across sessions) are never
+    // recorded; any other receiver takes the generic read each time.
+    if (useCache) {
+      const site = ctx.runtime.icSites = (ctx.runtime.icSites ?? 0) + 1
+      const hiG = `__ic_hi${site}`, slotG = `__ic_slot${site}`, vT = `$__dsrv${id}`
+      declGlobal(hiG, 'i64'); declGlobal(slotG, 'i32')
+      newDecls.push(['local', vT, 'i64'])
+      const fallback = [...genericCall]
+      if (!stable) fallback[2] = ['local.get', rT]
+      const dispatch = ['if', ['result', 'i64'],
+        ['i64.eq', ['i64.and', recvBits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['global.get', `$${hiG}`]],
+        ['then', ['i64.load', ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.shl', ['global.get', `$${slotG}`], ['i32.const', 3]]]]],
+        ['else', ['block', ['result', 'i64'],
+          ['global.set', '$__ic_found_slot', ['i32.const', -1]],
+          ['local.set', vT, fallback],
+          ['if', ['i32.ge_s', ['global.get', '$__ic_found_slot'], ['i32.const', 0]],
+            ['then', ['global.set', `$${hiG}`, ['global.get', '$__ic_found_hi']], ['global.set', `$${slotG}`, ['global.get', '$__ic_found_slot']]]],
+          ['local.get', vT]]]]
+      parent[i] = ['block', out, ['result', 'i64'], ...teeHoists,
+        ...(stable ? [] : [['local.set', rT, genericCall[2]]]), dispatch]
+      return
+    }
     const lo = withProp[0][0], hi = withProp[withProp.length - 1][0]
     const bySid = new Map(withProp)
     // Discriminant-field collapse: when EVERY compile-time schema has the prop
@@ -170,6 +202,21 @@ export function devirtSchemaReads(fn) {
         : dispatch
       return
     }
+    if (sparse) {
+      const fallback = [...genericCall]
+      if (!stable) fallback[2] = ['local.get', rT]
+      let choice = fallback
+      for (let k = withProp.length - 1; k >= 0; k--) {
+        const [sid, slot] = withProp[k]
+        choice = ['if', ['result', 'i64'],
+          ['i32.eq', stable ? sidRead(stable) : sidExprFor(recvBits(), node.dvObject === true), ['i32.const', sid]],
+          ['then', ['i64.load', ['i32.add', ['i32.wrap_i64', recvBits()], ['i32.const', slot * 8]]]],
+          ['else', choice]]
+      }
+      parent[i] = ['block', out, ['result', 'i64'], ...teeHoists,
+        ...(stable ? [] : [['local.set', rT, genericCall[2]]]), choice]
+      return
+    }
     const labels = Array.from({ length: hi - lo + 1 }, (_, k) => bySid.has(lo + k) ? `$__dsr${id}_${lo + k}` : dflt)
     // arms in sid order: each closes its block, loads its slot, brs out; the
     // innermost block (first arm's label) carries the br_table — selecting on
@@ -185,9 +232,7 @@ export function devirtSchemaReads(fn) {
             ['i64.const', LAYOUT.AUX_MASK]]],
         ['i32.const', lo]]]
     inner = ['block', `$__dsr${id}_${armSids[0]}`,
-      ...(stable ? [] : [['br_if', dflt, ['i32.ne',
-        ['call', '$__ptr_type', ['local.get', rT]],
-        ['i32.const', PTR.OBJECT]]]]),
+      ...(stable ? [] : [['br_if', dflt, ['i32.eqz', isObjectBits(['local.get', rT])]]]),
       inner]
     for (let k = 0; k < armSids.length; k++) {
       const sid = armSids[k], slot = bySid.get(sid)

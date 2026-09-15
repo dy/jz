@@ -7,7 +7,7 @@
  * @module ir/pointers
  */
 
-import { PTR, inc } from '../ctx.js'
+import { PTR, LAYOUT, inc } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
@@ -124,8 +124,13 @@ export function mkPtrIR(type, aux, offset) {
  *  that freed region — a memory-safety hazard that must not depend on inference
  *  precision. Memory safety is unconditional; the forwarding follow stays.
  *  If the node is already an unboxed pointer (ptrKind), return it directly. */
+// The kinds whose header never relocates (layout.js FORWARDING_MASK names the
+// ones that do): their payload offset is the box's low word, no helper call.
+const FIXED_OFFSET_KINDS = new Set([VAL.OBJECT, VAL.TYPED, VAL.BUFFER, VAL.CLOSURE, VAL.DATE, VAL.REGEX])
 export function ptrOffsetIR(valIR, valType) {
   if (valIR.ptrKind != null && valIR.ptrKind !== VAL.ARRAY) return valIR
+  if (valType != null && FIXED_OFFSET_KINDS.has(valType) && valIR.type === 'f64')
+    return typed(['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', valIR], ['i64.const', LAYOUT.OFFSET_MASK]]], 'i32')
   // asF64 may have just boxed a proven fixed-layout pointer. Recover that
   // same offset; growable containers still go through the forwarding reader.
   if ((valIR.srcPtrKind === VAL.OBJECT || valIR.srcPtrKind === VAL.TYPED ||

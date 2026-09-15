@@ -22,9 +22,16 @@ version once it contains these changes; until then the archive's full commit
 and integrity hash keep CI reproducible.
 
 Generic local propagation and merging run in watr after linking, including
-the fast tier. Dominating small constants propagate into control flow using
+the fast tier. The same local-slot allocator runs in the lightweight tail,
+including level 1: disjoint temporaries share storage instead of inflating
+recursive stack frames. Its lifetime proof preserves implicit zero values,
+conditional writes and loop-carried values. No JZ-specific allocator is needed.
+Dominating small constants propagate into control flow using
 the existing binding-use census. This pass skips functions mixing numeric
 and named local references, which can alias. The duplicate JZ implementations and cleanup sweep are removed.
+Global-load optimizations share a lazy call-graph write proof; tiers without a
+consumer build neither it nor the subsumed coarse volatility census. Fixed
+number-carrier peepholes call the carrier directly, without a session lookup.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 Condition chaining and boolean simplification also run in watr, including the
@@ -65,6 +72,38 @@ Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
 
+Object fields follow construction sites, independently of the physical schema.
+Aliases share facts; unrelated objects with the same keys do not. Joined objects
+retain at most 32 sites. Publication projects those facts to
+layout-wide storage once, so every object using a layout agrees on its field
+representation, including BigInt boxing. Overflow retains conservative storage.
+Conditions and discarded expressions visit effects without merging unused values:
+testing a callable cannot by itself introduce an unknown caller.
+The registry and summary share one schema key: a serialization of the brand
+and canonical property order. Delimiter characters inside valid JS string
+keys must never merge unrelated layouts.
+Unknown-receiver stores propagate only when their pending effect grows. A
+newly exposed construction replays both indexed and arbitrary-key effects;
+numeric reseeding clears these pending facts before solving again. Cache-hit
+paths do not create callback capture cells just to return an existing slot list.
+
+Numeric output-buffer contracts reuse the summary's stored-value kinds. Every
+element store must be numeric; one numeric initializer cannot prove a later
+unknown write. Input normalization can establish those output values, so the
+planner closes newly proven boundary contracts before signature narrowing.
+Established contracts are skipped, and each additional summary round proves at
+least one new parameter.
+
+Size mode keeps one shared dynamic property lookup instead of adding schema
+dispatch arms whose generic fallback remains necessary. The existing read-reuse
+walk still removes repeated lookups; speed modes retain guarded specialization.
+In speed modes a receiver whose shape set the summary retains, a name or a
+member chain, reads and stores its field through one masked compare per member
+shape that names it, with the shared dynamic lookup as the miss. Receivers must
+be reads that repeat without effect; a call result keeps the shared lookup.
+Where the schema-read devirtualization pass runs (few schemas, the pass on),
+it owns that dispatch instead, with its sid cache and duplicate-read reuse.
+
 Named functions stored in internal objects or bindings retain their identities
 in the summary's existing closure sets. Calls through those values bind the same
 parameters and result facts as direct calls. Unknown uses and host exposure still
@@ -98,13 +137,60 @@ Unused generated error signals disappear at link; explicit source throws retain
 the host channel. Generated Wasm and interop must
 be rebuilt together when this internal transport changes.
 
-Coercion distinguishes a fixed method slot, proven absence and an unresolved
-layout. Only proven absence selects an inherited method; unresolved layouts use
-the existing property-presence probe. Calls evaluate their receiver, property and
+Coercion distinguishes absence from an own non-callable value through the
+existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and
 arguments once, in source order, before checking callability. Nullish member reads
-throw before arguments run.
+throw before arguments run. Dynamic field and element helpers reject nullish
+receivers before decoding memory; unresolved property accesses retain source
+catch/finally handlers. A computed object key is evaluated once before
+checking the receiver and converting the key to a property name.
 
-Prepare uses one shape-consensus check for declarations and assignments.
+ToPrimitive has one method-resolution chain, generated for the string and
+number hints in `compile/emit/to-primitive.js`. Both statically known objects
+(`src/ir/coerce.js`) and runtime coercion kernels call those prepared functions.
+Each method lookup preserves absence separately from an own non-callable value;
+only absence reaches the class or inherited method. Each callable is read once,
+and the second method is looked up after the first call's effects. Exhausting
+both methods throws a TypeError. Programs without user methods retain the
+constant inherited tag. The two functions are runtime roots
+(`ctx.funcs.runtimeRoots`): address-taken, boxed ABI. Implicit coercions retain
+surrounding catches, since method calls only become explicit during emission.
+`+` with a heap operand of known kind concatenates unless a user conversion
+method may run; loose `==` between a heap kind and a primitive takes the dynamic compare.
+
+Relational operators share the boxed coercion/string-comparison slow path.
+Both operands evaluate before left-to-right primitive conversion. Proven
+numeric and string comparisons stay direct; an i32 pointer is not an integer
+value. Unordered comparisons remain false, including `<=` and `>=`.
+Date-only generic names alias their typed emitter; inherited generic names
+such as `toString` retain their own implementation.
+
+Member updates retain the receiver and converted key through GetValue and
+PutValue. A nullish base rejects after evaluating the key expression and before
+its conversion hooks. Plain writes defer key conversion until after the RHS.
+Dictionary read-modify-write fusion requires a proven HASH receiver. Opaque
+element stores exclude objects only with the shared ARRAY-or-TYPED call-site
+proof; `notString` alone cannot exclude a dictionary.
+
+Property enumeration uses one traversal builder for Object.keys/values/entries,
+for-in and JSON. It merges schema, init-sidecar and runtime keys: array indices
+sort numerically across all three sources; strings retain insertion order.
+Runtime values override init values without moving the key. Schema slots own
+field values; deleting and reinserting a field adds an ordering record to the
+existing property table. Static enumeration requires the schema's write census
+to rule out additions through aliases and helper parameters.
+`__prop_order` and Map/Set's `__coll_order` specialize one sorting template.
+Only property sorting allocates ranks; Map/Set read insertion sequence numbers
+from their existing slots, using a 4N-byte offset buffer instead of 12N bytes.
+Coercion activation reuses the class-dispatch member census, including definitions
+and parameter defaults. Its generated intrinsic probes add no ordinary member
+accesses, so synthesis does not invalidate that census.
+
+Prepare uses one shape census for literals, declarations and assignments,
+including the keys contributed by known spreads. Unresolved spread sources
+defer summary layout selection; they do not escape known sibling values while
+the solver is still settling. Default-export expressions declare their binding
+so imported objects and callables participate in the same analysis.
 Source shapes remain separate from layouts extended by property writes or
 `Object.assign`: replacing a record cannot inherit the earlier instance's
 extra fields. Replaced bindings reuse the existing allocation-provenance guard
@@ -113,6 +199,89 @@ The summary records lost schema identity, so dynamically readable BigInt fields
 use the existing tagged storage. Representation planning retains object-field
 initializers as it does array elements, including computed BigInt values.
 Possibly absent arrays use the existing checked index helper before header reads.
+
+A store of a name outside a shape's slots is tracked beside the shape (its kind
+under that name, and under an unknown name), not escaped: a read of the name
+on a shape the summary still follows is what was stored there, absent
+otherwise. A receiver of unknown shape is an instance of a lost shape or a
+foreign object, never of a followed one. A literal with a spread whose sources
+the summary knows but whose layouts differ, or a computed key, is a keyed
+dictionary: its entries by name, an unknown-name entry for what it cannot
+place. A dictionary joined with objects or primitives keeps its cell; the
+object shapes ride on the cell and its reads join both. A parameter used only
+in tests, identity compares and `typeof` keeps the shapes of a join it
+cannot name. A conditional on a parameter no call has bound waits for a later
+round; one the kinds decide walks only its live arm. A rest parameter is a
+tuple of its arguments by position, absent past a call's count. Set cells
+follow their elements; iterating a Set, Map or string materializes its
+members. A read or store through a nullish receiver, a call of a name no
+shape holds and a property read on a primitive outside its prototype are
+throwing or undefined, not unknown. A declared local takes the summary's
+exact shape as a parameter does.
+Construction and physical-layout IDs index ordinary arrays of field rows;
+missing rows read as NONE. Those dense numeric identities need no hash table.
+
+Prepared functions, synthesized dispatchers, imports and variants use the record
+constructor in `src/function.js`. Defaults and rest bindings have fixed fields;
+variants copy the explicit result facts and can clear the rest binding. No open
+spread-copy contract is needed. Variant queues keep named fields, not mixed
+tuples. The function registry and active state use the same constructors at
+startup and reset; function entry replaces only the active state.
+Array-pattern parameters use positional placeholders and ordered initializers,
+shared by ordinary functions and generator factories. They do not pack unused
+callback arguments into a synthetic rest array. The legacy object-pattern and
+actual `arguments` paths retain argument-list packing.
+Map/Set lookups share insertion's
+capacity/forwarding check, without a separate general pointer decode.
+
+Concatenation results carry the lazy hash cell; the Map hash mixes a packed
+short string and loads a cached heap hash in place. Speed modes lay out a key
+index for every schema of eight or more keys, probed once per slot search, and
+a dynamic read site past the schema-dispatch budget keeps an inline cache of
+the last static schema it resolved; size mode keeps the scans. The wasm name
+section names a closure body after its enclosing function.
+Schema indexes write little-endian hash, slot and offset words directly; their
+layout does not depend on the compiler's own BigInt-to-string conversion.
+
+Unknown-receiver stores affect schemas whose identity escaped analysis or whose
+instances the host can hold. The summary retains their stored values and applies
+them when another schema escapes later. Retained object joins use the existing
+set-ID space. Emitters see a layout only when every member agrees, so member
+BigInt slots use tagged storage for differing layouts while analysis retains their
+identities. Escaping an object also escapes its field values; escaping a callable
+escapes its result. Each summary owns and resets these facts.
+A map's keys are retained beside its values: storing an object as a key does
+not lose its shape; enumerating the map (keys, values, entries, forEach,
+iteration, a copy) or losing the map does. Lookups, presence tests and
+deletions do not escape their arguments. A call of a name outside a known
+shape escapes the arguments, not the receiver. Freezing returns its
+argument with its shape; other read-only builtins keep their argument shapes.
+An object parameter the call lattice already typed still takes the summary's
+exact shape, so its slot accesses stay direct.
+A boolean arm beside a number arm in `&&`, `||`, `??` or `?:` carries its
+numeric image: a raw 0/1 stays, a boxed boolean atom (a field read, a boxed
+local, a call result) converts, since the join is value-typed NUMBER.
+Number-key stores can reach every canonical number spelling, including negative,
+fractional, NaN and infinity keys; digit-only names are not a sufficient proof.
+For arrays, canonical index strings share the element cell, and an unknown
+string store also reaches that cell. Other named properties stay separate;
+the documented i32 numeric-index contract is unchanged.
+Boolean arms beside numeric arms use their numeric image when the result's
+representation is numeric; observable boolean results retain their tagged value.
+
+Default ABI carriers are immutable and shared between compile sessions.
+Only strings select an alternative carrier: the emitter reads the binding's
+externref hint directly, without a second registry or a general type dispatcher.
+Tagged typed-array reads reuse the ordinary checked numeric reader.
+Only the BigInt branch checks bounds separately, and it uses the shared data
+pointer decoder so offset views retain their origin.
+
+Schema-read devirtualization runs from level 1. Its budget counts shapes naming
+the requested field, rather than every shape in the module. Dense IDs use the
+existing branch table; up to four sparse matches use guarded direct loads.
+Unknown receivers must match the complete object NaN-box prefix before their
+schema ID selects a load. Missing shapes retain the generic lookup, and fields
+exceeding the dispatch budget retain that lookup unchanged.
 
 The host boundary carries plain `jz:fields` data alongside schema names. The
 summary supplies field families and typed/nested identities; schema analysis
@@ -140,6 +309,8 @@ array-index keys before registering a schema. The schema cache hashes decoded
 keys, verifies their contents, and grows its backing table while preserving IDs.
 Exhausting the pointer's schema-ID field raises a RangeError instead of corrupting
 another object. The ordinary module clear resets the table and cache together.
+Cache allocation clears its entries explicitly: arena reset reuses memory and
+the bump allocator does not promise zero-filled storage.
 
 URLSearchParams uses ordinary class lowering with shared methods and private
 key/value arrays. Unused methods disappear through existing reachability analysis.
@@ -341,6 +512,12 @@ Parameter initialization is owned by `jzify/arguments.js`. Ordinary functions
 prepend its initializers to the body; generator factories run the same list
 before creating the suspended machine. Iterator array parameters use lazy pulls
 and close on early completion. Keep parameter effects outside the state machine.
+All binding patterns use the same private iterator records. A close releases
+its record once, after any user `return()` call; nested and reentrant patterns
+therefore retain independent cursors. Recycled records clear user references.
+The pool is lazy because module initializers can use binding helpers before
+stdlib initialization. Its array uses ordinary arena snapshot/restore; linking
+through record fields would leave stale links after a reset.
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 

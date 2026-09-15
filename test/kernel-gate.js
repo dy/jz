@@ -184,6 +184,12 @@ test('kernel gate: memory judges only a complete, compatible, completed row set;
   const baseline = (over = {}) => ({ corpus: 'small', levels: [1], runnerProvenance: { profile: { optimize: 1 } }, gates: { memory: { rows: rows.map(r => ({ ...r })), peakRssMiB: { functional: 100 }, ...over } } })
   const judge = (mine, base, peaks = { functional: 100 }) => judgeMemory({ rows: mine, peaks, baseline: base, size: 'small', levels: [1], profile: { optimize: 1 }, tolerance: 0.1 })
   is(judge(rows, baseline()).status, 'green', 'the same figures: green')
+  const withError = [...rows, { gate: 'sequences', name: 'source error', level: 2, completed: false, heap: 500, memoryBytes: 65536 }]
+  const errorBase = baseline({ rows: withError })
+  is(judge(withError, errorBase).status, 'green', 'the intentionally rejected source cannot compile to completion')
+  is(judge(withError.map((r, i) => i === 0 ? { ...r, completed: false } : r), errorBase).status, 'incomplete', 'an unexpected failed compile still prevents the comparison')
+  is(judge(withError, baseline({ rows: withError.slice(-1) })).status, 'incomplete', 'a rejection alone provides no compilation baseline')
+  is(judge(rows, baseline({ rows: {} })).status, 'incomplete', 'malformed baseline rows are not a comparison')
   is(judge(rows.map(r => ({ ...r, heap: r.heap * 1.2 })), baseline()).status, 'red', '20% more heap: red')
   is(judge(rows, baseline(), { functional: 200 }).status, 'red', 'a doubled process peak: red, judged apart from the heap')
   is(judge(rows.slice(0, 1), baseline()).status, 'incomplete', 'a baseline row this run lacks: incomplete, not green on the one that matched')

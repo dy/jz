@@ -9,7 +9,8 @@
  * @module optimize/peephole
  */
 import { simplifyCast } from 'watr/optimize'
-import { LAYOUT, ctx, FORWARDING_MASK } from '../ctx.js'
+import { LAYOUT, FORWARDING_MASK } from '../ctx.js'
+import { nanboxF64 } from '../abi/index.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR } from '../ir.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
@@ -460,7 +461,7 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
   // Rep-specific folds (NaN-box layout-aware reinterpret/wrap simplifications under
   // the nanbox preset). Each rep owns the rules depending on its carrier layout.
   if (op === 'i64.reinterpret_f64' || op === 'f64.reinterpret_i64' || op === 'i32.wrap_i64') {
-    const repFold = ctx.abi?.number?.peephole(node)
+    const repFold = nanboxF64.peephole(node)
     if (repFold != null) return repFold
   }
   // Push ToInt32 through integer expressions and conditionals. The universal value model

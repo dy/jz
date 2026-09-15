@@ -1,6 +1,7 @@
 import { ctx } from '../ctx.js'
 import { MUTATE_OPS, T, walkAst } from '../ast.js'
 import { typedCtorRawOf } from '../static.js'
+import { VAL } from '../reps.js'
 
 // `recv[i] = v` into a numeric typed array: SetValueInBuffer ToNumbers the value,
 // so the store slot is a ToNumber-forcing use like `*`. BigInt arrays ToBigInt.
@@ -472,7 +473,9 @@ const TYPED_RECEIVER_METHODS = new Set(['subarray', 'slice', 'set', 'fill', 'cop
 const TYPED_WRITE_METHODS = new Set(['set', 'fill', 'copyWithin'])
 export function paramNumericArrayLike(body, name, _seen = new Set()) {
   if (body == null) return null
-  let ok = true, used = false, writes = false, forwardProven = false
+  let ok = true, used = false, writes = false, numericUse = false
+  let numericStores = null
+  const summary = ctx.summary?.at(body)
   const flat1 = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flat1) : [a]
   const closures = new Map()
   // Views and copies of the receiver (`let h = data.subarray(a, b)`, `.slice`)
@@ -548,6 +551,9 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
         const v = node[2]
         if (!numericIndex(t[2]) || (Array.isArray(v) && (v[0] === 'str' || v[0] === 'template' || (v[0] === '+' && v.length === 3 && (isStrLiteral(v[1]) || isStrLiteral(v[2])))))) { ok = false; return }
         writes = true; used = true
+        // A numeric output buffer may have no element reads to supply the
+        // proof below. Its stores give the same evidence as numeric fill.
+        numericStores = numericStores !== false && op === '=' && summary?.valOfExpr(v) === VAL.NUMBER
         walk(t[2]); for (let i = 2; i < node.length; i++) walk(node[i])
         return
       }
@@ -563,7 +569,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && names.has(node[1][1]) && TYPED_RECEIVER_METHODS.has(node[1][2])) {
       used = true
       if (TYPED_WRITE_METHODS.has(node[1][2])) writes = true
-      if (node[1][2] === 'fill' && numericIndex(node[2])) forwardProven = true
+      if (node[1][2] === 'fill' && numericIndex(node[2])) numericUse = true
       for (let i = 2; i < node.length; i++) walk(node[i])
       return
     }
@@ -581,7 +587,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
         const targetBody = cl ? cl.body : fn?.body
         const inner = target && !_seen.has(node[1] + '#' + i) && paramNumericArrayLike(targetBody, target, new Set([..._seen, node[1] + '#' + i]))
         if (!inner) { ok = false; return }
-        used = true; forwardProven = true
+        used = true; numericUse = true
         if (inner.writes) writes = true
       }
       return
@@ -613,7 +619,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
   }
   // Proof, not mere compatibility: `buf + s[i]` over a string local never
   // forces a number, so a string parameter indexed into a concat stays a string.
-  // A callee that proved the forwarded value supplies the proof for this body.
-  if (!paramAllUsesNumeric(subst(body), elem, new Set(), !forwardProven)) return null
+  // Numeric writes or a proven forwarded receiver supply the same evidence.
+  if (!paramAllUsesNumeric(subst(body), elem, new Set(), !(numericUse || numericStores === true))) return null
   return { writes }
 }

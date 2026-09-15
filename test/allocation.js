@@ -22,6 +22,15 @@ export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0;
 }
 const zero = (out, what) => { for (const level in out) is(out[level], 0, `${what} allocates ${out[level]} bytes per call at O${level}`) }
 
+test('allocation: closed destructuring records are reused', () => {
+  zero(measure(`const a = [3, 5]
+    export function read(a) { const [x, y] = a; return x + y }
+    const run = i => { a[0] = i; return read(a) }`), 'array destructuring after warmup')
+  zero(measure(`const a = [[3, 5], [7, 11]]
+    export function read(a) { const [[x, y], [z, w]] = a; return x + y + z + w }
+    const run = i => { a[0][0] = i; return read(a) }`), 'nested destructuring after warmup')
+})
+
 test('allocation: a dynamic method call passes its arguments inline', () => {
   // `pick` returns one of two shapes: the receiver's slot is read at runtime and the closure called through the dynamic path.
   zero(measure(`const o = { add: (a, b) => a + b, id: (x) => x, n: 1 }

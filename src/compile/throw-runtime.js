@@ -5,7 +5,8 @@ export const ensureThrowRuntime = (sec) => {
   // flag (e.g. __to_num on a Symbol). Detect it from the included stdlib bodies
   // so the $__jz_err tag is always present when something can raise it.
   if (!ctx.runtime.throws && [...ctx.core.includes].some(n => {
-    const body = ctx.core.stdlib[n]
+    let body = ctx.core.stdlib[n]
+    if (typeof body === 'function') ctx.core.stdlib[n] = body = body()   // realized once, as stdlib-pull would
     return typeof body === 'string' && body.includes('(throw ')
   })) ctx.runtime.throws = true
   if (!ctx.runtime.throws) return

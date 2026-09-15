@@ -10,7 +10,7 @@
  */
 import { typed, temp, freshId, arrayLoop, truthyIR, UNDEF_NAN } from '../../src/ir.js'
 import { ctx } from '../../src/ctx.js'
-import { hoistArrayValue, makeCallback, callbackArgReps, idxArg } from './callback.js'
+import { hoistArrayValue, makeCallback, callbackArgReps, idxArg, arrArg } from './callback.js'
 
 export const registerEarlyExit = () => {
   // Early-exit callback iterator: init value, exit test, value on match.
@@ -20,7 +20,7 @@ export const registerEarlyExit = () => {
     const exit = `$exit${freshId(ctx)}`
     const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', test(cb, i, item),
+      ['if', test(cb, i, item, recv),
         ['then', ['local.set', `$${r}`, onMatch(cb, i, item)], ['br', exit]]]
     ], undefined, undefined, reverse)
     return typed(['block', ['result', 'f64'],
@@ -34,35 +34,35 @@ export const registerEarlyExit = () => {
   ctx.core.emit['.some'] = earlyExitMethod({
     tag: 'sr',
     init: ['f64.const', 0],
-    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: () => ['f64.const', 1],
   })
 
   ctx.core.emit['.every'] = earlyExitMethod({
     tag: 'ev',
     init: ['f64.const', 1],
-    test: (cb, i, item) => ['i32.eqz', truthyIR(cb.call([item, idxArg(cb, i)]))],
+    test: (cb, i, item, recv) => ['i32.eqz', truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)]))],
     onMatch: () => ['f64.const', 0],
   })
 
   ctx.core.emit['.findIndex'] = earlyExitMethod({
     tag: 'fi',
     init: ['f64.const', -1],
-    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, i) => ['f64.convert_i32_s', ['local.get', `$${i}`]],
   })
 
   ctx.core.emit['.find'] = earlyExitMethod({
     tag: 'ff',
     init: ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]],
-    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, _i, item) => item,
   })
 
   ctx.core.emit['.findLastIndex'] = earlyExitMethod({
     tag: 'fli',
     init: ['f64.const', -1],
-    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, i) => ['f64.convert_i32_s', ['local.get', `$${i}`]],
     reverse: true,
   })
@@ -70,7 +70,7 @@ export const registerEarlyExit = () => {
   ctx.core.emit['.findLast'] = earlyExitMethod({
     tag: 'fl',
     init: ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]],
-    test: (cb, i, item) => truthyIR(cb.call([item, idxArg(cb, i)])),
+    test: (cb, i, item, recv) => truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
     onMatch: (_cb, _i, item) => item,
     reverse: true,
   })

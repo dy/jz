@@ -897,9 +897,9 @@ test('_clear() heals a durable array\'s data past a same-round shrink-then-grow 
     let a = [1,2,3,4,5]
     export let f = () => { a.length = 2; a.length = 5; return a.join(',') }`,
     { optimize: false })
-  is(exports.f(), '1,2,undefined,undefined,undefined', 'round 1')
+  is(exports.f(), '1,2,,,', 'round 1')
   exports._clear()
-  is(exports.f(), '1,2,undefined,undefined,undefined', 'round 2 — same answer, not a further-eroded array')
+  is(exports.f(), '1,2,,,', 'round 2 — same answer, not a further-eroded array')
 })
 
 // .shift()'s in-place rebasing is documented (module/array.js, __arr_shift's own

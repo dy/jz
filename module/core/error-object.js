@@ -15,9 +15,19 @@ import { ctx, err, inc, PTR } from '../../src/ctx.js'
 import { dataLen } from '../../src/static-data.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 
+// Runtime receiver checks use the private error-code transport. They must not
+// register a schema merely because a dynamic access might throw.
+export function requireReceiverWat(value) {
+  const code = errorCodeLiteral(ERR.OBJECT_NULLISH)
+  return `(if (call $__is_nullish ${value})
+    (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${code})))
+      (throw $__jz_err (f64.const ${code}))))`
+}
+
 // Shared lazy runtime throw: ordinary branded Error storage and transport.
 // Track literal data so dead helpers leave no strings in the final module.
 export function throwErrorWat(ctx, name, className, message) {
+  ctx.module.include('string')
   // Print whatever the string emitter yields. An own-memory build yields a
   // static literal, and the span below reclaims its bytes when the helper dies;
   // a shared or imported memory cannot extend static data after the start

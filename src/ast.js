@@ -102,6 +102,23 @@ export const isBlockBody = (body) =>
 // === AST node classifiers ===
 
 export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+
+/** A canonical array-index property key: `"0"`, `"1"`, … below 2^32 - 1 (ES 6.1.7). */
+const ARRAY_INDEX_KEY = /^(?:0|[1-9]\d*)$/
+export const isArrayIndexKey = (k) => typeof k === 'string' && k.length <= 10 && ARRAY_INDEX_KEY.test(k) && Number(k) < 4294967295
+/** Property keys in [[OwnPropertyKeys]] order (10.1.11.1): array indices ascending,
+ *  then the rest in the given (insertion) order. The input array is returned
+ *  unchanged when it holds no index key. */
+export function canonicalKeyOrder(names) {
+  let idx = null
+  for (const n of names) if (isArrayIndexKey(n)) (idx ??= []).push(n)
+  if (!idx) return names
+  idx.sort((a, b) => Number(a) - Number(b))
+  return [...idx, ...names.filter(n => !isArrayIndexKey(n))]
+}
+
+/** Unambiguous layout identity, including arbitrary JS keys and the class brand. */
+export const schemaKey = (names, brand) => JSON.stringify([brand || '', canonicalKeyOrder(names)])
 export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNames.has(node)
 
 /** A value-leaf IR instruction — `local.get`/`global.get`/any `*.const`. Cheap and

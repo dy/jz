@@ -585,10 +585,12 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
   const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
   if (ctx.core.emit[`.${method}`] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
-    const dateEmitter = method !== 'valueOf' ? ctx.core.emit[`.date:${method}`] : null
-    const callFlat = receiver => dateEmitter
+    // Only an actual Date-only alias needs a brand guard. Shared names such
+    // as toString/valueOf retain their generic inherited implementation.
+    const generic = ctx.core.emit[`.${method}`]
+    const callFlat = receiver => generic === ctx.core.emit[`.date:${method}`]
       ? unresolvedDateMethod(receiver, method, parsed)
-      : callMethod(receiver, ctx.core.emit[`.${method}`])
+      : callMethod(receiver, generic)
     // Statically-UNKNOWN receiver: an OWN property named like the builtin shadows it
     // (ES prototype semantics) — the runtime analogue of `objectShadow` above. Without
     // this fork, subscript's `d.map(a)` descriptor mapper (or any user method colliding

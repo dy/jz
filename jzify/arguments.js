@@ -3,7 +3,8 @@
  * @module jzify/arguments
  */
 
-import { paramList } from '../src/ast.js'
+import { collectParamNames, paramList } from '../src/ast.js'
+import { hasArrayPattern } from '../src/iterator-pattern.js'
 import { isDestructurePat } from './hoist-vars.js'
 
 export function usesArguments(node) {
@@ -130,8 +131,24 @@ function prependParamDecls(decl, body) {
   return ['{}', [';', decl, ['return', body]]]
 }
 
+// Keep array-pattern arguments positional. Patterns and defaults initialize in
+// order inside the body (or in a generator's factory), without a rest array.
+function lowerPatterns(params, temp) {
+  const raw = paramList(params)
+  if (!raw.some(hasArrayPattern)) return [params, []]
+  const prefix = [], bound = collectParamNames(raw), args = []
+  for (const p of raw) {
+    const arg = temp('pa'), rest = Array.isArray(p) && p[0] === '...'
+    args.push(rest ? ['...', arg] : arg)
+    const def = Array.isArray(p) && p[0] === '='
+    prefix.push(['=', rest || def ? p[1] : p,
+      def ? ['?:', ['===', arg, [null, undefined]], p[2], arg] : arg])
+  }
+  return [['()', [',', ...args]], [['let', ...bound], ...prefix]]
+}
+
 /** @param {ReturnType<import('./names.js').createNames>} names */
-export function createArgumentsLowering(names, lowerPatterns = params => [params, []]) {
+export function createArgumentsLowering(names) {
   // Generators consume the initializer list in their factory, outside the
   // suspended body. Ordinary functions prepend the same list to their body.
   function lowerArguments(params, body, split = false) {
@@ -165,7 +182,7 @@ export function createArgumentsLowering(names, lowerPatterns = params => [params
       return lowerArguments(renameArguments(params, fresh), renameArguments(body, fresh), split)
     }
     if (bindsArguments(body)) body = stripArgumentsVarDecl(body)
-    const lowered = lowerPatterns(params), init = lowered[1]
+    const lowered = lowerPatterns(params, names.genTemp), init = lowered[1]
     params = lowered[0]
     const paramsNeedLowering = paramList(params).some(isDestructurePat)
     const usesArgsObj = usesArguments(params) || usesArguments(body) || init.some(usesArguments)

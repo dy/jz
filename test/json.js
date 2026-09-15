@@ -67,12 +67,11 @@ test('JSON.parse', () => {
   ])
 })
 
-test('JSON.parse: \\uXXXX escapes decode to UTF-8', () => {
-  // ASCII code point → 1 byte.
+test('JSON.parse: \\uXXXX escapes preserve UTF-16 code units', () => {
+  // ASCII and non-ASCII escapes preserve the decoded string.
   is(run(`export let f = () => JSON.parse('["a\\\\u0041b"]')[0]`).f(), 'aAb')
-  // 2-byte code point (é = U+00E9) → 2 UTF-8 bytes; .length is byte length.
   is(run(`export let f = () => JSON.parse('["x\\\\u00e9y"]')[0]`).f(), 'xéy')
-  // Surrogate pair (U+1F600) combines into one 4-byte code point.
+  // A surrogate pair represents U+1F600.
   is(run(`export let f = () => JSON.parse('["\\\\uD83D\\\\uDE00!"]')[0]`).f(), '😀!')
   // \u escape on an object key.
   is(run(`export let f = () => JSON.parse('{"a\\\\u0041":7}').aA`).f(), 7)
@@ -618,6 +617,31 @@ test('JSON.parse: growing schema tables preserve earlier objects and stop before
   is(thrown.thrown, 214, 'runtime errors do not reserve user-thrown numbers')
 })
 
+
+test('JSON.parse: schema cache is empty after arena reuse', () => {
+  const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:42,level:${i + 100}}`).join(',')
+  const source = `const shapes = [${shapes}]
+    export function read(s, n) {
+      const o = n < 0 ? JSON.parse(s) : shapes[n % 30]
+      return [o.level, Object.keys(o).join(','), JSON.stringify(o)]
+    }
+    export function parse(s) { return JSON.stringify(JSON.parse(s)) }`
+  for (const optimize of levels(0, 1, 2, 'speed', 'size')) {
+    const j = instantiate(compile(source, { optimize }))
+    const clear = j.instance.exports._clear
+    clear() // zero work before the first parse
+    for (const n of [-1, -1, 0, -1, 1, -1]) {
+      const expected = n < 0 ? { level: 1 } : { ['k' + n]: 42, level: n + 100 }
+      is(j.exports.read('{"level":1}', n), [expected.level, Object.keys(expected).join(','), JSON.stringify(expected)])
+      clear()
+    }
+    for (const s of ['{}', '{}', '{"other":2}', '{"level":1}', '[]', 'null', '[', '{"level":1}']) {
+      if (s === '[') throws(() => j.exports.parse(s), SyntaxError)
+      else is(j.exports.parse(s), JSON.stringify(JSON.parse(s)))
+      clear()
+    }
+  }
+})
 
 test('JSON whitespace: every UTF-16 unit, EOF and repeated error recovery', () => {
   for (const optimize of levels(0, 2, 'speed', 'size')) {

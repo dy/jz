@@ -181,11 +181,12 @@ export function unswitchTypedParamLoop(fn) {
     let storeIdx = -1, storeEndIdx = -1, paramName = null, elseStore = null, helperStore = null
     for (let i = 0; i < body.length; i++) {
       const c = body[i]
-      // Outlined ARRAY/TYPED store: the helper owns the runtime width fork and
+      // Outlined element stores: both helpers own the runtime width fork and
       // returns the possibly-relocated pointer. Emission materializes that
       // pointer in a temp, then persists it to the receiver binding.
       if (Array.isArray(c) && c[0] === 'local.set' &&
-          Array.isArray(c[2]) && c[2][0] === 'call' && c[2][1] === '$__arr_typed_set_idx') {
+          Array.isArray(c[2]) && c[2][0] === 'call' &&
+          (c[2][1] === '$__arr_typed_set_idx' || c[2][1] === '$__arr_typed_obj_set_idx')) {
         const next = body[i + 1], ptrTmp = c[1], call = c[2]
         const p = Array.isArray(next) && next[0] === 'local.set' && f64Params.has(next[1]) &&
           Array.isArray(next[2]) && next[2][0] === 'local.get' && next[2][1] === ptrTmp ? next[1] : null

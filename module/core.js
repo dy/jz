@@ -24,11 +24,11 @@ import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followFor
 import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../layout.js'
 import { initSchema } from './schema.js'
-import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes } from './collection.js'
+import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
-import { registerErrorClasses, throwErrorWat } from './core/error-object.js'
+import { registerErrorClasses, throwErrorWat, requireReceiverWat } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -49,15 +49,19 @@ const arrayBaseIR = (obj) => typeof obj === 'string' && liveArrayBinding(obj)
 export default (ctx) => {
   const lane = collectionLaneBytes()
   deps({
-    __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : [])],
+    __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : []),
+      ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
+    __to_prim_dflt: ['__ptr_type', '__to_str'],
+    __cmp: ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num'],
+    __add_slow: ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat'],
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
-    __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : [])],
+    __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_offset', '__ptr_aux'],
-    __typed_idx: () => (ctx.linkDemand.f16 ? ['__f16_to_f64'] : []),
-    __typed_idx_tagged: ['__typed_idx', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
+    __typed_idx: () => ['__is_nullish', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
+    __typed_idx_tagged: ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
     __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
     __ptr_offset_fwd: [],
@@ -84,8 +88,10 @@ export default (ctx) => {
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
+    __hash_keys_ro: ['__ptr_offset', '__prop_order', '__alloc_hdr', '__mkptr'],
     __coll_order: ['__alloc'],
-    __hash_keys_ro: ['__ptr_offset', '__coll_order', '__alloc_hdr', '__mkptr'],
+    __prop_order: () => ['__alloc', ...(ctx.core.stdlib['__char_at'] ? ['__is_str_key', '__str_index_key'] : [])],
+    __str_index_key: ['__str_length', '__char_at'],
     // Durable-receiver global-table merge (see __obj_clone's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
     // machinery is actually part of this build (mirrors json.js's __json_obj
@@ -185,7 +191,20 @@ export default (ctx) => {
             ;; STRING tag (e.g. ASCII content read as f64) must NOT route to __str_eq
             ;; — that would deref garbage. number-vs-string is simply false.
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))${bigintMixedArm()}
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            ${ctx.core.stdlib['__to_num'] ? `;; IsLooselyEqual steps 6-7 (a boolean already read as its number above):
+            ;; a number beside a string compares with ToNumber(string).
+            (if (i32.and (f64.eq (local.get $fa) (local.get $fa)) (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
+              (then (return (f64.eq (local.get $fa) (call $__to_num (local.get $b))))))
+            (if (i32.and (f64.eq (local.get $fb) (local.get $fb)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
+              (then (return (f64.eq (call $__to_num (local.get $a)) (local.get $fb)))))` : ''}
+            ${ctx.core.stdlib['__to_str'] ? `;; steps 10-11: an object beside a string, number or boolean compares as its primitive
+            (if (i32.and (i32.and (call $__is_object (local.get $a)) (i32.ne (local.get $ta) (i32.const ${PTR.BIGINT})))
+                         (i32.and (i32.eqz (call $__is_object (local.get $b))) (i32.eqz (call $__is_nullish (local.get $b)))))
+              (then (return (call $__eq (call $__to_prim_dflt (local.get $a)) (local.get $b)))))
+            (if (i32.and (i32.and (call $__is_object (local.get $b)) (i32.ne (local.get $tb) (i32.const ${PTR.BIGINT})))
+                         (i32.and (i32.eqz (call $__is_object (local.get $a))) (i32.eqz (call $__is_nullish (local.get $a)))))
+              (then (return (call $__eq (local.get $a) (call $__to_prim_dflt (local.get $b))))))` : ''}${bigintMixedArm()}
             ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
             ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
             ;; two independently-boxed BigInts compare by PAYLOAD content, not
@@ -233,7 +252,10 @@ export default (ctx) => {
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (call $__bigint_eq_num (i64.load (call $__ptr_offset (local.get $v))) (local.get $n)))))` : ''}${ctx.core.stdlib['__to_num'] ? `
     (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-      (then (return (f64.eq (local.get $n) (call $__to_num (local.get $v))))))` : ''}
+      (then (return (f64.eq (local.get $n) (call $__to_num (local.get $v))))))` : ''}${ctx.core.stdlib['__to_str'] ? `
+    ;; an object compares as its primitive (IsLooselyEqual step 11)
+    (if (i32.and (call $__is_object (local.get $v)) (i32.ne (local.get $t) (i32.const ${PTR.BIGINT})))
+      (then (return (call $__eq_num (local.get $n) (call $__to_prim_dflt (local.get $v))))))` : ''}
     (i32.const 0))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)
@@ -335,6 +357,7 @@ export default (ctx) => {
     if (!ctx.linkDemand.typedarray && !ctx.linkDemand.external) {
       return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $len i32)
+    ${requireReceiverWat('(local.get $ptr)')}
     (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
       (i32.ge_u (local.get $i) (local.get $len))
@@ -354,6 +377,7 @@ export default (ctx) => {
           (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))
           (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (else (f64.const nan:${UNDEF_NAN}))))))
+    ${requireReceiverWat('(local.get $ptr)')}
     ;; Every consumer below masks aux low bits; high tag/prefix bits are inert.
     (local.set $aux (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT}))))
     ${ctx.linkDemand.typedView ? `(if
@@ -398,20 +422,21 @@ export default (ctx) => {
   // valid i64 BigInt payload, so inspecting the returned bits cannot tell an
   // OOB miss from an in-range value.
   ctx.core.stdlib['__typed_idx_tagged'] = `(func $__typed_idx_tagged (param $ptr i64) (param $i i32) (result f64)
-    (local $v f64) (local $off i32)
-    (if
-      (i32.ge_u (local.get $i) (call $__len (local.get $ptr)))
-      (then (return (f64.const nan:${UNDEF_NAN}))))
-    (local.set $v (call $__typed_idx (local.get $ptr) (local.get $i)))
-    (if
-      (i32.and
+    (local $off i32)
+    ;; Only BigInt elements need a tagged result. All other reads retain the
+    ;; ordinary helper's own bounds check, without a second length lookup.
+    (if (i32.and
         (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})) (i32.const 0)))
       (then
+        (if (i32.ge_u (local.get $i) (call $__len (local.get $ptr)))
+          (then (return (f64.const nan:${UNDEF_NAN}))))
         (local.set $off (call $__alloc (i32.const 8)))
-        (i64.store (local.get $off) (i64.reinterpret_f64 (local.get $v)))
+        (i64.store (local.get $off) (i64.load
+          (i32.add (call $__typed_data (local.get $ptr))
+            (i32.shl (local.get $i) (i32.const 3)))))
         (return (call $__mkptr (i32.const ${PTR.BIGINT}) (i32.const 0) (local.get $off)))))
-    (local.get $v))`
+    (call $__typed_idx (local.get $ptr) (local.get $i)))`
 
   ctx.core.stdlib['__ptr_offset_fwd'] = ptrOffsetFwdWat()
 
@@ -477,7 +502,60 @@ export default (ctx) => {
   // True iff a NaN-boxed value is a non-primitive (heap object) — tag is neither
   // ATOM (null/undefined/boolean/symbol) nor STRING. A genuine f64 Number is
   // never NaN-boxed, so `f64.eq(x,x)` holding proves it a primitive. Drives the
-  // ES `OrdinaryToPrimitive` method-fallback chain (src/ir.js toPrimitiveChain).
+  // shared OrdinaryToPrimitive chain (compile/emit/to-primitive.js).
+  // ToPrimitive with the default hint (ES2024 7.1.1): a user valueOf/toString
+  // through the prelude (compile/emit/to-primitive.js) when the program has
+  // one, else the kind's inherited string. Callers pass a heap value.
+  ctx.core.stdlib['__to_prim_dflt'] = () => `(func $__to_prim_dflt (param $v i64) (result i64)
+    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
+      (then
+        (return (i64.reinterpret_f64 (call $__jz_tp_num (f64.reinterpret_i64 (local.get $v)))))))` : ''}
+    (call $__to_str (local.get $v)))`
+
+  // Relational slow path: evaluate both operands before entering, then
+  // ToPrimitive left-to-right with the number hint. NaN preserves unordered
+  // comparisons for all four operators; equal infinities compare as zero.
+  ctx.core.stdlib['__cmp'] = () => `(func $__cmp (param $a i64) (param $b i64) (result f64)
+    (local $x f64) (local $y f64)
+    ${['a', 'b'].map(v => `
+    (if (i32.and (call $__is_object (local.get $${v}))
+          (i32.ne (call $__ptr_type (local.get $${v})) (i32.const ${PTR.BIGINT})))
+      (then (local.set $${v}
+        ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (result i64)
+          (i32.and (i32.eq (call $__ptr_type (local.get $${v})) (i32.const ${PTR.OBJECT}))
+            (i32.eq (call $__ptr_aux (local.get $${v})) (i32.const ${ctx.schema.dateSid})))
+          (then (i64.load (i32.wrap_i64 (local.get $${v}))))
+          (else (call $__to_prim_dflt (local.get $${v}))))`
+          : `(call $__to_prim_dflt (local.get $${v}))`})))`).join('')}
+    (if (i32.and (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
+      (then (return (f64.convert_i32_s (call $__str_cmp (local.get $a) (local.get $b))))))
+    (local.set $x (call $__to_num (local.get $a)))
+    (local.set $y (call $__to_num (local.get $b)))
+    (if (f64.eq (local.get $x) (local.get $y)) (then (return (f64.const 0))))
+    (if (f64.lt (local.get $x) (local.get $y)) (then (return (f64.const -1))))
+    (if (f64.gt (local.get $x) (local.get $y)) (then (return (f64.const 1))))
+    (f64.const nan))`
+
+  // The `+` operator for two carriers that are not both numbers (ES2024
+  // 13.15.3): ToPrimitive both, concatenate if either is a string, else add
+  // their numbers. A tagged BigInt keeps the existing numeric conversion.
+  // A primitive's number: true 1, false 0, null 0, any other atom NaN — the
+  // atom ladder every dynamic `+` site carried inline before this helper.
+  const atomNumWat = (v) => `(if (result f64) (f64.eq (f64.reinterpret_i64 ${v}) (f64.reinterpret_i64 ${v}))
+      (then (f64.reinterpret_i64 ${v}))
+      (else (select (f64.const 1)
+        (select (f64.const 0) (f64.const nan)
+          (i32.or (i64.eq ${v} (i64.const ${FALSE_NAN})) (i64.eq ${v} (i64.const ${NULL_NAN}))))
+        (i64.eq ${v} (i64.const ${TRUE_NAN})))))`
+  ctx.core.stdlib['__add_slow'] = `(func $__add_slow (param $a i64) (param $b i64) (result f64)
+    (if (i32.and (call $__is_object (local.get $a)) (i32.ne (call $__ptr_type (local.get $a)) (i32.const ${PTR.BIGINT})))
+      (then (local.set $a (call $__to_prim_dflt (local.get $a)))))
+    (if (i32.and (call $__is_object (local.get $b)) (i32.ne (call $__ptr_type (local.get $b)) (i32.const ${PTR.BIGINT})))
+      (then (local.set $b (call $__to_prim_dflt (local.get $b)))))
+    (if (i32.or (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
+      (then (return (call $__str_concat (local.get $a) (local.get $b)))))
+    (f64.add ${atomNumWat('(local.get $a)')} ${atomNumWat('(local.get $b)')}))`
+
   ctx.core.stdlib['__is_object'] = `(func $__is_object (param $p i64) (result i32)
     (local $t i32)
     (if (f64.eq (f64.reinterpret_i64 (local.get $p)) (f64.reinterpret_i64 (local.get $p)))
@@ -768,15 +846,28 @@ export default (ctx) => {
   // structuredClone/region-copy recursing into a nested Set/Map) only clobber the
   // global AFTER the outer bound is already captured into its own local.
   declGlobal('__coll_order_n', 'i32')
-  ctx.core.stdlib['__coll_order'] = `(func $__coll_order (param $off i32) (param $cap i32) (param $stride i32) (result i32)
-    (local $i i32) (local $n i32) (local $slot i32) (local $buf i32)
-    (local $j i32) (local $k i32) (local $cur i32) (local $sq i32)
+  // `propKeys`: the table holds property keys (a HASH, an object's dyn-prop
+  // sidecar), which enumerate in [[OwnPropertyKeys]] order (10.1.11.1): array
+  // indices ascending before the string keys in insertion order. A Map/Set
+  // uses its existing sequence directly, with no rank buffer. Property ranks are computed once per slot
+  // (u64: an index key is its index, any other key is 2^32 | sequence) into a
+  // parallel buffer the insertion sort moves alongside the slot offsets.
+  const indexRank = () => ctx.core.stdlib['__char_at'] ? `(if (call $__is_str_key (i64.load offset=8 (local.get $slot)))
+          (then
+            (local.set $ix (call $__str_index_key (i64.load offset=8 (local.get $slot))))
+            (if (i32.ne (local.get $ix) (i32.const -1)) (then (local.set $rank (i64.extend_i32_u (local.get $ix)))))))` : ''
+  for (const [name, propKeys] of [['__coll_order', false], ['__prop_order', true]])
+  ctx.core.stdlib[name] = () => `(func $${name} (param $off i32) (param $cap i32) (param $stride i32) (result i32)
+    (local $i i32) (local $n i32) (local $slot i32) (local $buf i32) ${propKeys ? '(local $rk i32) (local $ix i32)' : ''}
+    (local $j i32) (local $k i32) (local $cur i32) (local $rank i64)
     ;; A null/empty backing pointer (off below the heap base) has no live slots —
     ;; ordering it yields the empty list. Guard before the $off-8 length read so a
     ;; degenerate receiver returns an empty buffer instead of faulting on load(-8).
+    (global.set $__coll_order_n (i32.const 0))
     (if (i32.lt_u (local.get $off) (i32.const ${HEAP.START})) (then (return (call $__alloc (i32.const 0)))))
     (local.set $buf (call $__alloc (i32.shl (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 2))))
-    ;; gather live slot offsets (occupied ⇔ hash word ≠ 0)
+    ${propKeys ? '(local.set $rk (call $__alloc (i32.shl (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 3))))' : ''}
+    ;; gather live slot offsets (occupied ⇔ hash word ≠ 0) and their ranks
     (block $gd (loop $gl
       (br_if $gd (i32.ge_s (local.get $i) (local.get $cap)))
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $stride))))
@@ -785,31 +876,37 @@ export default (ctx) => {
             ;; skip healed zombie entries (durable-slot heal: key = TOMB sentinel)
             (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
         (then
+          ${propKeys ? `(local.set $rank (i64.or (i64.const 0x100000000) (i64.shr_u (i64.load (local.get $slot)) (i64.const 32))))
+          ${indexRank()}` : ''}
           (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (local.get $slot))
+          ${propKeys ? '(i64.store (i32.add (local.get $rk) (i32.shl (local.get $n) (i32.const 3))) (local.get $rank))' : ''}
           (local.set $n (i32.add (local.get $n) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $gl)))
-    ;; insertion-sort buf[0..n) ascending by sequence = hash-word high 32 bits
+    ;; insertion-sort buf[0..n) ascending by rank (rk moves alongside)
     (local.set $j (i32.const 1))
     (block $sd (loop $sl
       (br_if $sd (i32.ge_s (local.get $j) (local.get $n)))
       (local.set $cur (i32.load (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 2)))))
-      (local.set $sq (i32.wrap_i64 (i64.shr_u (i64.load (local.get $cur)) (i64.const 32))))
+      (local.set $rank ${propKeys ? '(i64.load (i32.add (local.get $rk) (i32.shl (local.get $j) (i32.const 3))))' : '(i64.shr_u (i64.load (local.get $cur)) (i64.const 32))'})
       (local.set $k (i32.sub (local.get $j) (i32.const 1)))
       (block $id (loop $il
         (br_if $id (i32.lt_s (local.get $k) (i32.const 0)))
-        (br_if $id (i32.le_u
-          (i32.wrap_i64 (i64.shr_u (i64.load (i32.load (i32.add (local.get $buf) (i32.shl (local.get $k) (i32.const 2))))) (i64.const 32)))
-          (local.get $sq)))
+        (br_if $id (i64.le_u ${propKeys ? '(i64.load (i32.add (local.get $rk) (i32.shl (local.get $k) (i32.const 3))))' : '(i64.shr_u (i64.load (i32.load (i32.add (local.get $buf) (i32.shl (local.get $k) (i32.const 2))))) (i64.const 32))'} (local.get $rank)))
         (i32.store (i32.add (local.get $buf) (i32.shl (i32.add (local.get $k) (i32.const 1)) (i32.const 2)))
           (i32.load (i32.add (local.get $buf) (i32.shl (local.get $k) (i32.const 2)))))
+        ${propKeys ? `(i64.store (i32.add (local.get $rk) (i32.shl (i32.add (local.get $k) (i32.const 1)) (i32.const 3)))
+          (i64.load (i32.add (local.get $rk) (i32.shl (local.get $k) (i32.const 3)))))` : ''}
         (local.set $k (i32.sub (local.get $k) (i32.const 1)))
         (br $il)))
       (i32.store (i32.add (local.get $buf) (i32.shl (i32.add (local.get $k) (i32.const 1)) (i32.const 2))) (local.get $cur))
+      ${propKeys ? '(i64.store (i32.add (local.get $rk) (i32.shl (i32.add (local.get $k) (i32.const 1)) (i32.const 3))) (local.get $rank))' : ''}
       (local.set $j (i32.add (local.get $j) (i32.const 1)))
       (br $sl)))
     (global.set $__coll_order_n (local.get $n))
     (local.get $buf))`
+  // Canonical array-index parse of a property key (-1 for any other key).
+  ctx.core.stdlib['__str_index_key'] = stringIndexWat('__str_index_key', 4294967294)
 
   // for-in's HASH key enumeration with a 1-slot enum cache (V8's EnumCache analog).
   // A for-in over an unchanged dict re-derives the same key array every entry —
@@ -840,7 +937,7 @@ export default (ctx) => {
     (if (i32.and (i32.eq (local.get $off) (global.get $__enumc_off))
                  (i32.eq (local.get $n) (global.get $__enumc_len)))
       (then (return (global.get $__enumc_arr))))
-    (local.set $ord (call $__coll_order (local.get $off)
+    (local.set $ord (call $__prop_order (local.get $off)
       (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const 24)))
     (local.set $realN (global.get $__coll_order_n))
     (local.set $out (call $__alloc_hdr (local.get $realN) (local.get $realN)))
@@ -1329,8 +1426,15 @@ export default (ctx) => {
    *     `ctx.abi.object.ops.load` uses the wrong (ordinary per-schema
    *     f64-slot) layout for what is actually a packed i32 cell. Silent
    *     wrong-value, not something wasm validation can catch. */
+  // A guard reads the receiver once per arm: it must be a read that repeats
+  // without effect (a local, a global, a load, address arithmetic), never a
+  // call whose repetition would rerun the callee.
+  const REPEATABLE_OPS = new Set(['local.get', 'global.get', 'i32.const', 'i64.const', 'f64.const',
+    'f64.load', 'i64.load', 'i32.load', 'i64.reinterpret_f64', 'f64.reinterpret_i64', 'i32.wrap_i64', 'i64.extend_i32_u', 'i64.extend_i32_s',
+    'i64.and', 'i64.or', 'i64.shl', 'i64.shr_u', 'i32.and', 'i32.or', 'i32.add', 'i32.sub', 'i32.shl', 'i32.shr_u'])
+  const isRepeatableRead = (n) => Array.isArray(n) && REPEATABLE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isRepeatableRead(c))
   function schemaGuardOk(va) {
-    return va?.type === 'f64' && va.ptrKind == null && !va.cellI32
+    return va?.type === 'f64' && va.ptrKind == null && !va.cellI32 && isRepeatableRead(va)
   }
 
   /** Monomorphic schema-slot devirtualization for a receiver whose static type
@@ -1351,6 +1455,37 @@ export default (ctx) => {
    *  key into the payload slot, so the slot stays authoritative even after an
    *  `obj[k] = v` write through the dyn-props sidecar/global table — schema
    *  fields are never shadowed by a dynamic write. */
+  /** A read through a receiver of a few possible shapes (the summary's shape
+   *  set): one masked compare per shape that names the field, its slot load on
+   *  a hit, `slow()` (the exact dynamic read) when none matches. No frame
+   *  temp: a read emitted here may be hoisted into another frame (a module
+   *  initializer), so the receiver, a pure read, is cloned per use as in
+   *  emitSchemaSlotGuarded. Every arm is bit-identical to the dynamic read for
+   *  the shape it proves, so this can only be as fast, never wrong. */
+  function emitSchemaSlotGuardedMulti(va, guards, slow, prop) {
+    if (!schemaGuardOk(va))
+      err(`compiler internal: emitSchemaSlotGuardedMulti requires a plain NaN-boxed f64 receiver for '${prop}'`)
+    const bits = () => asI64(typed(cloneIR(va), 'f64'))
+    let chain = asF64(slow())
+    for (let i = guards.length - 1; i >= 0; i--) {
+      const { sid, slot } = guards[i]
+      const off = ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]]
+      chain = typed(['if', ['result', 'f64'],
+        ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
+        ['then', typed(ctx.abi.object.ops.load(off, slot), 'f64')],
+        ['else', chain]], 'f64')
+    }
+    return chain
+  }
+  // The shape-set guard chain serves where devirtSchemaReads (optimize/devirt.js)
+  // does not run: the size tier keeps the shared dispatcher, and the pass, when
+  // on, dispatches a program of few schemas itself (with a sid cache and
+  // duplicate-read reuse this chain lacks).
+  const shapeGuardsOn = () => !ctx.transform.optimize?.leanRuntime &&
+    !(ctx.transform.optimize?.devirtSchemaReads !== false && (ctx.transform.optFlags & OPTF.devirtDynProps) && ctx.schema.list.length <= 24)
+  const shapeGuards = (va, obj, prop) => schemaGuardOk(va) && !ctx.func._schemaSpecSlow && shapeGuardsOn()
+    ? ctx.schema.guardsFor(ctx.summary?.at(ctx.func.current).shapesOfExpr(obj), prop) : null
+  ctx.schema.shapeGuardsOn = shapeGuardsOn
   function emitSchemaSlotGuarded(va, guard, slow, prop) {
     // Structural precondition (schemaGuardOk's doc, above): every caller MUST
     // pre-check this — asserted again here, not just trusted, so a future
@@ -1721,7 +1856,9 @@ export default (ctx) => {
         // doc). Kept as a bail, not adapted.
         const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
         const slow = () => emitDynGetExprTyped(va, key, vt, prop)
-        return guard ? emitSchemaSlotGuarded(va, guard, slow, prop) : slow()
+        if (guard) return emitSchemaSlotGuarded(va, guard, slow, prop)
+        const guards = shapeGuards(va, obj, prop)
+        return guards ? emitSchemaSlotGuardedMulti(va, guards, slow, prop) : slow()
       }
       if (vt == null) {
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
@@ -1756,7 +1893,9 @@ export default (ctx) => {
         // without also being classified OBJECT), so this arm needs the same
         // check as its sibling, not a weaker one.
         const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
-        return guard ? emitSchemaSlotGuarded(va, guard, slow, prop) : slow()
+        if (guard) return emitSchemaSlotGuarded(va, guard, slow, prop)
+        const guards = shapeGuards(va, obj, prop)
+        return guards ? emitSchemaSlotGuardedMulti(va, guards, slow, prop) : slow()
       }
       // Primitive receiver (number/boolean/bigint): no dynamic props — `(5).foo` is
       // undefined. Without this the value falls to the __hash_get fallback, which
@@ -1774,13 +1913,18 @@ export default (ctx) => {
     // runtime tag dispatch. Keep this fallback out of schema devirtualization:
     // the shared dispatcher is smaller than cloning a schema switch at every
     // uncertain site.
-    if (nestedMayBeExternal(obj)) {
-      setLinkDemand('external')
-      return emitDynGetAnyTyped(va, key, null, prop, false)
-    }
-    // A proven-native non-HASH receiver uses internal dynamic dispatch.
-    inc('__dyn_get_expr')
-    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', asI64(va), key]], 'f64')
+    // A chain receiver: the shapes the summary names for it are tested first
+    // (one masked compare each); the miss and every other kind take the
+    // dynamic read, the host-aware one when an earlier read in the chain may
+    // have returned a host object (the shared dispatcher stays the fallback).
+    const external = nestedMayBeExternal(obj)
+    if (external) setLinkDemand('external')
+    const chainVT = valTypeOf(obj)
+    const slow = () => external ? emitDynGetAnyTyped(va, key, null, prop, false) : emitDynGetExprTyped(va, key, chainVT === VAL.OBJECT ? chainVT : null, prop)
+    const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
+    if (guard) return emitSchemaSlotGuarded(va, guard, slow, prop)
+    const guards = shapeGuards(va, obj, prop)
+    return guards ? emitSchemaSlotGuardedMulti(va, guards, slow, prop) : slow()
   }
 
   // Runtime .length dispatch — factory elides branches for types that can't exist in

@@ -1329,30 +1329,42 @@ export default (ctx) => {
     (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
     (f64.mul (f64.const 0.5) (call $math.log (f64.div (f64.add (f64.const 1.0) (local.get $x)) (f64.sub (f64.const 1.0) (local.get $x))))))`)
 
-  // Bit-hack initial guess (divide the IEEE exponent by 3 via an integer divide of the raw bits,
-  // plus a magic bias) then 3 Newton steps  t = (2t + a/t²)/3  — quadratic convergence, max rel err
-  // ~1e-12 over the whole f64 range. Replaces the old `pow(x,1/3)` seed: no exp/log call, ~3-4×
-  // faster (the colorconv / Oklab hot path is 3 cbrt per pixel), and a program whose only
-  // transcendental is cbrt no longer pulls the pow/exp/log stdlib. Not bit-identical to V8's fdlibm
-  // cbrt (neither was the pow form) — jz's transcendentals are fast minimax/Newton approximations.
+  // fdlibm s_cbrt.c (Sun, as shipped by FreeBSD/musl/V8's ieee754): a 5-bit
+  // bit-hack seed, a polynomial to 23 bits, one Newton step to 53 bits with an
+  // error under 0.667 ulp — exact on every perfect cube.
   wat('math.cbrt', `(func $math.cbrt (param $x f64) (result f64)
-    (local $a f64) (local $t f64) (local $s f64)
-    ;; NaN / ±Infinity / ±0 pass through unchanged (sign of zero preserved).
+    (local $hx i32) (local $sign i32) (local $high i32) (local $t f64) (local $r f64) (local $s f64) (local $w f64)
     (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (local.set $a (f64.abs (local.get $x)))
-    (local.set $s (f64.const 1.0))
-    ;; subnormal |x| < 2^-1022: scale up by 2^60 so the exponent split is valid; cbrt(2^60) = 2^20.
-    (if (f64.lt (local.get $a) (f64.const 2.2250738585072014e-308))
-      (then (local.set $a (f64.mul (local.get $a) (f64.const 1152921504606846976.0)))
-            (local.set $s (f64.const 9.5367431640625e-07))))
-    (local.set $t (f64.reinterpret_i64
-      (i64.add (i64.div_u (i64.reinterpret_f64 (local.get $a)) (i64.const 3)) (i64.const 0x2A9F7893BF800000))))
-    (local.set $t (f64.mul (f64.add (f64.add (local.get $t) (local.get $t)) (f64.div (local.get $a) (f64.mul (local.get $t) (local.get $t)))) (f64.const 0.3333333333333333)))
-    (local.set $t (f64.mul (f64.add (f64.add (local.get $t) (local.get $t)) (f64.div (local.get $a) (f64.mul (local.get $t) (local.get $t)))) (f64.const 0.3333333333333333)))
-    (local.set $t (f64.mul (f64.add (f64.add (local.get $t) (local.get $t)) (f64.div (local.get $a) (f64.mul (local.get $t) (local.get $t)))) (f64.const 0.3333333333333333)))
-    (local.set $t (f64.mul (local.get $t) (local.get $s)))
-    (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $t))) (else (local.get $t))))`)
+    (local.set $hx (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $x)) (i64.const 32))))
+    (local.set $sign (i32.and (local.get $hx) (i32.const 0x80000000)))
+    (local.set $hx (i32.xor (local.get $hx) (local.get $sign)))
+    (if (i32.lt_u (local.get $hx) (i32.const 0x00100000))
+      (then
+        ;; subnormal: scale by 2^54 before splitting the exponent
+        (local.set $t (f64.mul (local.get $x) (f64.const 18014398509481984.0)))
+        (local.set $high (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $t)) (i64.const 32))) (i32.const 0x7fffffff)))
+        (local.set $t (f64.reinterpret_i64 (i64.shl (i64.extend_i32_u
+          (i32.or (local.get $sign) (i32.add (i32.div_u (local.get $high) (i32.const 3)) (i32.const 696219795)))) (i64.const 32)))))
+      (else
+        (local.set $t (f64.reinterpret_i64 (i64.shl (i64.extend_i32_u
+          (i32.or (local.get $sign) (i32.add (i32.div_u (local.get $hx) (i32.const 3)) (i32.const 715094163)))) (i64.const 32))))))
+    ;; cbrt(x) = t*cbrt(x/t^3) ~= t*P(t^3/x), to 23 bits
+    (local.set $r (f64.mul (f64.mul (local.get $t) (local.get $t)) (f64.div (local.get $t) (local.get $x))))
+    (local.set $t (f64.mul (local.get $t)
+      (f64.add
+        (f64.add (f64.const 1.87595182427177009643)
+          (f64.mul (local.get $r) (f64.add (f64.const -1.88497979543377169875) (f64.mul (local.get $r) (f64.const 1.621429720105354466140)))))
+        (f64.mul (f64.mul (f64.mul (local.get $r) (local.get $r)) (local.get $r))
+          (f64.add (f64.const -0.758397934778766047437) (f64.mul (local.get $r) (f64.const 0.145996192886612446982)))))))
+    ;; round t away from zero to 23 bits
+    (local.set $t (f64.reinterpret_i64 (i64.and (i64.add (i64.reinterpret_f64 (local.get $t)) (i64.const 0x80000000)) (i64.const -1073741824))))
+    ;; one Newton step to 53 bits
+    (local.set $s (f64.mul (local.get $t) (local.get $t)))
+    (local.set $r (f64.div (local.get $x) (local.get $s)))
+    (local.set $w (f64.add (local.get $t) (local.get $t)))
+    (local.set $r (f64.div (f64.sub (local.get $r) (local.get $t)) (f64.add (local.get $w) (local.get $r))))
+    (f64.add (local.get $t) (f64.mul (local.get $t) (local.get $r))))`)
 
   // Fifth root of v ≥ 0 — same bit-hack seed (÷5 of the raw bits) + 3 Newton steps t=(4t+v/t⁴)/5.
   // Caller (constant-exponent pow with denominator 5, e.g. the sRGB 2.4 gamma) guarantees v ≥ 0.

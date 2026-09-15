@@ -5,6 +5,7 @@
  */
 
 import { MUTATE_OPS, walkAst } from '../../ast.js'
+import { jsstring } from '../../abi/string.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { dataDependentFlag, hasExpensiveOp, isPureIR, resolveValType } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
@@ -13,7 +14,7 @@ import { VAL, lookupValType, repOf } from '../../reps.js'
 
 export const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
-  return ctx.abi.resolve('string', rep)?.ops ?? ctx.abi.string.ops
+  return rep?.carrier === 'jsstring' ? jsstring.ops : ctx.abi.string.ops
 }
 
 

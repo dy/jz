@@ -19,6 +19,10 @@ import { heapResetWat, stringIndexWat } from './collection.js'
 import { RESERVED as ATOM_RESERVED } from './symbol.js'
 import { throwErrorWat } from './core/error-object.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
+import { canonicalKeyOrder } from '../src/ast.js'
+import { walkObjectProperties } from './object.js'
+import print from 'watr/print'
+import { deletedMaskWat } from '../layout.js'
 
 function jsonConstString(ctx, expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
@@ -143,15 +147,16 @@ function foldJsonStr(node) {
     return '[' + parts.join(',') + ']'
   }
   if (op === '{}') {
-    const parts = []
+    const byKey = new Map()
     for (let i = 1; i < node.length; i++) {
       const e = node[i]
       if (!Array.isArray(e) || e[0] !== ':' || (typeof e[1] !== 'string' && typeof e[1] !== 'number')) return NOT_LIT
       const s = foldJsonStr(e[2])
       if (s === NOT_LIT) return NOT_LIT
-      parts.push(JSON.stringify(String(e[1])) + ':' + s)
+      byKey.set(String(e[1]), s)   // a duplicate key keeps its last value
     }
-    return '{' + parts.join(',') + '}'
+    // [[OwnPropertyKeys]] order: array indices first, then insertion order
+    return '{' + canonicalKeyOrder([...byKey.keys()]).map(k => JSON.stringify(k) + ':' + byKey.get(k)).join(',') + '}'
   }
   // Scalar (number / string / null / u-): exact formatting via the value path.
   const v = literalValue(node)
@@ -187,14 +192,14 @@ export default (ctx) => {
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
     __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
-    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order'],
+    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order'],
     // Durable-receiver global-table merge (see __json_obj's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
     // machinery is actually part of this build (mirrors array.js's
     // needsArrayDynMove-gated deps thunks) — a program that never writes a
     // dynamic prop anywhere never loads collection.js.
     __json_obj: () => [...(ctx.schema.dateSid != null ? ['__date_to_iso_string'] : []),
-      '__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__coll_order',
+      '__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order', '__str_index_key', '__str_eq',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     // Chain edges ($__jput_num → $__jput_str → $__jput): each body CALLS the
     // next stage; without the explicit edge they ride the auto-dep scan, which
@@ -553,7 +558,7 @@ export default (ctx) => {
     (local $off i32) (local $cap i32) (local $n i32) (local $i i32) (local $slot i32) (local $ord i32) (local $first i32) (local $pv i64)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (i32.const 24)))
+    (local.set $ord (call $__prop_order (local.get $off) (local.get $cap) (i32.const 24)))
     ;; Bound is __coll_order's OWN live count, not the header length — see
     ;; __coll_order's header comment (core.js) for why they can disagree.
     (local.set $n (global.get $__coll_order_n))
@@ -592,7 +597,25 @@ export default (ctx) => {
   // presence check below read the FINAL declaration state — see collection.js's
   // heapResetWat comment for why (module load order isn't otherwise settled
   // at the time this string would eagerly evaluate).
-  ctx.core.stdlib['__json_obj'] = () => `(func $__json_obj (param $val i64)
+  ctx.core.stdlib['__json_obj'] = () => {
+    const locals = []
+    const property = (key, value) => [
+      ['local.set', '$pv', value],
+      ['if', ['i32.eqz', ['call', '$__json_omit', ['local.get', '$pv']]], ['then',
+        ['if', ['i32.eqz', ['local.get', '$first']], ['then', ['call', '$__jput', ['i32.const', 44]]]],
+        ['local.set', '$first', ['i32.const', 0]], ['call', '$__jindent'],
+        ['call', '$__jput', ['i32.const', 34]], ['call', '$__jput_str', key],
+        ['call', '$__jput', ['i32.const', 34]], ['call', '$__jput', ['i32.const', 58]],
+        ['if', ['global.get', '$__jgaplen'], ['then', ['call', '$__jput', ['i32.const', 32]]]],
+        ['call', '$__json_val', ['local.get', '$pv']]]]]
+    const at = base => ['i64.load', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', '$i'], ['i32.const', 3]]]]
+    const walk = walkObjectProperties({ src: 'koff', sn: 'nkeys', base: 'off', mask: 'mask', ordS: 'ordS', dnS: 'dnS', ordG: 'ordG', dnG: 'dnG', i: 'i', slot: 'slot' },
+      () => property(at('$koff'), at('$off')),
+      () => property(['i64.load', ['i32.add', ['local.get', '$slot'], ['i32.const', 8]]], ['i64.load', ['i32.add', ['local.get', '$slot'], ['i32.const', 16]]]),
+      (name, type = 'i32') => { const n = name + locals.length; locals.push(['local', '$' + n, type]); return n })
+    return `(func $__json_obj (param $val i64)
+    ${locals.map(n => print(n)).join('\n')}
+    (local $mask i32)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32) (local $first i32) (local $pv i64)
     (local $props i64) (local $slot i32) (local $j i32) (local $skip i32)
@@ -632,22 +655,6 @@ export default (ctx) => {
     (call $__json_enter (local.get $val))
     (call $__jput (i32.const 123))
     (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $nkeys)))
-      (local.set $pv (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
-      (if (i32.eqz (call $__json_omit (local.get $pv)))
-        (then
-          (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
-          (local.set $first (i32.const 0))
-          (call $__jindent)
-          (call $__jput (i32.const 34))
-          (call $__jput_str (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
-          (call $__jput (i32.const 34))
-          (call $__jput (i32.const 58))
-          (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
-          (call $__json_val (local.get $pv))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l)))
     ;; Dynamic (off-schema) properties: heap OBJECTs carry a HASH propsPtr
     ;; either at off-16 (populated by an init-time write, or by any write at
     ;; all on an EPHEMERAL receiver — one allocated after the post-init
@@ -683,101 +690,23 @@ export default (ctx) => {
                 (local.set $poffG (call $__ptr_offset (local.get $props)))
                 (local.set $pcapG (i32.load (i32.sub (local.get $poffG) (i32.const 4))))
                 (local.set $dnG (i32.load (i32.sub (local.get $poffG) (i32.const 8))))))))))` : ''}
-    ;; Walk in insertion order via __coll_order — schema-only enumeration
-    ;; would drop computed props (e.g. {} then o.a=1). A key already in the
-    ;; schema is skipped: __dyn_set keeps a schema key in its slot
-    ;; (collection.js buildObjectSchemaSetArm's invariant), so this is a belt.
-    ;; G walks first (schema-dedup only); S walks second (schema-dedup AND
-    ;; G-dedup, so a key present in both — reassigned at runtime after being
-    ;; set at init — emits once, from the authoritative G copy).
-    ;; dnG/dnS are reassigned to __coll_order's OWN live count right after each
-    ;; call — not left at the header length read above — so every downstream
-    ;; bound use (both walks' own loop, plus the S-walk's nested G-dedup scan at
-    ;; $sgd below) matches what ordG/ordS actually contain. See __coll_order's
-    ;; header comment (core.js) for why the header and the real count can disagree.
+    ;; Sort each dynamic source, then use the same ordered merge as Object.keys,
+    ;; values and entries. Capture each live count before another ordering call.
     (if (i32.ne (local.get $poffG) (i32.const 0))
       (then
-        (local.set $ordG (call $__coll_order (local.get $poffG) (local.get $pcapG) (i32.const 24)))
+        (local.set $ordG (call $__prop_order (local.get $poffG) (local.get $pcapG) (i32.const 24)))
         (local.set $dnG (global.get $__coll_order_n))))
     (if (i32.ne (local.get $poffS) (i32.const 0))
       (then
-        (local.set $ordS (call $__coll_order (local.get $poffS) (local.get $pcapS) (i32.const 24)))
+        (local.set $ordS (call $__prop_order (local.get $poffS) (local.get $pcapS) (i32.const 24)))
         (local.set $dnS (global.get $__coll_order_n))))
-    (if (i32.ne (local.get $dnG) (i32.const 0))
-      (then
-            (local.set $i (i32.const 0))
-            (block $gd (loop $gl
-              (br_if $gd (i32.ge_s (local.get $i) (local.get $dnG)))
-              (local.set $slot (i32.load (i32.add (local.get $ordG) (i32.shl (local.get $i) (i32.const 2)))))
-              (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
-              (local.set $skip (i32.const 0))
-              (local.set $j (i32.const 0))
-              (block $gsd (loop $gsl
-                (br_if $gsd (i32.ge_s (local.get $j) (local.get $nkeys)))
-                (if (i64.eq
-                      (i64.load (i32.add (local.get $slot) (i32.const 8)))
-                      (i64.load (i32.add (local.get $koff) (i32.shl (local.get $j) (i32.const 3)))))
-                  (then (local.set $skip (i32.const 1)) (br $gsd)))
-                (local.set $j (i32.add (local.get $j) (i32.const 1)))
-                (br $gsl)))
-              (if (i32.and (i32.eqz (local.get $skip)) (i32.eqz (call $__json_omit (local.get $pv))))
-                (then
-                  (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
-                  (local.set $first (i32.const 0))
-                  (call $__jindent)
-                  (call $__jput (i32.const 34))
-                  (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
-                  (call $__jput (i32.const 34))
-                  (call $__jput (i32.const 58))
-                  (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
-                  (call $__json_val (local.get $pv))))
-              (local.set $i (i32.add (local.get $i) (i32.const 1)))
-              (br $gl)))))
-    (if (i32.ne (local.get $dnS) (i32.const 0))
-      (then
-            (local.set $i (i32.const 0))
-            (block $sd (loop $sl
-              (br_if $sd (i32.ge_s (local.get $i) (local.get $dnS)))
-              (local.set $slot (i32.load (i32.add (local.get $ordS) (i32.shl (local.get $i) (i32.const 2)))))
-              (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
-              (local.set $skip (i32.const 0))
-              (local.set $j (i32.const 0))
-              (block $ssd (loop $ssl
-                (br_if $ssd (i32.ge_s (local.get $j) (local.get $nkeys)))
-                (if (i64.eq
-                      (i64.load (i32.add (local.get $slot) (i32.const 8)))
-                      (i64.load (i32.add (local.get $koff) (i32.shl (local.get $j) (i32.const 3)))))
-                  (then (local.set $skip (i32.const 1)) (br $ssd)))
-                (local.set $j (i32.add (local.get $j) (i32.const 1)))
-                (br $ssl)))
-              (if (i32.eqz (local.get $skip))
-                (then
-                  (local.set $j (i32.const 0))
-                  (block $sgd (loop $sgl
-                    (br_if $sgd (i32.ge_s (local.get $j) (local.get $dnG)))
-                    (if (i64.eq
-                          (i64.load (i32.add (local.get $slot) (i32.const 8)))
-                          (i64.load (i32.add (i32.load (i32.add (local.get $ordG) (i32.shl (local.get $j) (i32.const 2)))) (i32.const 8))))
-                      (then (local.set $skip (i32.const 1)) (br $sgd)))
-                    (local.set $j (i32.add (local.get $j) (i32.const 1)))
-                    (br $sgl)))))
-              (if (i32.and (i32.eqz (local.get $skip)) (i32.eqz (call $__json_omit (local.get $pv))))
-                (then
-                  (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
-                  (local.set $first (i32.const 0))
-                  (call $__jindent)
-                  (call $__jput (i32.const 34))
-                  (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
-                  (call $__jput (i32.const 34))
-                  (call $__jput (i32.const 58))
-                  (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
-                  (call $__json_val (local.get $pv))))
-              (local.set $i (i32.add (local.get $i) (i32.const 1)))
-              (br $sl)))))
+    (local.set $mask ${deletedMaskWat()})
+    ${walk.map(n => print(n)).join('\n')}
     (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
     (if (i32.eqz (local.get $first)) (then (call $__jindent)))
     (call $__jput (i32.const 125))
     (call $__json_leave))`
+  }
 
   // __stringify(val: i64, space: i64) → f64 (NaN-boxed string)
   ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (param $space i64) (result f64)
@@ -1060,10 +989,11 @@ export default (ctx) => {
       (br $hash)))
     (if (i32.eqz (local.get $hh)) (then (local.set $hh (i32.const 1))))
     (local.set $cache (global.get $__schema_cache))
-    ;; Lazy-init cache: 64 entries × 8 bytes = 512 bytes, zero-filled by alloc.
+    ;; Lazy-init cache: reused arena memory may still contain earlier entries.
     (if (i32.eqz (local.get $cache))
       (then
         (local.set $cache (call $__alloc (i32.const 512)))
+        (memory.fill (local.get $cache) (i32.const 0) (i32.const 512))
         (global.set $__schema_cache (local.get $cache))))
     (local.set $idx (i32.and (local.get $hh) (i32.const 63)))
     (block $found (block $miss (loop $probe

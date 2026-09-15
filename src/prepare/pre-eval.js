@@ -916,7 +916,8 @@ export function preEval(ast) {
   // available: native and the self-compile kernel fold identically
   // (test/kernel-parity.js fold|0/2/3).
   const rationalOn = ctx.transform.optimize?.rationalConst !== false
-  const funcByName = new Map(ctx.funcs.list.map(f => [f.name, f]))
+  const funcByName = new Map()
+  for (const f of ctx.funcs.list) funcByName.set(f.name, f)
   const state = { rationalOn, funcByName, evaluating: new Set() }
   for (const f of ctx.funcs.list) f.body = foldFunctionBody(f.body, state)
   for (let i = 0; i < ctx.module.moduleInits.length; i++)

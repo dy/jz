@@ -14,7 +14,7 @@ import parseWat from 'watr/parse'
 import { ctx, declGlobal } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import {
-  optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
+  optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
   specializeMkptr, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
@@ -33,10 +33,12 @@ export function optimizeModule(sec, profiler) {
   // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)
   // (globalTypes backfill gone: declGlobal sets the type at declaration.)
   // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
-  const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
+  const globalTypesMap = cfg?.promoteGlobals !== false && ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
   const allFuncs = [...sec.funcs, ...sec.stdlib, ...sec.start]
-  const volatileGlobals = t('volatileGlobals', () => collectVolatileGlobals(allFuncs))
-  const reachableWrites = t('reachableWrites', () => collectReachableGlobalWrites(allFuncs))
+  // Build the shared proof only if a global-load optimization consumes it.
+  // Its precise call graph also subsumes the old coarse volatility census.
+  let reachableWrites
+  const globalWrites = () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(allFuncs))
   // Offset-hoist BEFORE promoteGlobals (inside optimizeFunc): value-promoting a
   // stable-pointee global to a $_pg local would destroy the global.get pattern
   // this pass matches, reverting rfft/diffusion to per-iteration resolves. After
@@ -44,7 +46,7 @@ export function optimizeModule(sec, profiler) {
   // below promoteGlobals' threshold, so the two passes compose either way.
   if (!cfg || cfg.hoistGlobalPtrOffset !== false) t('hoistGlobalPtr', () => {
     const stable = stablePtrGlobalNames()
-    if (stable.size) for (const s of allFuncs) hoistGlobalPtrOffset(s, stable, reachableWrites)
+    if (stable.size) { const writes = globalWrites(); for (const s of allFuncs) hoistGlobalPtrOffset(s, stable, writes) }
   })
   // Per-loop complement: a function the whole-function pass above declined
   // (an unrelated call_indirect / write ANYWHERE in the function poisons
@@ -53,7 +55,7 @@ export function optimizeModule(sec, profiler) {
   // Pratt-loop trampoline that also inlines unrelated operator dispatch.
   if (!cfg || cfg.hoistLoopGlobalPtrOffset !== false) t('hoistLoopGlobalPtr', () => {
     const stable = stablePtrGlobalNames()
-    if (stable.size) for (const s of allFuncs) hoistLoopGlobalPtrOffset(s, stable, reachableWrites)
+    if (stable.size) { const writes = globalWrites(); for (const s of allFuncs) hoistLoopGlobalPtrOffset(s, stable, writes) }
   })
   // Build the pure-function map for tryPerPixelColor's Phase-2 lane inline BEFORE the
   // per-function vectorizer runs — the vectorizer is jz lowering (pre-watr), so it needs
@@ -101,7 +103,8 @@ export function optimizeModule(sec, profiler) {
     ctx.scope.dvArmFns = new Map(allFuncs.filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
   }
   t('optimizeFuncs', () => {
-    for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, volatileGlobals, reachableWrites)
+    const writes = cfg?.promoteGlobals !== false ? globalWrites() : null
+    for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, null, writes)
   })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
@@ -112,9 +115,10 @@ export function optimizeModule(sec, profiler) {
       fn.some(n => Array.isArray(n) && n[0] === 'local' && n[2] === 'v128'))
     const wantMasks = mayHaveMasks && hasIROp(allFuncs, 'v128.bitselect')
     if (!wantLoads && !wantMasks) return
+    const writes = globalWrites()
     const memoryWrites = collectReachableMemoryWrites(allFuncs)
     for (const s of allFuncs) {
-      if (wantLoads) hoistStableGlobalConstLoads(s, memoryWrites, reachableWrites)
+      if (wantLoads) hoistStableGlobalConstLoads(s, memoryWrites, writes)
       if (wantMasks) guardMaskedVectorSuffix(s, memoryWrites)
     }
   })

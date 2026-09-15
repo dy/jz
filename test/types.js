@@ -580,9 +580,8 @@ test('slot-types: codegen — __is_str_key elided on monomorphic NUMBER slot +',
   is(countCalls(body, '__is_str_key'), 0, 'no __is_str_key in $f body')
 })
 
-test('slot-types: codegen — polymorphic slot keeps runtime str-key check on +', () => {
-  // mkS observes slot x = STRING; mkN observes slot x = NUMBER. Merged → null.
-  // In addS the `+` operator must keep its str-key check.
+test('slot-types: codegen — unrelated allocations sharing a layout keep precise addition', () => {
+  // The layout-wide slot is mixed; each allocation and its caller remain precise.
   const src = `
     let mkN = () => ({ x: 10 })
     let mkS = () => ({ x: "ab" })
@@ -591,7 +590,10 @@ test('slot-types: codegen — polymorphic slot keeps runtime str-key check on +'
   `
   const sBody = fnBody(wat(src), 'addS')
   ok(sBody, 'export $addS present in WAT')
-  ok(countCalls(sBody, '__is_str_key') >= 1, '__is_str_key retained in $addS body')
+  is(countCalls(sBody, '__is_str_key'), 0, 'known string allocation needs no runtime type check')
+  const { addS, addN } = jz(src).exports
+  is(addS(), 'abc')
+  is(addN(), 15)
 })
 
 // ============================================================================

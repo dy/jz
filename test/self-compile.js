@@ -47,6 +47,9 @@ test('self-compile: build a fresh compiler', () => {
 // [label, source, expected-main()-result]. Picked to cover the major
 // emit paths (arith, calls, loops, strings, arrays, objects, closures).
 const SAMPLES = [
+  ['array-property-alias', `export function write(a,n){a[''+n]=5;return a[0]||2}export function main(){const a=[true];return write(a,0)}`, 5],
+  ['numeric-property-stores', `export function read(n){const a={'-1':true,'1.5':true,NaN:true,Infinity:true};a[+n]=5;return [a[-1]||2,a[1.5]||2,a.NaN||2,a.Infinity||2].join(',')}export function main(){return read(-1)+'|'+read(NaN)}`, '5,true,true,true|true,true,5,true'],
+  ['schema-key-boundaries', String.raw`export function main(){const a={'a\u0001b':1,c:2},b={a:3,'b\u0001c':4};return [Object.keys(a),Object.keys(b),b.a,b['b\u0001c']]}`, [['a\x01b', 'c'], ['a', 'b\x01c'], 3, 4]],
   ['caught-error-brand', `export function main(){try{JSON.parse('x')}catch(e){return e instanceof SyntaxError}}`, true],
   ['thrown-code-number', `export function main(){try{throw 300}catch(e){return e===300 && e.message===undefined && !(e instanceof Error)}}`, true],
   ['unicode-escapes', String.raw`export let main = () => "\xff\u0100\uD83D\uDE00\u{1F600}"`, 'ÿĀ😀😀'],
@@ -134,6 +137,25 @@ test('self-compile: shared decimal powers survive repeated compilation', () => {
     const oracle = op === 'Number' ? Number : parseFloat
     for (const input of inputs) is(main(input), oracle(input), `${op}(${JSON.stringify(input)})`)
     is(main('5e-324'), 5e-324, 'subnormal after empty and invalid inputs')
+  }
+})
+
+test('self-compile: schema index capacities and backward offsets retain all i64 bits', () => {
+  const fields = (n, base) => Array.from({ length: n }, (_, i) => `k${i}:${base + i}`).join(',')
+  const src = `const A={${fields(12, 0)}}, B={${fields(40, 100)}};
+    export function main(n){const o=n&1?A:B;return o['k'+(n%42)]}`
+  for (const level of [1, 2]) {
+    const s = instantiate(selfBytes(), { memory: 8192 })
+    const native = jz.compile(src, { optimize: level })
+    for (let again = 0; again < 2; again++) {
+      const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level })))
+      const bytes = new Uint8Array(s.memory.read(out))
+      ok(bytes.length === native.length && bytes.every((v, i) => v === native[i]), `O${level}: schema data matches native, compile ${again}`)
+      const { main } = instantiate(bytes).exports
+      for (const n of [0, 1, 11, 12, 39, 40])
+        is(main(n), n & 1 ? n < 12 ? n : undefined : n < 40 ? 100 + n : undefined)
+      s.instance.exports._clear()
+    }
   }
 })
 

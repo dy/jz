@@ -1,7 +1,9 @@
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { ctx } from '../src/ctx.js'
 import { oracle, batch } from './util.js'
+import { levels } from './_matrix.js'
 
 const same = src => is(jz(src).exports.f(), oracle(src).f())
 
@@ -12,6 +14,87 @@ const same = src => is(jz(src).exports.f(), oracle(src).f())
 // to invoke `f` with different arguments.
 const sameMany = (srcs) => batch(srcs).forEach((f, i) => is(f(), oracle(srcs[i]).f()))
 const runMany = batch
+
+test('pattern parameters: positional bindings avoid a synthetic rest array', () => {
+  const src = `function pick([key, value]) { return key.length + value.n }
+    export function f() {
+      return [['a', {n: 2}], ['bb', {n: 5}]].map(pick).join(',')
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const j = jz(src, { optimize })
+    is(j.exports.f(), '3,7', 'callback index and collection arguments remain unobserved')
+    const pick = ctx.funcs.list.find(f => f.name === 'pick')
+    ok(pick && !pick.rest && pick.sig.params.length === 1, 'one positional argument, no rest packing')
+  }
+  sameMany([
+    `export let f = () => { let log = ''; function g([a = (log += 'a', 2)] = [], {b = (log += 'b', a + 1)} = {}, c = (log += 'c', b + 1)) { return [a,b,c,log].join(',') } return g() }`,
+    `export let f = () => { function g({x}, y = x + 1) { return [x, y, arguments.length, arguments[2]].join(',') } return g({x: 3}, undefined, 9) }`,
+    `export let f = () => { function g([x], ...[y, z]) { return x + y + z } return g([1], 2, 3, 99) }`,
+    `export let f = () => { function g([]) { return 1 } try { g(null); return 'missed' } catch (e) { return e.name } }`,
+  ])
+})
+
+test('iterator records: module-init reuse cannot overwrite a new allocation after clear', () => {
+  const src = `const make = v => ({[Symbol.iterator]: () => ({
+      next: () => ({value: v, done: false}), return: () => ({})
+    })});
+    const [seed] = make(7);
+    export function f(n) {
+      const a = new Uint8Array(n); a.fill(99);
+      const [[x, y]] = make([5, 6]);
+      let s = x + y + seed;
+      for (let i = 0; i < a.length; i++) s += a[i];
+      return s;
+    }`
+  for (const level of levels(0, 1, 2, 3, 'size')) for (const snapshotInit of [false, true]) {
+    const ex = jz(src, { optimize: { level, snapshotInit } }).exports
+    for (const n of [0, 4096, 0, 8192, 8192]) {
+      is(ex.f(n), 18 + 99 * n, `O${level}, snapshot=${snapshotInit}, n=${n}: new buffer is intact`)
+      ex._clear()
+    }
+  }
+})
+
+test('iterator records: nested close, errors, reuse and arena reset preserve the protocol', () => {
+  const src = `let log = ''; const pair = [5, 6];
+    const source = mode => ({ [Symbol.iterator]: () => {
+      if (mode === 1) throw new Error('acquire');
+      return {
+        get next() {
+          if (mode === 2) throw new Error('getter');
+          return () => {
+            if (mode === 3) throw new Error('step');
+            return { value: mode >= 6 ? undefined : 7, done: mode === 4 };
+          };
+        },
+        return() {
+          const [a, b] = pair; log += a + ':' + b + ';';
+          if (mode === 5 || mode === 7) throw new Error('close');
+          return {};
+        }
+      };
+    } });
+    const fail = () => { throw new Error('default') };
+    export function f(mode) {
+      log = '';
+      try {
+        const [[x, y]] = [pair];
+        if (mode === 8) { const [] = source(0); return log }
+        if (mode === 9) { const [a, b] = '😀x'; return a + b }
+        const [v = fail()] = source(mode);
+        return x + ':' + y + ':' + v + '|' + log;
+      } catch (e) { return e.message + '|' + log }
+    }`
+  const modes = [0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8, 9]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const ex = jz(src, { optimize }).exports
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const js = oracle(src)
+      is(modes.map(n => ex.f(n)), modes.map(n => js.f(n)), `O${optimize}: cycle ${cycle}`)
+      ex._clear()
+    }
+  }
+})
 
 test('iterator parameters: acquisition and stepping fail at call time', () => {
   for (const kind of ['function', 'function*', 'async function*']) {

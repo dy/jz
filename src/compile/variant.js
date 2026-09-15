@@ -31,6 +31,7 @@
  */
 import { ctx } from '../ctx.js'
 import { cloneRep } from '../param-reps.js'
+import { createFunction } from '../function.js'
 
 /**
  * @param {object} opts.origin        Source func — already vetted by the
@@ -54,8 +55,7 @@ import { cloneRep } from '../param-reps.js'
  *   shape: the clone's ABI is unchanged, only its paramReps facts are pinned).
  * @param {*} [opts.body]             Replacement body. Omitted → `origin.body`
  *   (only fixed-rest's rest-destructuring rewrite needs this).
- * @param {object} [opts.cloneFields] Extra top-level clone overrides beyond
- *   name/sig/body/exported=false (only fixed-rest needs `{ rest: null }`).
+ * @param {string|null} [opts.rest] Rest binding; fixed-arity variants clear it.
  * @param {Map} [opts.paramReps]      `programFacts.paramReps` — when given,
  *   the clone gets a deep-cloned (`cloneRep`) copy of `origin`'s reps map,
  *   patched by `factOverrides`, registered under the clone's name.
@@ -74,7 +74,7 @@ import { cloneRep } from '../param-reps.js'
  * @returns {object} the materialized (or reused) clone func.
  */
 export function materializeVariant({
-  origin, key, name, kind, sig, body, cloneFields, paramReps, factOverrides, eligibleSites, fallback,
+  origin, key, name, kind, sig, body, rest = origin.rest, paramReps, factOverrides, eligibleSites, fallback,
 }) {
   if (typeof kind !== 'string' || !kind)
     throw new Error(`materializeVariant: missing specialization kind for ${name || '<unnamed>'}`)
@@ -86,14 +86,13 @@ export function materializeVariant({
   let created = false
   if (!clone) {
     if (key == null) while (ctx.funcs.names.has(cloneName)) cloneName += '$'
-    clone = {
-      ...origin,
-      name: cloneName,
-      exported: false,
-      sig: sig || { params: origin.sig.params.map(p => ({ ...p })), results: [...origin.sig.results] },
-      body: body !== undefined ? body : origin.body,
-      ...cloneFields,
-    }
+    clone = createFunction(cloneName, body !== undefined ? body : origin.body,
+      sig || { params: origin.sig.params.map(p => ({ ...p })), results: [...origin.sig.results] },
+      false, origin.defaults, rest)
+    clone.valResult = origin.valResult
+    clone.valResultMayBeUndefined = origin.valResultMayBeUndefined
+    clone.arrayElemSchema = origin.arrayElemSchema
+    clone.arrayElemSchemaSet = origin.arrayElemSchemaSet
     ctx.funcs.list.push(clone)
     ctx.funcs.map.set(cloneName, clone)
     ctx.funcs.names.add(cloneName)
@@ -124,7 +123,7 @@ export function materializeVariant({
   if (created) {
     const index = ctx.plans.programIndex
     if (index) index.registerVariantIdentity(clone, origin, kind)
-    else ctx.funcs.pendingVariants.push([clone, origin, kind])
+    else ctx.funcs.pendingVariants.push({ variant: clone, origin, kind })
   }
 
   for (const site of eligibleSites || []) {

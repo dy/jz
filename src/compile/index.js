@@ -30,6 +30,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  */
 
 import { ctx, err, PTR, HEAP } from '../ctx.js'
+import { createFunction } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
 import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
@@ -64,6 +65,7 @@ import { summarize, K, hasTag, tagOf, paramOf, UNKNOWN } from '../summary/index.
 import { programPins } from '../optimize/watr-tail.js'
 import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
+import { synthesizeToPrimitive } from './emit/to-primitive.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { paramValueOnly } from './param-numeric.js'
@@ -116,6 +118,7 @@ export function assemble(ast, profiler) {
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
   // Populate known function names + lookup map on ctx.func for direct call detection
   ctx.module.entryInit = ast   // the entry module's own statements, beside `moduleInits`
+  synthesizeToPrimitive()        // OrdinaryToPrimitive for user toString/valueOf, called by the coercion kernels
   synthesizeClassDispatchers()   // the class dispatchers, functions like any other from here on
   ctx.funcs.names.clear()
   ctx.funcs.map.clear()
@@ -146,7 +149,7 @@ export function assemble(ast, profiler) {
         if (Array.isArray(part) && part[0] === 'param') params.push({ type: part[1] || 'f64' })
         else if (Array.isArray(part) && part[0] === 'result') result = part[1] || 'f64'
       }
-      ctx.funcs.map.set(fname, { name: fname, sig: { params, results: [result] } })
+      ctx.funcs.map.set(fname, createFunction(fname, null, { params, results: [result] }))
     }
   }
 

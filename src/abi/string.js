@@ -1,20 +1,15 @@
 /**
  * src/abi/string — string carriers.
  *
- * One file holds every strategy the compiler may pick for a string-typed
- * binding. Carriers are named exports; the narrower tags each site with the
- * chosen carrier, and codegen reads `ctx.abi.string[<carrier>]` (today only
- * the default carrier `sso` is reached — per-site picking arrives with the
- * JS String Builtins specialization workstream).
+ * Carriers are named exports. stringOps selects from the binding's carrier
+ * hint; ctx.abi.string holds the fixed SSO default.
  *
  * Carriers:
  *   - `sso`         default. NaN-boxed STRING pointer (PTR.STRING=4) with
  *                   Small-String-Optimization for ≤6 ASCII chars packed inline
  *                   in the aux+offset fields.
- *   - `jsstring`    architectural scaffold. Native JS strings via JS String
- *                   Builtins (`wasm:js-string` imports); externref slot. Empty
- *                   ops table — the 9-item compiler-wide checklist below blocks
- *                   real codegen.
+ *   - `jsstring`    externref boundary parameters with proven length/charCodeAt
+ *                   uses, through `wasm:js-string` imports.
  *
  * No `name`/`type` discriminant field — carriers are referenced by object
  * identity from the default-bundle in `src/abi/index.js`.
@@ -473,102 +468,26 @@ export const sso = {
 
 // ── jsstring ──────────────────────────────────────────────────────────────
 //
-// Architectural scaffold for native JS strings via JS String Builtins.
+// Native JS string parameters via JS String Builtins.
 // Under this carrier, string values flow across the wasm boundary as
 // `externref` instead of nanbox-tagged heap offsets. String operations
-// (`length`, `charCodeAt`, `concat`, `fromCharCode`, …) are emitted as
+// (`length` and proven in-bounds `charCodeAt`) are emitted as
 // calls to imports from the `wasm:js-string` namespace — engine-provided
-// builtins that read/write the engine's native String representation.
+// builtins that read the engine's native String representation.
 //
 //   Spec: https://webassembly.github.io/js-string-builtins/js-api/
-//   Engine support: V8 17+, Safari 18.4+, Firefox behind a flag.
 //
-// ### Status — scaffold, not a working codegen path
-//
-// Today this carrier exists to:
-//   1. Slot into the default-bundle in `src/abi/index.js` so the dispatch
-//      infrastructure is exercised end-to-end with two carriers.
-//   2. Document the contract future string-codegen rerouting will plug into.
-//   3. Outline the compiler-wide changes a real implementation requires —
-//      they're larger than "fill in the ops table" and need their own plan.
-//
-// Until those changes land, `jsstring` is exported alongside `sso` but the
-// default bundle in `src/abi/index.js` still picks `sso`. The narrower will
-// flip individual sites to `jsstring` once the codegen paths below are real.
-//
-// ### Wire shape
-//
-//     (import "wasm:js-string" "length"        (func $__jss_length        (param externref) (result i32)))
-//     (import "wasm:js-string" "charCodeAt"    (func $__jss_charCodeAt    (param externref i32) (result i32)))
-//     (import "wasm:js-string" "concat"        (func $__jss_concat        (param externref externref) (result (ref extern))))
-//     (import "wasm:js-string" "compare"       (func $__jss_compare       (param externref externref) (result i32)))
-//     (import "wasm:js-string" "test"          (func $__jss_test          (param externref)            (result i32)))
-//     (import "wasm:js-string" "fromCharCode"  (func $__jss_fromCharCode  (param i32)                  (result (ref extern))))
-//     (import "wasm:js-string" "substring"     (func $__jss_substring     (param externref i32 i32)    (result (ref extern))))
-//
-// ### Compiler-wide checklist (dependency order)
-//
-//   1. **Import declaration channel.** Mirror `ctx.core.includes` for
-//      `wasm:js-string` imports — a `ctx.core.imports` set that compile.js
-//      drains into `(import ...)` nodes. The string-builtins API is feature-
-//      detected (`WebAssembly.validate` with the import set), so the host
-//      must either gate compile output on builtins support or polyfill the
-//      imports from JS for older engines.
-//
-//   2. **STRING-typed locals as externref.** `ctx.func.locals` today stores
-//      `'f64' | 'i32'` per local; STRING locals need `'externref'`. Touch
-//      every site that declares string locals (closures, params, refinements,
-//      destructuring) so the WAT `(local $name externref)` lands.
-//
-//   3. **emit() returns externref for STRING-typed nodes.** Today every
-//      `emit(strNode)` returns f64-typed IR carrying a NaN-boxed pointer.
-//      Under jsstring it must return externref-typed IR. The `asF64` call
-//      sites currently feeding the carrier would route through a carrier-
-//      driven `coerceSlot(emit(...))` helper instead, so the slot type swap
-//      is transparent to callers.
-//
-//   4. **Boundary wrappers.** `src/compile.js:synthesizeBoundaryWrappers`
-//      types every string param/result through f64 (or i64 for ptr carriers).
-//      Read `ctx.abi.string.slotTypes[0]` — if `externref`, declare the
-//      param/result `externref` and skip the nanbox box/unbox steps.
-//
-//   5. **Literals.** `['str', "foo"]` today writes into the heap and returns
-//      a NaN-boxed pointer. Under jsstring it would need a module-level
-//      `externref` global initialized from a JS-side literal table — likely
-//      via a startup import that hands back the canonical `externref` for
-//      each known string. Or build at runtime with `fromCharCodeArray`.
-//
-//   6. **Mutating fast paths.** Heap-string optimizations like
-//      `__str_append_unit` (mutate in place when lhs is heap-top) don't
-//      translate — engine strings are immutable. These paths must gate off
-//      under jsstring (`if (slotTypes[0] === 'f64') …`) or be removed from
-//      the carrier's surface entirely.
-//
-//   7. **Cross-carrier interop.** Mixing nanbox numeric values and externref
-//      strings in the same function means locals span two slot types.
-//      `i32`/`f64`/`externref` already coexist (closures use `i32` for boxed
-//      cells), so the multi-slot story is incremental, not novel.
-//
-//   8. **`?.length`, optional access.** The `?.` emit threads `local.get`
-//      through `notNullish`, which today inspects f64 NaN-shape bits.
-//      `externref` nullishness is a single `ref.is_null` (no NaN inspection),
-//      so the optional-chain emit needs a carrier-aware nullish predicate.
-//
-//   9. **Host wiring.** `interop.js` passes externref strings directly
-//      (no encode/decode) and supplies the `wasm:js-string` imports object
-//      when the binary references any. JS strings already act as externrefs
-//      at the host boundary — the bridge mostly hands them through.
+// The JS host enables this carrier for exported string parameters whose uses
+// narrow/jsstring-carrier.js proves safe. WASI and jsstring:false retain SSO.
+// Only length and in-bounds charCodeAt are implemented; other uses keep the
+// ordinary carrier. compile/index.js emits imports recorded in ctx.core.jsstring,
+// and interop.js supplies the fallback implementations.
 
 export const jsstring = {
-  // Wasm slot type a string value occupies under this carrier. Read by
-  // `src/compile.js:synthesizeBoundaryWrappers` for param/result typing
-  // (item 4) and by the slot coercer at every STRING `emit()` call site
-  // (item 3).
+  // Wasm slot type for parameters selected by the boundary narrowing pass.
   slotTypes: ['externref'],
 
-  // Names of `wasm:js-string` imports this carrier relies on. Used
-  // (eventually) by the compiler to declare the import nodes once any op
-  // references them.
+  // Reserved builtin inventory; active imports are recorded by the ops below.
   imports: ['length', 'charCodeAt', 'concat', 'fromCharCode', 'substring',
             'codePointAt', 'compare', 'test', 'intoCharCodeArray', 'fromCharCodeArray'],
 

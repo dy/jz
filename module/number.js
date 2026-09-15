@@ -9,10 +9,10 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, throwErrorIR } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
-import { isReassigned } from '../src/ast.js'
+import { isReassigned, isUndefinedLiteral } from '../src/ast.js'
 import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
 import { stringBytes } from '../src/string-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
@@ -378,7 +378,14 @@ export default (ctx) => {
     // own edge: __static_str's body calls $__mkstr — without it the helper
     // rides the self-compile-unreliable auto-scan (test/self-compile-includes.js)
     __static_str: ['__mkstr'],
-    __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__ftoa_shortest'],
+    __ftoa: ['__static_str', '__ftoa_shortest'],
+    __bn_mul_pow5: ['__bn_mul_small'],
+    __bn_shr_round: ['__bn_add1'],
+    __dec_scaled: ['__alloc', '__bn_mul_pow5', '__bn_shl', '__bn_shr_round', '__bn_divmod_small', '__bn_add1'],
+    __dec_sig: ['__dec_scaled'],
+    __fmt_fixed: ['__ftoa', '__alloc', '__dec_scaled', '__mkstr'],
+    __fmt_exp: ['__ftoa', '__alloc', '__dec_sig', '__dec_to_f64', '__fmt_exp_tail', '__mkstr'],
+    __fmt_prec: ['__ftoa', '__alloc', '__dec_sig', '__fmt_exp_tail', '__mkstr'],
     __ftoa_shortest: ['__mkstr', '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
     __ryu_pow5: ['__umul128'],
     __dec_to_f64: ['__ryu_pow5', '__umul128', '__pow10'],
@@ -389,10 +396,9 @@ export default (ctx) => {
     __i32_to_str: ['__itoa_s', '__mkstr'],
     __itoa_s: ['__itoa'],
     __ilen: [],
-    __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
     __radix_str: ['__mkstr'],
     __num_radix: ['__ftoa', '__mkstr'],
-    __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux'],
+    __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux', '__is_object'],
     __skipws: ['__char_at', '__strws'],
     __str_to_bigint: ['__char_at', '__str_length'],
     __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset'],
@@ -491,7 +497,7 @@ export default (ctx) => {
 
   // __i32_to_str(val: i32) → f64 (NaN-boxed string) — ToString for a value the
   // compiler proved is a signed i32. The whole point is to bypass __ftoa's float
-  // machinery (shortest-repr search, __toExp, __pow10): a known integer renders with
+  // machinery (shortest-repr search, __pow10): a known integer renders with
   // just __itoa_s over a scratch buffer. Lets `"id " + (n|0)` and integer
   // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
   ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
@@ -631,181 +637,380 @@ export default (ctx) => {
     (memory.copy (local.get $off) (local.get $buf) (i32.shl (local.get $len) (i32.const 1)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
-  // __ftoa(val: f64, prec: i32, mode: i32) → f64 (NaN-boxed string)
-  // mode 0: default (shortest repr, strip trailing zeros)
-  // mode 1: fixed (exactly prec decimal places)
-  // Uses integer-scaled digit extraction to avoid float drift.
+  // __ftoa(val: f64, prec: i32, mode: i32) → f64 (NaN-boxed string): Number::toString
+  // (ES-exact shortest round-trip digits, Ryū core). `prec`/`mode` are retained by
+  // the call sites; toFixed/toExponential/toPrecision use the exact decimal
+  // kernels below (__fmt_fixed/__fmt_exp/__fmt_prec).
   ctx.core.stdlib['__ftoa'] = `(func $__ftoa (param $val f64) (param $prec i32) (param $mode i32) (result f64)
-    (local $buf i32) (local $pos i32) (local $neg i32)
-    (local $abs f64) (local $scale f64) (local $scaled f64)
-    (local $int i32) (local $frac i32) (local $ilen i32) (local $flen i32)
-    (local $i i32) (local $j i32)
-    ;; Special values
     (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
     (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
     (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
-    ;; Default mode: ES-exact shortest round-trip digits + notation (Ryū core) —
-    ;; the rest of this function serves mode 1 (toFixed/toPrecision) only.
-    (if (i32.eqz (local.get $mode))
-      (then (return (call $__ftoa_shortest (local.get $val)))))
-    (local.set $buf (call $__alloc (i32.const 80)))
-    ;; Sign
-    (if (f64.lt (local.get $val) (f64.const 0))
-      (then (local.set $neg (i32.const 1)) (local.set $val (f64.neg (local.get $val)))))
-    (if (i32.and (f64.eq (local.get $val) (f64.const 0)) (local.get $neg))
-      (then (local.set $neg (i32.const 0))))
-    (if (local.get $neg)
-      (then (i32.store16 (local.get $buf) (i32.const 45))
-        (local.set $pos (i32.const 1))))
-    ;; Round and scale to integer: scaled = nearest(val * 10^prec).
-    ;; NOTE: toFixed/toPrecision round ties-to-even here (f64.nearest), which differs from
-    ;; JS's round-half-away-from-zero on exact halves like (2.5).toFixed(0) → '2' vs '3'.
-    ;; A naive floor(x+0.5) "fixes" those but breaks values like 1.45 (whose ×10 rounds up
-    ;; to 14.5 in f64, giving '1.5' vs JS '1.4'); bit-exact toFixed needs the exact-decimal
-    ;; algorithm. Documented as a known difference rather than trading one error for another.
-    (local.set $scale (call $__pow10 (local.get $prec)))
-    (local.set $scaled (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
-    ;; If scaled doesn't fit i32, reduce precision until it does (min prec=0)
-    (block $fit (loop $fitl
-      (br_if $fit (f64.lt (local.get $scaled) (f64.const 2147483648)))
-      (br_if $fit (i32.le_s (local.get $prec) (i32.const 0)))
-      (local.set $prec (i32.sub (local.get $prec) (i32.const 1)))
-      (local.set $scale (call $__pow10 (local.get $prec)))
-      (local.set $scaled (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
-      (br $fitl)))
-    ;; Split: int = scaled / scale, frac = scaled % scale
-    (if (f64.lt (local.get $scaled) (f64.const 2147483648))
-      (then
-        (local.set $int (i32.trunc_f64_u (f64.div (local.get $scaled) (local.get $scale))))
-        (local.set $frac (i32.trunc_f64_u (f64.sub (local.get $scaled)
-          (f64.mul (f64.convert_i32_u (local.get $int)) (local.get $scale))))))
-      (else
-        (local.set $int (i32.const 0))
-        (local.set $frac (i32.const 0))
-        (local.set $prec (i32.const 0))
-        (local.set $abs (f64.trunc (local.get $val)))
-        ;; Write large integer digits reversed.
-        ;; Clamp digit to [0,9]: f64 precision loss for large values can make the naive
-        ;; subtraction (abs - trunc(abs/10)*10) go slightly negative → i32.trunc_f64_u trap.
-        (local.set $ilen (local.get $pos))
-        (block $ld (loop $ll
-          (br_if $ld (f64.lt (local.get $abs) (f64.const 1)))
-          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.add (i32.const 48) (i32.trunc_f64_u (f64.max (f64.const 0) (f64.min (f64.const 9)
-              (f64.nearest (f64.sub (local.get $abs)
-                (f64.mul (f64.trunc (f64.div (local.get $abs) (f64.const 10))) (f64.const 10)))))))))
-          (local.set $abs (f64.trunc (f64.div (local.get $abs) (f64.const 10))))
-          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-          (br $ll)))
-        ;; Reverse
-        (local.set $i (local.get $ilen)) (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
-        (block $rd (loop $rl
-          (br_if $rd (i32.ge_s (local.get $i) (local.get $j)))
-          (local.set $int (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1)))))
-          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1))) (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1)))))
-          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1))) (local.get $int))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (local.set $j (i32.sub (local.get $j) (i32.const 1)))
-          (br $rl)))
-        (return (call $__mkstr (local.get $buf) (local.get $pos)))))
-    ;; Write integer part
-    (local.set $ilen (call $__itoa (local.get $int) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1)))))
-    (local.set $pos (i32.add (local.get $pos) (local.get $ilen)))
-    ;; Write fractional part: extract digits from $frac by dividing by 10^(prec-1), 10^(prec-2), ...
-    (if (i32.gt_s (local.get $prec) (i32.const 0))
-      (then
-        (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 46))
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-        (local.set $i (i32.sub (local.get $prec) (i32.const 1)))
-        (block $fd (loop $fl
-          (br_if $fd (i32.lt_s (local.get $i) (i32.const 0)))
-          (local.set $j (i32.div_u (local.get $frac) (i32.trunc_f64_u (call $__pow10 (local.get $i)))))
-          (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.add (i32.const 48) (i32.rem_u (local.get $j) (i32.const 10))))
-          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-          (local.set $i (i32.sub (local.get $i) (i32.const 1)))
-          (br $fl)))))
-    (call $__mkstr (local.get $buf) (local.get $pos)))`
+    (call $__ftoa_shortest (local.get $val)))`
 
-  // __toExp(val: f64, prec: i32, strip: i32) → f64 (NaN-boxed string)
-  // Format: [-]d.ddd...e[+/-]dd — integer-based digit extraction.
-  // strip=1 drops trailing fractional zeros (default ToString); strip=0 keeps
-  // the exact prec digits (toExponential/toPrecision need a fixed digit count).
-  ctx.core.stdlib['__toExp'] = `(func $__toExp (param $val f64) (param $prec i32) (param $strip i32) (result f64)
-    (local $buf i32) (local $pos i32) (local $neg i32) (local $exp i32)
-    (local $len i32) (local $i i32) (local $j i32)
-    (local $mantissa f64) (local $scale f64)
-    (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
-    (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
-    (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
-    ;; The scaled mantissa is (prec+1) digits; cap prec at 8 so it stays below
-    ;; 2^32 (10^9 < 2^32 < 10^10), otherwise i32.trunc_f64_u below traps with
-    ;; "float unrepresentable in integer range" — e.g. 7.5e-151 normalizes to
-    ;; 7.5 and 7.5*10^9 already overflows an unsigned i32.
-    (if (i32.gt_s (local.get $prec) (i32.const 8)) (then (local.set $prec (i32.const 8))))
-    (local.set $buf (call $__alloc (i32.const 64)))
-    ;; Sign
-    (if (f64.lt (local.get $val) (f64.const 0))
-      (then (local.set $neg (i32.const 1)) (local.set $val (f64.neg (local.get $val)))))
-    (if (i32.and (f64.eq (local.get $val) (f64.const 0)) (local.get $neg))
-      (then (local.set $neg (i32.const 0))))
-    (if (local.get $neg)
-      (then (i32.store16 (local.get $buf) (i32.const 45))
-        (local.set $pos (i32.const 1))))
-    ;; Normalize: 1 <= val < 10
-    (if (f64.gt (local.get $val) (f64.const 0))
+  // === Exact decimal formatting (Number.prototype.toFixed/toExponential/toPrecision) ===
+  // A double is m·2^e exactly; n = round-half-up(|x|·10^t) is computed on a small
+  // bignum (32-bit limbs) with no float rounding: multiply by 5^t and shift for
+  // t ≥ 0, else shift and divide by ten with the last dropped digit deciding
+  // the round (ES 21.1.3.3/21.1.3.2/21.1.3.5: "pick the larger n" on a tie).
+  ctx.core.stdlib['__bn_mul_small'] = `(func $__bn_mul_small (param $buf i32) (param $n i32) (param $k i32) (result i32)
+    (local $i i32) (local $carry i64) (local $p i64)
+    (block $done (loop $l
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $p (i64.add (i64.mul (i64.extend_i32_u (i32.load (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2))))) (i64.extend_i32_u (local.get $k))) (local.get $carry)))
+      (i32.store (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2))) (i32.wrap_i64 (local.get $p)))
+      (local.set $carry (i64.shr_u (local.get $p) (i64.const 32)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (if (i64.ne (local.get $carry) (i64.const 0))
+      (then (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (i32.wrap_i64 (local.get $carry)))
+            (local.set $n (i32.add (local.get $n) (i32.const 1)))))
+    (local.get $n))`
+  ctx.core.stdlib['__bn_mul_pow5'] = `(func $__bn_mul_pow5 (param $buf i32) (param $n i32) (param $t i32) (result i32)
+    (block $done (loop $l
+      (br_if $done (i32.lt_s (local.get $t) (i32.const 13)))
+      (local.set $n (call $__bn_mul_small (local.get $buf) (local.get $n) (i32.const 1220703125)))
+      (local.set $t (i32.sub (local.get $t) (i32.const 13)))
+      (br $l)))
+    (block $done2 (loop $l2
+      (br_if $done2 (i32.le_s (local.get $t) (i32.const 0)))
+      (local.set $n (call $__bn_mul_small (local.get $buf) (local.get $n) (i32.const 5)))
+      (local.set $t (i32.sub (local.get $t) (i32.const 1)))
+      (br $l2)))
+    (local.get $n))`
+  ctx.core.stdlib['__bn_add1'] = `(func $__bn_add1 (param $buf i32) (param $n i32) (result i32)
+    (local $i i32) (local $v i32)
+    (block $d (loop $l
+      (br_if $d (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $v (i32.add (i32.load (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2)))) (i32.const 1)))
+      (i32.store (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2))) (local.get $v))
+      (br_if $d (local.get $v))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (if (i32.eq (local.get $i) (local.get $n))
+      (then (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (i32.const 1))
+            (local.set $n (i32.add (local.get $n) (i32.const 1)))))
+    (local.get $n))`
+  ctx.core.stdlib['__bn_shl'] = `(func $__bn_shl (param $buf i32) (param $n i32) (param $s i32) (result i32)
+    (local $w i32) (local $b i32) (local $i i32) (local $carry i32) (local $v i32)
+    (local.set $w (i32.shr_u (local.get $s) (i32.const 5)))
+    (local.set $b (i32.and (local.get $s) (i32.const 31)))
+    (if (local.get $b) (then
+      (block $d (loop $l
+        (br_if $d (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $v (i32.load (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2)))))
+        (i32.store (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2))) (i32.or (i32.shl (local.get $v) (local.get $b)) (local.get $carry)))
+        (local.set $carry (i32.shr_u (local.get $v) (i32.sub (i32.const 32) (local.get $b))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $l)))
+      (if (local.get $carry) (then
+        (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (local.get $carry))
+        (local.set $n (i32.add (local.get $n) (i32.const 1)))))))
+    (if (local.get $w) (then
+      (memory.copy (i32.add (local.get $buf) (i32.shl (local.get $w) (i32.const 2))) (local.get $buf) (i32.shl (local.get $n) (i32.const 2)))
+      (memory.fill (local.get $buf) (i32.const 0) (i32.shl (local.get $w) (i32.const 2)))
+      (local.set $n (i32.add (local.get $n) (local.get $w)))))
+    (local.get $n))`
+  // Right shift by s bits, rounding on the dropped bit s-1: half up, or half
+  // to even when `even` is set (the shortest-digits search; 21.1.3.2 step 10.b).
+  ctx.core.stdlib['__bn_shr_round'] = `(func $__bn_shr_round (param $buf i32) (param $n i32) (param $s i32) (param $even i32) (result i32)
+    (local $w i32) (local $b i32) (local $i i32) (local $round i32) (local $v i32) (local $carry i32) (local $sticky i32)
+    (if (i32.le_s (local.get $s) (i32.const 0)) (then (return (local.get $n))))
+    (local.set $w (i32.shr_u (i32.sub (local.get $s) (i32.const 1)) (i32.const 5)))
+    (local.set $b (i32.and (i32.sub (local.get $s) (i32.const 1)) (i32.const 31)))
+    (local.set $round (if (result i32) (i32.lt_u (local.get $w) (local.get $n))
+      (then (i32.and (i32.shr_u (i32.load (i32.add (local.get $buf) (i32.shl (local.get $w) (i32.const 2)))) (local.get $b)) (i32.const 1)))
+      (else (i32.const 0))))
+    (if (i32.and (local.get $round) (local.get $even)) (then
+      ;; a tie only when every bit below the dropped one is zero
+      (if (i32.lt_u (local.get $w) (local.get $n))
+        (then (local.set $sticky (i32.and (i32.load (i32.add (local.get $buf) (i32.shl (local.get $w) (i32.const 2)))) (i32.sub (i32.shl (i32.const 1) (local.get $b)) (i32.const 1))))))
+      (block $sd (loop $sl
+        (br_if $sd (i32.or (local.get $sticky) (i32.ge_u (local.get $i) (select (local.get $w) (local.get $n) (i32.lt_u (local.get $w) (local.get $n))))))
+        (local.set $sticky (i32.load (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $sl)))
+      (local.set $i (i32.const 0))))
+    (local.set $w (i32.shr_u (local.get $s) (i32.const 5)))
+    (local.set $b (i32.and (local.get $s) (i32.const 31)))
+    (if (i32.ge_u (local.get $w) (local.get $n))
+      (then (local.set $n (i32.const 0)))
+      (else
+        (if (local.get $w) (then
+          (memory.copy (local.get $buf) (i32.add (local.get $buf) (i32.shl (local.get $w) (i32.const 2))) (i32.shl (i32.sub (local.get $n) (local.get $w)) (i32.const 2)))
+          (local.set $n (i32.sub (local.get $n) (local.get $w)))))
+        (if (local.get $b) (then
+          (local.set $i (local.get $n))
+          (block $d (loop $l
+            (br_if $d (i32.eqz (local.get $i)))
+            (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+            (local.set $v (i32.load (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2)))))
+            (i32.store (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2))) (i32.or (i32.shr_u (local.get $v) (local.get $b)) (local.get $carry)))
+            (local.set $carry (i32.shl (local.get $v) (i32.sub (i32.const 32) (local.get $b))))
+            (br $l)))))))
+    (block $t (loop $tl
+      (br_if $t (i32.eqz (local.get $n)))
+      (br_if $t (i32.load (i32.add (local.get $buf) (i32.shl (i32.sub (local.get $n) (i32.const 1)) (i32.const 2)))))
+      (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+      (br $tl)))
+    ;; half to even: a tie rounds up only when the kept value is odd
+    (if (i32.and (i32.and (local.get $round) (local.get $even)) (i32.eqz (local.get $sticky)))
+      (then (local.set $round (if (result i32) (local.get $n) (then (i32.and (i32.load (local.get $buf)) (i32.const 1))) (else (i32.const 0))))))
+    (if (local.get $round) (then (local.set $n (call $__bn_add1 (local.get $buf) (local.get $n)))))
+    (local.get $n))`
+  // Divide by k in place: (remainder, new limb count).
+  ctx.core.stdlib['__bn_divmod_small'] = `(func $__bn_divmod_small (param $buf i32) (param $n i32) (param $k i32) (result i32 i32)
+    (local $i i32) (local $r i64) (local $cur i64)
+    (local.set $i (local.get $n))
+    (block $d (loop $l
+      (br_if $d (i32.eqz (local.get $i)))
+      (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+      (local.set $cur (i64.or (i64.shl (local.get $r) (i64.const 32)) (i64.extend_i32_u (i32.load (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2)))))))
+      (i32.store (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 2))) (i32.wrap_i64 (i64.div_u (local.get $cur) (i64.extend_i32_u (local.get $k)))))
+      (local.set $r (i64.rem_u (local.get $cur) (i64.extend_i32_u (local.get $k))))
+      (br $l)))
+    (if (i32.and (i32.ne (local.get $n) (i32.const 0)) (i32.eqz (i32.load (i32.add (local.get $buf) (i32.shl (i32.sub (local.get $n) (i32.const 1)) (i32.const 2))))))
+      (then (local.set $n (i32.sub (local.get $n) (i32.const 1)))))
+    (i32.wrap_i64 (local.get $r)) (local.get $n))`
+  // The decimal digits of round-half-up(x·10^t) for finite x ≥ 0, as UTF-16 units at dst; returns the count.
+  ctx.core.stdlib['__dec_scaled'] = `(func $__dec_scaled (param $x f64) (param $t i32) (param $dst i32) (param $even i32) (result i32)
+    (local $bits i64) (local $m i64) (local $e i32) (local $e2 i32) (local $buf i32) (local $n i32) (local $b i32) (local $d i32)
+    (local $rem i32) (local $len i32) (local $i i32) (local $j i32) (local $c i32) (local $sticky i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
+    (local.set $e (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7FF))))
+    (local.set $m (i64.and (local.get $bits) (i64.const 0xFFFFFFFFFFFFF)))
+    (if (i32.eqz (local.get $e))
+      (then (local.set $e2 (i32.const -1074)))
+      (else (local.set $m (i64.or (local.get $m) (i64.const 0x10000000000000)))
+            (local.set $e2 (i32.sub (local.get $e) (i32.const 1075)))))
+    (if (i64.eqz (local.get $m)) (then (i32.store16 (local.get $dst) (i32.const 48)) (return (i32.const 1))))
+    (local.set $buf (call $__alloc (i32.const 512)))
+    (i32.store (local.get $buf) (i32.wrap_i64 (local.get $m)))
+    (i32.store offset=4 (local.get $buf) (i32.wrap_i64 (i64.shr_u (local.get $m) (i64.const 32))))
+    (local.set $n (if (result i32) (i64.eqz (i64.shr_u (local.get $m) (i64.const 32))) (then (i32.const 1)) (else (i32.const 2))))
+    (if (i32.ge_s (local.get $t) (i32.const 0))
       (then
-        (block $d1 (loop $l1
-          (br_if $d1 (f64.lt (local.get $val) (f64.const 10)))
-          (local.set $val (f64.div (local.get $val) (f64.const 10)))
-          (local.set $exp (i32.add (local.get $exp) (i32.const 1)))
-          (br $l1)))
-        (block $d2 (loop $l2
-          (br_if $d2 (f64.ge (local.get $val) (f64.const 1)))
-          (local.set $val (f64.mul (local.get $val) (f64.const 10)))
-          (local.set $exp (i32.sub (local.get $exp) (i32.const 1)))
-          (br $l2)))))
-    ;; Scale to integer mantissa: nearest(val * 10^prec). Ties-to-even (see __ftoa note).
-    (local.set $scale (call $__pow10 (local.get $prec)))
-    (local.set $mantissa (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
-    ;; Rounding overflow (e.g. 9.95 → 1000 when prec=1, scale=10)
-    (if (f64.ge (local.get $mantissa) (f64.mul (f64.const 10) (local.get $scale)))
+        (local.set $n (call $__bn_mul_pow5 (local.get $buf) (local.get $n) (local.get $t)))
+        (local.set $b (i32.add (local.get $e2) (local.get $t)))
+        (if (i32.ge_s (local.get $b) (i32.const 0))
+          (then (local.set $n (call $__bn_shl (local.get $buf) (local.get $n) (local.get $b))))
+          (else (local.set $n (call $__bn_shr_round (local.get $buf) (local.get $n) (i32.sub (i32.const 0) (local.get $b)) (local.get $even))))))
+      (else
+        (local.set $d (i32.sub (i32.const 0) (local.get $t)))
+        (if (i32.ge_s (local.get $e2) (i32.const 0))
+          (then (local.set $n (call $__bn_shl (local.get $buf) (local.get $n) (local.get $e2))))
+          (else
+            (local.set $n (call $__bn_mul_pow5 (local.get $buf) (local.get $n) (i32.sub (i32.const 0) (local.get $e2))))
+            (local.set $d (i32.sub (local.get $d) (local.get $e2)))))
+        (block $dd (loop $dl
+          (br_if $dd (i32.le_s (local.get $d) (i32.const 0)))
+          (local.set $sticky (i32.or (local.get $sticky) (i32.ne (local.get $rem) (i32.const 0))))
+          (local.set $rem (local.set $n (call $__bn_divmod_small (local.get $buf) (local.get $n) (i32.const 10))))
+          (local.set $d (i32.sub (local.get $d) (i32.const 1)))
+          (br $dl)))
+        ;; the most significant dropped digit decides; an exact half rounds up,
+        ;; or to even when asked
+        (if (i32.or (i32.gt_s (local.get $rem) (i32.const 5))
+              (i32.and (i32.eq (local.get $rem) (i32.const 5))
+                (i32.or (i32.or (local.get $sticky) (i32.eqz (local.get $even)))
+                  (if (result i32) (local.get $n) (then (i32.and (i32.load (local.get $buf)) (i32.const 1))) (else (i32.const 0))))))
+          (then (local.set $n (call $__bn_add1 (local.get $buf) (local.get $n)))))))
+    (if (i32.eqz (local.get $n)) (then (i32.store16 (local.get $dst) (i32.const 48)) (return (i32.const 1))))
+    (block $gd (loop $gl
+      (br_if $gd (i32.eqz (local.get $n)))
+      (local.set $rem (local.set $n (call $__bn_divmod_small (local.get $buf) (local.get $n) (i32.const 10))))
+      (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $len) (i32.const 1))) (i32.add (i32.const 48) (local.get $rem)))
+      (local.set $len (i32.add (local.get $len) (i32.const 1)))
+      (br $gl)))
+    (local.set $j (i32.sub (local.get $len) (i32.const 1)))
+    (block $rd (loop $rl
+      (br_if $rd (i32.ge_s (local.get $i) (local.get $j)))
+      (local.set $c (i32.load16_u (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 1))) (i32.load16_u (i32.add (local.get $dst) (i32.shl (local.get $j) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get $dst) (i32.shl (local.get $j) (i32.const 1))) (local.get $c))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $rl)))
+    (local.get $len))`
+  // Exactly p significant digits of finite x > 0 at dst; returns the decimal exponent of the first digit.
+  ctx.core.stdlib['__dec_sig'] = `(func $__dec_sig (param $ax f64) (param $p i32) (param $dst i32) (param $even i32) (result i32)
+    (local $E i32) (local $len i32) (local $tries i32) (local $bits i64) (local $e i32) (local $m i64) (local $log2 i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ax)))
+    (local.set $e (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7FF))))
+    (if (local.get $e)
+      (then (local.set $log2 (i32.sub (local.get $e) (i32.const 1023))))
+      (else (local.set $m (i64.and (local.get $bits) (i64.const 0xFFFFFFFFFFFFF)))
+            (local.set $log2 (i32.sub (i32.sub (i32.const 63) (i32.wrap_i64 (i64.clz (local.get $m)))) (i32.const 1074)))))
+    (local.set $E (i32.trunc_f64_s (f64.floor (f64.mul (f64.convert_i32_s (local.get $log2)) (f64.const 0.3010299956639812)))))
+    (block $done (loop $l
+      (local.set $len (call $__dec_scaled (local.get $ax) (i32.sub (i32.sub (local.get $p) (i32.const 1)) (local.get $E)) (local.get $dst) (local.get $even)))
+      (br_if $done (i32.eq (local.get $len) (local.get $p)))
+      (br_if $done (i32.ge_s (local.get $tries) (i32.const 8)))
+      (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
+      (if (i32.gt_s (local.get $len) (local.get $p))
+        (then (local.set $E (i32.add (local.get $E) (i32.const 1))))
+        (else (local.set $E (i32.sub (local.get $E) (i32.const 1)))))
+      (br $l)))
+    (local.get $E))`
+  // 'e', the sign and the decimal exponent at p; returns the cursor after it.
+  ctx.core.stdlib['__fmt_exp_tail'] = `(func $__fmt_exp_tail (param $p i32) (param $E i32) (result i32)
+    (local $n i32) (local $i i32) (local $j i32) (local $c i32)
+    (i32.store16 (local.get $p) (i32.const 101))
+    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    (i32.store16 (local.get $p) (select (i32.const 45) (i32.const 43) (i32.lt_s (local.get $E) (i32.const 0))))
+    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    (local.set $E (select (i32.sub (i32.const 0) (local.get $E)) (local.get $E) (i32.lt_s (local.get $E) (i32.const 0))))
+    (loop $dl
+      (i32.store16 (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 1))) (i32.add (i32.const 48) (i32.rem_u (local.get $E) (i32.const 10))))
+      (local.set $n (i32.add (local.get $n) (i32.const 1)))
+      (local.set $E (i32.div_u (local.get $E) (i32.const 10)))
+      (br_if $dl (local.get $E)))
+    (local.set $j (i32.sub (local.get $n) (i32.const 1)))
+    (block $rd (loop $rl
+      (br_if $rd (i32.ge_s (local.get $i) (local.get $j)))
+      (local.set $c (i32.load16_u (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 1))) (i32.load16_u (i32.add (local.get $p) (i32.shl (local.get $j) (i32.const 1)))))
+      (i32.store16 (i32.add (local.get $p) (i32.shl (local.get $j) (i32.const 1))) (local.get $c))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $rl)))
+    (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 1))))`
+  // Number.prototype.toFixed (21.1.3.3): f fraction digits; |x| ≥ 1e21 formats as ToString.
+  ctx.core.stdlib['__fmt_fixed'] = `(func $__fmt_fixed (param $x f64) (param $f i32) (result f64)
+    (local $dig i32) (local $out i32) (local $len i32) (local $p i32) (local $i i32) (local $zeros i32) (local $intLen i32)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (call $__ftoa (local.get $x) (i32.const 0) (i32.const 0)))))
+    (if (f64.ge (f64.abs (local.get $x)) (f64.const 1e21)) (then (return (call $__ftoa (local.get $x) (i32.const 0) (i32.const 0)))))
+    (local.set $dig (call $__alloc (i32.const 320)))
+    (local.set $len (call $__dec_scaled (f64.abs (local.get $x)) (local.get $f) (local.get $dig) (i32.const 0)))
+    (local.set $out (call $__alloc (i32.const 260)))
+    (local.set $p (local.get $out))
+    (if (f64.lt (local.get $x) (f64.const 0))
+      (then (i32.store16 (local.get $p) (i32.const 45)) (local.set $p (i32.add (local.get $p) (i32.const 2)))))
+    (local.set $intLen (i32.sub (local.get $len) (local.get $f)))
+    (if (i32.le_s (local.get $intLen) (i32.const 0))
+      (then (i32.store16 (local.get $p) (i32.const 48)) (local.set $p (i32.add (local.get $p) (i32.const 2))))
+      (else (memory.copy (local.get $p) (local.get $dig) (i32.shl (local.get $intLen) (i32.const 1)))
+            (local.set $p (i32.add (local.get $p) (i32.shl (local.get $intLen) (i32.const 1))))))
+    (if (i32.gt_s (local.get $f) (i32.const 0)) (then
+      (i32.store16 (local.get $p) (i32.const 46))
+      (local.set $p (i32.add (local.get $p) (i32.const 2)))
+      (local.set $zeros (select (i32.sub (i32.const 0) (local.get $intLen)) (i32.const 0) (i32.lt_s (local.get $intLen) (i32.const 0))))
+      (block $zd (loop $zl
+        (br_if $zd (i32.ge_s (local.get $i) (local.get $zeros)))
+        (i32.store16 (local.get $p) (i32.const 48))
+        (local.set $p (i32.add (local.get $p) (i32.const 2)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $zl)))
+      (local.set $intLen (select (local.get $intLen) (i32.const 0) (i32.gt_s (local.get $intLen) (i32.const 0))))
+      (memory.copy (local.get $p) (i32.add (local.get $dig) (i32.shl (local.get $intLen) (i32.const 1))) (i32.shl (i32.sub (local.get $f) (local.get $zeros)) (i32.const 1)))
+      (local.set $p (i32.add (local.get $p) (i32.shl (i32.sub (local.get $f) (local.get $zeros)) (i32.const 1))))))
+    (call $__mkstr (local.get $out) (i32.shr_u (i32.sub (local.get $p) (local.get $out)) (i32.const 1))))`
+  // Number.prototype.toExponential (21.1.3.2): f fraction digits, or f = -1 for
+  // as many digits as needed (the fewest that read back as x).
+  ctx.core.stdlib['__fmt_exp'] = `(func $__fmt_exp (param $x f64) (param $f i32) (result f64)
+    (local $dig i32) (local $out i32) (local $len i32) (local $p i32) (local $E i32) (local $ax f64) (local $pc i32) (local $mant i64) (local $i i32)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (call $__ftoa (local.get $x) (i32.const 0) (i32.const 0)))))
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (call $__ftoa (local.get $x) (i32.const 0) (i32.const 0)))))
+    (local.set $ax (f64.abs (local.get $x)))
+    (local.set $dig (call $__alloc (i32.const 320)))
+    (if (f64.eq (local.get $ax) (f64.const 0))
       (then
-        (local.set $mantissa (f64.div (local.get $mantissa) (f64.const 10)))
-        (local.set $exp (i32.add (local.get $exp) (i32.const 1)))))
-    ;; Write mantissa digits via itoa
-    (local.set $len (call $__itoa (i32.trunc_f64_u (local.get $mantissa)) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1)))))
-    ;; Insert '.' after first digit
-    (if (i32.gt_s (local.get $prec) (i32.const 0))
+        (local.set $len (select (i32.add (local.get $f) (i32.const 1)) (i32.const 1) (i32.ge_s (local.get $f) (i32.const 0))))
+        (block $zd (loop $zl
+          (br_if $zd (i32.ge_s (local.get $i) (local.get $len)))
+          (i32.store16 (i32.add (local.get $dig) (i32.shl (local.get $i) (i32.const 1))) (i32.const 48))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $zl))))
+      (else
+        (if (i32.ge_s (local.get $f) (i32.const 0))
+          (then
+            (local.set $len (i32.add (local.get $f) (i32.const 1)))
+            (local.set $E (call $__dec_sig (local.get $ax) (local.get $len) (local.get $dig) (i32.const 0))))
+          (else
+            (local.set $pc (i32.const 1))
+            (block $sd (loop $sl
+              (local.set $E (call $__dec_sig (local.get $ax) (local.get $pc) (local.get $dig) (i32.const 1)))
+              (local.set $mant (i64.const 0))
+              (local.set $i (i32.const 0))
+              (block $md (loop $ml
+                (br_if $md (i32.ge_s (local.get $i) (local.get $pc)))
+                (local.set $mant (i64.add (i64.mul (local.get $mant) (i64.const 10)) (i64.extend_i32_u (i32.sub (i32.load16_u (i32.add (local.get $dig) (i32.shl (local.get $i) (i32.const 1)))) (i32.const 48)))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $ml)))
+              (br_if $sd (f64.eq (call $__dec_to_f64 (local.get $mant) (i32.sub (local.get $E) (i32.sub (local.get $pc) (i32.const 1)))) (local.get $ax)))
+              (br_if $sd (i32.ge_s (local.get $pc) (i32.const 17)))
+              (local.set $pc (i32.add (local.get $pc) (i32.const 1)))
+              (br $sl)))
+            (local.set $len (local.get $pc))))))
+    (local.set $out (call $__alloc (i32.shl (i32.add (local.get $len) (i32.const 12)) (i32.const 1))))
+    (local.set $p (local.get $out))
+    (if (f64.lt (local.get $x) (f64.const 0))
+      (then (i32.store16 (local.get $p) (i32.const 45)) (local.set $p (i32.add (local.get $p) (i32.const 2)))))
+    (i32.store16 (local.get $p) (i32.load16_u (local.get $dig)))
+    (local.set $p (i32.add (local.get $p) (i32.const 2)))
+    (if (i32.gt_s (local.get $len) (i32.const 1)) (then
+      (i32.store16 (local.get $p) (i32.const 46))
+      (local.set $p (i32.add (local.get $p) (i32.const 2)))
+      (memory.copy (local.get $p) (i32.add (local.get $dig) (i32.const 2)) (i32.shl (i32.sub (local.get $len) (i32.const 1)) (i32.const 1)))
+      (local.set $p (i32.add (local.get $p) (i32.shl (i32.sub (local.get $len) (i32.const 1)) (i32.const 1))))))
+    (local.set $p (call $__fmt_exp_tail (local.get $p) (local.get $E)))
+    (call $__mkstr (local.get $out) (i32.shr_u (i32.sub (local.get $p) (local.get $out)) (i32.const 1))))`
+  // Number.prototype.toPrecision (21.1.3.5): p significant digits, exponential
+  // form outside 1e-6 ≤ |x| < 10^p.
+  ctx.core.stdlib['__fmt_prec'] = `(func $__fmt_prec (param $x f64) (param $pr i32) (result f64)
+    (local $dig i32) (local $out i32) (local $p i32) (local $E i32) (local $ax f64) (local $i i32)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (call $__ftoa (local.get $x) (i32.const 0) (i32.const 0)))))
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (call $__ftoa (local.get $x) (i32.const 0) (i32.const 0)))))
+    (local.set $ax (f64.abs (local.get $x)))
+    (local.set $dig (call $__alloc (i32.const 320)))
+    (if (f64.eq (local.get $ax) (f64.const 0))
       (then
-        (local.set $i (local.get $len))
-        (block $md (loop $ml
-          (br_if $md (i32.le_s (local.get $i) (i32.const 1)))
-          (i32.store16 (i32.add (local.get $buf) (i32.shl (i32.add (local.get $pos) (local.get $i)) (i32.const 1))) (i32.load16_u (i32.add (local.get $buf) (i32.shl (i32.add (local.get $pos) (i32.sub (local.get $i) (i32.const 1))) (i32.const 1)))))
-          (local.set $i (i32.sub (local.get $i) (i32.const 1)))
-          (br $ml)))
-        (i32.store16 (i32.add (local.get $buf) (i32.shl (i32.add (local.get $pos) (i32.const 1)) (i32.const 1))) (i32.const 46))
-        (local.set $pos (i32.add (local.get $pos) (i32.add (local.get $len) (i32.const 1)))))
-      (else (local.set $pos (i32.add (local.get $pos) (local.get $len)))))
-    ;; Shortest form: drop trailing zeros (and a bare '.') from the mantissa.
-    ;; The leading digit is always 1-9, so the walk-back stops at the '.' at worst.
-    (if (i32.and (local.get $strip) (i32.gt_s (local.get $prec) (i32.const 0)))
+        (block $zd (loop $zl
+          (br_if $zd (i32.ge_s (local.get $i) (local.get $pr)))
+          (i32.store16 (i32.add (local.get $dig) (i32.shl (local.get $i) (i32.const 1))) (i32.const 48))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $zl))))
+      (else (local.set $E (call $__dec_sig (local.get $ax) (local.get $pr) (local.get $dig) (i32.const 0)))))
+    (local.set $out (call $__alloc (i32.shl (i32.add (local.get $pr) (i32.const 24)) (i32.const 1))))
+    (local.set $p (local.get $out))
+    (if (f64.lt (local.get $x) (f64.const 0))
+      (then (i32.store16 (local.get $p) (i32.const 45)) (local.set $p (i32.add (local.get $p) (i32.const 2)))))
+    (if (i32.or (i32.lt_s (local.get $E) (i32.const -6)) (i32.ge_s (local.get $E) (local.get $pr)))
       (then
-        (block $sz (loop $szl
-          (br_if $sz (i32.ne (i32.load16_u (i32.sub (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.shl (i32.const 1) (i32.const 1)))) (i32.const 48)))
-          (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
-          (br $szl)))
-        (if (i32.eq (i32.load16_u (i32.sub (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.shl (i32.const 1) (i32.const 1)))) (i32.const 46))
-          (then (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))))))
-    ;; Write 'e', sign, exponent
-    (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 101))
-    (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-    (if (i32.lt_s (local.get $exp) (i32.const 0))
-      (then (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 45))
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-        (local.set $exp (i32.sub (i32.const 0) (local.get $exp))))
-      (else (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 43))
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
-    (local.set $pos (i32.add (local.get $pos) (call $__itoa (local.get $exp) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))))))
-    (call $__mkstr (local.get $buf) (local.get $pos)))`
+        (i32.store16 (local.get $p) (i32.load16_u (local.get $dig)))
+        (local.set $p (i32.add (local.get $p) (i32.const 2)))
+        (if (i32.gt_s (local.get $pr) (i32.const 1)) (then
+          (i32.store16 (local.get $p) (i32.const 46))
+          (local.set $p (i32.add (local.get $p) (i32.const 2)))
+          (memory.copy (local.get $p) (i32.add (local.get $dig) (i32.const 2)) (i32.shl (i32.sub (local.get $pr) (i32.const 1)) (i32.const 1)))
+          (local.set $p (i32.add (local.get $p) (i32.shl (i32.sub (local.get $pr) (i32.const 1)) (i32.const 1))))))
+        (local.set $p (call $__fmt_exp_tail (local.get $p) (local.get $E))))
+      (else (if (i32.eq (local.get $E) (i32.sub (local.get $pr) (i32.const 1)))
+        (then
+          (memory.copy (local.get $p) (local.get $dig) (i32.shl (local.get $pr) (i32.const 1)))
+          (local.set $p (i32.add (local.get $p) (i32.shl (local.get $pr) (i32.const 1)))))
+        (else (if (i32.ge_s (local.get $E) (i32.const 0))
+          (then
+            (memory.copy (local.get $p) (local.get $dig) (i32.shl (i32.add (local.get $E) (i32.const 1)) (i32.const 1)))
+            (local.set $p (i32.add (local.get $p) (i32.shl (i32.add (local.get $E) (i32.const 1)) (i32.const 1))))
+            (i32.store16 (local.get $p) (i32.const 46))
+            (local.set $p (i32.add (local.get $p) (i32.const 2)))
+            (memory.copy (local.get $p) (i32.add (local.get $dig) (i32.shl (i32.add (local.get $E) (i32.const 1)) (i32.const 1))) (i32.shl (i32.sub (i32.sub (local.get $pr) (local.get $E)) (i32.const 1)) (i32.const 1)))
+            (local.set $p (i32.add (local.get $p) (i32.shl (i32.sub (i32.sub (local.get $pr) (local.get $E)) (i32.const 1)) (i32.const 1)))))
+          (else
+            (i32.store16 (local.get $p) (i32.const 48))
+            (i32.store16 offset=2 (local.get $p) (i32.const 46))
+            (local.set $p (i32.add (local.get $p) (i32.const 4)))
+            (local.set $i (i32.const 0))
+            (block $zd (loop $zl
+              (br_if $zd (i32.ge_s (local.get $i) (i32.sub (i32.const -1) (local.get $E))))
+              (i32.store16 (local.get $p) (i32.const 48))
+              (local.set $p (i32.add (local.get $p) (i32.const 2)))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $zl)))
+            (memory.copy (local.get $p) (local.get $dig) (i32.shl (local.get $pr) (i32.const 1)))
+            (local.set $p (i32.add (local.get $p) (i32.shl (local.get $pr) (i32.const 1))))))))))
+    (call $__mkstr (local.get $out) (i32.shr_u (i32.sub (local.get $p) (local.get $out)) (i32.const 1))))`
+
 
   // __static_str(id: i32) → f64 — create heap string from data segment
   // 0=NaN 1=Infinity 2=-Infinity 3=true 4=false 5=null 6=undefined 7=[Array] 8=[Object]
@@ -829,6 +1034,11 @@ export default (ctx) => {
     (if (i32.eq (local.get $id) (i32.const 9)) (then (local.set $src (i32.const 114)) (local.set $len (i32.const 2))))
     (if (i32.eq (local.get $id) (i32.const 10)) (then (local.set $src (i32.const 118)) (local.set $len (i32.const 9))))
     (if (i32.eq (local.get $id) (i32.const 11)) (then (local.set $src (i32.const 136)) (local.set $len (i32.const 9))))
+    (if (i32.eq (local.get $id) (i32.const 12)) (then (local.set $src (i32.const 154)) (local.set $len (i32.const 15))))
+    (if (i32.eq (local.get $id) (i32.const 13)) (then (local.set $src (i32.const 184)) (local.set $len (i32.const 12))))
+    (if (i32.eq (local.get $id) (i32.const 14)) (then (local.set $src (i32.const 208)) (local.set $len (i32.const 12))))
+    (if (i32.eq (local.get $id) (i32.const 15)) (then (local.set $src (i32.const 232)) (local.set $len (i32.const 20))))
+    (if (i32.eq (local.get $id) (i32.const 16)) (then (local.set $src (i32.const 272)) (local.set $len (i32.const 29))))
     (call $__mkstr ${ctx.memory.shared ? '(i32.add (global.get $__staticBase) (local.get $src))' : '(local.get $src)'} (local.get $len)))`
   }
 
@@ -836,7 +1046,8 @@ export default (ctx) => {
   // 0=NaN 1=Infinity 2=-Infinity 3=true 4=false 5=null 6=undefined 7=[Array] 8=[Object]
   // 9=ok 10=not-equal 11=timed-out (Atomics.wait results, module/atomics.js)
   // Padded to 16 so stripping the prefix keeps every later alignment.
-  const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]oknot-equaltimed-out'
+  // 12=[object Object] 13=[object Map] 14=[object Set] 15=[object ArrayBuffer] 16=function () { [native code] }
+  const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]oknot-equaltimed-out[object Object][object Map][object Set][object ArrayBuffer]function () { [native code] }'
   dataPush(stringBytes(staticStr))
   dataAlign(16)
   ctx.runtime.staticDataLen = dataLen()
@@ -1476,7 +1687,7 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
     (local.get $i))`
 
-  ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v i64) (result f64)
+  ctx.core.stdlib['__to_num'] = () => `(func $__to_num (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
@@ -1502,6 +1713,13 @@ export default (ctx) => {
     ;; payload. Raw BigInt is confined to statically-proven paths.
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
+    ;; ToPrimitive(number) for an object: a Date is its time value; a user
+    ;; valueOf/toString goes through the prelude (compile/emit/to-primitive.js).
+    (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
+      (then
+        ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid}))
+          (then (return (f64.load (i32.wrap_i64 (local.get $v))))))` : ''}
+        ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(return (call $__to_num (i64.reinterpret_f64 (call $__jz_tp_num (f64.reinterpret_i64 (local.get $v))))))` : ''}))
     ;; Non-string values go through ToString per JS spec, then re-check the
     ;; type in case ToString itself returned a non-string sentinel.
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
@@ -1826,7 +2044,7 @@ export default (ctx) => {
   // that already dominates it. ctx.schema.slotOf tracks an object literal's
   // OWN property schema independently of that flow-sensitive valType
   // inference (the same resolution src/ir.js's primMethodIdx already relies
-  // on for toPrimitiveChain), so this still checks it directly too rather
+  // on for objectToPrimitive), so this still checks it directly too rather
   // than trusting valTypeOf as the sole signal — a second, structural proof
   // for whatever valTypeOf still can't reach (e.g. a name never assigned an
   // object-shaped RHS in THIS function at all, only received boxed through a
@@ -1899,39 +2117,44 @@ export default (ctx) => {
   reg('.bigint:toString', ['__radix_str'], (n, radix) =>
     typed(['call', '$__radix_str', readI64(n, emit(n)), radix == null ? ['i32.const', 10] : asI32(emit(radix))], 'f64'))
 
-  reg('.number:toFixed', ['__ftoa'], (n, d) =>
-    typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64'))
-
-  reg('.number:toExponential', ['__toExp'], (n, d) =>
-    typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 0]], 'f64'))
-
-  reg('.number:toPrecision', ['__ftoa', '__toExp'], (n, p) => {
-    const val = temp('pv'), t = temp('tp'), exp = tempI32('te'), pr = tempI32('pp')
+  // ToIntegerOrInfinity of a digits argument, or the default when absent.
+  const digitsArg = (d, dflt) => d == null || isUndefinedLiteral(d) ? ['i32.const', dflt]
+    : ['i32.trunc_sat_f64_s', asF64(toNumF64(d, emit(d)))]
+  const rangeCheck = (f, msg, onlyFinite) => ['if',
+    onlyFinite
+      ? ['i32.and', ['i32.gt_u', ['local.get', `$${f}`], ['i32.const', 100]],
+          ['f64.lt', ['f64.abs', ['local.get', onlyFinite]], ['f64.const', 'inf']]]
+      : ['i32.gt_u', ['local.get', `$${f}`], ['i32.const', 100]],
+    ['then', ['drop', throwErrorIR('RangeError', msg)]]]
+  // toFixed checks its digits before the receiver's finiteness; the other two after (21.1.3.x).
+  reg('.number:toFixed', ['__fmt_fixed'], (n, d) => {
+    const v = temp('tfv'), f = tempI32('tff')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${val}`, asF64(emit(n))],
-      ['local.set', `$${pr}`, asI32(emit(p))],
-      ['local.set', `$${t}`, ['f64.abs', ['local.get', `$${val}`]]],
-      ['local.set', `$${exp}`, ['i32.const', 0]],
-      ['if', ['f64.gt', ['local.get', `$${t}`], ['f64.const', 0]],
-        ['then',
-          ['block', '$d1', ['loop', '$l1',
-            ['br_if', '$d1', ['f64.lt', ['local.get', `$${t}`], ['f64.const', 10]]],
-            ['local.set', `$${t}`, ['f64.div', ['local.get', `$${t}`], ['f64.const', 10]]],
-            ['local.set', `$${exp}`, ['i32.add', ['local.get', `$${exp}`], ['i32.const', 1]]],
-            ['br', '$l1']]],
-          ['block', '$d2', ['loop', '$l2',
-            ['br_if', '$d2', ['f64.ge', ['local.get', `$${t}`], ['f64.const', 1]]],
-            ['local.set', `$${t}`, ['f64.mul', ['local.get', `$${t}`], ['f64.const', 10]]],
-            ['local.set', `$${exp}`, ['i32.sub', ['local.get', `$${exp}`], ['i32.const', 1]]],
-            ['br', '$l2']]]]],
-      ['if', ['result', 'f64'],
-        ['i32.or',
-          ['i32.lt_s', ['local.get', `$${exp}`], ['i32.const', -6]],
-          ['i32.ge_s', ['local.get', `$${exp}`], ['local.get', `$${pr}`]]],
-        ['then', ['call', '$__toExp', ['local.get', `$${val}`], ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]], ['i32.const', 0]]],
-        ['else', ['call', '$__ftoa', ['local.get', `$${val}`],
-          ['i32.sub', ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]], ['local.get', `$${exp}`]],
-          ['i32.const', 1]]]]], 'f64')
+      ['local.set', `$${v}`, asF64(emit(n))],
+      ['local.set', `$${f}`, digitsArg(d, 0)],
+      rangeCheck(f, 'toFixed() digits argument must be between 0 and 100', null),
+      ['call', '$__fmt_fixed', ['local.get', `$${v}`], ['local.get', `$${f}`]]], 'f64')
+  })
+  reg('.number:toExponential', ['__fmt_exp'], (n, d) => {
+    const v = temp('tev'), f = tempI32('tef')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${v}`, asF64(emit(n))],
+      ['local.set', `$${f}`, digitsArg(d, -1)],
+      ['if', ['i32.ne', ['local.get', `$${f}`], ['i32.const', -1]],
+        ['then', rangeCheck(f, 'toExponential() argument must be between 0 and 100', `$${v}`)]],
+      ['call', '$__fmt_exp', ['local.get', `$${v}`], ['local.get', `$${f}`]]], 'f64')
+  })
+  reg('.number:toPrecision', ['__fmt_prec', '__ftoa'], (n, p) => {
+    const v = temp('tpv'), f = tempI32('tpf')
+    if (p == null || isUndefinedLiteral(p))
+      return typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${v}`, asF64(emit(n))],
+      ['local.set', `$${f}`, digitsArg(p, 0)],
+      ['if', ['i32.and', ['i32.gt_u', ['i32.sub', ['local.get', `$${f}`], ['i32.const', 1]], ['i32.const', 99]],
+          ['f64.lt', ['f64.abs', ['local.get', `$${v}`]], ['f64.const', 'inf']]],
+        ['then', ['drop', throwErrorIR('RangeError', 'toPrecision() argument must be between 1 and 100')]]],
+      ['call', '$__fmt_prec', ['local.get', `$${v}`], ['local.get', `$${f}`]]], 'f64')
   })
 
   // Number(x) — identity for numbers, i64→f64 conversion for BigInt

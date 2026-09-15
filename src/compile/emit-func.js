@@ -38,6 +38,8 @@ export function emitFunc(func, functionPlan, programFacts) {
 
   const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
   let schemaVarsPrev = null
+  const prevEmitting = ctx.closure.emitting
+  ctx.closure.emitting = name   // the owner of closures minted in this body (wasm name section only)
   try {
   // Escape-boxing gate for return-position BOOL literals/expressions (emit.js
   // 'return'): a func with >= 2 syntactic return statements whose overall
@@ -361,6 +363,7 @@ export function emitFunc(func, functionPlan, programFacts) {
 
   return fn
   } finally {
+    ctx.closure.emitting = prevEmitting
     if (schemaVarsPrev) ctx.schema.vars = schemaVarsPrev
     restoreActiveFunction(ctx, previousFrame)
   }

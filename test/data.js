@@ -7,6 +7,25 @@ import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle } from './util.js'
 
+test('Map/Set lookups follow aliased growth and preserve misses after deletion', () => {
+  const src = `
+    function fill(m, s, n) { for (let i=0;i<n;i++) { m.set(i, i+1); s.add(i) } }
+    export function f(n) {
+      const m=new Map(), s=new Set(), a=m, b=s
+      fill(m,s,n)
+      let sum=0
+      for(let i=0;i<n;i++) if(a.has(i)&&b.has(i)) sum+=a.get(i)
+      if(n) { m.delete(n-1); s.delete(n-1) }
+      return sum+':'+a.has(n-1)+':'+b.has(n-1)+':'+a.get(n-1)+':'+a.has(n)
+    }
+  `
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 6, 7, 64, 1024, 1024, 0, 7]) is(f(n), js(n), `O${optimize}, ${n} keys`)
+  }
+})
+
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
   return adaptI64(module, instance.exports)
@@ -4338,22 +4357,9 @@ test('RepresentationPlan: a `.`-property read chained off a proven array-element
     is(jz(src, { optimize }).exports.useArrElem(), 40, `O${optimize || 0}: rows[1].items[0] === 40, JS-correct`)
 })
 
-test('RepresentationPlan: a `.`-property read of a genuinely mixed-kind field stays runtime-dispatched (negative control)', () => {
-  // Negative control for the positive pin above: A and B share the identical
-  // schema (`{items, tag}` dedupes to one schemaId), but their `items` field
-  // disagrees in KIND (ARRAY vs STRING) — a real, whole-program disagreement,
-  // not merely unproven. `pick`'s branch is a runtime PARAMETER (not a
-  // compile-time constant), so B's construction can't be constant-folded
-  // away before the census runs — both constructions stay genuinely live,
-  // so the SlotFact census must see the real disagreement (an earlier,
-  // constant-foldable version of this repro was checked and rejected during
-  // this session: with a compile-time-constant branch, B's whole `{}`-
-  // literal got folded away before the census ever ran, silently leaving
-  // only A's ARRAY observation live — a vacuous, not a real, negative
-  // control; this shape avoids that pitfall). dispatch's `c` param still
-  // correctly proves schemaId (A/B share one schema) — only the FIELD's own
-  // kind is unprovable, confirming the fix declines at the right precision:
-  // "receiver's schema is known" is not "this field's kind is known."
+test('RepresentationPlan: unrelated records share storage without poisoning call arguments', () => {
+  // pick sees both allocations; dispatch receives only A. Layout identity
+  // alone must neither erase dispatch's facts nor narrow pick's result.
   const src = `
     const A = { items: [10, 20, 30], tag: 1 }
     const B = { items: 'oops', tag: 2 }
@@ -4368,8 +4374,11 @@ test('RepresentationPlan: a `.`-property read of a genuinely mixed-kind field st
     return wat.slice(start, next)
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param stays runtime-dispatched — A and B share one schema but genuinely disagree on items' kind, so the SlotFact census is (correctly) poisoned and the fix must decline, not guess")
-  is(jz(src, { optimize: false }).exports.useA(), 20, 'O0: the declined param still computes the JS-correct answer through the (slower) runtime-dispatch path')
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), 'grab receives only A.items, a proven array')
+  const { useA, pick } = jz(src, { optimize: false }).exports
+  is(useA(), 20)
+  is(pick(1), 'oops')
+  is(pick(0), [10, 20, 30])
 })
 
 test("RepresentationPlan: `.`-property-read schemaId resolution is pass-order-independent — swapping a 3-function forwarding chain's declaration order yields byte-identical WAT", () => {

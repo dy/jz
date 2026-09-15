@@ -204,7 +204,10 @@ test('summary: delete, a host import, for-of, a binding read before its assignme
   is(ctx.summary.fieldTypedCtor(sid, 'a'), null, 'a computed-key delete may remove any slot')
   is(ctx.summary.fieldVal(sid, 'b'), null)
   is(tagOf(kindOf('f', 'x')), K.NUMBER, 'for-of over a typed array and a number array binds a number')
-  is(tagOf(kindOf('later', 'v')), K.ANY, 'the deleted-from slot reaches later as ANY, joined with the literal')
+  // ECMAScript: a deleted property reads as undefined (a computed-key delete
+  // may remove any slot), so the slot's number gains absence, not every kind.
+  is(tagOf(kindOf('later', 'v')), K.NUMBER, 'the deleted-from slot reaches later as its number, joined with the literal')
+  ok(isNullable(kindOf('later', 'v')), 'and as possibly absent, since the delete may have removed it')
   is(tagOf(kindOf('g', 'o')), K.OBJECT, 'a function declared after its caller binds through the fixpoint')
   is(tagOf(ctx.summary.resultOf('later')), K.NUMBER)
   _compileInProcess(`import { log } from 'host'\nconst mk = () => ({ a: new Float32Array(2) })\nexport const f = () => { const o = mk(); log(o); return o.a[0] }`,
@@ -326,17 +329,19 @@ test('summary codegen: a method called through an array of instances, an exporte
   // level 2: below it the method's dispatcher, dead here, is not shaken
   if (OPT_LEVEL === 2) ok(!/__dyn_get|__hash|__to_str/.test(compile(src, { wat: true })), 'the method comes from the element\'s schema slot, the method parameter is a typed array')
   is(jz(src).exports.run(4), 2 * 0.5 * 1.5 * 2.5)
-  if (OPT_LEVEL === 2) ok(compile(src).length < 3100, `the typed tier's size class (${compile(src).length} B)`)
+  // Nullish receiver checks retain the private error signal: 3060 → 3132 B.
+  // A control build omitting only those checks restores 3060; keep the same slack.
+  if (OPT_LEVEL === 2) ok(compile(src).length < 3172, `the typed tier's size class (${compile(src).length} B)`)
   // An exported class: its constructor parameter is read only through a slot
   // every read of which multiplies, so the f64 boundary is the coercion.
   const cls = `export class Gain { constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
       process() { const b = this.buf, g = this.gain; for (let i = 0; i < b.length; i++) b[i] = b[i] * g; return b[0] } }
     export const run = (n, gain) => { const g = new Gain(n, gain); g.buf[0] = 2; g.process(); return g.process() }`
   if (OPT_LEVEL === 2) ok(!/__to_str/.test(compile(cls, { wat: true })), 'no string machinery: the gain slot is read only as a number')
-  if (OPT_LEVEL === 2) ok(!WebAssembly.Module.exports(new WebAssembly.Module(compile(cls))).some(e => e.name === '__jz_last_err_bits'), 'dead generated guards retain no host error signal')
   is(jz(cls).exports.run(8, 0.5), 0.5)
   is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
-  if (OPT_LEVEL === 2) ok(compile(cls).length < 2000, `bytes: ${compile(cls).length}`)
+  // The same required receiver check adds 72 B to the exported-class case.
+  if (OPT_LEVEL === 2) ok(compile(cls).length < 2072, `bytes: ${compile(cls).length}`)
 })
 
 test('summary: a module global is the join of every store; the declaration\'s claim yields', () => {
@@ -536,4 +541,46 @@ test('summary: named callable values share closure argument and result analysis'
   }
   summarize(`function identity(x){return x} export function get(){return {identity}}`)
   ok(ctx.summary.escaped.has('identity'), 'a host-visible namespace opens its callable parameters')
+})
+
+test('summary: joins that never read through a value keep its shapes', () => {
+  // `must` only tests its argument: objects and booleans meet there without
+  // losing the shapes. A rest parameter is a tuple of its arguments by
+  // position. Set elements are followed. A dictionary joined with an object
+  // keeps the dictionary cell, its shapes riding on it.
+  summarize(`const must = (c, m) => { if (!c) throw new Error(m) }
+    const rest = (...args) => args[1]
+    export const f = (n) => {
+      const cfg = { list: [1, 2], name: 'a' }
+      must(cfg, 'cfg'); must(n > 1, 'n')
+      const got = rest(n, cfg)
+      const s = new Set(); s.add({ k: n })
+      let picked = null
+      for (const o of s) picked = o
+      const src = n > 2 ? { list: [1], name: 'a' } : { name: 'b', list: [2], z: 1 }
+      const records = []
+      records.push({ ...src, extra: 1 }); records.push({ list: [3], name: 'b' })
+      const r = records[0]
+      return cfg.list.length + got.list.length + picked.k + r.list.length
+    }`)
+  is(tagOf(kindOf('f', 'cfg')), K.OBJECT, 'the passive test keeps the literal shape')
+  ok(paramOf(kindOf('f', 'cfg')) !== UNKNOWN, 'the shape stays named')
+  is(tagOf(kindOf('f', 'got')), K.OBJECT, 'the rest tuple hands back the argument by position')
+  ok(paramOf(kindOf('f', 'got')) !== UNKNOWN, 'with its shape')
+  is(tagOf(kindOf('f', 'picked')), K.OBJECT, 'iterating a Set yields its elements')
+  ok(hasTag(kindOf('f', 'r'), K.HASH) && hasTag(kindOf('f', 'r'), K.OBJECT), 'a dictionary joined with an object keeps both')
+  is(jz(`const must = (c, m) => { if (!c) throw new Error(m) }
+    export const f = (n) => { const cfg = { list: [1, 2], name: 'a' }; must(cfg, 'x'); must(n > 1, 'n'); return cfg.list.length + n }`).exports.f(5), 7)
+})
+
+test('summary: a decided condition prunes its dead arm; a nullish receiver read throws', () => {
+  // `x === undefined` on a binding that is never nullish walks only the live
+  // arm, so a defaulted destructuring keeps the argument's shape. A read
+  // through a nullish receiver is a throwing call, not an unknown value.
+  summarize(`const mk = (opts) => { const o = opts === undefined ? {} : opts; const sig = o.sig === undefined ? null : o.sig; return { current: sig } }
+    export const f = () => { const frame = mk({ sig: { params: [1], results: [] } }); return frame.current.params.length }`)
+  is(tagOf(kindOf('mk', 'o')), K.OBJECT, 'the never-undefined argument skips the {} default')
+  ok(paramOf(kindOf('mk', 'o')) !== UNKNOWN, 'and keeps its shape')
+  is(jz(`const mk = (opts) => { const o = opts === undefined ? {} : opts; const sig = o.sig === undefined ? null : o.sig; return { current: sig } }
+    export const f = () => { const frame = mk({ sig: { params: [1], results: [] } }); return frame.current.params.length }`).exports.f(), 1)
 })

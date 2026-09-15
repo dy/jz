@@ -481,6 +481,8 @@ function effectFoldSeq(operands, constIR) {
   return typed(['block', ['result', 'i32'], ...stmts, constIR], 'i32')
 }
 
+const HEAP_EQ_KINDS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.TYPED, VAL.MAP, VAL.SET, VAL.HASH, VAL.DATE, VAL.CLOSURE, VAL.BUFFER])
+const PRIM_EQ_KINDS = new Set([VAL.NUMBER, VAL.STRING, VAL.BOOL])
 function emitLooseEq(a, b, negate, strict) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
@@ -558,6 +560,15 @@ function emitLooseEq(a, b, negate, strict) {
   // Strict `===` converts nothing: every one of those is a NaN-box on the
   // unknown side, so `f64.eq` against the carrier as it is answers (`b[1]
   // === 0` with `b[1]` holding '0' is false).
+  // A heap kind beside a primitive kind converts the object (IsLooselyEqual
+  // steps 10-11): the dynamic compare, whose ToPrimitive arm needs the
+  // string module.
+  if (!strict && (HEAP_EQ_KINDS.has(rawA) && PRIM_EQ_KINDS.has(rawB) || HEAP_EQ_KINDS.has(rawB) && PRIM_EQ_KINDS.has(rawA))) {
+    ctx.module.include('string')
+    inc('__eq')
+    const call = typed(['call', '$__eq', asI64(numA()), asI64(numB())], 'i32')
+    return negate ? typed(['i32.eqz', call], 'i32') : call
+  }
   if (!strict) {
     if (aSafe && (rawB == null || rawB === VAL.STRING)) return looseNumberEq(numA(), b, vb, rawB, negate, true)
     if (bSafe && (rawA == null || rawA === VAL.STRING)) return looseNumberEq(numB(), a, va, rawA, negate, false)
@@ -661,6 +672,16 @@ function emitLooseEq(a, b, negate, strict) {
       : ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
           ['then', ['call', '$__str_eq', uG, lG]],
           ['else', ['i32.const', 0]]]
+    // Loose: an object on the unknown side compares as its primitive
+    // (IsLooselyEqual step 11) — through the dynamic compare, before the SSO
+    // shortcut, which is only sound for a string or a non-object.
+    if (!strict) {
+      ctx.module.include('string')
+      inc('__is_object', '__eq')
+      tail = ['if', ['result', 'i32'], ['call', '$__is_object', uG],
+        ['then', ['call', '$__eq', uG, lG]],
+        ['else', tail]]
+    }
     if (bigU) {
       inc('__bigint_eq_str')
       const uF = typed(['f64.reinterpret_i64', uG], 'f64')
@@ -823,28 +844,6 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   if (vta === VAL.STRING && vtb === VAL.STRING) {
     return typed([`i32.${i32op}`, stringOps(a).cmp(asF64(va), asF64(vb), ctx), ['i32.const', 0]], 'i32')
   }
-  // Exactly one operand is a known string; the other has no static type, so it
-  // may hold a string pointer at runtime (e.g. `c >= '0'` where `c` came from
-  // `s[i]` on an untyped receiver). JS relational compare is lexicographic only
-  // when *both* sides are strings, else it ToNumbers both. The f64 path below
-  // would compare the unknown side's NaN-boxed string bits as a float (NaN ⇒
-  // always false), so dispatch at runtime on the unknown side: string → __str_cmp
-  // three-way; else ToNumber both. Mirrors `+`'s __is_str_key string dispatch.
-  // Gated on a *known-string* counterpart, so numeric loops (`i < n`) never pay
-  // the check — comparing against a string literal signals string intent.
-  if (((vta === VAL.STRING && vtb == null) || (vtb === VAL.STRING && vta == null)) && stringOps(a)?.cmp) {
-    const unkIsA = vta == null
-    const ta = temp('cmp'), tb = temp('cmp')
-    inc('__is_str_key')
-    const getA = typed(['local.get', `$${ta}`], 'f64'), getB = typed(['local.get', `$${tb}`], 'f64')
-    const check = ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${unkIsA ? ta : tb}`]]]
-    const strCmp = [`i32.${i32op}`, stringOps(a).cmp(getA, getB, ctx), ['i32.const', 0]]
-    const numCmp = [`f64.${f64op}`, toNumF64(a, getA), toNumF64(b, getB)]
-    return typed(['block', ['result', 'i32'],
-      ['local.set', `$${ta}`, asF64(va)],
-      ['local.set', `$${tb}`, asF64(vb)],
-      ['if', ['result', 'i32'], check, ['then', strCmp], ['else', numCmp]]], 'i32')
-  }
   if (vta === VAL.DATE || vtb === VAL.DATE) {
     const dateNum = (node, v, vt) => {
       if (vt !== VAL.DATE) return toNumF64(node, v)
@@ -858,51 +857,42 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // A numeric partner rules out lexicographic comparison. Coercion belongs
   // to the value contract, regardless of whether it came from a parameter,
   // call, or property read. toNumF64 already elides proven numeric carriers.
-  const numA = vta === VAL.NUMBER || (va.type === 'i32' && va.ptrKind == null)
-  const numB = vtb === VAL.NUMBER || (vb.type === 'i32' && vb.ptrKind == null)
-  if ((numB && !numA) || (numA && !numB))
-    return typed([`f64.${f64op}`, toNumF64(a, va), toNumF64(b, vb)], 'i32')
+  const numA = vta === VAL.NUMBER || (vta == null && va.type === 'i32' && va.ptrKind == null)
+  const numB = vtb === VAL.NUMBER || (vtb == null && vb.type === 'i32' && vb.ptrKind == null)
+  if ((numB && !numA) || (numA && !numB)) {
+    const ta = temp('cmp'), tb = temp('cmp')
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${ta}`, asF64(va)], ['local.set', `$${tb}`, asF64(vb)],
+      [`f64.${f64op}`, toNumF64(a, typed(['local.get', `$${ta}`], 'f64')),
+        toNumF64(b, typed(['local.get', `$${tb}`], 'f64'))]], 'i32')
+  }
   // An `.unsigned` i32 operand ([0, 2^32)) can't share a signed i32 compare with a
   // possibly-signed one: mixed sign inverts the order (3 < 0xFFFFFFFF unsigned, but
   // 3 > -1 signed). Widen to f64, where asF64 converts each operand by its own
   // signedness (convert_i32_u for unsigned, _s otherwise) to its true numeric value.
-  if (!va.unsigned && !vb.unsigned) {
+  if (numA && numB && !va.unsigned && !vb.unsigned) {
     const ai = intConstValue(a), bi = intConstValue(b)
     if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
     if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
     if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${i32op}`, va, vb], 'i32')
   }
-  // BOTH operands runtime-unknown boxed carriers: two strings must compare
-  // lexicographically (the raw f64 compare below reads their NaN-boxed
-  // pointers as NaN — always false; this silently broke watr-in-kernel's
-  // hex-string i64 comparisons, folding `i64.lt_s(-1, 0)` to 0 and with it
-  // the -1n<0n row and the shaped-parser family). Same runtime dispatch as
-  // the one-known-string branch above, gated to non-i32 boxed operands so
-  // narrowed numeric compares never pay it: both strings → __str_cmp
-  // three-way; anything else → ToNumber compare (ES 7.2.13).
-  if (vta == null && vtb == null && va.type !== 'i32' && vb.type !== 'i32' && ctx.module.modules.string && stringOps(a)?.cmp) {
+  // Every remaining non-numeric pair may compare as strings after
+  // ToPrimitive. Keep the common two-number check inline; share coercion,
+  // string dispatch and unordered handling across all four operators.
+  if (!numA && !numB) {
+    ctx.module.include('string')
+    ctx.module.include('number')
     const ta = temp('cmp'), tb = temp('cmp')
-    inc('__is_str_key')
-    const getA = typed(['local.get', `$${ta}`], 'f64'), getB = typed(['local.get', `$${tb}`], 'f64')
-    // FAST PATH first — two inline non-NaN tests, no calls: every NaN-boxed
-    // carrier (strings included) is a NaN, so both-non-NaN ⇒ genuine numbers ⇒
-    // plain f64 compare. Only NaN-ish operands (boxed values, real NaN) pay
-    // the is_str_key calls; the kernel's own hot compares are overwhelmingly
-    // numbers, and the call-based form alone cost ~4% warm self-compile.
-    const bothNum = ['i32.and',
-      ['f64.eq', ['local.get', `$${ta}`], ['local.get', `$${ta}`]],
-      ['f64.eq', ['local.get', `$${tb}`], ['local.get', `$${tb}`]]]
-    const bothStr = ['i32.and',
-      ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${ta}`]]],
-      ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${tb}`]]]]
-    const strCmp = [`i32.${i32op}`, stringOps(a).cmp(getA, getB, ctx), ['i32.const', 0]]
-    const numCmp = [`f64.${f64op}`, toNumF64(a, getA), toNumF64(b, getB)]
+    inc('__cmp')
+    const getA = ['local.get', `$${ta}`], getB = ['local.get', `$${tb}`]
+    const slow = [`f64.${f64op}`, ['call', '$__cmp',
+      ['i64.reinterpret_f64', getA], ['i64.reinterpret_f64', getB]], ['f64.const', 0]]
+    const result = vta == null && vtb == null
+      ? ['if', ['result', 'i32'], ['i32.and', ['f64.eq', getA, getA], ['f64.eq', getB, getB]],
+        ['then', [`f64.${f64op}`, getA, getB]], ['else', slow]] : slow
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${ta}`, asF64(va)],
-      ['local.set', `$${tb}`, asF64(vb)],
-      ['if', ['result', 'i32'], bothNum,
-        ['then', [`f64.${f64op}`, ['local.get', `$${ta}`], ['local.get', `$${tb}`]]],
-        ['else', ['if', ['result', 'i32'], bothStr, ['then', strCmp], ['else', numCmp]]]]], 'i32')
+      ['local.set', `$${tb}`, asF64(vb)], result], 'i32')
   }
   return typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
 }

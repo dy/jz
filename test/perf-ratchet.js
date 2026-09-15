@@ -24,6 +24,12 @@ import { CATEGORIES, genProgram } from '../scripts/perf-corpus.mjs'
 const SEEDS = 40
 const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 
+// Nullish receiver checks (2026-09-15) add buf +40, nest +88, slice +256,
+// condref +152 loop nodes when generic reads/stores inline. Omitting only
+// requireReceiverWat in a control build restores every prior count exactly.
+// These are required JS exceptions, not a lost optimization; timing, Watr/JSON
+// binary-size ceilings and memory caps stay unchanged.
+
 // Reset-log reuse adds 26 loop nodes to __durable_slot_log in each of the
 // 40 condref modules (+1040). Comparing with only that helper reverted proved
 // all other 1657 function bodies unchanged. The baseline includes this required
@@ -46,6 +52,22 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // where the measurement falls; re-baselined here. The same update lowered buf,
 // nest, slice, ring and condref, which the pass never versions: those had
 // improved under earlier commits and sat below a stale-high baseline.
+// Numeric dictionary stores (2026-09-14): notString cannot prove ARRAY/TYPED.
+// The object-capable store must remain for opaque receivers; the old helper
+// silently ignored dictionary writes (test/to-primitive.js, numeric keys on
+// opaque receivers). An isolated old/new store-proof comparison attributes
+// the added loops to __hash_set_local / __ihash_set_local and their runtime
+// dependencies. buf seed 8's fast SIMD/scalar loops still have 19 nodes each;
+// its cold loop shrinks 989 -> 835 as outlining changes. The ratchet includes
+// those newly required runtime loops, even outside a program's hot loops.
+// With summary-proven output buffers, totals change buf 14344 -> 14994,
+// slice 67576 -> 74808, fgather 9840 -> 5960. Timing/size/memory caps do not move.
+//
+// The Map hash's string arm mixes a packed short string and loads a filled
+// hash cell in place (layout-kinds.js mapHashStringArm): a string-keyed Map or
+// Set probe makes one call, not two. watr inlines the arm into the collection
+// helpers' own loops (copy, rehash), which this count includes: nest 21900 ->
+// 22538, slice 74808 -> 76664. Timing/size/memory caps do not move.
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
 // A wide-accumulator versioning (src/optimize/wide-accumulator.js) keeps the
 // original loop as the cold fallback, the last child of its `$__wa…d` block:

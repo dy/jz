@@ -886,7 +886,7 @@ test('closure-unbox: codegen — local declared as i32', () => {
       return g(1) + g(2)
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const w = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   // multi-use closure so the slot survives propagateLocals (the single-use def would be forwarded)

@@ -11,7 +11,7 @@
 // exists where evidence lands, values are exact on the fast path, and a
 // guard MISS still computes the exact JS result through the original.
 import test from 'tst'
-import { ok, is } from 'tst/assert.js'
+import { ok, is, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle } from './util.js'
@@ -143,11 +143,8 @@ export let go = (n) => sum(P.tw, n)`
   ok(!w.includes('$sum$spec'), 'no clone for a rewritable field')
 })
 
-// nullish through the guard: a null table must not become a trap on the
-// speculated route — the guard routes it to the original path, and the result
-// must match the unoptimized compile bit-for-bit (differential, since jz's
-// null[i] semantics predate this pass).
-test('speculate: nullish table falls through the guard, no trap', () => {
+// A failed speculation guard retains the original nullish receiver check.
+test('speculate: nullish table falls through the guard and throws TypeError', () => {
   const src = `
 const mk = (n) => { const tw = new Float64Array(n); for (let i = 0; i < n; i++) tw[i] = i; return { tw } }
 const P = mk(8)
@@ -157,5 +154,7 @@ export let nul = (n) => sum(null, n)`
   const { exports } = jz(src)
   is(exports.fast(8), 28)               // Σ 0..7 — typed fast path
   const control = jz(src, { optimize: 0 }).exports
-  is(exports.nul(4), control.nul(4), 'null table: optimized == unoptimized, no trap')
+  is(exports.nul(0), 0, 'zero iterations never dereference the receiver')
+  throws(() => exports.nul(4), TypeError)
+  throws(() => control.nul(4), TypeError)
 })

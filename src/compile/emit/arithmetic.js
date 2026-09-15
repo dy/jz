@@ -5,13 +5,11 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import {
-  FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
-} from '../../ir.js'
+import { asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp, boolBoxIR } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
-import { K, hasTag, tagsOf, isPostfixRecovery } from '../../summary/kind.js'
+import { K, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
 import { exprType } from '../../type.js'
 import {
   bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain, numericStep,
@@ -169,6 +167,26 @@ const mayBeString = (node) => {
   return hasTag(k, K.STRING) || tagsOf(k) === 0
 }
 
+// Heap kinds whose ToPrimitive (default hint) is a string: an operand of one
+// makes `+` a concatenation. OBJECT joins them unless a user primitive-conversion method may run.
+const STRINGISH_KINDS = new Set([VAL.ARRAY, VAL.TYPED, VAL.MAP, VAL.SET, VAL.HASH, VAL.DATE, VAL.CLOSURE, VAL.BUFFER, VAL.REGEX])
+// Whether an OBJECT operand may reach a user toString/valueOf: its schema slot or class
+// method, or a dynamic write the program makes somewhere. Only possible when
+// the ToPrimitive prelude exists (compile/emit/to-primitive.js).
+const objectMayPrimitiveMethod = (node) => {
+  if (!ctx.funcs.runtimeRoots.has('__jz_tp_num')) return false
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
+  const sid = k != null && tagOf(k) === K.OBJECT ? paramOf(k) : UNKNOWN
+  if (sid === UNKNOWN) return true
+  const brand = ctx.schema.brandOf?.(sid)
+  return ['valueOf', 'toString'].some(name => ctx.schema.list[sid]?.includes(name)
+    || brand && ctx.transform.classes?.get(brand)?.methods.has(name)
+    || ctx.summary.memberMayBeOwn(name))
+}
+const stringishOperand = (vt, n) => vt != null && (STRINGISH_KINDS.has(vt) || (vt === VAL.OBJECT && !objectMayPrimitiveMethod(n)))
+const dynamicObjectOperand = (vt, n) => vt === VAL.OBJECT && objectMayPrimitiveMethod(n)
+const boxedOperand = (vt, n) => vt === VAL.BOOL ? boolBoxIR(emit(n)) : asF64(emit(n))
+
 export const arithmeticOps = {
   // === Arithmetic (type-preserving) ===
 
@@ -246,11 +264,28 @@ export const arithmeticOps = {
       const long = staticLen(a) > LAYOUT.MAX_SSO || staticLen(b) > LAYOUT.MAX_SSO
       return typed(ctx.abi.string.ops.concatRaw(asF64(emit(a)), asF64(emit(b)), ctx, selfAccum, long), 'f64')
     }
-    if (vtA === VAL.STRING || vtB === VAL.STRING) {
-      // An OBJECT operand coerces via ToPrimitive(string) at compile time —
-      // __str_concat's runtime __to_str cannot invoke a user-defined toString.
+    // Either conversion method can yield a number. Even beside a string, `+`
+    // uses the default hint, so an unknown object must not reach ToString first.
+    const dynamicObject = dynamicObjectOperand(vtA, a) || dynamicObjectOperand(vtB, b)
+    if (dynamicObject || ctx.funcs.runtimeRoots.has('__jz_tp_num') && (vtA == null || vtB == null)) {
+      ctx.module.include('string')
+      inc('__add_slow')
+      const va = boxedOperand(vtA, a), vb = boxedOperand(vtB, b)
+      const slow = (x, y) => ['call', '$__add_slow', ['i64.reinterpret_f64', x], ['i64.reinterpret_f64', y]]
+      if (dynamicObject || vtA === VAL.STRING || vtB === VAL.STRING) return typed(slow(va, vb), 'f64')
+      const x = temp('add'), y = temp('add')
+      const readX = () => ['local.get', `$${x}`], readY = () => ['local.get', `$${y}`]
+      return block64(['local.set', `$${x}`, va], ['local.set', `$${y}`, vb],
+        ['if', ['result', 'f64'], ['i32.and', ['f64.eq', readX(), readX()], ['f64.eq', readY(), readY()]],
+          ['then', ['f64.add', readX(), readY()]], ['else', slow(readX(), readY())]])
+    }
+    if (vtA === VAL.STRING || vtB === VAL.STRING || stringishOperand(vtA, a) || stringishOperand(vtB, b)) {
+      if (vtA !== VAL.STRING && vtB !== VAL.STRING) ctx.module.include('string')
+      // A heap operand coerces via ToPrimitive(string) at compile time: an
+      // array joins, an object renders through its user toString or the
+      // inherited tag, a Date its time.
       // A BOOL operand renders "true"/"false" rather than its 0/1 carrier.
-      const strOperand = (vt, n) => vt === VAL.OBJECT ? typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
+      const strOperand = (vt, n) => vt === VAL.OBJECT || STRINGISH_KINDS.has(vt) ? typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
         : vt === VAL.BOOL ? emitBoolStr(n) : asF64(emit(n))
       // Coercion-free sides are already strings: a known STRING is raw; OBJECT/BOOL
       // were stringified by `strOperand`. An unknown side still needs ToString, but
@@ -265,7 +300,7 @@ export const arithmeticOps = {
       // STRING claim is NOT coercion-free (see that comment); OBJECT/BOOL are
       // unaffected (strOperand already applies real coercion for those, never
       // a raw-bits passthrough, so no census claim to falsify there).
-      const coercionFree = (vt, n) => stringSafe(vt, n) || vt === VAL.OBJECT || vt === VAL.BOOL
+      const coercionFree = (vt, n) => stringSafe(vt, n) || vt === VAL.OBJECT || vt === VAL.BOOL || STRINGISH_KINDS.has(vt)
       const cfA = coercionFree(vtA, a), cfB = coercionFree(vtB, b)
       const strI64 = (n) => typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
       if (cfA && cfB) return typed(ctx.abi.string.ops.concatRaw(strOperand(vtA, a), strOperand(vtB, b), ctx, selfAccum), 'f64')
@@ -305,36 +340,31 @@ export const arithmeticOps = {
       // is a TYPED concat (handled by concatRaw above); a both-untyped self-mutation stays the
       // documented rare-aliasing tradeoff. Self-accumulation is still safe to extend.
       inc('__str_concat', '__is_str_key')
-      const eA = vtA == null ? asF64(emit(a)) : null
-      const eB = vtB == null ? asF64(emit(b)) : null
+      // A known BOOL side enters as its atom: concat renders "true", the
+      // numeric arm converts it, and neither sees a raw 0/1 carrier.
+      const dyn = (vt) => vt == null || vt === VAL.BOOL
+      const eA = dyn(vtA) ? boxedOperand(vtA, a) : null
+      const eB = dyn(vtB) ? boxedOperand(vtB, b) : null
       const checkA = eA ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, eA]]] : null
       const checkB = eB ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, eB]]] : null
       const concat = ['call', '$__str_concat', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
-      // Numeric arm: an UNKNOWN operand may still be a non-string NaN-box (bool
-      // atom, null) whose ToNumber is not its raw bits — `true + 1` is 2,
-      // `null + 1` is 1. Guard with the self-compare (every non-NaN f64 IS its
-      // own ToNumber; two inline ops on the hot path); the cold arm is the
-      // inline ATOM ladder, not __to_num — strings can't reach here (the
-      // __is_str_key fork above took them) and objects stay jz-permissive NaN
-      // either way, so the full ToNumber (and the number↔string formatter tree
-      // it pins — the dyn-object golden) buys nothing. Skipped when the side is
-      // known-vt (raw carrier by design) or IR-shape numeric (isNumArm — keeps
-      // floatbeat kernels at their box-free ratchet counts).
-      const numSide = (t, e, node) => {
-        if (!e || isNumArm(e, node)) return ['local.get', `$${t}`]
-        const bits = ['i64.reinterpret_f64', ['local.get', `$${t}`]]
-        return ['if', ['result', 'f64'],
-          ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
-          ['then', ['local.get', `$${t}`]],
-          ['else', ['select',
-            ['f64.const', 1],
-            ['select',
-              ['f64.const', 0],
-              ['f64.const', 'nan'],
-              ['i32.or', ['i64.eq', bits, ['i64.const', FALSE_NAN]], ['i64.eq', bits, ['i64.const', NULL_NAN]]]],
-            ['i64.eq', bits, ['i64.const', TRUE_NAN]]]]]
+      // Numeric arm: an UNKNOWN operand may still be a non-string NaN-box (a
+      // boolean atom, null, undefined, an object) whose `+` is not its raw
+      // bits. The self-compare guards the hot path (every non-NaN f64 IS its
+      // own ToNumber, two inline ops); the cold arm is the runtime `+`
+      // (__add_slow: ToPrimitive both, concat or add). Skipped when the side
+      // is known-vt (raw carrier by design) or IR-shape numeric (isNumArm —
+      // keeps floatbeat kernels at their box-free ratchet counts).
+      const numCheck = (t, e, node) => !e || isNumArm(e, node) ? null : ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]]
+      const cA = numCheck(tA, eA, a), cB = numCheck(tB, eB, b)
+      const fastAdd = ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
+      let add = fastAdd
+      if (cA || cB) {
+        inc('__add_slow')
+        add = ['if', ['result', 'f64'], cA && cB ? ['i32.and', cA, cB] : cA || cB,
+          ['then', fastAdd],
+          ['else', ['call', '$__add_slow', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]]]
       }
-      const add    = ['f64.add', numSide(tA, eA, a), numSide(tB, eB, b)]
       if (checkA && checkB) {
         return typed(['if', ['result', 'f64'], ['i32.or', checkA, checkB], ['then', concat], ['else', add]], 'f64')
       }
@@ -344,7 +374,7 @@ export const arithmeticOps = {
       // (both without effects; a literal; a local the left does not assign,
       // where a call can reach a global or a captured local) is set first, and
       // the check tees the left.
-      if (vtA == null) {
+      if (eA) {
         const commutes = (isSideEffectFree(a) && isSideEffectFree(b)) || (Array.isArray(b) && b[0] == null)
           || (typeof b === 'string' && !isGlobal(b) && !ctx.func.boxed?.has(b) && !some(a, n => MUTATE_OPS.has(n[0]) && n[1] === b))
         if (commutes) return block64(['local.set', `$${tB}`, asF64(emit(b))], ['if', ['result', 'f64'], checkA, ['then', concat], ['else', add]])

@@ -12,7 +12,7 @@
  *
  * @module optimize/watr-tail
  */
-import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
+import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
@@ -39,6 +39,10 @@ import {
  */
 export function programPins(cfg) {
   return [
+    // The dynamic `+`'s cold path (ToPrimitive, concat or add) stays a call: spliced
+    // into the hot arithmetic loops that reach it, it costs size for a path a
+    // numeric program never takes.
+    ...(ctx.core.includes.has('__add_slow') ? ['$__add_slow'] : []),
     ...(cfg._vectorizedFnNames?.size
       ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : []),
@@ -124,6 +128,7 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // while caller-level constant propagation and hot-call removal become live.
   if (boundaryPins.length) watrOpts.pin = [...watrOpts.pin, ...boundaryPins]
   if (cfg.propagateLocals === false && watrOpts.propagate === undefined) watrOpts.propagate = false
+  if (cfg.coalesceLocals === false && watrOpts.coalesce === undefined) watrOpts.coalesce = false
   if (watrOpts.conditions === undefined) watrOpts.conditions = cfg.chainConditions !== false
   if (watrOpts.bool === undefined) watrOpts.bool = cfg.fusedRewrite !== false
   if (watrOpts.poolConstants === undefined) watrOpts.poolConstants = cfg.hoistConstantPool !== false
@@ -453,9 +458,12 @@ export function watrTail(module, cfg, {
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts))
     : time('watCleanup', () => {
       if (cfg.chainConditions !== false) conditions(legalized)
-      const locals = cfg.propagateLocals !== false ? localReuse(mergeLocals(propagate(legalized))) : legalized
+      const locals = cfg.propagateLocals !== false ? mergeLocals(propagate(legalized)) : legalized
       const cleaned = cfg.fusedRewrite !== false ? mergeBlocks(vacuum(bool(locals))) : locals
-      return cfg.hoistConstantPool !== false ? poolConstants(cleaned) : cleaned
+      // Large recursive functions need compact frames even without the fixpoint.
+      const compact = cfg.coalesceLocals !== false ? coalesceLocals(cleaned) : cleaned
+      if (cfg.coalesceLocals !== false || cfg.propagateLocals !== false) localReuse(compact)
+      return cfg.hoistConstantPool !== false ? poolConstants(compact) : compact
     })
   if (cfg.hoistGlobalPtrOffset !== false) {
     const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')

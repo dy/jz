@@ -147,7 +147,7 @@ export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
   "toPrecision": ["number"],
   "toReversed": ["array", "typedarray"],
   "toSorted": ["array", "typedarray"],
-  "toString": ["number", "string"],
+  "toString": ["date", "number", "string"],
   "toTimeString": ["date"],
   "toUTCString": ["date"],
   "toUpperCase": ["string"],

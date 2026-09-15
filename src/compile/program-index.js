@@ -537,7 +537,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   // is consumed here. No variant is ever admitted to the source arrays.
   const pendingVariants = ctx.funcs.pendingVariants || []
   const pendingVariantFunctions = new Set()
-  for (const row of pendingVariants) pendingVariantFunctions.add(row[0])
+  for (const row of pendingVariants) pendingVariantFunctions.add(row.variant)
 
   const sourceFunctions = []
   const sourceObjectIds = new Map()
@@ -670,7 +670,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     variantNameIds.set(variant.name, id)
     return id
   }
-  for (const [variant, origin, kind] of pendingVariants)
+  for (const { variant, origin, kind } of pendingVariants)
     registerVariantIdentity(variant, origin, kind)
   for (const [name, func] of ctx.funcs.map) {
     const id = variantObjectIds.get(func)
@@ -1017,6 +1017,9 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   const retiredMemberReadsKey = 'memberValueReads'
   delete programFacts[retiredMemberReadsKey]
   if (ctx.funcs.globalDevirt) for (const name of ctx.funcs.globalDevirt.values()) takeAddress(name)
+  // Functions the runtime kernels call by name (no source call site): roots
+  // that keep the boxed ABI.
+  for (const name of ctx.funcs.runtimeRoots ?? []) takeAddress(name)
   const isGraphAddressTaken = idOrName => {
     const id = Number.isInteger(idOrName) ? idOrName : graphNameIds.get(idOrName) ?? -1
     return id >= 0 && !!addressTakenBits[id]

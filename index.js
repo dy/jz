@@ -203,7 +203,9 @@ const functionNameSection = (module) => {
       if (name != null) entries.push([funcIdx++, name])
     } else if (node[0] === 'func') {
       const name = watName(node[1])
-      if (name != null) entries.push([funcIdx, name])
+      // A closure body carries its enclosing function: profiles read the source site.
+      const owner = name != null ? ctx.closure.owner?.get(name) : null
+      if (name != null) entries.push([funcIdx, owner ? `${name}@${owner}` : name])
       funcIdx++
     }
   }

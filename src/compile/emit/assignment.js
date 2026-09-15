@@ -4,9 +4,9 @@
  * @module compile/emit/assignment
  */
 
-import { ctx, err } from '../../ctx.js'
+import { ctx, err, inc } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isNullish, isNullishLit, readI64, readVar, temp, toNumF64, truthyIR, typed, writeVar,
+  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -24,16 +24,10 @@ import {
 } from './i32-bounds.js'
 
 
-// A member reference's receiver or key with an effect (a call, a write, an
-// accessor read) is evaluated once, into a temp, before the read and the RHS
-// (JS: the reference, then GetValue, then the RHS, then PutValue through the
-// same reference). The temp carries the expression's facts (value kind,
-// typed constructor, schema), so the read and the write lower as the
-// expression would have. A reference without effects is read twice as it
-// was: the optimizers recognize that shape. A plain write (`update` false)
-// stages only its receiver: the store emitters evaluate the key once
-// themselves, and the store's own index shapes (`a[i++] = v`, a proven
-// length) stay theirs.
+// Updates evaluate effectful receivers/keys and ToPropertyKey once, before
+// GetValue and the RHS. Both read and write use that reference. Plain writes
+// leave key coercion to the store, after the RHS. Primitive keys keep their
+// index representation; temps retain the receiver's type/layout facts.
 const readsAccessor = (n) => {
   if (!Array.isArray(n)) return false
   if ((n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && ctx.transform.accessorNames?.has(n[2])) return true
@@ -41,10 +35,10 @@ const readsAccessor = (n) => {
   return false
 }
 const effectful = (n) => Array.isArray(n) && (!isSideEffectFree(n) || readsAccessor(n))
-function stagedReference(name, update = true) {
+function stagedReference(name, update = true, rhs) {
   if (!Array.isArray(name) || (name[0] !== '.' && name[0] !== '[]')) return null
   const pre = []
-  const stage = (node, tag, always = false) => {
+  const stage = (node, tag, always = false, key = false) => {
     if (!always && !effectful(node)) return node
     const h = temp(tag)
     const vt = valTypeOf(node)
@@ -53,30 +47,53 @@ function stagedReference(name, update = true) {
     if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, ctor)
     const sid = vt === VAL.OBJECT ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(node) : null
     if (sid != null) (ctx.func.refinements ??= new Map()).set(h, { schemaId: sid })   // the transient channel ctx.schema.idOf reads first
-    pre.push(['local.set', `$${h}`, asF64(emit(node))])
+    const value = emit(node)
+    pre.push(['local.set', `$${h}`, asF64(value)])
+    // GetValue rejects a nullish base after evaluating the key expression,
+    // but before invoking that key's conversion hooks.
+    if (key && !valTypeOf(recv))
+      pre.push(['if', isNullish(asF64(emit(recv))), ['then', ['drop', throwTypeErrorIR()]]])
+    if (key && vt) {
+      pre.push(['local.set', `$${h}`, ['f64.reinterpret_i64', toStrI64(node, typed(['local.get', `$${h}`], 'f64'))]])
+      ctx.func.localValTypesOverlay.set(h, VAL.STRING)
+    }
+    if (key && !vt) {
+      // Unknown keys retain primitive payloads (including symbol atoms).
+      // Only an object can run user code during ToPropertyKey.
+      inc('__is_object', '__to_str')
+      const bits = ['i64.reinterpret_f64', ['local.get', `$${h}`]]
+      pre.push(['if', ['call', '$__is_object', bits], ['then',
+        ['local.set', `$${h}`, ['f64.reinterpret_i64', ['call', '$__to_str', bits]]]]])
+    }
     return h
   }
   // A key with an effect may reassign the receiver's binding: the receiver is
   // taken first, whatever it is.
-  const keyEffect = update && name[0] === '[]' && effectful(name[2])
-  const recv = keyEffect && typeof name[1] === 'string' ? stage(name[1], 'ref', true) : stage(name[1], 'ref')
-  const key = keyEffect ? stage(name[2], 'key') : name[2]
+  const keyKind = name[0] === '[]' ? valTypeOf(name[2]) : null
+  const coercingKey = update && name[0] === '[]' && (keyKind == null ||
+    ![VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT].includes(keyKind))
+  const rhsEffect = update && effectful(rhs)
+  const keyEffect = coercingKey || update && name[0] === '[]' && (effectful(name[2]) || rhsEffect)
+  const recv = stage(name[1], 'ref', keyEffect || rhsEffect)
+  const key = keyEffect ? stage(name[2], 'key', coercingKey || rhsEffect, coercingKey) : name[2]
   return pre.length ? { ref: [name[0], recv, key], pre } : null
 }
 const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]
+const putReference = (ref, value) => ref[0] === '[]'
+  ? emitElementAssign(ref[1], ref[2], value) : emitPropertyAssign(ref[1], ref[2], value)
 /** Lower a compound member write through its staged reference: `build` receives the reference to read and write. */
-function throughReference(name, build) {
-  const staged = stagedReference(name)
+function throughReference(name, rhs, build) {
+  const staged = stagedReference(name, true, rhs)
   if (!staged) return build(name)
   return afterStaging(staged.pre, build(staged.ref))
 }
 /** `ref op= val` as `ref = ref op val`: the rebuilt binary keeps the plan's
  *  compound identity, so its BigInt arm is boxed for the tagged slot it
  *  lands in (representationComputedExprAction). */
-const memberCompound = (op, name, val) => throughReference(name, ref => {
+const memberCompound = (op, name, val) => throughReference(name, val, ref => {
   const bin = [op, ref, val]
   ctx.plans.compoundOf.set(bin, ref)
-  return emit(['=', ref, bin])
+  return putReference(ref, bin)
 })
 
 /** Compound assignment: read → op → write back (via readVar/writeVar).
@@ -183,7 +200,10 @@ export const assignmentOps = {
     if (Array.isArray(name) && (name[0] === '[]' || name[0] === '.')) {
       const update = Array.isArray(val) && (val[0] === '+1' || val[0] === '-1')
       const staged = stagedReference(name, update)
-      if (staged) return afterStaging(staged.pre, emit(['=', staged.ref, update ? [val[0], staged.ref] : val]))
+      if (staged) {
+        const value = update ? [val[0], staged.ref] : val
+        return afterStaging(staged.pre, putReference(staged.ref, value))
+      }
     }
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
@@ -264,7 +284,7 @@ export const assignmentOps = {
     return compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32'), '%')
   },
   // `**` is always f64 (and has its own const-exponent lowering) — full desugar.
-  '**=': (name, val) => throughReference(name, ref => emit(['=', ref, ['**', ref, val]])),
+  '**=': (name, val) => throughReference(name, val, ref => emit(['=', ref, ['**', ref, val]])),
 
   // Bare bindings normalize before planning. Remaining member assignments
   // share the same binary operation and write path, not a second i64 gate.
@@ -279,7 +299,7 @@ export const assignmentOps = {
     // A member: read, test, and write through the reference, evaluated once.
     if (typeof name !== 'string') {
       const baseOp = op.slice(0, -1) // '||', '&&', '??'
-      return throughReference(name, ref => emit([baseOp, ref, ['=', ref, val]]))
+      return throughReference(name, val, ref => emit([baseOp, ref, ['=', ref, val]]))
     }
     if (isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     const void_ = ctx.func._expect === 'void'

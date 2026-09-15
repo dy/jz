@@ -11,7 +11,7 @@
  * Refactored into focused sub-contexts for better maintainability.
  */
 
-import { makeAbi } from './abi/index.js'
+import abi from './abi/index.js'
 import { createActiveFunction } from './compile/active-function.js'
 import { DBG_INVARIANTS, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from './debug.js'
 import { HOT_PASSES } from './passes.js'
@@ -58,7 +58,7 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // | features  | compile  | prepare, analyze                | compile, optimizer, stdlib factories |
 // | linkDemand| compile  | emit, modules                   | resolveIncludes()+, assemble |
 // | plans     | compile  | plan and per-function planners | analyze, emit, optimizer  |
-// | abi       | compile  | reset (makeAbi)                 | ir.js codegen, optimizer  |
+// | abi       | process  | fixed carrier registry          | ir.js codegen, optimizer  |
 // | bridge    | compile  | reset (bridge.js)               | bridge.js → emit, modules |
 //
 // *emit's only `core` write is ctx.core.hostGlobals (a bare host-global reference),
@@ -81,19 +81,35 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // `ctx` keeps one exported identity while reset() replaces its phase-owned
 // subtrees. A reference to a subtree is invalid after reset().
 //
-// This initial literal is the pre-first-`reset()` default shape only — every
-// field below is a bare placeholder, fully overwritten by reset()'s own
-// per-field mutation the instant the first session begins. `index.js`'s
+// Apart from the fixed ABI and function records, these are pre-reset
+// placeholders, replaced by reset() when the first session begins. `index.js`'s
 // uncaught-exception wrapper reads `ctx.error.node` while ENRICHING an error
 // thrown before beginSession() ever ran (e.g. `--host bogus` validation,
 // index.js setupCtx) — a genuinely reachable pre-reset() read, not a
 // hypothetical one — so every field here must stay a real (if empty) value,
 // never null-shaped where a dependent read could dereference it.
 export const ctx = {
-  bridge: {}, core: {}, module: {}, scope: {}, funcs: {}, names: {}, func: {},
+  bridge: {}, core: {}, module: {}, scope: {}, funcs: createFunctions(), names: {}, func: createActiveFunction(),
   types: {}, schema: {}, closure: {}, runtime: {}, memory: {}, error: {},
-  transform: {}, inspect: null, warnings: null, abi: {}, features: {},
+  transform: {}, inspect: null, warnings: null, abi, features: {},
   linkDemand: {}, plans: {}, facts: {}, summary: null,
+}
+
+// Compile-lifetime registry. Prepare and specialization append functions;
+// ProgramIndex assigns their identities. Function entry never replaces it.
+function createFunctions() {
+  return {
+    list: [],
+    names: new Set(),
+    map: new Map(),
+    multiProp: new Map(), // obj.prop → lifted implementations, including reassignments
+    exports: Object.create(null), // export names may shadow Object.prototype
+    globalDevirt: null,
+    runtimeRoots: new Set(), // prepared functions called by runtime kernels
+    // Fixed-rest variants precede ProgramIndex: { variant, origin, kind }.
+    // ProgramIndex consumes this queue once; later variants register directly.
+    pendingVariants: [],
+  }
 }
 
 /** Reset-hook registry: a subsystem that keeps MODULE-scope working state
@@ -505,23 +521,7 @@ export function reset(proto, globals, bridge) {
   // derives from this, never from its importer's (ES module scopes do not nest).
   ctx.scope.root = ctx.scope.chain
 
-  // Compile-lifetime compatibility registry. Prepare appends source functions;
-  // materializeVariant appends concrete specializations. ProgramIndex assigns
-  // those two families disjoint numeric identities. Unlike ctx.func's active
-  // frame, this record is never replaced at function entry.
-  ctx.funcs = {
-    list: [],
-    names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
-    map: new Map(),    // Map<string, func> — name → func entry; populated at compile() start
-    multiProp: new Map(),  // Map<"obj.prop", Set<liftedName>> — function-properties assigned >1× (wrapper composition) and every lifted implementation; suppresses the static fn.prop() direct call, and ProgramIndex roots the lifts as address-taken
-    exports: Object.create(null),  // name-keyed: prototype-less (see derive) — `export let valueOf` must not hit Object.prototype
-    globalDevirt: null, // Map<global, function name> published by plan/scope.js, consumed by emit
-    // Flat pre-index transfer log: [variant, immediateOrigin, kind]. It exists
-    // only because fixed-rest specialization precedes ProgramIndex construction.
-    // buildProgramIndex consumes it once and sets it to null; every later
-    // variant registers directly with ProgramIndex through materializeVariant.
-    pendingVariants: [],
-  }
+  ctx.funcs = createFunctions()
 
   // Prepare/session synthetic names must not consume the active frame's temp
   // counter: prepare runs before any function entry and spans bundled modules.
@@ -690,6 +690,8 @@ export function reset(proto, globals, bridge) {
     width: null,          // closure call/make signature width (plan/scope sets; emit/assemble read). null ⇒ MAX_CLOSURE_ARITY.
     spread: null,         // the program holds a spread call, so a closure's argc may exceed the width
                           // (plan/scope sets; a rest slot view reads the spill past the inline slots). null ⇒ true.
+    owner: null,          // Map<closureBodyName, enclosing function name> — the wasm name section only.
+    emitting: null,       // the closure body being emitted (closure-emit.js): the owner of closures minted inside it
   }
 
   ctx.runtime = {
@@ -800,8 +802,6 @@ export function reset(proto, globals, bridge) {
 
   // Features are seeded here and settled by prepare. Emission only reads them;
   // facts discovered during emission belong to linkDemand below.
-  ctx.abi = makeAbi()
-
   ctx.features = {
     // SESSION
     sso: true,        // Short ASCII string packing. Default on; flip off to A/B the heap-only path.
@@ -1020,7 +1020,7 @@ export function err(msg, cause) {
   // is wrapped, the original stack — pointing at the actual codegen site — survives
   // in the chain (`Error: …  [cause]: …`) instead of being replaced by this frame.
   const e = cause !== undefined ? new Error(detail, { cause }) : new Error(detail)
-  const stackLines = e.stack.split('\n')
+  const stackLines = e.stack?.split('\n') ?? []
   const firstFrame = stackLines.findIndex(line => line.trimStart().startsWith('at '))
   const frames = firstFrame >= 0 ? stackLines.slice(firstFrame) : stackLines.slice(1)
   e.stack = `${e.name}: ${detail}\n${frames.join('\n')}`

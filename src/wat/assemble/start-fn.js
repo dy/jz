@@ -23,7 +23,8 @@ import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
 import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
-import { dataLen, strPoolLen, pushStaticSlots } from '../../static-data.js'
+import { strHashLiteral } from '../../../module/collection.js'
+import { dataLen, dataAlign, dataPush, strPoolLen, pushStaticSlots } from '../../static-data.js'
 
 const normalizeEmittedIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
 
@@ -177,6 +178,45 @@ function buildSchemaInit() {
       staticBits.push(extractF64Bits(staticArrayPtr(bits)))
     }
     if (staticBits) {
+      // Speed mode: a key index for every schema wide enough that the slot
+      // search's linear scan costs (module/collection.js __schema_slot): an
+      // open-addressed table of (slot << 32 | key hash) words behind a capacity
+      // word, the same hash the runtime computes for the key string. The
+      // per-schema table stores each index's offset relative to itself, so a
+      // stripped data prefix moves both together; a runtime-registered schema
+      // (the reserve) has no index and keeps the scan.
+      let idxRel = null
+      if (!ctx.transform.optimize?.leanRuntime && ctx.schema.list.some(keys => keys.length >= 8)) {
+        const idxOffs = ctx.schema.list.map(keys => {
+          if (keys.length < 8) return 0
+          let cap = 8
+          while (cap < keys.length * 2) cap <<= 1
+          const bytes = new Uint8Array(8 + cap * 8), table = new DataView(bytes.buffer)
+          table.setUint32(0, cap, true)
+          keys.forEach((k, slot) => {
+            const h = strHashLiteral(String(k)) >>> 0
+            let i = h & (cap - 1)
+            while (table.getUint32(8 + i * 8, true) || table.getUint32(12 + i * 8, true)) i = (i + 1) & (cap - 1)
+            table.setUint32(8 + i * 8, h, true)
+            table.setUint32(12 + i * 8, slot, true)
+          })
+          dataAlign(8)
+          const off = dataLen()
+          dataPush(bytes)
+          return off
+        })
+        const idxBase = dataLen()
+        const bytes = new Uint8Array((idxOffs.length + runtimeReserve) * 8), offsets = new DataView(bytes.buffer)
+        for (let i = 0; i < idxOffs.length; i++) if (idxOffs[i]) {
+          offsets.setInt32(i * 8, idxOffs[i] - idxBase, true)
+          offsets.setInt32(i * 8 + 4, -1, true) // every index precedes this table
+        }
+        dataPush(bytes)
+        idxRel = idxBase
+        if (!ctx.scope.globals.has('__schema_idx')) declGlobal('__schema_idx', 'i32')
+        ctx.scope.globals.get('__schema_idx').init = idxRel
+        ;(ctx.runtime.staticI32GlobalInits ??= []).push('__schema_idx')
+      }
       const tblOff = pushStaticSlots([...staticBits, ...Array(runtimeReserve).fill('0x0000000000000000')])
       // The consumers declGlobal '__schema_tbl' lazily at TEMPLATE EXPANSION
       // (pullStdlib) — AFTER this runs. Declare it here so the static offset

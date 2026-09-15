@@ -11,6 +11,7 @@
 
 import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { ctx, inc } from '../../ctx.js'
+import { createFunction } from '../../function.js'
 import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from '../../ast.js'
 import { asF64, asI64, isNullish, isUndef, temp, throwTypeErrorIR, typed } from '../../ir.js'
 import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
@@ -116,11 +117,12 @@ export function classInstanceof(a, brand) {
 
 /**
  * The member names the program uses, by position: called (`o.m(…)`), read
- * (`o.m`, `o["m"]`), stored (`o.m = v`). One census per compile.
+ * (`o.m`, `o["m"]`), stored (`o.m = v`), defined (literal/class fields and methods).
+ * One census per compile, also used to activate coercion helpers.
  */
 export function memberUses() {
   if (ctx.transform.memberUses) return ctx.transform.memberUses
-  const called = new Set(), read = new Set(), written = new Set()
+  const called = new Set(), read = new Set(), written = new Set(), defined = new Set()
   // `o.m` and `o["m"]` name the member alike
   const memberOf = (n) => !Array.isArray(n) ? null
     : (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' ? n[2]
@@ -128,6 +130,7 @@ export function memberUses() {
   const walk = (n) => {
     if (!Array.isArray(n)) return
     const op = n[0], m = n.length > 1 ? memberOf(n[1]) : null
+    if (op === ':' && typeof n[1] === 'string') defined.add(n[1])
     // a call through a computed key reads the member as a value first
     if ((op === '()' || op === '?.()') && m != null) { (n[1][0] === '[]' ? read : called).add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
     if (MUTATE_OPS.has(op) && m != null) { written.add(m); if (op !== '=') read.add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
@@ -138,7 +141,20 @@ export function memberUses() {
   for (const f of ctx.funcs.list) { walk(f.body); if (f.defaults) for (const d of Object.values(f.defaults)) walk(d) }
   walk(ctx.module.entryInit)
   for (const init of ctx.module.moduleInits ?? []) walk(init)
-  return ctx.transform.memberUses = { called, read, written }
+  for (const props of ctx.schema.list) for (const prop of props) defined.add(prop)
+  for (const entry of classes()?.values() ?? []) for (const name of entry.methods.keys()) defined.add(name)
+  return ctx.transform.memberUses = { called, read, written, defined }
+}
+
+/** `['__own', r, ['str', prop]]`: whether `r` carries an own property `prop` where the
+ *  summary admits one stored under that name (the class contract); false
+ *  otherwise, folding the probe away. Shared with the ToPrimitive prelude. */
+export function defineOwnProbe() {
+  ctx.core.emit.__own = (r, propLit) => {
+    if (!ctx.summary.memberMayBeOwn(propLit[1])) return typed(['i32.const', 0], 'i32')
+    inc('__dyn_get_expr', '__ptr_type')
+    return typed(['i32.eqz', isUndef(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', asF64(emit(r))], asI64(emit(propLit))]])], 'i32')
+  }
 }
 
 // A dispatcher: one function per member the program accesses on receivers
@@ -161,21 +177,15 @@ export const inDispatcher = () => !!ctx.func?.current?.dispatcher
 export function synthesizeClassDispatchers() {
   if (!classes()?.size) return
   const { called, read, written } = memberUses()
-  const byName = new Map(ctx.funcs.list.map(f => [f.name, f]))
+  const byName = new Map()
+  for (const f of ctx.funcs.list) byName.set(f.name, f)
   const depth = (e) => { let d = 0; for (let c = e; c.base; c = classes().get(c.base)) d++; return d }
   const entries = [...classes().values()].sort((a, b) => depth(b) - depth(a))   // most derived first
   const keys = new Set()
   for (const e of entries) for (const k of e.methods.keys()) keys.add(k)
   const R = CLASS_T + 'r', A = (i) => CLASS_T + 'a' + i
   const argList = (n) => n === 0 ? null : n === 1 ? A(0) : [',', ...Array.from({ length: n }, (_, i) => A(i))]
-  // `['__own', r, ['str', prop]]`: whether `r` carries an own property `prop` where the
-  // summary admits one stored under that name (the class contract); false
-  // otherwise, folding the probe away.
-  ctx.core.emit.__own = (r, propLit) => {
-    if (!ctx.summary.memberMayBeOwn(propLit[1])) return typed(['i32.const', 0], 'i32')
-    inc('__dyn_get_expr', '__ptr_type')
-    return typed(['i32.eqz', isUndef(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', asF64(emit(r))], asI64(emit(propLit))]])], 'i32')
-  }
+  defineOwnProbe()
   const define = (name, arity, arm, fallback, prop) => {
     if (byName.has(name)) return
     const stmts = [['if', ['__own', R, ['str', prop]], ['return', fallback]]]
@@ -183,7 +193,7 @@ export function synthesizeClassDispatchers() {
     stmts.push(['return', fallback])
     const params = [{ name: R, type: 'f64' }, ...Array.from({ length: arity }, (_, i) => ({ name: A(i), type: 'f64' }))]
     const body = ['{}', [';', ...stmts]]
-    const func = { name, body, exported: false, sig: { params, results: ['f64'], dispatcher: true } }
+    const func = createFunction(name, body, { params, results: ['f64'], dispatcher: true })
     ctx.funcs.list.push(func); byName.set(name, func)
   }
   const withR = (n) => n === 0 ? R : [',', R, ...Array.from({ length: n }, (_, i) => A(i))]
@@ -210,6 +220,8 @@ export function classRootNames() {
   const { called, read, written } = memberUses()
   const roots = []
   for (const entry of classes().values()) for (const [m, fn] of entry.methods) {
+    // ToPrimitive reaches toString/valueOf through coercion, never a call site
+    if (m === 'toString' || m === 'valueOf') roots.push(fn)
     if (m.endsWith(ACCESSOR_GET)) { if (read.has(m.slice(0, -ACCESSOR_GET.length))) roots.push(fn, dispatcherName(m, 'call')); continue }
     if (m.endsWith(ACCESSOR_SET)) { if (written.has(m.slice(0, -ACCESSOR_SET.length))) roots.push(fn, dispatcherName(m, 'call')); continue }
     if (called.has(m)) roots.push(fn, dispatcherName(m, 'call'))

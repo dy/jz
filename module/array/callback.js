@@ -195,3 +195,20 @@ export function idxF64(i) { return typed(['f64.convert_i32_s', ['local.get', `$$
 export function idxArg(cb, i, slot = 1) {
   return cb.usedParams && !cb.usedParams[slot] ? null : idxF64(i)
 }
+// The callback's array argument (`(v, i, arr) =>`, reduce's fourth): the
+// receiver value, or null when an inlined arrow provably never reads it.
+export function arrArg(cb, recvValue, slot = 2) {
+  return cb.usedParams && !cb.usedParams[slot] ? null : recvValue
+}
+// Whether `fn` may read the array argument at `slot`. A literal arrow proves
+// the negative by its parameter list; any other callee may read it. A fused
+// pipeline (`a.map(f).filter(g)`) never materializes the intermediate array a
+// downstream callback would receive, so it fuses only when this is false.
+export function callbackReadsArray(fn, slot = 2) {
+  if (!Array.isArray(fn) || fn[0] !== '=>') return true
+  const params = extractParams(fn[1])
+  if (params.some(p => p == null)) return true   // a rest parameter can hold it
+  if (params.length <= slot) return false
+  const p = params[slot]
+  return typeof p !== 'string' || refsName(fn[2], p, REFS_IN_EXPR)
+}

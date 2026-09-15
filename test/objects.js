@@ -9,6 +9,58 @@ import { i64ToF64 } from '../interop.js'
 import { onWasi, belowOpt, levels } from './_matrix.js'
 import { run, oracle, cases } from './util.js'
 
+test('nullable property receivers throw before reading or writing memory', () => {
+  for (const absent of ['undefined', 'null']) for (const access of ['o.b', 'o[k]', 'o[0]', 'o.length', 'o.b = 7', 'o[k] = 7', 'o[0] = 7', 'o.b++']) {
+    const src = `export function f(c, k) {
+      const o = c ? ${absent} : { a: 1, b: 2, length: 3 }
+      let log = ''
+      try { const v = ${access}; log += v }
+      catch (e) { log += e.name }
+      finally { log += ':finally' }
+      return log
+    }`
+    const js = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { f } = jz(src, { optimize }).exports
+      for (const c of [false, true, true, false])
+        is(f(c, 'b'), js(c, 'b'), `${absent} ${access}, O${optimize}, nullish=${c}`)
+    }
+  }
+})
+
+test('computed property reads evaluate keys once and reject nullish bases before coercion', () => {
+  const src = `export function f(c) {
+    let log = '', value = ''
+    const o = c ? undefined : { b: 2 }
+    function key() { log += 'k'; return { toString() { log += 's'; return 'b' } } }
+    try { value = o[key()] } catch (e) { value = e.name }
+    return log + ':' + value
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const c of [false, true, true, false]) is(f(c), js(c), `O${optimize}, nullish=${c}`)
+  }
+})
+
+test('schema identity: arbitrary keys retain distinct layouts and canonical index order', () => {
+  for (const body of [
+    `const a = {'a\\u0001b':1, c:2}, b = {a:3, 'b\\u0001c':4};
+      return JSON.stringify([a, b, b.a, b['b\\u0001c']])`,
+    `const a = {'':1, '\\u0001':2}, b = {'\\u0001':3, '':4};
+      return JSON.stringify([a, b, a[''], b['']])`,
+    `const a = {'2':3, '1':4, 'x:0':5}, b = {'1':6, '2':7, 'x:0':8};
+      return JSON.stringify([a, b, a[1], b[2]])`,
+  ]) {
+    const src = `export function f() { ${body} }`, expected = oracle(src).f()
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { f } = jz(src, { optimize }).exports
+      is(f(), expected, `O${optimize}: properties and field values`)
+      is(f(), expected, `O${optimize}: repeated call`)
+    }
+  }
+})
+
 test('empty literal allocation follows its own writes, not a forwarded result kind', () => {
   const sources = [
     ['dot write', 'let o={};o.a=3;return o.a', 3],
@@ -1955,8 +2007,8 @@ test('devirt schema-slot: non-object receivers fall back correctly (number, unde
     export const getA = (o) => o.a
   `)
   is(r.getA(42), undefined)
-  is(r.getA(undefined), undefined)
-  is(r.getA(null), undefined)
+  throws(() => r.getA(undefined), TypeError)
+  throws(() => r.getA(null), TypeError)
 })
 
 test('devirt schema-slot: two schemas sharing a field name at different slots never devirtualize, both still resolve', () => {
@@ -2271,4 +2323,31 @@ test('objects: an unknown receiver\'s length write and spread push reach the obj
     is(ex.g([1, 2, 3], 1), 1, `array length write @O${optimize}`)
     is(ex.g({ length: 3 }, 2.5), 2.5, `object length write @O${optimize}`)
   }
+})
+
+test('objects: a wide schema read by a computed key probes its static key index', () => {
+  // A receiver of several wide shapes reads a computed key through the shared
+  // slot search; the runtime hashes the key once and probes the schema's index
+  // instead of comparing every slot's key. A miss reads undefined as before.
+  const keysA = Array.from({ length: 40 }, (_, i) => `op_${i}_${'x'.repeat(i % 9)}`)
+  const keysB = Array.from({ length: 12 }, (_, i) => `alt${i}`)
+  const src = `const A = { ${keysA.map((k, i) => `${k}: ${i * 3}`).join(', ')} }
+    const B = { ${keysB.map((k, i) => `${k}: ${i + 100}`).join(', ')} }
+    const pick = (o, k) => o[k]
+    export const f = (n) => { let t = 0; const names = [${keysA.map(k => JSON.stringify(k)).join(',')}]; for (let i = 0; i < n; i++) { t += pick(i % 3 ? A : B, names[i % 40]) === undefined ? 1 : pick(A, names[i % 40]) } return t }
+    export const g = (n) => { let t = 0; for (let i = 0; i < n; i++) { const k = 'alt' + (i % 20); const v = pick(i % 2 ? B : A, k); t += v === undefined ? 1 : v } return t }`
+  const A = Object.fromEntries(keysA.map((k, i) => [k, i * 3])), B = Object.fromEntries(keysB.map((k, i) => [k, i + 100]))
+  const jf = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = i % 3 ? A : B; t += o[keysA[i % 40]] === undefined ? 1 : A[keysA[i % 40]] } return t }
+  const jg = (n) => { let t = 0; for (let i = 0; i < n; i++) { const k = 'alt' + (i % 20); const v = (i % 2 ? B : A)[k]; t += v === undefined ? 1 : v } return t }
+  const indexed = (w) => /\(global \$__schema_idx\s+\(mut i32\)\s+\(i32\.const [1-9]/.test(w)
+  for (const optimize of levels(1, 2)) {
+    const w = compile(src, { wat: true, optimize })
+    // A level that resolves the read without the shared slot search needs no index.
+    if (w.includes('call $__schema_slot')) ok(indexed(w), 'speed mode lays out the key index')
+    const r = jz(src, { optimize })
+    is(r.exports.f(2000), jf(2000), 'present keys resolve through the index')
+    is(r.exports.g(2000), jg(2000), 'absent keys miss through the index')
+  }
+  const lean = compile(src, { wat: true, optimize: 'size' })
+  ok(!indexed(lean), 'size mode lays out no index')
 })

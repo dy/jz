@@ -2197,7 +2197,7 @@ export default (ctx) => {
           // The result crosses the closure ABI as any value; the typed store
           // coerces it (ToNumber: a boolean stores 1 or 0, not its atom).
           ['local.set', `$${tmr}`, asF64(ctx.closure.call(vf,
-            [loadElem(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))],
+            [loadElem(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), va]))],
           storeElem(asF64(ctx.core.stdlib['__to_num'] ? toNumF64(null, vr) : coerceAtomsToNum(vr))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
@@ -2271,7 +2271,7 @@ export default (ctx) => {
     const mapped = asF64(ctx.closure.call(
       typed(['local.get', `$${cbLoc}`], 'f64'),
       [typedElemArg(srcPtr64, typed(['call', '$__typed_get_idx', srcPtr64, ['local.get', `$${i}`]], 'f64')),
-       typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))
+       typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), typed(['f64.reinterpret_i64', srcPtr64], 'f64')]))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${cbLoc}`, asF64(emit(fn))],
       ['local.set', `$${arrLoc}`, asF64(emit(arr))],
@@ -2408,10 +2408,10 @@ export default (ctx) => {
   // TDZ would fire if we declared it after.
   ctx.core.emit['.typed:forEach'] = (arr, fn) => {
     const cbLoc = temp('tfc')
-    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, _receiver, argOf) => [
+    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, receiver, argOf) => [
       ['drop', asF64(ctx.closure.call(
         typed(['local.get', `$${cbLoc}`], 'f64'),
-        [argOf(load()), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]
+        [argOf(load()), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver]))]
     ])
     if (!loop) return null
     return typed(['block', ['result', 'f64'],
@@ -2545,14 +2545,14 @@ export default (ctx) => {
   // undefined / -1 respectively.
   const findCommon = (arr, fn, returnIndex) => {
     const cbLoc = temp('tfc'), result = temp('tfr'), foundIdx = tempI32('tfi')
-    const loop = typedLoop(arr, (load, i, _len, _ptr, exit, _receiver, argOf) => {
+    const loop = typedLoop(arr, (load, i, _len, _ptr, exit, receiver, argOf) => {
       const itemLoc = temp('tfit')
       return [
         ['local.set', `$${itemLoc}`, load()],
         ['if', truthyIR(ctx.closure.call(
           typed(['local.get', `$${cbLoc}`], 'f64'),
           [argOf(typed(['local.get', `$${itemLoc}`], 'f64')),
-           typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+           typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver])),
           ['then',
             returnIndex
               ? ['local.set', `$${foundIdx}`, ['local.get', `$${i}`]]
@@ -2580,14 +2580,14 @@ export default (ctx) => {
   // raw f64 and returned garbage for non-f64 typed arrays.
   const findLastCommon = (arr, fn, returnIndex) => {
     const cbLoc = temp('tLc'), result = temp('tLr'), foundIdx = tempI32('tLi')
-    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, _receiver, argOf) => {
+    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, receiver, argOf) => {
       const itemLoc = temp('tLit')
       return [
         ['local.set', `$${itemLoc}`, load()],
         ['if', truthyIR(ctx.closure.call(
           typed(['local.get', `$${cbLoc}`], 'f64'),
           [argOf(typed(['local.get', `$${itemLoc}`], 'f64')),
-           typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+           typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver])),
           ['then',
             returnIndex
               ? ['local.set', `$${foundIdx}`, ['local.get', `$${i}`]]
@@ -2611,10 +2611,10 @@ export default (ctx) => {
   // .some / .every: short-circuit boolean reduction. some=∃, every=∀.
   const anyAllCommon = (arr, fn, isEvery) => {
     const cbLoc = temp('tac'), result = tempI32('tar')
-    const loop = typedLoop(arr, (load, i, _len, _ptr, exit, _receiver, argOf) => {
+    const loop = typedLoop(arr, (load, i, _len, _ptr, exit, receiver, argOf) => {
       const test = truthyIR(ctx.closure.call(
         typed(['local.get', `$${cbLoc}`], 'f64'),
-        [argOf(load()), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))
+        [argOf(load()), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver]))
       // every: exit on falsy with result=0. some: exit on truthy with result=1.
       return [
         ['if', isEvery ? ['i32.eqz', test] : test,
@@ -2663,7 +2663,7 @@ export default (ctx) => {
       // The element enters the callback's slot as a closure argument (a BigInt boxed).
       const passes = truthyIR(ctx.closure.call(
         typed(['local.get', `$${cbLoc}`], 'f64'),
-        [typedElemArg(srcPtr64, loadAt()), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64')]))
+        [typedElemArg(srcPtr64, loadAt()), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64'), typed(['f64.reinterpret_i64', srcPtr64], 'f64')]))
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${cbLoc}`, asF64(emit(fn))],
         ['local.set', `$${arrLoc}`, asF64(emit(arr))],
@@ -2713,7 +2713,7 @@ export default (ctx) => {
     const id = freshId(ctx)
     const passes = truthyIR(ctx.closure.call(
       typed(['local.get', `$${cbLoc}`], 'f64'),
-      [loadAt(srcPtr, srci), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64')]))
+      [loadAt(srcPtr, srci), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64'), typed(['local.get', `$${arrLoc}`], 'f64')]))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${cbLoc}`, asF64(emit(fn))],
       ['local.set', `$${arrLoc}`, asF64(emit(arr))],

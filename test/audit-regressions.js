@@ -497,9 +497,11 @@ test('audit: changing record shapes preserves absent fields and own keys', () =>
   for (const optimize of TIERS) {
     const { result } = jz(`function first(a){return a[0]}
       export function result(full){let p={x:1,items:[7]};if(!full)p={x:3};if(full===1)p={x:4,items:[]};return first(p.items)}`, { optimize }).exports
-    // Existing absent-array dialect: preserve undefined, never dereference
-    // the missing value as an array header. A present empty array is distinct.
-    for (const full of [2,2,0,1,2]) is(result(full), full === 2 ? 7 : undefined)
+    // A missing array throws; a present empty array yields undefined.
+    for (const full of [2,2,0,1,2]) {
+      if (full === 0) throws(() => result(full), TypeError)
+      else is(result(full), full === 2 ? 7 : undefined)
+    }
   }
   // A → A → B → A in one instance: neither retained aliases nor a prior
   // allocation may supply the missing field of a newly constructed object.

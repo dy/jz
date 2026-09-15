@@ -1,5 +1,7 @@
 const TESTS = [
   'errors',
+  'to-primitive',
+  'property-order',
   'math',
   'simd-intrinsics',
   'bytebeat',
@@ -41,6 +43,7 @@ const TESTS = [
   'simd',
   'cli',
   'objects',
+  'js-parity',
   'conditional-spread',
   'dyn-keys',
   'interop',

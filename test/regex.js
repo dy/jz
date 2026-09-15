@@ -383,7 +383,9 @@ test('regex: regex.exec() named capture groups', async () => {
 
 test('regex: str.match(regex)', async () => {
   is(evalStr('"hello world".match(/world/)[0]'), 'world')
-  is(await evaluate('"hello".match(/xyz/)'), 0)
+  is(await evaluate('"hello".match(/xyz/)'), null)
+  is(evalStr('"a1b22".match(/\\d+/g).join()'), '1,22', 'with /g: every match')
+  is(await evaluate('"abc".match(/\\d/g)'), null, 'with /g and no match: null')
 })
 
 test('regex: str.match(regex) named capture groups', () => {
@@ -567,9 +569,11 @@ test('regex: exec /g returns null on no-match (not 0)', async () => {
   is(await evaluate('/xyz/.exec("abc")'), null)
 })
 
-test('regex: source writes to lastIndex reject instead of splitting state', () => {
-  throws(() => compile(`let re = /a/g; re.lastIndex = 2; export let f = () => re.exec('a')`),
-    /RegExp.lastIndex assignment is not supported/)
+test('regex: source writes to lastIndex set the exec cursor', () => {
+  const { g } = jz(`let re = /a/g; export let g = () => { re.lastIndex = 2; return re.exec('aXa').index }`).exports
+  is(g(), 2, 'a write moves the cursor the next exec starts from')
+  const { h } = jz(`export let h = () => { const re = /a/g; re.lastIndex = -3; return re.lastIndex }`).exports
+  is(h(), -3, 'the written value reads back as is; exec applies ToLength to it')
   const { f } = jz(`let o = { lastIndex: 0 }; o.lastIndex = 2; export let f = () => o.lastIndex`).exports
   is(f(), 2, 'ordinary object properties named lastIndex remain writable')
 })

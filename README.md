@@ -236,8 +236,11 @@ not supported
   `WeakSet` use `Map` and `Set` semantics.
 - **Generators and async.** Both lower to state machines. Jobs drain at host
   boundaries; a `finally` that yields is unsupported.
-- **Dates.** Date getters use UTC. Intl and Temporal are absent: ICU, CLDR,
-  and timezone tables exceed the intended module size.
+- **Dates.** Date getters and `toString` use UTC (the zone renders as
+  `GMT+0000 (Coordinated Universal Time)`). Intl and Temporal are absent: ICU,
+  CLDR, and timezone tables exceed the intended module size.
+- **Functions as strings.** A function has no source text at runtime;
+  `String(fn)` renders `function () { [native code] }`.
 - **Runtime compilation.** `eval`, the `Function` constructor, and `with` would
   require a compiler or interpreter at runtime.
 - **Host and legacy APIs.** DOM and Node services stay in the host. JZ omits

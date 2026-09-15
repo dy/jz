@@ -365,6 +365,60 @@ test('interop: a written array-like parameter copies its storage back to the hos
   is(Array.from(memory.read(buf)).join(), '5,10,15', 'a jz buffer stays a live view')
 })
 
+test('interop: numeric output-only buffers use typed storage and copy back on repeated calls', () => {
+  const src = `export let fill = (out, n) => { for (let i = 0; i < n; i++) out[i] = i * 0.5 + 1 }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const bytes = compile(src, { optimize })
+    const lanes = JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0]))
+    is(lanes.find(e => e.name === 'fill').t['0'], 'Float64Array+', 'numeric stores prove an output buffer without an element read')
+    const wat = compile(src, { optimize, wat: true })
+    ok(!/\(func \$__(?:arr_typed_obj_set_idx|to_str|dyn_set)\b/.test(wat), 'a proven output buffer links no object/key conversion runtime')
+    const { exports } = interop.instantiate(bytes)
+    const a = [9, 9, 9], b = new Float32Array([8, 8])
+    exports.fill(a, 0)
+    is(a.join(), '9,9,9', 'zero work preserves storage')
+    exports.fill(a, 2)
+    is(a.join(), '1,1.5,9', 'partial fill preserves the tail')
+    exports.fill(a, 3)
+    is(a.join(), '1,1.5,2', 'A to A fills the final element')
+    exports.fill(b, 2)
+    is(b.join(), '1,1.5', 'A to different B copies back to the new receiver')
+    const empty = []
+    exports.fill(empty, 0)
+    is(empty.length, 0, 'empty output remains empty')
+    throws(() => exports.fill(null, 1), TypeError)
+  }
+})
+
+test('interop: one numeric store cannot type an otherwise unknown output buffer', () => {
+  const src = `export let mixed = (out, v) => { out[0] = 1; out[1] = v }
+    export let copy = (out, src) => { for (let i = 0; i < 2; i++) out[i] = src[i] }
+    export let unstable = (out, v) => { let x = 1; x = v; out[0] = x }
+    export let boolean = (out, v) => { out[0] = v > 0 ? true : 1 }
+    export let nullable = (out, v) => { out[0] = v > 0 ? null : 1 }`
+  const bytes = compile(src)
+  const lanes = JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0]))
+  for (const name of ['mixed', 'copy', 'unstable', 'boolean', 'nullable'])
+    is(lanes.find(e => e.name === name).t?.['0'], undefined, `${name}: unknown stored values retain the generic boundary`)
+})
+
+test('interop: numeric input contracts propagate to output buffers independently of parameter order', () => {
+  const src = `export let map = (out, input, n) => {
+    for (let i = 0; i < n; i++) out[i] = input[i] + input[i] * 0.5
+  }`
+  const bytes = compile(src)
+  const lanes = JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0]))
+  const entry = lanes.find(e => e.name === 'map')
+  is(entry.t['0'], 'Float64Array+', 'output is typed after the input contract settles')
+  is(entry.t['1'], 'Float64Array', 'input elements are numeric')
+  const { exports } = interop.instantiate(bytes)
+  const out = [7, 7, 7]
+  exports.map(out, new Float32Array([2, 4, 6]), 0)
+  is(out.join(), '7,7,7')
+  exports.map(out, new Float32Array([2, 4, 6]), 3)
+  is(out.join(), '3,6,9')
+})
+
 test('interop: typed views, typed methods and accumulators keep an array-like parameter typed', () => {
   const src = `export let head = (data, n) => { let h = data.subarray(0, n); let s = 0; for (let i = 0; i < h.length; i++) s += h[i]; return s }
     export let fillz = (data) => { data.fill(0); data[0] = 7; return data.length }

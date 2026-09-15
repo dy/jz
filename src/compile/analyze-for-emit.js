@@ -169,8 +169,8 @@ export function analyzeFuncForEmit(func, programFacts) {
   // called through the class dispatch; a callee the census never named).
   const summary = ctx.summary?.at(sig)
   if (summary) for (const p of sig.params) {
-    if (p.rest || func.defaults?.[p.name] || ctx.func.localReps?.get(p.name)?.val || isReassigned(body, p.name)) continue
-    seedSummaryParam(p.name, summary)
+    if (p.rest || func.defaults?.[p.name] || isReassigned(body, p.name)) continue
+    seedSummaryParam(p.name, summary)   // a parameter already typed by the call lattice still takes the summary's exact shape
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
   // site omits its position (narrow's missing rule poisons r.val) or when callers
@@ -206,7 +206,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   // `mem.wrapVal`, which passes a JS number straight to f64 — so the coercion
   // only ever fired for a *string* arg to a numeric param (a type misuse). When
   // that lone coercion is the only `__to_num` consumer, dropping it lets the whole
-  // ToNumber string-parse dep tree (`__to_str`→`__itoa`/`__toExp`/`__mkstr`/…)
+  // ToNumber string-parse dep tree (`__to_str`→`__ftoa_shortest`/`__mkstr`/…)
   // treeshake away — a ~4× module shrink that, decisively, lets V8 tier the hot
   // fill loop up properly (the bloated module JITs the *identical* loop ~2× slower).
   // Block AND expression bodies: value-bound arrows (`export let f = (a,b) => a*b`) are

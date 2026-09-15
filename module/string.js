@@ -68,7 +68,9 @@ export const ssoEncode = (str) => {
   return { aux: LAYOUT.SSO_BIT | (str.length << SSO_LEN_SHIFT) | auxChars, offset: offset >>> 0 }
 }
 // aux for an SSO string whose chars all fit in the offset (len ≤ 4: 4*7=28 ≤ 32 bits).
-const ssoAux = (len) => LAYOUT.SSO_BIT | (len << SSO_LEN_SHIFT)
+export const ssoAux = (len) => LAYOUT.SSO_BIT | (len << SSO_LEN_SHIFT)
+/** Whether a `.replace` replacement may carry `$` patterns: anything but a `$`-free string literal. */
+export const replacementHasPatterns = (repl) => !(Array.isArray(repl) && repl[0] === 'str' && typeof repl[1] === 'string' && !repl[1].includes('$'))
 // WAT: char i (i32 expr) of SSO ptr (i64 expr) — 7-bit at payload bit i*7.
 const ssoCharWat = (ptr, i) => `(i32.wrap_i64 (i64.and (i64.shr_u ${ptr} (i64.mul (i64.extend_i32_u ${i}) (i64.const 7))) (i64.const 0x7f)))`
 // WAT: length (i32) of SSO ptr (i64 expr) — payload bits 42-44.
@@ -194,7 +196,10 @@ export default (ctx) => {
     __str_trimEnd: ['__str_slice', '__str_length', '__char_at', '__strws'],
     __str_repeat: ['__str_length', '__str_copy', '__alloc', '__sso_norm'],
     __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
-    __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
+    __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat', '__str_length'],
+    __str_subst: ['__str_length', '__char_at', '__str_slice', '__str_concat', '__str_eq', '__len', '__ptr_offset'],
+    __str_replace_subst: ['__str_indexof', '__str_slice', '__str_concat', '__str_length', '__str_subst'],
+    __str_replaceall_subst: ['__str_indexof', '__str_slice', '__str_concat', '__str_length', '__str_subst'],
     __str_split: ['__str_slice', '__str_length', '__char_at', '__alloc_hdr'],
     __str_idx: ['__char_unit'],
     __sso_norm: [],
@@ -206,7 +211,8 @@ export default (ctx) => {
     __str_substring_eq: ['__str_length', '__str_range_eq'],
     __str_slice_eq: ['__str_length', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-compile auto-scan unreliable — test/self-compile-includes.js)
     __str_pad: ['__str_length', '__str_copy', '__alloc'],
-    __str_join: ['__str_concat', '__to_str', '__str_length', '__len', '__ptr_offset', '__mkptr'],  // FN template: __mkptr body-called, must be manual (self-compile auto-scan diverges)
+    __str_join: ['__str_concat', '__to_str', '__str_length', '__len', '__ptr_offset', '__mkptr', '__join_elem'],
+    __join_elem: ['__is_nullish'],  // FN template: __mkptr body-called, must be manual (self-compile auto-scan diverges)
     __str_encode: ['__str_length', '__alloc_hdr_n', '__utf8_encode', '__mkptr'],
     __encodeURIComponent: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
     __decodeURIComponent: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__uri_hex', '__sso_norm'],
@@ -226,7 +232,8 @@ export default (ctx) => {
     __hex_set: ['__hex_dec_raw', '__u8_data', '__len'],
     __u8_data: ['__ptr_type', '__ptr_aux', '__typed_data'],
     __str_encode_into: ['__utf8_encode', '__byte_length', '__typed_data', '__ptr_type', '__ptr_aux'],
-    __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
+    __to_str: () => ['__ftoa', '__static_str', '__str_join', '__mkptr',
+      ...(ctx.module.modules.date && ctx.schema.dateSid != null ? ['__ptr_aux', '__date_to_string'] : [])],
     __str_length: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
 
@@ -1109,6 +1116,29 @@ export default (ctx) => {
     ${representationProgramHasBigint(ctx) && ctx.core.stdlib['__radix_str'] ? `;; A boxed BigInt: its payload in decimal
     (if (i32.eq (local.get $type) (i32.const ${PTR.BIGINT}))
       (then (return (i64.reinterpret_f64 (call $__radix_str (i64.load (call $__ptr_offset (local.get $val))) (i32.const 10))))))` : ''}
+    ${ctx.module.modules.typedarray ? `;; A typed array joins like an Array (its @@toStringTag is not consulted by %TypedArray%.prototype.toString)
+    (if (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+      (then (return (i64.reinterpret_f64 (call $__str_join (local.get $val)
+        (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (i32.const 44))))))))` : ''}
+    ;; An object: a Date renders its time, a user toString/valueOf goes through
+    ;; the ToPrimitive prelude (compile/emit/to-primitive.js), else the
+    ;; inherited Object.prototype.toString tag. A dictionary is a plain object.
+    (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+      (then
+        ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
+          (then (return (i64.reinterpret_f64 (call $__date_to_string (f64.load (i32.wrap_i64 (local.get $val))))))))` : ''}
+        ${ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))` : ''}
+        (return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 12))))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.MAP}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 13))))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.SET}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 14))))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.BUFFER}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 15))))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 16))))))
     (local.get $val))`)
 
   // Copy bytes of a string (SSO or heap) into memory at dst. Uses memory.copy for
@@ -1409,23 +1439,152 @@ export default (ctx) => {
           (i64.reinterpret_f64 (call $__str_slice (local.get $str) (i32.add (local.get $idx) (local.get $slen))
             (call $__str_length (local.get $str))))))))`)
 
-  wat('__str_replaceall', `(func $__str_replaceall (param $str i64) (param $search i64) (param $repl i64) (result f64)
-    (local $idx i32) (local $slen i32) (local $pos i32) (local $result i64)
-    (local.set $slen (call $__str_length (local.get $search)))
-    (local.set $result (local.get $str))
-    (local.set $pos (i32.const 0))
+  // GetSubstitution (ES2024 22.1.3.19.1): expand `$$`, `$&`, `$\``, `$'`, `$n`,
+  // `$nn` and `$<name>` in the replacement for the match [ms, me) of `str`.
+  // `gtab` holds `ng` (start, end) i32 pairs for groups 1..ng (start -1 when
+  // unmatched); `names` is a jz array of group names by group index, or 0 when
+  // the pattern has no named groups (then `$<` is literal).
+  wat('__str_subst', `(func $__str_subst (param $str i64) (param $ms i32) (param $me i32) (param $repl i64) (param $gtab i32) (param $ng i32) (param $names i64) (result f64)
+    (local $acc f64) (local $i i32) (local $len i32) (local $run i32) (local $c i32) (local $d i32) (local $n i32) (local $k i32) (local $j i32)
+    (local $gs i32) (local $ge i32) (local $nlen i32) (local $noff i32)
+    (local.set $len (call $__str_length (local.get $repl)))
+    (local.set $acc (call $__str_slice (local.get $repl) (i32.const 0) (i32.const 0)))
     (block $done (loop $next
-      (local.set $idx (call $__str_indexof (local.get $result) (local.get $search) (local.get $pos)))
-      (br_if $done (i32.lt_s (local.get $idx) (i32.const 0)))
-      (local.set $result (i64.reinterpret_f64 (call $__str_concat
-        (i64.reinterpret_f64 (call $__str_concat
-          (i64.reinterpret_f64 (call $__str_slice (local.get $result) (i32.const 0) (local.get $idx)))
-          (local.get $repl)))
-        (i64.reinterpret_f64 (call $__str_slice (local.get $result) (i32.add (local.get $idx) (local.get $slen))
-          (call $__str_length (local.get $result)))))))
-      (local.set $pos (i32.add (local.get $idx) (call $__str_length (local.get $repl))))
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $repl) (local.get $i)))
+      (if (i32.ne (local.get $c) (i32.const 36))
+        (then (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $next)))
+      (local.set $d (if (result i32) (i32.lt_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
+        (then (call $__char_at (local.get $repl) (i32.add (local.get $i) (i32.const 1)))) (else (i32.const -1))))
+      ;; $n: consumed units (0: a literal $); $k: group, or -2 match, -3 prefix, -4 suffix, -5 '$'
+      (local.set $n (i32.const 0))
+      (local.set $k (i32.const -1))
+      (if (i32.eq (local.get $d) (i32.const 36)) (then (local.set $n (i32.const 2)) (local.set $k (i32.const -5))))
+      (if (i32.eq (local.get $d) (i32.const 38)) (then (local.set $n (i32.const 2)) (local.set $k (i32.const -2))))
+      (if (i32.eq (local.get $d) (i32.const 96)) (then (local.set $n (i32.const 2)) (local.set $k (i32.const -3))))
+      (if (i32.eq (local.get $d) (i32.const 39)) (then (local.set $n (i32.const 2)) (local.set $k (i32.const -4))))
+      (if (i32.and (i32.ge_s (local.get $d) (i32.const 48)) (i32.le_s (local.get $d) (i32.const 57)))
+        (then
+          (local.set $k (i32.sub (local.get $d) (i32.const 48)))
+          (local.set $j (if (result i32) (i32.lt_s (i32.add (local.get $i) (i32.const 2)) (local.get $len))
+            (then (call $__char_at (local.get $repl) (i32.add (local.get $i) (i32.const 2)))) (else (i32.const -1))))
+          ;; two digits name a group when 1 <= nn <= ng; else one digit when 1 <= n <= ng; else the $ is literal
+          (if (i32.and (i32.ge_s (local.get $j) (i32.const 48)) (i32.le_s (local.get $j) (i32.const 57)))
+            (then
+              (local.set $j (i32.add (i32.mul (local.get $k) (i32.const 10)) (i32.sub (local.get $j) (i32.const 48))))
+              (if (i32.and (i32.ge_s (local.get $j) (i32.const 1)) (i32.le_s (local.get $j) (local.get $ng)))
+                (then (local.set $k (local.get $j)) (local.set $n (i32.const 3))))))
+          (if (i32.eqz (local.get $n))
+            (then (if (i32.and (i32.ge_s (local.get $k) (i32.const 1)) (i32.le_s (local.get $k) (local.get $ng)))
+              (then (local.set $n (i32.const 2)))
+              (else (local.set $k (i32.const -1))))))))
+      (if (i32.and (i32.eq (local.get $d) (i32.const 60)) (i64.ne (local.get $names) (i64.const 0)))
+        (then
+          (local.set $j (i32.add (local.get $i) (i32.const 2)))
+          (block $gt (loop $scan
+            (br_if $gt (i32.ge_s (local.get $j) (local.get $len)))
+            (br_if $gt (i32.eq (call $__char_at (local.get $repl) (local.get $j)) (i32.const 62)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (br $scan)))
+          (if (i32.lt_s (local.get $j) (local.get $len))
+            (then
+              (local.set $n (i32.sub (i32.add (local.get $j) (i32.const 1)) (local.get $i)))
+              (local.set $k (i32.const 0))
+              (local.set $nlen (call $__len (local.get $names)))
+              (local.set $noff (call $__ptr_offset (local.get $names)))
+              (local.set $gs (i32.const 0))
+              (block $found (loop $nl
+                (br_if $found (i32.ge_s (local.get $gs) (local.get $nlen)))
+                (if (call $__str_eq (i64.load (i32.add (local.get $noff) (i32.shl (local.get $gs) (i32.const 3))))
+                      (i64.reinterpret_f64 (call $__str_slice (local.get $repl) (i32.add (local.get $i) (i32.const 2)) (local.get $j))))
+                  (then (local.set $k (i32.add (local.get $gs) (i32.const 1))) (br $found)))
+                (local.set $gs (i32.add (local.get $gs) (i32.const 1)))
+                (br $nl)))))))
+      (if (i32.eqz (local.get $n))
+        (then (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $next)))
+      (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+        (i64.reinterpret_f64 (call $__str_slice (local.get $repl) (local.get $run) (local.get $i)))))
+      (if (i32.eq (local.get $k) (i32.const -5))
+        (then (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+          (i64.reinterpret_f64 (call $__str_slice (local.get $repl) (local.get $i) (i32.add (local.get $i) (i32.const 1))))))))
+      (if (i32.eq (local.get $k) (i32.const -2))
+        (then (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+          (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $ms) (local.get $me)))))))
+      (if (i32.eq (local.get $k) (i32.const -3))
+        (then (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+          (i64.reinterpret_f64 (call $__str_slice (local.get $str) (i32.const 0) (local.get $ms)))))))
+      (if (i32.eq (local.get $k) (i32.const -4))
+        (then (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+          (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $me) (call $__str_length (local.get $str))))))))
+      (if (i32.ge_s (local.get $k) (i32.const 1))
+        (then
+          (local.set $gs (i32.load (i32.add (local.get $gtab) (i32.shl (i32.sub (local.get $k) (i32.const 1)) (i32.const 3)))))
+          (local.set $ge (i32.load offset=4 (i32.add (local.get $gtab) (i32.shl (i32.sub (local.get $k) (i32.const 1)) (i32.const 3)))))
+          (if (i32.ge_s (local.get $gs) (i32.const 0))
+            (then (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+              (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $gs) (local.get $ge)))))))))
+      (local.set $i (i32.add (local.get $i) (local.get $n)))
+      (local.set $run (local.get $i))
       (br $next)))
-    (f64.reinterpret_i64 (local.get $result)))`)
+    (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+      (i64.reinterpret_f64 (call $__str_slice (local.get $repl) (local.get $run) (local.get $len)))))`)
+
+  // String search with a replacement carrying `$` patterns: the first
+  // occurrence, then every occurrence (positions found in the original string,
+  // an empty search matching before every unit and at the end).
+  wat('__str_replace_subst', `(func $__str_replace_subst (param $str i64) (param $search i64) (param $repl i64) (result f64)
+    (local $idx i32) (local $slen i32)
+    (local.set $idx (call $__str_indexof (local.get $str) (local.get $search) (i32.const 0)))
+    (if (result f64) (i32.lt_s (local.get $idx) (i32.const 0))
+      (then (f64.reinterpret_i64 (local.get $str)))
+      (else
+        (local.set $slen (call $__str_length (local.get $search)))
+        (call $__str_concat
+          (i64.reinterpret_f64 (call $__str_concat
+            (i64.reinterpret_f64 (call $__str_slice (local.get $str) (i32.const 0) (local.get $idx)))
+            (i64.reinterpret_f64 (call $__str_subst (local.get $str) (local.get $idx) (i32.add (local.get $idx) (local.get $slen))
+              (local.get $repl) (i32.const 0) (i32.const 0) (i64.const 0)))))
+          (i64.reinterpret_f64 (call $__str_slice (local.get $str) (i32.add (local.get $idx) (local.get $slen))
+            (call $__str_length (local.get $str))))))))`)
+  wat('__str_replaceall_subst', `(func $__str_replaceall_subst (param $str i64) (param $search i64) (param $repl i64) (result f64)
+    (local $idx i32) (local $slen i32) (local $pos i32) (local $len i32) (local $prev i32) (local $acc f64)
+    (local.set $slen (call $__str_length (local.get $search)))
+    (local.set $len (call $__str_length (local.get $str)))
+    (local.set $acc (call $__str_slice (local.get $str) (i32.const 0) (i32.const 0)))
+    (block $done (loop $next
+      (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
+      (local.set $idx (call $__str_indexof (local.get $str) (local.get $search) (local.get $pos)))
+      (br_if $done (i32.lt_s (local.get $idx) (i32.const 0)))
+      (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+        (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prev) (local.get $idx)))))
+      (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+        (i64.reinterpret_f64 (call $__str_subst (local.get $str) (local.get $idx) (i32.add (local.get $idx) (local.get $slen))
+          (local.get $repl) (i32.const 0) (i32.const 0) (i64.const 0)))))
+      (local.set $prev (i32.add (local.get $idx) (local.get $slen)))
+      (local.set $pos (i32.add (local.get $idx) (select (local.get $slen) (i32.const 1) (local.get $slen))))
+      (br $next)))
+    (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+      (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prev) (local.get $len)))))`)
+
+  // Every occurrence, positions found in the original string (22.1.3.20): an
+  // empty search matches before every unit and at the end.
+  wat('__str_replaceall', `(func $__str_replaceall (param $str i64) (param $search i64) (param $repl i64) (result f64)
+    (local $idx i32) (local $slen i32) (local $pos i32) (local $len i32) (local $prev i32) (local $acc f64)
+    (local.set $slen (call $__str_length (local.get $search)))
+    (local.set $len (call $__str_length (local.get $str)))
+    (local.set $acc (call $__str_slice (local.get $str) (i32.const 0) (i32.const 0)))
+    (block $done (loop $next
+      (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
+      (local.set $idx (call $__str_indexof (local.get $str) (local.get $search) (local.get $pos)))
+      (br_if $done (i32.lt_s (local.get $idx) (i32.const 0)))
+      (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+        (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prev) (local.get $idx)))))
+      (local.set $acc (call $__str_concat (i64.reinterpret_f64 (local.get $acc)) (local.get $repl)))
+      (local.set $prev (i32.add (local.get $idx) (local.get $slen)))
+      (local.set $pos (i32.add (local.get $idx) (select (local.get $slen) (i32.const 1) (local.get $slen))))
+      (br $next)))
+    (call $__str_concat (i64.reinterpret_f64 (local.get $acc))
+      (i64.reinterpret_f64 (call $__str_slice (local.get $str) (local.get $prev) (local.get $len)))))`)
 
   // $limit ≥ 0: honour JS's optional limit arg. 0x7fffffff = "no limit"
   // (sentinel passed by the no-limit call site). limit=0 → []. limit=N → at
@@ -1540,6 +1699,9 @@ export default (ctx) => {
   // promoteIntArrayLiterals rewrites [int,...] → new Int32Array([...]) internally,
   // so a.map(fn).join() may receive a PTR.TYPED result. Use __typed_idx to load
   // each element correctly (it returns f64 for any element type / stride).
+  // Array.prototype.join renders null and undefined elements as the empty string.
+  wat('__join_elem', `(func $__join_elem (param $v i64) (result i64)
+    (select (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)}) (local.get $v) (call $__is_nullish (local.get $v))))`)
   wat('__str_join', () => {
     if (!ctx.module.modules.typedarray) {
       // ARRAY-only fast path — no __typed_idx overhead.
@@ -1549,13 +1711,13 @@ export default (ctx) => {
     (local.set $len (call $__len (local.get $arr)))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    (local.set $result (f64.reinterpret_i64 (call $__to_str (i64.load (local.get $off)))))
+    (local.set $result (f64.reinterpret_i64 (call $__to_str (call $__join_elem (i64.load (local.get $off))))))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result)) (local.get $sep)))
       (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result))
-        (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
+        (call $__join_elem (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
     (local.get $result))`
@@ -1579,7 +1741,7 @@ export default (ctx) => {
         (call $__to_str
           (if (result i64) (local.get $isTyped)
             (then (i64.reinterpret_f64 (call $__typed_idx (local.get $arr) (i32.const 0))))
-            (else (i64.load (local.get $off)))))))
+            (else (call $__join_elem (i64.load (local.get $off))))))))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
@@ -1589,7 +1751,7 @@ export default (ctx) => {
           (i64.reinterpret_f64 (local.get $result))
           (if (result i64) (local.get $isTyped)
             (then (i64.reinterpret_f64 (call $__typed_idx (local.get $arr) (local.get $i))))
-            (else (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))))
+            (else (call $__join_elem (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
     (local.get $result))`
@@ -1891,14 +2053,18 @@ export default (ctx) => {
             asI64(typed(['call', '$__str_concat', asI64(head), repIR], 'f64')),
             asI64(tail)], 'f64')]]], 'f64')
     }
-    inc('__str_replace')
+    // A replacement that is not a `$`-free literal may carry GetSubstitution
+    // patterns: the pattern-aware kernel expands them per occurrence.
+    const kernel = replacementHasPatterns(repl) ? '__str_replace_subst' : '__str_replace'
+    inc(kernel)
     // search/repl ToString'd at the call site (searchArg) — __str_replace's __str_indexof
     // no longer coerces internally, so a non-string search must be stringified here.
-    return typed(['call', '$__str_replace', asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
+    return typed(['call', `$${kernel}`, asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
   })
   bind('.replaceAll', (str, search, repl) => {
-    inc('__str_replaceall')
-    return typed(['call', '$__str_replaceall', asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
+    const kernel = replacementHasPatterns(repl) ? '__str_replaceall_subst' : '__str_replaceall'
+    inc(kernel)
+    return typed(['call', `$${kernel}`, asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
   })
 
   const caseMethod = (lo, hi, delta) => (str) => {
@@ -1991,10 +2157,13 @@ export default (ctx) => {
     ir.push(['local.set', `$${total}`, ['i32.const', litTotal]])
     for (const len of lens) if (len != null)
       ir.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['local.get', `$${len}`]]])
+    // [hash=0 u32][len u32][bytes] + STR_HCACHE_BIT, allocCopyTail's layout: a
+    // built name keyed repeatedly hashes once, then reads its cell.
     const alloc = [
-      ['local.set', `$${off}`, ['call', '$__alloc', ['i32.add', ['i32.const', 4], ['i32.shl', ['local.get', `$${total}`], ['i32.const', 1]]]]],
-      ['i32.store', ['local.get', `$${off}`], ['local.get', `$${total}`]],
-      ['local.set', `$${off}`, ['i32.add', ['local.get', `$${off}`], ['i32.const', 4]]],
+      ['local.set', `$${off}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${total}`], ['i32.const', 1]]]]],
+      ['i32.store', ['local.get', `$${off}`], ['i32.const', 0]],
+      ['i32.store', ['i32.add', ['local.get', `$${off}`], ['i32.const', 4]], ['local.get', `$${total}`]],
+      ['local.set', `$${off}`, ['i32.add', ['local.get', `$${off}`], ['i32.const', 8]]],
       ['local.set', `$${dst}`, ['local.get', `$${off}`]],
     ]
     const dstAt = (k) => k ? ['i32.add', ['local.get', `$${dst}`], ['i32.const', k * 2]] : ['local.get', `$${dst}`]
@@ -2021,7 +2190,7 @@ export default (ctx) => {
     // ≤6-ASCII template results (`\`$\${n}\`` name-building) must SSO-normalize —
     // the module invariant; a leaked short heap string breaks bare-i64.eq ===.
     alloc.push(['call', '$__sso_norm',
-      ['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['local.get', `$${off}`]]])
+      ['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', STR_HCACHE_BIT], ['local.get', `$${off}`]]])
     // A non-empty literal or a number part (≥1 digit) proves the result non-empty —
     // skip the empty-total branch entirely.
     ir.push(litTotal > 0 || nums.some(t => t != null)

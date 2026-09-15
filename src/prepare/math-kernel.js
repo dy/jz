@@ -278,18 +278,29 @@ function atanh(x) {
   return 0.5 * log((1 + x) / (1 - x))
 }
 
+// fdlibm s_cbrt.c, the twin of module/math.js's `math.cbrt` kernel.
 function cbrt(x) {
   if (!Number.isFinite(x)) return x
   if (x === 0) return x
-  let a = Math.abs(x)
-  let s = 1
-  if (a < 2.2250738585072014e-308) { a = a * 1152921504606846976; s = 9.5367431640625e-7 }
-  let t = bitsF64((f64Bits(a) / 3n) + 0x2A9F7893BF800000n)
-  t = ((t + t) + a / (t * t)) * 0.3333333333333333
-  t = ((t + t) + a / (t * t)) * 0.3333333333333333
-  t = ((t + t) + a / (t * t)) * 0.3333333333333333
-  t = t * s
-  return x < 0 ? -t : t
+  let hx = Number(f64Bits(x) >> 32n)
+  const sign = hx & 0x80000000
+  hx = (hx ^ sign) >>> 0
+  let t
+  if (hx < 0x00100000) {
+    t = x * 18014398509481984   // 2^54
+    const high = Number(f64Bits(t) >> 32n) & 0x7fffffff
+    t = bitsF64(BigInt(((sign | (Math.floor(high / 3) + 696219795)) >>> 0)) << 32n)
+  } else {
+    t = bitsF64(BigInt(((sign | (Math.floor(hx / 3) + 715094163)) >>> 0)) << 32n)
+  }
+  let r = (t * t) * (t / x)
+  t = t * ((1.87595182427177009643 + r * (-1.88497979543377169875 + r * 1.621429720105354466140)) + ((r * r) * r) * (-0.758397934778766047437 + r * 0.145996192886612446982))
+  t = bitsF64((f64Bits(t) + 0x80000000n) & 0xffffffffc0000000n)
+  const s = t * t
+  r = x / s
+  const w = t + t
+  r = (r - t) / (w + r)
+  return t + t * r
 }
 
 // N-ary like Math.hypot, folded as the SAME left-chained 2-ary calls the runtime

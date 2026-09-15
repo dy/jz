@@ -214,6 +214,11 @@ export default function plan(ast, profiler, summarize) {
   // with the export contract: narrowing reads the parameter kinds from it.
   t('collectSlotConstants', () => collectSlotConstants(ast))
   ctx.summary = t('summary', summarize)
+  // Normalizing an input can prove the values stored into an output buffer.
+  // Close that dependency before narrowing. Each round fixes at least one
+  // previously untyped boundary parameter; established contracts are skipped.
+  while (t('applyExportTypedArrayAbi', () => applyExportTypedArrayAbi(programFacts.paramReps, programFacts.callSites, programFacts.programIndex.addressTaken)))
+    ctx.summary = t('summary', summarize)
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
 
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call

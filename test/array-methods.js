@@ -14,6 +14,21 @@ function run(code) {
 // jz()-based helper for regression tests that need full host wiring.
 const runHost = (code, opts) => jz(code, opts).exports
 
+test('.pop: empty, drained and refilled arrays preserve length and values', () => {
+  const src = `export function f(n) {
+    const a = [], out = [];
+    for (let i = 0; i < n; i++) a.push(i + 1);
+    for (let i = 0; i < n + 2; i++) out.push(a.pop());
+    out.push(a.length); a.push(41); out.push(a.pop()); out.push(a.length);
+    return out;
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = runHost(src, { optimize })
+    for (const n of [0, 1, 8, 0, 8]) is(f(n), js(n), `O${optimize}, n=${n}`)
+  }
+})
+
 // === .map ===
 
 test('.map: double', () => {

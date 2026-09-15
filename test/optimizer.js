@@ -357,7 +357,7 @@ test('LICM: actually fires for invariant cell read in non-call loop', () => {
       inc()
       return s | 0
     }
-  `, { wat: true, optimize: { watr: false } })
+  `, { wat: true, optimize: { watr: false, coalesceLocals: false } })
   ok(/\$__li\d+/.test(wat), 'expected hoisted snap local')
 })
 
@@ -393,6 +393,27 @@ test('LICM: self-referential tee induction in loop condition is not hoisted (rff
   is(main(2048), 11 * 1000000 + 2047)  // 2^11: nn walks 1024…1 (11 iters), Σ = 2047
   is(main(64), 6 * 1000000 + 63)       // 2^6: nn walks 32…1 (6 iters), Σ = 63
   is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
+})
+
+test('devirtSchemaReads: sparse fields remain specialized past 24 module schemas', () => {
+  const src = `const rows=[{wanted:7},${Array.from({length:30}, (_,i)=>`{field${i}:${i}}`).join(',')},{padding:1,wanted:9}]
+    function get(o){return o.wanted}
+    export function f(k){return get(rows[k])}`
+  const w = jz.compile(src, { wat: true, optimize: { level: 1, watr: false } })
+  const start = w.indexOf('(func $get\n'), body = w.slice(start, w.indexOf('(func', start + 1))
+  ok(start >= 0 && (body.match(/i64\.load/g) || []).length === 2, 'unrelated schemas do not disable specialization')
+  ok(!body.includes('br_table'), 'sparse schema ids do not allocate a wide jump table')
+  const { f } = run(src, { optimize: { level: 1, snapshotInit: true } })
+  for (const k of [0, 0, 31, 1, 0]) is(f(k), k === 0 ? 7 : k === 31 ? 9 : undefined)
+})
+
+test('devirtSchemaReads: Number bits matching an object tag stay on the generic path', () => {
+  const src = `const object={wanted:7}; function get(o){return o.wanted}
+    export function f(k){return get(k ? object : 1.6875)}`
+  for (const optimize of levels(1, 2, 3)) {
+    const { f } = run(src, { optimize: { level: optimize, snapshotInit: true } })
+    for (const k of [0, 1, 0]) is(f(k), k ? 7 : undefined, `O${optimize}, input ${k}`)
+  }
 })
 
 test('devirtSchemaReads: megamorphic property read switches on schemaId to direct slot loads', () => {
@@ -442,7 +463,8 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   ok(gAt >= 0, 'geo compiles as its own function pre-watr')
   const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
   ok(/\$__dsrs\d+/.test(geoWat), 'multi-read receiver gets an entry-hoisted sid local')
-  ok(/select/.test(geoWat), 'sid computed branch-free (select over tag test)')
+  // a proven-OBJECT receiver needs no tag test: the sid is a bare aux extract; an unproven one selects over the tag test
+  ok(/local\.set \$__dsrs\d+\s*\((?:i32\.wrap_i64|select)/.test(geoWat), 'sid computed branch-free (bare aux extract, or select over tag test)')
   ok(/br_table/.test(geoWat), 'slot-conflicting prop still dispatches via br_table')
   ok(!/br_if[^\n]*\n?[^\n]*call \$__ptr_type/.test(geoWat), 'no per-read tag-guard call in the dispatches')
   ok(/local\.(?:set|tee) \$s\s*\(f64\.load/.test(geoWat), 'proven discriminant read collapses to a bare slot load')
@@ -521,6 +543,11 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   for (let i = 0; i < rows.length; i++) ref += geoJs(rows[i])
   const { f } = run(src, { optimize: 'speed' })
   is(f(), ref, 'memoized read bit-matches the generic path')
+  const size = jz.compile(src, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
+  const at = size.indexOf('(func $geo'), geoSize = size.slice(at, size.indexOf('(func', at + 1))
+  ok(/\$__dsrm\d+/.test(geoSize), 'size mode retains duplicate-read reuse')
+  ok(!/\$__dsr[os]\d+/.test(geoSize), 'size mode adds no schema dispatch arms or receiver cache')
+  is(run(src, { optimize: 'size' }).f(), ref, 'shared size-mode lookup agrees with the specialized speed mode')
 })
 
 test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
@@ -1273,7 +1300,7 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   // faster than the pack/extract SIMD form, beating rust-wasm. The reassociation (invariant
   // terms summed first) is ULP-level, so it is gated to speed; the level-2 path above keeps
   // the bit-exact f64x2 dot pairs.
-  const speedWat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const speedWat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false } })
   ok(/\$__rinv_/.test(speedWat), 'speed tier hoists loop-invariant dot partials into $__rinv locals')
   ok(!/f64x2\./.test(speedWat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || speedWat), 'hoisted dots drop the f64x2 pack/extract')
   const speed = run(src, { optimize: 'speed' })
@@ -2069,6 +2096,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   const l1 = resolveOptimize(1)
   is(l1.treeshake, true)
   is(l1.sortLocalsByUse, true)
+  is(l1.coalesceLocals, true)
   is(l1.fusedRewrite, true)
   is(l1.watr, false)
   is(l1.hoistAddrBase, false)
@@ -2216,7 +2244,8 @@ test('inliner: expr-bodied arrow with arg-forwarding candidate', () => {
 //   unchanged  → `(local $NAME f64)`, $__arr_idx_known or 8-byte stride
 
 const compileMain = (src, passes = {}) => {
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, ...passes } })
+  // Representation pins name the original locals, before slot allocation.
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, ...passes } })
   return wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
 }
 
@@ -3842,13 +3871,32 @@ test('int narrowing: bounded typed-array element products use i32.mul (faithful)
   }
 })
 
+test('local slots: lightweight cleanup bounds recursive frames', () => {
+  // Sequential property operations create disjoint address/value temporaries.
+  // Without coalescing, 48 stores leave 336 locals and overflow the stack at
+  // roughly 512 calls on Node; slot count pins the cause independently of V8.
+  const src = `export function visit(a, n) { if (n <= 0) return 0;
+    ${'a[0] = (a[0] || 0) + 1;'.repeat(48)}
+    return visit(a, n - 1) + 1 }
+    export function main(n) { const a = new Float64Array(1); return visit(a, n) + a[0] }`
+  const locals = optimize => findFunc(parseWat(compile(src, { optimize, wat: true })), '$visit')
+    .filter(n => n[0] === 'local').length
+  const baseline = locals({ level: 1, coalesceLocals: false })
+  for (const optimize of levels(1, 'fast')) {
+    ok(locals(optimize) < baseline / 4, `${optimize}: disjoint lifetimes share slots`)
+    const { main } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 1024, 1024, 3, 0])
+      is(main(n), n * 49, `${optimize}: fresh frame at depth ${n}`)
+  }
+})
+
 test('propagateLocals: forwards single-use temps and tees the first of multiple uses', () => {
   // jz emits short-lived address/index temps; the shared pass (watr/optimize
   // `propagate`) forwards a pure single-use temp into its use and sinks a
   // multi-use single-def into a tee at its first use. Structure at `watr: false`,
   // where the shared local cleanup is the only propagation.
   const wat = (src, opt) => {
-    const fn = findFunc(parseWat(compile(src, { wat: true, optimize: opt })), '$f')
+    const fn = findFunc(parseWat(compile(src, { wat: true, optimize: { ...opt, coalesceLocals: false } })), '$f')
     ok(fn, 'inspect the user function, not runtime helper locals')
     return JSON.stringify(fn)
   }
@@ -3877,7 +3925,7 @@ test('propagateLocals: forwards single-use temps and tees the first of multiple 
     [`export let f = (a, d) => { let q = (100 / d) | 0; a[0] = 7; return q + a[0] }`, [[new Int32Array([0]), 0], [new Int32Array([0]), 5]]],
   ]) {
     const js = oracle(s).f
-    for (const level of [{ level: 2, watr: false }, { level: 'fast' }, { level: 2 }, { level: 'speed' }]) {
+    for (const level of [{ level: 1 }, { level: 2, watr: false }, { level: 'fast' }, { level: 2 }, { level: 'speed' }]) {
       const onF = jz(s, { optimize: level }).exports.f
       const offF = jz(s, { optimize: { ...level, propagateLocals: false } }).exports.f
       for (const a of args) {
@@ -5087,4 +5135,24 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   ok(body.includes('$__cc'), 'the jump chain is present')
   const ref = oracle(src).f
   for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
+})
+
+test('devirtSchemaReads: past the dispatch budget a read site keeps an inline cache', () => {
+  // 30 shapes carry `x` at three different slots: too many for a jump table,
+  // so the site caches the last static schema it resolved (high word, slot)
+  // and reads the next receiver of that schema behind one compare. Other
+  // receivers, a Number included, take the generic read and refill the cache.
+  const shapes = Array.from({ length: 30 }, (_, i) => i % 3 === 0 ? `{ x: ${i}, k${i}: ${i} }` : i % 3 === 1 ? `{ k${i}: ${i}, x: ${i} }` : `{ a${i}: 1, b${i}: 2, x: ${i} }`)
+  const src = `const mk = (i) => { switch (i % 30) { ${shapes.map((s, i) => `case ${i}: return ${s}`).join('\n')} } return { x: -1, z: 0 } }
+    export const f = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = mk(i); t += o.x } return t }
+    export const g = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = i % 2 ? mk(3) : mk(7); t += o.x } return t }
+    export const h = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = i % 5 ? mk(4) : 12; t += o.x === undefined ? 100 : o.x } return t }`
+  const w = jz.compile(src, { wat: true, optimize: { level: 1, watr: false } })
+  ok((w.match(/global\.get \$__ic_hi\d+/g) || []).length >= 3, 'each over-budget read site owns an inline cache')
+  ok(!w.slice(w.indexOf('(func $f')).includes('br_table'), 'no jump table past the budget')
+  const { f, g, h } = run(src, { optimize: { level: 1, snapshotInit: true } })
+  const js = (n) => { let t = 0; for (let i = 0; i < n; i++) t += i % 30; return t }
+  is(f(1000), js(1000), 'polymorphic receivers match the generic read')
+  is(g(1001), Array.from({ length: 1001 }, (_, i) => i % 2 ? 3 : 7).reduce((a, b) => a + b, 0), 'alternating schemas refill the cache')
+  is(h(1000), Array.from({ length: 1000 }, (_, i) => i % 5 ? 4 : 100).reduce((a, b) => a + b, 0), 'a Number receiver reads undefined through the generic path')
 })

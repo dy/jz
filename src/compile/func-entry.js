@@ -3,14 +3,28 @@ import { enterActiveFunction } from './active-function.js'
 import { nullExpr } from '../ir.js'
 import { VAL, updateRep } from '../reps.js'
 
+// A binding the summary names one exact shape for takes it: the slot reads
+// and stores need the layout. A parameter the call lattice already typed
+// OBJECT (a narrowed pointer) and a declared local whose initializer is not
+// a literal (a recycled record, a conditional) are the same case.
+export function seedSummaryShape(name, summary) {
+  const sid = summary?.sidOf(name)
+  if (sid == null) return false
+  const rep = ctx.func.localReps?.get(name)
+  if (rep?.schemaId == null && (rep?.val == null || rep.val === VAL.OBJECT)) updateRep(name, { schemaId: sid, val: VAL.OBJECT })
+  return true
+}
+
 // Direct and closure bodies consume the same settled call-site facts. Keep
 // their boxed ABI; this publishes value/layout knowledge, not a new carrier.
 export function seedSummaryParam(name, summary) {
-  if (!summary || ctx.func.localReps?.get(name)?.val) return
+  if (!summary) return
+  if (seedSummaryShape(name, summary)) return
+  const rep = ctx.func.localReps?.get(name)
+  const ctor = summary.typedCtorOf(name)
+  if (rep?.val) return
   const val = summary.valOf(name)
-  const sid = summary.sidOf(name), ctor = summary.typedCtorOf(name)
-  if (sid != null) updateRep(name, { schemaId: sid, val: VAL.OBJECT })
-  else if (ctor) {
+  if (ctor) {
     (ctx.func.typedElem ||= new Map()).set(name, ctor)
     updateRep(name, { val: VAL.TYPED })
   }

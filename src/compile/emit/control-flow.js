@@ -209,7 +209,7 @@ function unrollForIn(init, cond, step, body) {
   // Unroll only with PROOF the schema is complete: a computed-key write adds
   // enumerable keys, so bail if `src` takes one — or if the fact is unavailable
   // (no proof ⇒ no unroll; unrolling drops the dynamic path, so erring safe matters).
-  if (!ctx.types.dynWriteVars || ctx.types.dynWriteVars.has(src)) return null
+  if (!ctx.types.dynWriteVars || ctx.types.dynWriteVars.has(src) || ctx.schema.mayGrow(src)) return null
   if (lookupValType(src) !== VAL.OBJECT) return null
   const keys = ctx.schema.resolve(src)
   if (!keys || !keys.length || keys.length > FORIN_UNROLL_MAX) return null
@@ -427,18 +427,19 @@ export const controlFlowOps = {
     // keeps the checked forms verbatim (also the correct semantics for a failing guard:
     // OOB reads yield undefined, OOB writes are ignored). Guard arithmetic runs in i64:
     // a*(B-1)+b overflows i32 near the edge, and a wrapped guard that passes is heap
-    // corruption. `_tbVersioned` brakes the arms' re-entry into this same intercept —
-    // keyed by ctx.func identity so a REUSED AST (same source compiled twice, the
+    // corruption. The frame's `versioned` set brakes the arms' re-entry into this
+    // same intercept — per frame, so a REUSED AST (same source compiled twice, the
     // self-compile warm path) versions afresh in the next compile instead of silently
-    // skipping.
-    if (!labeledContinue && body._tbVersioned !== ctx.func
+    // skipping, and the AST carries no frame reference.
+    if (!labeledContinue && !ctx.func.versioned?.has(body)
         && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
       const levels = versionableTypedNest(init, cond, step, body, ctx.func.locals)
       if (levels) {
-        body._tbVersioned = ctx.func
+        const versioned = ctx.func.versioned ??= new Set()
+        versioned.add(body)
         // every LIFTED level is proven by THIS guard — brake their own intercepts
         // (re-versioning per level compounds 2^depth checked twins)
-        for (const vs of levels) if (vs.bodyNode && !vs.partial) vs.bodyNode._tbVersioned = ctx.func
+        for (const vs of levels) if (vs.bodyNode && !vs.partial) versioned.add(vs.bodyNode)
         // Loop-counter RANGE-PROOF lever (c8700daa), rescued from this guard's OWN
         // re-emission: both arms below re-emit the loop via `controlFlowOps['for'](null,
         // cond, step, body)` — init nulled because the REAL init already ran once,

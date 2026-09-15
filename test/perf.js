@@ -1686,7 +1686,9 @@ const parserFixture = `export let f = (s) => {
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
 }`
-golden('closure-heavy parser', parserFixture, 13234)
+// The Map hash's inlined string arm (layout-kinds.js mapHashStringArm) adds its
+// packed-string mix and cell load to every copy watr inlines: 13234 -> 13907.
+golden('closure-heavy parser', parserFixture, 13907)
 test('closure-heavy parser: behavior behind the size pin', () => {
   const { f } = jz(parserFixture).exports
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])

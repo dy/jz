@@ -3,6 +3,10 @@
  */
 
 export default `
+// Binding records are private and closed exactly once. Retain only as many
+// as the deepest overlapping pattern needs; never retain a user's iterator.
+let spare = null
+const recycle = r => { r.iterator = undefined; r.next = undefined; spare.push(r) }
 export let __it_open = (v) => {
   if (v == null) throw new TypeError('value is not iterable')
   // Native collection methods expose snapshot views (see README.md).
@@ -16,8 +20,13 @@ export let __it_open = (v) => {
     w = method()
     if (w == null || typeof w !== 'object') throw new TypeError('iterator is not an object')
   } else if (!indexed && typeof w.next !== 'function') throw new TypeError('value is not iterable')
+  // Read next before borrowing: a throwing getter must not lose a record.
+  const next = indexed ? undefined : w.next
+  if (!spare) spare = []
+  const r = spare.pop() || { iterator: undefined, next: undefined, index: 0, done: false }
   // A nonnegative index is an indexed cursor; -1 is a protocol iterator.
-  return { iterator: w, next: indexed ? undefined : w.next, index: indexed ? 0 : -1, done: false }
+  r.iterator = w; r.next = next; r.index = indexed ? 0 : -1; r.done = false
+  return r
 }
 export let __it_pull = (r, value) => {
   if (r.done) return undefined
@@ -25,13 +34,20 @@ export let __it_pull = (r, value) => {
   r.done = true
   if (r.index >= 0) {
     let v = r.iterator, i = r.index
-    if (i >= v.length) return undefined
     let result
-    if (typeof v === 'string') {
+    // Each cursor kind is guarded by its own test so its length and element
+    // reads compile to that kind's direct form.
+    if (Array.isArray(v)) {
+      if (i >= v.length) return undefined
+      if (value) result = v[i]
+      i++
+    } else if (typeof v === 'string') {
+      if (i >= v.length) return undefined
       let cp = v.codePointAt(i)
       if (value) result = String.fromCodePoint(cp)
       i += cp > 65535 ? 2 : 1
     } else {
+      if (i >= v.length) return undefined
       if (value) result = v[i]
       i++
     }
@@ -55,9 +71,8 @@ export let __it_rest = (r) => {
   return a
 }
 export let __it_close = (r, abrupt) => {
-  if (r.done) return
+  if (r.done || r.index >= 0) { recycle(r); return }
   r.done = true
-  if (r.index >= 0) return
   try {
     let close = r.iterator.return
     if (close != null) {
@@ -65,7 +80,9 @@ export let __it_close = (r, abrupt) => {
       let result = close()
       if (!abrupt && (result == null || typeof result !== 'object')) throw new TypeError('iterator return is not an object')
     }
-  } catch (e) { if (!abrupt) throw e }
+  } catch (e) { recycle(r); if (!abrupt) throw e; return }
+  // A user return() can destructure again: release after it completes.
+  recycle(r)
 }
 export let __it_drain = (v) => {
   if (v == null) return v

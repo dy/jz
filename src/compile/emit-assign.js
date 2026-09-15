@@ -16,7 +16,7 @@ import { T, walkAst, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, dictCapacity } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
-import { i64Hex, encodePtrHi } from '../../layout.js'
+import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
 import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
@@ -83,6 +83,19 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
 
 /** Strict-mode guard for dynamic property writes — emitted in branches that
  *  fall through to `__dyn_set` or its key-kind dispatch. */
+// A receiver a `delete` can reach (the summary's deletable shapes): a known
+// shape marked deletable, a shape set with a deletable member, or a shape the
+// summary cannot name. Its field stores keep the presence mask (`__dyn_set`).
+function mayBeDeleted(obj) {
+  const sum = ctx.summary
+  if (!sum?.deletableSchema) return true
+  const sid = ctx.schema.idOf(obj)
+  if (sid != null) return sum.deletableSchema(sid)
+  const shapes = sum.at(ctx.func.current).shapesOfExpr(obj)
+  return !shapes || shapes.some(s => sum.deletableSchema(s))
+}
+// A name, or a member chain over one: reading it twice has no effect.
+const isPureChain = (n) => typeof n === 'string' || (Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && isPureChain(n[1]))
 function ensureDynSetAllowed(arr) {
   const arrLabel = typeof arr === 'string' ? arr : '<expr>'
   warnDeopt('deopt-dyn-write', `dynamic property write \`${arrLabel}[…] = …\` couldn't resolve a static type — it falls back to a runtime hash store (~2× slower than a typed/slot write, far worse in a hot loop). Use a literal key, a numeric typed-array index, or a Map for genuinely dynamic keys.`)
@@ -190,9 +203,10 @@ function tryHashRmwFusion(arr, idx, val) {
   // fusion never fires on exactly the bindings it exists for (`counts[w] =
   // (counts[w]|0)+1` on a computed-key dictionary).
   const at = repOf(arr)?.val === VAL.HASH ? VAL.HASH : valTypeOf(arr)
-  if (at !== VAL.HASH && at != null) return null
-  // A proven-string key probes directly; an unknown-typed name key takes the same
-  // __is_str_key routing __dyn_set uses (numeric keys → slot 0 → generic path).
+  // Fusion is a dictionary operation. An unknown receiver may be a typed
+  // array; its numeric writes need the ordinary element-store dispatcher.
+  if (at !== VAL.HASH) return null
+  // A proven string probes directly; an unknown key is normalized once.
   const keyStr = (typeof idx === 'string' && valTypeOf(idx) === VAL.STRING) || isLiteralStr(idx)
   const keyUnknown = typeof idx === 'string' && valTypeOf(idx) == null
   if (!keyStr && !keyUnknown) return null
@@ -206,7 +220,7 @@ function tryHashRmwFusion(arr, idx, val) {
     : (n[0] === '[]' && _rmwStructEq(n, readNode)) ? oldT
     : n.map((c, i) => i === 0 ? c : subst(c))
   const lean = ctx.func.leanHashLocals?.has(arr)
-  const i32Values = lean && at === VAL.HASH && ctx.func.i32HashLocals?.has(arr)
+  const i32Values = lean && ctx.func.i32HashLocals?.has(arr)
   // i32-lean values compute in i32 end to end: the old value is the raw cell
   // and the rhs narrows through the ring (`(v | 0) + 1` is one `i32.add`),
   // no f64 round trip between the load and the store.
@@ -222,26 +236,7 @@ function tryHashRmwFusion(arr, idx, val) {
   const slotFn = fixed ? '$__hash_slot_eph_fixed' : lean ? '$__hash_slot_eph' : '$__hash_slot'
   const slotCall = (obj, key) => ['call', slotFn, obj, key,
     ...(fixed ? [['i32.const', capHint]] : [])]
-  // __dyn_set is only reachable below via the non-HASH fallback arm (line ~328);
-  // a PROVEN-HASH receiver (`at === VAL.HASH`) takes the early-return probe/load/
-  // store branch exclusively and never emits a `call $__dyn_set` — including it
-  // anyway pulled __dyn_set's ToPropertyKey (→ __to_str → the whole Ryu formatter)
-  // into every module with a proven-HASH counting idiom (`counts[w] = (counts[w]|0)+1`
-  // on a dictionary-mode `{}`), even in a module that otherwise never stringifies a
-  // number. STRATIFICATION lever retry (.work/archive/todo.md): a genuine __dyn_set/
-  // __dyn_get_t core-split was built, verified correct (two real dep-graph gate
-  // bugs found+fixed: assemble.js's tblConsumed/__clear-reset enumerations and
-  // array.js's needsArrayDynMove hardcode function names by exact string, so new
-  // stratified names must be added to all three or reads/writes silently corrupt —
-  // reproduced live via the JSON.parse+o[k] pin, root-caused, fixed) — but the
-  // corpus-wide size sweep showed ZERO benefit anywhere (wordcount's Ryu-free state
-  // predates this work, from the unrelated cross-call array-elem lattice fix) and a
-  // real regression on the self-compiled watr case (+767B) from paying for the near-
-  // duplicate core with no module ever shedding __to_str because of it. NOT landed;
-  // this one line survives because it's independently sound on its own (zero new
-  // functions, zero duplication cost, strictly more precise reachability — it can
-  // only ever shrink a module, never grow one).
-  inc(fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot', ...(at === VAL.HASH ? [] : ['__dyn_set']))
+  inc(fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot')
   const resIR = i32Values ? asI32(emit(subst(val))) : asF64(emit(subst(val)))
   // Statically-numeric result (isNumericIR — the counting idiom's
   // `(o[k]|0)+1`): a plain number is never an ephemeral pointer, so
@@ -253,70 +248,32 @@ function tryHashRmwFusion(arr, idx, val) {
     ? ['i64.store', ['local.get', `$${slotT}`], ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
     : ['call', '$__slot_write', ['local.get', `$${slotT}`],
       ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
-  // Proven HASH receiver: __hash_slot cannot take its non-HASH return-0 arm.
-  // Normalize an unresolved key once through ToPropertyKey's string path, then
-  // emit only probe→load→compute→store. This removes the enormous generic
-  // __dyn_set fallback from dictionary-count loops and gives the optimizer a
-  // compact hot function; the receiver's HASH fact was established before emit.
-  if (at === VAL.HASH) {
-    if (!keyStr) inc('__to_str')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${oT}`, asF64(emit(arr))],
-      ['local.set', `$${kT}`, asF64(emit(idx))],
-      ...(!keyStr ? [['if',
-        ['i32.eqz', ['i32.and',
-          ['f64.ne', ['local.get', `$${kT}`], ['local.get', `$${kT}`]],
-          ['i64.eq',
-            ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
-              ['i64.const', String(LAYOUT.TAG_SHIFT)]], ['i64.const', String(LAYOUT.TAG_MASK)]],
-            ['i64.const', String(PTR.STRING)]]]],
-        ['then', ['local.set', `$${kT}`,
-          ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]]]]]] : []),
-      ['local.set', `$${slotT}`, slotCall(
-        ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
-        ['i64.reinterpret_f64', ['local.get', `$${kT}`]])],
-      ['local.set', `$${oldT}`, i32Values
-        ? ['i32.load', ['local.get', `$${slotT}`]]
-        : ['f64.load', ['local.get', `$${slotT}`]]],
-      ['local.set', `$${resT}`, resIR],
-      i32Values
-        ? ['i32.store', ['local.get', `$${slotT}`], ['local.get', `$${resT}`]]
-        : writeBack,
-      i32Values ? ['f64.convert_i32_s', ['local.get', `$${resT}`]] : ['local.get', `$${resT}`]], 'f64')
-  }
+  // A proven dictionary has a slot for every normalized key. Normalize
+  // once, then probe, load, compute and store through that slot.
+  if (!keyStr) inc('__to_str')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${oT}`, asF64(emit(arr))],
     ['local.set', `$${kT}`, asF64(emit(idx))],
-    // Unknown-typed key: the same __is_str_key routing __dyn_set uses, but
-    // inline — `f64.ne(k,k)` (only NaN patterns carry pointers) AND tag ==
-    // STRING is 6 ops against a per-token call in the counting idiom's loop.
-    ['local.set', `$${slotT}`, keyStr
-      ? slotCall(
-        ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
-        ['i64.reinterpret_f64', ['local.get', `$${kT}`]])
-      : ['if', ['result', 'i32'],
-        ['i32.and',
-          ['f64.ne', ['local.get', `$${kT}`], ['local.get', `$${kT}`]],
-          ['i64.eq',
-            ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
-              ['i64.const', String(LAYOUT.TAG_SHIFT)]], ['i64.const', String(LAYOUT.TAG_MASK)]],
-            ['i64.const', String(PTR.STRING)]]],
-        ['then', slotCall(
-          ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
-          ['i64.reinterpret_f64', ['local.get', `$${kT}`]])],
-        ['else', ['i32.const', 0]]]],
-    ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${slotT}`]],
-      // non-HASH receiver: the generic dynamic write of the ORIGINAL rhs (its
-      // reads re-emit as ordinary dyn gets on the same pure receiver/key)
-      ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set',
-        ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
-        ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
-        asI64(emit(val))]]],
-      ['else', typed(['block', ['result', 'f64'],
-        ['local.set', `$${oldT}`, ['f64.load', ['local.get', `$${slotT}`]]],
-        ['local.set', `$${resT}`, resIR],
-        writeBack,
-        ['local.get', `$${resT}`]], 'f64')]]], 'f64')
+    ...(!keyStr ? [['if',
+      ['i32.eqz', ['i32.and',
+        ['f64.ne', ['local.get', `$${kT}`], ['local.get', `$${kT}`]],
+        ['i64.eq',
+          ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${kT}`]],
+            ['i64.const', String(LAYOUT.TAG_SHIFT)]], ['i64.const', String(LAYOUT.TAG_MASK)]],
+          ['i64.const', String(PTR.STRING)]]]],
+      ['then', ['local.set', `$${kT}`,
+        ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', ['local.get', `$${kT}`]]]]]]]] : []),
+    ['local.set', `$${slotT}`, slotCall(
+      ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
+      ['i64.reinterpret_f64', ['local.get', `$${kT}`]])],
+    ['local.set', `$${oldT}`, i32Values
+      ? ['i32.load', ['local.get', `$${slotT}`]]
+      : ['f64.load', ['local.get', `$${slotT}`]]],
+    ['local.set', `$${resT}`, resIR],
+    i32Values
+      ? ['i32.store', ['local.get', `$${slotT}`], ['local.get', `$${resT}`]]
+      : writeBack,
+    i32Values ? ['f64.convert_i32_s', ['local.get', `$${resT}`]] : ['local.get', `$${resT}`]], 'f64')
 }
 
 /** In-place replace-store: `arr[i] = {lit}` at a site the whole-program alias
@@ -661,10 +618,35 @@ export function emitElementAssign(arr, idx, val) {
   // dynamic read finds it through the schema arm.
   if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
     const slot = ctx.schema.slotOf(arr, litKey)
-    if (slot >= 0)
+    if (slot >= 0 && !(ctx.types.anyDelete && mayBeDeleted(arr)))
       return withTemp(valueExpr, t => [
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
         ['local.get', `$${t}`]])
+  }
+  // 2b. A receiver of a few possible shapes (the summary's shape set, module/
+  // core.js emitSchemaSlotGuardedMulti): the slot of the shape a masked compare
+  // proves, else the dynamic store. The receiver is a pure read, emitted per
+  // use (no frame temp); the value is evaluated once, after it.
+  if (litKey != null && ctx.schema.guardsFor && ctx.schema.shapeGuardsOn?.() && isPureChain(arr) && !(ctx.types.anyDelete && mayBeDeleted(arr))) {
+    const guards = ctx.schema.guardsFor(ctx.summary?.at(ctx.func.current).shapesOfExpr(arr), litKey)
+    if (guards) {
+      ensureDynSetAllowed(arr)
+      inc('__dyn_set')
+      const bits = () => asI64(asF64(emit(arr)))
+      return withTemp(valueExpr, t => {
+        const val = () => ['local.get', '$' + t]
+        let chain = ['drop', ['call', '$__dyn_set', bits(), asI64(keyExpr), ['i64.reinterpret_f64', val()]]]
+        for (let i = guards.length - 1; i >= 0; i--) {
+          const { sid, slot } = guards[i]
+          const off = ['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]]
+          chain = ['if',
+            ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
+            ['then', ctx.abi.object.ops.store(off, slot, val())],
+            ['else', chain]]
+        }
+        return [chain, val()]
+      })
+    }
   }
   // 3. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
@@ -740,15 +722,10 @@ export function emitElementAssign(arr, idx, val) {
     (typeof arr === 'string' && knownArrVT == null && ctx.funcs.names.has(arr) && !isBoundName(arr))
   if (knownArrVT === VAL.OBJECT || knownArrVT === VAL.HASH || closureReceiver) return dynSetCall(arr, keyExpr, valueExpr)
 
-  // A receiver "may be an OBJECT/HASH at runtime" unless the analyzer has proven it
-  // is an indexable array/typed candidate (`rep.notString`, set by infer.js for
-  // bindings used as `x[i]` array/typed receivers — e.g. a Float64Array param `buf`).
-  // Those keep the lean raw-store path and never drag in __dyn_set / __i32_to_str
-  // (which carry their own rehash/itoa loops — a real size + hot-loop-ratchet cost).
-  // Everything else (an object-literal local `let o = {}` — the Root A′ case — or a
-  // fully-opaque expression) gets the OBJECT-safe fork that routes to the propsPtr
-  // sidecar instead of an out-of-bounds raw f64.store.
-  const mayBeObject = typeof arr !== 'string' || repOf(arr)?.notString !== true
+  // Exclude objects only when every call site proves ARRAY or TYPED, the same
+  // class proof used by element reads. Write syntax's weaker `notString`
+  // fact says nothing about dictionaries, which also accept numeric keys.
+  const mayBeObject = typeof arr !== 'string' || repOf(arr)?.recvArrTyped !== true
 
   // 8. Polymorphic + runtime key dispatch — key kind unknown, receiver shape
   //    unproven. "Not statically ARRAY" (Step 7 already caught the PROVEN
@@ -851,9 +828,18 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   // sidecar while exec() reads the hidden global, a silent split-brain value.
   // Until ToLength + accessor effects can be preserved, reject the proven
   // regex write and leave user objects with an ordinary `lastIndex` untouched.
+  // A regex's lastIndex is a compiler global (module/regex.js) holding the
+  // written value itself; exec applies ToLength when it reads it.
   if (prop === 'lastIndex' && (valTypeOf(obj) === VAL.REGEX ||
-      typeof obj === 'string' && ctx.runtime.regex?.vars?.has(obj)))
-    err('RegExp.lastIndex assignment is not supported; stateful exec updates lastIndex internally')
+      typeof obj === 'string' && ctx.runtime.regex?.vars?.has(obj))) {
+    const name = ctx.runtime.regex?.lastIndexGlobal?.(obj)
+    if (!name) err('RegExp.lastIndex assignment needs a literal /pattern/flags or a variable assigned one directly — jz resolves regexes at compile time')
+    const t = temp('rli')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, storedValue(val)],
+      ['global.set', `$${name}`, ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]], 'f64')
+  }
   // arr.length = N — array resize. Intercept before the schema/object paths
   // (`length` is never a schema field). An ARRAY receiver resizes; a known
   // OBJECT/Map/etc. keeps `.length =` as a plain property write below; an
@@ -907,7 +893,7 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   }
   // A deletion can reach this receiver through an alias. Let the schema writer
   // update presence as well as the payload, including a rewrite to undefined.
-  if (ctx.types.anyDelete && (valTypeOf(obj) == null || valTypeOf(obj) === VAL.OBJECT)) {
+  if (ctx.types.anyDelete && (valTypeOf(obj) == null || valTypeOf(obj) === VAL.OBJECT) && mayBeDeleted(obj)) {
     inc('__dyn_set')
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_set',
       asI64(emit(obj)), asI64(emit(['str', prop])),

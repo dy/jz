@@ -15,7 +15,7 @@ import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
-import { isReassigned, MUTATE_OPS, some, isBrand } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR } from '../layout.js'
@@ -160,7 +160,7 @@ export default (ctx) => {
     // field order in `schema` can differ from the literal's `names`, so each value
     // must land at its named slot `schema.indexOf(name)` — a positional `slot = i`
     // store would scatter values into the wrong (or another field's) slots.
-    const slotOf = schemaId === litId ? (i => i) : (i => schema.indexOf(names[i]))
+    const slotOf = schemaId === litId && schema.every((n, i) => n === names[i]) ? (i => i) : (i => schema.indexOf(names[i]))
     // SOUNDNESS GATE: a static literal is ONE shared instance — every evaluation
     // returns the same pointer. That is only faithful when the object is never
     // mutated: `let mk = () => ({n:0,m:0}); mk().n++` must not bleed into the
@@ -205,8 +205,8 @@ export default (ctx) => {
     // The slots are the fields' only home (module/collection.js
     // buildObjectSchemaSetArm's invariant): a dynamic reader finds a field
     // through the schema arm, so construction stores the slots and nothing
-    // else. A sidecar exists only once a key outside the schema is written,
-    // installed on demand by __dyn_set.
+    // else. __dyn_set installs a sidecar only for extra keys or to record a
+    // deleted field's new insertion position.
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]],
     ]
@@ -387,11 +387,10 @@ export default (ctx) => {
     // writes outside the schema — either kind adds enumerable keys the pool
     // would drop (computed writes via dynWriteVars; out-of-schema literal
     // writes land in the dyn sidecar — see hasOutOfSchemaWrites).
-    // `mayHaveDynProps` is too coarse here — it also flags computed-READ receivers,
-    // and for-in's own `o[k]` read would otherwise veto its own pooling.
+    // The schema's write census also covers aliases and helper parameters.
     if (!ctx.types.anyDelete && typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
       const schema = resolveSchema(obj)
-      if (schema && !hasOutOfSchemaWrites(obj, schema)) {
+      if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj)) {
         const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
       }
@@ -652,7 +651,9 @@ export default (ctx) => {
     const tSchema = resolveSchema(target)
     const sourceSchemas = sources.map(knownSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
-    if (sourceSchemas.some(s => !s)) return emitObjectAssignDynamic(target, sources)
+    // Existing targets cannot grow their physical schema. Extra source keys
+    // must use the property table rather than disappear from a slot-only copy.
+    if (sourceSchemas.some(s => !s || s.some(p => !tSchema.includes(p)))) return emitObjectAssignDynamic(target, sources)
     // Extern-write belt: cross-schema slot copies into the TARGET's sid below
     // (plan's hazard scan marks the same target when it resolves it).
     const tSid = typeof target === 'string'
@@ -672,7 +673,6 @@ export default (ctx) => {
       body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = tSchema.indexOf(sSchema[si])
-        if (ti < 0) continue
         body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase2}`], si)))
       }
     }
@@ -897,8 +897,14 @@ function emitObjectAssignDynamic(target, sources) {
 // to it — program-facts records these in `ctx.types.dynKeyVars`. Such an object
 // can hold props beyond its static schema, so schema-only enumeration would drop
 // them; callers route it through the runtime schema∪dyn-props merge instead.
-const mayHaveDynProps = (obj) => ctx.types.anyDelete || (typeof obj === 'string' &&
-  (!!ctx.types.dynKeyVars?.has(obj) || !!ctx.types.dynWriteVars?.has(obj)))
+const mayHaveDynProps = (obj) => {
+  if (ctx.types.anyDelete) return true
+  if (typeof obj !== 'string') return false
+  if (ctx.types.dynKeyVars?.has(obj) || ctx.types.dynWriteVars?.has(obj)) return true
+  // A helper parameter has a different binding name but the same schema as
+  // the caller's mutated object. Reuse the program-wide write census.
+  return ctx.schema.mayGrow(obj)
+}
 
 // A literal-key write of a key OUTSIDE the receiver's schema lands in the
 // dyn-props sidecar (locals get no propMap/autoBox merge) — the static schema
@@ -976,12 +982,12 @@ function resolveSchema(obj) {
     // spread's keys vanished from keys/values/entries/for-in/JSON while
     // remaining readable as properties (watr-in-kernel's normalize() cfg).
     if (props.some(p => Array.isArray(p) && p[0] === '...')) return spreadLiteralSchema(props)
-    return props.filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+    return canonicalKeyOrder(props.filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1]))
   }
   // JSON-shape inferred: JSON.parse(constStr) call or `.prop`/`[i]` chain
   // resolving to a known OBJECT shape carries its key list as `names`.
   const sh = shapeOf(obj)
-  if (sh?.val === VAL.OBJECT && sh.names) return sh.names
+  if (sh?.val === VAL.OBJECT && sh.names) return canonicalKeyOrder(sh.names)
   return null
 }
 
@@ -1307,7 +1313,7 @@ function emitHashEntries(obj) {
 // IR shape from the same source — only difference is whether they enter from
 // a static type guard or a runtime ptr-type check.
 function hashKeysFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__coll_order')
+  inc('__ptr_offset', '__cap', '__prop_order')
   const off = tempI32('hko'), cap = tempI32('hkc'), n = tempI32('hkn')
   const i = tempI32('hki'), ord = tempI32('hkr'), slot = tempI32('hks')
   // len is __coll_order's OWN live count, not the header length (core.js
@@ -1318,7 +1324,7 @@ function hashKeysFromTemp(t) {
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
+    ['local.set', `$${ord}`, ['call', '$__prop_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
@@ -1334,7 +1340,7 @@ function hashKeysFromTemp(t) {
 }
 
 function hashValuesFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__coll_order')
+  inc('__ptr_offset', '__cap', '__prop_order')
   const off = tempI32('hvo'), cap = tempI32('hvc'), n = tempI32('hvn')
   const i = tempI32('hvi'), ord = tempI32('hvr'), slot = tempI32('hvs')
   // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
@@ -1343,7 +1349,7 @@ function hashValuesFromTemp(t) {
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
+    ['local.set', `$${ord}`, ['call', '$__prop_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
@@ -1359,7 +1365,7 @@ function hashValuesFromTemp(t) {
 }
 
 function hashEntriesFromTemp(t) {
-  inc('__ptr_offset', '__cap', '__alloc_hdr', '__coll_order')
+  inc('__ptr_offset', '__cap', '__alloc_hdr', '__prop_order')
   const off = tempI32('heo'), cap = tempI32('hec'), n = tempI32('hen')
   const i = tempI32('hei'), ord = tempI32('her'), slot = tempI32('hes'), pair = tempI32('hep')
   // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
@@ -1368,7 +1374,7 @@ function hashEntriesFromTemp(t) {
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
+    ['local.set', `$${ord}`, ['call', '$__prop_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     out.init,
     ['local.set', `$${i}`, ['i32.const', 0]],
@@ -1476,7 +1482,7 @@ function emitRuntimeEntries(obj) {
 // metacircularity (kernel dicts grow via `o[k]=v` then enumerate via Object.keys).
 //
 // All three variants share the entire scaffold — schema lookup, dyn discovery,
-// over-alloc output, two iteration loops, shadow-mirror dedup, length patch,
+// output allocation, ordered property traversal, length patch,
 // ARRAY ptr boxing. They differ ONLY in per-slot stores:
 //   - keys:    write i64 key
 //   - values:  write f64 value
@@ -1484,8 +1490,68 @@ function emitRuntimeEntries(obj) {
 //
 // Callbacks receive the active locals as named fields so each variant can
 // reference what it needs without knowing the scaffold's layout.
+/** Merge sorted schema/sidecar/runtime streams. Numeric keys share one order;
+ * strings retain schema, init, then runtime order. Runtime values shadow init
+ * values without moving the key. Consumers supply only their per-property work. */
+export function walkObjectProperties(env, onStatic, onDynamic, local) {
+  const get = n => ['local.get', `$${n}`], set = (n, v) => ['local.set', `$${n}`, v]
+  const c = n => ['i32.const', n], load = (p, i, shift = 3) => ['i64.load', ['i32.add', get(p), ['i32.shl', get(i), c(shift)]]]
+  const { src, sn, base, mask, ordS, dnS, ordG, dnG, i, slot } = env
+  const key = local('owkey', 'i64'), j = local('owj'), skip = local('owskip'), other = local('owother')
+  const pick = local('owpick'), best = local('owbest', 'i64')
+  const streams = [{ src, n: sn }, { src: ordS, n: dnS }, { src: ordG, n: dnG }].map((s, n) => ({
+    ...s, nsrc: n, pos: local('owpos'), rank: local('owrank', 'i64'), key: local('owk', 'i64'), slot: local('owslot'),
+  }))
+  const advance = s => [
+    set(s.rank, ['i64.const', -1]),
+    ['if', ['i32.lt_u', get(s.pos), get(s.n)], ['then',
+      ...(s.nsrc ? [set(s.slot, ['i32.load', ['i32.add', get(s.src), ['i32.shl', get(s.pos), c(2)]]])]
+        : []),
+      set(s.key, s.nsrc ? ['i64.load', ['i32.add', get(s.slot), c(8)]] : load(src, s.pos)),
+      set(j, ['call', '$__str_index_key', get(s.key)]),
+      set(s.rank, ['if', ['result', 'i64'], ['i32.ne', get(j), c(-1)],
+        ['then', ['i64.extend_i32_u', get(j)]], ['else', ['i64.const', (s.nsrc + 1) * 4294967296]]])]],
+  ]
+  // Schema slots own values even when a reinsertion record supplies their order.
+  // Content equality also handles non-interned keys.
+  const scan = (label, n, candidate, hit) => [set(j, c(0)), ['block', label, ['loop', label + 'loop',
+    ['br_if', label, ['i32.ge_u', get(j), get(n)]],
+    ['if', ['call', '$__str_eq', get(key), candidate], ['then', ...hit, ['br', label]]],
+    set(j, ['i32.add', get(j), c(1)]), ['br', label + 'loop']]]]
+  const dynKey = ord => ['i64.load', ['i32.add', ['local.tee', `$${other}`,
+    ['i32.load', ['i32.add', get(ord), ['i32.shl', get(j), c(2)]]]], c(8)]]
+  const field = ctx.types.anyDelete ? local('owfield') : null
+  const staticValue = () => ['if', ['i32.eqz', deletedSlotIR(mask, i, load(base, i))], ['then', ...onStatic()]]
+  const arms = streams.map(s => {
+    const emit = s.nsrc === 0 ? [set(i, get(s.pos)),
+      ...(field ? [set(skip, c(0)),
+        ...scan(`$owinit${pick}`, dnS, dynKey(ordS), [set(skip, c(1))]),
+        ...scan(`$owrun${pick}`, dnG, dynKey(ordG), [set(skip, c(1))]),
+        ['if', ['i32.eqz', get(skip)], ['then', staticValue()]]]
+        : [staticValue()])]
+      : [set(slot, get(s.slot)), set(skip, c(0)), ...(field ? [set(field, c(-1))] : []),
+        ...scan(`$owschema${pick}${s.nsrc}`, sn, load(src, j), field ? [set(field, get(j))] : [set(skip, c(1))]),
+        ['if', ['i32.eqz', get(skip)], ['then',
+          ...scan(`$owdyn${pick}${s.nsrc}`, s.nsrc === 1 ? dnG : dnS, dynKey(s.nsrc === 1 ? ordG : ordS),
+            s.nsrc === 1 ? [set(slot, get(other))] : [set(skip, c(1))]),
+          ['if', ['i32.eqz', get(skip)], ['then',
+            ...(field ? [['if', ['i32.ge_s', get(field), c(0)], ['then', set(i, get(field)), staticValue()], ['else', ...onDynamic()]]]
+              : onDynamic())]]]]]
+    return ['if', ['i32.eq', get(pick), c(s.nsrc)], ['then', set(key, get(s.key)), ...emit,
+      set(s.pos, ['i32.add', get(s.pos), c(1)]), ...advance(s)]]
+  })
+  return [...streams.flatMap(s => [set(s.pos, c(0)), ...advance(s)]),
+    ['block', `$owdone${pick}`, ['loop', `$owloop${pick}`,
+      set(best, ['i64.const', -1]), set(pick, c(-1)),
+      ...streams.map(s => ['if', ['i64.lt_u', get(s.rank), get(best)],
+        ['then', set(best, get(s.rank)), set(pick, c(s.nsrc))]]),
+      ['br_if', `$owdone${pick}`, ['i32.eq', get(pick), c(-1)]],
+      ...arms, ['br', `$owloop${pick}`]]]]
+}
+
 function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
-  inc('__alloc_hdr', '__ptr_offset', '__coll_order')
+  inc('__alloc_hdr', '__ptr_offset', '__prop_order', '__str_index_key', '__str_eq')
+  ctx.module.include('string')
   if (ro) declEnumcGlobals()
   // Durable-receiver global-table merge (see below) only when collection.js's
   // dyn-props machinery is actually part of this build — a program that never
@@ -1508,7 +1574,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
   // dnG/dnS (above) stay the HEADER length — the cheap for-in cache key
   // (roHit/cache-store below), read before __coll_order ever runs. dnGReal/
   // dnSReal are __coll_order's OWN live counts, read right after each call —
-  // walkDyn's actual loop bound MUST use these, not the header, or a header/
+  // Traversal bounds MUST use these, not the header, or a header/
   // real-occupancy desync walks past __coll_order's real buffer (see
   // __coll_order's header comment, core.js, for why they can disagree). `total`
   // (below) keeps sizing off the header value — header ≥ real is the only
@@ -1522,7 +1588,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
   // The deleted-slot mask (layout.js): a deleted schema field keeps undefined in
   // its slot, so its absence is read from the header, not the slot.
   const mask = tempI32('oedm')
-  const j = tempI32('oej2'), skip = tempI32('oesk'), pair = tempI32('oep')
+  const pair = tempI32('oep')
   const id = freshId(ctx)
   const env = { out, o, src, base, i, slot, pair }
   // for-in enum cache, OBJECT arm (see core.js __hash_keys_ro for the scheme).
@@ -1540,45 +1606,6 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
         ['i32.eq', ['local.get', `$${poffS}`], ['global.get', '$__enumc_off']]],
       ['i32.eq', ['local.get', `$${dnS}`], ['global.get', '$__enumc_len']]],
     ['then', ['br', `$oed${id}`, ['global.get', '$__enumc_arr']]]]] : []
-  // Dedup-and-store one dyn source's dn live slots (at poff/pcap, ord already
-  // computed) against the schema (0..sn @ src) and, when `against` is given,
-  // a second dyn source's already-walked ord array (0..dn2 @ ord2).
-  const walkDyn = (label, dn, ord, against) => ['if', ['i32.ne', ['local.get', `$${dn}`], ['i32.const', 0]],
-    ['then',
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$${label}brk${id}`, ['loop', `$${label}loop${id}`,
-        ['br_if', `$${label}brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${dn}`]]],
-        ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
-          ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
-        ['local.set', `$${skip}`, ['i32.const', 0]],
-        ['local.set', `$${j}`, ['i32.const', 0]],
-        ['block', `$${label}skbrk${id}`, ['loop', `$${label}skloop${id}`,
-          ['br_if', `$${label}skbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${sn}`]]],
-          ['if', ['i64.eq',
-              ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
-              ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${j}`], ['i32.const', 3]]]]],
-            ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$${label}skbrk${id}`]]],
-          ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
-          ['br', `$${label}skloop${id}`]]],
-        ...(against ? [
-          ['if', ['i32.eqz', ['local.get', `$${skip}`]],
-            ['then',
-              ['local.set', `$${j}`, ['i32.const', 0]],
-              ['block', `$${label}gdbrk${id}`, ['loop', `$${label}gdloop${id}`,
-                ['br_if', `$${label}gdbrk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${against.dn}`]]],
-                ['if', ['i64.eq',
-                    ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]],
-                    ['i64.load', ['i32.add', ['i32.load', ['i32.add', ['local.get', `$${against.ord}`],
-                      ['i32.shl', ['local.get', `$${j}`], ['i32.const', 2]]]], ['i32.const', 8]]]],
-                  ['then', ['local.set', `$${skip}`, ['i32.const', 1]], ['br', `$${label}gdbrk${id}`]]],
-                ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
-                ['br', `$${label}gdloop${id}`]]]]]] : []),
-        ['if', ['i32.eqz', ['local.get', `$${skip}`]],
-          ['then',
-            ...emitDynStore(env),
-            ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$${label}loop${id}`]]]]]
   return ['block', `$oed${id}`, ['result', 'f64'],
     // Static schema row: sid (AUX bits) → __schema_tbl[sid] → src offset; n@src-8.
     // __schema_tbl is omitted when every program schema is empty (dyn-only dicts);
@@ -1672,33 +1699,18 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     ['local.set', `$${total}`, ['i32.add', ['local.get', `$${sn}`], ['i32.add', ['local.get', `$${dnG}`], ['local.get', `$${dnS}`]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${total}`], ['local.get', `$${total}`]]],
     ['local.set', `$${o}`, ['i32.const', 0]],
-    // Static schema slots — every key is unique by construction; a deleted one
-    // (the header mask) is not a key.
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$sbrk${id}`, ['loop', `$sloop${id}`,
-      ['br_if', `$sbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${sn}`]]],
-      ['if', ['i32.eqz', deletedSlotIR(mask, i, ['i64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]])],
-        ['then', ...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$sloop${id}`]]],
-    // Dyn-prop slots in insertion order (__coll_order sorts the live 24-byte
-    // slots by packed seq; hash@+0, key@+8, value@+16). A key already in the
-    // schema is skipped: __dyn_set keeps a schema key in its slot (collection.js
-    // buildObjectSchemaSetArm's invariant), so this is a belt, not a dedup of
-    // a construction mirror. Global walks first (schema-dedup only); sidecar
-    // walks second (schema-dedup AND global-dedup, so a key present in both —
-    // reassigned at runtime after being set at init — is emitted once, from
-    // the authoritative global copy).
     ['if', ['i32.ne', ['local.get', `$${poffG}`], ['i32.const', 0]],
       ['then',
-        ['local.set', `$${ordG}`, ['call', '$__coll_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]],
+        ['local.set', `$${ordG}`, ['call', '$__prop_order', ['local.get', `$${poffG}`], ['local.get', `$${pcapG}`], ['i32.const', 24]]],
         ['local.set', `$${dnGReal}`, ['global.get', '$__coll_order_n']]]],
     ['if', ['i32.ne', ['local.get', `$${poffS}`], ['i32.const', 0]],
       ['then',
-        ['local.set', `$${ordS}`, ['call', '$__coll_order', ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]],
+        ['local.set', `$${ordS}`, ['call', '$__prop_order', ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]],
         ['local.set', `$${dnSReal}`, ['global.get', '$__coll_order_n']]]],
-    walkDyn('oeg', dnGReal, ordG, null),
-    walkDyn('oes', dnSReal, ordS, { dn: dnGReal, ord: ordG }),
+    ...walkObjectProperties({ src, sn, base, mask, ordS, dnS: dnSReal, ordG, dnG: dnGReal, i, slot },
+      () => [...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]],
+      () => [...emitDynStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]],
+      (name, type) => type === 'i64' ? tempI64(name) : tempI32(name)),
     ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${o}`]],
     // Fill the enum cache (keyed by sidecar — see roHit above). Objects without
     // a sidecar are either tier-1 (returned above) or global-only (rare; a 0 key

@@ -137,10 +137,10 @@ test('ablation: vectorizeLaneLocal lifts a pure f64 element map to SIMD lanes', 
 
 test('ablation: hoistInvariantLoop snaps an invariant cell read to a pre-header local', () => {
   // `inc` escapes via `keep`, which stores it, so `i` stays a real captured heap cell; the
-  // loop reads it invariantly. watr:false keeps the `$__li` snap name (coalesce renames it).
+  // loop reads it invariantly. Inspect before local-slot coalescing renames `$__li`.
   const src = `let sink; const keep = (f) => (sink = f, f); export const main = () => { let i = 0; const inc = keep(() => i = i + 1); let s = 0; for (let j = 0; j < 10; j++) s = s + i + i; inc(); return s | 0 }`
-  ok(!has(parse(src, { watr: false, hoistInvariantLoop: false }), LI_SNAP), 'control: no snap local with pass OFF')
-  ok(has(parse(src, { watr: false }), LI_SNAP), 'INVARIANT: $__li snap local hoists the invariant read with pass ON')
+  ok(!has(parse(src, { watr: false, coalesceLocals: false, hoistInvariantLoop: false }), LI_SNAP), 'control: no snap local with pass OFF')
+  ok(has(parse(src, { watr: false, coalesceLocals: false }), LI_SNAP), 'INVARIANT: $__li snap local hoists the invariant read with pass ON')
 })
 
 test('ablation: promoteGlobals snapshots a repeatedly-read global to one function-entry local', () => {

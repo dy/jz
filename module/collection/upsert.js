@@ -337,16 +337,17 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
           : '(call $__ext_has (local.get $coll) (local.get $key))'}))
         (else ${onEmpty}))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then ${onEmpty}))`
-  // SET/MAP/HASH all grow by forward-marking the old header (genUpsert / genUpsertGrow
-  // with forward=true), so a boxed pointer may be stale → resolve through the chain.
-  const offExpr = '(call $__ptr_offset (local.get $coll))'
-
   return `(func $${name} (param $coll i64) (param $key i64) (result ${rt})
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
     ${laneLocals}
     ${typeGuard}
-    (local.set $off ${offExpr})
+    (local.set $off (i32.wrap_i64 (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ;; Reuse the capacity load as the forwarding check, as upsert does.
+    (if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $done (loop $probe

@@ -59,6 +59,17 @@ const canonArm = (f, isNum, otherNum) => isNum && !otherNum ? canonNum(f) : f
 const taggedArm = (arm, ir) =>
   resolveValType(arm, valTypeOf, lookupValType) === VAL.BOOL ? boolBoxIR(ir) : asF64(ir)
 
+// A BOOL arm beside a NUMBER arm carries its ToNumber image (VT's BOOL∪NUMBER
+// rule): a raw i32 0/1, or its conversion, already is that image. A boxed atom
+// (a field read, a boxed local, a call's result) becomes it here; left as the
+// atom, the NUMBER-typed consumer reads its NaN bits as NaN.
+const numericBoolArm = (ir) => {
+  if (ir.type === 'i32' || (Array.isArray(ir) && (ir[0] === 'f64.convert_i32_s' || ir[0] === 'f64.convert_i32_u'))) return ir
+  const n = typed(['f64.convert_i32_u', truthyIR(ir)], 'f64')
+  n.valKind = VAL.NUMBER
+  return n
+}
+
 // One half of a two-sided range test against a compile-time constant, normalized to
 // an inclusive bound on a *local* `x`: `{ x, lo }` (x ≥ lo) or `{ x, hi }` (x ≤ hi).
 // `>`/`<` fold to the inclusive neighbor; a const on either side is accepted. Returns
@@ -312,9 +323,10 @@ export const logicalOps = {
         return tagPtr(typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32'))
       }
     }
-    const fb = asF64(vb), fc = asF64(vc)
     const vtb = resolveValType(b, valTypeOf, lookupValType)
     const vtc = resolveValType(c, valTypeOf, lookupValType)
+    const fb = asF64(vtb === VAL.BOOL && vtc === VAL.NUMBER ? numericBoolArm(vb) : vb)
+    const fc = asF64(vtc === VAL.BOOL && vtb === VAL.NUMBER ? numericBoolArm(vc) : vc)
     const isNaNBoxLit = n => Array.isArray(n) && n[0] === 'f64.const' && typeof n[1] === 'string' && n[1].startsWith('nan:')
     const refPayload = (vtb && vtb === vtc && REF_EQ_KINDS.has(vtb))
       || vb.closureFuncIdx != null || vc.closureFuncIdx != null
@@ -393,7 +405,8 @@ export const logicalOps = {
       const v = litVal(va)
       if (v !== 0 && v === v) {
         const refs = extractRefinements(a, new Map(), true)
-        return withRefinements(refs, b, () => emit(b))
+        const vb = withRefinements(refs, b, () => emit(b))
+        return resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER ? numericBoolArm(vb) : vb
       }
       return va
     }
@@ -436,7 +449,8 @@ export const logicalOps = {
     // i32 fast path: use i32 tee as cond directly (nonzero=truthy in wasm `if`),
     // skip f64 round-trip and __is_truthy call entirely.
     if (va.type === 'i32') {
-      const vb = emitRight()
+      let vb = emitRight()
+      if (resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER) vb = numericBoolArm(vb)
       // Boolean-only short circuit with a pure RHS is safe to evaluate
       // eagerly. Comparisons are canonical 0/1, so bitwise AND preserves the
       // value while removing the nested if/tee ladder in scalar predicates.
@@ -465,11 +479,15 @@ export const logicalOps = {
         ['else', typed(['f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')]], 'f64')
     }
     const t = temp()
-    const numA = isNumArm(va, a)
-    const vb = emitRight(), numB = isNumArm(vb, b)
+    const vtA = resolveValType(a, valTypeOf, lookupValType), vtB = resolveValType(b, valTypeOf, lookupValType)
+    const fa = vtA === VAL.BOOL && vtB === VAL.NUMBER ? numericBoolArm(va) : va
+    const numA = isNumArm(fa, a)
+    let vb = emitRight()
+    if (vtB === VAL.BOOL && vtA === VAL.NUMBER) vb = numericBoolArm(vb)
+    const numB = isNumArm(vb, b)
     // `a` is the else-arm result (returned when falsy — incl NaN), so canon a lone-numeric
     // `a` before the tee: `$t` then feeds both the result and the cond canonically.
-    const teed = typed(['local.tee', `$${t}`, canonArm(asF64(va), numA, numB)], 'f64')
+    const teed = typed(['local.tee', `$${t}`, canonArm(asF64(fa), numA, numB)], 'f64')
     // A numeric left arm tests truthiness NaN-by-value (not __is_truthy, which mis-reads
     // x86's sign-set NaN as truthy) — tag it so truthyIR takes that path.
     if (numA) teed.valKind = VAL.NUMBER
@@ -509,7 +527,8 @@ export const logicalOps = {
       const v = litVal(va)
       if (v !== 0 && v === v) return va
       const refs = extractRefinements(a, new Map(), false)
-      return withRefinements(refs, b, () => emit(b))
+      const vb = withRefinements(refs, b, () => emit(b))
+      return resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER ? numericBoolArm(vb) : vb
     }
     // a is falsy in the right-arm — `x == null || ...` proves x is null/undefined in b;
     // De Morgan'd via the sense=false branch of extractRefinements (mirrors the ?: else-arm).
@@ -531,7 +550,8 @@ export const logicalOps = {
       }
     }
     if (va.type === 'i32') {
-      const vb = emitRight()
+      let vb = emitRight()
+      if (resolveValType(b, valTypeOf, lookupValType) === VAL.BOOL && resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER) vb = numericBoolArm(vb)
       // Boolean twin of && above: eager pure RHS + canonical 0/1 values make
       // bitwise OR exactly equivalent to short-circuit OR.
       if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
@@ -561,12 +581,16 @@ export const logicalOps = {
         ['else', asF64(vb)]], 'f64')
     }
     const t = temp()
-    const numA = isNumArm(va, a)
-    const vb = emitRight(), numB = isNumArm(vb, b)
+    const vtA = resolveValType(a, valTypeOf, lookupValType), vtB = resolveValType(b, valTypeOf, lookupValType)
+    const fa = vtA === VAL.BOOL && vtB === VAL.NUMBER ? numericBoolArm(va) : va
+    const numA = isNumArm(fa, a)
+    let vb = emitRight()
+    if (vtB === VAL.BOOL && vtA === VAL.NUMBER) vb = numericBoolArm(vb)
+    const numB = isNumArm(vb, b)
     // `a` (then-arm) is returned only when truthy — hence never NaN — so it needs no canon;
     // the cond's NaN-safety comes from the valKind tag. Only the else (b) arm can surface
     // as a numeric NaN.
-    const teed = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
+    const teed = typed(['local.tee', `$${t}`, asF64(fa)], 'f64')
     if (numA) teed.valKind = VAL.NUMBER   // numeric left arm: NaN-safe truthiness (see `&&`)
     return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
       ['then', ['local.get', `$${t}`]],
@@ -592,21 +616,21 @@ export const logicalOps = {
           ['then', ['i64.reinterpret_f64', faBoxed]],
           ['else', ['i64.reinterpret_f64', fb0]]]], 'f64')
     }
-    const va = emit(a), vb = emit(b)
+    let va = emit(a), vb = emit(b)
     const t = temp()
+    const vtA = resolveValType(a, valTypeOf, lookupValType)
+    const vtB = resolveValType(b, valTypeOf, lookupValType)
     // Mixed BOOL/non-NUMBER sides — see `&&`: a surfacing bool carries its atom box.
-    {
-      const vtA = resolveValType(a, valTypeOf, lookupValType)
-      const vtB = resolveValType(b, valTypeOf, lookupValType)
-      if ((vtA === VAL.BOOL) !== (vtB === VAL.BOOL) && (vtA === VAL.BOOL ? vtB : vtA) !== VAL.NUMBER) {
-        const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
-        const fb = vtB === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
-        return typed(['if', ['result', 'f64'],
-          ['i32.eqz', isNullish(['local.tee', `$${t}`, fa])],
-          ['then', ['local.get', `$${t}`]],
-          ['else', fb]], 'f64')
-      }
+    if ((vtA === VAL.BOOL) !== (vtB === VAL.BOOL) && (vtA === VAL.BOOL ? vtB : vtA) !== VAL.NUMBER) {
+      const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
+      const fb = vtB === VAL.BOOL ? boolBoxIR(vb) : asF64(vb)
+      return typed(['if', ['result', 'f64'],
+        ['i32.eqz', isNullish(['local.tee', `$${t}`, fa])],
+        ['then', ['local.get', `$${t}`]],
+        ['else', fb]], 'f64')
     }
+    if (vtA === VAL.BOOL && vtB === VAL.NUMBER) va = numericBoolArm(va)
+    if (vtB === VAL.BOOL && vtA === VAL.NUMBER) vb = numericBoolArm(vb)
     const numA = isNumArm(va, a), numB = isNumArm(vb, b)
     // Both arms can surface as the (untyped) result — `a` when non-nullish (a NaN is not
     // nullish, so it IS returned), `b` otherwise. Canon a lone-numeric arm; `a` before the

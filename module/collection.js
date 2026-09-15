@@ -19,9 +19,10 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
-import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG } from '../layout.js'
+import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
+import { requireReceiverWat } from './core/error-object.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { withControlFrame } from '../src/compile/flow-state.js'
 
@@ -174,6 +175,8 @@ export default (ctx) => {
   // Size tier: `__str_hash` links its plain walk and the probes call it
   // instead of inlining its fast arms (module/collection/upsert.js).
   const lean = !!ctx.transform.optimize?.leanRuntime
+  // The inline-cache handoff globals (buildObjectSchemaArm → optimize/devirt.js).
+  if (!lean) { declGlobal('__ic_found_hi', 'i64'); declGlobal('__ic_found_slot', 'i32') }
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when linkDemand.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.linkDemand.
   const ifExt = (name) => () => ctx.linkDemand.external ? [name] : []
@@ -193,7 +196,8 @@ export default (ctx) => {
   // kernel-compiled `.delete()` would trap.
   const relogDeps = () => needsDurableFwdLog() ? ['__durable_slot_relog', '__durable_slot_cancel'] : []
   deps({
-    __schema_slot: ['__str_eq'],
+    __schema_slot: ['__str_eq', '__str_hash'],
+    __schema_slot_h: ['__str_eq'],
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
     // '__durable_fwd_log' on __set_add/__map_set/__hash_set/__hash_set_local: an
@@ -256,8 +260,8 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: () => ['__schema_slot', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
-    __dyn_get_t_hm: () => ['__schema_slot', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
+    __dyn_get_t_h: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
+    __dyn_get_t_hm: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
@@ -331,6 +335,9 @@ export default (ctx) => {
   // schema list is non-empty AND (__stringify OR __dyn_get) is included.
   if (!ctx.scope.globals.has('__schema_tbl'))
     declGlobal('__schema_tbl', 'i32')
+  // The key index (src/wat/assemble/start-fn.js): 0 when a build lays none out.
+  if (!ctx.scope.globals.has('__schema_idx'))
+    declGlobal('__schema_idx', 'i32')
 
   // __ext_* imports carry NaN-boxed pointers across the env boundary as i64
   // (not f64) to dodge V8's f64 NaN canonicalization at the wasm↔JS edge —
@@ -370,13 +377,13 @@ export default (ctx) => {
             ${sameValueZeroIdentityChain()})))))`
 
   ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
-    (local $f f64) (local $t i32) (local $h i32)
+    (local $f f64) (local $t i32) (local $h i32) (local $aux i32) (local $off i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ;; NaN-boxed strings carry the tag inside a NaN payload. Regular numbers
     ;; (e.g. f64.convert_i32_s offsets used as __ihash keys) can alias mantissa
     ;; bits onto the type slot — gate the str-hash dispatch on actual NaN.
-    ${mapHashStringArm()}
+    ${mapHashStringArm(lean)}
     ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
     ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]): hash
     ;; the PAYLOAD, not the pointer, so equal-value boxes land in the same
@@ -1309,13 +1316,39 @@ export default (ctx) => {
   // canonical SSO invariant, a short query needs only bit comparisons: decide
   // that once outside the scan. Canonical interned pairs also compare by bits;
   // slices, host strings and JSON-created schema rows retain content equality.
-  ctx.core.stdlib['__schema_slot'] = `(func $__schema_slot (param $obj i64) (param $key i64) (result i32)
+  // `__schema_slot_h` takes the key's hash from a caller that holds it (the
+  // prehashed read bodies); `__schema_slot` hashes the key itself.
+  // The index probe joins only a program that lays one out (start-fn.js:
+  // speed mode, a schema of eight or more keys), observed at template
+  // expansion so the schema list is final.
+  const schemaSlotBody = (name, hashed) => { const indexed = !lean && ctx.schema.list.some(keys => keys.length >= 8); return `(func $${name} (param $obj i64) (param $key i64) ${hashed ? '(param $h i32)' : ''} (result i32)
     (local $off i32) (local $n i32) (local $i i32) (local $canonical i32) (local $stored i64)
-    (local.set $off (i32.wrap_i64 (i64.load
-      (i32.add (global.get $__schema_tbl)
-        (i32.shl (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj)
-          (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))) (i32.const 3))))))
+    (local $sid i32) ${indexed ? `(local $ix i32) ${hashed ? '' : '(local $h i32)'} (local $mask i32) (local $e i64) (local $s i32)` : ''}
+    (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $off (i32.wrap_i64 (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    ${!indexed ? '' : `
+    ;; The schema's key index (start-fn.js): hash the key once, probe by hash,
+    ;; confirm the slot's key. A schema without an index keeps the scan below.
+    (if (global.get $__schema_idx) (then
+      (local.set $ix (i32.wrap_i64 (i64.load (i32.add (global.get $__schema_idx) (i32.shl (local.get $sid) (i32.const 3))))))
+      (if (local.get $ix) (then
+        (local.set $ix (i32.add (global.get $__schema_idx) (local.get $ix)))
+        ${hashed ? '' : '(local.set $h (call $__str_hash (local.get $key)))'}
+        (local.set $mask (i32.sub (i32.wrap_i64 (i64.load (local.get $ix))) (i32.const 1)))
+        (local.set $i (i32.and (local.get $h) (local.get $mask)))
+        (block $miss (loop $probe
+          (local.set $e (i64.load offset=8 (i32.add (local.get $ix) (i32.shl (local.get $i) (i32.const 3)))))
+          (br_if $miss (i64.eqz (local.get $e)))
+          (if (i32.eq (i32.wrap_i64 (local.get $e)) (local.get $h))
+            (then
+              (local.set $s (i32.wrap_i64 (i64.shr_u (local.get $e) (i64.const 32))))
+              (local.set $stored (i64.load (i32.add (local.get $off) (i32.shl (local.get $s) (i32.const 3)))))
+              (if (i32.or (i64.eq (local.get $stored) (local.get $key)) (call $__str_eq (local.get $stored) (local.get $key)))
+                (then (return (local.get $s))))))
+          (local.set $i (i32.and (i32.add (local.get $i) (i32.const 1)) (local.get $mask)))
+          (br $probe)))
+        (return (i32.const -1))))))`}
     ${ctx.features.sso && !lean ? `
     (if (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
       (then
@@ -1343,7 +1376,9 @@ export default (ctx) => {
       ${!lean ? '))' : ''}
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $scan)))
-    (i32.const -1))`
+    (i32.const -1))` }
+  ctx.core.stdlib['__schema_slot'] = () => schemaSlotBody('__schema_slot', false)
+  ctx.core.stdlib['__schema_slot_h'] = () => schemaSlotBody('__schema_slot_h', true)
   // The schema arm of a dynamic read, FIRST for an OBJECT receiver: a schema
   // field lives in its slot only (buildObjectSchemaSetArm's invariant), so a
   // read of a schema key is the slot and never probes a sidecar. A deleted
@@ -1358,10 +1393,14 @@ export default (ctx) => {
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                  (i32.ne (global.get $__schema_tbl) (i32.const 0)))
       (then
-        (local.set $idx (call $__schema_slot (local.get $obj) (local.get $key)))
+        (local.set $idx (call $__schema_slot_h (local.get $obj) (local.get $key) (local.get $h)))
         (if (i32.ge_s (local.get $idx) (i32.const 0))
           (then ${!presence
-            ? '(return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))'
+            ? `${lean ? '' : `;; a static schema's slot feeds the reading site's inline cache (optimize/devirt.js)
+               (if (i32.lt_u (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))) (i32.const ${ctx.schema.list.length}))
+                 (then (global.set $__ic_found_slot (local.get $idx))
+                       (global.set $__ic_found_hi (i64.and (local.get $obj) (i64.const ${OBJECT_SCHEMA_HI_MASK})))))`}
+               (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))`
             : `(local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
                (local.set $dmask ${deletedMaskWat('$off')})
                (return (select (i64.const ${TOMB_NAN}) (local.get $val) ${deletedSlotWat('$dmask', '$idx', '$val')}))`}))))` : ''
@@ -1369,17 +1408,12 @@ export default (ctx) => {
   // template-expansion time so schemas registered later in the compile
   // still pull the arm in.
   const buildObjectSchemaSetLocals = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
-    ? '(local $idx i32)'
+    ? `(local $idx i32) ${ctx.types.anyDelete ? '(local $reinsert i32) (local $dmask i32) (local $oldval i64)' : ''}`
     : ''
-  // THE INVARIANT: a schema field lives in its slot only; the sidecar (and the
-  // global __dyn_props table for a durable receiver) holds only keys outside
-  // the schema. A dynamic write whose key names a field stores the slot and
-  // returns, so no sidecar ever carries a stale copy of a field: the dot
-  // write is the plain slot store, the dynamic read finds the field through
-  // the schema arm above, enumeration walks the schema then the sidecar with
-  // nothing to dedup, and a literal's construction mirrors nothing (the
-  // former per-field __dyn_set mirror was 2,006,398 sidecar hashes and 39.5M
-  // __dyn_set calls on the compiler's own graph, ~250 MB of its peak).
+  // Schema slots own field values. Ordinary writes return after updating the
+  // slot; only delete/reinsert falls through to the property table, recording
+  // the key's new insertion position. Enumeration reads such a record's value
+  // from the schema slot, so subsequent writes need no mirrored payload.
   const buildObjectSchemaSetArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
                  (i32.ne (global.get $__schema_tbl) (i32.const 0)))
@@ -1387,9 +1421,13 @@ export default (ctx) => {
         (local.set $idx (call $__schema_slot (local.get $obj) (local.get $key)))
         (if (i32.ge_s (local.get $idx) (i32.const 0))
           (then
+            ${ctx.types.anyDelete ? `(local.set $dmask ${deletedMaskWat('$off')})
+            (local.set $oldval (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
+            (local.set $reinsert ${deletedSlotWat('$dmask', '$idx', '$oldval')})` : ''}
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
             ${markDeletedSlotWat('$off', '$idx', false)}
-            (return (local.get $val))))))` : ''
+            ${ctx.types.anyDelete ? `(if (i32.eqz (local.get $reinsert)) (then (return (local.get $val))))
+            (global.set $__enumc_off (i32.const 0))` : '(return (local.get $val))'}))))` : ''
 
   // Canonical array-index parse of a string key: '0' | [1-9][0-9]{0,9} within
   // i32 range → the index, else -1. JS property semantics: a canonical numeric
@@ -1459,6 +1497,8 @@ export default (ctx) => {
       (then (return ${miss})))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${buildObjectSchemaArm(presence)}
+    ;; Nullish atoms have no receiver; reject before header or sidecar reads.
+    ${requireReceiverWat('(local.get $obj)')}
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
     ;; global __dyn_props hash on the function table index (negative — can't collide
     ;; with real heap/data offsets). Closures *with* env keep their unique env ptr.
@@ -1833,6 +1873,7 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_set'] = () => `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local $root i64) (local $props i64) (local $oldProps i64) (local $objKey i64)
     (local $off i32) (local $type i32) (local $kf f64) (local $kidx i32) ${buildObjectSchemaSetLocals()}
+    ${requireReceiverWat('(local.get $obj)')}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ;; STRING receiver: primitives drop property writes (JS non-strict
@@ -2042,6 +2083,7 @@ export default (ctx) => {
           (then
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
             ${markDeletedSlotWat('$off', '$idx', true)}
+            (global.set $__enumc_off (i32.const 0))
             (local.set $hit (i32.const 1))))))` : ''
 
   ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)

@@ -1,20 +1,35 @@
 /**
  * Object-literal and declaration schema tracking: bindSchema/
- * censusUnknownInitDecl/conditionalSpreadGroupPrepare/inferAssignSchema — the "track
+ * censusUnknownInitDecl/objLiteralSid/inferAssignSchema — the "track
  * schemas" concern from the pass's own header contract.
  *
  * @module prepare/schema
  */
 
-import { staticObjectProps } from '../static.js'
+import { isBrand } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { assignSid, declInitUnknown } from './state.js'
 
-// Schema id when prhs is a bare object literal with static keys, else null.
+// One shape census for literal expressions, declarations and assignments.
+// A spread contributes its known source keys; conditional/unknown sources
+// cannot establish a fixed layout.
 export function objLiteralSid(prhs) {
   if (!Array.isArray(prhs) || prhs[0] !== '{}') return null
-  const props = staticObjectProps(prhs.slice(1))
-  return props ? ctx.schema.register(props.names, props.brand) : null
+  const raw = prhs.length === 2 && prhs[1]?.[0] === ',' ? prhs[1].slice(1) : prhs.slice(1)
+  const names = []
+  let brand = null
+  const add = name => { if (!names.includes(name)) names.push(name) }
+  for (const p of raw) {
+    if (p?.[0] === ':' && typeof p[1] === 'string') {
+      if (isBrand(p[1])) brand = p[1]; else add(p[1])
+    } else if (p?.[0] === '...') {
+      const sid = typeof p[1] === 'string' ? ctx.schema.idOf(p[1]) : objLiteralSid(p[1])
+      const props = sid == null ? null : ctx.schema.list[sid]
+      if (!props) return null
+      for (const name of props) add(name)
+    } else return null
+  }
+  return names.length || brand ? ctx.schema.register(names, brand) : null
 }
 
 // Declarations and assignments share one consensus over source shapes. A
@@ -53,21 +68,6 @@ export function censusUnknownInitDecl(name, ownLiteral = false) {
   if (!ownLiteral) ctx.schema.unknownInit?.add(name)
   if (ctx.schema.vars.has(name)) { ctx.schema.vars.delete(name); ctx.schema.poisoned?.add(name) }
 }
-// Recognizes `cond && {k: v, …}` — decl-schema-binding's own hand-synced copy
-// of module/object.js's conditionalSpreadGroup / src/kind.js's identical
-// mirror (see the decl-tracking call site below for why prepare needs its
-// own). Returns the inner literal's key list (order preserved) or null.
-export function conditionalSpreadGroupPrepare(node) {
-  if (!Array.isArray(node) || node[0] !== '&&' || node.length !== 3) return null
-  let inner = node[2]
-  while (Array.isArray(inner) && inner[0] === '&&' && inner.length === 3) inner = inner[2]
-  if (!Array.isArray(inner) || inner[0] !== '{}') return null
-  const props = inner.length === 2 && Array.isArray(inner[1]) && inner[1][0] === ','
-    ? inner[1].slice(1) : inner.slice(1)
-  if (!props.length || !props.every(p => Array.isArray(p) && p[0] === ':')) return null
-  return props.map(p => p[1])
-}
-
 /** Merge source schemas into target via Object.assign for compile-time schema
  *  inference. The merged schema is the layout the target's own literal adopts
  *  at construction (module/object.js honors it), so only a binding minted by

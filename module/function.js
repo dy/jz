@@ -78,6 +78,8 @@ export default (ctx) => {
     if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
     // Generate closure body function name
     const fnName = `${T}closure${ctx.closure.table.length}`
+    const owner = ctx.func.current?.name ?? ctx.closure.emitting
+    if (owner) (ctx.closure.owner ??= new Map()).set(fnName, owner)
 
     // ClosureEnvPlan (src/compile/closure-plan.js's mintClosureEnvPlans,
     // see .work/archive/todo.md) — the frozen pre-emission
@@ -324,8 +326,10 @@ export default (ctx) => {
         ['then', ['f64.load', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]]]],
         ['else', UNDEF_LIT()]])
     } else {
-      const n = args.length
-      if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+      if (args.length > MAX_CLOSURE_ARITY) err(`Closure call with ${args.length} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+      // The uniform type carries W slots, and W covers every declared parameter
+      // list, so an argument past it is one no callee could name.
+      const n = Math.min(args.length, W)
       argc = ['i32.const', n]
       for (let i = 0; i < n; i++) {
         const arg = ctx.closure.argIR(args[i])

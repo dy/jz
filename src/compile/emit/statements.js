@@ -11,7 +11,6 @@ import {
 import { REFS_THROUGH_ARROWS, refsName } from '../../ast.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
-import { staticPropertyKey } from '../../static.js'
 import { isTerminator } from '../../type.js'
 import { withFinallyStack, withTryState } from '../flow-state.js'
 import { representationProgramHasBigint, representationReturnAction } from '../representation-plan.js'
@@ -21,6 +20,7 @@ import { storedValue } from './method-dispatch.js'
 
 const BIGINT_THROWING_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', 'u+',
   '+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '++', '--'])
+const COERCING_OPS = new Set([...BIGINT_THROWING_OPS, 'u-', '~', '<', '<=', '>', '>=', '==', '!='])
 function canThrow(body, seen = new Set()) {
   if (!Array.isArray(body)) return false
   const op = body[0]
@@ -30,12 +30,12 @@ function canThrow(body, seen = new Set()) {
   // TypeError) in every arithmetic, bitwise and shift operator and its
   // compound. A program proven to have no BigInts keeps its Number-only fast path.
   if (BIGINT_THROWING_OPS.has(op) && representationProgramHasBigint(ctx)) return true
-  // Unresolved ordinary `.length` now performs a real property Get, including
-  // the nullish TypeError. Keep a surrounding source try/catch live even when
-  // there is no explicit `throw` node in the AST. Optional chaining does not
-  // throw and stays excluded.
-  if (op === '.' && body[2] === 'length' && valTypeOf(body[1]) == null) return true
-  if (op === '[]' && staticPropertyKey(body[2]) === 'length' && valTypeOf(body[1]) == null) return true
+  // Implicit ToPrimitive can invoke user code or exhaust both methods. Its
+  // calls appear during emit, so a source-only call scan cannot discard the catch.
+  if (ctx.funcs.runtimeRoots.has('__jz_tp_num') && COERCING_OPS.has(op)) return true
+  // Any unresolved property receiver can be nullish. Its runtime check must
+  // retain catch/finally even without an explicit throw or call in the source.
+  if ((op === '.' || op === '[]') && valTypeOf(body[1]) == null) return true
   // Typed element assignment can throw during ToNumber/ToBigInt even for an
   // OOB index. Keep a surrounding catch visible; the typed emitter either
   // emits the supported runtime throw or rejects an unrepresentable catch.

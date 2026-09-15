@@ -14,6 +14,32 @@ const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
 
+test('summary fields: empty and sparse schema tables retain independent readers', () => {
+  const schemas = [['x'], [], ['unused'], ['data']]
+  const options = { schemas, funcs: [], brandOf: () => null, imports: new Map(), exported: () => false }
+  const empty = summarize(null, options)
+  is(empty.fieldKind(3, 'data'), K.NONE)
+  is(empty.fieldKind(-1, 'x'), K.NONE)
+  is(empty.fieldKind(100, 'x'), K.NONE)
+  is(empty.hasTypedFields, false)
+  const ast = [';',
+    ['let', ['=', 'a', ['{}', [':', 'data', ['()', 'new.Uint8Array', lit(0)]]]]],
+    ['let', ['=', 'b', ['{}', [':', 'x', lit(7)]]]],
+  ]
+  for (let again = 0; again < 2; again++) {
+    const first = summarize(ast, options)
+    is(first.fieldVal(3, 'data'), VAL.TYPED)
+    is(first.fieldKind(0, 'x'), kind(K.NUMBER))
+    is(first.fieldKind(2, 'unused'), K.NONE)
+    is(first.hasTypedFields, true)
+    const other = summarize(['let', ['=', 'c', ['{}', [':', 'x', lit('s')]]]], options)
+    is(other.fieldKind(0, 'x'), kind(K.STRING))
+    is(other.hasTypedFields, false)
+    is(first.fieldKind(0, 'x'), kind(K.NUMBER), 'later summaries do not overwrite retained storage')
+    is(first.fieldVal(3, 'data'), VAL.TYPED)
+  }
+})
+
 function program() {
   const params = [',', 'acc', 'element']
   const ast = [';',
@@ -112,7 +138,11 @@ test('summary queries: class methods and import kinds are retained by value', ()
   const methods = new Map([['value', 'method']]), classes = new Map([[brand, { methods }]])
   const imports = new Map([['foreign', 'number']])
   let allowBrandLookup = true
-  const summary = summarize(['const', ['=', 'record', ['{}', [':', brand, lit(true)], [':', 'x', lit(1)]]]], {
+  const summary = summarize([';',
+    ['const', ['=', 'record', ['{}', [':', brand, lit(true)], [':', 'x', lit(1)]]]],
+    ['const', ['=', 'other', ['{}', [':', brand, lit(true)], [':', 'x', lit(2)]]]],
+    ['const', ['=', 'choice', ['?', 'flag', 'record', 'other']]],
+  ], {
     funcs: [{ name: 'method', sig: { params: [{ name: 'self' }] }, body: lit(7) }],
     schemas: [['x']], classes, imports, exported: () => false,
     brandOf: () => { if (!allowBrandLookup) throw new Error('reader consulted the live registry'); return brand },
@@ -121,6 +151,7 @@ test('summary queries: class methods and import kinds are retained by value', ()
   is(summary.kindOfExpr(call), kind(K.NUMBER))
   is(summary.classCallee('record', 'value'), 'method')
   is(summary.classCallee('record', 'missing'), null)
+  is(summary.classCallee('choice', 'value'), 'method', 'two allocations of the same class share method identity')
   is(summary.classCallee(['?', lit(true), 'record', lit(null)], 'value'), null, 'nullable receiver keeps dispatch')
   is(summary.kindOfExpr(['()', 'foreign', null]), kind(K.NUMBER))
   methods.set('value', 'different'); classes.clear(); imports.set('foreign', 'string')
@@ -471,4 +502,206 @@ test('summary spreads: a schema does not exclude properties added through aliase
   const js = oracle(src).f
   for (const optimize of levels(0, 1, 2, 3))
     is(instantiate(compile(src, { optimize })).exports.f(), js(), `O${optimize}`)
+})
+
+test('summary spreads: pending sources retain known sibling shapes', () => {
+  const src = `const defaults=Object.freeze({number:{x:1},array:{x:2}})
+    const carriers=Object.freeze({number:{x:3},array:{x:4}})
+    function make(){return {...defaults,carriers}}
+    export function f(){return make().number.x+make().carriers.array.x}`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const binary = _compileInProcess(src, { optimize })
+    is(ctx.summary.resultVal('make'), VAL.OBJECT, 'spread settles to a record without escaping siblings')
+    const f = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f
+    is(f(), 5, `O${optimize}`)
+    is(f(), 5, 'repeated call')
+  }
+})
+
+test('summary modules: default values declare their imported object and callable facts', () => {
+  const src = `import record from './record.js'; import scale from './scale.js'
+    export const f = () => scale(record.value)`
+  const modules = {
+    './record.js': 'export const record={value:7}; export default record',
+    './scale.js': 'const scale=x=>x*3; export default scale',
+  }
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const binary = _compileInProcess(src, { optimize, modules })
+    is(ctx.summary.resultVal('f'), VAL.NUMBER, 'default imports participate in analysis')
+    const f = instantiate(onKernel() ? compile(src, { optimize, modules }) : binary).exports.f
+    is(f(), 21, `O${optimize}`)
+    is(f(), 21, 'repeated call')
+  }
+})
+
+test('summary shapes: bounded joins and their overflow keep BigInt fields readable', () => {
+  for (const count of [2, 16, 17]) {
+    const cases = Array.from({ length: count }, (_, i) =>
+      `if(k===${i})return {field${i}:0,value:${i}n}`).join(';')
+    const src = `function pick(k){${cases};return {field0:0,value:0n}}
+      function read(k){return pick(k).value} export function f(k){return read(k)}`
+    for (const optimize of levels(0, 1, 2, 3)) {
+      const binary = _compileInProcess(src, { optimize })
+      if (count <= 16) is(ctx.summary.resultOf('read'), kind(K.BIGINT), 'retained shapes agree on the field kind')
+      const f = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f
+      for (const k of [0, 0, count - 1, 1, -1, 0])
+        is(f(k), BigInt(k < 0 ? 0 : k), `${count} shapes, O${optimize}, input ${k}`)
+    }
+  }
+})
+
+test('summary objects: construction identity is separate from field layout', () => {
+  const params = [',', 'context']
+  const call = ['()', ['.', 'ops', 'value'], 'context']
+  const ast = [';',
+    ['const', ['=', 'ops', ['{}', [':', 'value', ['=>', params, ['.', 'context', 'count']]]]]],
+    ['const', ['=', 'signature', ['{}', [':', 'value', ['{}', [':', 'count', lit('descriptor')]]]]]],
+    ['const', ['=', 'context', ['{}', [':', 'count', lit(7)]]]],
+    ['const', ['=', 'answer', call]],
+  ]
+  const summary = summarize(ast, {
+    funcs: [], schemas: [['value'], ['count']], brandOf: () => null,
+    imports: new Map(), exported: () => false,
+  })
+  is(summary.sidOf('ops'), summary.sidOf('signature'), 'both objects retain the same physical layout')
+  is(summary.kindOf('answer'), kind(K.NUMBER), 'a descriptor object cannot erase an unrelated callable')
+  is(summary.at(params).kindOf('context'), kind(K.OBJECT, 1), 'the known call retains its argument')
+  is(summary.kindOfExpr(['.', 'context', 'count']), kind(K.NUMBER))
+  is(summary.fieldKind(1, 'count'), join(kind(K.NUMBER), kind(K.STRING)), 'storage facts join every allocation using the layout')
+  is(summary.escaped.size, 0, 'layout sharing does not escape values')
+  const before = summary.kindOf('answer')
+  summary.kindOfExpr(['.', ['{}', [':', 'count', lit(false)]], 'count'])
+  is(summary.kindOf('answer'), before, 'hypothetical reads do not mutate retained facts')
+})
+
+test('summary objects: aliases write their allocation while unrelated records stay precise', () => {
+  const ast = [';',
+    ['const', ['=', 'a', ['{}', [':', 'value', lit(1)]]]],
+    ['const', ['=', 'b', ['{}', [':', 'value', lit('b')]]]],
+    ['const', ['=', 'alias', 'a']],
+    ['=', ['.', 'alias', 'value'], lit(true)],
+    ['const', ['=', 'joined', ['?', lit(true), 'a', 'b']]],
+    ['=', ['.', 'joined', 'value'], lit(2n)],
+  ]
+  const summary = summarize(ast, {
+    funcs: [], schemas: [['value']], brandOf: () => null,
+    imports: new Map(), exported: () => false,
+  })
+  is(summary.kindOfExpr(['.', 'a', 'value']), join(join(kind(K.NUMBER), kind(K.BOOL)), kind(K.BIGINT)))
+  is(summary.kindOfExpr(['.', 'b', 'value']), join(kind(K.STRING), kind(K.BIGINT)))
+  is(summary.sidOf('joined'), 0, 'an allocation union can still have one layout')
+  is(summary.fieldKind(0, 'value'), join(join(join(kind(K.NUMBER), kind(K.BOOL)), kind(K.STRING)), kind(K.BIGINT)))
+})
+
+test('summary objects: repeated factories, aliases, joins and unknown writes preserve JS values', () => {
+  const src = `function make(v){return {value:v}}
+    function read(o){return o.value}
+    const ops={value:o=>o.count}, signature={value:{count:'descriptor'}}
+    export function f(flag){
+      const a=make(1), b=make('two'), alias=a, context={count:7}
+      alias.value=3
+      const joined=flag?a:b
+      joined.value=5n
+      return [String(read(a)),String(read(b)),ops.value(context),signature.value.count].join(':')
+    }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const f = instantiate(compile(src, {optimize})).exports.f
+    for (const flag of [0, 0, 1, 0]) is(f(flag), js(flag), `O${optimize}, ${flag}`)
+  }
+})
+
+test('summary objects: testing or discarding a callable does not open its arguments', () => {
+  const src = `const ops={run:context=>context.value}
+    function read(flag){
+      const context={value:7}
+      if(flag && ops.run) ops.run(context)
+      flag ? ops.run : 0
+      flag || ops.run
+      return (flag ? ops.run : 0, ops.run(context))
+    }
+    export function f(flag){return read(flag)}`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const binary = _compileInProcess(src, {optimize})
+    is(ctx.summary.resultOf('read'), kind(K.NUMBER), 'a discarded join creates no unknown caller')
+    const f = instantiate(onKernel() ? compile(src, {optimize}) : binary).exports.f
+    for (const flag of [0, 0, 1, 0]) is(f(flag), 7)
+  }
+})
+
+test('summary objects: allocation-set capacity and overflow keep storage conservative', () => {
+  for (const count of [0, 1, 32, 33]) {
+    const ast = [';', ['let', 'selected']]
+    for (let i = 0; i < count; i++) {
+      const name = 'record' + i
+      ast.push(['const', ['=', name, ['{}', [':', 'value', lit(BigInt(i))]]]])
+      ast.push(['=', 'selected', i ? ['?', 'flag', name, 'selected'] : name])
+    }
+    const summary = summarize(ast, {
+      funcs: [], schemas: [['value']], brandOf: () => null,
+      imports: new Map(), exported: () => false,
+    })
+    is(summary.objectSidOfExpr('selected'), count && count <= 32 ? 0 : null, `${count} construction sites`)
+    is(summary.fieldKind(0, 'value'), count ? kind(K.BIGINT) : K.NONE)
+    is(summary.opaqueSchema(0), count > 1, 'joined or lost allocations use tagged storage')
+  }
+})
+
+test('summary objects: losing one allocation does not poison an unrelated record of the same layout', () => {
+  const summary = summarize([';',
+    ['const', ['=', 'a', ['{}', [':', 'value', lit(1)]]]],
+    ['const', ['=', 'b', ['{}', [':', 'value', lit('b')]]]],
+    ['()', 'Object.assign', [',', 'a', 'outside']],
+    ['=', ['[]', 'outside', 'key'], lit(true)],
+  ], {
+    funcs: [], schemas: [['value']], brandOf: () => null,
+    imports: new Map(), exported: () => false,
+  })
+  is(summary.kindOfExpr(['.', 'a', 'value']), kind(K.ANY))
+  is(summary.kindOfExpr(['.', 'b', 'value']), kind(K.STRING))
+  is(summary.fieldKind(0, 'value'), kind(K.ANY), 'the physical slot still accommodates either allocation')
+})
+
+test('summary stores: repeated effects replay on late host shapes and after numeric reseeding', () => {
+  for (const early of [false, true]) for (const numericFirst of [false, true]) for (const reseed of [false, true]) {
+    const record = ['const', ['=', 'a', ['{}', [':', '0', lit(1)], [':', 'value', lit(2)]]]]
+    const numeric = ['=', ['[]', 'outside', lit(0)], lit(true)]
+    const named = ['=', ['[]', 'outside', 'key'], ['str', 'x']]
+    const stores = numericFirst ? [numeric, named] : [named, numeric]
+    const ast = [';', ...(early ? [record] : []), ...stores, ...stores, ...(early ? [] : [record]), ...stores]
+    const summary = summarize(ast, {
+      funcs: reseed ? [{ name: 'scale', sig: { params: [{ name: 'n' }] }, body: ['*', 'n', lit(2)] }] : [],
+      schemas: [['0', 'value']], brandOf: () => null, imports: new Map(), exported: () => true, hostGlobals: ['a'],
+    })
+    is(summary.fieldKind(0, '0'), kind(K.ANY), `early=${early}, numericFirst=${numericFirst}, reseed=${reseed}: both effects reach the index`)
+    is(summary.fieldKind(0, 'value'), join(kind(K.NUMBER), kind(K.STRING)), 'numeric stores leave named fields precise')
+    if (reseed) is(summary.at('scale').kindOf('n'), kind(K.NUMBER), 'the demand pass reran kinds with a numeric parameter')
+  }
+})
+
+test('summary stores: number keys reach every canonical number name and only those names', () => {
+  const numeric = ['0', '-1', '1.5', 'NaN', 'Infinity', '-Infinity', '1e+21', '0.000001', '1e-7']
+  const named = ['', '-0', '01', '+1', '1.0', '1e21', ' 1', 'value']
+  const props = [...numeric, ...named]
+  for (const host of [false, true]) for (const early of [false, true]) {
+    const record = ['const', ['=', 'a', ['{}', ...props.map(p => [':', p, lit(true)])]]]
+    const store = ['=', ['[]', host ? 'outside' : 'a', ['u+', 'key']], lit(5)]
+    const summary = summarize([';', ...(early ? [store] : []), record, store], {
+      funcs: [], schemas: [props], brandOf: () => null, imports: new Map(), exported: () => false,
+      hostGlobals: host ? ['a'] : [],
+    })
+    for (const p of numeric) is(summary.fieldKind(0, p), kind(K.ANY), `host=${host}, early=${early}, ${p}`)
+    for (const p of named) is(summary.fieldKind(0, p), kind(K.BOOL), `noncanonical ${JSON.stringify(p)} stays precise`)
+  }
+})
+
+test('summary objects: exhausted site IDs retain conservative layout storage', () => {
+  const schemas = Array.from({length: 1 << 15}, (_, i) => i ? [] : ['value'])
+  const summary = summarize([';',
+    ['const', ['=', 'a', ['{}', [':', 'value', lit(1)]]]],
+    ['const', ['=', 'b', ['{}', [':', 'value', lit('text')]]]],
+  ], {funcs: [], schemas, brandOf: () => null, imports: new Map(), exported: () => false})
+  is(summary.sidOf('a'), 0)
+  is(summary.sidOf('b'), null)
+  is(summary.fieldKind(0, 'value'), kind(K.ANY), 'overflow cannot leave a numeric-only physical slot')
 })

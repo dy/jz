@@ -316,6 +316,7 @@ export function applyTypedPointerParamAbi(paramReps, addressTaken) {
  *  forward, and the body reads typed storage. Seeded before the signature
  *  fixpoint so callees fed from the parameter inherit the kind. */
 export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
+  let changed = false
   const calledInside = new Set()
   for (const cs of callSites) calledInside.add(cs.callee)
   for (const func of ctx.funcs.list) {
@@ -325,7 +326,7 @@ export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
     if (calledInside.has(func.name) || addressTaken.has(func.name)) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
     func.sig.params.forEach((p, k) => {
-      if (k === restIdx || p.type !== 'f64' || p.ptrKind != null || p.jsstring || func.defaults?.[p.name] != null) return
+      if (k === restIdx || p.boundaryTyped || p.type !== 'f64' || p.ptrKind != null || p.jsstring || func.defaults?.[p.name] != null) return
       const use = paramNumericArrayLike(func.body, p.name)
       if (!use) return
       const rep = ensureParamRep(paramReps, func.name, k)
@@ -337,9 +338,11 @@ export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
       // every forward (applyI32ParamSpecialization) instead of a pointer. A
       // trailing `+` asks the wrapper to copy the storage back after the call.
       p.boundaryTyped = use.writes ? 'Float64Array+' : 'Float64Array'
+      changed = true
       // The typed readers live in the typedarray module, which only a source
       // constructor would otherwise pull in.
       ctx.module.include?.('typedarray')
     })
   }
+  return changed
 }

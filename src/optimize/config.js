@@ -5,7 +5,7 @@
  *
  * Levels:
  *   0 — nothing. Fastest compile, largest output. Useful for live coding.
- *   1 — encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
+ *   1 — encoding/frame compactness (treeshake + local slots + fusedRewrite-inline).
  *       Cheap, no IR rewrites that perturb V8's tier-up shape.
  *   2 — default. All stable jz passes + full watr (treeshake / dedupe / dedupTypes /
  *       coalesce / propagate / packData / fold / peephole / vacuum / mergeBlocks /
@@ -66,10 +66,10 @@ const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', 
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
-  1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true,
+  1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, coalesceLocals: true, fusedRewrite: true,
     // The formerly-implicit emit-time transforms ran at every truthy cfg — L1 keeps them.
     inlineToNum: true, hashRmwFusion: true, inplaceStore: true,
-    devirtClosureTables: true, devirtDynProps: true }),
+    devirtClosureTables: true, devirtDynProps: true, devirtSchemaReads: true }),
   // Default (level 2 / 'balanced'): every stable pass + full watr. Pre-4.6.9 had to
   // force 'light' mode here (inline / inlineOnce / coalesce all off) to dodge the
   // W1a/W1b miscompiles; watr 4.6.9 fixes both, and the L2 default now runs the full

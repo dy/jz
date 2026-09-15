@@ -230,7 +230,7 @@ export function targetProfileFor(host) {
  * @property {object} memory     module memory config (pages, shared)
  * @property {object} error      source location carried through emit for err() messages
  * @property {object} transform  compile-time options + derived cfg + injected services
- * @property {object} abi        per-type rep lookup bundle (src/abi/index.js makeAbi())
+ * @property {object} abi        shared carrier registry (src/abi/index.js)
  * @property {object} bridge     emit/flat/wat dispatch bound at reset()
  * @property {object} features   frozen FeaturePlan (SESSION+PROGRAM+ANALYSIS strata)
  * @property {object} linkDemand DEMAND stratum (emission-produced reachability facts)

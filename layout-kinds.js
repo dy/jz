@@ -3,7 +3,7 @@
  * Descriptive per-kind documentation lives in layout-kinds-doc.js; this leaf
  * contains only fields consumed by production generators.
  */
-import { PTR, LAYOUT, ATOM, STR_INTERN_BIT } from './layout.js'
+import { PTR, LAYOUT, ATOM, STR_INTERN_BIT, STR_HCACHE_BIT } from './layout.js'
 
 /** @typedef {{tag:number|null, aux:number|string|null, identity:'value'|'content'|'pointer-bits'|'exact-bits', identityArm?:{kind:'content', order:number}}} KindEntry */
 /** @type {Record<string, KindEntry>} */
@@ -130,10 +130,33 @@ export function sameValueZeroIdentityChain() {
 /** $__map_hash's STRING content-identity arm — an early-return statement
  *  (map_hash's shape is sequential guards, not a nested chain), hashes via
  *  __str_hash. */
-export function mapHashStringArm() {
-  return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
+/** $__map_hash's STRING arm: the packed short string mixes in place and a
+ *  filled lazy hash cell loads in place, exactly as __str_hash computes them
+ *  (module/collection.js); an interned static or a walk calls it. A string
+ *  key costs the probe one call, not two. Size mode keeps the call. */
+export function mapHashStringArm(lean = false) {
+  if (lean) return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
           (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
       (then (return (call $__str_hash (local.get $v)))))`
+  return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
+          (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
+      (then
+        (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (if (i32.shr_u (local.get $aux) (i32.const 14))
+          (then
+            (local.set $h (i32.mul
+              (i32.xor (local.get $off) (i32.mul (i32.xor (i32.and (local.get $aux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
+              (i32.const 0xC2B2AE35)))
+            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
+            (return (if (result i32) (i32.le_u (local.get $h) (i32.const 1))
+              (then (i32.add (local.get $h) (i32.const 2)))
+              (else (local.get $h))))))
+        (if (i32.eq (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT}))
+          (then
+            (local.set $h (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (if (local.get $h) (then (return (local.get $h))))))
+        (return (call $__str_hash (local.get $v)))))`
 }
 
 /** $__map_hash's BIGINT content-identity arm — hashes the payload cell via

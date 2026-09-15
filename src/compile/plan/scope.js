@@ -20,6 +20,7 @@
  */
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
+import { createFunction } from '../../function.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
@@ -708,7 +709,7 @@ export const devirtGlobalCalls = (ast) => {
     for (const name of free) if (!ctx.scope.globals.has(name) && !fnNames.has(name)) return null
 
     const name = `${T}devirt${freshId(ctx)}`
-    const funcInfo = { name, body: node[2], exported: false, sig: { params: params.map(n => ({ name: n, type: 'f64' })), results: ['f64'] } }
+    const funcInfo = createFunction(name, node[2], { params: params.map(n => ({ name: n, type: 'f64' })), results: ['f64'] })
     ctx.funcs.list.push(funcInfo)
     ctx.funcs.map.set(name, funcInfo)
     fnNames.add(name)

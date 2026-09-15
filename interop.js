@@ -1050,7 +1050,7 @@ export const wrap = (memSrc, inst, state) => {
     // happens to numerically coincide with a minted error sid).
     if (mem) {
       const errClassName = errorSidClassOf(errBits)
-      if (errClassName != null) {
+      if (errClassName != null && value != null) {
         const Ctor = globalThis[errClassName] ?? Error
         const wrapped = new Ctor(value.message)
         wrapped.cause = error

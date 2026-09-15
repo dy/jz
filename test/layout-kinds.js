@@ -320,7 +320,9 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
 })
 
 test('golden[mapHashStringArm]: $__map_hash\'s generated STRING arm matches the captured hand-written text', () => {
-  is(mapHashStringArm(), "(if (i32.and (f64.ne (local.get $f) (local.get $f))\n          (i32.eq (local.get $t) (i32.const 4)))\n      (then (return (call $__str_hash (local.get $v)))))")
+  // Speed modes mix a packed short string and load a cached heap hash in place; size mode calls __str_hash.
+  is(mapHashStringArm(), "(if (i32.and (f64.ne (local.get $f) (local.get $f))\n          (i32.eq (local.get $t) (i32.const 4)))\n      (then\n        (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const 32)) (i64.const 32767))))\n        (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))\n        (if (i32.shr_u (local.get $aux) (i32.const 14))\n          (then\n            (local.set $h (i32.mul\n              (i32.xor (local.get $off) (i32.mul (i32.xor (i32.and (local.get $aux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))\n              (i32.const 0xC2B2AE35)))\n            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))\n            (return (if (result i32) (i32.le_u (local.get $h) (i32.const 1))\n              (then (i32.add (local.get $h) (i32.const 2)))\n              (else (local.get $h))))))\n        (if (i32.eq (i32.and (local.get $aux) (i32.const 8194)) (i32.const 2))\n          (then\n            (local.set $h (i32.load (i32.sub (local.get $off) (i32.const 8))))\n            (if (local.get $h) (then (return (local.get $h))))))\n        (return (call $__str_hash (local.get $v)))))")
+  is(mapHashStringArm(true), "(if (i32.and (f64.ne (local.get $f) (local.get $f))\n          (i32.eq (local.get $t) (i32.const 4)))\n      (then (return (call $__str_hash (local.get $v)))))")
 })
 
 test('golden[mapHashBigintArm]: $__map_hash\'s generated BIGINT arm matches the captured hand-written text', () => {
