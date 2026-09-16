@@ -64,135 +64,85 @@ to `d6d140d`; Subscript to `0f65c86`.
 
 ## Candidate verification — September 16
 
-Current full matrix: core 4338 passes (69655 assertions), O0 4144, O3 4144,
-WASI 4196; each has one skip and zero failures. The negation regression covers
-zero signs, the signed boundary, direct and stored results, reassignment,
-repeated calls and the retained integer fast path. The Uint32 word-read,
-tonemap and example vectorization pins pass. No product cap changed.
-Logs use `/private/tmp/jz-neg-final-`.
+The final full run passes core 4345 tests (71822 assertions), O0 4151, O3 4151
+and WASI 4203, each with one skip and zero failures. Focused checks also pass
+all 259 optimizer tests, 223 SIMD tests and the 10-category loop ratchet.
+Seven new regression groups pass 4331 assertions across O0/O2/speed/size,
+including the implicit-zero range fix. Full-run logs use
+`/private/tmp/jz-presence-final5-`; focused logs use the same prefix without
+`final5-`.
 
-Current self-host functional suite: 52 passes, 2333 assertions. Current
-language conformance reports 3151 positive passes, 4045 negative
-rejections and 8 expected failures; built-ins reported 874 passes and 45
-expected failures, both with zero failures. Import lint passes.
-Public types passed on the preceding candidate; no public signatures changed.
+Self-host correctness passes all 52 tests (2333 assertions). Language conformance
+passes 3151 positives and rejects 4045 negatives, with zero failures and 8
+expected failures. Built-ins pass 874, with zero failures and 45 expected
+failures. Public types and import lint pass.
 
-The preceding kernel passes provenance, byte parity, recursive compilation, reuse,
-error recovery and all 28 memory comparisons within the existing 10% band.
-The manifest is `/private/tmp/jz-rest-final-candidate.json`, compared against
-`/private/tmp/jz-finish-candidate.json`. Recursive compilation uses 1555927920
-heap bytes and emits 15308343 wasm bytes. The shared upsert removes roughly
-21 KB from the kernel; paired warm timing is unchanged (1.002×).
+The latest full size sweep wins all 51 comparisons against AssemblyScript at
+0.784× bytes. The VM size build is 1646 bytes against AS's 1694. No timing,
+size, memory or instruction-ratchet cap changed. This standalone sweep does
+not refresh the committed benchmark dataset.
 
-The current full size sweep beats AssemblyScript on all 51 comparable cases at
-0.778× bytes (`/private/tmp/jz-neg-final-size.log`), with every recorded corpus
-size unchanged by the negation fix. Current affected size checks keep Watr below 300000 bytes and
-JSON below 12500. This does not refresh committed benchmark rows.
-Evidence logs use `/private/tmp/jz-rest-`.
+The typed-read correctness fixes have a measurable runtime cost. Alternating
+pairs against the preceding compiler keep every checksum intact, but SDF
+measures 1.382× and VM 2.270×. Glyph parsing measures 0.949×; trace, wordcount
+and shapes have unchanged emitted WAT, so their timing movement is noise.
+These are local diagnostics, not release attestations.
 
-Current isolated self-host timing: warm 1.063×/1.117×/1.100× against 1.03×
-(fails), fresh 0.912× against 0.99× (passes). Logs:
-`/private/tmp/jz-neg-final-self.log` and `/private/tmp/jz-neg-final-self-perf.log`.
-The earlier timing pass under concurrent test load is not release evidence.
-The preceding candidate measured 15871642 kernel bytes
-(+0.06% from its predecessor). Tuple precision, inline-map
-reuse and export enumeration showed no meaningful paired timing improvement.
-The numeric hash removes a separate severe defect: isolated Map fill/read
-workloads improved about 5–51× for 128–4096 sequential keys, while aggregate
-warm compilation remained unchanged. The Map counter now uses one probe per update, sharing dictionary fusion's
-effect proof and the ordinary upsert generator. In an alternating paired run
-of 100000 updates, fusion reduced time from 1.226 to 0.699 ms (0.570×); V8
-took 0.882 ms (JZ/V8 0.793×). Both compiler variants and V8 returned 4799685.
-The same source shrank from 29183 to 28835 bytes. These are local diagnostics,
-not refreshed benchmark evidence. Logs use `/private/tmp/jz-map-fusion-`.
-An alternating baseline/candidate run for the passive-summary cleanup measured
-0.984× warm compile time over the six self-host cases, with byte-identical
-outputs. Kernel size moved from 15856275 to 15862819 bytes (+0.04%); the
-comparison includes the spread and runtime-table correctness fixes. This
-modest improvement does not close the warm gate. Logs use `/private/tmp/jz-passive-`.
-These are diagnostics, not release attestations. The committed evidence records
-15830.94 MB of swap. A fresh system read during negation verification reports
-11380.19 MB (`/private/tmp/jz-neg-final-machine.log`), still above the 4096 MB
-validity cap. No cap was relaxed.
-
-The preceding compiler candidate passed the stateful native VST fixture: 12438 checks,
+The preceding candidate passed the stateful native VST fixture: 12438 checks,
 4000 concurrent blocks, zero sample error and fixed callback heaps. The public
-compile-vst package's 29 tests also pass, including three real bundle builds.
-These tests do not prove callback deadlines.
+compile-vst package's 29 tests also passed, including three real bundle builds.
+Those tests do not establish callback deadlines.
 
 ## Remaining release work
 
-1. **Warm self-host speed.** Close the remaining roughly 3–9% diagnostic gap without
-   changing the 1.03× cap. Uniform function records and positional collection
-   flow are implemented. `ctx.funcs` has an exact layout; `createFunction().sig`
-   and `ctx.func.current` still join to unknown. Passive export predicates and
-   unused `opts.locals` reads no longer lose these shapes. The next traced
-   loss is the unresolved `reachableForLowering` callable read from
-   `programFacts.programIndex`. Isolating profiling wrappers at call sites did not restore that
-   precision and was discarded; do not assume it is the sole cause.
-   The previous profile attributes about 14% to Map/Set probes and 5% to
-   pointer decoding. General primitive get/set fusion is now implemented; it
-   requires unchanged Map methods and a non-observable, non-throwing RHS.
-   Object-building and effectful updates retain ordinary probes. Blanket
-   forwarding inlining was measured slower and discarded.
-   The latest trace confirms that `collectProgramFacts` and `buildProgramIndex`
-   return exact records, but polymorphic timing callbacks merge their results
-   to unknown. Preserving each call's result must also preserve callback effects
-   and its physical return carrier; a new context-specialization layer is not
-   justified without a measured benefit.
+1. **Runtime and self-host speed.** Missing integer reads now preserve
+   `undefined` through locals, copies, computed indices and helper returns.
+   Uint32 locals retain unsigned magnitude, and signed/unsigned comparisons
+   share one proof. Local/result narrowing reuses existing interval and
+   canonical-loop proofs; validated caller lengths also reach result analysis.
+   Exact integer expression folding is shared by emission and optimization.
+   NaN-aware coercion bounds remove unnecessary arbitrary-number conversions
+   while keeping missing-index guards. Implicit zero is part of local ranges.
 
-2. **Fresh speed, size and memory evidence.** The committed-evidence audit
-   reports 7 passes and 13 failures: compiler/memory provenance is stale,
-   timing was captured above the swap cap, and rival coverage is incomplete
-   (43 comparable Porffor/TinyGo rows where 44 are required). The old size
-   losses in that dataset are superseded by the 51/51 standalone wins above,
-   but the dataset itself must be regenerated through the benchmark runner.
-   Obtain quiet reference hardware and refresh the committed benchmark memory
-   baseline. The adjacent-candidate kernel comparison above is complete, but
-   does not replace that product-wide evidence.
-   Keep TinyGo 0.42.0 and the current same-machine Porffor native comparison.
+   Recover performance without reversing these fixes. SDF's data-dependent
+   scratch cursor still lacks a presence proof. VM's nullable opcode and
+   program-counter values now use f64: its old integer jump table becomes six
+   floating comparisons. Payload ranges alone cannot authorize integer storage.
+   A temporary guarded-f64 jump table was 14.5% slower; a block-result coercion
+   experiment was 8.5% slower on VM. Neither was retained. Joining multiple
+   local definitions produced no code change and was also discarded.
 
-   The last paired runtime diagnostics, from the preceding candidate, lost
-   to Clang Wasm on glyfparse (1.401×), sdf (1.171×), trace (1.063×) and
-   wordcount (1.061×), and to AssemblyScript on sdf (1.055×) and shapes
-   (1.127×). Re-measure before ranking these. SDF's summary already bounds
-   the scratch parameter to [0,383]; its cached load loses presence and
-   scalar bounds, leaving checks and conversions that Clang eliminates.
-   Recover those existing facts while preserving out-of-bounds behavior.
-   The shared scalar range query now recovers stored-element bounds when the
-   index hull proves presence. A masked gather's square uses one integer
-   multiply and one conversion instead of a float multiply and two conversions;
-   the final 32-pair local diagnostic measured 0.978× time (975 → 974 bytes). SDF's
-   data-dependent cursor is not proved present, so that case is unchanged.
-   Logs use `/private/tmp/jz-load-bounds-` and `/private/tmp/jz-proven-load-`.
-   The interval-product proof is shared by local typing and emission and
-   rejects products that can lose negative zero. Regression coverage includes
-   empty/missing reads, integer-store wrapping, large squares and zero signs.
+   Warm self-compilation must meet the unchanged 1.03× cap; fresh compilation
+   must meet 0.99×. The preceding candidate measured warm
+   1.063×/1.117×/1.100× and fresh 0.912×. The current isolated run measures
+   warm 1.095×/1.137×/1.129× (fails) and fresh 0.844× (passes).
+   The remaining self-host profile is spread across Map/Set probes and pointer
+   decoding. `ctx.funcs` has an exact layout, but polymorphic profiling callbacks
+   still merge `createFunction().sig` / `ctx.func.current` facts to unknown.
+   Call-site wrapper isolation and blanket forwarding inlining did not help.
+   Preserve callback effects and physical return carriers in any future change;
+   a new context-specialization layer needs measured justification.
 
-   A separate pre-existing scalar-storage defect remains: with `a` an
-   `Int32Array(16)` and `b` a `Float64Array(16)`, a helper looping to a dynamic
-   `n` over `const v=a[i]; s+=b[v]+v*v` returns the same sum for `n=16` and
-   `n=17`, where JS returns NaN at 17. The potentially missing read is stored
-   in i32 and becomes zero. Fix presence-aware local narrowing before treating
-   these general gather paths as conformant; payload bounds alone cannot do it.
-   Unary negation now shares a nonzero, signed-range proof between local
-   typing and emission. It preserves both `-0` and `-(-2147483648)`; a finite
-   integer operand needs no NaN-normalization guard after widening.
-   Unsigned negation's minimal module shrinks from 73 to 56 bytes;
-   the proven nonzero integer path is unchanged. This does not fix the
-   separate missing-element storage/presence problem above. That work must
-   also retain Uint32 scalar locals' unsigned magnitude: `const v=a[i];return
-   -v` still misreads values above I32_MAX. Making every Uint32 read f64
-   disrupted word-coercing and tonemap vectorization and was discarded;
-   propagate signedness and presence through the existing narrowing facts.
+2. **Reproducible speed, size and memory evidence.** The committed benchmark
+   dataset is stale, was timed above the 4096 MB swap-validity cap, and lacks
+   complete Porffor/TinyGo coverage (43 comparable rows against 44 required).
+   A fresh system read reports 11356.19 MB of swap, still above that cap.
+   Regenerate through the benchmark runner on quiet reference hardware, with
+   the current compiler and memory-baseline provenance. Standalone size wins
+   and local paired timings do not replace that evidence. Keep TinyGo 0.42.0
+   and the current same-machine Porffor native comparison.
+
+   The prior rival comparison also trailed Clang Wasm on glyph parsing, SDF,
+   trace and wordcount, and AssemblyScript on SDF and shapes. Refresh those
+   comparisons before ranking further work. No new leadership claim is justified
+   by the current diagnostic machine or by smaller WAT alone.
 
 3. **Public VST scope and identity.** The builder is JZ/macOS/stereo.
-   Porffor's lifecycle fixture needs a public state-object adapter and build
-   verification. Choose the permanent vendor root before publishing derived
-   class IDs. Mono remains refused until its arrangement constant is verified
-   against SDK headers. Restart-flagged edits take effect on the next setup;
-   active host restart needs the component-handler interface. Events and wider
-   layouts remain refused. The stateful fixture passed before the unary-negation change.
+   Porffor needs a public state-object adapter and build verification. Choose
+   the permanent vendor root before publishing derived class IDs. Mono remains
+   refused until its arrangement constant is verified against SDK headers.
+   Restart-flagged edits take effect on next setup; active restart needs the
+   component-handler interface. Events and wider layouts remain refused.
 
 4. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation/work proofs unknown. Empirical block checks establish

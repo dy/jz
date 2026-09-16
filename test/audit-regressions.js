@@ -853,3 +853,136 @@ test('audit: catch without a binding does not materialize an Error', () => {
     if (!onKernel()) ok(!compile(src, {optimize,wat:true}).includes('$__catch_error'), 'no error materializer')
   }
 })
+
+test('audit: typed local storage preserves missing values through copies and gathers', () => {
+  for (const ctor of ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']) {
+    const bodies = [
+      'return a[i]',
+      'return +a[i]',
+      'const v=a[i];return v',
+      'let v=0;v=a[i];return v',
+      'const v=a[i],w=v;return w',
+      'const v=a[i];return b[v]',
+      'const v=a[i];return v*v+b[v]',
+      'const v=a[i];return v===undefined',
+      'const v=a[i];return v===0 ? 7 : v+1',
+      'const v=a[i];return v??9',
+      'return b[a[i]]',
+      'const v=a[i];return b[v|0]',
+    ]
+    const src = bodies.map((body, k) => `function read${k}(a,b,i){${body}}
+      export function f${k}(i,n){return read${k}(new ${ctor}(n===0?[]:[2,1]),new Float64Array([7,8,9]),i)}`).join('\n')
+    const js = oracle(src)
+    for (const optimize of TIERS) {
+      const wasm = jz(src, { optimize }).exports
+      for (const [i,n] of [[0,0],[0,0],[0,2],[1,2],[2,2],[-1,2],[0,0],[0,2]])
+        for (let k=0;k<bodies.length;k++)
+          ok(Object.is(wasm[`f${k}`](i,n), js[`f${k}`](i,n)), `${ctor} ${optimize}: ${bodies[k]}, i=${i}, n=${n}`)
+    }
+  }
+})
+
+test('audit: stored typed reads cannot borrow a loop or another receiver length', () => {
+  const src = `function gather(a,b,n){let s=0;for(let i=0;i<n;i++){const v=a[i];s+=b[v]+v*v}return s}
+    export function f(n){return gather(new Int32Array([0,1]),new Float64Array([7,8]),n)}
+    export function twin(n){let a=new Int32Array([2,1]),i=0,s=0;
+      for(i=0;i<a.length;i++){const v=a[i];s+=v}i=n;const v=a[i];return v}
+    export function rebound(n){let a=new Int32Array([2,1]);if(n)a=new Int32Array(0);const v=a[0];return v}
+    export function view(i){const a=new Uint32Array([7,4294967295,2147483648,8]).subarray(1,3);const v=a[i];return v}
+    export function viewNeg(i){const a=new Uint32Array([7,4294967295,2147483648,8]).subarray(1,3);const v=a[i];return -v}
+    const arrow=(a,i)=>a[i];export function arrowRead(i){return arrow(new Int32Array([2,1]),i)}`
+  const js=oracle(src)
+  for (const optimize of TIERS) {
+    const wasm=jz(src,{optimize}).exports
+    for (const name of ['f','twin','rebound','view','viewNeg','arrowRead']) for(const i of [0,0,1,2,3,-1,0])
+      ok(Object.is(wasm[name](i),js[name](i)), `${optimize}: ${name}(${i})`)
+  }
+})
+
+test('audit: unsigned typed locals retain magnitude and comparison domains', () => {
+  const bodies = [
+    'const v=a[i&3];return -v',
+    'const v=a[i&3];return v+1',
+    'const v=a[i&3];const w=v;return w',
+    'let v=0;v=a[i&3];return v',
+    'let v=a[i&3];if(i>0)v=-1;return v',
+    'const v=a[i&3];return v===-1',
+    'const v=a[i&3];return v!==-1',
+    'const v=a[i&3];return v>0',
+    'const v=a[i&3];return v<=2147483648',
+    'const v=a[i&3];return v<4294967295',
+    'const v=a[i&3];return v>=1',
+    'const v=a[i&3];return v===(i|0)',
+    'const v=a[i&3];let w=v;w++;return w',
+  ]
+  const src=bodies.map((body,k)=>`export function f${k}(i){const a=new Uint32Array([4294967295,2147483648,0,1]);${body}}`).join('\n')
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize}).exports
+    for(let k=0;k<bodies.length;k++)for(const i of [0,0,1,2,3,-1,2147483647,0])
+      ok(Object.is(wasm[`f${k}`](i),js[`f${k}`](i)), `${optimize}: ${bodies[k]}, i=${i}`)
+  }
+  if(!onKernel()){
+    const wat=compile('export function f(x){const u=x>>>0;return u>1}',{optimize:2,wat:true})
+    ok(/i32\.(gt_u|ge_u)/.test(wat),'unsigned comparison stays in integer registers')
+    ok(!/f64\.convert_i32/.test(wat),'unsigned comparison needs no float conversion')
+  }
+})
+
+test('audit: integer comparison peeling preserves signed and unsigned boundaries', () => {
+  const src=`export function f(x,y){const s=x|0,u=y>>>0;
+    return [s===u,s!==u,s<u,s>u,s<=u,s>=u,s<2147483648,s>=2147483648,
+      u===-1,u>4294967295,u<=4294967295,u===4294967295]}`
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize}).exports
+    for(const x of [-2147483648,-1,0,1,2147483647])
+      for(const y of [0,1,2147483647,2147483648,4294967295])
+        is(wasm.f(x,y),js.f(x,y), `${optimize}: signed ${x}, unsigned ${y}`)
+  }
+})
+
+test('audit: word-only helper parameters normalize at the call boundary', () => {
+  const src=`function word(v){return v&7}
+    function identity(v){return v}
+    function capture(v){const read=()=>v;return read()}
+    function compare(v){return v===undefined}
+    export function f(i){const a=new Int32Array([11,2]),v=a[i];return [word(v),identity(v),capture(v),compare(v)]}`
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize:{level:optimize,sourceInline:false}}).exports
+    for(const i of [0,0,1,2,-1,0])is(wasm.f(i),js.f(i), `${optimize}: index ${i}`)
+  }
+})
+
+test('audit: bounded numeric conversions retain missing and nonfinite values', () => {
+  for (const ctor of ['Int32Array','Uint32Array','Float64Array']) {
+    const src=`export function f(i,n){
+      const a=new ${ctor}(n ? [7,-2147483648,2147483647,4294967295,NaN,Infinity,-Infinity,1e30] : []);
+      const v=a[i], b=new Int32Array(3);
+      b[0]=v;b[1]=v+1;b[2]=v*2;
+      return [v,b[0],b[1],b[2]]
+    }`
+    const js=oracle(src)
+    for(const optimize of TIERS){
+      const wasm=jz(src,{optimize}).exports
+      for(const n of [0,1,0,1])for(const i of [-1,0,0,1,2,3,4,5,6,7,8])
+        is(wasm.f(i,n),js.f(i,n),`${ctor} ${optimize}: i=${i}, n=${n}`)
+    }
+  }
+  if(!onKernel()){
+    const src=`export function f(i){const a=new Int32Array([7,-2147483648,2147483647]);
+      const v=a[i],b=new Int32Array(1);b[0]=v;return [v,b[0]]}`
+    const wat=compile(src,{optimize:2,wat:true})
+    ok(!wat.includes('$__to_int32'),'bounded payload or missing read needs no arbitrary-number conversion helper')
+  }
+})
+
+test('audit: range folding includes a local\'s implicit zero value', () => {
+  const src='export function f(p){let x=0;if(p)x=0.5;return (4294967297*(1-2*x))|0}'
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize}).exports
+    for(const p of [0,0,1,0,1])is(wasm.f(p),js.f(p),`${optimize}: conditional assignment ${p}`)
+  }
+})

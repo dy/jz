@@ -613,9 +613,9 @@ export default function narrowSignatures(programFacts, ast) {
   // typed pointer), leaving sig.results f64 and the call site running the full
   // __typed_idx/ToNumber unbox on every probe step (491520× per dict kernel run). Now that
   // evalTails seeds the typed-param overlay and params carry ptrAux, the fixpoint catches
-  // `vals[h]` as i32, narrows the result, and the dispatch vanishes; the runFixpoint below
+  // `vals[h]` as i32 when the validated lengths prove presence; the runFixpoint below
   // then propagates the i32 result into `let v = lookup(...)` at the call sites.
-  narrowI32Results(funcsWithNarrowableResult)
+  narrowI32Results(funcsWithNarrowableResult, paramReps)
   // Reset wasm field unconditionally — first pass populated it from stale callerLocals
   // (where `let h = mix(...)` widened h to f64 because mix's result wasn't narrowed
   // yet). Here we need to reset f64-observed too so the refreshed exprType view propagates.

@@ -47,7 +47,10 @@ import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN, PR
  * can fall through or execute `return;` is preserved as f64; multi-value / raw /
  * value-used functions are skipped by the narrowable filter.
  */
-export function narrowI32Results(funcs) {
+const NO_PRESENT_READS = new Set()
+export function narrowI32Results(funcs, paramReps) {
+  // The post-parameter pass adds settled lengths to the body's proof inputs.
+  if (paramReps) invalidateBodies(funcs.map(f => f.body))
   // A return tail's SIGN — 'unsigned' (a uint32 magnitude that needs
   // f64.convert_i32_u at the boundary), 'signed' (ordinary ToInt32 range,
   // f64.convert_i32_s), or null (an unsigned value reaches this tail but the
@@ -120,10 +123,6 @@ export function narrowI32Results(funcs) {
     // result to i32 here while E2 (narrowValResults, below) correctly claimed
     // BIGINT for the same tail — a WAT-validation crash (the two phases'
     // per-tail facts about the same expression must agree).
-    const bodyFacts = isBlockBody(body) ? analyzeBody(body) : null
-    const locals = bodyFacts ? bodyFacts.locals : new Map()
-    const valTypes = bodyFacts?.valTypes
-    for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
     // Seed the typedElem overlay with this func's TYPED-pointer params so a return tail
     // reading a typed-array element — `return vals[h]`, vals an Int32Array param (dict's
     // `lookup`) — types as i32, not NaN-boxed f64. Without it the call site keeps the full
@@ -139,6 +138,10 @@ export function narrowI32Results(funcs) {
       }
     }
     const classify = () => {
+    const bodyFacts = Array.isArray(body) ? analyzeBody(body) : null
+    const locals = bodyFacts ? bodyFacts.locals : new Map()
+    const valTypes = bodyFacts?.valTypes
+    for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
     const allV128 = exprs.every(e => exprType(e, locals, valTypes) === 'v128')
     // research.md §Carrier invariant: exprType's own '&&'/'||'/'?:' conciliation
     // (src/type.js) only asks "is each branch i32-representable", the same
@@ -161,8 +164,11 @@ export function narrowI32Results(funcs) {
     // own doc comment on the parameter): this whole-program pre-pass runs before
     // ctx.func.localReps is live, so the bitwise-ops BigInt guard's bare-name arm
     // reads the scoped program summary instead.
-    const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true, body) === 'i32')
     const unsignedLocals = bodyFacts?.unsignedLocals
+    // A result slot preserves missing values just like a local slot. A proven
+    // unsigned tail already has a canonical word and its own result sign flag.
+    const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true, body,
+      isUnsignedTail(e, unsignedLocals) ? undefined : bodyFacts?.readPresent ?? NO_PRESENT_READS) === 'i32')
     return {
       allV128, allI32,
       anyUnsigned: exprs.some(e => isUnsignedTail(e, unsignedLocals)),
@@ -174,7 +180,13 @@ export function narrowI32Results(funcs) {
       anyUnclassifiable: exprs.some(e => isUnclassifiableTail(e, unsignedLocals)),
     }
     }
-    return te ? withTypedElems(te, classify) : classify()
+    const savedTL = ctx.func.typedLen
+    const lengths = new Map(ctx.scope.globalTypedLen)
+    for (const p of func.sig.params) lengths.set(p.name, null)
+    if (paramReps) for (const [name, len] of paramFactsOf(paramReps, func, 'typedLen') || []) lengths.set(name, len)
+    ctx.func.typedLen = lengths
+    try { return te ? withTypedElems(te, classify) : classify() }
+    finally { ctx.func.typedLen = savedTL }
   })
   // A pointer result is not a number, though an unboxed pointer parameter or
   // call reads as i32 to exprType: a result the summary proves a pointer kind
@@ -397,4 +409,3 @@ export function narrowReturnArrayElemSets(paramReps, addressTaken) {
     }
   }
 }
-

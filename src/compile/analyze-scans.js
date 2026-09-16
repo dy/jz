@@ -210,6 +210,7 @@ export const USE = {
   BOOL_TEST: 10,     // operand of `!`/`typeof`/`void`, or an `if`/`while`/`?:` test
   DELETE_MEMBER: 11, // `delete name.member`
   BARE: 12,          // any other value position — the conservative catch-all
+  WORD: 14,         // operand consumed by ToInt32/ToUint32
   MEMBER_CALL: 13,   // receiver of a member call — never a plain property read
 }
 // Immutable singleton records for uses with no metadata. scanBindingUses
@@ -223,7 +224,7 @@ export const BINDING_USE_COMPUTED = 3
 export const BINDING_USE_COMPOUND = 4
 export const BINDING_USE_NULL_CMP = 7
 export const BINDING_USE_OP = 8
-const SIMPLE_USE = Array.from({ length: 13 }, (_, kind) => [kind])
+const SIMPLE_USE = Array.from({ length: 15 }, (_, kind) => [kind])
 // The records with metadata are read-only too and hold primitives alone, so
 // equal ones are shared as well: a member read or write is one record per
 // (key, optional/compound), a call argument one per (callee, position), a
@@ -431,6 +432,14 @@ export function scanBindingUses(body, trackNames) {
           if (typeof a === 'string') use(a, USE.CALL_ARG, callArg(typeof callee === 'string' ? callee : null, ai))
           else walk(a)
         }
+      }
+      return
+    }
+    if (op === '&' || op === '|' || op === '^' || op === '~' || op === '<<' || op === '>>' || op === '>>>') {
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (typeof c === 'string') use(c, USE.WORD)
+        else walk(c)
       }
       return
     }
@@ -855,13 +864,13 @@ export const isFreshArrayCtor = (rhs) =>
 /**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
  * initializer is a non-negative integer literal in [0, 2^32) or itself a
- * `(…) >>> k` (`const u = s >>> 0`, the xorshift draw) and every
- * reassignment is `name = (…) >>> k` — that WRITE invariant alone proves the
+ * `(…) >>> k` or proven-present Uint32 read, and every reassignment is also
+ * an unsigned shift or proven Uint32 read. That WRITE invariant proves the
  * local always holds a canonical uint32 bit pattern (ToUint32 is idempotent:
  * re-masking an already-masked value is a no-op), independent of how the
  * local is later read. Names that escape the invariant itself (closures — a
  * captured binding must keep the outer f64 capture convention; `++`/`--`; a
- * reassignment whose RHS isn't `>>>`-shaped) are disqualified; everything
+ * reassignment without that proof) are disqualified; everything
  * else — bare `return`, arithmetic, relational/equality compares, division —
  * reads the proven bit pattern as-is. Returns the qualifying set; callers
  * retype `locals` to 'i32' and tag `readVar` reads `.unsigned`, so every
@@ -871,11 +880,11 @@ export const isFreshArrayCtor = (rhs) =>
  */
 const EMPTY_SCAN_SET = new Set()
 const EMPTY_SCAN_MAP = new Map()
-export function narrowUint32(body, locals) {
+export function narrowUint32(body, locals, isTypedU32) {
   const states = takeScratchMap()
-  try { return narrowUint32In(body, locals, states) } finally { releaseScratchMap(states) }
+  try { return narrowUint32In(body, locals, states, isTypedU32) } finally { releaseScratchMap(states) }
 }
-function narrowUint32In(body, locals, states) {
+function narrowUint32In(body, locals, states, isTypedU32) {
   // One state map replaces initLit/disq/seen's three hash tables.
   // 1 = one valid u32 initializer and no unsafe write; 0 = disqualified.
   const isU32Lit = e => {
@@ -883,6 +892,7 @@ function narrowUint32In(body, locals, states) {
       : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
     return Number.isInteger(v) && v >= 0 && v < 4294967296
   }
+  const isU32 = e => Array.isArray(e) && (e[0] === '>>>' || isTypedU32?.(e))
   const banNames = n => {
     if (typeof n === 'string') states.set(n, 0)
     else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) banNames(n[i])
@@ -901,7 +911,7 @@ function narrowUint32In(body, locals, states) {
         const d = node[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
           const nm = d[1]
-          if (states.has(nm) || inClosure || !(isU32Lit(d[2]) || (Array.isArray(d[2]) && d[2][0] === '>>>'))) states.set(nm, 0)
+          if (states.has(nm) || inClosure || !(isU32Lit(d[2]) || isU32(d[2]))) states.set(nm, 0)
           else states.set(nm, 1)
           walk(d[2], inClosure)
         } else if (typeof d === 'string') states.set(d, 0)
@@ -913,7 +923,7 @@ function narrowUint32In(body, locals, states) {
     if (ASSIGN_OPS.has(op)) {
       const lhs = node[1]
       if (typeof lhs === 'string') {
-        if (op !== '=' || inClosure || !(Array.isArray(node[2]) && node[2][0] === '>>>')) states.set(lhs, 0)
+        if (op !== '=' || inClosure || !isU32(node[2])) states.set(lhs, 0)
       } else banNames(lhs)
       walk(node[2], inClosure)
       return

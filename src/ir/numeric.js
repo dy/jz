@@ -12,6 +12,38 @@ import { temp } from './locals.js'
 import { boxPtrIR, valKindToPtr } from './pointers.js'
 import { int32 } from '../static.js'
 
+// An exact integer carrier and the signedness of its numeric interpretation.
+const compareWord = n => {
+  if (!Array.isArray(n)) return null
+  if (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u')
+    return { src: n[1], unsigned: n[0] === 'f64.convert_i32_u' }
+  if (n.type === 'i32') return { src: n, unsigned: !!n.unsigned }
+  if (n[0] === 'f64.const' && Number.isInteger(n[1]) && n[1] >= I32_MIN && n[1] <= 4294967295)
+    return { src: ['i32.const', n[1] | 0], unsigned: n[1] > I32_MAX }
+  return null
+}
+const topBitClear = n => {
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === 'i32.load8_u' || op === 'i32.load16_u') return true
+  if (op === 'i32.const') return typeof n[1] === 'number' && n[1] >= 0 && n[1] <= I32_MAX
+  if (op === 'i32.and') return topBitClear(n[1]) || topBitClear(n[2])
+  if (op === 'i32.shr_u') return Array.isArray(n[2]) && n[2][0] === 'i32.const' &&
+    typeof n[2][1] === 'number' && (n[2][1] & 31) !== 0
+  return false
+}
+
+/** Remove exact integer-to-float conversions from a numeric comparison.
+ * Equality also depends on signedness: the same word can mean -1 or 2^32-1.
+ * A mixed pair can compare in i32 only with a proof that the domains agree. */
+export function foldIntCompare(op, a, b) {
+  const x = compareWord(a), y = compareWord(b)
+  if (!x || !y) return null
+  const eq = op === 'eq' || op === 'ne', same = x.unsigned === y.unsigned
+  if (!same && !(eq ? topBitClear(x.src) || topBitClear(y.src) : topBitClear((x.unsigned ? y : x).src))) return null
+  return typed(['i32.' + op + (eq ? '' : x.unsigned || y.unsigned ? '_u' : '_s'), x.src, y.src], 'i32')
+}
+
 /** Coerce node to f64. Pointer-kinded i32 offsets rebox via NaN-tag fusion, not numeric convert.
  *  The `unsigned` flag (set by `>>>` codegen) opts into `convert_i32_u` so the canonical
  *  `(x >>> 0)` uint32 idiom converts to a positive f64 in [0, 2^32) instead of sign-flipping. */
@@ -65,7 +97,7 @@ export const asI32 = n => {
   // local, not `wrap(trunc(f64(r) − 1))`).
   const nw = narrowI32(n, true)
   if (nw) return nw.node
-  const rng = f64Range(n)
+  const rng = f64Range(n, null, true)
   if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return typed(['i32.trunc_sat_f64_s', n], 'i32')
   return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
 }
@@ -151,7 +183,7 @@ export const maskBound = (x) => {
  *
  * Returns {node (i32-typed), maxAbs, faithful} or null — callers use `.node`.
  */
-const narrowI32 = (x, isRoot) => {
+export const narrowI32 = (x, isRoot) => {
   if (!Array.isArray(x)) return null
   // `maskBound` (magnitude bound from `&`/`>>>` structure, defaulting to the full
   // i32 magnitude when it can't prove tighter) gives this leaf's REAL worst-case
@@ -189,16 +221,18 @@ const narrowI32 = (x, isRoot) => {
     if (!a) return null
     return { node: typed(['i32.sub', ['i32.const', 0], a.node], 'i32'), maxAbs: a.maxAbs, faithful: false }
   }
-  // A branchless conditional over two ring values is a ring value: ToInt32
-  // distributes over `select` (`x = c ? x + d : x - d`, the delta-decoder
-  // accumulator). The condition is i32 by validation and stays as is.
-  if (op === 'select' && x.length === 4) {
-    const a = narrowI32(x[1]), b = narrowI32(x[2])
+  // ToInt32 distributes over conditionals of two ring values. Preserve
+  // conditional evaluation for `if`; a `select` already evaluates both arms.
+  const cond = op === 'if' && x.length === 5 && x[1]?.[0] === 'result' && x[1][1] === 'f64' &&
+    x[3]?.[0] === 'then' && x[3].length === 2 && x[4]?.[0] === 'else' && x[4].length === 2
+  if ((op === 'select' && x.length === 4) || cond) {
+    const left = cond ? x[3][1] : x[1], right = cond ? x[4][1] : x[2]
+    const a = narrowI32(left), b = narrowI32(right)
     if (!a || !b) return null
-    const node = typed(['select', a.node, b.node, x[3]], 'i32')
+    const node = typed(cond ? ['if', ['result', 'i32'], x[2], ['then', a.node], ['else', b.node]] : ['select', a.node, b.node, x[3]], 'i32')
     // two uint32 arms join to a uint32: the i32 bits keep their unsigned magnitude
     const isU = (e) => Array.isArray(e) && (e[0] === 'f64.convert_i32_u' || e.unsigned === true)
-    if (isU(x[1]) && isU(x[2])) node.unsigned = true
+    if (isU(left) && isU(right)) node.unsigned = true
     return { node, maxAbs: Math.max(a.maxAbs, b.maxAbs), faithful: a.faithful && b.faithful }
   }
   if (op === 'f64.div' && isRoot) {
@@ -246,7 +280,11 @@ const convRange = (child, signed) => {
 // the def's range bounds every value the local can take, even if the def's inputs vary across
 // iterations. A self-referential (loop-carried) single def is caught by the `seen` cycle guard
 // and yields null (unknown), which is conservative.
-export const f64Range = (n, get) => {
+// Saturating integer conversions also accept NaN (as zero). In that mode,
+// bounds describe only numeric outcomes; a NaN-only arm is an empty interval.
+// Other consumers keep the default finite-value contract.
+const NAN_RANGE = { lo: Infinity, hi: -Infinity }
+export const f64Range = (n, get, allowNaN = false) => {
   const seen = get ? new Set() : null
   const r = (n) => {
     if (!Array.isArray(n)) return null
@@ -256,9 +294,15 @@ export const f64Range = (n, get) => {
       const def = typeof get === 'function' ? get(n[1]) : get.get(n[1])
       if (!def) return null
       seen.add(n[1]); const rng = r(def); seen.delete(n[1])
-      return rng
+      // A conditional or skipped definition leaves the Wasm local at zero.
+      // Include it before composing arithmetic around the read, not only at
+      // the final conversion (zero plus an offset need not convert to zero).
+      return rng && fin(Math.min(0, rng.lo), Math.max(0, rng.hi))
     }
-    if (op === 'f64.const') return typeof n[1] === 'number' ? fin(n[1], n[1]) : null   // `nan:…`/Inf literal strings → null
+    if (op === 'f64.const') {
+      if (allowNaN && (Number.isNaN(n[1]) || (typeof n[1] === 'string' && /^[-+]?nan(?::0x[0-9a-f]+)?$/i.test(n[1])))) return NAN_RANGE
+      return typeof n[1] === 'number' ? fin(n[1], n[1]) : null
+    }
     if (op === 'f64.convert_i32_s') return convRange(n[1], true)
     if (op === 'f64.convert_i32_u') return convRange(n[1], false)
     if (op === 'f64.neg') { const a = r(n[1]); return a && fin(-a.hi, -a.lo) }
@@ -285,6 +329,11 @@ export const f64Range = (n, get) => {
       const a = r(n[1]); if (!a) return null
       const p = [a.lo / c, a.hi / c]
       return fin(Math.min(...p), Math.max(...p))
+    }
+    if (op === 'if' && n.length === 5 && n[1]?.[0] === 'result' && n[1][1] === 'f64' &&
+        n[3]?.[0] === 'then' && n[3].length === 2 && n[4]?.[0] === 'else' && n[4].length === 2) {
+      const a = r(n[3][1]), b = r(n[4][1])
+      return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi))
     }
     if (op === 'select' && n.length === 4) { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi)) }
     if (op === 'f64.min') { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
@@ -317,11 +366,11 @@ const i32Narrowed = n => {
   const nw = narrowI32(n, true)
   if (nw) return nw.node
   // Value-range narrowing: a NON-integer f64 tree (e.g. `10 + 200·(u8[i]/255)`) the ring
-  // path rejects, but whose value is PROVABLY FINITE — so the +∞-guard `select` is dead.
+  // path rejects, but whose numeric values are bounded — so the +∞ guard is dead.
   // When the value also provably fits i32, a single `i32.trunc_sat_f64_s` IS exact ToInt32
-  // (no saturation can fire in-range, no NaN, no ±∞) — dropping the i64 round-trip AND the
+  // (no saturation can fire in-range; NaN converts to zero) — dropping the i64 round-trip AND the
   // guard. Pervasive in pixel/colour packing: `(base + scale·v)|0`.
-  const rng = f64Range(n)
+  const rng = f64Range(n, null, true)
   if (rng) {
     if (rng.lo >= I32_MIN && rng.hi <= I32_MAX) return typed(['i32.trunc_sat_f64_s', n], 'i32')
     // Finite and within (−2^63, 2^63): keep the mod-2^32 wrap, drop the (now-dead) +∞ guard.

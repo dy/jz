@@ -12,7 +12,7 @@
 import { isI32 } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { K, hasTag } from '../summary/kind.js'
-import { VAL, lookupValType } from '../reps.js'
+import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   hasAmbiguousBoolMerge, censusShapedNode,
 } from '../kind.js'
@@ -36,10 +36,10 @@ const typedElemCtorOf = (name, locals) => typedStorageNameCtor(ctx, name, locals
 // `>>>`, an unsigned-result call, or a Uint32Array read (aux 5 — the only typed array whose
 // element can exceed signed-i32 range). The +/-/*/% rules widen these to f64 so `U[i] + 1`
 // near 2^32 doesn't wrap; bitwise/store consumers are ToInt32-exact and keep the i32 bits.
-const isUnsignedI32Expr = (e, locals) => Array.isArray(e) && (
+const isUnsignedI32Expr = (e, locals) => typeof e === 'string' ? !!repOf(e)?.unsigned : Array.isArray(e) && (
   e[0] === '>>>' ||
   (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true) ||
-  (e[0] === '[]' && typeof e[1] === 'string' && typedElemAux(typedElemCtorOf(e[1], locals)) === 5)
+  (e[0] === '[]' && typeof e[1] === 'string' && (typedElemAux(typedElemCtorOf(e[1], locals)) & 7) === 5)
 )
 
 /**
@@ -48,14 +48,17 @@ const isUnsignedI32Expr = (e, locals) => Array.isArray(e) && (
  * Looks up `locals` first, then current-function params (for i32-specialized params).
  *
  * `bodyRoot` selects the settled summary scope during whole-program narrowing.
+ * Supplying `readPresent` selects lossless storage/result typing: only these
+ * exact typed-read nodes may lose absence, and unsigned words need widening.
+ * Without it, integer payloads stay i32 for word-coercing consumers.
  */
 // Whole-program callers supply the body to select its settled summary scope.
-export function exprType(expr, locals, valTypes, strict, bodyRoot) {
+export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) {
   if (expr == null) return 'f64'
   if (typeof expr === 'number')
     return isI32(expr) ? 'i32' : 'f64'
   if (typeof expr === 'string') {
-    if (locals?.has?.(expr)) return locals.get(expr)
+    if (locals?.has?.(expr)) return readPresent && repOf(expr)?.unsigned ? 'f64' : locals.get(expr)
     const paramType = ctx.func.current?.params?.find(p => p.name === expr)?.type
     if (paramType) return paramType
     // A module-level INTEGER const (`const N = 16384`) is an integer compile-time
@@ -76,7 +79,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
 
   const op = expr[0]
   const arity = expr.length - 1
-  if (op == null) return exprType(expr[1], locals, valTypes, strict, bodyRoot) // literal [, value]
+  if (op == null) return exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent) // literal [, value]
 
   // Statically evaluable to -0 (e.g. -1 * 0) — i32 would lose the sign.
   const sv = staticValue(expr)
@@ -97,7 +100,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
         // int family only — Float16Array shares code 3 with a flag; its elements are floats.
         // Payload classification only: a possible missing read still needs
         // a separate storage-presence proof before committing an i32 local.
-        if (aux != null && (aux & 7) <= 5 && !(aux & 32)) return 'i32'
+        if (aux != null && (aux & 7) <= 5 && !(aux & 32))
+          return !readPresent || ((aux & 7) !== 5 && readPresent.has(expr)) ? 'i32' : 'f64'
       }
     }
     return 'f64'
@@ -152,8 +156,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   // reverted) demoted 8/10 perf-ratchet benchmarks' hottest accumulator/
   // index shapes from i32 to f64.
   if (op === '+' || op === '-') {
-    const ta = exprType(expr[1], locals, valTypes, strict)
-    const tb = expr[2] != null ? exprType(expr[2], locals, valTypes, strict) : ta // unary: inherit
+    const ta = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent)
+    const tb = expr[2] != null ? exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent) : ta // unary: inherit
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // A uint32 operand ([0, 2^32)) makes the result exceed signed i32 range, so
     // emit widens to f64 (see emit.js `+`/`-`). exprType must agree — else
@@ -173,7 +177,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   // yields NaN via f64rem (f64), so result-narrowing must NOT see i32 here — else a
   // NaN remainder gets i32.trunc_sat'd to 0. Mirrors the emit.js `%` guard exactly.
   if (op === '%') {
-    const ta = exprType(expr[1], locals, valTypes, strict), tb = exprType(expr[2], locals, valTypes, strict)
+    const ta = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // the divisor as a folded module-const expression (`MAXPTS - 20 + 1`) is a literal too
     const dv = staticValue(expr[2]) !== NO_VALUE ? staticValue(expr[2]) : (constIntExpr(expr[2]) ?? NO_VALUE)
@@ -187,7 +191,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   // Storage and emission share the same product proof: both the magnitude
   // and the zero sign must survive an i32 multiply.
   if (op === '*') {
-    const ta = exprType(expr[1], locals, valTypes, strict), tb = exprType(expr[2], locals, valTypes, strict)
+    const ta = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
     if (isUnsignedI32Expr(expr[1], locals) || isUnsignedI32Expr(expr[2], locals)) return 'f64'
@@ -195,15 +199,15 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
     return mulRangeFitsI32(expr[1], expr[2]) ? 'i32' : 'f64'
   }
   // Unary minus shares emission's magnitude and zero-sign proof.
-  if (op === 'u+') return exprType(expr[1], locals, valTypes, strict)
+  if (op === 'u+') return exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent)
   if (op === 'u-') {
-    const t = exprType(expr[1], locals, valTypes, strict)
+    const t = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent)
     return t === 'i32' && !isUnsignedI32Expr(expr[1], locals) && negRangeFitsI32(expr[1]) ? 'i32' : 'f64'
   }
   // Ternary / logical: conciliate
   if (op === '?:' || op === '&&' || op === '||') {
     const branches = op === '?:' ? [expr[2], expr[3]] : [expr[1], expr[2]]
-    const ta = exprType(branches[0], locals, valTypes, strict), tb = exprType(branches[1], locals, valTypes, strict)
+    const ta = exprType(branches[0], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(branches[1], locals, valTypes, strict, bodyRoot, readPresent)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // research.md §Carrier invariant: both branches are i32-REPRESENTABLE (a
     // comparison's 0/1 and a NUMBER literal both answer 'i32' here — this

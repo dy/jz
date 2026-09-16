@@ -11,15 +11,18 @@ import { ctx, getFactStore } from '../../ctx.js'
 import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { VAL, updateRep } from '../../reps.js'
-import { intLiteralValue, intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
+import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
-import { ctorFromElemAux } from '../../../layout.js'
+import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
   scanObjectArrayFacts, isFreshArrayCtor, stampCoInductionRanges,
 } from '../analyze-scans.js'
 import { makeTypedTracker } from './trackers.js'
+import { typedStorageNameCtor } from '../../typed-context.js'
+import { scanIntervalIdx } from '../../type/interval-proof.js'
+import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
 // Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
 // compile's bodies, cleared by resetBodyFactsCache at compile start — so weak
@@ -170,6 +173,25 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     (n, l) => { (typedLens ||= new Map()).set(n, l) },
     n => typedLens?.delete(n))
 
+  // Payload width alone cannot authorize integer storage: a missing read is
+  // undefined. Reuse the interval interpreter and canonical-loop recognizer
+  // after the body's constructor/length tracker has settled. Canonical proofs
+  // use node identity so an access outside the loop cannot borrow its bound.
+  const typedReads = [], presentNodes = new Set()
+  let presentKeys
+  const readPresent = e => {
+    if (!presentKeys) {
+      presentKeys = new Set()
+      scanBoundedArrIdx(body, new Set(), null, presentNodes)
+      const lens = n => locals.has(n) ? typedLens?.get(n) ?? null
+        : ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null
+      const entry = new Map()
+      for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
+      scanIntervalIdx(body, presentKeys, lens, null, null, entry)
+    }
+    return presentNodes.has(e) || presentKeys.has(idxKey(e[1], e[2]))
+  }
+
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
     // wasm type (locals slice). A `>>> 0` result is an unsigned uint32 that doesn't fit a
@@ -182,21 +204,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     const shr = Array.isArray(rhs) && rhs[0] === '>>>'
     const shrFitsI32 = shr && Array.isArray(rhs[2]) && rhs[2][0] == null
       && typeof rhs[2][1] === 'number' && (rhs[2][1] & 31) >= 1
-    // An integer TypedArray read is i32 only as a value-domain fact. A literal
-    // index with no static in-bounds proof can legally yield `undefined`; storing
-    // it in i32 would turn that into 0 before identity/JSON observes it. Variable
-    // indices retain the existing loop/range proof pipeline.
-    const typedRead = Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string'
-    const readCtor = typedRead
-      ? (typedElems.get(rhs[1]) ?? ctx.func.typedElem?.get(rhs[1]) ?? ctx.scope.globalTypedElem?.get(rhs[1]))
-      : null
-    const readLen = typedRead
-      ? (typedLens?.get(rhs[1]) ?? ctx.func.typedLen?.get(rhs[1]) ?? ctx.scope.globalTypedLen?.get(rhs[1]))
-      : null
-    const readIdx = typedRead ? intLiteralValue(rhs[2]) : null
-    const typedReadMayMiss = readCtor != null && readIdx != null &&
-      (readLen == null || readIdx < 0 || readIdx >= readLen)
-    const wt = typedReadMayMiss ? 'f64' : (shr && !shrFitsI32) ? 'f64' : exprType(rhs, locals)
+    const wt = (shr && !shrFitsI32) ? 'f64' : exprType(rhs, locals)
     if (!locals.has(name)) locals.set(name, wt)
     else if (locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
     // Stamp the closed integer hull EARLY (mirrors analyzeValTypes's own later
@@ -314,6 +322,10 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return  // don't cross closure boundary
+    if (op === '[]' && node.length === 3 && typeof node[1] === 'string') {
+      const aux = typedElemAux(typedStorageNameCtor(ctx, node[1], locals))
+      if (aux != null && (aux & 7) <= 5 && !(aux & 32)) typedReads.push(node)
+    }
 
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -416,18 +428,17 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   withValueOverlay(valTypes, () =>
     withTypedElemOverlay(typedElems, () => {
     walk(body)
+    for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)
     // Co-induction accumulator fact (INDUCTION-VARIABLE FACT project,
     // analyze-scans.js's own header doc): durably stamps a body-local
     // accumulator's proven range BEFORE widenLocalTypes' Pass D runs, so its
     // bare-escape check (e.g. `return op` after the loop) sees a real hull
     // instead of blaming an unranged reassigned local into f64 storage.
     stampCoInductionRanges(body)
-    widenLocalTypes(body, locals)
-    // Narrow proven uint32 accumulator locals to unsigned i32. Runs post-widen so
-    // a local already demoted to f64 above (e.g. compared against an f64) is
-    // reconsidered with final types — and stays f64, since a relational compare
-    // is a non-transparent read that disqualifies narrowing anyway.
-    unsignedLocals = narrowUint32(body, locals)
+    unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
+      typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
+    for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
+    widenLocalTypes(body, locals, presentNodes, unsignedLocals)
     // A narrowing above retypes a never-reassigned decl whose initializer
     // reads the narrowed name (`const np = 20 + t % 101` over `const t = s
     // >>> 0`): the first pass typed it f64 through t's provisional f64. Re-
@@ -435,9 +446,6 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     // retyped decl may feed the next). Initializers processDecl types by
     // their own shape (`>>>`, a typed read) are left as they are.
     if (unsignedLocals.size) {
-      // the range evaluator reads the uint32 fact off the rep (`t % 101` over
-      // `const t = s >>> 0` is [0, 100]): stamp it now, ahead of analyze-for-emit's own copy
-      for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
       let narrowed = new Set(unsignedLocals)
       while (narrowed.size) {
         const next = new Set()
@@ -491,7 +499,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     typedElems,
     typedLens: typedLens || EMPTY_BODY_FACT_MAP,
     escapes: escapes || EMPTY_BODY_FACT_MAP,
-    flatObjects, sliceViews, unsignedLocals, neverGrown, ownCurrent,
+    flatObjects, sliceViews, unsignedLocals, neverGrown, ownCurrent, readPresent: presentNodes,
   }
   // null (not '') when ctx.func.current is unset at capture time — some legitimate
   // callers (plan/literals.js's AST-rewrite passes, narrow.js's refreshCallerLocals)
@@ -579,7 +587,7 @@ function sigFingerprint(sig) {
  * Math.imul/clz32) needs no check — every value it can hold already fits i32.
  */
 const WIDEN_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
-function widenLocalTypes(body, locals) {
+function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
   // Shared, lazily-memoized across collectI32SafeIndexVars' own internal use
   // and Pass D below — both want the identical collectBareEscapes(body,
   // locals) fact (same body, same locals, no crossClosure), and it's a real
@@ -615,7 +623,7 @@ function widenLocalTypes(body, locals) {
   // the identical gap for it (see .work/archive/todo.md KNOWN GAP #1 sibling note).
   const intLevels = intLevelMap(body, nestedNames)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
-  const keepI32 = (name) => i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
+  const keepI32 = (name) => unsignedLocals.has(name) || i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
   const widenPass = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -630,6 +638,19 @@ function widenLocalTypes(body, locals) {
   }
   widenPass(body)
 
+  // Width lost by a typed read or unsigned value must propagate through
+  // copies/arithmetic, even when an index use would otherwise permit wrapping.
+  const valueWide = new Set()
+  const widenValue = (name, rhs) => {
+    if (locals.get(name) !== 'i32' || unsignedLocals.has(name) ||
+        exprType(rhs, locals, null, false, body, readPresent) !== 'f64') return false
+    const exact = exprType(rhs, locals) !== 'f64' ||
+      (typeof rhs === 'string' ? valueWide.has(rhs) : some(rhs, n => n.some(x => typeof x === 'string' && valueWide.has(x))))
+    if (exact) valueWide.add(name)
+    if (!exact && keepI32(name)) return false
+    locals.set(name, 'f64')
+    return true
+  }
   let widened = true
   while (widened) {
     widened = false
@@ -642,23 +663,17 @@ function widenLocalTypes(body, locals) {
           const a = node[i]
           if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
             const name = a[1], rhs = a[2]
-            if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64' && !keepI32(name)) {
-              locals.set(name, 'f64'); widened = true
-            }
+            if (widenValue(name, rhs)) widened = true
           }
         }
       }
       if (op === '=' && typeof node[1] === 'string') {
         const name = node[1], rhs = node[2]
-        if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64' && !keepI32(name)) {
-          locals.set(name, 'f64'); widened = true
-        }
+        if (widenValue(name, rhs)) widened = true
       }
       if ((op === '+=' || op === '-=' || op === '*=' || op === '%=') && typeof node[1] === 'string') {
         const name = node[1]
-        if (locals.get(name) === 'i32' && exprType([op[0], name, node[2]], locals) === 'f64' && !keepI32(name)) {
-          locals.set(name, 'f64'); widened = true
-        }
+        if (widenValue(name, [op[0], name, node[2]])) widened = true
       }
       if (op === '/=' && typeof node[1] === 'string') {
         const name = node[1]

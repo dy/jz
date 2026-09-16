@@ -17,6 +17,8 @@ import { PTR_ABI_KINDS } from './caller-ctx.js'
 import { isExported } from '../func-exports.js'
 import { paramNumericArrayLike } from '../param-numeric.js'
 import { ensureParamRep } from '../../param-reps.js'
+import { scanBindingUses, USE, BINDING_USE_KIND, BINDING_USE_USES } from '../analyze-scans.js'
+import { K, tagOf, core } from '../../summary/kind.js'
 
 // narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
 // when every mutation of it is provably int-preserving. Reuses type.js's
@@ -103,15 +105,13 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
     // those guard DIFFERENT contracts (a static length, a literal constant, a
     // pointer identity) that a value-preserving int mutation can still break,
     // so they are not int-safety questions this lever answers.
-    let mutated = null
+    let mutated = null, uses = null
     for (const [k, r] of reps) {
       if (k === restIdx || k >= func.sig.params.length) continue
       const p = func.sig.params[k]
       if (func.defaults?.[p.name] != null) continue
-      // Admit 'f64' evidence too (beyond the plain i32/v128 gate below) — ONLY
-      // the mutated branch may act on it, via the mutation-safety +
-      // caller-consistency proof; the non-mutated tail still requires a hard
-      // 'i32'/'v128' verdict, unchanged.
+      // Admit f64 evidence when mutations preserve integer values, or every
+      // read applies a word conversion at the boundary below.
       if (r.wasm !== 'v128' && r.wasm !== 'i32' && r.wasm !== 'f64') continue
       if (r.wasm === 'i32' && p.type === 'i32') continue
       if (mutated === null) {
@@ -131,7 +131,16 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
       }
       // SIMD: a param passed a v128 (lane vector) at every call site is a v128 param.
       if (r.wasm === 'v128') { p.type = 'v128'; continue }
-      if (r.wasm !== 'i32') continue
+      if (r.wasm !== 'i32') {
+        // Moving a primitive word conversion to the call boundary is exact
+        // when every parameter read repeats it. Missing elements then become
+        // zero only at the helper that actually asks for ToInt32.
+        if (isExported(func) || !func.body ||
+            tagOf(core(ctx.summary.at(func.sig).paramKindOf(p.name))) !== K.NUMBER) continue
+        uses ||= scanBindingUses(func.body, new Set(func.sig.params.map(p => p.name)))
+        const reads = uses.get(p.name)?.[BINDING_USE_USES]
+        if (!reads?.length || !reads.every(u => u[BINDING_USE_KIND] === USE.WORD)) continue
+      }
       if (skipTyped && r.val === VAL.TYPED) continue
       p.type = 'i32'
     }

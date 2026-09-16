@@ -169,11 +169,13 @@ export function inBoundsCharCodeAt(ctx) {
  *  loop. Stores `"recv\x00idxVar"` keys — `\x00` isn't a valid identifier char so
  *  the pair is unambiguous. Stops at `=>` (a closure may run after the loop, when
  *  `idxVar` has reached `recv.length`). */
-function collectBoundedArrIdx(node, recv, idxVar, set) {
+function collectBoundedArrIdx(node, recv, idxVar, set, nodes) {
   walkAst(node, { enter: n => {
     if (n[0] === '=>') return false
-    if (n[0] === '[]' && n.length === 3 && n[1] === recv && n[2] === idxVar)
+    if (n[0] === '[]' && n.length === 3 && n[1] === recv && n[2] === idxVar) {
       set.add(recv + '\x00' + idxVar)
+      nodes?.add(n)
+    }
   } })
 }
 
@@ -181,7 +183,7 @@ function collectBoundedArrIdx(node, recv, idxVar, set) {
  *  `[0, recv.length)` by an enclosing canonical loop `for (let i = C; i < recv.length;
  *  i++)`. Same loop contract as `scanBoundedLoops` (charCodeAt) — sibling proof for
  *  the ARRAY indexed-read fast path in `module/array.js`. */
-export function scanBoundedArrIdx(node, set, litSet) {
+export function scanBoundedArrIdx(node, set, litSet, nodes) {
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
     const [, init, cond, step, body] = node
@@ -200,7 +202,7 @@ export function scanBoundedArrIdx(node, set, litSet) {
         && !isReassigned(body, idx) && !isReassigned(body, recv)
         && (boundVar == null || !isReassigned(body, boundVar))
         && !redeclaresName(body, idx))
-      collectBoundedArrIdx(body, recv, idx, set)
+      collectBoundedArrIdx(body, recv, idx, set, nodes)
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in
     // [C, B) — provable against a receiver whose STATIC length ≥ B (typedIdxProven
     // consults litSet's recorded bound vs ctx.func.typedLen). Collected for every
@@ -235,7 +237,7 @@ export function scanBoundedArrIdx(node, set, litSet) {
       }
     }
   }
-  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set, litSet)
+  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set, litSet, nodes)
 }
 
 /** Set of `"recv\x00idx"` keys for `recv[idx]` reads in the current function proven

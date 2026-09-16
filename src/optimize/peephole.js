@@ -12,6 +12,7 @@ import { simplifyCast } from 'watr/optimize'
 import { LAYOUT, FORWARDING_MASK } from '../ctx.js'
 import { nanboxF64 } from '../abi/index.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR } from '../ir.js'
+import { foldIntCompare, narrowI32 } from '../ir/numeric.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 
@@ -202,40 +203,6 @@ export function inlinePtrOffsetFastPass(fn) {
   }
   for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
-}
-
-// The i32 form of an integer-valued f64 expression, or null. Used to push ToInt32
-// through a conditional and to collapse the f64 round-trip on integer `+`/`-`.
-// Lossless by construction: `convert_i32(X) → X`; integer `f64.const → i32.const`
-// (ToInt32); `f64.add/sub` of i32-valued operands → `i32.add/sub` (mod-2³² is a ring
-// homomorphism, and each i32±i32 < 2³² < 2⁵³ so the f64 op is exact). EXCLUDES `mul`
-// (products can exceed 2⁵³, so the f64 op loses precision and i32.mul wouldn't match)
-// and anything non-integer or unprovable. Address `local.tee`s inside operands are
-// preserved (kept as-is in the returned i32 tree).
-function toI32(n) {
-  if (!Array.isArray(n)) return null
-  const op = n[0]
-  if ((op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') && n.length === 2) return n[1]
-  // i32-range consts only: keeps every leaf within i32 so f64 add/sub of leaves stays exact
-  // (< 2^53) and ToInt32-homomorphic. A larger const would round in f64.add or saturate in
-  // trunc_sat differently from JS `|0`, breaking the fold.
-  if (op === 'f64.const' && typeof n[1] === 'number' && (n[1] | 0) === n[1]) return ['i32.const', n[1]]
-  if ((op === 'f64.add' || op === 'f64.sub') && n.length === 3) {
-    const a = toI32(n[1]), b = toI32(n[2])
-    if (a && b) return [op === 'f64.add' ? 'i32.add' : 'i32.sub', a, b]
-  }
-  // ToInt32 distributes through a conditional: ToInt32(if C A B) == if(result i32) C
-  // ToInt32(A) ToInt32(B). Recursive — a nested integer `?:` like `((3<a)?(2&a):((7<a)?a:1))|0`
-  // narrows whole to i32 (each arm folded by toI32, incl. nested ifs), so the lane vectorizer
-  // lifts it as i32x4 bitselect instead of bailing on the f64 result. Only reached from
-  // ToInt32 sinks (the select idiom / toI32 recursion), so the i32 result is always wanted.
-  if (op === 'if' && Array.isArray(n[1]) && n[1][0] === 'result' && n[1][1] === 'f64'
-      && Array.isArray(n[3]) && n[3][0] === 'then' && n[3].length === 2
-      && Array.isArray(n[4]) && n[4][0] === 'else' && n[4].length === 2) {
-    const t = toI32(n[3][1]), e = toI32(n[4][1])
-    if (t && e) return ['if', ['result', 'i32'], n[2], ['then', t], ['else', e]]
-  }
-  return null
 }
 
 // Fused bottom-up walk applying three orthogonal pattern sets at each node:
@@ -480,27 +447,29 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
       if (Array.isArray(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]
       // ToInt32(integer-valued f64 expr) → its i32 form: covers (i32±i32)|0 sums AND the
       // conditional `?:` (toI32 distributes through `(if result f64)`, recursively).
-      const i = toI32(inner)
+      const i = narrowI32(inner, true)?.node
       if (i) return i
       // Range fallback for the NON-integer-ring values toI32 rejects (`floor(scale·v)`,
       // `base + scale·v` — every grid/lattice/colour index): when the def chain — resolved
-      // through single-def inlining temps via `get` — provably yields a finite i32-range value,
+      // through single-def inlining temps via `get` — yields i32-range values or NaN,
       // the +∞ guard is dead AND trunc_sat can't saturate, so the whole guarded select collapses
       // to one `i32.trunc_sat_f64_s`. SOUND: f64Range admits only pure nodes and proves
-      // finiteness (kills the guard) + in-range (kills saturation), so the result is identical
+      // no infinity (kills the guard) + in-range (kills saturation); NaN maps to zero,
       // ToInt32 on every value the program can produce. Drops the i64 round-trip + guard on all
       // runtimes (this is the post-inline twin of the emit-time fold at ir.js toI32).
-      const rng = f64Range(inner, get)
+      // A missing-index select falls back to -1, not ToInt32's zero. Its
+      // absence test may disappear only with the original finite proof.
+      const rng = f64Range(inner, get, node[2]?.[0] === 'i32.const' && node[2][1] === 0)
       if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', inner]
     }
   }
   // The exact element-store conversion (toInt32's `call $__to_int32 X`) folds the
-  // same two ways: an integer-valued X takes its i32 form, a provably finite
-  // i32-ranged X one trunc_sat — both identical ToInt32 on every value.
+  // same two ways: an integer-valued X takes its i32 form; i32-range values
+  // or NaN need one trunc_sat — both identical ToInt32 on every value.
   if (op === 'call' && node[1] === '$__to_int32' && node.length === 3) {
-    const i = toI32(node[2])
+    const i = narrowI32(node[2], true)?.node
     if (i) return i
-    const rng = f64Range(node[2], get)
+    const rng = f64Range(node[2], get, true)
     if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', node[2]]
   }
   // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left
@@ -570,32 +539,14 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
     // reuse it across multiple i32/i64/f64 branches, DO need the explicit
     // dataDependentFlag/selectCondOK gate because they don't run isPureIR(cond) at all).
     if (isPureIR(a) && isPureIR(b) && isPureIR(cond) && !hasExpensiveOp(a) && !hasExpensiveOp(b) &&
-        !(toI32(a) && toI32(b))) return ['select', a, b, cond]
+        !(narrowI32(a, true) && narrowI32(b, true))) return ['select', a, b, cond]
   }
 
-  // f64.CMP(convert_i32 A, convert_i32 B) → i32.CMP(A, B). Comparing two i32 values is
-  // identical whether done in exact f64 or in i32 (the converts are lossless and
-  // order-preserving), so an integer comparison over typed-array loads (reads are f64)
-  // drops its f64 round-trip. eq/ne are sign-agnostic; ordered compares need matching
-  // signedness; an integer comparand constant works for the signed case. Both operands
-  // are kept, so any address `local.tee` inside them survives. Prerequisite for i32
-  // conditional-lane vectorization (the mask becomes an i32x4 compare).
+  // Share the emitter's signedness proof; a later fold must not turn a
+  // mixed signed/unsigned equality back into an equality of the raw bits.
   if (op === 'f64.eq' || op === 'f64.ne' || op === 'f64.lt' || op === 'f64.gt' || op === 'f64.le' || op === 'f64.ge') {
-    const base = op.slice(4)
-    const cv = (x) => Array.isArray(x) && (x[0] === 'f64.convert_i32_s' || x[0] === 'f64.convert_i32_u') && x.length === 2 ? x : null
-    const intK = (x) => Array.isArray(x) && x[0] === 'f64.const' && Number.isInteger(x[1]) && x[1] >= -2147483648 && x[1] <= 2147483647 ? x[1] : null
-    const a = node[1], b = node[2], ca = cv(a), cb = cv(b)
-    if (ca && cb) {
-      const sa = ca[0] === 'f64.convert_i32_s', sb = cb[0] === 'f64.convert_i32_s'
-      if (base === 'eq' || base === 'ne') return ['i32.' + base, ca[1], cb[1]]
-      if (sa === sb) return ['i32.' + base + (sa ? '_s' : '_u'), ca[1], cb[1]]
-    } else if (ca && ca[0] === 'f64.convert_i32_s') {
-      const k = intK(b)
-      if (k != null) return base === 'eq' || base === 'ne' ? ['i32.' + base, ca[1], ['i32.const', k]] : ['i32.' + base + '_s', ca[1], ['i32.const', k]]
-    } else if (cb && cb[0] === 'f64.convert_i32_s') {
-      const k = intK(a)
-      if (k != null) return base === 'eq' || base === 'ne' ? ['i32.' + base, ['i32.const', k], cb[1]] : ['i32.' + base + '_s', ['i32.const', k], cb[1]]
-    }
+    const cmp = foldIntCompare(op.slice(4), node[1], node[2])
+    if (cmp) return cmp
   }
 
   // shl-distribute-over-add: (i32.shl (i32.add x (i32.const K)) (i32.const S))

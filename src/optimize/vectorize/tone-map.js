@@ -21,9 +21,8 @@ import { isArr } from './node-utils.js'
 // BIT-EXACT by construction: each lane runs the scalar op (log_v is the per-lane
 // extract/repack mirror; the clamp keeps L finite & in [0,255] so `trunc_sat == |0`,
 // the ±Inf canon is a no-op and is dropped; the pack is element-wise). The conditional
-// masks are emitted in the SAME lane width as the data they select (`v>0` is i32 and
-// gates i32 stores/values; the `L>255` clamp is f64 and gates f64) — a width mismatch
-// bails. No cross-lane reordering, so no ulp drift. Speculatively-evaluated arms are
+// masks are resized to the data they select, preserving the two active lanes.
+// No cross-lane reordering, so no ulp drift. Speculatively-evaluated arms are
 // trap-free (log/convert/mul/min/trunc never trap; there is no div/rem). Gated until
 // proven across the corpus, then promoted like the stencil/outer-strip wins.
 const _toneStripTee = (n) => isArr(n) && n[0] === 'local.tee' && n.length === 3 ? n[2] : n
@@ -200,8 +199,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // mistype the recursive lifter's `ctx` (the recursive call site can't agree on i32, so it
   // stays boxed f64 and its callers emit a bad i64.reinterpret_f64). Capturing sidesteps that.
 
-  // Result lane width of a value expr ('i32' | 'f64' | 'x') — keeps a conditional's mask the
-  // SAME width as the data it selects (a mismatch bails).
+  // Result lane width of a value expr ('i32' | 'f64' | 'x') selects its mask width.
   function toneWidth(e) {
     if (!isArr(e)) return 'x'
     const o = e[0]
@@ -290,12 +288,18 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     if (isArr(c) && c[0] === 'i32.ne' && isI32Const(c[2]) && c[2][1] === 0) c = c[1]
     if (!isArr(c) || c.length !== 3) return liftFail(ctx, 'tonemap: condition is not a comparison')
     const condTy = c[0].startsWith('f64.') ? 'f64' : (c[0].startsWith('i32.') ? 'i32' : 'x')
-    if (condTy !== dataTy) return liftFail(ctx, `tonemap: mask width ${condTy} ≠ data width ${dataTy}`)
+    if (dataTy !== 'i32' && dataTy !== 'f64') return liftFail(ctx, 'tonemap: unknown data width')
     const cmp = LANE_COMPARE[condTy]?.[c[0]]
     if (!cmp) return liftFail(ctx, `tonemap: ${c[0]}: not a lane comparison`)
     const ca = liftV(c[1]); if (ctx.fail) return null
     const cb = liftV(c[2]); if (ctx.fail) return null
-    return [cmp, ca, cb]
+    const mask = [cmp, ca, cb]
+    if (condTy === dataTy) return mask
+    // Comparisons produce all-one/all-zero lanes. Resize those boolean lanes,
+    // preserving the low two elements the mixed-width loop processes.
+    if (dataTy === 'f64') return ['i64x2.extend_low_i32x4_s', mask]
+    return ['i8x16.shuffle', '0', '1', '2', '3', '8', '9', '10', '11',
+      '16', '17', '18', '19', '20', '21', '22', '23', mask, ['v128.const', 'i32x4', '0', '0', '0', '0']]
   }
 
   // `cond ? a : b` → bitselect(a, b, mask(cond)); mask in the branch's lane width.

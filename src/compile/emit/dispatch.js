@@ -97,15 +97,14 @@ function tryI32Index(e) {
 export const emitIndex = (index) => {
   const direct = tryI32Index(index)
   if (direct) return direct
-  // A checked typed read used as another computed index must carry its miss
-  // bit outward: ToInt32(undefined) is 0, but JS's property key remains
-  // `undefined` and must not access element zero. Demand-drive the metadata
-  // context only for the direct nested-read shape; arithmetic around the read
-  // has its own JS coercion semantics (`undefined|0` really does become zero).
-  if (!Array.isArray(index) || index[0] !== '[]') return asI32(emit(index))
-  ctx.types.indexConsumer = (ctx.types.indexConsumer || 0) + 1
+  // Direct nested reads can pass their check bit without reboxing. Stored
+  // reads take the same fallback below: a missing value is no index,
+  // even though the machine's saturating conversion would yield zero.
+  const nested = Array.isArray(index) && index[0] === '[]'
+  if (!nested && typeof index !== 'string') return asI32(emit(index))
+  if (nested) ctx.types.indexConsumer = (ctx.types.indexConsumer || 0) + 1
   let value
-  try { value = emit(index) } finally { ctx.types.indexConsumer-- }
+  try { value = emit(index) } finally { if (nested) ctx.types.indexConsumer-- }
   if (value?.indexValid) {
     // The checked typed read's own miss bit, materialized after the read: the
     // same -1 for every consumer, and the bit itself for the typed read's guard.
@@ -113,9 +112,7 @@ export const emitIndex = (index) => {
     out.indexValid = value.indexValid
     return out
   }
-  // Any other element read (an array, a dictionary) misses as the undefined
-  // atom, which JS reads as the property "undefined", never element zero:
-  // the index becomes -1, which every bounds check rejects.
+  // Preserve absence; real NaN retains the documented i32-index coercion.
   if (value?.type === 'i32') return asI32(value)
   const t = temp('ix')
   return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],

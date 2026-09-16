@@ -4,7 +4,8 @@ import { ok, is } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
-import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
+import parseWat from 'watr/parse'
+import { parse as watTree, callsOutside, walk as walkWat } from '../scripts/wat-probe.mjs'
 
 // Helper: time N iterations, return ms
 function bench(fn, n) {
@@ -967,8 +968,9 @@ test('codegen: ping-pong double-buffer base decode hoists per-loop (volatile glo
   const step = wat.match(/\(func \$step[\s\S]*?\n  \)/)?.[0] || ''
   // No per-element pointer decode survives inside either loop — both are hoisted to
   // their own pre-header (the first reads pre-swap `a`, the second the post-swap `a`).
-  const loops = step.match(/\(loop[\s\S]*?\(br /g) || []
-  let inLoop = 0; for (const l of loops) inLoop += (l.match(/i64\.reinterpret_f64/g) || []).length
+  let inLoop = 0
+  walkWat(parseWat(step), (n, inside) => { if (inside && n[0] === 'i64.reinterpret_f64' &&
+    n[1]?.[0] === 'global.get' && (n[1][1] === '$a' || n[1][1] === '$b')) inLoop++ })
   is(inLoop, 0, 'volatile double-buffer base decode is hoisted out of every loop')
   // Correctness floor: identical to the same source as plain JS, across a swap.
   const { exports } = jz(`

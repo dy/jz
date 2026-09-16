@@ -1,5 +1,6 @@
 /**
- * NEG_NAN_MASK, emitTypeofCmp (public); the char/substring index-compare fusion (stringLiteral/intIndexIR/emitSingleCharIndexCmp/emitSubstringEqCmp); the loose/strict-eq machinery (numericVal/peelIntCmp/emitLooseEq/emitStrictEq/cmpOp/looseNumberEq/...); plus the ==/!=/instanceof/===/!==/</>/<=/>= emitter properties.
+ * NEG_NAN_MASK, emitTypeofCmp (public); char/substring comparison fusion;
+ * loose/strict equality and ordered comparison emission.
  *
  * @module compile/emit/comparisons
  */
@@ -12,6 +13,7 @@ import {
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
+import { foldIntCompare } from '../../ir/numeric.js'
 import { nonNegIntLiteral } from '../../static.js'
 import { K, hasTag } from '../../summary/index.js'
 import { typedIdxProven } from '../../type.js'
@@ -447,33 +449,6 @@ function emitBigintEq(a, b, va, vb, vta, vtb, negate, strict) {
   return fin(typed(['block', ['result', 'i32'], ...(bigA ? [setPayload, setPartner] : [setPartner, setPayload]), cmp], 'i32'))
 }
 
-// An emitted value whose bit pattern is an i32, paired with how it widens to f64: a
-// `f64.convert_i32_s/u(x)` peels to its i32 source `x`; a bare i32 widens signed. Used to compare
-// two integer-backed operands directly in i32 instead of widening both to f64.
-const peelIntCmp = (v) => {
-  if (Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u'))
-    return { src: Array.isArray(v[1]) ? typed(v[1], 'i32') : v[1], sign: v[0] === 'f64.convert_i32_u' ? 'u' : 's' }
-  if (v && v.type === 'i32') return { src: v, sign: 's' }
-  return null
-}
-// The value's top bit is provably 0 (so its signed and unsigned readings agree): a u8/u16 load,
-// `>>>` (always clears the sign bit), `& m` with m a non-negative small const, or a small const.
-const i32TopBitClear = (n) => {
-  if (typeof n === 'number') return n >= 0 && n < 0x80000000
-  if (!Array.isArray(n)) return false
-  if (n[0] == null) return typeof n[1] === 'number' && n[1] >= 0 && n[1] < 0x80000000
-  if (n[0] === 'i32.load8_u' || n[0] === 'i32.load16_u') return true
-  if (n[0] === 'i32.const') return typeof n[1] === 'number' ? (n[1] >= 0 && n[1] < 0x80000000) : false
-  if (n[0] === 'i32.shr_u' || n[0] === '>>>') return true
-  if (n[0] === 'i32.and' || n[0] === '&') return i32TopBitClear(n[1]) || i32TopBitClear(n[2])
-  return false
-}
-// i32.eq/ne over the peeled sources equals the f64-widened compare when the signs match, or — for
-// a mixed signed/unsigned pair — when the unsigned-read source is top-bit-clear (then both readings
-// of equal bits agree, and unequal bits stay unequal under both).
-const i32EqSound = (pa, pb) => pa.sign === pb.sign ||
-  i32TopBitClear((pa.sign === 'u' ? pa : pb).src)
-
 function effectFoldSeq(operands, constIR) {
   const stmts = []
   for (const o of operands) if (o != null && !foldOperandPure(o)) stmts.push(['drop', emit(o)])
@@ -508,13 +483,8 @@ function emitLooseEq(a, b, negate, strict) {
   // compared a raw 1 with the TRUE atom.
   const identity = (n) => !strict ? emit(n) : mayCarryRawBool(n) ? emitIdentitySafeArms(n) : boolOrNullish(n) ? nullableBoolBoxIR(emit(n)) : emit(n)
   const va = identity(a), vb = identity(b)
-  if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${eqOp}`, va, vb], 'i32')
-  // Both operands integer-backed (e.g. an i32 local vs a `b[j]` u8 read materialized as f64):
-  // compare the i32 sources directly, skipping the per-op widen to f64. Recovers `intElem ===
-  // intElem` in hot loops (levenshtein's DP cell, where `a[i-1] === b[j-1]` was an f64.eq + 2
-  // converts every iteration). Sound only when the widen can't change the answer (see i32EqSound).
-  const pa = peelIntCmp(va), pb = peelIntCmp(vb)
-  if (pa && pb && i32EqSound(pa, pb)) return typed([`i32.${eqOp}`, pa.src, pb.src], 'i32')
+  const intCmp = foldIntCompare(eqOp, va, vb)
+  if (intCmp) return intCmp
   // Either side known-pure NUMBER (literal or typed) → f64.eq/ne is correct regardless
   // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
   // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
@@ -866,15 +836,9 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
       [`f64.${f64op}`, toNumF64(a, typed(['local.get', `$${ta}`], 'f64')),
         toNumF64(b, typed(['local.get', `$${tb}`], 'f64'))]], 'i32')
   }
-  // An `.unsigned` i32 operand ([0, 2^32)) can't share a signed i32 compare with a
-  // possibly-signed one: mixed sign inverts the order (3 < 0xFFFFFFFF unsigned, but
-  // 3 > -1 signed). Widen to f64, where asF64 converts each operand by its own
-  // signedness (convert_i32_u for unsigned, _s otherwise) to its true numeric value.
-  if (numA && numB && !va.unsigned && !vb.unsigned) {
-    const ai = intConstValue(a), bi = intConstValue(b)
-    if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
-    if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
-    if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${i32op}`, va, vb], 'i32')
+  if (numA && numB) {
+    const intCmp = foldIntCompare(f64op, va, vb)
+    if (intCmp) return intCmp
   }
   // Every remaining non-numeric pair may compare as strings after
   // ToPrimitive. Keep the common two-number check inline; share coercion,
@@ -918,16 +882,6 @@ function looseNumberEq(num, other, otherIR, otherVt, negate, numLeft) {
     ['then', ['f64.eq', nG(), oG]],
     ['else', ['call', '$__eq_num', nG(), ['i64.reinterpret_f64', oG]]]], 'i32')
   return typed(['block', ['result', 'i32'], ...(numLeft ? [...setN, ...setO] : [...setO, ...setN]), fin(cmp)], 'i32')
-}
-
-function intConstValue(expr) {
-  if (typeof expr === 'number' && Number.isInteger(expr)) return expr
-  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number' && Number.isInteger(expr[1])) return expr[1]
-  if (typeof expr === 'string') {
-    const v = repOf(expr)?.intConst
-    if (v != null) return v
-  }
-  return null
 }
 
 function bigintUnsignedBound(expr) {

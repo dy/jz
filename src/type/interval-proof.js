@@ -128,14 +128,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (typeof e === 'string') return closureWrites.has(e) ? null : coupledEnv.get(e)?.h ?? env.get(e) ?? null
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
-    // a NARROW typed load is range-bound by its element width (`table[in[j]]` — a
-    // Uint8Array read is [0,255] wherever j lands; even an unproven-idx read's
-    // undefined coerces through ToInt32 to 0, inside every narrow range)
+    // An element hull describes a present value only. Retaining it across
+    // a missing read would prove the next gather index valid after undefined
+    // had become zero (or NaN in arithmetic).
     if (op === '[]' && e.length === 3 && typeof x === 'string') {
-      visit(e)   // record the access's own proof attempt
-      // Index arithmetic may coerce a missing element to zero. A scalar call
-      // argument must retain undefined, so it needs a separate presence proof.
-      if (calls || stores) return null
+      const present = visit(e)
+      if (!present) return null
       const written = ctx.func.localReps?.get(x)?.arrayElemRange
       const r = written ?? NARROW_ELEM_RANGE[ctx.func.typedElem?.get(x)]
       return r ?? null
@@ -514,9 +512,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       const idxV = ev(n[2])
-      if (!recording) return   // exploratory fixpoint pass: env effects only
       const L = lens(n[1]), k = idxKey(n[1], n[2])
       const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
+      if (!recording) return proven   // exploratory fixpoint pass: env effects only
       if (typeof process !== 'undefined' && process.env.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
       if (!proven) { rejected.add(k); out.delete(k) }
       else if (!rejected.has(k)) out.add(k)
@@ -535,7 +533,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
             : prev.hiName && prev.hiName === h.hiName && prev.hiBias === h.hiBias
               ? { ...h, lo: Math.min(prev.lo, h.lo), entryHi: Math.max(prev.entryHi, h.entryHi) } : null)
       }
-      return
+      return proven
     }
     if (op === 'let' || op === 'const') {
       for (let k = 1; k < n.length; k++) {

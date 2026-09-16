@@ -2158,8 +2158,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === '?' || op === '?:') { demand(n[1]); useOf(n[2], cx, into); useOf(n[3], cx, into); return }
     if (op === '&&' || op === '||') { useOf(n[1], cx, into); useOf(n[2], cx, into); return }
     if (op === '??') { useOf(n[1], atMost(COMPAT, cx, into)); useOf(n[2], cx, into); return }
-    // Equality against a number converts nothing: a compatible read, the number the host must pass.
-    if (op === '==' || op === '!=' || op === '===' || op === '!==') { useOf(n[1], isNumberExpr(n[2]) ? COMPAT : OTHER); useOf(n[2], isNumberExpr(n[1]) ? COMPAT : OTHER); return }
+    // For number|undefined locals, equality with a definite number cannot
+    // distinguish undefined from numeric NaN. Other kinds still require the
+    // compatible (non-coercing) contract: null/boolean identity must survive.
+    if (op === '==' || op === '!=' || op === '===' || op === '!==') {
+      const eqCx = (value, other) => {
+        if (!isNumberExpr(other)) return OTHER
+        const k = kindOfExpr(value)
+        return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) ? NUM : COMPAT
+      }
+      useOf(n[1], eqCx(n[1], n[2])); useOf(n[2], eqCx(n[2], n[1])); return
+    }
     if (op === ',') { for (let i = 1; i < n.length - 1; i++) demand(n[i]); useOf(n[n.length - 1], cx, into); return }
     if (op === '()' && n.length === 2) { useOf(n[1], cx, into); return }
     if (op === '()') {

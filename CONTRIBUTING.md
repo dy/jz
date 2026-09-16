@@ -101,6 +101,24 @@ The scalar range query also reuses typed arrays' stored-value bounds when the
 index hull fits the known length. This carries bounds through ordinary locals
 and load-reuse temporaries without a new pass. A possible missing read supplies
 no integer range; stored width and signedness still constrain the payload.
+Local and result storage also reuse those presence proofs. A missing integer
+element keeps its undefined value through copies and returns; using it as an
+index must not read element zero. Canonical loop proofs refer to exact access
+nodes, so an access outside the loop cannot borrow their bounds. Uint32 locals
+whose every write is proven unsigned retain their magnitude via the existing
+unsigned carrier flag. Primitive parameters consumed only by word operators may
+convert once at the call boundary, as established by the binding-use census.
+Comparison emission and folding share one signedness proof: equal word bits
+do not imply equal numbers across signed and unsigned domains.
+They also share exact integer expression narrowing, including conditionals;
+early conversion folding cannot hide those integer branches from SIMD lifting.
+Saturating integer conversions opt into the shared floating range query's
+NaN-aware mode. It bounds numeric outcomes while admitting NaN, which converts
+to zero, so checked integer reads need no arbitrary-number conversion helper.
+The ordinary range query still proves finiteness; infinity remains unknown.
+Ranges obtained from a local's definition include its implicit zero value:
+the write may be conditional, and arithmetic can make that skipped-write path
+differ from the definition's value before integer conversion.
 Local typing and emission share the interval-product proof, including the
 negative-zero check; a product fitting i32's magnitude alone is insufficient.
 Unary negation likewise requires a nonzero interval whose negation fits i32.
