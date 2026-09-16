@@ -27,6 +27,89 @@ const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join(
 // pin the source's own functions, so the inliner is off (the speed tier splices callees).
 const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }); return ctx.summary }
 
+test('summary: testing data fields does not lose the argument shape at an open join', () => {
+  for (const condition of ['!!x?.enabled', "x?.name === 'f'", "typeof x?.nested === 'object'", 'x?.nested?.enabled === true']) {
+    const src = `function predicate(x) { return ${condition} }
+      function test(x) { return predicate(x) }
+      export function f(other, key) {
+        const cfg = { enabled: true, name: 'f', nested: { enabled: true, value: 7 } }
+        other[key] = false
+        test(other)
+        test(cfg)
+        return cfg.nested.value
+      }`
+    const summary = summarize(src)
+    const sid = sidOf(['enabled', 'name', 'nested'])
+    is(tagOf(summary.fieldKind(sid, 'nested')), K.OBJECT, condition + ': unrelated nested shape survives')
+    is(tagOf(summary.fieldKind(sidOf(['enabled', 'value']), 'value')), K.NUMBER, condition + ': nested value stays numeric')
+  }
+})
+
+test('summary: unused field values do not merge unrelated collection contents', () => {
+  for (const access of ['options.locals', "options['locals']"]) {
+    const src = `function read(ctx) { return ctx.value }
+      function enabled(options) { return !!${access} }
+      export function f(flag) {
+        const table = { locals: new Map() }, options = { locals: false }
+        table.locals.set('read', read)
+        enabled(flag ? table : options)
+        const context = { value: 7 }
+        return read(context)
+      }`
+    const summary = summarize(src)
+    is(summary.resultOf('read'), kind(K.NUMBER), access + ': testing the Map must not open its callable values')
+    const f = jz(src).exports.f
+    for (const flag of [0, 1, 1, 0]) is(f(flag), 7, access)
+  }
+})
+
+test('summary: forwarding through defaults and spreads preserves writes through aliases', () => {
+  for (const wrapper of [
+    'function update(x, alias = x) { alias.value = "changed"; return !!x.value }',
+    'function write(alias) { alias.value = "changed" } function update(x) { return write(...[x]) }',
+    'function write(alias) { alias.value = "changed" } function update(x, n = 1) { if (n) return update(x, n - 1); write(x); return !!x.value }',
+  ]) {
+    const src = `${wrapper} export function f() {
+      const cfg = { value: 7 }
+      update({ value: false }); update(cfg)
+      return cfg.value
+    }`
+    for (const optimize of levels(0, 1, 2, 3)) {
+      const f = jz(src, { optimize }).exports.f
+      for (let i = 0; i < 2; i++) is(f(), 'changed', `O${optimize}: ${wrapper}`)
+    }
+  }
+})
+
+test('summary: field predicates retain getter effects and escaping or reassigned receivers', () => {
+  const cases = [
+    `const state = { value: 7 }; function receiver() { state.value = 'receiver'; return { enabled: false } }
+     export function f() { if (receiver().enabled) return 'wrong'; return state.value }`,
+    `function test(x) { return !!x?.enabled }
+     export function f() {
+       const cfg = { nested: { value: 7 }, get enabled() { this.nested.value = 'getter'; return true } }
+       test({ enabled: false }); test(cfg)
+       return cfg.nested.value
+     }`,
+    `class Box {
+       constructor() { this.nested = { value: 7 } }
+       get enabled() { this.nested.value = 'class getter'; return true }
+     }
+     function test(x) { return !!x?.enabled }
+     export function f() { const cfg = new Box(); test({ enabled: false }); test(cfg); return cfg.nested.value }`,
+    `function read(x) { return x.nested }
+     export function f() { const cfg = { nested: { value: 7 } }; const alias = read(cfg); alias.value = 'alias'; return cfg.nested.value }`,
+    `function test(x, other) { x = other; return !!x?.enabled }
+     export function f() { return test({ enabled: true }, { enabled: false }) }`,
+    `function test(x) { x.enabled = 'written'; return !!x.enabled }
+     export function f() { const cfg = { enabled: true }; test(cfg); return cfg.enabled }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 3)) {
+    const f = jz(src, { optimize }).exports.f, js = oracle(src).f
+    for (let i = 0; i < 2; i++) is(f(), js(), `O${optimize}: ${src}`)
+  }
+})
+
 test('summary: imported constant initializers are folded before analysis', () => {
   const source = `import { PI, EPSILON } from 'constants'; export const probe = x => x * PI + EPSILON`
   const modules = { constants: 'export const PI = Math.PI, EPSILON = Number.EPSILON' }

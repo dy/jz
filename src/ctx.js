@@ -281,9 +281,9 @@ export const registerGetter = (key, fn) => {
   ctx.core.getters.add(key)
 }
 
-/** Expand ctx.core.includes transitively via ctx.core.stdlibDeps. Call before WASM assembly.
- *  Each module co-locates its own deps with its stdlib registrations at init time. */
-export function resolveIncludes() {
+/** Expand helper dependencies. Before runtime-table initialization, use only
+ *  declared dependencies; realizing templates can intern their own constants. */
+export function resolveIncludes(realize = true) {
   const graph = ctx.core.stdlibDeps
   const stdlib = ctx.core.stdlib
   // Auto-derived deps: a stdlib template that calls `$__foo` (a registered stdlib
@@ -293,8 +293,8 @@ export function resolveIncludes() {
   // blanket `inc('__mkptr','__alloc')` masked). Factory templates are realized
   // (called) so feature-gated branches — `${hasExt ? '(call $__ext_prop …)' : ''}`
   // — resolve before scanning; reading raw source would over-pull the dead branch.
-  // jz's templates are pure string builders, so realizing here (and again at
-  // emission) is side-effect-free. A `$__foo` naming a global (not a stdlib func)
+  // Some templates intern constants, so realize only after runtime-table setup.
+  // A `$__foo` naming a global (not a stdlib func)
   // is skipped. Realization can fail if called before its inputs are ready — then
   // we return nothing *without caching*, so a later pass retries. Memoized per compile.
   const autoCache = ctx.core._autoDeps ??= new Map()
@@ -323,7 +323,7 @@ export function resolveIncludes() {
       const deps = typeof entry === 'function' ? entry() : entry
       const add = (dep) => { if (!ctx.core.includes.has(dep)) { ctx.core.includes.add(dep); changed = true } }
       if (deps) for (const dep of deps) add(dep)
-      for (const dep of autoDepsOf(name)) add(dep)
+      if (realize) for (const dep of autoDepsOf(name)) add(dep)
     }
   }
   // Self-compile divergence diagnostics (scripts/self.js compileDiag): snapshot

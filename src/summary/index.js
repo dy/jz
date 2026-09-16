@@ -582,24 +582,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const incoming = []
   const bindParam = (key, k, quiet = false) => { raise(incoming, key, k, quiet); raise(kinds, key, k, quiet) }
   // A passive parameter is only tested, compared by identity or asked its
-  // typeof: nothing reads through it, so a join that cannot name its shapes
-  // loses nothing through it. Any other use, a reassignment, a default or a
-  // shadowing declaration keeps the parameter ordinary.
+  // typeof, including data fields used in those positions. No reference
+  // escapes or invokes user code, so a join need not lose its shapes. Other
+  // uses, reassignments, defaults and shadowing keep the parameter ordinary.
   const passiveMemo = new Map()   // scope → Set<param name>
   const passiveParamsOf = (scope, names, defaults) => {
     let set = passiveMemo.get(scope)
     if (set) return set
     passiveMemo.set(scope, set = new Set())
     const body = typeof scope === 'string' ? funcByName.get(scope)?.body : closureBodies[scope]
-    if (body == null) return set
-    for (const name of names) if (name != null && !defaults?.[name] && isPassiveIn(body, name)) set.add(name)
-    return set
-  }
-  const isPassiveIn = (body, name) => {
-    let bad = false
+    if (body == null || !names.length) return set
+    // Publish only after the walk. Recursive calls see the empty placeholder.
+    const candidates = new Set()
+    for (const name of names) if (name != null && !defaults?.[name]) candidates.add(name)
     const walk = (n, passive) => {
-      if (bad) return
-      if (typeof n === 'string') { if (n === name && !passive) bad = true; return }
+      if (!candidates.size) return
+      if (typeof n === 'string') { if (!passive) candidates.delete(n); return }
       if (!Array.isArray(n)) return
       const op = n[0]
       if (op == null || op === 'str' || op === 'bool' || op === 'nan' || op === 'bigint' || op === '//') return
@@ -611,23 +609,43 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         case 'if': walk(n[1], true); walk(n[2], false); walk(n[3], false); return
         case 'while': walk(n[1], true); walk(n[2], false); return
         case 'for': walk(n[1], false); walk(n[2], true); walk(n[3], false); walk(n[4], false); return
-        case '.': case '?.': walk(n[1], false); if (typeof n[2] !== 'string') walk(n[2], false); return
-        case '=>': if (paramNames(n[1]).includes(name)) { bad = true; return } walk(n[2], false); return
-        case 'let': case 'const': case 'var':
-          for (let i = 1; i < n.length; i++) { const d = n[i]; if (d === name || (Array.isArray(d) && d[0] === '=' && d[1] === name)) { bad = true; return } if (Array.isArray(d) && d[0] === '=') walk(d[2], false); else walk(d, false) }
+        case '.': case '?.': {
+          const prop = n[2]
+          const data = dataProperty(prop)
+          walk(n[1], passive && data)
+          if (typeof prop !== 'string') walk(prop, false)
           return
-        case 'catch': if (n[1] === name) { bad = true; return } walk(n[2], false); return
+        }
+        case '()': {
+          const f = typeof n[1] === 'string' ? funcByName.get(n[1]) : null
+          if (!f) break
+          const params = paramNamesOf(f), allowed = passiveParamsOf(f.name, params, f.defaults)
+          walk(n[1], false)
+          let fixed = true
+          for (let i = 0; i < argCount(n[2]); i++) {
+            const arg = argAt(n[2], i)
+            if (isSpread(arg)) fixed = false
+            walk(arg, fixed && allowed.has(params[i]))
+          }
+          return
+        }
+        case '=>': for (const p of paramNames(n[1])) candidates.delete(p); walk(n[2], false); return
+        case 'let': case 'const': case 'var':
+          for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') candidates.delete(d); else if (Array.isArray(d) && d[0] === '=') candidates.delete(d[1]); if (Array.isArray(d) && d[0] === '=') walk(d[2], false); else walk(d, false) }
+          return
+        case 'catch': candidates.delete(n[1]); walk(n[2], false); return
         case '{}':
-          if (isLiteral(n)) { for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p === 'string') { if (p === name) bad = true } else if (p[0] === ':') walk(p[2], false); else walk(p, false) } return }
+          if (isLiteral(n)) { for (let i = 1; i < n.length; i++) { const p = n[i]; if (typeof p === 'string') { candidates.delete(p) } else if (p[0] === ':') walk(p[2], false); else walk(p, false) } return }
           for (let i = 1; i < n.length; i++) walk(n[i], false)
           return
-        case '++': case '--': if (n[1] === name) { bad = true; return } walk(n[1], false); return
+        case '++': case '--': walk(n[1], false); return
       }
-      if (typeof op === 'string' && op.endsWith('=') && op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>=') { if (n[1] === name) { bad = true; return } }
       for (let i = 1; i < n.length; i++) walk(n[i], false)
     }
+    if (defaults) for (const key in defaults) walk(defaults[key], false)
     walk(body, false)
-    return !bad
+    for (const name of candidates) set.add(name)
+    return set
   }
   // A call's argument kinds live on one stack, a frame per call: `base` is
   // the frame's first slot and `n` its count. A frame is pushed above the
@@ -863,6 +881,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // The class members by name (a receiver the summary cannot name calls each class's).
   const membersByName = new Map()   // member name → the class functions bearing it
   if (classes) for (const e of classes.values()) for (const [name, fn] of e.methods) { let l = membersByName.get(name); if (!l) membersByName.set(name, l = []); l.push(fn) }
+  const dataProperty = prop => typeof prop === 'string' && !byProp.has(getterOf(prop)) && !membersByName.has(getterOf(prop))
   const NO_MEMBERS = []
   const callCandidates = (recv, name, base, n) => {
     if (!unknownReceiver(recv)) return
@@ -1345,7 +1364,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Mask zero visits effects without retaining the value. Conditions and
   // discarded expressions cannot create an unknown holder at a value join.
   const selectedExpr = (n, mask) => {
-    const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
+    const op = Array.isArray(n) ? n[0] : null
+    const logical = logicalMask(op)
+    // Testing a data field uses no value from it. Visit receiver effects, but
+    // do not join unrelated layouts' same-named fields into an escaping value.
+    if (mask === 0 && (op === '.' || op === '?.' || op === '[]')) {
+      const key = n[2], prop = op !== '[]' ? key
+        : Array.isArray(key) && (key[0] == null || key[0] === 'str') ? key[1] : null
+      if (dataProperty(prop)) { selectedExpr(n[1], 0); return K.NONE }
+    }
     if (mask !== 7 && !logical && n?.[0] !== '?' && n?.[0] !== '?:' && n?.[0] !== ',') return selectKind(expr(n), mask)
     if (n == null) return NULLISH
     if (typeof n === 'number') return NUMBER
@@ -1363,7 +1390,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return mask === undefined ? k : refine(k, mask)
     }
     if (!Array.isArray(n)) return ANY
-    const op = n[0]
     if (op == null) return literalKind(n[1])
     if (op === 'str') return STRING
     if (op === 'bool') return BOOL
@@ -1462,7 +1488,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (NUMBER_OPS.has(op) || op === 'u-') { let k = n.length > 2 ? expr(n[1]) : arith(op, expr(n[1])); for (let i = 2; i < n.length; i++) k = arith(op, k, expr(n[i])); return k }
     if (op === '+1' || op === '-1') return arith(op, expr(n[1]))  // a member's ++/-- (prepare)
     if (op === 'u+') { expr(n[1]); return NUMBER }
-    if (BOOL_OPS.has(op)) { for (let i = 1; i < n.length; i++) selectedExpr(n[i], 0); return BOOL }
+    if (BOOL_OPS.has(op)) {
+      // Loose equality, ordering and property-key tests may coerce their values.
+      const passive = op === '!' || op === '===' || op === '!=='
+      for (let i = 1; i < n.length; i++) passive ? selectedExpr(n[i], 0) : expr(n[i])
+      return BOOL
+    }
     if (logical) {
       const a = selectedExpr(n[1], mask & logical)
       branch++

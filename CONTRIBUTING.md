@@ -79,6 +79,10 @@ layout-wide storage once, so every object using a layout agrees on its field
 representation, including BigInt boxing. Overflow retains conservative storage.
 Conditions and discarded expressions visit effects without merging unused values:
 testing a callable cannot by itself introduce an unknown caller.
+The summary checks all passive parameters in one body walk, following direct
+calls only into proven passive positions. Testing a data field does not retain
+its contents; receiver effects and accessors still run. Defaults, reassignment,
+spread positions and recursive forwarding retain conservative argument joins.
 The registry and summary share one schema key: a serialization of the brand
 and canonical property order. Delimiter characters inside valid JS string
 keys must never merge unrelated layouts.
@@ -171,6 +175,12 @@ its conversion hooks. Plain writes defer key conversion until after the RHS.
 Dictionary read-modify-write fusion requires a proven HASH receiver. Opaque
 element stores exclude objects only with the shared ARRAY-or-TYPED call-site
 proof; `notString` alone cannot exclude a dictionary.
+Runtime initialization uses declared helper dependencies: a table reached
+through a fallback needs initialization even without a direct helper call.
+Template realization follows table setup, keeping dead helper constants at
+the reclaimable data tail. Table consumers must declare their dependencies.
+Source inlining leaves spread argument lists to runtime call marshalling
+instead of treating each spread as one positional value.
 
 Property enumeration uses one traversal builder for Object.keys/values/entries,
 for-in and JSON. It merges schema, init-sidecar and runtime keys: array indices

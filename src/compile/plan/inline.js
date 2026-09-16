@@ -82,7 +82,8 @@ const bodyHasCall = body => some(body, n => n[0] === '()' || n[0] === 'new')
 
 const inlinedBody = (func, args) => {
   const params = func.sig.params
-  if (args.length !== params.length) return null
+  // A spread supplies a runtime number of values, not one positional argument.
+  if (args.length !== params.length || args.some(a => Array.isArray(a) && a[0] === '...')) return null
   const paramNames = new Set(params.map(p => p.name))
   if (mutatesAny(func.body, paramNames)) return null
 

@@ -69,6 +69,7 @@ const SAMPLES = [
   ['iterator-destructuring', `export let main = () => { let [a, b, ...c] = '😀éab'; return a + '|' + b + '|' + c.join('') }`, '😀|é|ab'],
   ['arithmetic',  'export let main = () => 3 + 4 * 5', 23],
   ['function',    'let inc = x => x + 1; export let main = () => inc(10)', 11],
+  ['spread-object-alias', 'function write(o){o.value="changed"} function update(x){write(...[x])} export function main(){const cfg={value:7};update({value:false});update(cfg);return cfg.value}', 'changed'],
   // Method dispatch passes its parsed-argument record through a function table.
   // The trampoline must extract a narrowed pointer, never numeric-convert its box.
   ['function-property-empty', 'function fn() {} fn.p = () => 1; export let main = () => fn.p()', 1],

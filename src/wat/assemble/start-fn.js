@@ -13,7 +13,7 @@ import { DBG_INVARIANTS, assertCtxInvariants } from '../../debug.js'
  * `$__start` function.
  */
 
-import { ctx, inc, PTR, declGlobal } from '../../ctx.js'
+import { ctx, inc, resolveIncludes, PTR, declGlobal } from '../../ctx.js'
 import { T, walkAst } from '../../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../../compile/active-function.js'
@@ -298,6 +298,10 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
 
   const boxInit = buildBoxInit()
 
+  // Runtime tables serve transitive helpers too (for example hash_set's
+  // dynamic object-store fallback), not just the helpers emission called.
+  // Defer template realization so dead helper constants remain reclaimable.
+  resolveIncludes(false)
   const schemaInit = buildSchemaInit()
 
   const strPoolInit = []

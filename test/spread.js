@@ -70,6 +70,26 @@ test('spread: empty spread', () => {
 // SPREAD IN FUNCTION CALLS WITH REST PARAMS
 // ============================================
 
+test('spread: direct and local calls preserve object aliases and missing arguments', () => {
+  for (const declaration of [
+    'function write(target) { target.value = "changed"; return target }',
+    'const write = target => { target.value = "changed"; return target }',
+  ]) {
+    const src = `export function f(n) {
+      ${declaration}
+      const target = { value: 7 }
+      const args = n === 0 ? [] : n === 1 ? [target] : [target, 99]
+      try { return (write(...args) === target) + '|' + target.value }
+      catch (e) { return e.name }
+    }`
+    const js = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3)) {
+      const f = jz(src, { optimize }).exports.f
+      for (const n of [0, 1, 1, 2, 0]) is(f(n), js(n), `O${optimize}, ${declaration}, ${n} arguments`)
+    }
+  }
+})
+
 test('spread in call: f(...arr) with rest', () => {
   const { f } = run(`export let f = (...args) => args.length`)
   is(f(...[1, 2, 3]), 3)  // JS-side spread into rest function

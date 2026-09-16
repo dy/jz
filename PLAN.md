@@ -22,6 +22,9 @@ contract; CONTRIBUTING owns compiler invariants.
   sets, collection cells and positional rest facts. Pending effects propagate
   only when changed; the redundant layout-set census is removed.
   Construction and layout IDs index field rows directly instead of hashing them.
+  Passive arguments are proven in one walk per function, including direct
+  forwarding and field predicates. Testing a field does not merge unrelated
+  layouts' unused values; defaults, accessors and escaping uses stay conservative.
   Tuple positions retain nested shapes through array literals, rest arguments
   and collection entries. A mixed dynamic read, mutation, union or host escape
   exposes their identities to effects; constructing the tuple alone does not.
@@ -48,6 +51,10 @@ contract; CONTRIBUTING owns compiler invariants.
 - Schema indexes write binary words directly, preserving capacities and signed
   relative offsets through self-compilation. JSON's schema cache explicitly
   clears reused arena storage; repeated object-form compiler options stay intact.
+  Runtime-table setup resolves declared helper dependencies before selecting
+  tables, so an indirect object write updates the same slot as a static read.
+  Template constants are still generated later, preserving dead-data removal.
+  Source inlining preserves spread calls for runtime argument marshalling.
 - Stateful native VST lifecycle fixtures, block-size/automation checks,
   allocation counters and concurrent processing exist. Public VST scope and
   proof limits remain below.
@@ -55,20 +62,17 @@ contract; CONTRIBUTING owns compiler invariants.
 The handoff has been folded here and removed. Watr remains pinned
 to `d6d140d`; Subscript to `0f65c86`.
 
-## Candidate verification — September 15
+## Candidate verification — September 16
 
-Current core: 4329 pass, one skip, zero failures (69377 assertions). The prior
-full matrix passed all four legs. This continuation passed 559 affected tests
-at O0, O3 and WASI after the tuple/hash changes, collection checks after the
-upsert fold, and 252 affected tests in each leg after the final coercion fixes.
-The Map update change passes 676 affected tests; eight focused cases pass
-at O0, O3 and WASI, covering method identity, coercion, key/value carriers,
-growth, insertion order and arena resets. The compact dictionary test now
-uses the actual internal build option. Product timing, size and memory caps
-are unchanged.
+Current full matrix: core 4334 passes (69451 assertions), O0 4140, O3 4140,
+WASI 4192; each has one skip and zero failures. New regressions cover passive
+field predicates, getters, default and recursive forwarding, object aliases
+through spread calls, empty spreads and repeated calls. The typed DSP size
+fixture remains 3132 bytes. Product timing, size and memory caps are unchanged.
+Logs use `/private/tmp/jz-passive-`.
 
-Current self-host functional suite: 51 passes, 2331 assertions. Earlier in this
-continuation, language conformance reported 3151 positive passes, 4045 negative
+Current self-host functional suite: 52 passes, 2333 assertions. Current
+language conformance reports 3151 positive passes, 4045 negative
 rejections and 8 expected failures; built-ins reported 874 passes and 45
 expected failures, both with zero failures. The final coercion fixes pass
 objects, ToPrimitive and optimizer tests (432 cases). Import lint passes.
@@ -86,8 +90,8 @@ The prior full size sweep beat AssemblyScript on all 51 comparable cases at
 JSON below 12500. This does not refresh committed benchmark rows.
 Evidence logs use `/private/tmp/jz-rest-`.
 
-Current self-host timing: warm 1.102×/1.144×/1.144× against 1.03× (fails), fresh
-0.870× against 0.99× (passes). Tuple precision, inline-map
+Current self-host timing: warm 1.089×/1.129×/1.150× against 1.03× (fails), fresh
+0.862× against 0.99× (passes). Tuple precision, inline-map
 reuse and export enumeration showed no meaningful paired timing improvement.
 The numeric hash removes a separate severe defect: isolated Map fill/read
 workloads improved about 5–51× for 128–4096 sequential keys, while aggregate
@@ -97,6 +101,11 @@ of 100000 updates, fusion reduced time from 1.226 to 0.699 ms (0.570×); V8
 took 0.882 ms (JZ/V8 0.793×). Both compiler variants and V8 returned 4799685.
 The same source shrank from 29183 to 28835 bytes. These are local diagnostics,
 not refreshed benchmark evidence. Logs use `/private/tmp/jz-map-fusion-`.
+An alternating baseline/candidate run for the passive-summary cleanup measured
+0.984× warm compile time over the six self-host cases, with byte-identical
+outputs. Kernel size moved from 15856275 to 15862819 bytes (+0.04%); the
+comparison includes the spread and runtime-table correctness fixes. This
+modest improvement does not close the warm gate. Logs use `/private/tmp/jz-passive-`.
 These are diagnostics, not release attestations: the latest swap reading
 is 12365 MB, above the 4096 MB validity cap. No cap was relaxed.
 
@@ -107,12 +116,13 @@ These tests do not prove callback deadlines.
 
 ## Remaining release work
 
-1. **Warm self-host speed.** Close the remaining roughly 7–11% gap without
+1. **Warm self-host speed.** Close the remaining roughly 6–12% gap without
    changing the 1.03× cap. Uniform function records and positional collection
    flow are implemented. `ctx.funcs` has an exact layout; `createFunction().sig`
-   and `ctx.func.current` still join to unknown. The next observed loss comes
-   through the unknown `programFacts`/function-order result passed into export
-   queries. Isolating profiling wrappers at call sites did not restore that
+   and `ctx.func.current` still join to unknown. Passive export predicates and
+   unused `opts.locals` reads no longer lose these shapes. The next traced
+   loss is the unresolved `reachableForLowering` callable read from
+   `programFacts.programIndex`. Isolating profiling wrappers at call sites did not restore that
    precision and was discarded; do not assume it is the sole cause.
    The previous profile attributes about 14% to Map/Set probes and 5% to
    pointer decoding. General primitive get/set fusion is now implemented; it
