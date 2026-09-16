@@ -97,6 +97,12 @@ unknown write. Input normalization can establish those output values, so the
 planner closes newly proven boundary contracts before signature narrowing.
 Established contracts are skipped, and each additional summary round proves at
 least one new parameter.
+The scalar range query also reuses typed arrays' stored-value bounds when the
+index hull fits the known length. This carries bounds through ordinary locals
+and load-reuse temporaries without a new pass. A possible missing read supplies
+no integer range; stored width and signedness still constrain the payload.
+Local typing and emission share the interval-product proof, including the
+negative-zero check; a product fitting i32's magnitude alone is insufficient.
 
 Size mode keeps one shared dynamic property lookup instead of adding schema
 dispatch arms whose generic fallback remains necessary. The existing read-reuse
@@ -603,7 +609,7 @@ gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scat
 
 - **Don't contort compiler source for microbenchmarks.** Readability wins in `src/`; optimize compiler time and retained memory only from measured, general evidence. Output speed and size remain the primary product budgets.
 - **JZ source is JavaScript source.** Supported programs must parse and run as standard JavaScript. Parser acceptance of an ECMAScript early-error-invalid program is a bug/temporary hole, never a language extension or compatibility promise.
-- **A finite speed dialect, not an open-ended escape hatch.** Compiled output follows the machine semantics explicitly listed under [“What differs from JS?”](README.md#what-differs-from-js): i32/i64 wrapping, unchecked typed-array access, and the other enumerated cases. Outside that list, preserve JavaScript answers, exceptions, evaluation order, and effects or reject. “A native compiler could do it” is not sufficient authority for a new divergence: update the public contract and add cross-tier exact tests before landing one. Never trade away a meaningful result's f64 accuracy (no mantissa trimming or arbitrary precision loss).
+- **A finite speed dialect, not an open-ended escape hatch.** Compiled output follows the machine semantics explicitly listed under [“What differs from JS?”](README.md#what-differs-from-js): i32/i64 wrapping and the other enumerated cases. Outside that list, preserve JavaScript answers, exceptions, evaluation order, and effects or reject. “A native compiler could do it” is not sufficient authority for a new divergence: update the public contract and add cross-tier exact tests before landing one. Never trade away a meaningful result's f64 accuracy (no mantissa trimming or arbitrary precision loss).
 - **Minimal surface.** Every feature must justify its weight. If it can be a library, it should be.
 - **No external runtime and no GC.** Needed JZ runtime operations are linked into the module; unused operations are omitted.
 

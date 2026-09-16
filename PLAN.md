@@ -64,18 +64,18 @@ to `d6d140d`; Subscript to `0f65c86`.
 
 ## Candidate verification — September 16
 
-Current full matrix: core 4334 passes (69451 assertions), O0 4140, O3 4140,
-WASI 4192; each has one skip and zero failures. New regressions cover passive
-field predicates, getters, default and recursive forwarding, object aliases
-through spread calls, empty spreads and repeated calls. The typed DSP size
-fixture remains 3132 bytes. Product timing, size and memory caps are unchanged.
-Logs use `/private/tmp/jz-passive-`.
+Current full matrix: core 4337 passes (69574 assertions), O0 4143, O3 4143,
+WASI 4195; each has one skip and zero failures. New regressions cover bounded
+element reads through scalar locals and load-reuse temporaries, empty arrays,
+boundary misses, wrapped stores, large squares and negative zero. The focused
+compiler run passed 521 cases; the kernel's empty → A → A → B → A sequence
+preserves bytes and results for the new kernels. No product cap changed.
+Logs use `/private/tmp/jz-load-bounds-final-` (core is `final-matrix.log`).
 
 Current self-host functional suite: 52 passes, 2333 assertions. Current
 language conformance reports 3151 positive passes, 4045 negative
 rejections and 8 expected failures; built-ins reported 874 passes and 45
-expected failures, both with zero failures. The final coercion fixes pass
-objects, ToPrimitive and optimizer tests (432 cases). Import lint passes.
+expected failures, both with zero failures. Import lint passes.
 Public types passed on the preceding candidate; no public signatures changed.
 
 The preceding kernel passes provenance, byte parity, recursive compilation, reuse,
@@ -85,13 +85,15 @@ The manifest is `/private/tmp/jz-rest-final-candidate.json`, compared against
 heap bytes and emits 15308343 wasm bytes. The shared upsert removes roughly
 21 KB from the kernel; paired warm timing is unchanged (1.002×).
 
-The prior full size sweep beat AssemblyScript on all 51 comparable cases at
-0.778× bytes. Current affected size checks keep Watr below 300000 bytes and
+The current full size sweep beats AssemblyScript on all 51 comparable cases at
+0.778× bytes (`/private/tmp/jz-load-bounds-sizes.log`). Current affected size checks keep Watr below 300000 bytes and
 JSON below 12500. This does not refresh committed benchmark rows.
 Evidence logs use `/private/tmp/jz-rest-`.
 
-Current self-host timing: warm 1.089×/1.129×/1.150× against 1.03× (fails), fresh
-0.862× against 0.99× (passes). Tuple precision, inline-map
+Current self-host timing: warm 1.093×/1.134×/1.146× against 1.03× (fails), fresh
+0.886× against 0.99× (passes). Logs: `/private/tmp/jz-load-bounds-self.log` and
+`/private/tmp/jz-load-bounds-self-perf.log`. The kernel is 15871642 bytes
+(+0.06% from the previous candidate). Tuple precision, inline-map
 reuse and export enumeration showed no meaningful paired timing improvement.
 The numeric hash removes a separate severe defect: isolated Map fill/read
 workloads improved about 5–51× for 128–4096 sequential keys, while aggregate
@@ -106,8 +108,8 @@ An alternating baseline/candidate run for the passive-summary cleanup measured
 outputs. Kernel size moved from 15856275 to 15862819 bytes (+0.04%); the
 comparison includes the spread and runtime-table correctness fixes. This
 modest improvement does not close the warm gate. Logs use `/private/tmp/jz-passive-`.
-These are diagnostics, not release attestations: the latest swap reading
-is 12365 MB, above the 4096 MB validity cap. No cap was relaxed.
+These are diagnostics, not release attestations. The current committed-evidence
+audit records 15830.94 MB of swap, above the 4096 MB validity cap. No cap was relaxed.
 
 The current compiler passed the stateful native VST fixture: 12438 checks,
 4000 concurrent blocks, zero sample error and fixed callback heaps. The public
@@ -129,8 +131,13 @@ These tests do not prove callback deadlines.
    requires unchanged Map methods and a non-observable, non-throwing RHS.
    Object-building and effectful updates retain ordinary probes. Blanket
    forwarding inlining was measured slower and discarded.
+   The latest trace confirms that `collectProgramFacts` and `buildProgramIndex`
+   return exact records, but polymorphic timing callbacks merge their results
+   to unknown. Preserving each call's result must also preserve callback effects
+   and its physical return carrier; a new context-specialization layer is not
+   justified without a measured benefit.
 
-2. **Fresh speed, size and memory evidence.** The committed claims audit
+2. **Fresh speed, size and memory evidence.** The pre-commit claims audit
    reports 6 passes and 14 failures: compiler/memory provenance is stale,
    timing was captured above the swap cap, and rival coverage is incomplete
    (43 comparable Porffor/TinyGo rows where 44 are required). The old size
@@ -148,6 +155,25 @@ These tests do not prove callback deadlines.
    the scratch parameter to [0,383]; its cached load loses presence and
    scalar bounds, leaving checks and conversions that Clang eliminates.
    Recover those existing facts while preserving out-of-bounds behavior.
+   The shared scalar range query now recovers stored-element bounds when the
+   index hull proves presence. A masked gather's square uses one integer
+   multiply and one conversion instead of a float multiply and two conversions;
+   the final 32-pair local diagnostic measured 0.978× time (975 → 974 bytes). SDF's
+   data-dependent cursor is not proved present, so that case is unchanged.
+   Logs use `/private/tmp/jz-load-bounds-` and `/private/tmp/jz-proven-load-`.
+   The interval-product proof is shared by local typing and emission and
+   rejects products that can lose negative zero. Regression coverage includes
+   empty/missing reads, integer-store wrapping, large squares and zero signs.
+
+   A separate pre-existing scalar-storage defect remains: with `a` an
+   `Int32Array(16)` and `b` a `Float64Array(16)`, a helper looping to a dynamic
+   `n` over `const v=a[i]; s+=b[v]+v*v` returns the same sum for `n=16` and
+   `n=17`, where JS returns NaN at 17. The potentially missing read is stored
+   in i32 and becomes zero. Fix presence-aware local narrowing before treating
+   these general gather paths as conformant; payload bounds alone cannot do it.
+   The same review reproduced an existing zero-sign loss for `-v` when `v`
+   is an integer typed-element local holding zero. Keep that separate from
+   the corrected interval-product proof; it also needs a narrowing fix.
 
 3. **Public VST scope and identity.** The builder is JZ/macOS/stereo.
    Porffor's lifecycle fixture needs a public state-object adapter and build

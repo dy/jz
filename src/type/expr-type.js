@@ -17,7 +17,7 @@ import {
   hasAmbiguousBoolMerge, censusShapedNode,
 } from '../kind.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
-import { NO_VALUE, staticValue, intExprRange, constIntExpr } from '../static.js'
+import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32 } from '../static.js'
 import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { inBoundsCharCodeAt } from './canonical-bounds.js'
@@ -194,30 +194,15 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
       return (dv !== NO_VALUE && typeof dv === 'number' && Number.isInteger(dv) && dv > 0 && dv <= 0x80000000) ? 'i32' : 'f64'
     return (dv !== NO_VALUE && typeof dv === 'number' && dv !== 0 && Number.isInteger(dv)) ? 'i32' : 'f64'
   }
-  // `*` — a JS multiply is an f64 operation; `i32.mul` reproduces it faithfully
-  // only when the exact product provably fits signed i32 (±(2^31−1)) — NOT
-  // merely f64-exact (P0-2 ledger: the old "one literal operand ≤2^22, other
-  // side unbounded" rule let `i32.mul` wrap past i32 range while staying
-  // f64-representable, corrupting any consumer that widens the result straight
-  // to f64). Stay i32 when both operands are i32 *and* the product provably
-  // fits: a fully-static product checked directly, otherwise a magnitude BOUND
-  // on EACH operand (intExprRange's hull — resolves module const-ints, ranged
-  // decl reps, masks/ternaries) whose PRODUCT (not either bound alone) clears
-  // the i32 ceiling. Mirrors emit.js `mulFitsI32`/`mulRangeFitsI32` exactly —
-  // this must stay a SUBSET of emit's verdict (never claim i32 where emit
-  // might widen to f64): an unproven operand costs the full i32 magnitude in
-  // the product check, same sentinel emit's `maskBound` defaults to.
+  // Storage and emission share the same product proof: both the magnitude
+  // and the zero sign must survive an i32 multiply.
   if (op === '*') {
     const ta = exprType(expr[1], locals, valTypes, strict), tb = exprType(expr[2], locals, valTypes, strict)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
     if (isUnsignedI32Expr(expr[1], locals) || isUnsignedI32Expr(expr[2], locals)) return 'f64'
     if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
-    const bound = e => {
-      const r = intExprRange(e)
-      return r != null ? Math.max(Math.abs(r[0]), Math.abs(r[1])) : 0x80000000
-    }
-    return bound(expr[1]) * bound(expr[2]) <= 0x7fffffff ? 'i32' : 'f64'
+    return mulRangeFitsI32(expr[1], expr[2]) ? 'i32' : 'f64'
   }
   // `u+` truly just preserves its operand's type (ToNumber, no arithmetic). `u-`
   // is `0 - x` — same overflow shape as binary `-` (line ~2351 above) and needs

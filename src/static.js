@@ -128,6 +128,15 @@ export function intExprRange(n) {
   }
   if (!Array.isArray(n)) return null
   const op = n[0]
+  // A present typed element retains the all-writers hull proved for its
+  // receiver. A possible miss is undefined, not an integer in that hull.
+  if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
+    const rep = repOf(n[1]), range = rep?.arrayElemRange
+    if (!range) return null
+    const len = ctx.func?.typedLen?.get(n[1]) ?? rep.arrayLen
+    const index = intExprRange(n[2])
+    return len != null && index && index[0] >= 0 && index[1] < len ? range : null
+  }
   // A typed array's `.length` (element count) is bounded by wasm32's own hard
   // linear-memory ceiling: a SINGLE allocation can span at most the whole
   // address space, 2^32 BYTES (WebAssembly core spec, memory32 limit — 65536
@@ -231,6 +240,18 @@ export function intExprRange(n) {
     return [Math.min(...p), Math.max(...p)]
   }
   return null
+}
+
+/** A numeric product that preserves both signed-i32 magnitude and zero sign.
+ *  The callers separately require i32 operands; squaring the same i32 binding
+ *  therefore cannot produce -0, even when its interval spans both signs. */
+export function mulRangeFitsI32(a, b) {
+  const ra = intExprRange(a), rb = intExprRange(b)
+  if (!ra || !rb) return false
+  if (!(typeof a === 'string' && a === b) &&
+      (ra[0] <= 0 && ra[1] >= 0 && rb[0] < 0 || rb[0] <= 0 && rb[1] >= 0 && ra[0] < 0)) return false
+  const p = [ra[0] * rb[0], ra[0] * rb[1], ra[1] * rb[0], ra[1] * rb[1]]
+  return Math.min(...p) >= I32_MIN && Math.max(...p) <= I32_MAX
 }
 
 /** Interval hull (min-of-los, max-of-his) — null-safe, a missing side returns

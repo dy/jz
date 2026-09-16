@@ -49,16 +49,7 @@ export const i32Mag = (v) =>
 // the i32 ABI (one op, no f64 round-trip) on V8 / JSC / wasmtime alike, and the i32
 // product is lane-vectorizable where the f64 form was not.
 export const mulBoundedFaithful = (va, vb) => i32Mag(va) * i32Mag(vb) <= 0x7fffffff
-// AST-level range twin (intExprRange resolves const names + ranged decl reps):
-// the EXACT product interval must fit signed i32 — then i32.mul is faithful in
-// every consumer context, same contract as mulBoundedFaithful. Keeps exprType's
-// range-proven i32 verdict (type.js `*`) in lock-step at the emit site.
-export const mulRangeFitsI32 = (aAst, bAst) => {
-  const ra = intExprRange(aAst), rb = intExprRange(bAst)
-  if (!ra || !rb) return false
-  const p = [ra[0] * rb[0], ra[0] * rb[1], ra[1] * rb[0], ra[1] * rb[1]]
-  return Math.min(...p) >= -0x80000000 && Math.max(...p) <= 0x7fffffff
-}
+export { mulRangeFitsI32 } from '../../static.js'
 export const addFitsI32 = (va, vb) => opBound(va) + opBound(vb) <= 0x7fffffff
 export const addBoundedFaithful = (va, vb) => i32Mag(va) + i32Mag(vb) <= 0x7fffffff
 export const addRangeFitsI32 = (aAst, bAst) => {

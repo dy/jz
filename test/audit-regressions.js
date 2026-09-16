@@ -325,6 +325,62 @@ test('audit: fill-helper intervals retain typed-store coercion and unknown-write
     }
   }
 })
+
+test('audit: proven typed element bounds survive scalar locals and cached reads', () => {
+  const src = `
+    function gather(a,b,n){let s=0;for(let i=0;i<n;i++){
+      const v=a[i&15];s+=b[v]+v*v}return s}
+    function repeat(a,n){let s=0;for(let i=0;i<n;i++)s+=a[3]*a[3];return s}
+    export function run(n){const a=new Int32Array(16),b=new Float64Array(16);
+      for(let i=0;i<16;i++){a[i]=i;b[i]=i+1}return gather(a,b,n)+repeat(a,n)}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const n of [0, 1, 16, 17, 17, 2, 0])
+      is(wasm.run(n), js.run(n), `${optimize}: bounded elements, ${n} iterations`)
+  }
+  if (!onKernel()) {
+    const wat = compile(src, { optimize: 'speed', wat: true })
+    ok(wat.includes('i32.mul') && !wat.includes('f64.mul'),
+      'bounded squares use integer multiplication, including after helper inlining')
+  }
+})
+
+test('audit: typed element bounds require presence and respect stored width', () => {
+  const rows = [
+    ['empty', 'Int32Array', '[]', 0],
+    ['negative index', 'Int32Array', '[3,4]', -1],
+    ['past final element', 'Int32Array', '[3,4]', 2],
+    ['signed store wraps', 'Int8Array', '[255]', 0],
+    ['unsigned store wraps', 'Uint8Array', '[-1]', 0],
+    ['large square', 'Int32Array', '[46341]', 0],
+    ['unsigned high bit', 'Uint32Array', '[2147483648]', 0],
+    ['float payload', 'Float64Array', '[1.5]', 0],
+  ]
+  const src = rows.map(([, ctor, values, idx], k) => `
+    function square${k}(a,n){let s=0;for(let i=0;i<n;i++)s+=a[${idx}]*a[${idx}];return s}
+    export function f${k}(n){return square${k}(new ${ctor}(${values}),n)}`).join('\n')
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (let k=0;k<rows.length;k++) for (const n of [0, 1, 2, 2, 0])
+      is(wasm[`f${k}`](n), js[`f${k}`](n), `${optimize}: ${rows[k][0]}, ${n} iterations`)
+  }
+})
+
+test('audit: bounded element products preserve negative zero', () => {
+  const src = `
+    function product(a,n){let s=1;for(let i=0;i<n;i++){const v=a[i&3];s=v*(v-4)}return s}
+    function negate(a,n){let s=1;for(let i=0;i<n;i++){const v=a[i&3];s=v*-1}return s}
+    export function p(n){return product(new Int32Array([0,1,2,3]),n)}
+    export function q(n){return negate(new Int32Array([0,1,2,3]),n)}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['p','q']) for (const n of [0,1,2,4,5,5,0])
+      ok(Object.is(wasm[name](n), js[name](n)), `${optimize}: ${name}(${n}) preserves zero sign`)
+  }
+})
 const vec = `
 function vec(x,y){return {x,y}}
 function add(a,b){return vec(a.x+b.x,a.y+b.y)}
