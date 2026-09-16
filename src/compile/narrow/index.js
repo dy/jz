@@ -123,11 +123,24 @@ export default function narrowSignatures(programFacts, ast) {
   // callerCtx[null] (top-level) uses module globals for locals.
   const phase = createPhaseState()
   const { callerCtx } = phase
-  const storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast)
-  const typedValueRanges = inferTypedValueRanges(storeRanges)
   const internalArrayLengths = inferInternalArrayLengths()
-  programFacts.arrayLengths = internalArrayLengths.locals
-  programFacts.arrayCapacities = internalArrayLengths.capacities
+  const storeRanges = inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, internalArrayLengths)
+  const typedValueRanges = inferTypedValueRanges(storeRanges)
+  // One per-binding representation row owns the settled array facts.
+  programFacts.arrayReps = new Map()
+  for (const func of ctx.funcs.list) {
+    const reps = new Map()
+    for (const [facts, key] of [
+      [internalArrayLengths.locals, 'arrayLen'],
+      [internalArrayLengths.capacities, 'arrayCap'],
+      [internalArrayLengths.elementRanges, 'arrayElemRange'],
+      [typedValueRanges.locals, 'arrayElemRange'],
+    ]) for (const [name, value] of facts.get(func) || []) {
+      if (!reps.has(name)) reps.set(name, {})
+      reps.get(name)[key] = value
+    }
+    if (reps.size) programFacts.arrayReps.set(func, reps)
+  }
   const intConstArg = (arg) => {
     let raw = null
     if (typeof arg === 'number') raw = arg

@@ -101,6 +101,19 @@ The scalar range query also reuses typed arrays' stored-value bounds when the
 index hull fits the known length. This carries bounds through ordinary locals
 and load-reuse temporaries without a new pass. A possible missing read supplies
 no integer range; stored width and signedness still constrain the payload.
+Immutable literal tables share the existing no-write/no-escape proof with
+scalar argument and store analysis. Deletion and return/throw/yield aliases
+invalidate that proof, including forwarded helper parameters. Length, capacity
+and element bounds travel together as settled per-binding representation facts.
+The interval interpreter spans the full signed word; overflowing transfers
+become unknown. Integer payloads alone never prove bounded accumulation.
+Counted reductions combine element bounds with the trip count, including every
+intermediate step. Counter proofs reject additional writes in the loop header.
+Repeated regions require a fresh initializer; peeled copies
+join their hulls and every write must be covered. Escaping arithmetic values
+propagate backward through local copies. Explicit word conversions still wrap.
+SIMD narrowing preserves the scalar conversion: direct saturating instructions
+can lift directly, while modular conversions run per lane before packing.
 Local and result storage also reuse those presence proofs. A missing integer
 element keeps its undefined value through copies and returns; using it as an
 index must not read element zero. Canonical loop proofs refer to exact access

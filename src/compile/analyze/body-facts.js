@@ -434,7 +434,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     // accumulator's proven range BEFORE widenLocalTypes' Pass D runs, so its
     // bare-escape check (e.g. `return op` after the loop) sees a real hull
     // instead of blaming an unranged reassigned local into f64 storage.
-    stampCoInductionRanges(body)
+    stampCoInductionRanges(body, presentNodes, typedLens)
     unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
       typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
     for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
@@ -621,7 +621,7 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
   // magnitude-blind "every read re-applies ToInt32" premise
   // collectI32SafeIndexVars' back-propagation does, and Pass D below closes
   // the identical gap for it (see .work/archive/todo.md KNOWN GAP #1 sibling note).
-  const intLevels = intLevelMap(body, nestedNames)
+  const intLevels = intLevelMap(body, nestedNames, null, readPresent)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
   const keepI32 = (name) => unsignedLocals.has(name) || i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
   const widenPass = (node) => {

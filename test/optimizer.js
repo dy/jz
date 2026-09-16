@@ -4223,7 +4223,7 @@ test('versioning: ||-cond never versions (accesses run past the bound)', () => {
 
 // S2 narrowing + short-circuit refinement + range-rhs — the heapsort family:
 // copy-chain hulls (`i = child` — i only ever receives root- or cond-clamped
-// child-values; the widened ±IP_LIM invariant narrows back to the true range),
+// child-values; the widened signed-word invariant narrows back to the true range),
 // `&&`-guarded lookahead reads (`child+1 < n && a[child] < a[child+1]` — the
 // rhs conjunct evaluates under the lhs), and var-bounded whiles
 // (`while (child < end)` — end is the enclosing downward iv; the refine takes

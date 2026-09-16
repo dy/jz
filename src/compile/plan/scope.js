@@ -21,7 +21,7 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { createFunction } from '../../function.js'
-import { ASSIGN_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
 import { typedStaticLen, intLevelMap } from '../../type.js'
@@ -365,7 +365,7 @@ export const inferModuleIntGlobals = (ast) => {
   let strictLevel = null, bareEscaped = null
   if (candidates.size) {
     const funcBodies = []
-    for (const f of ctx.funcs.list) if (f.body && !f.raw) funcBodies.push(f.body)
+    for (const f of ctx.funcs.list) if (f.body && !f.raw) funcBodies.push(isBlockBody(f.body) ? f.body : ['return', f.body])
     const programBody = [';', ast, ...(ctx.module.moduleInits || []), ...funcBodies]
     strictLevel = intLevelMap(programBody)
     if ([...candidates].some(n => strictLevel.get(n) !== 2))

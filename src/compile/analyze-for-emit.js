@@ -242,23 +242,16 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (block) {
     seedLocalIntConsts(body)
   }
-  // A plain analyzeBody read, not a forced reanalyzeBody (walk-count design
-  // B1, .work/archive/walk-count-design.md §2.4/§5 item 3): narrowSignatures may
-  // have cached this body's locals slice before our pre-seed, when params
-  // still had no inferred VAL.TYPED — but analyzeBody's own live
-  // sigFingerprint gate now catches that mismatch on the read itself and
-  // recomputes, so this call no longer needs to unconditionally invalidate
-  // first. Re-walks with reps in place exactly when the cache can't be
-  // trusted, not on every emit.
-  const bodyFacts = block ? analyzeBody(body) : null
+  // Reuse the signature-validated body cache unless new whole-program array
+  // facts need to participate in local storage and reduction proofs.
+  const arrayReps = programFacts.arrayReps?.get(func)
+  if (arrayReps) for (const [name, rep] of arrayReps) updateRep(name, rep)
+  // These whole-program facts were unavailable to the earlier body cache.
+  const bodyFacts = block ? (arrayReps ? reanalyzeBody(body) : analyzeBody(body)) : null
   if (bodyFacts) ctx.func.locals = bodyFacts.locals
   if (bodyFacts?.valTypes) {
     for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
   }
-  const capacities = programFacts.arrayCapacities?.get(func)
-  if (capacities) for (const [name, arrayCap] of capacities) updateRep(name, { arrayCap })
-  const arrayLengths = programFacts.arrayLengths?.get(func)
-  if (arrayLengths) for (const [name, arrayLen] of arrayLengths) updateRep(name, { arrayLen })
   // Never-relocated array bindings — the `[]` reader skips the forwarding follow.
   if (bodyFacts?.neverGrown) for (const name of bodyFacts.neverGrown) updateRep(name, { neverGrown: true })
   // Own-name-current bindings — grown only through their own name, every grow

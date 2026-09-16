@@ -281,10 +281,8 @@ export function assemble(ast, profiler) {
     programFacts.programIndex.publishParameterAbi(programFacts.paramReps)
     const retiredParamRepsKey = 'paramReps'
     delete programFacts[retiredParamRepsKey]
-    const retiredArrayLengthsKey = 'arrayLengths'
-    delete programFacts[retiredArrayLengthsKey]
-    const retiredArrayCapacitiesKey = 'arrayCapacities'
-    delete programFacts[retiredArrayCapacitiesKey]
+    const retiredArrayRepsKey = 'arrayReps'
+    delete programFacts[retiredArrayRepsKey]
   })
   // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones

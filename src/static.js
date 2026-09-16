@@ -2,7 +2,7 @@
  * Compile-time static evaluation — literals, property keys, schema ids.
  * @module static
  */
-import { I32_MIN, I32_MAX, isBrand } from './ast.js'
+import { I32_MIN, I32_MAX, isBrand, isReassigned } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
@@ -149,6 +149,8 @@ export function intExprRange(n) {
   // exactly 2^31 (still not STRICTLY under 0x7fffffff) — both left unbounded
   // here rather than admitting a boundary-adjacent hull.
   if (op === '.' && n.length === 3 && n[2] === 'length' && typeof n[1] === 'string') {
+    const len = ctx.func?.typedLen?.get(n[1]) ?? repOf(n[1])?.arrayLen
+    if (len != null) return [len, len]
     const raw = typedCtorRawOf(n[1])
     if (raw != null) {
       const bare = raw.endsWith('.view') ? raw.slice(4, -5) : raw.slice(4)
@@ -437,20 +439,24 @@ export function guardCounterName(cond) {
   if (Array.isArray(lhs) && lhs.length === 3 && lhs[0] === '-' && typeof lhs[1] === 'string' && constIntExpr(lhs[2]) != null) return lhs[1]
   return null
 }
-export function forCounterRange(init, cond, step, name) {
+export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) {
   if (!Array.isArray(cond) || !RELATIONAL_OPS.has(cond[0])) return null
   const shift = nameShift(cond[1], name)
   if (shift == null) return null
   const increasing = cond[0] === '<' || cond[0] === '<='
-  // Multi-declarator init (`let j = 0, k = 0`) — a dual-IV header (the FFT
-  // butterfly's `j`/`k` twiddle-walk being the motivating shape): find the ONE
-  // declarator that binds `name`, ignoring sibling declarators entirely (they
-  // prove nothing about `name` and disprove nothing either).
-  const initExpr =
-    Array.isArray(init) && (init[0] === 'let' || init[0] === 'const')
-      ? (init.slice(1).find(d => Array.isArray(d) && d[0] === '=' && d[1] === name) ?? null)?.[2] ?? null
-    : Array.isArray(init) && init[0] === '=' && init[1] === name ? init[2]
-    : null
+  // Both source multi-declarations and lowering's cached-length sequence may
+  // accompany the counter initializer. A second counter write rejects it.
+  const inits = Array.isArray(init) && (init[0] === ';' || init[0] === ',') ? init.slice(1) : [init]
+  let initExpr = null
+  for (const n of inits) {
+    const ds = Array.isArray(n) && (n[0] === 'let' || n[0] === 'const') ? n.slice(1) : [n]
+    for (const d of ds) {
+      if (Array.isArray(d) && d[1] === name) {
+        if (d[0] !== '=' || initExpr != null) return null
+        initExpr = d[2]
+      } else if (isReassigned(d, name)) return null
+    }
+  }
   if (initExpr == null) return null
   const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
   // A comma-sequenced step (`j++, k += step`) — postfix `j++`'s VALUE is
@@ -482,9 +488,16 @@ export function forCounterRange(init, cond, step, name) {
     return null
   }
   const stepMatches = (s) => increasing ? stepMag(s, '++', '+') : stepMag(s, '--', '-')
-  const stepOK = Array.isArray(step) && step[0] === ',' ? (step.slice(1).map(stepMatches).find(v => v != null) ?? null) : stepMatches(step)
+  let stepOK = null
+  for (const s of Array.isArray(step) && step[0] === ',' ? step.slice(1) : [step]) {
+    const magnitude = stepMatches(s)
+    if (magnitude != null) {
+      if (stepOK != null) return null
+      stepOK = magnitude
+    } else if (isReassigned(s, name)) return null
+  }
   if (stepOK == null) return null
-  const initRange = intExprRange(initExpr), boundRange0 = intExprRange(cond[2])
+  const initRange = rangeOf(initExpr), boundRange0 = rangeOf(cond[2])
   if (!initRange || !boundRange0) return null
   const boundRange = [boundRange0[0] - shift, boundRange0[1] - shift]
   const lo = increasing ? initRange[0] : boundRange[0] + (cond[0] === '>' ? 1 : 0)

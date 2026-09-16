@@ -30,7 +30,7 @@ import { VAL } from '../../reps.js'
 // when EVERY incoming site proves a hull. Each intermediate result is sound;
 // a bounded worklist budget can forgo precision without trusting an unfinished
 // optimistic fixpoint. Indirect/synthetic calls stay unknown.
-export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast) {
+export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken, ast, arrays) {
   const outgoing = new Map(), incoming = new Map(), observed = new Map(), stores = new Map()
   const hasKind = (f, kind) => {
     for (const r of paramReps.get(f.name)?.values() ?? []) if (r.val === kind || r.presentVal === kind) return true
@@ -74,7 +74,10 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
     const prev = enterActiveFunction(ctx, { sig: caller?.sig, body })
     try {
       ctx.func.locals = callerCtx.get(caller)?.callerLocals ?? new Map()
-      scanIntervalIdx(body, new Set(), () => null, null, calls, entry, writes)
+      ctx.func.localReps = new Map()
+      for (const [name, arrayElemRange] of arrays.elementRanges.get(caller) || [])
+        ctx.func.localReps.set(name, { arrayElemRange })
+      scanIntervalIdx(body, new Set(), name => arrays.locals.get(caller)?.get(name) ?? null, null, calls, entry, writes)
     } finally { restoreActiveFunction(ctx, prev) }
     stores.set(caller, writes)
     const targets = new Set()
@@ -192,7 +195,7 @@ export function inferInternalArrayLengths() {
         const d = n[i]
         if (Array.isArray(d) && d[0] === '=' && d[1] === arr) {
           if (defNode) { bad = true; return false }
-          const size = staticArrayLen(d[2])
+          const size = staticArrayLen(d[2]) ?? typedStaticLen(d[2])
           if (size != null) { len = size; defNode = d } else bad = true
         }
       }
@@ -249,7 +252,9 @@ export function inferInternalArrayLengths() {
       if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') for (const [name, k] of ps) {
         if (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name))) safe[k] = false
       }
-      if (n[0] === 'return') for (const [name, k] of ps) if (carries(n[1], name)) safe[k] = false
+      if (n[0] === 'delete') for (const [name, k] of ps) if (refs(n[1], name)) safe[k] = false
+      if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield')
+        for (const [name, k] of ps) if (carries(n[1], name)) safe[k] = false
       if (n[0] === '()') {
         const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
         for (const [name, k] of ps) {
@@ -277,7 +282,7 @@ export function inferInternalArrayLengths() {
     }
   }
 
-  const locals = new Map()
+  const locals = new Map(), elementRanges = new Map()
   for (const f of funcs) {
     const candidates = new Map(), defs = new Map()
     const collect = (n) => {
@@ -285,7 +290,7 @@ export function inferInternalArrayLengths() {
       if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
-        const size = staticArrayLen(d[2])
+        const size = staticArrayLen(d[2]) ?? typedStaticLen(d[2])
         const len = size != null ? size
           : Array.isArray(d[2]) && d[2][0] === '()' && typeof d[2][1] === 'string' ? funcLens.get(d[2][1])
           : null
@@ -302,7 +307,8 @@ export function inferInternalArrayLengths() {
         if (n[0] === '=>') { if (refs(n, name)) ok = false; return }
         if (n !== defs.get(name) && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') &&
             (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name)))) { ok = false; return }
-        if (n[0] === 'return' && carries(n[1], name)) { ok = false; return }
+        if ((n[0] === 'delete' && refs(n[1], name)) ||
+            ((n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') && carries(n[1], name))) { ok = false; return }
         if (n[0] === '()') {
           const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
           if (refs(n[1], name)) { ok = false; return }
@@ -312,11 +318,26 @@ export function inferInternalArrayLengths() {
         for (let i = 1; i < n.length; i++) verify(n[i])
       }
       verify(f.body)
-      if (ok) m.set(name, len)
+      if (ok) {
+        m.set(name, len)
+        // The existing no-write/no-escape proof also makes a literal table's
+        // element hull invariant. Share it with scalar call/store analysis.
+        const elems = staticArrayElems(defs.get(name)[2])
+        let range = null
+        if (elems) for (const e of elems) {
+          const v = typedValueLiteral(e)
+          if (v == null || Object.is(v, -0)) { range = null; break }
+          range = hull(range, [v, v])
+        }
+        if (range) {
+          if (!elementRanges.has(f)) elementRanges.set(f, new Map())
+          elementRanges.get(f).set(name, range)
+        }
+      }
     }
     locals.set(f, m)
   }
-  return { funcLens, locals, safeParams, capacities }
+  return { funcLens, locals, safeParams, capacities, elementRanges }
 }
 
 // Whole-program typed-element hulls for fresh local typed arrays. A callee
@@ -388,7 +409,7 @@ export function inferTypedValueRanges(storeRanges) {
           if (!r) s.bad = true; else s.range = hull(s.range, r)
         }
         // Aliases/returns escape the receiver; element/property reads do not.
-        if (n[0] === 'return') for (const [name, k] of ps) if (carries(n[1], name)) sum[k].bad = true
+        if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const [name, k] of ps) if (carries(n[1], name)) sum[k].bad = true
         if (ASSIGN_OPS.has(n[0])) for (const [name, k] of ps) {
           if (n[1] === name || carries(n[2], name)) sum[k].bad = true
           if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) sum[k].bad = true
@@ -476,7 +497,7 @@ export function inferTypedValueRanges(storeRanges) {
             if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) merge(name, null)
           }
         }
-        if (n[0] === 'return') for (const name of [...ranges.keys()]) if (carries(n[1], name)) merge(name, null)
+        if (n[0] === 'return' || n[0] === 'throw' || n[0] === 'yield') for (const name of [...ranges.keys()]) if (carries(n[1], name)) merge(name, null)
         if (n[0] === '()') {
           const args = callArgs(n), callee = typeof n[1] === 'string' ? n[1] : null
           const target = callee ? summaries.get(callee) : null

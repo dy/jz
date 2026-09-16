@@ -204,17 +204,15 @@ export function liftStmt(stmt, ctx) {
     // conversion (f32.demote_f64, or the float→int ToInt32 idiom); peel it, lift the
     // inner float expr, and let narrowStore apply the SIMD narrow + low-byte store.
     if (sty !== ctx.laneType) {
-      // Integer narrowing (`o[i] = (f(x)) | 0` into Int32Array/…) lowers via the saturating
-      // i32x4.trunc_sat_f64x2_s_zero, which clamps +Inf / |x|≥2³¹ to INT_MAX where scalar
-      // ToInt32 wraps mod 2³² — bit-exact for in-range finite values (every pixel/coordinate/
-      // typical-DSP value), divergent only at that edge, so it rides relaxedSimd. Float demote
-      // (f64→f32) is bit-exact (round-to-nearest both ways) and stays ungated.
-      if (sty !== 'f32' && !vecState.relaxF32) return liftFail(ctx, `narrowing ${ctx.laneType}->${sty} store saturates out-of-range (needs relaxedSimd)`)
+      // f64 integer narrowing preserves the scalar conversion lane by lane.
+      // f32 arithmetic still belongs to the existing precision relaxation.
+      if (ctx.laneType === 'f32' && sty !== 'f32' && !vecState.relaxF32)
+        return liftFail(ctx, 'f32 integer narrowing needs relaxedSimd')
       const inner = peelNarrowConv(stmt[2], sty)
       if (!inner) return liftFail(ctx, `narrowing store ${ctx.laneType}->${sty}: unrecognized conversion`)
       const innerV = liftExprV(inner, ctx)
       if (ctx.fail) return null
-      const ns = narrowStore(addr, innerV, ctx.laneType, sty, ctx)
+      const ns = narrowStore(addr, innerV, ctx.laneType, sty, ctx, stmt[2][0])
       return ns || liftFail(ctx, `no narrowing ${ctx.laneType}->${sty}`)
     }
     const val = liftExprV(stmt[2], ctx)
@@ -734,16 +732,13 @@ export function peelNarrowConv(val, sty) {
   // Infinity-guarded saturating trunc:
   //   (select (i32.wrap_i64 (i64.trunc_sat_f64_s X)) (i32.const 0) (f64.ne X' Inf))
   // where X is `(local.tee $inf <f64 expr>)` and X' the matching get. Peel to the inner f64.
-  // (The SIMD narrow i32x4.trunc_sat_f64x2_s_zero saturates +Inf / |x|≥2³¹ to INT_MAX where
-  // ToInt32 wraps mod 2³² — caller gates the int narrowing on relaxedSimd for that edge.)
   if (val[0] === 'select' && val.length === 4 && isI32Const(val[2]) && val[2][1] === 0 &&
       isArr(val[1]) && val[1][0] === 'i32.wrap_i64' && isArr(val[1][1]) && val[1][1][0] === 'i64.trunc_sat_f64_s') {
     let inner = val[1][1][1]   // the f64 operand of the trunc, captured in a `(local.tee $inf …)`
     if (isArr(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]   // peel to the tee's VALUE
     return inner
   }
-  // The exact ES ToIntN element-store conversion `(call $__to_int32 X)`;
-  // narrowStore's f32→i8/i16 pack re-establishes the +Inf→0 lane semantics.
+  // The exact ES ToIntN element-store conversion is preserved per lane.
   if (val[0] === 'call' && val[1] === '$__to_int32' && val.length === 3) return val[2]
   if (val[0] === 'i32.trunc_sat_f64_s' || val[0] === 'i32.trunc_sat_f64_u') return val[1]
   // Bare wrap-through-i64 (asI32's boundary coercion — ES ToInt32 wrap, no guard).
@@ -757,7 +752,7 @@ export function peelNarrowConv(val, sty) {
 const PACK_I32_TO_I16 = [0, 1, 4, 5, 8, 9, 12, 13, 0, 0, 0, 0, 0, 0, 0, 0]
 const PACK_I32_TO_I8 = [0, 4, 8, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-function narrowStore(addr, val, laneType, sty, ctx) {
+function narrowStore(addr, val, laneType, sty, ctx, conversion) {
   const tmp = `$__nv${ctx.freshIdRef.next++}`
   ctx.extraLocals.push(['local', tmp, 'v128'])
   const g = ['local.get', tmp]
@@ -765,36 +760,32 @@ function narrowStore(addr, val, laneType, sty, ctx) {
   const sets = []
   let pre, lane8, store
   if (laneType === 'f64' && sty === 'f32') { pre = ['f32x4.demote_f64x2_zero', val]; lane8 = g; store = 'i64.store' }
-  else if (laneType === 'f64' && sty === 'i32') { pre = ['i32x4.trunc_sat_f64x2_s_zero', val]; lane8 = g; store = 'i64.store' }
-  else if (laneType === 'f64' && (sty === 'i16' || sty === 'i8')) {
-    // Wasm has no f64x2→i64x2 conversion. Keep the scalar ToInt32 conversion
-    // on each result lane, then pack only the two written elements.
-    const vt = `$__nvi${ctx.freshIdRef.next++}`
-    ctx.extraLocals.push(['local', vt, 'v128'])
-    sets.push(['local.set', vt, val])
-    const convert = i => {
-      const x = ['f64x2.extract_lane', i, ['local.get', vt]]
-      return ['select', ['i32.const', 0], ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], ['f64.eq', x, ['f64.const', 'inf']]]
+  else if ((laneType === 'f64' && (sty === 'i32' || sty === 'i16' || sty === 'i8')) ||
+           (laneType === 'f32' && (sty === 'i16' || sty === 'i8'))) {
+    const lanes = laneType === 'f64' ? 2 : 4
+    // Saturation is valid only when present in the scalar program. Otherwise
+    // retain its exact helper or word conversion, then pack the low bytes.
+    if (conversion === 'i32.trunc_sat_f64_s' || conversion === 'i32.trunc_sat_f64_u') {
+      const sign = conversion.endsWith('_u') ? 'u' : 's'
+      pre = [`i32x4.trunc_sat_${laneType}x${lanes}_${sign}${laneType === 'f64' ? '_zero' : ''}`, val]
+    } else {
+      const vt = `$__nvi${ctx.freshIdRef.next++}`
+      ctx.extraLocals.push(['local', vt, 'v128'])
+      sets.push(['local.set', vt, val])
+      const convert = i => {
+        let x = [`${laneType}x${lanes}.extract_lane`, i, ['local.get', vt]]
+        if (laneType === 'f32') x = ['f64.promote_f32', x]
+        if (conversion === 'call') return ['call', '$__to_int32', x]
+        const word = ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]]
+        return conversion === 'select'
+          ? ['select', ['i32.const', 0], word, ['f64.eq', x, ['f64.const', 'inf']]] : word
+      }
+      pre = ['i32x4.splat', convert(0)]
+      for (let i = 1; i < lanes; i++) pre = ['i32x4.replace_lane', i, pre, convert(i)]
     }
-    pre = ['i32x4.replace_lane', 1, ['i32x4.splat', convert(0)], convert(1)]
-    lane8 = sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)
-    store = sty === 'i16' ? 'i32.store' : 'i32.store16'
-  }
-  else if (laneType === 'f32' && (sty === 'i16' || sty === 'i8')) {
-    // Scalar integer stores are wrapIntIR ToIntN: a +Inf lane stores 0 where the
-    // saturated lane packs to -1 (INT32_MAX's low bytes). andnot the lanes equal
-    // to +∞ (0x7F800000 as f32 bits) so the low-byte pack stays bit-identical to
-    // the scalar loop at EVERY input, not just finite ones. -Inf (INT32_MIN, low
-    // bytes 0) and NaN (trunc_sat → 0) lanes already agree.
-    const vt = `$__nvi${ctx.freshIdRef.next++}`
-    ctx.extraLocals.push(['local', vt, 'v128'])
-    const vg = ['local.get', vt]
-    sets.push(['local.set', vt, val])
-    pre = ['v128.andnot', ['i32x4.trunc_sat_f32x4_s', vg],
-      ['f32x4.eq', vg,
-        ['v128.const', 'i32x4', '2139095040', '2139095040', '2139095040', '2139095040']]]
-    lane8 = sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)
-    store = sty === 'i16' ? 'i64.store' : 'i32.store'
+    lane8 = sty === 'i32' ? g : sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)
+    const bytes = lanes * (sty === 'i32' ? 4 : sty === 'i16' ? 2 : 1)
+    store = bytes === 8 ? 'i64.store' : bytes === 4 ? 'i32.store' : 'i32.store16'
   }
   else return null
   // 8-byte stores extract an i64 lane; the 4-byte i8 pack extracts an i32 lane.

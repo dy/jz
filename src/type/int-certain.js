@@ -14,6 +14,7 @@ import { VAL, lookupValType } from '../reps.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
 import { NO_VALUE, staticValue } from '../static.js'
 import { typedStorageNameCtor } from '../typed-context.js'
+import { typedElemAux } from '../../layout.js'
 
 // === Integer-certainty fixpoint (shared by analyzeIntCertain + program-facts) ===
 
@@ -84,7 +85,7 @@ const _numLevel = (v) => typeof v === 'boolean' ? 2
   : typeof v !== 'number' || !Number.isInteger(v) || Object.is(v, -0) ? 0
   : v >= -2147483648 && v <= 2147483647 ? 2 : 1
 
-function makeIntLevelExpr(intLevels, slotLevelOf) {
+function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
   return function levelOf(expr) {
     if (typeof expr === 'number' || typeof expr === 'boolean') return _numLevel(expr)
     if (typeof expr === 'string') return intLevels.get(expr) ?? 0
@@ -95,6 +96,10 @@ function makeIntLevelExpr(intLevels, slotLevelOf) {
     if (op == null) return _numLevel(expr[1])
     if (op === '>>>') return 1                      // uint32: up to 2^32-1, exceeds int32
     if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return 2
+    if (op === '[]' && readPresent?.has(expr) && typeof expr[1] === 'string') {
+      const aux = typedElemAux(typedStorageNameCtor(ctx, expr[1]))
+      if (aux != null && (aux & 7) <= 5 && !(aux & 32)) return (aux & 7) === 5 ? 1 : 2
+    }
     if (op === '.') {
       // Slot-census resolver (analyzeSchemaSlotIntCertain's optimistic
       // fixpoint): a censused slot answers definitively — including 0
@@ -146,12 +151,14 @@ const _slotLevelAdapter = (slotIntOf) => slotIntOf
  *  own-scope-only behavior unchanged. */
 /** Monotone-down level fixpoint over binding defs in `body`:
  *  Map name → 0|1|2 (see the lattice above `makeIntLevelExpr`).
- *  `slotLevelOf(obj, prop)` → 0|1|2|null resolves `.prop` reads. */
-export function intLevelMap(body, capturedNames, slotLevelOf) {
+ *  `slotLevelOf(obj, prop)` → 0|1|2|null resolves `.prop` reads.
+ *  `readPresent` supplies exact typed-read nodes whose absence is ruled out;
+ *  their payloads ground the same lattice without bounding subsequent sums. */
+export function intLevelMap(body, capturedNames, slotLevelOf, readPresent) {
   const defs = takeScratchMap()
-  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs) } finally { releaseScratchMap(defs) }
+  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent) } finally { releaseScratchMap(defs) }
 }
-function intLevelMapIn(body, capturedNames, slotLevelOf, defs) {
+function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent) {
   collectIntDefs(body, capturedNames, defs)
   if (defs.size === 0) return new Map()
   const levels = new Map()
@@ -168,7 +175,7 @@ function intLevelMapIn(body, capturedNames, slotLevelOf, defs) {
   // forgo an optimization, never miscompile.
   for (const p of ctx.func.current?.params || [])
     if (p.type !== 'i32' && levels.has(p.name)) levels.set(p.name, 0)
-  const levelOf = makeIntLevelExpr(levels, slotLevelOf)
+  const levelOf = makeIntLevelExpr(levels, slotLevelOf, readPresent)
   // The defs as two lists, read by index in every round: an entry-pair walk
   // of the map would allocate a pair per name per round.
   const names = [], lists = []

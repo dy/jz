@@ -333,19 +333,35 @@ test('SIMD narrowing - encode/downsample bit-identical to scalar (incl. clipping
   is(jz(ds, { optimize: 'speed' }).exports.f(40), jz(ds, { optimize: 2 }).exports.f(40))
 })
 
-test('SIMD narrowing - f64→i32 ToInt32 map (a[i]|0) lifts via trunc_sat, bit-exact in-range', () => {
-  // `o[i] = (f(a[i])) | 0` into an Int32Array. The ToInt32 (`|0`) is CSE'd into a lane-local
-  // before the store; the lift inlines it and narrows via i32x4.trunc_sat_f64x2_s_zero. That
-  // SATURATES |x|≥2³¹/±Inf where ToInt32 wraps mod 2³² — bit-exact for in-range finite values
-  // (every pixel/coord/typical-DSP value), so it rides relaxedSimd (speed); strict opts out.
+test('SIMD narrowing - f64→i32 retains the scalar word conversion', () => {
   const src = `export let f = (n) => {
     let a = new Float64Array(n); for (let i=0;i<n;i++) a[i] = Math.sin(i*1.3)*1e6 + (i-32)*0.5
     let o = new Int32Array(n); for (let i=0;i<n;i++) o[i] = (a[i]*0.5 + 1000.0) | 0
     let s = 0; for (let i=0;i<n;i++) s = (s + o[i]) | 0; return s
   }`
   is(jz(src, { optimize: 'speed' }).exports.f(64), jz(src, { optimize: 'speed', noSimd: true }).exports.f(64), 'in-range bit-exact')
-  ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, SPEED)), 'f64→i32 |0 map → i32x4.trunc_sat under relaxedSimd')
-  ok(!/i32x4\.trunc_sat_f64x2_s_zero/.test(wat(src, SIMD_OPT)), 'gated: no trunc_sat narrow without relaxedSimd (saturation edge)')
+  for (const opt of [SPEED, SIMD_OPT]) {
+    const w = wat(src, opt)
+    ok(hasV128(w), 'the arithmetic remains vectorized')
+    ok(!/i32x4\.trunc_sat_f64x2_s_zero/.test(w), 'unbounded word conversion does not become saturation')
+  }
+})
+
+test('SIMD narrowing - integer stores retain wrapping, infinities and scalar tails', () => {
+  for (const input of ['Float64Array', 'Float32Array']) for (const output of ['Int32Array', 'Int16Array', 'Uint8Array'])
+    for (const cast of ['', '| 0']) {
+      const src = `export function f(n) {
+        const values = new ${input}([2147483648, -2147483649, 4294967296, 1e30, Infinity, -Infinity, NaN, 255.75, -255.75])
+        const out = new ${output}(n)
+        for (let i = 0; i < n; i++) out[i] = values[i] ${cast}
+        let s = 0; for (let i = 0; i < n; i++) s += out[i]
+        return s
+      }`
+      const scalar = jz(src, { optimize: 'speed', noSimd: true }).exports.f
+      const vector = jz(src, { optimize: 'speed' }).exports.f
+      for (const n of [0, 1, 2, 3, 4, 5, 8, 9, 0, 9])
+        is(vector(n), scalar(n), `${input} → ${output} ${cast}, n=${n}`)
+    }
 })
 
 // === SIMD Float32Array (f32x4 — 4 elements per vector) ===

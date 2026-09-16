@@ -24,12 +24,11 @@ import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget
 // whole computation is static. Accesses whose idx interval fits a STATIC receiver
 // length are recorded proven; everything else stays checked/versioned.
 
-const IP_LIM = 0x40000000   // endpoints beyond ±2^30 widen to unknown (i32 headroom)
 // The smallest 2^k − 1 covering a non-negative m: the top of m's bit field. Integer
 // arithmetic on purpose — a transcendental (`Math.log2`) may differ in its last bit
 // between the native and the self-hosted compiler, and a proof must not.
 const fieldAbove = (m) => m <= 0 ? 0 : 2 ** (32 - Math.clz32(m)) - 1
-const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
+const ipOk = (v) => v != null && v[0] >= I32_MIN && v[1] <= I32_MAX
 // Initializer roots whose true result can carry range facts through a named const.
 const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 
@@ -186,7 +185,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       }
       // a positive literal modulus over a dividend that is non-negative by
       // construction (`>>>`, a non-negative mask, a const bound to one) — the
-      // draw `rnd() % 101` over a uint32 word the interval cannot hold (beyond IP_LIM)
+      // draw `rnd() % 101` over a uint32 word the interval cannot hold (beyond signed i32)
       if (op === '%' && B && B[0] === B[1] && B[0] > 0
           && ((Array.isArray(x) && (x[0] === '>>>' || (x[0] === '&' && (intLiteralValue(x[1]) ?? intLiteralValue(x[2])) >= 0)))
             || (typeof x === 'string' && nonNegConsts.has(x))))
@@ -228,7 +227,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     const p = ctx.func.current?.params?.find(q => q.name === name)
     return p?.ptrKind == null ? [I32_MIN, I32_MAX] : null
   }
-  // Raw facts may exceed IP_LIM while separate conjuncts are being intersected
+  // Raw facts may exceed I32_MAX while separate conjuncts are being intersected
   // (`x >= 0` and `x < W`). Only refine()/refineAll() publish an ipOk interval.
   const refineRaw = (c, negate, seedUnknown = false) => {
     if (!Array.isArray(c) || c.length !== 3) return null
@@ -290,8 +289,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     return r && r[1][0] <= r[1][1] && ipOk(r[1]) ? r : null
   }
   // Every conjunct holds on the positive path. Intersect repeated facts for
-  // the same name before applying IP_LIM: either half of `x >= 0 && x < W`
-  // is too wide alone, while their meet is the useful finite theorem.
+  // the same name: together `x >= 0 && x < W` prove a valid index domain.
   const refineAll = (c2, namedSeed = false) => {
     // The new full-i32 seed is deliberately limited to a positive `if (name)`
     // use of a stable const definition. Every older inline/refinement path keeps
@@ -395,7 +393,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     for (const k2 of new Set([...entryEnv.keys(), ...env.keys()])) {
       const a = entryEnv.get(k2), b = env.get(k2)
       joined.set(k2, a && b
-        ? [b[0] < a[0] ? -IP_LIM : Math.min(a[0], b[0]), b[1] > a[1] ? IP_LIM : Math.max(a[1], b[1])]
+        ? [b[0] < a[0] ? I32_MIN : Math.min(a[0], b[0]), b[1] > a[1] ? I32_MAX : Math.max(a[1], b[1])]
         : null)
     }
     // FIELD BOUNDS: a widened name may hold a bit-pattern invariant the linear
@@ -407,10 +405,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // after the sentinel pass, and a name adopts its field only when it holds.
     const fields = new Map()
     for (const [k2, j] of joined) {
-      if (!j || (j[0] !== -IP_LIM && j[1] !== IP_LIM)) continue
+      if (!j || (j[0] !== I32_MIN && j[1] !== I32_MAX)) continue
       const a = entryEnv.get(k2), b = stepEnv.get(k2)
       if (!a || !b || a[0] < 0 || b[0] < 0) continue
-      fields.set(k2, [j[0] === -IP_LIM ? 0 : j[0], j[1] === IP_LIM ? fieldAbove(Math.max(a[1], b[1])) : j[1]])
+      fields.set(k2, [j[0] === I32_MIN ? 0 : j[0], j[1] === I32_MAX ? fieldAbove(Math.max(a[1], b[1])) : j[1]])
     }
     restore(joined); seedFn(); applyCond(); walkPass()  // pass B: verify
     // the back edge re-evaluates the condition before re-entering the body, so
@@ -435,7 +433,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     for (const k2 of failed) joined.set(k2, null)
     // NARROWING (≤2 decreasing passes): the widened invariant is sound but
-    // loose — a name with no cond conjunct to re-clamp it sits at ±IP_LIM even
+    // loose — a name with no cond conjunct to re-clamp it sits at a word boundary even
     // when the loop's true range is finite (`i = child` copy chains: i only
     // ever receives root- or cond-clamped child-values, so hull(entry,
     // end-state) is the real invariant). Each pass recomputes the hull from
@@ -444,7 +442,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // (meet with the previous invariant keeps the sequence decreasing).
     //
     // GATE (exact, not heuristic — a raw compile-time win jz.wasm pays for):
-    // ONLY a name at an ±IP_LIM endpoint can narrow. The join gave every
+    // ONLY a name at a signed-word boundary can narrow. The join gave every
     // non-escaping name its exact one-step hull (min/max of entry ∪ back-edge),
     // which is already the tightest interval containing both edges — a fresh
     // walk reproduces the same stable end-state, so the meet is a no-op there.
@@ -453,7 +451,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // ivs never escape). Turns the heapsort-class cost into zero on every
     // ordinary loop.
     const widened = () => {
-      for (const [, j] of joined) if (j && (j[0] === -IP_LIM || j[1] === IP_LIM)) return true
+      for (const [, j] of joined) if (j && (j[0] === I32_MIN || j[1] === I32_MAX)) return true
       return false
     }
     for (let np = 0; np < 2 && widened(); np++) {
@@ -515,7 +513,6 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const L = lens(n[1]), k = idxKey(n[1], n[2])
       const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
       if (!recording) return proven   // exploratory fixpoint pass: env effects only
-      if (typeof process !== 'undefined' && process.env.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
       if (!proven) { rejected.add(k); out.delete(k) }
       else if (!rejected.has(k)) out.add(k)
       // A bounded idx against an UNKNOWN length is half a proof — export the hull
@@ -669,7 +666,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // advances and affine/zero credit writes are accepted; complex control
       // or state explosion fails closed.
       const potentialAdvance = (root, cursor, credit) => {
-        const LIM = 128, INF = IP_LIM
+        const LIM = 128, INF = I32_MAX
         const norm = (xs) => {
           const m = new Map()
           for (const s of xs) {

@@ -106,6 +106,74 @@ const CHECKED_STORE = /\(i32\.lt_u[\s\S]{0,400}?\(i32\.const \d+\)\s*\)\s*\(then
 const userFuncs = wat => wat.split(/(?=\(func )/).filter(f => /^\(func \$(?!__)/.test(f)).join('\n')
 const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || CHECKED_STORE.test(userFuncs(wat))
 
+const tableWalk = (table, edit = '', length = 4) => `
+function fill(a, n) {
+  const table = ${table}
+  ${edit}
+  for (let i = 0; i < table.length; i++) a[i] = table[i] | 0
+}
+function follow(a, remaining) {
+  let cursor = 0, total = 0
+  while (cursor < 4 && remaining > 0) {
+    const value = a[cursor]
+    total += value
+    cursor = value
+    remaining--
+  }
+  return total
+}
+export function f(n) { const a = new Int32Array(${length}); fill(a, n); return follow(a, n) }
+`
+
+test('interval proof: immutable table bounds survive fill helpers and dependent reads', () => {
+  const src = tableWalk('[1, 2, 3, 2147483647]')
+  const native = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const wasm = jz(src, { optimize }).exports.f
+    for (const n of [0, 0, 1, 2, 3, 4, 8, 0, 4])
+      is(wasm(n), native(n), `O${optimize}: ${n} dependent reads preserve the full sum`)
+  }
+  if (onKernel()) return
+  const f = compile(src, { optimize: 2, inspect: true }).inspect.functions.follow
+  const local = name => Object.entries(f.locals).find(([key]) => key.startsWith(name))[1]
+  is(f.params[0].arrayElemRange, [0, 2147483647], 'the fill carries its closed stored-value hull')
+  is(local('cursor').type, 'i32', 'the loop condition closes the cursor bounds')
+  is(local('value').type, 'i32', 'proven-present reads retain their integer carrier')
+  is(local('total').type, 'f64', 'integer payloads do not bound an accumulating result')
+})
+
+test('interval proof: table mutation, missing entries and word boundaries stay conservative', () => {
+  const sources = [
+    tableWalk('[]'),
+    tableWalk('[1, 2, 3, 2147483647]', '', 0),
+    tableWalk('[1, 2, 3, -2147483648]'),
+    tableWalk('[1, 2, 3, 2147483648]'),
+    tableWalk('[1, 2, 3, 4294967295]'),
+    tableWalk('[1, , 3, 2147483647]'),
+    tableWalk('[1, NaN, Infinity, -0]'),
+    tableWalk('[1, 2, 3, 2147483647]', 'table[2] = -1'),
+    tableWalk('[1, 2, 3, 2147483647]', 'const alias = table; alias[2] = -1'),
+    tableWalk('[1, 2, 3, 2147483647]', 'const change = () => { table[2] = -1 }; change()'),
+    tableWalk('[1, 2, 3, 2147483647]', 'table.push(-1)'),
+    tableWalk('[1, 2, 3, 2147483647]', 'table[2] = 1.5'),
+    tableWalk('[1, 2, 3, 2147483647]', 'let key = n & 3; delete table[key]'),
+    tableWalk('[1, 2, 3, 2147483647]', 'function erase(p, key) { delete p[key] }; erase(table, n & 3)'),
+    tableWalk('[1, 2, 3, 2147483647]', 'function leak(p) { throw p }; try { leak(table) } catch (p) { p[2] = -1 }'),
+  ]
+  for (const optimize of levels(0, 2, 3, 'size')) for (const src of sources) {
+    const native = oracle(src).f, wasm = jz(src, { optimize }).exports.f
+    for (const n of [0, 0, 1, 4, 8, 0, 4])
+      ok(Object.is(wasm(n), native(n)), `O${optimize}, n=${n}: ${src.split('\n')[2].trim()}`)
+  }
+})
+
+test('interval proof: table ranges do not survive a different compilation', () => {
+  const src = tableWalk('[1, 2, 3, 2147483647]')
+  const other = tableWalk('[1, 2, 3, -2147483648]')
+  for (const optimize of levels(0, 2, 3, 'size'))
+    assertCompileHistoryIndependent(src, [src, other, tableWalk('[]'), other], { optimize }, `O${optimize} table bounds`)
+})
+
 const INPUTS = [
   [1, 1], [2, 2], [-1, 1], [4, 1], [1, 4], [1.9, 1], [-0, 1],
   [NaN, 1], [Infinity, 1], [-Infinity, 1], [4294967297, 1],
@@ -214,5 +282,88 @@ test('interval proof: xor/shift cursors are proven inside their field', () => {
   for (const [name, src] of FIELD_ESCAPES) {
     ok(hasCheckedTypedAccess(compile(src, { optimize: 3, wat: true })), `${name}: access stays checked`)
     is(jz(src).exports.f(100), oracle(src).f(100), `${name}: matches Node`)
+  }
+})
+
+// A payload's integer type is not an accumulator bound. Only a finite trip
+// count and a bound covering every stored element justify an i32 reduction.
+const reduceTyped = (ctor, values, step = 'sum += a[i]', init = '0', bound = 'a.length') => `
+export function f() {
+  const a = new ${ctor}(${values})
+  let sum = ${init}
+  for (let i = 0; i < ${bound}; i++) { ${step} }
+  return sum
+}`
+
+test('interval proof: typed reductions preserve overflow, signedness, misses and explicit wrapping', () => {
+  const cases = [
+    ['empty', reduceTyped('Uint8Array', '0')],
+    ['bytes', reduceTyped('Uint8Array', '[0, 255, 128, 1]')],
+    ['signed subtract', reduceTyped('Int16Array', '[-32768, 32767, -1]', 'sum -= a[i]')],
+    ['i32 positive overflow', reduceTyped('Int32Array', '[2147483647, 2147483647]')],
+    ['i32 negative overflow', reduceTyped('Int32Array', '[-2147483648, -2147483648]')],
+    ['u32 payload', reduceTyped('Uint32Array', '[4294967295, 2147483648]')],
+    ['near boundary', reduceTyped('Uint8Array', '[255, 255, 255]', 'sum += a[i]', '2147483000')],
+    ['missing element', reduceTyped('Int32Array', '[1, 2]', 'sum += a[i + 1]')],
+    ['returned compound assignment', reduceTyped('Int32Array', '[2147483647, 2147483647]').replace('return sum', 'return sum += 1')],
+    ['returned postincrement', reduceTyped('Int32Array', '[2147483647, 2147483647]').replace('return sum', 'return sum++')],
+    ['nested assignment', reduceTyped('Int32Array', '[2147483647, 2147483647]', 'sum = (sum += a[i])')],
+    ['wrapping requested', reduceTyped('Int32Array', '[2147483647, 2147483647]', 'sum = (sum + a[i]) | 0')],
+    ['fractional payload', reduceTyped('Float32Array', '[0.5, 1.25]')],
+    ['clamped store keeps magnitude', reduceTyped('Int32Array', '[2147483647, 2147483647]').replace('return sum', 'const dst = new Uint8ClampedArray(1); dst[0] = sum; return dst[0]')],
+  ]
+  for (const optimize of levels(0, 2, 3, 'size')) for (const [name, src] of cases) {
+    const expected = oracle(src).f(), wasm = jz(src, { optimize }).exports.f
+    is(wasm(), expected, `${name}, O${optimize}`)
+    is(wasm(), expected, `${name}, repeated call, O${optimize}`)
+  }
+  if (!onKernel()) {
+    const functions = compile(cases[1][1], { optimize: 2, inspect: true }).inspect.functions
+    const sum = Object.entries(functions.f.locals).find(([name]) => name.startsWith('sum'))?.[1]
+    is(sum?.type, 'i32', 'bounded byte reduction stays integer')
+  }
+})
+
+test('interval proof: reductions account for repeated regions and writes outside the counted loop', () => {
+  const cases = [
+    `const a = new Uint8Array([255, 255, 255]); let sum = 2147483000;
+     for (let row = 0; row < 2; row++) for (let i = 0; i < 3; i++) sum += a[i]; return sum`,
+    `const a = new Uint8Array([255, 255, 255]); let result = 0;
+     for (let row = 0, sum = 2147483000; row < 2; row++) {
+       for (let i = 0; i < 3; i++) sum += a[i]; result = sum
+     } return result`,
+    `const a = new Uint8Array([255, 255, 255]); let sum = 0;
+     for (let i = 0; i < 3; i++) sum += a[i]; sum += 2147483647; return sum`,
+    `const a = new Uint8Array([255, 255, 255]); let sum = 0;
+     const change = () => { sum = 2147483647 };
+     for (let i = 0; i < 3; i++) { change(); sum += a[i] } return sum`,
+    `const a = new Int32Array([1, 2, 3]);
+     function escape(p) { throw p }
+     try { escape(a) } catch (p) { p[1] = 2147483647 }
+     let sum = 0; for (let i = 0; i < 3; i++) sum += a[i]; return sum`,
+    `let sum = 2147483600;
+     for (let i = 0; i < 2; i++, i -= 0.5) sum += 20; return sum`,
+    `let sum = 2147483600;
+     for (let i = 0; i < 2; i -= 0.75, i++) sum += 20; return sum`,
+    `let sum = 2147483600;
+     for (let i = 0, saved = i--; i < 2; i++) sum += 20; return sum`,
+  ]
+  for (const optimize of levels(0, 2, 3, 'size')) for (const [i, body] of cases.entries()) {
+    const src = `export function f() { ${body} }`
+    is(jz(src, { optimize }).exports.f(), oracle(src).f(), `region/write ${i}, O${optimize}`)
+  }
+})
+
+
+test('interval proof: typed-store assignment values retain the original magnitude', () => {
+  const src = `export function f(key) {
+    const a = new Int32Array([2147483647, 2147483647])
+    let sum = 0; for (let i = 0; i < 2; i++) sum += a[i]
+    const dst = new Int32Array(1); return dst[key] = sum
+  }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const native = oracle(src).f, wasm = jz(src, { optimize }).exports.f
+    for (const key of ['label', 0, 'label', '0', 'label'])
+      is(wasm(key), native(key), `dynamic property ${key}, O${optimize}`)
   }
 })
