@@ -477,6 +477,9 @@ VT.nan = () => VAL.NUMBER   // parse.js's self-describing `NaN` marker
 VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+  // Object coercion can produce a string, number or BigInt. Consumers such
+  // as String() must inspect the result rather than assume a numeric carrier.
+  if (ta === VAL.OBJECT || tb === VAL.OBJECT) return null
   if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
   // A BigInt payload on both operands selects the joint runtime dispatch.
   // One unknown operand alone does not prove that both domains agree.

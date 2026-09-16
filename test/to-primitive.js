@@ -230,3 +230,50 @@ test('ToPrimitive: shared member census covers defaults, modules and repeated co
     is(jz(src, { modules, optimize }).exports.f(), 'default:module:a')
   }
 })
+
+test('ToPrimitive: dynamic addition preserves BigInt and rejects mixed domains', () => {
+  const src = `export function f(a, b) {
+    const values = {}
+    values.big = 7n; values.neg = -7n; values.num = 3
+    values.str = 'x'; values.nil = null; values.bool = true
+    values.bits = 9221120245631025152n; values.negBits = -9221120245631025152n
+    try { return values[a] + values[b] }
+    catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' }
+  }`
+  const want = oracle(src)
+  const pairs = [['big', 'big'], ['big', 'neg'], ['bits', 'negBits'],
+    ['big', 'num'], ['num', 'big'], ['big', 'missing'], ['missing', 'big'],
+    ['big', 'nil'], ['big', 'bool'], ['big', 'str'], ['str', 'big'],
+    ['num', 'num'], ['nil', 'bool'], ['missing', 'missing'], ['big', 'big']]
+  for (const optimize of [0, 2, 3, 'size']) {
+    const got = jz(src, { optimize }).exports
+    for (const [a, b] of pairs) is(got.f(a, b), want.f(a, b), `O${optimize}, ${a} + ${b}`)
+  }
+})
+
+test('ToPrimitive: nullable numeric collection reads add without string dispatch', () => {
+  const src = `export function f(k) {
+    const m = new Map(); m.set('n', 7)
+    return m.get(k) + 1
+  }`
+  check(src, ['n', 'missing', 'n', 'missing'])
+  for (const optimize of [0, 2, 3, 'size']) {
+    const wat = compile(src, { optimize, wat: true })
+    is(wat.includes('$__str_concat'), false, 'Number or undefined cannot concatenate')
+    is(wat.includes('$__add_slow'), false, 'numeric addition needs no generic helper')
+  }
+})
+
+test('ToPrimitive: a boxed BigInt returned by a conversion method is primitive', () => {
+  check(`export function f(k) {
+    let order = ''
+    const a = { valueOf() { order += 'a'; return 7n } }
+    const b = { valueOf() { order += 'b'; return k ? 3 : 5n } }
+    try { return String(a + b) + ':' + order }
+    catch (e) { return (e instanceof TypeError ? 'TypeError:' : 'other:') + order }
+  }`, [0, 1, 1, 0])
+  check(`export function f(k) {
+    const o = { toString() { return 8n }, valueOf() { return 7n } }
+    return k ? String(o) : String(o + 0n)
+  }`, [0, 1, 0])
+})

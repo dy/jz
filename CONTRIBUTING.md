@@ -200,7 +200,13 @@ constant inherited tag. The two functions are runtime roots
 (`ctx.funcs.runtimeRoots`): address-taken, boxed ABI. Implicit coercions retain
 surrounding catches, since method calls only become explicit during emission.
 `+` with a heap operand of known kind concatenates unless a user conversion
-method may run; loose `==` between a heap kind and a primitive takes the dynamic compare.
+method may run. Loose `==` between a heap kind and a Number, String or Boolean
+takes the dynamic compare.
+Generic addition receives operands through `storedValue`, including boxed BigInts.
+The shared primitive check classifies those boxes as primitives; addition unboxes
+both BigInts or throws on mixed numeric domains. An object's conversion result
+has no fixed numeric kind. Number/nullish joins can skip string dispatch while
+retaining ToNumber for the missing or null arm.
 
 Relational operators share the boxed coercion/string-comparison slow path.
 Both operands evaluate before left-to-right primitive conversion. Proven

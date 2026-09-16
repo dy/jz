@@ -20,6 +20,10 @@ contract; CONTRIBUTING owns compiler invariants.
 - Closure argument facts and disjoint ProgramIndex identities, scoped active
   function state, recycled iterator bindings and recursive self-compilation.
 - Coercion, method lookup, enumeration and internal errors preserve JS effects.
+  Generic addition retains BigInt payloads, rejects mixed numeric domains and
+  accepts BigInt results from conversion methods. Nullable numeric addition
+  reuses existing payload facts to omit string dispatch; a Map lookup example
+  shrinks from 8408 to 3007 bytes at the size tier.
   Nullish field/index reads and writes now throw instead of decoding memory.
   Computed object keys retain evaluation and conversion order. Generated Wasm
   and interop must be rebuilt together for the private error transport.
@@ -69,11 +73,13 @@ to `d6d140d`; Subscript to `0f65c86`.
 
 ## Candidate verification — September 16
 
-The final full matrix passes core 4352 tests (72267 assertions), O0 4158,
-O3 4158 and WASI 4210, each with one skip and zero failures. Focused interval
-regressions pass at O0/O2/O3/size; all 259 optimizer tests, 224 SIMD tests,
-143 inference tests, performance/minimal-output tests and the 10-category loop
-ratchet pass. Verification logs use `/private/tmp/jz-scalar-final8-`.
+The final full matrix passes core 4355 tests (72385 assertions), O0 4161,
+O3 4161 and WASI 4213, each with one skip and zero failures. BigInt conversion
+and nullable-addition regressions pass at O0/O2/O3/size; all 259 optimizer
+tests, 224 SIMD tests, 143 inference tests, performance/minimal-output tests
+and the 10-category loop ratchet pass. Matrix evidence is in
+`/private/tmp/jz-add-final-gates.log`; self-host, conformance and size logs use
+`/private/tmp/jz-add-verified-`.
 
 Self-host correctness passes all 52 tests (2333 assertions). Language conformance
 passes 3151 positives and rejects 4045 negatives, with zero failures and 8
@@ -104,6 +110,9 @@ Those tests do not establish callback deadlines.
    with `key = 'label'` returns a wrapped element value, while a literal
    `'label'` read returns zero. Route named keys through the existing property
    machinery; retain numeric element conversion and assignment-result identity.
+   A separate remaining coercion case is static object/BigInt loose equality:
+   `({ valueOf() { return 7n } }) == 7n` still returns false. Addition now accepts
+   the primitive result; equality must preserve that conversion too.
 
 2. **Runtime and self-host speed.** Missing integer reads now preserve
    `undefined` through locals, copies, computed indices and helper returns.
@@ -120,9 +129,8 @@ Those tests do not establish callback deadlines.
    table now supplies the missing all-writers hull and restores integer dispatch.
 
    Warm self-compilation must meet the unchanged 1.03× cap; fresh compilation
-   must meet 0.99×. The previous candidate measured warm
-   1.095×/1.137×/1.129× and fresh 0.844×. This candidate measures warm
-   1.097×/1.117×/1.132× (fails) and fresh 0.876× (passes), diagnostically on
+   must meet 0.99×. This candidate measures warm
+   1.110×/1.122×/1.144× (fails) and fresh 0.868× (passes), diagnostically on
    this loaded machine. No timing cap changed.
    The remaining self-host profile is spread across Map/Set probes and pointer
    decoding. `ctx.funcs` has an exact layout, but polymorphic profiling callbacks
@@ -134,7 +142,7 @@ Those tests do not establish callback deadlines.
 3. **Reproducible speed, size and memory evidence.** The committed benchmark
    dataset is stale, was timed above the 4096 MB swap-validity cap, and lacks
    complete Porffor/TinyGo coverage (43 comparable rows against 44 required).
-   The last system read reported 11356.19 MB of swap, above that cap.
+   The last system read reported 11441.44 MB of swap, above that cap.
    Regenerate through the benchmark runner on quiet reference hardware, with
    the current compiler and memory-baseline provenance. Standalone size wins
    and local paired timings do not replace that evidence. Keep TinyGo 0.42.0

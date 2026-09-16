@@ -2582,7 +2582,7 @@ test('dictionary summary: an unresolvable write poisons the fact', () => {
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-test('dictionary summary: unproven dict read keeps the `+` STRING-coercion arm regardless of escape status (regression pin, was Slice 4 positive win)', () => {
+test('dictionary summary: numeric addition retains missing-key semantics without string dispatch', () => {
   if (onKernel()) return  // white-box: ctx.types.nameEscapes (see section note above)
   const src = `
     export let OPCODE = {}, code = 0
@@ -2592,8 +2592,11 @@ test('dictionary summary: unproven dict read keeps the `+` STRING-coercion arm r
   `
   const wat = jz.compile(src, { wat: true })
   const body = wat.slice(wat.indexOf('$bigOp'))
-  ok(body.includes('__str_concat'), 'non-escaping: census dormant — dictValueKindOf is never consulted by VT, the STRING-coercion arm stays live')
-  is(run(src).bigOp('add'), 1, 'functional result unchanged (0 + 1)')
+  ok(!body.includes('__str_concat'), 'number or undefined cannot concatenate')
+  const f = run(src).bigOp
+  is(f('add'), 1, 'present number')
+  is(f('missing'), NaN, 'absence still converts to NaN')
+  is(f('add'), 1, 'present after missing')
 
   const escapingSrc = `
     export let OPCODE = {}, code = 0
@@ -2606,8 +2609,10 @@ test('dictionary summary: unproven dict read keeps the `+` STRING-coercion arm r
   const watEsc = jz.compile(escapingSrc, { wat: true })
   ok(ctx.types.nameEscapes.has('OPCODE'), 'OPCODE is passed to leak() — escapes')
   const bodyEsc = watEsc.slice(watEsc.indexOf('$bigOp'))
-  ok(bodyEsc.includes('__str_concat'), 'escaping: same shape as non-escaping now — the generic dynamic `+` needs the STRING-coercion arm either way')
-  is(run(escapingSrc).bigOp('add'), 1, 'functional result still correct via the generic path')
+  ok(bodyEsc.includes('__str_concat'), 'escaping contents retain generic addition')
+  const escaped = run(escapingSrc).bigOp
+  is(escaped('add'), 1)
+  is(escaped('missing'), NaN)
 })
 
 test('dictionary summary: dict read against a NUMBER literal compares via cmpOp\'s coerced f64 path', () => {
@@ -2824,7 +2829,7 @@ test('Map summary: soundness carve-out — an unregistered key still identity-co
   is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
 })
 
-test('Map summary: nameEscapes is still computed but no longer changes `+` codegen for either receiver (regression pin, was Slice 4 positive win)', () => {
+test('Map summary: numeric addition retains missing-key semantics and escaping fallback', () => {
   if (onKernel()) return  // white-box: ctx.types.nameEscapes (see section note above)
   const nonEscaping = `
     export let OPCODE = new Map(), code = 0
@@ -2835,8 +2840,11 @@ test('Map summary: nameEscapes is still computed but no longer changes `+` codeg
   const watNon = jz.compile(nonEscaping, { wat: true })
   is(ctx.types.nameEscapes.has('OPCODE'), false, 'OPCODE is never read in a value position — does not escape')
   const bodyNon = watNon.slice(watNon.indexOf('$bigOp'))
-  ok(bodyNon.includes('__str_concat'), 'non-escaping: census dormant — mapValueKindOf is never consulted by VT, the STRING-coercion arm stays live')
-  is(run(nonEscaping).bigOp('add'), 1, 'functional result unchanged')
+  ok(!bodyNon.includes('__str_concat'), 'number or undefined cannot concatenate')
+  const f = run(nonEscaping).bigOp
+  is(f('add'), 1)
+  is(f('missing'), NaN)
+  is(f('add'), 1)
 
   const escaping = `
     export let OPCODE = new Map(), code = 0
@@ -2849,8 +2857,10 @@ test('Map summary: nameEscapes is still computed but no longer changes `+` codeg
   const watEsc = jz.compile(escaping, { wat: true })
   ok(ctx.types.nameEscapes.has('OPCODE'), 'OPCODE is passed to leak() — a value-position read — so it escapes')
   const bodyEsc = watEsc.slice(watEsc.indexOf('$bigOp'))
-  ok(bodyEsc.includes('__str_concat'), 'escaping: mapValueKindOf must decline (nameEscapes gate) — the generic dynamic `+` still needs the STRING-coercion arm')
-  is(run(escaping).bigOp('add'), 1, 'functional result still correct via the generic (gated-off) path')
+  ok(bodyEsc.includes('__str_concat'), 'escaping contents retain generic addition')
+  const escaped = run(escaping).bigOp
+  is(escaped('add'), 1)
+  is(escaped('missing'), NaN)
 })
 
 test('Map summary: new Map(seed) remains conservative and executes correctly', () => {

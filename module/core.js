@@ -32,6 +32,7 @@ import { registerErrorClasses, throwErrorWat, requireReceiverWat } from './core/
 import { registerDurableLog } from './core/durable-log.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
+import { errorCodeLiteral, ERR } from '../err-codes.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -53,7 +54,8 @@ export default (ctx) => {
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __to_prim_dflt: ['__ptr_type', '__to_str'],
     __cmp: ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num'],
-    __add_slow: ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat'],
+    __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat',
+      ...(representationProgramHasBigint(ctx) ? ['__box_bigint', '__ptr_offset'] : [])],
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
     __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
@@ -199,10 +201,10 @@ export default (ctx) => {
             (if (i32.and (f64.eq (local.get $fb) (local.get $fb)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
               (then (return (f64.eq (call $__to_num (local.get $a)) (local.get $fb)))))` : ''}
             ${ctx.core.stdlib['__to_str'] ? `;; steps 10-11: an object beside a string, number or boolean compares as its primitive
-            (if (i32.and (i32.and (call $__is_object (local.get $a)) (i32.ne (local.get $ta) (i32.const ${PTR.BIGINT})))
+            (if (i32.and (call $__is_object (local.get $a))
                          (i32.and (i32.eqz (call $__is_object (local.get $b))) (i32.eqz (call $__is_nullish (local.get $b)))))
               (then (return (call $__eq (call $__to_prim_dflt (local.get $a)) (local.get $b)))))
-            (if (i32.and (i32.and (call $__is_object (local.get $b)) (i32.ne (local.get $tb) (i32.const ${PTR.BIGINT})))
+            (if (i32.and (call $__is_object (local.get $b))
                          (i32.and (i32.eqz (call $__is_object (local.get $a))) (i32.eqz (call $__is_nullish (local.get $a)))))
               (then (return (call $__eq (local.get $a) (call $__to_prim_dflt (local.get $b))))))` : ''}${bigintMixedArm()}
             ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
@@ -254,7 +256,7 @@ export default (ctx) => {
     (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.eq (local.get $n) (call $__to_num (local.get $v))))))` : ''}${ctx.core.stdlib['__to_str'] ? `
     ;; an object compares as its primitive (IsLooselyEqual step 11)
-    (if (i32.and (call $__is_object (local.get $v)) (i32.ne (local.get $t) (i32.const ${PTR.BIGINT})))
+    (if (call $__is_object (local.get $v))
       (then (return (call $__eq_num (local.get $n) (call $__to_prim_dflt (local.get $v))))))` : ''}
     (i32.const 0))`
 
@@ -500,7 +502,7 @@ export default (ctx) => {
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))`
 
   // True iff a NaN-boxed value is a non-primitive (heap object) — tag is neither
-  // ATOM (null/undefined/boolean/symbol) nor STRING. A genuine f64 Number is
+  // ATOM (null/undefined/boolean/symbol), STRING or BIGINT. A genuine f64 Number is
   // never NaN-boxed, so `f64.eq(x,x)` holding proves it a primitive. Drives the
   // shared OrdinaryToPrimitive chain (compile/emit/to-primitive.js).
   // ToPrimitive with the default hint (ES2024 7.1.1): a user valueOf/toString
@@ -518,8 +520,7 @@ export default (ctx) => {
   ctx.core.stdlib['__cmp'] = () => `(func $__cmp (param $a i64) (param $b i64) (result f64)
     (local $x f64) (local $y f64)
     ${['a', 'b'].map(v => `
-    (if (i32.and (call $__is_object (local.get $${v}))
-          (i32.ne (call $__ptr_type (local.get $${v})) (i32.const ${PTR.BIGINT})))
+    (if (call $__is_object (local.get $${v}))
       (then (local.set $${v}
         ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (result i64)
           (i32.and (i32.eq (call $__ptr_type (local.get $${v})) (i32.const ${PTR.OBJECT}))
@@ -538,7 +539,7 @@ export default (ctx) => {
 
   // The `+` operator for two carriers that are not both numbers (ES2024
   // 13.15.3): ToPrimitive both, concatenate if either is a string, else add
-  // their numbers. A tagged BigInt keeps the existing numeric conversion.
+  // their numbers or BigInt payloads, rejecting mixed numeric domains.
   // A primitive's number: true 1, false 0, null 0, any other atom NaN — the
   // atom ladder every dynamic `+` site carried inline before this helper.
   const atomNumWat = (v) => `(if (result f64) (f64.eq (f64.reinterpret_i64 ${v}) (f64.reinterpret_i64 ${v}))
@@ -547,13 +548,27 @@ export default (ctx) => {
         (select (f64.const 0) (f64.const nan)
           (i32.or (i64.eq ${v} (i64.const ${FALSE_NAN})) (i64.eq ${v} (i64.const ${NULL_NAN}))))
         (i64.eq ${v} (i64.const ${TRUE_NAN})))))`
-  ctx.core.stdlib['__add_slow'] = `(func $__add_slow (param $a i64) (param $b i64) (result f64)
-    (if (i32.and (call $__is_object (local.get $a)) (i32.ne (call $__ptr_type (local.get $a)) (i32.const ${PTR.BIGINT})))
+  ctx.core.stdlib['__add_slow'] = () => `(func $__add_slow (param $a i64) (param $b i64) (result f64)
+    ${representationProgramHasBigint(ctx) ? '(local $ab i32) (local $bb i32)' : ''}
+    (if (call $__is_object (local.get $a))
       (then (local.set $a (call $__to_prim_dflt (local.get $a)))))
-    (if (i32.and (call $__is_object (local.get $b)) (i32.ne (call $__ptr_type (local.get $b)) (i32.const ${PTR.BIGINT})))
+    (if (call $__is_object (local.get $b))
       (then (local.set $b (call $__to_prim_dflt (local.get $b)))))
     (if (i32.or (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
       (then (return (call $__str_concat (local.get $a) (local.get $b)))))
+    ${representationProgramHasBigint(ctx) ? `
+    (local.set $ab (i32.and
+      (f64.ne (f64.reinterpret_i64 (local.get $a)) (f64.reinterpret_i64 (local.get $a)))
+      (i32.eq (call $__ptr_type (local.get $a)) (i32.const ${PTR.BIGINT}))))
+    (local.set $bb (i32.and
+      (f64.ne (f64.reinterpret_i64 (local.get $b)) (f64.reinterpret_i64 (local.get $b)))
+      (i32.eq (call $__ptr_type (local.get $b)) (i32.const ${PTR.BIGINT}))))
+    (if (i32.ne (local.get $ab) (local.get $bb)) (then
+      (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)})))
+      (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_UNDEF_MIX)}))))
+    (if (local.get $ab) (then (return (call $__box_bigint (f64.reinterpret_i64
+      (i64.add (i64.load (call $__ptr_offset (local.get $a)))
+        (i64.load (call $__ptr_offset (local.get $b)))))))))` : ''}
     (f64.add ${atomNumWat('(local.get $a)')} ${atomNumWat('(local.get $b)')}))`
 
   ctx.core.stdlib['__is_object'] = `(func $__is_object (param $p i64) (result i32)
@@ -561,9 +576,9 @@ export default (ctx) => {
     (if (f64.eq (f64.reinterpret_i64 (local.get $p)) (f64.reinterpret_i64 (local.get $p)))
       (then (return (i32.const 0))))
     (local.set $t (call $__ptr_type (local.get $p)))
-    (i32.and
-      (i32.ne (local.get $t) (i32.const ${PTR.ATOM}))
-      (i32.ne (local.get $t) (i32.const ${PTR.STRING}))))`
+    (i32.eqz (i32.and
+      (i32.const ${(1 << PTR.ATOM) | (1 << PTR.STRING) | (1 << PTR.BIGINT)})
+      (i32.shl (i32.const 1) (local.get $t)))))`
 
   // === Bump allocator ===
 

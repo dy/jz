@@ -5,13 +5,14 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp, boolBoxIR } from '../../ir.js'
+import { asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
-import { censusMaybeUndefined, numericDenied, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { negRangeFitsI32 } from '../../static.js'
 import { K, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
 import { exprType } from '../../type.js'
+import { storedValue } from '../../bridge.js'
 import {
   bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain, numericStep,
 } from './bigint.js'
@@ -191,7 +192,6 @@ const objectMayPrimitiveMethod = (node) => {
 }
 const stringishOperand = (vt, n) => vt != null && (STRINGISH_KINDS.has(vt) || (vt === VAL.OBJECT && !objectMayPrimitiveMethod(n)))
 const dynamicObjectOperand = (vt, n) => vt === VAL.OBJECT && objectMayPrimitiveMethod(n)
-const boxedOperand = (vt, n) => vt === VAL.BOOL ? boolBoxIR(emit(n)) : asF64(emit(n))
 
 export const arithmeticOps = {
   // === Arithmetic (type-preserving) ===
@@ -233,8 +233,10 @@ export const arithmeticOps = {
       if (fused) return fused
     }
     // String concatenation: pure string operands skip generic ToString coercion.
-    const vtA = valTypeOf(a)
-    const vtB = valTypeOf(b)
+    // Number/nullish joins cannot concatenate. The numeric path still applies
+    // ToNumber, preserving null as zero and a missing value as NaN.
+    const vtA = valTypeOf(a) ?? (censusMaybeUndefinedKind(a) === VAL.NUMBER ? VAL.NUMBER : null)
+    const vtB = valTypeOf(b) ?? (censusMaybeUndefinedKind(b) === VAL.NUMBER ? VAL.NUMBER : null)
     // mayBeUndefined join (Slice 3, .work/archive/todo.md §deletion-sweep
     // §4 — the "NEWLY added" `+` STRING-concat gap): a STRING claim whose only
     // proof is a maybeUndefined-flagged dict/Map census read (or a bare name
@@ -276,7 +278,7 @@ export const arithmeticOps = {
     if (dynamicObject || ctx.funcs.runtimeRoots.has('__jz_tp_num') && (vtA == null || vtB == null)) {
       ctx.module.include('string')
       inc('__add_slow')
-      const va = boxedOperand(vtA, a), vb = boxedOperand(vtB, b)
+      const va = storedValue(a), vb = storedValue(b)
       const slow = (x, y) => ['call', '$__add_slow', ['i64.reinterpret_f64', x], ['i64.reinterpret_f64', y]]
       if (dynamicObject || vtA === VAL.STRING || vtB === VAL.STRING) return typed(slow(va, vb), 'f64')
       const x = temp('add'), y = temp('add')
@@ -349,8 +351,8 @@ export const arithmeticOps = {
       // A known BOOL side enters as its atom: concat renders "true", the
       // numeric arm converts it, and neither sees a raw 0/1 carrier.
       const dyn = (vt) => vt == null || vt === VAL.BOOL
-      const eA = dyn(vtA) ? boxedOperand(vtA, a) : null
-      const eB = dyn(vtB) ? boxedOperand(vtB, b) : null
+      const eA = dyn(vtA) ? storedValue(a) : null
+      const eB = dyn(vtB) ? storedValue(b) : null
       const checkA = eA ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, eA]]] : null
       const checkB = eB ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, eB]]] : null
       const concat = ['call', '$__str_concat', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
