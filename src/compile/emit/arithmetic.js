@@ -9,6 +9,7 @@ import { asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostf
 import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
+import { negRangeFitsI32 } from '../../static.js'
 import { K, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
 import { exprType } from '../../type.js'
 import {
@@ -126,7 +127,12 @@ const emitNeg = (a, self) => {
   // just via its true unsigned value; a runtime i32 widens through the f64 path
   // below, whose `toNumF64` → `asF64` already convert_i32_u's an `.unsigned` operand.
   if (isLit(v)) return emitNum(-(v.unsigned ? litVal(v) >>> 0 : litVal(v)))
-  if (isI32Num(v) && !v.unsigned) return typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
+  if (isI32Num(v)) {
+    if (!v.unsigned && negRangeFitsI32(a)) return typed(['i32.sub', ['i32.const', 0], v], 'i32')
+    // Integer carriers are finite: widening preserves -0 and I32_MIN's
+    // positive counterpart without a NaN-canonicalization guard.
+    return typed(['f64.neg', asF64(v)], 'f64')
+  }
   // f64.neg flips the sign bit, so negating a NaN yields 0xFFF8.. — a non-canonical
   // number-NaN that overlaps the NaN-boxed value space (jz reserves 0x7FF8.. as THE
   // number-NaN). `__is_truthy`/`__eq` compare against that exact pattern, so a sign-

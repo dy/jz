@@ -381,6 +381,29 @@ test('audit: bounded element products preserve negative zero', () => {
       ok(Object.is(wasm[name](n), js[name](n)), `${optimize}: ${name}(${n}) preserves zero sign`)
   }
 })
+
+test('audit: integer negation preserves zero sign and the signed boundary', () => {
+  const src = `
+    function neg(v){return -v}
+    function local(a,i){const v=a[i&3];const n=-v;return n}
+    function assigned(a,i){let n=1;for(let k=0;k<2;k++){const v=a[i&3];n=-v}return n}
+    export function direct(i){return neg(i|0)}
+    export function stored(i){return local(new Int32Array([0,1,-1,-2147483648]),i)}
+    export function update(i){return assigned(new Int32Array([0,1,-1,-2147483648]),i)}
+    export function unsigned(i){return -(i>>>0)}
+    export function bounded(i){const v=(i&7)+1;return -v}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['direct','stored','update','unsigned','bounded'])
+      for (const i of [0,0,1,2,3,-2147483648,2147483647,0])
+        ok(Object.is(wasm[name](i),js[name](i)), `${optimize}: ${name}(${i}) preserves sign and magnitude`)
+  }
+  if (!onKernel()) {
+    const wat = compile('export function f(x){const v=(x&7)+1;return -v}', {optimize: 2,wat:true})
+    ok(wat.includes('i32.sub') && !wat.includes('f64.neg'), 'proven nonzero negation stays integer')
+  }
+})
 const vec = `
 function vec(x,y){return {x,y}}
 function add(a,b){return vec(a.x+b.x,a.y+b.y)}

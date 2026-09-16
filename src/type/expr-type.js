@@ -17,7 +17,7 @@ import {
   hasAmbiguousBoolMerge, censusShapedNode,
 } from '../kind.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
-import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32 } from '../static.js'
+import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32, negRangeFitsI32 } from '../static.js'
 import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { inBoundsCharCodeAt } from './canonical-bounds.js'
@@ -84,14 +84,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
 
   // Always f64
   if (op === '/' || op === '**' || op === '[' || op === '{}' || op === 'str') return 'f64'
-  // arr[i] — integer typed arrays (Int8/Uint8/Int16/Uint16/Int32/Uint32, aux 0..5) read as i32:
-  // the element IS a 32-bit machine integer, so a binding used in integer/bitwise ops stays i32
-  // instead of round-tripping i32.load → f64 → trunc back (the deopt that made packed-pixel fade
-  // loops like lorenz slow). Uint32 reads carry the full 0..2^32-1 range as the i32 bit-pattern;
-  // ToInt32-coercing uses (& | ^ << >> >>>, i32.store) are bit-exact, and value uses that need the
-  // unsigned magnitude (compare, f64 convert) go through the elem-aux's unsigned path. Floats
-  // (Float32/Float64, aux 6/7) genuinely yield f64. typedElems: in-progress reads come from
-  // localTypedElemsOverlay during analyzeBody; post-analyze passes read ctx.func.typedElem.
+  // Integer typed payloads use i32 for word-coercing consumers. Storing a
+  // Uint32 value also requires preserving its unsigned magnitude.
   if (op === '[]') {
     if (typeof expr[1] === 'string') {
       // Resolve the element ctor across local overlay → per-func map → module-global registry
@@ -101,13 +95,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
       if (ctor) {
         const aux = typedElemAux(ctor)
         // int family only — Float16Array shares code 3 with a flag; its elements are floats.
-        // NOTE the i32 claim is a VALUE-context answer (ToInt32 consumers fold a
-        // miss's undefined to 0, correctly). STORAGE narrowing (an i32 local
-        // cell) must additionally prove the read cannot miss — the cell would
-        // trunc_sat the miss's NaN to 0 — and that veto lives with the cell
-        // writers in analyze.js (body-local proofs, cache-pure), not here:
-        // exprType runs inside the context-pure cached analyzeBody where the
-        // emit-time prover state (typedIdxProven) is unavailable/foreign.
+        // Payload classification only: a possible missing read still needs
+        // a separate storage-presence proof before committing an i32 local.
         if (aux != null && (aux & 7) <= 5 && !(aux & 32)) return 'i32'
       }
     }
@@ -170,7 +159,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
     // emit widens to f64 (see emit.js `+`/`-`). exprType must agree — else
     // narrowing the result back to i32 would trunc_sat-saturate the f64 to INT32_MAX.
     if (isUnsignedI32Expr(expr[1], locals) || (expr[2] != null && isUnsignedI32Expr(expr[2], locals))) return 'f64'
-    if (!strict || expr[2] == null) return 'i32'  // unary: no combination magnitude to bound
+    if (expr[2] == null) return op === '+' || negRangeFitsI32(expr[1]) ? 'i32' : 'f64'
+    if (!strict) return 'i32'
     if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
     const bound = e => {
       const r = intExprRange(e)
@@ -204,28 +194,11 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
     if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
     return mulRangeFitsI32(expr[1], expr[2]) ? 'i32' : 'f64'
   }
-  // `u+` truly just preserves its operand's type (ToNumber, no arithmetic). `u-`
-  // is `0 - x` — same overflow shape as binary `-` (line ~2351 above) and needs
-  // the same magnitude-bound proof under `strict`: negating I32_MIN (-2^31)
-  // overflows to 2^31, one past I32_MAX, and negating a proven-unsigned i32
-  // ([0, 2^32)) — a `>>>`/unsignedResult/Uint32Array-read value, or a
-  // narrowUint32 accumulator local (isUnsignedI32Expr doesn't see the latter;
-  // its range is simply unproven, so the generic bound fallback below already
-  // catches it) — can go far past it (`-(3000000000)` = -3000000000). Missing
-  // this let narrowI32Results (the only `strict` caller with no further
-  // ToInt32 sink) commit a function's result to i32 for `return -y`, then
-  // wrap the true value through i32.wrap_i64(trunc_sat) instead of leaving it
-  // f64 — silently corrupting both `-(-2^31)` (signed) and `-(unsigned h)`.
+  // Unary minus shares emission's magnitude and zero-sign proof.
   if (op === 'u+') return exprType(expr[1], locals, valTypes, strict)
   if (op === 'u-') {
     const t = exprType(expr[1], locals, valTypes, strict)
-    if (t !== 'i32') return t
-    if (isUnsignedI32Expr(expr[1], locals)) return 'f64'
-    if (!strict) return 'i32'
-    if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
-    const r = intExprRange(expr[1])
-    const bound = r != null ? Math.max(Math.abs(r[0]), Math.abs(r[1])) : 0x80000000
-    return bound <= 0x7fffffff ? 'i32' : 'f64'
+    return t === 'i32' && !isUnsignedI32Expr(expr[1], locals) && negRangeFitsI32(expr[1]) ? 'i32' : 'f64'
   }
   // Ternary / logical: conciliate
   if (op === '?:' || op === '&&' || op === '||') {

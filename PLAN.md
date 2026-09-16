@@ -64,13 +64,12 @@ to `d6d140d`; Subscript to `0f65c86`.
 
 ## Candidate verification — September 16
 
-Current full matrix: core 4337 passes (69574 assertions), O0 4143, O3 4143,
-WASI 4195; each has one skip and zero failures. New regressions cover bounded
-element reads through scalar locals and load-reuse temporaries, empty arrays,
-boundary misses, wrapped stores, large squares and negative zero. The focused
-compiler run passed 521 cases; the kernel's empty → A → A → B → A sequence
-preserves bytes and results for the new kernels. No product cap changed.
-Logs use `/private/tmp/jz-load-bounds-final-` (core is `final-matrix.log`).
+Current full matrix: core 4338 passes (69655 assertions), O0 4144, O3 4144,
+WASI 4196; each has one skip and zero failures. The negation regression covers
+zero signs, the signed boundary, direct and stored results, reassignment,
+repeated calls and the retained integer fast path. The Uint32 word-read,
+tonemap and example vectorization pins pass. No product cap changed.
+Logs use `/private/tmp/jz-neg-final-`.
 
 Current self-host functional suite: 52 passes, 2333 assertions. Current
 language conformance reports 3151 positive passes, 4045 negative
@@ -86,14 +85,17 @@ heap bytes and emits 15308343 wasm bytes. The shared upsert removes roughly
 21 KB from the kernel; paired warm timing is unchanged (1.002×).
 
 The current full size sweep beats AssemblyScript on all 51 comparable cases at
-0.778× bytes (`/private/tmp/jz-load-bounds-sizes.log`). Current affected size checks keep Watr below 300000 bytes and
+0.778× bytes (`/private/tmp/jz-neg-final-size.log`), with every recorded corpus
+size unchanged by the negation fix. Current affected size checks keep Watr below 300000 bytes and
 JSON below 12500. This does not refresh committed benchmark rows.
 Evidence logs use `/private/tmp/jz-rest-`.
 
-Current self-host timing: warm 1.093×/1.134×/1.146× against 1.03× (fails), fresh
-0.886× against 0.99× (passes). Logs: `/private/tmp/jz-load-bounds-self.log` and
-`/private/tmp/jz-load-bounds-self-perf.log`. The kernel is 15871642 bytes
-(+0.06% from the previous candidate). Tuple precision, inline-map
+Current isolated self-host timing: warm 1.063×/1.117×/1.100× against 1.03×
+(fails), fresh 0.912× against 0.99× (passes). Logs:
+`/private/tmp/jz-neg-final-self.log` and `/private/tmp/jz-neg-final-self-perf.log`.
+The earlier timing pass under concurrent test load is not release evidence.
+The preceding candidate measured 15871642 kernel bytes
+(+0.06% from its predecessor). Tuple precision, inline-map
 reuse and export enumeration showed no meaningful paired timing improvement.
 The numeric hash removes a separate severe defect: isolated Map fill/read
 workloads improved about 5–51× for 128–4096 sequential keys, while aggregate
@@ -108,17 +110,19 @@ An alternating baseline/candidate run for the passive-summary cleanup measured
 outputs. Kernel size moved from 15856275 to 15862819 bytes (+0.04%); the
 comparison includes the spread and runtime-table correctness fixes. This
 modest improvement does not close the warm gate. Logs use `/private/tmp/jz-passive-`.
-These are diagnostics, not release attestations. The current committed-evidence
-audit records 15830.94 MB of swap, above the 4096 MB validity cap. No cap was relaxed.
+These are diagnostics, not release attestations. The committed evidence records
+15830.94 MB of swap. A fresh system read during negation verification reports
+11380.19 MB (`/private/tmp/jz-neg-final-machine.log`), still above the 4096 MB
+validity cap. No cap was relaxed.
 
-The current compiler passed the stateful native VST fixture: 12438 checks,
+The preceding compiler candidate passed the stateful native VST fixture: 12438 checks,
 4000 concurrent blocks, zero sample error and fixed callback heaps. The public
 compile-vst package's 29 tests also pass, including three real bundle builds.
 These tests do not prove callback deadlines.
 
 ## Remaining release work
 
-1. **Warm self-host speed.** Close the remaining roughly 6–12% gap without
+1. **Warm self-host speed.** Close the remaining roughly 3–9% diagnostic gap without
    changing the 1.03× cap. Uniform function records and positional collection
    flow are implemented. `ctx.funcs` has an exact layout; `createFunction().sig`
    and `ctx.func.current` still join to unknown. Passive export predicates and
@@ -137,8 +141,8 @@ These tests do not prove callback deadlines.
    and its physical return carrier; a new context-specialization layer is not
    justified without a measured benefit.
 
-2. **Fresh speed, size and memory evidence.** The pre-commit claims audit
-   reports 6 passes and 14 failures: compiler/memory provenance is stale,
+2. **Fresh speed, size and memory evidence.** The committed-evidence audit
+   reports 7 passes and 13 failures: compiler/memory provenance is stale,
    timing was captured above the swap cap, and rival coverage is incomplete
    (43 comparable Porffor/TinyGo rows where 44 are required). The old size
    losses in that dataset are superseded by the 51/51 standalone wins above,
@@ -171,9 +175,16 @@ These tests do not prove callback deadlines.
    `n=17`, where JS returns NaN at 17. The potentially missing read is stored
    in i32 and becomes zero. Fix presence-aware local narrowing before treating
    these general gather paths as conformant; payload bounds alone cannot do it.
-   The same review reproduced an existing zero-sign loss for `-v` when `v`
-   is an integer typed-element local holding zero. Keep that separate from
-   the corrected interval-product proof; it also needs a narrowing fix.
+   Unary negation now shares a nonzero, signed-range proof between local
+   typing and emission. It preserves both `-0` and `-(-2147483648)`; a finite
+   integer operand needs no NaN-normalization guard after widening.
+   Unsigned negation's minimal module shrinks from 73 to 56 bytes;
+   the proven nonzero integer path is unchanged. This does not fix the
+   separate missing-element storage/presence problem above. That work must
+   also retain Uint32 scalar locals' unsigned magnitude: `const v=a[i];return
+   -v` still misreads values above I32_MAX. Making every Uint32 read f64
+   disrupted word-coercing and tonemap vectorization and was discarded;
+   propagate signedness and presence through the existing narrowing facts.
 
 3. **Public VST scope and identity.** The builder is JZ/macOS/stereo.
    Porffor's lifecycle fixture needs a public state-object adapter and build
@@ -181,7 +192,7 @@ These tests do not prove callback deadlines.
    class IDs. Mono remains refused until its arrangement constant is verified
    against SDK headers. Restart-flagged edits take effect on the next setup;
    active host restart needs the component-handler interface. Events and wider
-   layouts remain refused. The stateful fixture has been rerun on this candidate.
+   layouts remain refused. The stateful fixture passed before the unary-negation change.
 
 4. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation/work proofs unknown. Empirical block checks establish

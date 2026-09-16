@@ -254,6 +254,12 @@ export function mulRangeFitsI32(a, b) {
   return Math.min(...p) >= I32_MIN && Math.max(...p) <= I32_MAX
 }
 
+/** Negation must neither overflow signed i32 nor erase the sign of zero. */
+export function negRangeFitsI32(a) {
+  const r = intExprRange(a)
+  return !!r && r[0] > I32_MIN && r[1] <= I32_MAX && (r[1] < 0 || r[0] > 0)
+}
+
 /** Interval hull (min-of-los, max-of-his) — null-safe, a missing side returns
  *  the other side's own range unchanged. Generic interval-merge shared by the
  *  typed-value-range family below and any other range-lattice join. */

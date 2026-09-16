@@ -103,6 +103,9 @@ and load-reuse temporaries without a new pass. A possible missing read supplies
 no integer range; stored width and signedness still constrain the payload.
 Local typing and emission share the interval-product proof, including the
 negative-zero check; a product fitting i32's magnitude alone is insufficient.
+Unary negation likewise requires a nonzero interval whose negation fits i32.
+Other integer operands widen without a NaN-normalization guard, since their
+carriers are finite.
 
 Size mode keeps one shared dynamic property lookup instead of adding schema
 dispatch arms whose generic fallback remains necessary. The existing read-reuse
