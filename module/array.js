@@ -319,10 +319,9 @@ export default (ctx) => {
   // sources, BigInt64/Uint64 lanes, …) has non-f64 element stride/width, so a raw
   // byte copy is garbage — fall back to the polymorphic per-element reader that
   // already decodes every TYPED element kind + view indirection + bounds
-  // (`__typed_idx`, the same helper bracket-reads `src[i]` route through — Array.from
-  // and bracket-read agree element-for-element by construction, including the
-  // BigInt64/Uint64 carrier: whatever `src[i]` yields is what lands in `dst[i]`).
-  ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src i64) (result f64)
+  // Ordinary array slots hold tagged values, so BigInt elements must be boxed
+  // by the shared tagged reader before leaving typed storage.
+  ctx.core.stdlib['__arr_from'] = () => `(func $__arr_from (param $src i64) (result f64)
     (local $len i32) (local $dst i32) (local $i i32)
     (local.set $len (call $__len (local.get $src)))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len)))
@@ -333,7 +332,7 @@ export default (ctx) => {
         (block $brk (loop $loop
           (br_if $brk (i32.ge_s (local.get $i) (local.get $len)))
           (f64.store (i32.add (local.get $dst) (i32.shl (local.get $i) (i32.const 3)))
-            (call $__typed_idx (local.get $src) (local.get $i)))
+            (call $${representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'} (local.get $src) (local.get $i)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $loop)))))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`

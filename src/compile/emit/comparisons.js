@@ -15,9 +15,7 @@ import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../ki
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { foldIntCompare } from '../../ir/numeric.js'
 import { nonNegIntLiteral } from '../../static.js'
-import { K, hasTag } from '../../summary/index.js'
 import { typedIdxProven } from '../../type.js'
-import { BIGINT_REP_RAW, bigintRepBits, bigintRepIsClosed, representationActiveMaterializedRep, representationProgramHasBigint } from '../representation-plan.js'
 import { numLiteralNode } from './bigint.js'
 import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { emitInstanceof } from './instanceof.js'
@@ -324,45 +322,8 @@ export const numericVal = vt => vt === VAL.BOOL ? VAL.NUMBER : vt
 // path instead, which already resolves distinct pointers to `false`.
 const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 
-/**
- * Strict `===`/`!==`. Unlike loose `==`, no coercion: a statically-known type
- * mismatch folds to a constant (`true === 1` → false, `"1" === 1` → false). When
- * the types match — or one side is statically unknown — the result is bit-for-bit
- * identical to loose `==` on same-type operands, so we delegate to it.
- *
- * `null` and `undefined` are distinct NaN-boxed sentinels, so `===` tells them
- * apart (`null === undefined` is false) even though loose `==` treats both nullish.
- *
- * One carrier-level limitation remains (documented gap, not a regression): booleans
- * and numbers share the 0/1 carrier, so `1 === trueDynamic` can only be told apart
- * when the boolean's type is statically known.
- */
-// A binding the analyzer marked `nullable` (its init or some assignment was a
-// nullish literal) can hold null/undefined at runtime, so `x === null` / `x == null`
-// must NOT fold to a constant even when `val` is a definite non-null kind. Only bare
-// variable reads carry the flag; literals/fresh allocations are inherently non-null.
-// An UNPROVEN typed-index read joins the set: `ta[i]` reads `undefined` past the end
-// (the checked .typed:[] form), while its VT stays NUMBER for numeric dispatch — the
-// undef box IS a NaN through arithmetic; only these identity folds must stay live.
-// `ta[i] === undefined` is the idiomatic bounds probe, so folding it kills real code.
-// A dict-mode `[]`/`.` read or `recv.get(k)` Map read whose VT comes SOLELY
-// from dictValueKindOf/mapValueKindOf's soundness carve-out joins the set for
-// the identical reason: an unwritten key reads back the same undefined —
-// `prec[op] === undefined` (does this key exist?) is that dict's own bounds
-// probe. The predicate is `censusMaybeUndefined` (kind.js,
-// .work/archive/todo.md §deletion-sweep) — REACHABLE but not yet
-// LOAD-BEARING here: Slice 4's VT['[]']/VT['.']/VT['()'] exact-kind wiring
-// was reverted (audit #10, §14 is the re-enablement path), so `valTypeOf`
-// for a dict/Map read stays null and this function's callers never reach a
-// state where the difference matters — YET. Kept correct anyway (not
-// reverted to the old early-return) because the composition bug it fixes is
-// real independent of VT: a bare name must fall through to the bottom `if
-// (censusMaybeUndefined(n))` check — NOT early-return on `.nullable` alone
-// (a materially DIFFERENT REP field, seeded by nullish-literal producers,
-// that says nothing about a census-copied `mayBeUndefined` binding) — so a
-// decl-hop identity compare (`let x = m.get(missing); x === undefined`)
-// stays sound the moment §14's opt-in presentVal model makes `x`'s claim
-// live again, with no re-audit of this call site required.
+// Presence is independent of payload kind. Bounds, array holes and census
+// nullish facts keep sentinel equality live even when present values are numeric.
 const nullableOperand = (n) => {
   if (typeof n === 'string' && (repOf(n)?.nullable || repOfGlobal(n)?.nullable)) return true
   // A construct-then-fill numeric array (`new Array(n)`, `a[i] = expr`): an unwritten
@@ -396,22 +357,6 @@ const boolOrNullish = (n) => resolveValType(n, valTypeOf, lookupValType) === VAL
 // bits, which equal no payload.
 const bigintCarrier = (n, vt) => vt === VAL.BIGINT || isPlanRawBigint(n)
 
-// The plan left this carrier open, so a raw BigInt's bits may sit in it:
-// only $__eq's bit contract applies (the raw-carrier contract its open
-// operands keep).
-const openRawBigint = (n) => {
-  const r = representationActiveMaterializedRep(ctx, n)
-  return !bigintRepIsClosed(r) && (bigintRepBits(r) & BIGINT_REP_RAW) !== 0
-}
-
-// The carrier may hold a boxed BigInt: the program can box one, and the
-// summary does not exclude the kind.
-const mayBeBigint = (n) => {
-  if (!representationProgramHasBigint(ctx)) return false
-  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(n)
-  return k == null || k === K.NONE || hasTag(k, K.BIGINT)
-}
-
 // `$t` (an f64 local) holds a PTR.BIGINT box: a NaN-box with the tag. The
 // NaN test comes first; a Number's bits spell any tag.
 const boxTest = (get) => typed(['i32.and', ['f64.ne', get, get], ptrTypeEq(get, PTR.BIGINT)], 'i32')
@@ -420,11 +365,9 @@ const boxTest = (get) => typed(['i32.and', ['f64.ne', get, get], ptrTypeEq(get, 
 // their payloads. One beside a partner of another kind (IsLooselyEqual
 // steps 8-14): a Number or a boolean mathematically, a string through
 // StringToBigInt, an unkinded carrier through __bigint_eq's own dispatch.
-// Strictly, a box of the same payload; a partner that is no box keeps the
-// bit contract (an unkinded carrier may hold a raw BigInt, whose bits are
-// the value) unless the plan tagged it, so its raw f64 is a Number and no
-// BigInt. Both operands evaluate once, in source order. Null when neither
-// side is a BigInt carrier, or the partner is an open carrier.
+// Strictly, only a box of the same payload; a Number's raw bits are never
+// evidence of a BigInt. Both operands evaluate once, in source order. Null
+// when neither side is a BigInt carrier.
 function emitBigintEq(a, b, va, vb, vta, vtb, negate, strict) {
   const bigA = bigintCarrier(a, vta), bigB = bigintCarrier(b, vtb)
   if (!bigA && !bigB) return null
@@ -432,7 +375,6 @@ function emitBigintEq(a, b, va, vb, vta, vtb, negate, strict) {
   if (bigA && bigB) return fin(typed(['i64.eq', readI64(a, va), readI64(b, vb)], 'i32'))
   const big = bigA ? a : b, bigV = bigA ? va : vb
   const other = bigA ? b : a, otherV = bigA ? vb : va, otherVt = bigA ? vtb : vta
-  if (openRawBigint(other)) return null
   const payload = tempI64('beq'), partner = temp('beq')
   const setPayload = ['local.set', `$${payload}`, readI64(big, bigV)]
   const setPartner = ['local.set', `$${partner}`, asF64(otherV)]
@@ -441,11 +383,14 @@ function emitBigintEq(a, b, va, vb, vta, vtb, negate, strict) {
   let cmp
   if (strict) cmp = ['if', ['result', 'i32'], boxTest(o),
     ['then', ['i64.eq', p, unboxBigInt(o)]],
-    ['else', isPlanTaggedBigint(other) ? ['i32.const', 0] : ['i64.eq', p, ['i64.reinterpret_f64', o]]]]
+    ['else', ['i32.const', 0]]]
   else if (known && (otherVt === VAL.NUMBER || otherVt === VAL.BOOL)) { inc('__bigint_eq_num'); cmp = ['call', '$__bigint_eq_num', p, toNumF64(other, o)] }
   else if (known && otherVt === VAL.STRING) { inc('__bigint_eq_str'); cmp = ['call', '$__bigint_eq_str', p, ['i64.reinterpret_f64', o]] }
-  else if (known) cmp = ['i32.const', 0]
-  else { inc('__bigint_eq'); cmp = ['call', '$__bigint_eq', p, ['i64.reinterpret_f64', o]] }
+  else {
+    ctx.module.include('string')
+    inc('__bigint_eq')
+    cmp = ['call', '$__bigint_eq', p, ['i64.reinterpret_f64', o]]
+  }
   return fin(typed(['block', ['result', 'i32'], ...(bigA ? [setPayload, setPartner] : [setPartner, setPayload]), cmp], 'i32'))
 }
 
@@ -485,40 +430,15 @@ function emitLooseEq(a, b, negate, strict) {
   const va = identity(a), vb = identity(b)
   const intCmp = foldIntCompare(eqOp, va, vb)
   if (intCmp) return intCmp
-  // Either side known-pure NUMBER (literal or typed) → f64.eq/ne is correct regardless
-  // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
-  // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
-  // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
+  // Keep semantic kinds separate from numeric Boolean coercion.
   const rawA = boolOrNullish(a) ? null : resolveValType(a, valTypeOf, lookupValType)
   const rawB = boolOrNullish(b) ? null : resolveValType(b, valTypeOf, lookupValType)
   const vta = numericVal(rawA)
   const vtb = numericVal(rawB)
   const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
   const numB = () => rawB === VAL.BOOL ? toNumF64(b, vb) : asF64(vb)
-  // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1/Slice 5): "either
-  // side known-pure NUMBER" above is only TRUE when that side's exact-kind
-  // claim can't be falsified at runtime. `nullableOperand` (this file, above)
-  // already unifies the two ways a NUMBER claim can lie — an unproven typed-
-  // index OOB read and a dict-census exact-kind claim (censusMaybeUndefined)
-  // — both yield a real `undefined` at runtime, a NaN-boxed sentinel that
-  // f64.eq/ne can NEVER correctly equate to another NaN-boxed `undefined`
-  // (IEEE-754 f64.eq is false for any NaN operand, by construction, even
-  // against a bit-identical NaN) — unlike the relational family (cmpOp,
-  // `<`/`>`/`<=`/`>=`), which stays correct unguarded: JS ToNumber(undefined)
-  // = NaN and "compared to NaN" is always false, exactly what a raw f64
-  // relational op already returns for ANY NaN-boxed operand, real or
-  // masquerading — no fix needed there, confirmed by direct repro. Equality
-  // has no such coincidence: `undefined === undefined` is TRUE in JS. A
-  // genuinely CERTAIN real number on the OTHER side still makes f64.eq safe
-  // regardless of nullability here (a real number can never equal a nullish/
-  // pointer value, and f64.eq(realFloat, anyNaN) is unconditionally false,
-  // matching) — so only a claim that is BOTH "===VAL.NUMBER" AND non-nullable
-  // counts as "safe" below; a nullable claim degrades exactly as if that side
-  // had no VAL.NUMBER proof at all, falling through to the fully-dynamic
-  // `__eq`/`__eq_strict` fallback (below) or the coercion helper as
-  // appropriate. Found live via `d[rk] === u` (u a genuinely-undefined local)
-  // and `d[rk] == otherDict[missingKey]` (both operands independently
-  // nullable) both wrongly reading false — JS true — pre-fix.
+  // A nullable numeric read may carry undefined. Only a present Number
+  // permits direct numeric equality against an otherwise untyped carrier.
   const bigCmp = emitBigintEq(a, b, va, vb, rawA, rawB, negate, strict)
   if (bigCmp) return bigCmp
   const aSafe = vta === VAL.NUMBER && !nullableOperand(a)
@@ -586,26 +506,19 @@ function emitLooseEq(a, b, negate, strict) {
   if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
     return typed([`i64.${eqOp}`, ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
   }
-  // String-equality specialization — the hot `node[0] === 'literal'` AST-tag dispatch,
-  // the compiler's single most-emitted comparison (5579 of its 6487 __eq sites). When one
-  // side is statically a STRING, skip the generic __eq NaN-box dispatch (the #1 self-compile
-  // hot helper). jz's ==/=== never coerce (number-vs-string is false in __eq), so this is
-  // sound for both. Two shapes by what the OTHER side is known to be:
-  //   both STRING        → __str_eq directly (no number/NaN/tag test needed at all).
-  //   STRING vs unknown  → i64.eq fast ? equal : (__is_str_key(u) ? __str_eq : not-equal).
-  // Soundness of the fast path: the known string is a non-NaN STRING NaN-box, so a bit
-  // match can ONLY be that same string (a normal f64 can't alias those bits). On bit
-  // MISMATCH the unknown can still content-match — a heap string from `'i'+'f'` shares
-  // content but not bits — so the fallback __str_eq stays (pure i64.eq is unsound here).
-  // __is_str_key rejects the number-whose-bits-alias-the-STRING-tag case that a bare
-  // __ptr_type would misroute into a wild __str_eq deref (see __eq's own guard).
-  // INLINED (not a helper call): a single $__str_eq_lit helper measured 2.4% slower on
-  // the corpus — V8 keeps the call at the hot miss path; inlining lets the optimizer fold
-  // __is_str_key/__str_eq's prefix in, which is where the tag dispatch spends its time.
-  // Behaviorally identical to __eq when one side is a string — proven by a 4584-case
-  // spec-on/spec-off differential (zero divergence at optimize 0 and 2).
+  // String content compares by bits first, then by content for heap strings.
+  // Loose unknown partners take the shared conversion path before these
+  // shortcuts; strict comparisons need only a string tag and content check.
   const strEqResult = (r) => negate ? typed(['i32.eqz', r], 'i32') : r
   const aStr = rawA === VAL.STRING, bStr = rawB === VAL.STRING
+  // A loose unknown partner may be a Number, Boolean, BigInt or object.
+  // The shared comparison owns their conversions; string-only shortcuts
+  // require strict equality or proof that both operands are strings.
+  if (!strict && (aStr && rawB == null || bStr && rawA == null)) {
+    ctx.module.include('string')
+    inc('__eq')
+    return strEqResult(typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32'))
+  }
   // SSO literal (≤6 ASCII — its NaN-box IS its content, see module/string.js codec):
   // under the ≤6-ASCII⇒SSO producer invariant, content equality ⟺ bit equality
   // against ANY operand — an equal string must be the same SSO pattern, a heap
@@ -613,11 +526,7 @@ function emitLooseEq(a, b, negate, strict) {
   // (bit-aliasing NaNs behave identically to the pre-existing bit-eq fast path).
   // So the whole compare collapses to ONE i64.eq/ne — no call, no fallback.
   const ssoLit = (n) => ctx.features.sso && isLiteralStr(n) && n[1].length <= 6 && /^[\x00-\x7f]*$/.test(n[1])
-  // Loose `==` admits one non-string partner: a boxed BigInt equals the string
-  // StringToBigInt reads as its value (IsLooselyEqual step 8). An unknown
-  // side that may carry one keeps a tag test on the bit-mismatch path.
-  const bigU = !strict && ((bStr && rawA == null && mayBeBigint(a)) || (aStr && rawB == null && mayBeBigint(b)))
-  if ((aStr || bStr) && (rawA == null || aStr) && (rawB == null || bStr) && (ssoLit(a) || ssoLit(b)) && !bigU) {
+  if ((aStr || bStr) && (rawA == null || aStr) && (rawB == null || bStr) && (ssoLit(a) || ssoLit(b))) {
     return typed([`i64.${negate ? 'ne' : 'eq'}`, asI64(va), asI64(vb)], 'i32')
   }
   if (aStr && bStr) {
@@ -632,7 +541,7 @@ function emitLooseEq(a, b, negate, strict) {
     // above) — one inline bit test skips the __is_str_key/__str_eq tail. Sound
     // for a non-string u too: the test only ever short-circuits to "not equal",
     // and a non-string never equals a string.
-    let tail = ctx.features.sso
+    const tail = ctx.features.sso
       ? ['if', ['result', 'i32'],
           ['i64.ne', ['i64.and', ['i64.or', uG, lG], ['i64.const', ssoBitI64Hex()]], ['i64.const', 0]],
           ['then', ['i32.const', 0]],
@@ -642,23 +551,6 @@ function emitLooseEq(a, b, negate, strict) {
       : ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
           ['then', ['call', '$__str_eq', uG, lG]],
           ['else', ['i32.const', 0]]]
-    // Loose: an object on the unknown side compares as its primitive
-    // (IsLooselyEqual step 11) — through the dynamic compare, before the SSO
-    // shortcut, which is only sound for a string or a non-object.
-    if (!strict) {
-      ctx.module.include('string')
-      inc('__is_object', '__eq')
-      tail = ['if', ['result', 'i32'], ['call', '$__is_object', uG],
-        ['then', ['call', '$__eq', uG, lG]],
-        ['else', tail]]
-    }
-    if (bigU) {
-      inc('__bigint_eq_str')
-      const uF = typed(['f64.reinterpret_i64', uG], 'f64')
-      tail = ['if', ['result', 'i32'], boxTest(uF),
-        ['then', ['call', '$__bigint_eq_str', unboxBigInt(uF), lG]],
-        ['else', tail]]
-    }
     // Source order: the unknown side is stored first only when it is the left operand.
     const sets = bStr
       ? [['local.set', `$${u}`, asI64(uVal)], ['local.set', `$${l}`, asI64(lVal)]]
@@ -668,12 +560,8 @@ function emitLooseEq(a, b, negate, strict) {
         ['then', ['i32.const', 1]],
         ['else', tail]]], 'i32'))
   }
-  // Every fast path above (i32/peeled-int/known-NUMBER/REF_EQ/STRING) agrees bit-
-  // for-bit between == and === — coercion never enters them. Only THIS final,
-  // fully-dynamic fallback can hit the one case where they diverge: both operands
-  // nullish at runtime but different atoms (null vs undefined) — loose treats
-  // that equal, strict does not. `strict` (set only by emitStrictEq's delegation
-  // below) picks the non-coercing helper.
+  // Fully dynamic operands retain their tagged kinds. Only loose equality
+  // converts primitives and treats null and undefined as equal.
   inc(strict ? '__eq_strict' : '__eq')
   const call = typed(['call', strict ? '$__eq_strict' : '$__eq', asI64(va), asI64(vb)], 'i32')
   return negate ? typed(['i32.eqz', call], 'i32') : call

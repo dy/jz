@@ -200,8 +200,14 @@ constant inherited tag. The two functions are runtime roots
 (`ctx.funcs.runtimeRoots`): address-taken, boxed ABI. Implicit coercions retain
 surrounding catches, since method calls only become explicit during emission.
 `+` with a heap operand of known kind concatenates unless a user conversion
-method may run. Loose `==` between a heap kind and a Number, String or Boolean
-takes the dynamic compare.
+method may run. Loose `==` between a heap kind and a Number, String, Boolean
+or BigInt applies that same conversion before comparing primitive values.
+String bit/content shortcuts require strict equality or two proven strings;
+loose comparisons with an unknown partner use the shared conversion helper.
+Dynamic BigInt comparisons inspect the partner's tag, never its raw payload
+bits: a subnormal Number can have the same bits as an integer. `Array.from`
+uses the tagged element reader when copying typed BigInts into ordinary slots
+or passing them to a mapper, including through an unknown source kind.
 Generic addition receives operands through `storedValue`, including boxed BigInts.
 The shared primitive check classifies those boxes as primitives; addition unboxes
 both BigInts or throws on mixed numeric domains. An object's conversion result

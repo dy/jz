@@ -277,3 +277,87 @@ test('ToPrimitive: a boxed BigInt returned by a conversion method is primitive',
     return k ? String(o) : String(o + 0n)
   }`, [0, 1, 0])
 })
+
+test('ToPrimitive: loose BigInt equality converts known and dynamic objects', () => {
+  check(`export function f(k) {
+    let calls = 0
+    const o = { valueOf() { calls++; return k ? 8n : 7n } }
+    const result = (o == 7n) + ':' + (7n == o) + ':' + (o != 7n) + ':' +
+      (7n != o) + ':' + (o === 7n) + ':' + (7n !== o)
+    return result + ':' + calls + ':' + ([7] == 7n) + ':' + (0n == [])
+  }`, [0, 1, 1, 0])
+  check(`export function f(k) {
+    let calls = 0
+    const values = [7n, 7, '7', true, null, undefined, NaN, {}, [7], []]
+    const o = { valueOf() { calls++; return values[k] } }
+    const choices = [o, null]
+    const value = choices[0]
+    return (value == 7n) + ':' + (7n != value) + ':' + calls + ':' + (values[k] == 7n)
+  }`, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0])
+})
+
+test('ToPrimitive: BigInt equality evaluates both sides before conversion and preserves errors', () => {
+  check(`export function f(k) {
+    let order = ''
+    const o = {
+      valueOf() { order += 'v'; if (k === 1) throw 23; return {} },
+      toString() { order += 's'; return k === 2 ? {} : '7' }
+    }
+    function left() { order += 'l'; return o }
+    function right() { order += 'r'; return 7n }
+    try {
+      const eq = k === 3 ? right() == left() : left() == right()
+      return eq + ':' + order
+    } catch (e) { return (e instanceof TypeError ? 'TypeError' : e) + ':' + order }
+  }`, [0, 1, 2, 3, 0])
+})
+
+test('ToPrimitive: dynamic BigInt equality distinguishes numeric bits from a payload', () => {
+  check(`export function f(k) {
+    const values = [7n, 7, 3.5e-323, -3.5e-323, 0, null, undefined]
+    return (values[k] == 7n) + ':' + (7n == values[k]) + ':' + (values[k] != 7n) + ':' +
+      (values[k] === 7n) + ':' + (7n !== values[k])
+  }`, [0, 1, 2, 3, 4, 5, 6, 0])
+  check(`export function f(k) {
+    const values = Array.from(new BigInt64Array([7n, 0n, -7n]))
+    return (values[k] == 7n) + ':' + (values[k] == 0n) + ':' + (values[k] == -7n)
+  }`, [0, 1, 2, 3, 0])
+  const src = `function clone(src) { return Array.from(src, v => v) }
+  export function copy(k) {
+    const src = new BigInt64Array([7n, 0n, -7n, 9221120245631025152n])
+    if (k === 0) return Array.from(src)
+    if (k === 1) return Array.from(src, v => v)
+    if (k === 3) return Array.from(src.subarray(2, 2), v => { throw 23 })
+    if (k === 4) return clone(src)
+    if (k === 5) return clone([3.5e-323, 'x', true])
+    return Array.from(src.subarray(1, 3), v => [v, typeof v])
+  }`
+  const want = oracle(src)
+  for (const optimize of [0, 2, 3, 'size']) {
+    const got = jz(src, { optimize }).exports
+    for (const k of [0, 1, 2, 3, 4, 5, 0]) is(got.copy(k), want.copy(k), `O${optimize}, copy ${k}`)
+  }
+})
+
+test('ToPrimitive: equality specializations preserve every primitive conversion domain', () => {
+  const values = ['null', 'undefined', 'false', 'true', '0', '-0', '1', '7',
+    '3.5e-323', 'NaN', '7n', '0n', "''", "'0'", "'7'", "'true'",
+    '[]', '[7]', '({ valueOf() { return 7 } })',
+    '({ valueOf() { return 7n } })', "({ valueOf() { return '7' } })"]
+  const src = values.slice(0, 16).map((literal, n) => `export function f${n}(k) {
+    const v = [${values.join(',')}]
+    return [${literal} == v[k], v[k] == ${literal},
+      ${literal} === v[k], v[k] === ${literal}, ${literal} != v[k], v[k] !== ${literal}]
+  }`).join('\n')
+  const want = oracle(src)
+  for (const optimize of [0, 2, 3, 'size']) {
+    const got = jz(src, { optimize }).exports
+    for (let n = 0; n < 16; n++) for (let k = 0; k <= values.length; k++)
+      is(got['f' + n](k), want['f' + n](k), `O${optimize}, ${values[n]} vs ${values[k]}`)
+  }
+  // Without any BigInt syntax, the old SSO shortcut also skipped object coercion.
+  check(`export function f(k) {
+    const values = [7, '7', { valueOf() { return 7 } }]
+    return values[k] == '7'
+  }`, [0, 1, 2, 3, 0])
+})

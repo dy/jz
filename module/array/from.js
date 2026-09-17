@@ -17,6 +17,7 @@ import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, inc, err, PTR, setLinkDemand } from '../../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { makeCallback, idxArg } from './callback.js'
+import { representationProgramHasBigint } from '../../src/compile/representation-plan.js'
 
 // Array.from(items, mapfn): spec step 2 — if mapfn is not undefined and
 // IsCallable(mapfn) is false, throw a TypeError before iterating items.
@@ -98,6 +99,7 @@ export const arrayFromEmit = (src, mapFn) => {
   }
 
   const sourceVt = resolveValType(src, valTypeOf, lookupValType)
+  const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
   if (mapFn && !ctx.closure.call) ctx.module.include('fn')
   if (sourceVt === VAL.SET || sourceVt === VAL.MAP || sourceVt === VAL.CLOSURE)
     err(sourceVt === VAL.CLOSURE
@@ -148,7 +150,7 @@ export const arrayFromEmit = (src, mapFn) => {
   // Known Array/TypedArray + mapper: fixed integer length, but each element
   // is read afresh so callback mutations of not-yet-visited slots are visible.
   if (mapFn && (sourceVt === VAL.ARRAY || sourceVt === VAL.TYPED)) {
-    inc('__len', '__typed_idx')
+    inc('__len', read)
     const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
     const srcIR = asF64(emit(src))
     const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }])
@@ -162,7 +164,7 @@ export const arrayFromEmit = (src, mapFn) => {
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
         ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ['local.set', `$${item}`, ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
+        ['local.set', `$${item}`, ['call', `$${read}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
         elemStore(out.local, i, asF64(cb.stored([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],
@@ -181,7 +183,7 @@ export const arrayFromEmit = (src, mapFn) => {
   const checkExternalIterable = sourceVt == null && ctx.transform.targetProfile.envImports
   if (checkExternalIterable) { setLinkDemand('external'); inc('__ext_has_iterator') }
   setLinkDemand('typedarray')
-  inc('__str_points', '__length.value', '__ptr_type', '__typed_idx', '__str_idx', '__dyn_get_any_t', '__to_num')
+  inc('__str_points', '__length.value', '__ptr_type', read, '__str_idx', '__dyn_get_any_t', '__to_num')
 
   const s = temp('afsrc'), t = tempI32('aft'), rawLen = temp('afrawlen')
   const num = temp('afnum'), len = tempI32('aflen'), i = tempI32('afi')
@@ -198,7 +200,7 @@ export const arrayFromEmit = (src, mapFn) => {
     ['i32.or',
       ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.ARRAY]],
       ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.TYPED]]],
-    ['then', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
+    ['then', ['call', `$${read}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
     ['else', ['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.STRING]],
       ['then', ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],

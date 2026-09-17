@@ -404,7 +404,7 @@ export default (ctx) => {
     __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset'],
     __bigint_eq_num: [],
     __bigint_eq_str: ['__str_to_bigint'],
-    __bigint_eq: ['__bigint_eq_num', '__bigint_eq_str', '__ptr_type', '__ptr_offset'],
+    __bigint_eq: ['__bigint_eq_num', '__bigint_eq_str', '__ptr_type', '__ptr_offset', '__is_object', '__to_prim_dflt'],
     __parseInt: ['__char_at', '__str_length', '__skipws', '__to_str'],
     __parseFloat: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws'],
   })
@@ -1938,7 +1938,7 @@ export default (ctx) => {
   // `b`: a Number compares mathematically (step 14; NaN and the infinities
   // are equal to nothing), a boolean as its ToNumber (steps 10-11), a string
   // through StringToBigInt (step 8; no parse, no equality), a boxed BigInt by
-  // content, everything else (null, undefined, a heap kind) is unequal.
+  // content, an object through ToPrimitive. Nullish and Symbol are unequal.
   // __bigint_eq is the dynamic form the static lowering reaches for a
   // partner it cannot kind; $__eq (module/core.js) takes it for a box it
   // meets beside another tag.
@@ -1963,10 +1963,8 @@ export default (ctx) => {
 
   ctx.core.stdlib['__bigint_eq'] = `(func $__bigint_eq (param $b i64) (param $v i64) (result i32)
     (local $f f64) (local $t i32)
-    ;; Identical bits are equal, as in $__eq: a carrier the lowering could not
-    ;; kind may hold a raw BigInt (an Array.from of a BigInt64Array keeps the
-    ;; element bits), whose payload is the value itself.
-    (if (i64.eq (local.get $b) (local.get $v)) (then (return (i32.const 1))))
+    ;; The partner uses the tagged-value contract. Equal raw bits do not
+    ;; prove equality: an integer payload can spell a subnormal Number.
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (call $__bigint_eq_num (local.get $b) (local.get $f)))))
@@ -1977,6 +1975,8 @@ export default (ctx) => {
       (then (return (i64.eq (local.get $b) (i64.load (call $__ptr_offset (local.get $v)))))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (call $__bigint_eq_str (local.get $b) (local.get $v)))))
+    (if (call $__is_object (local.get $v))
+      (then (return (call $__bigint_eq (local.get $b) (call $__to_prim_dflt (local.get $v))))))
     (i32.const 0))`
 
   ctx.core.stdlib['__parseFloat'] = `(func $__parseFloat (param $v i64) (result f64)
