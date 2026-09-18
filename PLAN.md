@@ -679,16 +679,26 @@ Those tests do not establish callback deadlines.
   undefined" on every program with an object literal). The finder was a
   bisect over the changed files, one tree copy each with that file at
   HEAD, building a kernel and compiling one probe.
-- watr regressed against V8 before this work: the results snapshot
-  (e36aab3b) measured 1135 µs against V8's 865 (1.31×); the same bench
-  source on the September 18 tree measures 1.5 to 1.8×, with watr 5.10.3's
-  sources as well as 5.11.0's, so it is jz, not the workload. Its profile
-  is dictionary reads by parsed keys (`__dyn_get_expr`, 108 sites in
-  `normalize`), small-array allocation, `__dyn_set`, and string hashing
-  (a parsed key is hashed at every lookup; V8 caches a string's hash in the
-  string). A bisect over the 268 commits since the snapshot (`git archive`
-  builds in the scratchpad) is the next step; the snapshot builds and runs
-  against today's node_modules.
+- watr's bench number moved from 1.31× V8 (the results snapshot, e36aab3b)
+  to 1.5 to 1.9× before this work, with watr 5.10.3's sources as well as
+  5.11.0's. A bisect over the 270 commits since the snapshot (`git archive`
+  builds against today's node_modules, timed on a quiet machine) lands on
+  63f4fe97 (the summary widening and the kernel's inline hot reads): the
+  parent's watr build runs its first `main()` in 986 µs, that commit's in
+  1569. The loss is tier-up, not steady state: by the second call every jz
+  build of watr runs at 741 to 782 µs (the parent, that commit, today's
+  tree), and the commit's module is 16% larger (525 → 607 KB), which V8's
+  Liftoff tier runs slower until TurboFan replaces it. The bench measures
+  the first call of a fresh process, where V8's own row warms as well (watr
+  794 → 625 µs, jessie 1429 → 1138 by the third call): watr's steady-state
+  ratio is 1.24×, its first-call ratio about 1.9×; jessie's steady state
+  1.27×, its first call 1.06×, the paired bench's 1.13× between them. What
+  a closer bench number needs is smaller hot functions for the speed tier
+  (cold paths out of line), not a different steady state. watr's steady
+  profile keeps its own targets: dictionary reads by parsed keys
+  (`__dyn_get_expr`, 108 sites in `normalize`), small-array allocation,
+  `__dyn_set`, and string hashing (a parsed key is hashed at every lookup;
+  V8 caches a string's hash in the string).
 - Gates on the tree with the parser work: core 4501/4502, opt0 4306/4307,
   opt3 4306/4307, wasi 4359/4360 (one skip each), self-compile 68/68,
   kernel parity byte-identical at O0/O2/O3, `bench:size` geomean 0.794×;
