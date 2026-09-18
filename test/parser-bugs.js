@@ -844,7 +844,7 @@ test('async contextual keywords retain arrow/method line boundaries (async-gener
     rejects('async\n(x) => x', 'async')
     rejects('if (false) { let f = async /*\n*/ () => 1 }', 'async')
     rejects('\\u0061sync () => {}', 'arrow parameters')
-    rejects('({ async\nmethod() {} })', 'object method')
+    rejects('({ async\nmethod() {} })', 'async')
 
     ok(compile('export let f = async (x) => x + 1') instanceof Uint8Array,
       'same-line async arrow parameters still compile')

@@ -99,8 +99,8 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "https://codeload.github.com/dy/subscript/tar.gz/0f65c867269c2dc9c26ac98a7bc91d26c327e9b1",
-    "watr": "https://codeload.github.com/dy/watr/tar.gz/d6d140d0f968af5c642b555ce9f8c1deaaaa9068"
+    "subscript": "https://codeload.github.com/dy/subscript/tar.gz/c60fd6f0c4d3ab930ed149c50b5d09ecc792e5df",
+    "watr": "https://codeload.github.com/dy/watr/tar.gz/8cf60aeb2a5c3e7c398f4eee42f66b7a7a81c303"
   },
   "keywords": [
     "javascript",

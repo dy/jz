@@ -1834,6 +1834,8 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
           // other shape (`=`-initialized shorthand, a literal value marker
           // like a number/boolean/nan, a bracketed computed-name attempt
           // missing its `: value`, `;`-joined content) is invalid.
+          if (isNode(item) && item[0] === ';' && item[1] === 'async')
+            fail("object literal members are separated by ',': a line terminator after 'async' ends a shorthand property, so the method that follows needs a comma before it")
           if (isNode(item) && item[0] !== ':' && item[0] !== '...' && item[0] !== 'get' && item[0] !== 'set')
             fail('invalid object literal shorthand/initialized name')
           if (typeof item === 'string') checkBindingName(item, cx)
