@@ -18,6 +18,7 @@
  * @module kind/val-type-of
  */
 
+import { typedElementKey } from '../typed-provenance.js'
 import { ctx, registerResetHook } from '../ctx.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import { intLiteralValue, staticIndexKey, typedCtorRawOf } from '../static.js'
@@ -29,7 +30,8 @@ import { summaryTypedCtor, typedStorageCtorFromContext } from '../typed-context.
 import { literalTruthiness, nullishArm } from './lattice.js'
 import { censusMaybeUndefinedKind } from './dict-census.js'
 import { valOf as summaryVal, contractVal } from '../summary/index.js'
-import { isPostfixRecovery } from '../summary/kind.js'
+import { typedIndexKnown } from '../type/canonical-bounds.js'
+import { NUMBER, isPostfixRecovery } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 
 /**
@@ -284,6 +286,8 @@ VT['[]'] = (args) => {
   // typedReadMaybeOob below and keep the runtime compare.
   const recvVt = valTypeOf(args[0])
   if (recvVt === VAL.TYPED) {
+    if (!typedElementKey(args[1], isPresentNumber(ctx, args[1])) &&
+        !((valTypeOf(args[1]) === VAL.NUMBER || censusMaybeUndefinedKind(args[1]) === VAL.NUMBER) && ctx.summary?.typedPropertiesAbsent())) return null
     const ctor = typedReceiverCtor(args[0])
     const elem = typedCtorElemValType(ctor)
     // With no BigInt syntax in the whole program, every accepted host typed
@@ -625,6 +629,26 @@ VT['()'] = (args) => {
   // Pure structural unwrap: the grouping's type IS its inner expression's type.
   if (args.length === 1) return valTypeOf(callee)
   return null
+}
+
+/** An index's payload kind alone does not exclude a missing value's named key. */
+export function isPresentNumber(ctx, key, scope = ctx.func.current) {
+  if (typeof key === 'number' || Array.isArray(key) && key[0] == null && typeof key[1] === 'number') return true
+  if (Array.isArray(key) && valTypeOf(key) === VAL.NUMBER) {
+    const op = key[0]
+    if (op === 'nan' || op === '+' || NUMERIC_UNARY_OPS.has(op) || NUMERIC_BINARY_OPS.includes(op)) return true
+    if (op === '[]' && typedIndexKnown(ctx, key[1], key[2])) return true
+  }
+  if (typeof key === 'string') {
+    const rep = repOf(key)
+    // Lossless local narrowing has already proved every stored value present.
+    // The summary's earlier nullable kind must not discard that settled proof.
+    if (rep?.val === VAL.NUMBER && ctx.func.locals?.get(key) === 'i32') return true
+    const flow = ctx.func.localValTypesOverlay?.get(key)
+    if (typeof flow === 'number') return flow === NUMBER
+    if ((flow === VAL.NUMBER || flow == null && rep?.val === VAL.NUMBER) && rep && !rep.nullable && !rep.mayBeUndefined) return true
+  }
+  return ctx.summary?.at(scope).kindOfExpr(key) === NUMBER
 }
 
 export function valTypeOf(expr) {

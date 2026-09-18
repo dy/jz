@@ -2,7 +2,7 @@ import { DBG_INVARIANTS } from '../../debug.js'
 import { ASSIGN_OPS, commaList, isLiteralStr, returnExprs } from '../../ast.js'
 import { staticPropertyKey } from '../../static.js'
 
-import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../../kind.js'
+import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, isPresentNumber, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { K as SUMMARY_KIND, core as summaryCore, hasTag as summaryHasTag, tagOf as summaryTagOf, contractVal } from '../../summary/index.js'
 import {
@@ -16,6 +16,7 @@ import {
 } from './common.js'
 import { boundaryDataOf, ensureBoundary } from './boundaries.js'
 import { deriveLocalProvenance } from './provenance.js'
+import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 
 
 const NON_BIGINT_OPS = new Set([
@@ -27,7 +28,6 @@ const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[
 // Static bracket keys use the same slot reader as dot access (module/array.js).
 const rawSchemaRead = (ctx, node) => {
   const recv = node[1]
-  if (typeof recv !== 'string') return false
   const prop = node[0] === '.' ? node[2] : isLiteralStr(node[2]) ? node[2][1]
     : valTypeOf(recv) === VAL.OBJECT ? staticPropertyKey(node[2]) : null
   return prop != null && ctx.schema.slotBigintRawAt?.(recv, prop) === true
@@ -37,7 +37,8 @@ const rawSchemaRead = (ctx, node) => {
 // collection.js taggedStoredValue, emit-assign.js storedValue). A write's
 // own value is the stored carrier.
 export const memberStorageRep = (ctx, member) =>
-  valTypeOf(member[1]) === VAL.TYPED || rawSchemaRead(ctx, member) ? RAW_BIGINT : BOXED_BIGINT
+  (member[0] === '[]' && valTypeOf(member[1]) === VAL.TYPED && isPresentNumber(ctx, member[2]) &&
+    plannedTypedStorageCtor(ctx, member[1]) != null) || rawSchemaRead(ctx, member) ? RAW_BIGINT : BOXED_BIGINT
 
 const directCallBoundary = (ctx, name) => {
   const func = ctx.funcs.map.get(name)

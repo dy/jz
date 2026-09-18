@@ -529,6 +529,18 @@ test('class struct: a method read as a value is bound to its receiver; an own pr
     export const f = () => { const p = new P(4); p.dbl = () => 1; return p.dbl() + new P(5).dbl() }`), 11)
 })
 
+test('class struct: nullable method values retain binding and reject missing receivers', () => {
+  const src = `class P { constructor(x) { this.x = x } dbl() { return this.x * 2 } }
+    export function f(i) {
+      const rows = [new P(4)], p = rows[i];
+      try { const method = p.dbl; return method(); } catch (e) { return e.name; }
+    }`
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const i of [0, 0, 1, -1, 0]) is(f(i), i === 0 ? 8 : 'TypeError', `O${optimize}: row ${i}`)
+  }
+})
+
 test('class struct: accessors on a known receiver, an unknown receiver, a plain object', () => {
   const { f, unknown } = compile(`
     class T { #c = 0; constructor(v) { this.v = v } get twice() { return this.v * 2 } set twice(x) { this.v = x / 2 } }
@@ -564,4 +576,71 @@ test('class struct: an imported class keeps its identity across modules', () => 
   const { f } = jz(`import { P, mk } from './p.js'
     export const f = () => { const p = new P(3); const q = mk(4); return p.dbl() + q.sq }`, { modules }).exports
   is(f(), 22)
+})
+
+test('class static async methods, private ones too', async () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
+  const { m, q, s } = compile(`
+    class A {
+      static k = 3
+      static async m() { return this.k * 2 }
+      static async #p() { return 4 }
+      static async q() { return await A.#p() + 1 }
+      async #r() { return 5 }
+      s() { return this.#r() }
+    }
+    export let m = () => A.m()
+    export let q = () => A.q()
+    export let s = () => new A().s()
+  `)
+  is(await m(), 6)
+  is(await q(), 5)
+  is(await s(), 5)
+})
+
+test('class derived constructor with a bare super()', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
+  const { run } = compile(`
+    class N { constructor() { this.w = 0 } }
+    class W extends N { constructor() { super(); this.w = 1 } }
+    class V extends N { }
+    export let run = () => new W().w * 10 + new V().w
+  `)
+  is(run(), 10)
+})
+
+test('class optional method call on a known receiver', () => {
+  if (onWasi()) return  // wasi: run-reserved / void command entry
+  const { run } = compile(`
+    class N { constructor() { this.w = 0 } }
+    class W extends N { constructor() { super(); this.w = 1 } _wake() { this.w = 2 } }
+    class P { constructor(node) { this.node = node } c() { this.node._wake?.(); return this.node.w } }
+    export let run = () => new P(new N()).c() * 10 + new P(new W()).c()
+  `)
+  is(run(), 2, 'absent: undefined, present: the bound method runs')
+})
+
+// A class function returning BOOL yields the raw 0/1 to readers whose own type
+// proves the call BOOL (a receiver of one named class); every other reader of
+// the same value (a dispatcher's caller, an optional chain joining the
+// undefined arm, a stored element) expects the true/false atom. Reference:
+// ECMA-262 13.3.9.1 OptionalChain (a nullish base short-circuits to undefined),
+// 13.5.3 typeof (a Boolean value reads "boolean").
+test('class method boolean result keeps its atom through a dispatcher and an optional chain', () => {
+  const { known, unknown, optional } = compile(`
+    class C { ok() { return true } }
+    class D { ok() { return false } }
+    let o = null
+    export let known = () => { const before = o?.ok() === true; o = new C(); const v = o?.ok(); return [before, v === true, typeof v, [o?.ok()][0]] }
+    let pick = k => k === 0 ? new C() : k === 1 ? new D() : k === 2 ? { ok() { return 1 } } : null
+    export let unknown = k => { const x = pick(k); return [typeof x.ok(), x.ok() === true] }
+    export let optional = k => { const x = pick(k); return [typeof x?.ok(), x?.ok() === true] }
+  `)
+  is(known(), [false, true, 'boolean', true])
+  is(unknown(0), ['boolean', true])
+  is(unknown(1), ['boolean', false])
+  is(unknown(2), ['number', false], 'an object literal method is not a class arm')
+  is(optional(0), ['boolean', true])
+  is(optional(1), ['boolean', false])
+  is(optional(3), ['undefined', false], 'a nullish receiver short-circuits to undefined')
 })

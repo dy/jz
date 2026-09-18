@@ -33,7 +33,7 @@ export const PHASE_NAMES = [
   'plan:moduleGlobalKinds', 'plan:unboxConstTypedGlobals', 'plan:inferModuleIntGlobals', 'plan:collectFacts',
   'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls',
   'plan:bindNestedRowLengths', 'plan:unrollRowLenPadLoops', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
-  'plan:specializeFixedRestCalls', 'plan:splitCharScan', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
+  'plan:specializeFixedRestCalls', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:synthesizeComputedDispatchCallSites',
   'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex',
   'plan:buildDictKindIndex', 'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi',
@@ -42,6 +42,7 @@ export const PHASE_NAMES = [
   'plan:speculateTypedParams', 'plan:refineDynKeys', 'plan:refineSlotIntCensus',
   'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
   'optMod:hoistLoopGlobalPtr', 'optMod:inlinePureFns', 'optMod:optimizeFuncs', 'optMod:hoistGlobalConstLoads', 'optMod:appendLateStdlib',
+  'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds',
 ]
 const PHASE_IDS = new Map(PHASE_NAMES.map((name, id) => [name, id]))
 export const PHASE_RECORDS = 256

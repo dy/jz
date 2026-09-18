@@ -7,6 +7,124 @@ import { strHashLiteral } from '../module/collection.js'
 import { levels } from './_matrix.js'
 import { run, oracle, cases } from './util.js'
 
+test('string operands: preserve boolean, numeric, BigInt and nullable identities', () => {
+  const src = `export function f(n) {
+    return [
+      'false1'.indexOf(n ? false : 1), 'false1false'.lastIndexOf(n ? false : 1),
+      'atrueb'.includes(n > 0), 'trueabc'.startsWith(n > 0), 'abctrue'.endsWith(n > 0),
+      'a7b'.indexOf(n ? 7n : false), 'aundefinedb'.indexOf(n ? undefined : 'a'),
+      'xtruefalse'.search(n > 0), 'truefalse'.match(n > 0)[0],
+      'x'.padStart(7, n > 0), 'x'.padEnd(7, n > 0), 'true'.localeCompare(n > 0),
+      'atrueb'.replace(n > 0, 'x'), 'atrueb'.replace(n > 0, () => 'x'),
+      'axb'.replace('x', n ? false : 1), 'axbxb'.replaceAll('x', n ? 7n : false),
+      'atrueb'.split(n > 0), 'a7b'.split(n ? 7n : false),
+      'aundefinedb'.split(n ? undefined : 'a'), 'false1'.indexOf(),
+      'a7b'.split(7n), 'a9221120245631025152b'.split(9221120245631025152n)
+    ]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 1, 0]) is(f(n), js(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('string concat: preserves the receiver and each operand identity', () => {
+  const src = `export function f(n) {
+    const s = 'abcdefghi' + n
+    const out = s.concat(true, 7n, n ? false : 1, 'é𝄞')
+    return [out, s, s.concat(), s.concat(undefined, null)]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 0, 1, 0]) is(f(n), js(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('string padding: defaults, empty fills and zero-work boundaries', () => {
+  const src = `export function f(n) {
+    return ['a'.padStart(n, undefined), 'a'.padEnd(n, ''),
+      ''.padStart(n, false), 'a'.padEnd(n, null), 'a'.padStart(n, 'é𝄞'),
+      ''.padStart(n > 0 ? true : 2, 'x'), ''.padEnd(n > 0 ? false : 2, undefined),
+      'a'.padStart(), 'a'.padEnd()]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [-1, 0, 1, 2, 5, 0, 0, 5]) is(f(n), js(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('string padding: convert length before fill and skip unused fill conversion', () => {
+  const src = `export function f(mode) {
+    let trace = ''
+    const fill = { toString() { trace += 'p'; if (mode === 0 || mode === 2) throw 7; return 'xy' } }
+    const length = { valueOf() { trace += 'l'; if (mode === 3) throw 8; return mode === 0 ? 1 : 6 } }
+    function receiver() { trace += 'r'; return 'abc' }
+    function target() { trace += 'n'; return length }
+    function padding() { trace += 'f'; return fill }
+    try { const out = receiver().padStart(target(), padding()); return [out, trace] }
+    catch (e) { return [e, trace] }
+  }
+  export function captured() {
+    let pad = 'x'
+    const length = { valueOf() { pad = 'y'; return 3 } }
+    return ''.padStart(length, pad) + '|' + pad
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f, captured } = jz(src, { optimize }).exports
+    is(captured(), 'xxx|y', 'capture fill before length conversion mutates its binding')
+    for (const n of [0, 0, 1, 2, 3, 1, 0]) is(f(n), js(n), `O${optimize}, mode=${n}`)
+  }
+})
+
+test('string padding: oversized allocation leaves the arena reusable', () => {
+  const src = `export function f(n) { return 'a'.padStart(n, 'x') }
+    export function empty(n) { return 'a'.padEnd(n, '') }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { exports: { f, empty }, instance } = jz(src, { optimize })
+    is(f(2), 'xa')
+    const before = instance.exports.__heap.value
+    throws(() => f(Infinity))
+    is(instance.exports.__heap.value, before, 'reject before allocation')
+    is(empty(Infinity), 'a', 'an empty fill needs no allocation')
+    is(f(3), 'xxa', 'valid call after oversized request')
+  }
+})
+
+test('string split: limits wrap to uint32 and preserve undefined', () => {
+  const src = `export function f(n) {
+    return ['a,b,c'.split(',', n), 'abc'.split('', n), ''.split('', n),
+      'abc'.split(undefined, n), ''.split(undefined, n)]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [undefined, 0, 1, 2, -1, 1.9, 4294967296, 4294967297, NaN, Infinity, '2', true, null, 0, 2])
+      is(f(n), js(n), `O${optimize}, limit=${n}`)
+  }
+})
+
+test('string split: evaluate arguments before limit and separator conversions', () => {
+  const src = `export function f(mode) {
+    let trace = ''
+    const sep = { toString() { trace += 's'; if (mode === 2) throw 7; return ',' } }
+    const limit = { valueOf() { trace += 'l'; if (mode === 3) throw 8; return mode === 0 ? 0 : 2 } }
+    function receiver() { trace += 'r'; return 'a,b,c' }
+    function separator() { trace += 'q'; return sep }
+    function bound() { trace += 'n'; return limit }
+    try { const out = receiver().split(separator(), bound()); return [out, trace] }
+    catch (e) { return [e, trace] }
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 2, 3, 1, 0]) is(f(n), js(n), `O${optimize}, mode=${n}`)
+  }
+})
+
 
 // ============================================
 // STRING METHODS
@@ -157,20 +275,33 @@ test('string !=: different contents compare unequal', () => {
 
 test('string equality: UTF-16 word boundaries and unaligned views', () => {
   const src = `export function eq(a,b){return a===b}
-    export function view(a,b,start,n){return a.slice(start,start+n)===b}`
+    export function view(a,b,start,n){return a.slice(start,start+n)===b}
+    export function copies(a,b){return (a+'!')===(b+'!')}
+    export function views(a,b,start,n){return a.slice(start,start+n)===b.slice(start,start+n)}`
   for (const optimize of levels(0, 2, 'speed', 'size')) {
-    const { eq, view } = jz(src, { optimize }).exports
+    const { eq, view, copies, views } = jz(src, { optimize }).exports
     for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 33]) {
       const a = Array.from({ length: n }, (_, i) => '\u0100\0\ud800\udc00\uffff'[i % 5]).join('')
       is(eq(a, a), true, `equal ${n} units`)
+      // Runtime concatenations give equal contents in distinct allocations.
+      is(copies(a, a), true, `equal copies of ${n} units`)
       is(eq(a, a + 'x'), false, 'unequal lengths')
-      for (const start of [1, 2, 3])
+      is(copies(a, a + 'x'), false, 'unequal copy lengths')
+      for (const start of [1, 2, 3]) {
         is(view('x'.repeat(start) + a + 'y', a, start, n), true, `view at unit ${start}, length ${n}`)
+        is(view('x'.repeat(start) + a + 'y', a + 'y', start, n), false, 'view excludes the matching next unit')
+        is(views('x'.repeat(start) + a + 'y', 'z'.repeat(start) + a + 'q', start, n), true, 'both views ignore surrounding units')
+        is(views('x'.repeat(start) + a, 'z'.repeat(start) + a + 'y', start, n + 1), false, 'first view clamps to a shorter length')
+        is(views('x'.repeat(start) + a + 'y', 'z'.repeat(start) + a, start, n + 1), false, 'second view clamps to a shorter length')
+      }
       for (let i = 0; i < n; i++) {
         const b = a.slice(0, i) + String.fromCharCode(a.charCodeAt(i) ^ 1) + a.slice(i + 1)
         is(eq(a, b), false, `mismatch at unit ${i}/${n}`)
+        is(copies(a, b), false, `copy mismatch at unit ${i}/${n}`)
+        is(view('x' + a + 'y', b, 1, n), false, `view mismatch at unit ${i}/${n}`)
       }
       is(eq(a, a), true, 'equal after unequal comparisons')
+      is(copies(a, a), true, 'equal copies after unequal comparisons')
     }
   }
 })
@@ -352,16 +483,18 @@ test('fused concat: literal ASCII parts store inline — no per-separator copy o
 test('fused concat: i32-proven parts render digits at the cursor — no temp string, no copy', () => {
   // An i32-proven part (`n|0`, a loop counter) needs no ToString temp: __ilen joins
   // the total, __itoa_s writes sign+digits at the cursor. __ilen and __itoa_s MUST
-  // agree byte-for-byte (the alloc is sized from __ilen; a one-byte disagreement is
+  // agree in code units (the alloc is sized from __ilen; a one-unit disagreement is
   // heap corruption) — pinned differentially over every digit-count boundary,
   // INT_MIN (negates to itself, read unsigned), INT_MAX, and zero.
   const edges = [0, 1, -1, 9, 10, -9, -10, 99, 100, 999, 1000, 9999, 10000, 99999, 100000,
     999999, 1000000, 9999999, 10000000, 99999999, 100000000, 999999999, 1000000000,
     -999999999, -1000000000, 2147483647, -2147483648]
   const src = `export let f = (i, v) => 'x' + (i|0) + ',' + (v|0) + '!'`
-  const r = jz(src)
-  for (const a of edges) for (const b of [0, -1, 2147483647, -2147483648])
-    is(r.memory.read(r.exports.f(a, b)), 'x' + (a | 0) + ',' + (b | 0) + '!')
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const r = jz(src, { optimize })
+    for (const a of edges) for (const b of [0, -1, 2147483647, -2147483648])
+      is(r.memory.read(r.exports.f(a, b)), 'x' + (a | 0) + ',' + (b | 0) + '!', `O${optimize}`)
+  }
   const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
   const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 1))
   is((fn.match(/call \$__itoa_s/g) || []).length, 2, 'both int parts render at the cursor')
@@ -1313,6 +1446,31 @@ test('string slices: interning uses UTF-16 offsets in copies and views', () => {
       is(copy(s, a, b), s.slice(a, b), `copy ${a}:${b}`)
       is(sub(s, a, b), s.substring(a, b), `substring ${a}:${b}`)
       is(view(s, a, b), hash(s.slice(a, b)), `view ${a}:${b}`)
+    }
+  }
+})
+
+test('charCodeAt on a dissolved concat buffer reads UTF-16 units', () => {
+  // `const line = a + b + c` used only through `.length`/`.charCodeAt` dissolves
+  // into raw (buf, len) locals (emit/dispatch.js tryConcatBufferDecl); the reader
+  // indexes 16-bit units, never bytes (the strbuild checksum regression).
+  const NAMES = ['alpha', 'bravo']
+  for (const e of ['0 + "," + NAMES[0] + "," + ((-5 + 0) | 0) + "\\n"', '"," + NAMES[0] + ","', '"é" + NAMES[1] + "😀"']) {
+    const src = `const NAMES = ${JSON.stringify(NAMES)}
+      export function len() { const line = ${e}; return line.length }
+      export function at(j) { const line = ${e}; return line.charCodeAt(j) }
+      export function fold() { const line = ${e}; let h = 0; for (let j = 0; j < line.length; j++) h = (h * 31 + line.charCodeAt(j)) | 0; return h }`
+    const ref = eval(e)
+    let refFold = 0
+    for (let j = 0; j < ref.length; j++) refFold = (refFold * 31 + ref.charCodeAt(j)) | 0
+    for (const optimize of levels(0, 2, 3)) {
+      const { exports } = jz(src, { optimize })
+      is(exports.len(), ref.length, `O${optimize}: length of ${e}`)
+      let got = ''
+      for (let j = 0; j < ref.length; j++) got += String.fromCharCode(exports.at(j))
+      is(got, ref, `O${optimize}: units of ${e}`)
+      ok(Number.isNaN(exports.at(ref.length)), `O${optimize}: past the end is NaN`)
+      is(exports.fold(), refFold, `O${optimize}: fold of ${e}`)
     }
   }
 })

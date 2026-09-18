@@ -127,19 +127,15 @@ export function sameValueZeroIdentityChain() {
               (else (i32.const 0)))))`
 }
 
-/** $__map_hash's STRING content-identity arm — an early-return statement
- *  (map_hash's shape is sequential guards, not a nested chain), hashes via
- *  __str_hash. */
 /** $__map_hash's STRING arm: the packed short string mixes in place and a
  *  filled lazy hash cell loads in place, exactly as __str_hash computes them
  *  (module/collection.js); an interned static or a walk calls it. A string
- *  key costs the probe one call, not two. Size mode keeps the call. */
+ *  key costs the probe one call, not two. Size mode keeps the call.
+ *  The caller has already classified the value as a NaN box. */
 export function mapHashStringArm(lean = false) {
-  if (lean) return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
-          (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
+  if (lean) return `(if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (call $__str_hash (local.get $v)))))`
-  return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
-          (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
+  return `(if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
       (then
         (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
         (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -160,10 +156,10 @@ export function mapHashStringArm(lean = false) {
 }
 
 /** $__map_hash's BIGINT content-identity arm — hashes the payload cell via
- *  __hash, folding away the two reserved sentinel buckets (0/1). */
+ *  __hash, folding away the two reserved sentinel buckets (0/1).
+ *  The caller has already classified the value as a NaN box. */
 export function mapHashBigintArm() {
-  return `(if (i32.and (f64.ne (local.get $f) (local.get $f))
-          (i32.eq (local.get $t) (i32.const ${PTR.BIGINT})))
+  return `(if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (local.set $h (call $__hash (i64.load (call $__ptr_offset (local.get $v)))))
         (return (if (result i32) (i32.le_u (local.get $h) (i32.const 1))
           (then (i32.add (local.get $h) (i32.const 2)))

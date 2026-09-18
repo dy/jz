@@ -302,6 +302,7 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
     snaps.push(['local.set', name, snap])
   }
   fn.splice(bodyStart, 0, ...decls, ...snaps)
+  return chosen
 }
 
 // Constant element reads from a fixed typed-array global are immutable for the
@@ -702,10 +703,8 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
  * invariant value, so any downstream read of `$vo` is as invariant as
  * `global.get $cur` itself.
  *
- * Runs immediately after `hoistGlobalPtrOffset` in the same module pass: any
- * site the function-wide pass already hoisted is now `local.get $__goN`, so
- * `siteGlobal` no longer matches it there — the two passes can't double-hoist
- * the same read.
+ * Runs after `hoistGlobalPtrOffset` and reuses its entry snapshots when the
+ * broader write proof already holds; other globals use per-loop snapshots.
  *
  * @param {Array} fn - func IR node
  * @param {Set<string>} stablePtrGlobals - '$name's of never-forwarding module globals
@@ -716,7 +715,7 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
 // that capture this pass's per-loop state — the same divergence the loop-hoist
 // trio hit (.work/archive/handoff-2026-08-22.md §"Full test:wasm loop-hoist trio");
 // test/index.js's kernel leg pins it ("ablation: hoistLoopGlobalPtrOffset …").
-export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
+export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites, entrySnapshots) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -814,7 +813,7 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
         for (const callee of calleeNames) if (reachableWrites?.has(callee, g)) { calleeWrites = true; break }
         if (!stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites) continue
         chosenGlobals.push(g)
-        chosenNames.push(freshId())
+        chosenNames.push(entrySnapshots?.get(g) ?? freshId())
       }
       if (chosenGlobals.length) {
         const replace = (parent, idx) => {
@@ -831,6 +830,7 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
         for (let i = 1; i < loopNode.length; i++) replace(loopNode, i)
         for (let i = 0; i < chosenGlobals.length; i++) {
           const g = chosenGlobals[i], name = chosenNames[i]
+          if (entrySnapshots?.has(g)) continue
           newDecls.push(['local', name, 'i32'])
           const snap = ptrOffsetForm.has(g)
             ? ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['global.get', g]]]

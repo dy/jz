@@ -70,13 +70,14 @@ export const PASS_NAMES = [
   'internStrings',            // slice/substring results probe the static-literal pool: equal-content → canonical bits (bit-eq fast paths)
   'hoistConstantPool',
   'sourceInline',
+  'laneRecords',              // record parameters read field by field become scalar lanes (plan/lanes.js)
   'sourceInlineDup',          // splice a looped kernel at MORE than one call site (×sites body duplication — speed-for-size)
   'smallConstForUnroll',
   'nestedSmallConstForUnroll',
   'splitScratch',             // SSA-split scalar scratch from unrolled loop copies, then LICM
   'vectorizeLaneLocal',       // SIMD-128 lift for lane-pure typed-array loops
   'recursionUnroll',          // inline a single non-tail self-call to depth N (tree-recursion call-overhead)
-  'arenaRewind',              // per-call heap rewind for no-arg scalar allocator kernels
+  'arenaRewind',              // per-call heap rewind for functions whose allocations stay in the frame
   'treeshake',
   'jsstring',                 // boundary opt-in: flip exported string params to externref
   // Registry completion (architecture plan Stage 0): every flag a call site

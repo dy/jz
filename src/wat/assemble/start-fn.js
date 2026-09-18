@@ -24,7 +24,7 @@ import { emit, emitVoid } from '../../compile/emit.js'
 import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
 import { strHashLiteral } from '../../../module/collection.js'
-import { dataLen, dataAlign, dataPush, strPoolLen, pushStaticSlots } from '../../static-data.js'
+import { dataLen, dataAlign, dataPush, pushStaticSlots } from '../../static-data.js'
 
 const normalizeEmittedIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
 
@@ -304,16 +304,6 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   resolveIncludes(false)
   const schemaInit = buildSchemaInit()
 
-  const strPoolInit = []
-  if (strPoolLen()) {
-    const total = strPoolLen()
-    strPoolInit.push(
-      ['global.set', '$__strBase', ['call', '$__alloc', ['i32.const', total]]],
-      ['memory.init', '$__strPool', ['global.get', '$__strBase'], ['i32.const', 0], ['i32.const', total]],
-      ['data.drop', '$__strPool'],
-    )
-  }
-
   const typeofInit = []
   if (ctx.runtime.typeofStrs) {
     for (const s of ctx.runtime.typeofStrs)
@@ -321,11 +311,11 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   }
 
   const wasiTimers = ctx.core.includes.has('__timer_init')
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || wasiTimers) {
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || wasiTimers) {
     const initIR = normalizeEmittedIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit,
+    startFn.push(...typeofInit, ...boxInit, ...schemaInit,
       ...(wasiTimers ? [['call', '$__timer_init']] : []),
       ...moduleInits, ...initIR,
       ...(ctx.features.blockingTimers ? [['call', '$__timer_loop']] : []),

@@ -167,6 +167,97 @@ test('.join: default separator', () => {
   is(runHost(`export let f = () => ["A", "B", "C"].join()`).f(), 'A,B,C')
 })
 
+test('.join: separators preserve boolean, BigInt and nullable identities', () => {
+  const src = `export function f(n) {
+    const a = ['a', 'b'];
+    return [a.join(n > 0), a.join(n ? false : 1), a.join(n ? true : undefined), a.join(n ? 7n : false)];
+  }`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = runHost(src, { optimize })
+    for (const n of [0, 1, 1, 0]) is(f(n), expected(n), `O${optimize}, n=${n}`)
+  }
+})
+
+test('.join: preserves input strings and UTF-16 content through repeated calls', () => {
+  const src = `export function f(value, sep) {
+    const a = [null, null, undefined]; a[0] = 'abcdefghi' + value; a[1] = value;
+    const joined = a.join(sep); return [joined, a[0], a[1], [value].join(sep), [].join(sep)];
+  }`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f } = runHost(src, { optimize })
+    for (const value of ['x', 'x', 'é\0𝄞\ud800', ''])
+      for (const sep of ['', '|', undefined, '\0𝄞']) is(f(value, sep), expected(value, sep))
+  }
+})
+
+test('.join: typed BigInt elements retain their numeric domain', () => {
+  for (const ctor of ['BigInt64Array', 'BigUint64Array']) {
+    const tail = ctor === 'BigInt64Array' ? '-1n, -9223372036854775808n' : '2n, 9223372036854775807n'
+    const src = `export function f(n) {
+      const a = new ${ctor}([0n, 1n, 9221120245631025152n, ${tail}]); return a.subarray(0, n).join('|');
+    }`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const { f } = runHost(src, { optimize })
+      for (const n of [0, 1, 3, 5, 5, 0]) is(f(n), expected(n), `${ctor}, O${optimize}, n=${n}`)
+    }
+  }
+})
+
+test('.join: conversions run once in order and observe receiver mutation', () => {
+  const src = `export function f(mode) {
+    let trace = ''; const a = [null, 'old', 'tail'];
+    const sep = { toString() { trace += 's'; a[1] = 'sep'; if (mode === 2) throw new RangeError('sep'); return '|'; } };
+    a[0] = { toString() { trace += 'e'; a[1] = 'new';
+      if (mode === 3) throw new TypeError('element');
+      if (mode === 1) a.length = 2;
+      if (mode === 4) { for (let i = 0; i < 40; i++) a.push('grown'); a[1] = 'after growth'; }
+      return 'head'; } };
+    if (mode === 0) a.length = 0;
+    try { return [a.join(sep), trace, a.length, a[1]]; } catch (e) { return [e.name, trace]; }
+  }`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f } = runHost(src, { optimize })
+    for (const mode of [0, 0, 1, 2, 3, 4, 1, 0]) is(f(mode), expected(mode), `O${optimize}, mode=${mode}`)
+  }
+})
+
+test('.join: user conversions retain published allocations after joining', () => {
+  if (onWasi() || onKernel()) return
+  const src = `let saved;
+    export function f() {
+      const a = [{ toString() { saved = ['persisted', 'value']; return 'first'; } }, 'last'];
+      return a.join('|');
+    }
+    export function read() { return saved.join('|'); }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    for (const memory of [undefined, jz.memory()]) {
+      const { f, read } = runHost(src, { optimize, memory })
+      for (let i = 0; i < 3; i++) { is(f(), 'first|last'); is(read(), 'persisted|value'); }
+    }
+  }
+})
+
+test('.join: decimal formatting uses linear arena space', () => {
+  if (onWasi() || onKernel()) return
+  const src = `export function f(n) {
+    const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i + .123456789;
+    return a.join('|');
+  }`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const m = jz(src, { optimize }), raw = m.instance.exports, used = []
+    for (const n of [512, 1024]) {
+      raw._clear(); const start = raw.__heap.value;
+      is(m.exports.f(n), expected(n)); used.push(raw.__heap.value - start)
+    }
+    ok(used[1] < used[0] * 3, `O${optimize}: doubling input uses ${used[0]} → ${used[1]} bytes`)
+  }
+})
+
 // join renders through the string module (__str_join, the `,` default) whether
 // or not the program has a string of its own: the emitter's dependency is the
 // property table's (src/autoload.js PROP_MODULES), not the source's literals.
@@ -2063,4 +2154,64 @@ test('element kind: an array every store into which is a number reads numbers wi
     const host = oracle(src).f
     is(jz(src).exports.f(4), host(4), `${name}: value`)
   }
+})
+
+// Every position argument (23.1.3.x: fill, copyWithin, slice, splice, with,
+// indexOf/lastIndexOf/includes's fromIndex) is ToIntegerOrInfinity: a string
+// converts, a Boolean is 0/1, undefined takes the default, a BigInt throws a
+// TypeError (7.1.5 ToIntegerOrInfinity through 7.1.4 ToNumber). The search
+// methods honor fromIndex, a negative one from the end. Reference values
+// are V8's for the same expressions (differential below).
+test('array positions coerce through ToIntegerOrInfinity and reject BigInt', () => {
+  const src = `export function main() {
+    const a = [1, 2, 1, 3, 1]
+    return [a.indexOf(1, 1), a.indexOf(1, -2), a.indexOf(1, -9), a.indexOf(1, 9), a.indexOf(1, '2'), a.indexOf(1, true),
+      a.lastIndexOf(1), a.lastIndexOf(1, 3), a.lastIndexOf(1, -3), a.lastIndexOf(1, -9), a.lastIndexOf(1, '1'),
+      a.includes(3, 3), a.includes(3, 4), a.includes(1, -1), a.includes(3, -2),
+      [1, 2, 3].slice('1'), [1, 2, 3].slice(1, '2'), [1, 2, 3, 4].fill(9, '1', '3'), [1, 2, 3, 4].copyWithin('0', 2),
+      [1, 2, 3].with('1', 7), [1, 2, 3].with(-1, 8), [1, 2, 3, 4].splice('1', '2'), [1, 2, 3, 4].splice(1, undefined)]
+  }
+  export function rejects() {
+    const out = []
+    for (const f of [() => [7, 8].fill(0, 1n), () => [7, 8].slice(1n), () => [1, 2, 3].copyWithin(0, 1n), () => [1, 2, 3].with(1n, 9),
+      () => [1, 2, 3].indexOf(3, 1n), () => [1, 2, 3].lastIndexOf(3, 1n), () => [1, 2, 3].includes(3, 1n), () => [1, 2, 3].splice(1n, 1)])
+      try { f(); out.push('no throw') } catch (e) { out.push(e.name) }
+    return out
+  }`
+  const want = (() => { const a = [1, 2, 1, 3, 1]
+    return [a.indexOf(1, 1), a.indexOf(1, -2), a.indexOf(1, -9), a.indexOf(1, 9), a.indexOf(1, '2'), a.indexOf(1, true),
+      a.lastIndexOf(1), a.lastIndexOf(1, 3), a.lastIndexOf(1, -3), a.lastIndexOf(1, -9), a.lastIndexOf(1, '1'),
+      a.includes(3, 3), a.includes(3, 4), a.includes(1, -1), a.includes(3, -2),
+      [1, 2, 3].slice('1'), [1, 2, 3].slice(1, '2'), [1, 2, 3, 4].fill(9, '1', '3'), [1, 2, 3, 4].copyWithin('0', 2),
+      [1, 2, 3].with('1', 7), [1, 2, 3].with(-1, 8), [1, 2, 3, 4].splice('1', '2'), [1, 2, 3, 4].splice(1, undefined)] })()
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    is(m.main(), want, `O${optimize}: the same values as V8`)
+    is(m.rejects(), Array(8).fill('TypeError'), `O${optimize}: a BigInt position throws TypeError`)
+  }
+})
+
+// `splice(...args)` takes its start, count and inserts from the array at run
+// time (23.1.3.31: no start is 0, no count deletes to the end, an explicit
+// count coerces); the direct form with inserts coerces its positions too.
+test('splice with its arguments spread reads start, count and inserts at run time', () => {
+  const src = `export function main() {
+    const a = [1, 2, 3, 4], args = [1, 2, 'x', 'y']
+    const r = a.splice(...args)
+    const b = [1, 2, 3, 4]
+    function s(...rest) { return b.splice(...rest) }
+    const r1 = s(2, 1), r2 = s(0, 0, 'z'), r3 = s(), r4 = s(1)
+    const c = [1, 2, 3, 4, 5], neg = [-2]
+    const r5 = c.splice(...neg)
+    const d = [1, 2, 3, 4]
+    const r6 = d.splice(1, 2, 'x', 'y', 'w')
+    return [a, r, b, r1, r2, r3, r4, c, r5, d, r6]
+  }`
+  const want = (() => { const a = [1, 2, 3, 4], args = [1, 2, 'x', 'y']; const r = a.splice(...args)
+    const b = [1, 2, 3, 4]; function s(...rest) { return b.splice(...rest) }
+    const r1 = s(2, 1), r2 = s(0, 0, 'z'), r3 = s(), r4 = s(1)
+    const c = [1, 2, 3, 4, 5], neg = [-2]; const r5 = c.splice(...neg)
+    const d = [1, 2, 3, 4]; const r6 = d.splice(1, 2, 'x', 'y', 'w')
+    return [a, r, b, r1, r2, r3, r4, c, r5, d, r6] })()
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(), want, `O${optimize}: the same values as V8`)
 })

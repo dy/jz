@@ -10,6 +10,7 @@ import print from 'watr/print'
 import { typed, asF64, temp, tempI32, isUndef, truthyIR, toStrI64, mkPtrIR } from '../../src/ir.js'
 import { emit } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
+import { NULL_NAN, UNDEF_NAN } from '../../src/ir/sentinels.js'
 import { VAL } from '../../src/reps.js'
 import { ctx, err, inc, PTR } from '../../src/ctx.js'
 import { dataLen } from '../../src/static-data.js'
@@ -19,7 +20,9 @@ import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 // register a schema merely because a dynamic access might throw.
 export function requireReceiverWat(value) {
   const code = errorCodeLiteral(ERR.OBJECT_NULLISH)
-  return `(if (call $__is_nullish ${value})
+  // Two bit compares in place of a helper call: this guard opens every
+  // generic read (`value` is a local read, evaluated twice for free).
+  return `(if (i32.or (i64.eq ${value} (i64.const ${NULL_NAN})) (i64.eq ${value} (i64.const ${UNDEF_NAN})))
     (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${code})))
       (throw $__jz_err (f64.const ${code}))))`
 }
@@ -28,11 +31,8 @@ export function requireReceiverWat(value) {
 // Track literal data so dead helpers leave no strings in the final module.
 export function throwErrorWat(ctx, name, className, message) {
   ctx.module.include('string')
-  // Print whatever the string emitter yields. An own-memory build yields a
-  // static literal, and the span below reclaims its bytes when the helper dies;
-  // a shared or imported memory cannot extend static data after the start
-  // function's copy length is fixed, so it yields a runtime construction
-  // instead, which this helper must carry rather than reject.
+  // Owned-memory literals occupy static data; dead helpers can reclaim them.
+  // Shared-memory literals use the pool initialized after template realization.
   const strWat = text => print(ctx.core.emit['str'](text))
   const sid = ctx.schema.errorSid(className)
   ctx.schema.namedUses.push({ sid, funcName: name })

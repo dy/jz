@@ -114,7 +114,7 @@ const CALLEE_VAL = {
   'Atomics.wait': VAL.STRING, 'Atomics.isLockFree': VAL.BOOL,
 }
 
-const ATOMICS_VALUE_OPS = new Set(['Atomics.load', 'Atomics.store', 'Atomics.add',
+export const ATOMICS_VALUE_OPS = new Set(['Atomics.load', 'Atomics.store', 'Atomics.add',
   'Atomics.sub', 'Atomics.and', 'Atomics.or', 'Atomics.xor', 'Atomics.exchange',
   'Atomics.compareExchange'])
 

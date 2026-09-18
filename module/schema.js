@@ -564,7 +564,7 @@ export function initSchema(ctx) {
   ctx.schema.slotBigintProvenAt = (varName, prop) => {
     const ids = ctx.func.refinements?.get(varName)?.schemaIds
     if (ids?.length) return ids.every(id => ctx.schema.slotBigintProvenBySid(id, prop))
-    return ctx.schema.slotBigintProvenBySid(ctx.schema.idOf(varName), prop)
+    return ctx.schema.slotBigintProvenBySid(ctx.schema.idOf(varName) ?? ctx.summary?.at(ctx.func.current).objectSidOfExpr(varName), prop)
   }
 
   // The static read emits raw BigInt either because the slot stores raw bits,
@@ -581,7 +581,7 @@ export function initSchema(ctx) {
       for (const id of ids) if (!slotStoresRawBigint(id, prop)) return false
       return true
     }
-    return slotStoresRawBigint(ctx.schema.idOf(varName), prop)
+    return slotStoresRawBigint(ctx.schema.idOf(varName) ?? ctx.summary?.at(ctx.func.current).objectSidOfExpr(varName), prop)
   }
 
 }

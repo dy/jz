@@ -467,7 +467,15 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   ok(/local\.set \$__dsrs\d+\s*\((?:i32\.wrap_i64|select)/.test(geoWat), 'sid computed branch-free (bare aux extract, or select over tag test)')
   ok(/br_table/.test(geoWat), 'slot-conflicting prop still dispatches via br_table')
   ok(!/br_if[^\n]*\n?[^\n]*call \$__ptr_type/.test(geoWat), 'no per-read tag-guard call in the dispatches')
-  ok(/local\.(?:set|tee) \$s\s*\(f64\.load/.test(geoWat), 'proven discriminant read collapses to a bare slot load')
+  let discriminant
+  walk(parseWat(geoWat), n => {
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === '$s') discriminant = n[2]
+  })
+  // The array-element argument can be absent. Its null check remains, but
+  // the discriminant itself needs one slot load and no property dispatch.
+  is(count(discriminant, n => n[0] === 'f64.load'), 1, 'discriminant reads one slot')
+  is(count(discriminant, n => n[0] === 'br_table' || n[0] === 'call' && n[1] !== '$__throw_property_nullish'), 0,
+    'only the nullish error path can call; the field load stays direct')
   const mkRowsJs = () => {
     const rows = []
     for (let i = 0; i < 9; i++) {
@@ -807,12 +815,14 @@ test('escape analysis: returned object still heap allocates', () => {
 test('escape analysis: call-passed object still heap allocates', () => {
   // sourceInline off: the fixture pins escape analysis at a REAL call
   // boundary — the leaf inliner would otherwise splice get's body, the call
-  // disappears, and scalarizing obj becomes correct (no escape).
+  // disappears, and scalarizing obj becomes correct (no escape). The callee
+  // uses the object whole: one that only read fields would take them as lanes
+  // (plan/lanes.js) and the object would rightly dissolve.
   const wat = jz.compile(`
-    const get = (obj) => obj.a
+    const get = (obj) => obj
     export const main = (x) => {
       const obj = { a: x }
-      return get(obj)
+      return get(obj).a
     }
   `, { wat: true, optimize: { watr: false, sourceInline: false } })
   ok(/\(call \$__alloc_hdr\b/.test(wat), 'call-passed object must remain materialized')
@@ -1880,6 +1890,103 @@ test('Math.floor(bounded)|0 → single i32.trunc_sat (no i64 round-trip / +∞ g
   const ref = (() => { const buf = [], out = []; for (let i = 0; i < 8; i++) buf[i] = (i * 31) & 255
     const f = (b, o, n) => { for (let i = 0; i < n; i++) o[i] = (Math.floor(b[i] * 0.5) | 0) & 255 }; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 })()
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'floor result bit-exact vs JS')
+})
+
+test('bounded fractional recurrences preserve rounding, zero work and i32 boundaries', () => {
+  const cases = [
+    ['1', '0.3', 0], ['-0', '-0', 1], ['1', '0.1', 100],
+    ['1', '-0.3', 97], ['-3.75', '1.2', 33],
+    ['2147483644', '0.25', 33], ['-2147483647', '-0.75', 31],
+    ['1', 'Infinity', 3], ['1', '-Infinity', 3], ['1', 'NaN', 3],
+  ]
+  for (const [start, step, n] of cases) {
+    const src = `export function f(flag){let p=${start},s=0;
+      for(let i=0;i<${n};i++){s+=p|0;p+=${step}}
+      return [s,p,1/p,flag?(p|0):9,flag?(p|0):0]}`
+    const js = oracle(src).f
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const f = run(src, { optimize }).f
+      for (const flag of [0, 0, 1, 0]) is(f(flag), js(flag), `${start} + ${n}*${step}, O${optimize}, flag=${flag}`)
+    }
+  }
+})
+
+test('fractional recurrence proofs require a reset on every nested-loop entry', () => {
+  for (const reset of [false, true]) {
+    const src = `export function f(flag){let p=1,s=0;
+      for(let j=0;j<3;j++){${reset ? 'p=1;' : ''}
+        for(let i=0;i<100;i++){s+=p|0;p+=0.3}}
+      return [s,p,flag?(p|0):9]}`
+    const js = oracle(src).f
+    for (const optimize of levels(2, 3, 'size')) {
+      const f = run(src, { optimize }).f
+      for (const flag of [0, 0, 1, 0]) is(f(flag), js(flag), `reset=${reset}, O${optimize}`)
+    }
+    if (!onKernel() && !belowOpt(2)) {
+      const wat = compile(src, { wat: true, optimize: { level: 2, watr: false, wideAccumulator: false } })
+      const body = findFunc(parseWat(wat), '$f')
+      const guards = count(body, n => n[0] === 'f64.ne' && n[2]?.[0] === 'f64.const' && n[2][1] === 'inf')
+      is(guards === 0, reset, 'only a dominating reset permits removal of the infinity guard')
+    }
+  }
+})
+
+test('fractional recurrence proofs reject unknown entries, multiple writes and skipped counter steps', () => {
+  const sources = [
+    `export function f(p){let s=0;for(let i=0;i<5;i++){s+=p|0;p+=0.25}return [s,p]}`,
+    `export function f(p){let s=0,x=1;for(let i=0;i<5;i++){s+=x|0;x+=0.25;x=p}return [s,x]}`,
+    `export function f(p){let s=0,x=1,i=0,skip=0;while(i<5){s+=x|0;x+=0.25;if(!skip){skip=1;continue}i++}return [s,x]}`,
+  ]
+  for (const src of sources) {
+    const js = oracle(src).f
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const f = run(src, { optimize }).f
+      for (const p of [0, 0, Infinity, -Infinity, NaN, 2.75, 0]) is(f(p), js(p), `O${optimize}, input=${p}`)
+    }
+  }
+})
+
+test('bounded fractional indices retain their original property keys', () => {
+  const src = `export function f(){const a={};a[0.25]=7;a[0.75]=9;
+    let p=0.25,s=0;for(let i=0;i<63;i++){s+=a[p]||0;p+=0.5}return [s,p]}`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const f = run(src, { optimize }).f
+    is(f(), js(), `O${optimize}`)
+    is(f(), js(), `O${optimize}, repeated call`)
+  }
+})
+
+test('fractional recurrence IR keeps captured values and rejects numeric aliases and extra backedges', () => {
+  for (const mode of ['bounded', 'alias', 'backedge']) {
+    const fn = parseWat(`(func $f (export "f") (param $again i32) (result i32)
+      (local $p f64) (local $i i32) (local $s i32) (local $t f64)
+      (local.set $p (f64.const 0.25))
+      (block $exit (loop $loop
+        (br_if $exit (i32.eqz (i32.lt_s (local.get $i) (i32.const 3))))
+        (local.set $s (i32.add (local.get $s)
+          (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.tee $t (local.get $p))))
+            (i32.const 0) (f64.ne (local.get $t) (f64.const inf)))))
+        (local.set $s (i32.add (local.get $s)
+          (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $t)))
+            (i32.const 0) (f64.ne (local.get $t) (f64.const inf)))))
+        ${mode === 'alias' ? '(local.set 1 (f64.const inf))' : ''}
+        (local.set $p (f64.add (local.get $p) (f64.const 0.5)))
+        ${mode === 'backedge' ? '(if (local.get $again) (then (local.set $again (i32.const 0)) (br $loop)))' : ''}
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $loop)))
+      (local.get $s))`)
+    walk(fn, n => {
+      if ((n[0] === 'f64.const' || n[0] === 'i32.const') && Number.isFinite(Number(n[1]))) n[1] = Number(n[1])
+      if (n[0] === 'local.set' && n[1] === '1') n[1] = 1
+    })
+    const instantiate = f => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', f]))).exports.f
+    const before = instantiate(fn)
+    fusedRewrite(fn)
+    const after = instantiate(fn)
+    for (const again of [0, 0, 1, 0]) is(after(again), before(again), `${mode}, again=${again}`)
+    const guards = count(fn, n => n[0] === 'f64.ne')
+    is(guards === 0, mode === 'bounded', 'only the bounded loop drops its guards')
+  }
 })
 
 test('vectorized single-caller helper still participates in inlineOnce', () => {
@@ -3068,14 +3175,11 @@ test('narrowI32: f64 edges (NaN/±Inf/fraction) keep exact ToInt32 semantics', (
   }
 })
 
-// ---- fusedRewrite $__is_truthy inline: boolean false is falsy --------------
-// The inline expansion mirrors module/core.js's $__is_truthy — five falsy bit
-// patterns (NaN, null, undefined, empty SSO string, boolean FALSE). The FALSE
-// arm was missing, so any `x || y` lowered through the inlined check treated
-// boolean false as truthy. Surfaced as the jessie/jz bench rows mis-parsing at
-// every optimize level ≥ 1 while optimize:false stayed correct.
+// Regressions for the former duplicated truthiness expansion: it omitted
+// false, then boxed BigInt zero. Runtime semantics now have one owner, and
+// the inline and outlined forms share the complete predicate builder.
 
-test('fusedRewrite: || sees boolean false through a boxed local as falsy', () => {
+test('truthiness: || sees boolean false through a boxed local as falsy', () => {
   const src = `
     export let go = (s) => {
       let v = s === 'no' ? false : s
@@ -3096,6 +3200,31 @@ test('fusedRewrite: || sees boolean false through a boxed local as falsy', () =>
     is(r.chain('q'), 'end', `chain all-falsy @opt ${opt}`)
     is(r.chain('x'), 'x', `chain truthy @opt ${opt}`)
   }
+})
+
+test('truthiness: BigInt origins without literals share runtime and optimized predicates', () => {
+  // No BigInt literal or BigInt() call: the values originate in typed storage
+  // and DataView. Include a NaN-box-shaped payload, signed zero/NaN Numbers,
+  // side-effectful callees and repeated use of the same instance.
+  const src = `export function f(k) {
+    const a=new BigInt64Array(3),d=new DataView(a.buffer)
+    if(k){d.setUint32(8,1,true);d.setUint32(20,2146959362,true)}
+    const xs=[a[0],a[1],a[2],false,'',0,-0,NaN,null,undefined]
+    let calls=0
+    function next(){calls++;return xs[k?1:0]}
+    const chosen=next()||'fallback',negated=!next(),condition=next()?1:0
+    return [a.filter(x=>x).length,a.some(x=>x),a.every(x=>x),a.findIndex(x=>x),a.findLastIndex(x=>x),
+      xs.filter(x=>x).length,xs.some(x=>x),xs.every(x=>x),chosen,negated,condition,calls,
+      Boolean(d.getBigInt64(0,true)),Boolean(d.getBigUint64(8,true))]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,0,1]) is(f(k), js(k), `O${optimize}, BigInt predicates ${k}`)
+  }
+  const scalar = compile('export function f(n){return n>0}')
+  ok(!WebAssembly.Module.exports(new WebAssembly.Module(scalar)).some(e => e.kind === 'memory'),
+    'scalar boolean exports retain the memory-free path')
 })
 
 // dropEffects — dead-value-drop simplification (drop of a pure op over a tee

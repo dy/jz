@@ -64,6 +64,90 @@ canonical bits rather than source spellings and skips literals too cheap to pool
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
+Runtime helper templates may emit string literals. Shared string-pool setup
+runs after their realization, before reachability; otherwise the pool's copy
+length can omit constants that the linked helpers read.
+
+Array joining captures length before separator conversion and reads elements
+through the checked, tagged reader. Each conversion runs once, in order; a
+second pass copies those strings into one result. Input strings remain immutable.
+On owned heaps without a user ToPrimitive hook, built-in conversions publish no
+allocations, so the result can replace the temporary region. Shared heaps and
+user conversions retain their allocations. A future built-in that publishes a
+heap pointer must preserve this region-lifetime proof.
+
+String operands share interpolation's identity-preserving conversion, and
+concat uses its immutable builder. Regex dispatch delegates plain-string cases
+to the string handlers. Split captures arguments first, converts its limit with
+ToUint32, then converts the separator before testing zero or undefined. A boxed
+temporary uses its own carrier facts, not the source expression's raw BigInt plan.
+Padding also captures arguments before conversion, skips fill conversion when
+no work is needed, and returns the receiver for an empty fill. Its allocation
+size is checked before shifting the code-unit count to bytes.
+
+Implicit ToNumber rejects BigInt. Explicit `Number()` accepts its payload and
+delegates all other parsing to the same helper. Unary plus and string positions
+use ToNumber; an unboxed object pointer is never a numeric proof. Present typed
+BigInt reads retain their raw-payload fact, while checked reads box only the
+successful branch. Atomic value operations share the existing operation catalogue
+with the summary: their result is an element or an exception, never undefined.
+
+Computed typed-element reads delegate their bounds check to the element reader.
+Presence queries retain their own check because they do not load an element.
+The reader and length helper share the element-count expression over decoded
+offset/aux facts. Bounds use the view descriptor before resolving its data base;
+DataView has no indexed elements. Subarrays use the canonical aux encoder so
+float16, clamped and BigInt flags survive both static and runtime dispatch.
+Array/typed-array `at`, typed-array ranges and buffer slicing capture argument
+values before coercing positions. Omitted or undefined ends use the captured
+length; an object that converts to undefined instead supplies numeric zero.
+The range emitters share `__clamp_idx`. Array `at` retains the original relative
+length but rechecks storage after a conversion hook can grow or shrink it.
+Unsigned word values must saturate as positive positions, never unwrap to a
+negative signed word.
+Builtin method dispatch also keeps the summary's presence fact: a nullable
+receiver is captured and checked before argument evaluation. Staging preserves
+typed constructors, view layouts and deferred BigInt result boxing.
+The receiver temporary retains its tagged-local fact for BigInt method reads.
+Fixed-arity method spreads retain the receiver and argument prefix in locals,
+evaluate every argument before the call, and dispatch by the supplied count.
+The builtin signature catalogue supplies arity in both hosts; the kernel cannot
+depend on `Function.length` reflection. Registration coverage is tested.
+Literal array spreads expand directly, retaining numeric proofs; dynamic
+spreads are consumed in order, before later arguments can mutate their source.
+Variadic push/unshift capture the receiver and all argument values before
+mutating it, then grow and copy in bulk. A trailing spread stages its scalar
+prefix in locals; prepend shifts the tail once and reads self-aliased values
+from that moved range without a temporary allocation. Pointer write-back is
+conditional on the source binding still naming the captured receiver.
+Earlier spread sections snapshot their elements only before later potentially
+effectful expressions; the existing IR purity query supplies that decision.
+Typed BigInt elements use the tagged reader and scalar items use stored-value
+lowering, as in ordinary array literals.
+The summary likewise treats positions after a spread as possible tail values
+or missing arguments, including reducer seeds and collection stores.
+Iterable normalization may skip nullish checks only for proven-present sources;
+Set/Map constructors still accept nullish sources as empty. String slice and
+substring use the same position capture/defaulting helper as typed ranges.
+Array callback capture owns its closure dependency and callability proof.
+Ordinary and typed loops validate callbacks even when no iteration runs;
+reducers capture their initial value before validation. Typed find/findLast
+share one early-exit emitter and select traversal direction in the loop builder.
+Truthiness has one predicate builder for its runtime helper and inline form.
+The existing lean-runtime policy retains the shared call in size mode.
+String equality resolves representation and equal lengths in its loop-free
+entry. Its cold loop receives heap offsets and a checked UTF-16 length; it
+neither decodes carriers again nor reads beyond a substring view. The SSO
+invariant excludes mixed carriers before that call. Size mode and the
+heap-only configuration share the existing code-unit accessor loop.
+Integer decimal rendering and concatenation sizing share one unsigned digit
+count expression. Rendering writes backward from the known end, eliminating
+the reversal pass; widths and cursors count UTF-16 units. Signed minimum values
+retain their unsigned magnitude. Other radices share one reversal fragment.
+BigInt presence comes from the representation proof, including typed storage
+and DataView origins without literal syntax; dynamic reads and updates use
+that same proof when selecting tagged value handling.
+
 The summary's declaration tables own numeric binding IDs, local to that summary.
 Kind and incoming-argument facts are indexed arrays; solver and read-only queries
 reuse the same IDs. Scope resolution still uses names, but reading a resolved
@@ -132,11 +216,67 @@ The ordinary range query still proves finiteness; infinity remains unknown.
 Ranges obtained from a local's definition include its implicit zero value:
 the write may be conditional, and arithmetic can make that skipped-write path
 differ from the definition's value before integer conversion.
+Counted floating recurrences reuse that range query and the local write census.
+Every loop entry needs a proven initializer; unknown entries, numeric aliases,
+extra backedges and additional writes prevent the proof. Integer enclosures
+bound rounding at every addition without reassociating the arithmetic. These
+bounds remove only the ToInt32 infinity guard, retaining the f64 accumulator
+and its captured value. The peephole and wide-accumulator pass share the exact
+conversion recognizer; arbitrary selects and property-key guards remain distinct.
 Local typing and emission share the interval-product proof, including the
 negative-zero check; a product fitting i32's magnitude alone is insufficient.
+
+Typed constructor provenance describes storage, not presence. A field or index
+result needs a separate non-nullish proof before pointer unboxing. Computed
+typed-array reads keep the actual receiver tag unless presence is proven; catch
+elimination must also consult presence even when the payload kind is known.
+Nullable direct reads guard the receiver while retaining their schema/element
+loads. Dot reads preserve plain local identity for dispatch caching; computed
+reads capture the receiver before evaluating the key. Speculative loop extents
+treat a missing buffer as empty, so a zero-work call does not inspect its header.
+Only an executed access throws. Versioned loops prove receiver presence separately
+from index extents; presence alone cannot remove an out-of-range check. Guard
+stability includes helper calls, default arguments and writes in loop headers.
+Unknown calls invalidate globals and captured cells; ordinary locals remain stable.
+Loop pointer hoisting reuses function-entry snapshots when the broader write
+proof holds. Both hoists share one module traversal and the existing snapshot map.
 Unary negation likewise requires a nonzero interval whose negation fits i32.
 Other integer operands widen without a NaN-normalization guard, since their
 carriers are finite.
+
+Typed element facts require a numeric key; named properties retain ordinary
+boxed values independently of the element width. Presence is part of that
+proof: a missing numeric payload addresses the property `"undefined"`.
+Numeric demand owns typed-store coercion proofs. Usage-only parameter scans
+must not classify a typed receiver's unknown key or stored value as numeric:
+the key may name a property, which stores the value unchanged.
+Dispatch reuses the later lossless i32 local-storage proof even when the
+summary's earlier kind still admits absence. The same bounds query reuses a
+settled i32 index's range when it fits the receiver length.
+Checked numeric loads retain Number|undefined in the existing flow overlay;
+that permits a single missing-value conversion without an impossible null arm.
+When the all-uses proof normalizes a binding on write, its flow kind describes
+the stored Number instead of retaining the initializer's possible absence.
+Likewise, arithmetic over nullable BigInts keeps the summary's BigInt|Number
+result in the flow overlay: an absent operand can produce NaN or an integer
+Number. Treating that union as definite BigInt boxes an already tagged result.
+Load CSE caches the numeric conversion when its occurrences consume the value
+arithmetically; raw identity uses retain a separate cache entry. This uses the
+prepared unary `u+` operator, so missing reads become NaN before reuse.
+Dynamic dispatch keeps numeric keys numeric, avoiding a formatting/parsing
+round trip. Known receivers pass their type to the existing typed dispatcher.
+Typed reads parse valid integer indices without a Number/String round trip;
+invalid canonical numeric keys cannot have sidecar entries. Writes retain the
+full classification because invalid numeric keys still convert their RHS.
+Computed length/byte accessors follow own-property lookup, including an own
+undefined value, and fall back to the same length/offset helpers as dot reads.
+The tagged store converts its RHS before checking the index,
+then preserves the original assignment value. Raw internal stores still serve
+algorithms whose bounds are already checked. Reference evaluation precedes
+both index and RHS effects; source inlining checks dependencies in both
+directions before moving a call's prefix across an assignment target.
+A global's i32 storage may hold a pointer; it supplies numeric expression
+facts only when the global's value kind is Number.
 
 Size mode keeps one shared dynamic property lookup instead of adding schema
 dispatch arms whose generic fallback remains necessary. The existing read-reuse
@@ -147,6 +287,21 @@ shape that names it, with the shared dynamic lookup as the miss. Receivers must
 be reads that repeat without effect; a call result keeps the shared lookup.
 Where the schema-read devirtualization pass runs (few schemas, the pass on),
 it owns that dispatch instead, with its sid cache and duplicate-read reuse.
+
+Expression-property reads share one receiver-dispatch generator, including
+prehashed keys and optional host fallback. Each selected path normalizes its
+key once: dictionary reads own their hash, external reads reuse the normalized
+key for both own-property and host lookup, and other receivers delegate the raw
+key so typed numeric indices retain their fast path.
+Computed reads request host fallback from receiver facts, like named reads;
+prior helper demand is not evidence about the receiver. Numeric element paths
+and proven internal receivers do not request that fallback.
+Unknown readers select the shared dispatcher before emission finishes; its
+factory selects the host arm at link time. The existing ingress query is shared
+by computed and chained reads, cached in the session fact store for imports and
+public parameters, and observes host globals as their producers are emitted.
+Thus a helper emitted before its host-valued caller keeps the needed fallback,
+while a closed program's dispatcher collapses to its internal body.
 
 Named functions stored in internal objects or bindings retain their identities
 in the summary's existing closure sets. Calls through those values bind the same
@@ -224,6 +379,14 @@ such as `toString` retain their own implementation.
 Member updates retain the receiver and converted key through GetValue and
 PutValue. A nullish base rejects after evaluating the key expression and before
 its conversion hooks. Plain writes defer key conversion until after the RHS.
+Typed stores reject nullish receivers before value coercion or header loads,
+after capturing the receiver, key and RHS. Direct and runtime stores share this
+order. A typed assignment with a dynamic key or unknown constructor returns a
+tagged value; only the proven numeric element path has a raw BigInt carrier.
+Checked property reads retain the captured receiver's exact schema. Optional
+reads box raw BigInt fields inside the successful arm, before joining undefined.
+Expression field writes use that same schema storage rule and capture the
+receiver before evaluating their RHS.
 Dictionary read-modify-write fusion requires a proven HASH receiver. Opaque
 element stores exclude objects only with the shared ARRAY-or-TYPED call-site
 proof; `notString` alone cannot exclude a dictionary.
@@ -300,9 +463,20 @@ callback arguments into a synthetic rest array. The legacy object-pattern and
 actual `arguments` paths retain argument-list packing.
 Map/Set lookups share insertion's
 capacity/forwarding check, without a separate general pointer decode.
+Map/Set's ordinary and prehashed lookups share one probe generator with the
+prehashed dictionary readers, including missing-value sentinels, forwarding
+and external receivers. A prehashed lookup takes its hash
+as an argument; the ordinary lookup computes it after checking the receiver.
+Proven-present string keys use the existing prehashed probes and string hash;
+possibly missing string elements retain generic key hashing. Shared probe
+lowering captures the key once and preserves excess argument effects through
+the ordinary intrinsic-call staging.
 Numeric and pointer hashes mix both words into low table buckets; XOR alone
 clusters consecutive integer-valued doubles. Folded numeric-key hashes use the
 same mix as the runtime, including the reserved empty/tombstone hash values.
+Map hashing classifies numbers and NaN boxes once, before decoding a tag.
+Its string and BigInt arms inherit that proof; finite mantissas can contain
+every tag pattern and must never be interpreted as payload pointers.
 Dictionary and Map read/modify/write slots use the ordinary upsert generator:
 only a missing slot receives undefined; hits retain their value for the caller.
 Growth preserves header metadata, aliases, insertion order and durable logs.
@@ -330,6 +504,32 @@ the last static schema it resolved; size mode keeps the scans. The wasm name
 section names a closure body after its enclosing function.
 Schema indexes write little-endian hash, slot and offset words directly; their
 layout does not depend on the compiler's own BigInt-to-string conversion.
+
+A destructuring reads through its source: an object pattern's names take the
+source's members, a default merges in where the member may be undefined, an
+array pattern reads by position, a rest element copies the remainder into a
+fresh array. Prepare folds a computed key that is a static string
+(`o[KEY]` after `const KEY = 'k'`) to the literal key, so the read or store
+is the slot access `o.k` compiles to. The array-pattern protocol
+(src/iterator-pattern.js) over an indexed source is read by position in the
+summary: `__it_open` binds a cursor, each step takes the next element; the
+protocol's functions still run over the source's kind without its identity.
+
+A Map's keys and a Set's members are handed out only by enumeration: a key
+whose identity the join drops is held beside the kind and escapes when the
+container enumerates, escapes or reaches the host, never when it is stored.
+Two tuple rows of one length unify by position; a row that reaches itself is
+unified before its rows merge. A shape joined with primitives keeps its
+identity in a cell of its own, read like a dictionary that may hold it.
+
+A wrapper hands back what its closure argument returns: a return that calls a
+parameter (or a local returned untouched, or passes the parameter on to
+another wrapper) binds nothing into the wrapper's result, and each call site
+reads its own argument's result; away from a call site (`resultOf`) a
+forwarded result is unknown. A closure set holds up to 1024 members before
+its members escape. `Object.assign` onto a shaped target stores each source
+slot by name; onto an array or dictionary it stores every shape of a shape-set
+source.
 
 Unknown-receiver stores affect schemas whose identity escaped analysis or whose
 instances the host can hold. The summary retains their stored values and applies
@@ -500,7 +700,10 @@ jzify/          pre-compile desugar (index.js orchestrator + phase modules)
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
-  optimize/     WAT-array passes + vectorize.js; arena-rewind, sort-locals, low-word-mask are tape passes run by link
+                analyze/frame-effects.js: per-function and per-loop escape census (what outlives a frame or an iteration)
+                plan/lanes.js: record parameters as scalar lanes (a parameter read only field by field, at literal or known-shape sites)
+  optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
+                arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
   summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites
   ir/           tape.js, the IR tape (parallel typed arrays); the WAT-array helpers until emit builds the tape
@@ -606,6 +809,162 @@ therefore retain independent cursors. Recycled records clear user references.
 The pool is lazy because module initializers can use binding helpers before
 stdlib initialization. Its array uses ordinary arena snapshot/restore; linking
 through record fields would leave stale links after a reset.
+
+An async body suspends only at statements (`jzify/generators.js`: a yield as a
+statement, or the right side of `let x = yield E` / `x = yield E` /
+`x.f = yield E`), so `jzify/async.js` hoists every other `await` first: the
+awaited value lands in a temp declared before the statement; what the
+statement evaluates before that await lands in temps ahead of it, a callee and
+an assignment target staying in place; a short-circuit or conditional whose
+later arm awaits becomes an if statement assigning a temp; a loop whose test
+awaits tests at the top of `while (true)`. Class lowering (`jzify/classes.js`)
+takes `static async` methods on both of its paths and a bare `super()`, and the
+member census counts an optional method call (`o.m?.()`) as a read, since the
+call binds the method as a value first (`src/compile/emit/class-dispatch.js`).
+A class function returning BOOL yields the raw 0/1 only to a reader whose own
+`valTypeOf` proves the call BOOL (a receiver of one named class); a dispatcher
+returns into a tagged f64 slot, so it boxes its class arms' BOOL results like
+its fallback arm's generic call, and a direct call through a receiver the
+readers cannot type (an optional chain's temp) carries the atom too.
+
+A binding that holds a Boolean beside another kind (`let v; if (k) v = true;
+else v = 1`, `let x = c && 1`) and whose reads observe its identity (a
+return, a `typeof`, a strict compare, a store: the summary's numeric demand
+pass denied it a number) is a tagged carrier (`boolTaggedBinding`,
+`src/compile/emit/dispatch.js`): every Boolean store lands as its atom, a
+merge keeps its Boolean arm boxed (`emitIdentitySafe`), its storage is the
+tagged f64 (`analyze/body-facts.js` Pass E, over a known union only, never
+the unknown kind), and no flow fact of one store's kind is recorded for it.
+A binding read only for truthiness or arithmetic keeps the raw carrier. The
+compile-time rejection remains for the one case a plan typed such a binding
+as one concrete non-Boolean kind.
+
+Every array position argument (fill, copyWithin, slice, splice, with, the
+search methods' fromIndex) is captured and coerced through `positionArgs`
+(`src/bridge.js`): ToIntegerOrInfinity converts a string, reads a Boolean as
+0/1, takes the default for undefined, saturates ±Infinity and throws a
+TypeError for a BigInt, after the receiver and earlier arguments are
+evaluated. `splice(...args)` reads start, count and inserts from the argument
+array at run time. A typed array constructor's argument is ToIndex for a
+primitive (the full ToNumber where the program links it, the atoms in place
+otherwise, a BigInt a TypeError), a copy or view for an array, typed array
+or buffer, an iteration for a Set or Map and `Array.from` for another object
+of a known kind; an argument of unknown kind dispatches at run time without
+the array-like arm, whose dynamic reads would cost a numeric kernel its size.
+The dynamic method dispatch (`src/compile/emit/method-dispatch.js`) gives
+`f.call(thisArg, …)` and `f.apply(thisArg, args)` on a closure value a closure
+leg: a closure takes no receiver, so the call is its own with the remaining
+arguments. The module resolver (`src/resolve.js`) takes `sources`, module text
+by path suffix standing in for a file: the Web Audio bench replaces the
+worklet host, which loads processor code through `new Function`, with a stub
+of the same shape (`bench/_lib/graph.js`).
+
+Frame effects (`src/compile/analyze/frame-effects.js`) are two facts per
+function, read off the prepared AST and the summary before emission and
+transitive over direct calls: `writesOuter` (the body may write storage that
+exists before the call) and `arenaUnsafe` (an allocation made during the call
+may outlive the frame: a heap-capable value stored into outer storage, a growth
+of an outer container, a captured or module binding assigned a heap value, an
+unknown or host callee). A store into a fresh local aggregate, a binding
+declared in the body whose every write is a literal or a `new`, is a store into
+fresh memory. The arena rewind (`src/optimize/arena-rewind.js`) restores the
+heap pointer at return for any function with a scalar non-pointer result whose
+frame is not `arenaUnsafe`, parameters included; the link pass adds what the
+source cannot show: a `global.set` of anything but the heap pointers, the error
+transport and the insertion stamp; a `call_indirect`/`call_ref`; a host import
+that takes arguments (the interop `$__ext_*` imports copy what they receive); a
+runtime kernel that stores through an address a mutable global reaches (a
+durable log, a property cache); a tail call, except one into a safe kernel,
+which becomes a plain call under the restore. Vetoes propagate to callers, so a
+cycle of clean kernels stays safe; allocation counts through callees. The
+durable-heap logs are census-guarded: they record only outer-container
+mutations, which no rewind candidate performs. `whyNotRewind` names the reason
+for every declined candidate. Load CSE (`src/compile/cse-load.js`) keeps a
+cached typed-array load across a call whose callee does not `writesOuter`.
+A function whose fresh allocation is stored into module state used to rewind
+and hand out a dangling pointer; the census is what makes the rewind sound.
+The same census runs per loop with the loop body as its scope: an iteration
+that lets no allocation escape and itself builds a value (a literal, a `new`,
+a concatenation, a fresh-value method) restores the heap pointer at its start
+(`optimize/loop-rewind.js`, placed after the lane vectorizer so loop shapes
+stay matchable; the link pass validates the marker locals `$lrw<N>` against
+the body's callees and strips the rest), so a loop building a temporary per
+row runs in constant memory. Truly shared memory (`sharedMemory`) rewinds
+nothing: one thread's restore would discard every other thread's allocations.
+
+Record parameters become lanes (`src/compile/plan/lanes.js`, a plan sweep
+before the object scalarizer). A same-module function that reads a parameter
+only as `p.k` with literal keys, outside nested functions and without writing
+a field or using `p` whole, gets a sibling `f$lanes` with one f64 parameter per
+key read; every direct call site hands the fields over. A site that spelled
+the record as a literal never allocates it: the values go straight into the
+lanes, in parameter order, so a literal whose values have effects qualifies
+only when it lists the read keys in that order, and an unread key stays only
+when its value is effect-free. A site passing a name the summary proves an
+object of one shape reads the fields at the call, beside effect-free
+arguments, and only when the callee writes no outer storage (the frame census
+above), or the copies could go stale while it runs. One opaque site keeps the
+record form at every site; with all sites retargeted the original is dead.
+`optimize: { laneRecords: false }` keeps every record form (the summary tests
+pin the source's own functions).
+
+Generic reads in the self-compiled kernel cost helper entries, and the warm
+self-compile gate is paid in them. Five rules keep the common shapes inline:
+a typed array that may be unset indexes through its payload kind after the
+nullish check, and a key the summary cannot type still indexes directly once
+a runtime test proves it an integer the i32 index holds exactly (a typed
+array answers a number key from its elements alone; a property name, an
+undefined key or a huge integer keeps the dynamic get); an optional chain's
+guarded temp carries its head's present kind through the summary view's
+`alias`, so `map?.get(k)` probes the Map and `rep?.slot` loads the slot, and
+the guarded arm carries a BOOL continuation (`set?.has(k)`) as its atom,
+typed while the alias holds, since it joins the undefined arm; a
+receiver that may be an array reads its element inline (tag, one forwarding
+hop, bounds, load) and calls the helper only for anything else, a number key
+on a receiver the summary cannot type included (`node[0]` under a walker); a
+known array, Set, Map or dictionary takes its data offset with that one hop
+inline (`fwdOffsetIR`), the chase past it outlined; a nullish test of any
+expression is two bit compares on one i64 temp; strict equality of two
+untyped operands settles inline where bits can (equal bits are equal
+values, a NaN's own excepted; two packed strings with different bits are
+different strings) and calls the helper for the rest; a boxed boolean is a
+`select` of the two atoms, which truthiness and unboxing read back as the
+condition; the runtime templates test nullish receivers with two bit
+compares, the tagged typed read masks the tag and the BigInt flag off the
+box, the Map key hash mixes a number key in place, and the string hash
+reads a heap string's length in place. The lane vectorizer
+(`src/optimize/vectorize`) declines a loop whose lane-local is live out of
+it (`last = a[i]`, read after the loop: the v128 shadow never lands in the
+scalar local; liveness is the straight-line scan of the continuation, a
+write on one path killing nothing past it), and the typed-param unswitch
+(`src/optimize/unswitch.js`) looks through the inline array arm to the
+typed read it specializes. The summary keeps typed-array named properties
+per element type (`typedPropsByAux`): a property stored on a `Uint8Array`
+never reaches a read of an `Int32Array`, and an escape opens no cell, since
+a typed array's properties come from stores the walk sees or from a builtin
+that writes its argument (`escapeObject`); the host holds a view of the
+elements alone.
+
+The export boundary is numeric for a parameter used only as a typed-array
+index or stored into a typed array (README, "Host boundary"): the usage scan
+(`src/compile/param-numeric.js`) counts those uses as numeric, reading the
+receiver's typed kind from the summary as well as its declaration. A program
+that wants the host's property keys takes them as strings (`key = '' + key`,
+JS's own ToPropertyKey); inside the program the summary knows a string key and
+the typed-array property semantics hold.
+
+`charCodeAt` on a concatenation dissolved into raw (buf, len) locals reads
+16-bit units at `i << 1`; the byte-indexed read it had after the UTF-16 move
+was the strbuild checksum regression.
+
+`x ** c` with a constant non-integer exponent is the `$math.pow` kernel, one
+implementation for constant and runtime exponents within an ulp of the host;
+the k/5 fifthroot fold runs four Newton steps (the last a correction) and
+measures a worst case of ~40 ulp across its exponents against the exact
+rational power, which `test/pow.js` pins under a 96 ulp ceiling. The lane vectorizer lifts a constant-exponent pow per lane through the
+same kernel, bit-exact with the scalar loop. A second algorithm (exp∘log, or
+the three-step fifthroot) is never the default: a meaningful result keeps its
+f64 accuracy.
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 

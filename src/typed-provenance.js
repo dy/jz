@@ -27,6 +27,19 @@ export const TYPED_CTOR_CONFLICT = Symbol('typed ctor conflict')
 const stripTypedView = ctor =>
   typeof ctor === 'string' && ctor.endsWith('.view') ? ctor.slice(0, -5) : ctor
 
+/** Numeric keys address typed elements; every other property has independent storage. */
+export const typedElementKey = (key, numeric = false) => {
+  if (numeric) return true
+  const literal = Array.isArray(key) && (key[0] == null || key[0] === 'str') ? key[1] : key
+  if (typeof literal === 'number') return true
+  if (Array.isArray(key) && typeof literal === 'string') {
+    const c = literal.charCodeAt(0)
+    if (!literal.length || c !== 45 && c !== 73 && c !== 78 && (c < 48 || c > 57)) return false
+    return literal === '-0' || String(Number(literal)) === literal
+  }
+  return false
+}
+
 export const typedCtorName = ctor => {
   const base = stripTypedView(ctor)
   return typeof base === 'string' && base.startsWith('new.') ? base.slice(4) : null

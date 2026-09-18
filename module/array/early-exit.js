@@ -25,7 +25,7 @@ export const registerEarlyExit = () => {
     ], undefined, undefined, reverse)
     return typed(['block', ['result', 'f64'],
       recv.setup,
-      cb.setup,
+      cb.setup, cb.check,
       ['local.set', `$${r}`, init],
       ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')

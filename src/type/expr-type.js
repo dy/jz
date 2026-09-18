@@ -11,7 +11,7 @@
  */
 import { isI32 } from '../ast.js'
 import { ctx } from '../ctx.js'
-import { K, hasTag } from '../summary/kind.js'
+import { K, NUMBER, BOOL, core, hasTag } from '../summary/kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   hasAmbiguousBoolMerge, censusShapedNode,
@@ -20,6 +20,8 @@ import { propValType, CMP_OPS } from '../kind-traits.js'
 import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32, negRangeFitsI32 } from '../static.js'
 import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
+import { isPresentNumber } from '../kind.js'
+import { typedElementKey } from '../typed-provenance.js'
 import { inBoundsCharCodeAt } from './canonical-bounds.js'
 
 // The bitwise and signed-shift operators: i32 on numbers, f64 (the i64 carrier) on BigInts.
@@ -72,7 +74,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
     // Only propagate primitive numeric kinds — i64 globals are reserved for the
     // NaN-box carrier ABI and shouldn't influence local typing.
     const gt = ctx.scope?.globalTypes?.get?.(expr)
-    if (gt === 'i32' || gt === 'f64') return gt
+    if (gt === 'f64' || gt === 'i32' && ctx.scope.globalValTypes?.get(expr) === VAL.NUMBER) return gt
     return 'f64'
   }
   if (!Array.isArray(expr)) return 'f64'
@@ -96,12 +98,17 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
       // f64-round-tripping integer accumulation like `ax = ax + DX[i]`). See typedElemCtorOf.
       const ctor = typedElemCtorOf(expr[1], locals)
       if (ctor) {
+        const present = readPresent?.has(expr)
+        const scope = bodyRoot ?? ctx.func.current
+        const elementOnly = ctx.summary?.typedPropertiesAbsent() &&
+          core(ctx.summary.at(scope).kindOfExpr(expr[2])) === NUMBER
+        if (!present && !elementOnly && !typedElementKey(expr[2], isPresentNumber(ctx, expr[2], scope))) return 'f64'
         const aux = typedElemAux(ctor)
         // int family only — Float16Array shares code 3 with a flag; its elements are floats.
         // Payload classification only: a possible missing read still needs
         // a separate storage-presence proof before committing an i32 local.
         if (aux != null && (aux & 7) <= 5 && !(aux & 32))
-          return !readPresent || ((aux & 7) !== 5 && readPresent.has(expr)) ? 'i32' : 'f64'
+          return !readPresent || ((aux & 7) !== 5 && present) ? 'i32' : 'f64'
       }
     }
     return 'f64'
@@ -199,7 +206,12 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
     return mulRangeFitsI32(expr[1], expr[2]) ? 'i32' : 'f64'
   }
   // Unary minus shares emission's magnitude and zero-sign proof.
-  if (op === 'u+') return exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent)
+  if (op === 'u+') {
+    // An i32 object offset is not a numeric bound on ToNumber's result.
+    const k = ctx.summary?.at(bodyRoot ?? ctx.func.current)?.kindOfExpr(expr[1])
+    return k != null && (core(k) === NUMBER || core(k) === BOOL)
+      ? exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent) : 'f64'
+  }
   if (op === 'u-') {
     const t = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent)
     return t === 'i32' && !isUnsignedI32Expr(expr[1], locals) && negRangeFitsI32(expr[1]) ? 'i32' : 'f64'

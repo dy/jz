@@ -12,6 +12,216 @@ const check = (src, args, reference = src) => {
   }
 }
 
+test('method positions: string ranges capture arguments and default only undefined', () => {
+  for (const method of ['slice', 'substring']) check(`export function f(k) {
+    let trace='', end=3
+    const start={valueOf(){trace+='v';end=1;if(k===2)throw 1;return k===3?1n:1}}
+    function extra(){trace+='e';return 9}
+    try { return ['abcdef'.${method}(start,end,extra()), trace,
+      'abcdef'.${method}(1,undefined),'abcdef'.${method}(1,null),
+      'abcdef'.${method}(1,{valueOf(){return undefined}}),'abcdef'.${method}(-2,Infinity)] }
+    catch(e){ return [e===1?'one':e.name,trace] }
+  }`, [0,0,2,3,0])
+})
+
+test('method positions: array and typed at, slice and subarray coerce before clamping', () => {
+  check(`
+    function at(i) { try { return [7, 8].at(i) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function typedAt(i) { try { return new Int32Array([7, 8]).at(i) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function bigAt(i) { try { return new BigInt64Array([7n, 8n]).at(i) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function slice(i) { try { return Array.from(new Int32Array([7, 8]).slice(i)) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function bigSlice(i) { try { return Array.from(new BigInt64Array([7n, 8n]).slice(i)) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function view(i) { try { return Array.from(new Int32Array([7, 8]).subarray(i)) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function buffer(i) { try { return new ArrayBuffer(2).slice(i).byteLength } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    export function f(k) {
+      const values = ['1', true, null, undefined, NaN, Infinity, -Infinity, -1.5, 4294967295, 1n]
+      const i = values[k]
+      return [at(i), typedAt(i), bigAt(i), slice(i), bigSlice(i), view(i), buffer(i)]
+    }
+  `, [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0])
+  check(`export function f(k) {
+    const i = k >>> 0, a = new Int32Array([7, 8]), b = new BigInt64Array([7n, 8n])
+    return [a.at(i), [7, 8].at(i), a.slice(i).length, a.subarray(i).length,
+      b.at(i), b.slice(i).length, 'ab'.at(i), 'ab'.slice(i)]
+  }`, [0, 1, 2147483647, 2147483648, 4294967295, -1, 0])
+  check(`export function f(k) {
+    try {
+      const a = new Int32Array(0)
+      return k === 0 ? a.at(1n) : k === 1 ? a.slice(1n).length : a.subarray(0, 1n).length
+    } catch(e) { return e instanceof TypeError }
+  }`, [0, 1, 2, 0])
+})
+
+test('method positions: range arguments precede conversions, including unused arguments', () => {
+  for (const method of ['slice', 'subarray']) check(`
+    export function f(k) {
+      let trace = '', end = 2
+      const a = new Int32Array([7, 8, 9])
+      const start = { valueOf() { trace += 'v'; end = 0; a[1] = 42; if(k === 1) throw 17; return k === 2 ? 1n : 1 } }
+      function first() { trace += 'a'; return start }
+      function second() { trace += 'b'; return end }
+      function extra() { trace += 'c'; if(k === 3) throw 23; return 99 }
+      try { const b = a.${method}(first(), second(), extra()); return [Array.from(b), trace, end] }
+      catch(e) { return [e instanceof TypeError ? 'TypeError' : e, trace, end] }
+    }
+  `, [0, 0, 1, 2, 3, 0])
+  check(`
+    export function f(k) {
+      let trace = ''
+      const a = new Int32Array([7, 8, 9])
+      const end = { valueOf() { trace += 'e'; return k ? undefined : 2 } }
+      const missing = [undefined][0]
+      return [Array.from(a.slice(1, end)), Array.from(a.subarray(1, end)),
+        Array.from(a.slice(1, missing)), Array.from(a.subarray(1, missing)), trace]
+    }
+  `, [0, 1, 1, 0])
+  check(`
+    function copy(a, end) { return Array.from(a.slice('1', end)) }
+    function view(a, end) { return Array.from(a.subarray('1', end)) }
+    export function f(k) {
+      const end = k ? undefined : 2
+      return [copy(new Int32Array([7, 8, 9]), end), copy(new BigInt64Array([7n, 8n, 9n]), end),
+        view(new Int32Array([7, 8, 9]), end), view(new Uint8Array([7, 8, 9]), end)]
+    }
+  `, [0, 1, 1, 0])
+  check(`export function f(k) {
+    let trace = ''
+    const b = new ArrayBuffer(3), bytes = new Uint8Array(b)
+    bytes[0] = 7; bytes[1] = 8; bytes[2] = 9
+    const start = { valueOf() { trace += 'v'; if(k) throw 17; bytes[1] = 42; return 1 } }
+    function end() { trace += 'e'; return 2 }
+    function extra() { trace += 'x'; return 0 }
+    try { return [Array.from(new Uint8Array(b.slice(start, end(), extra()))), trace] }
+    catch(e) { return [e, trace] }
+  }`, [0, 1, 1, 0])
+})
+
+test('method positions: at captures length after arguments and reads after conversion', () => {
+  check(`
+    export function f(k) {
+      let trace = ''
+      const a = [7, 8]
+      const index = { valueOf() {
+        trace += 'v'
+        if(k === 0) a.length = 0
+        if(k === 1) { for(let i=0;i<100;i++) a.push(i); a[1] = 42 }
+        if(k === 2) return 1n
+        if(k === 3) throw 17
+        return -1
+      } }
+      function first() { trace += 'a'; return index }
+      function extra() { trace += 'b'; return 3 }
+      try { const v = a.at(first(), extra()); return [v, trace, a.length] }
+      catch(e) { return [e instanceof TypeError ? 'TypeError' : e, trace, a.length] }
+    }
+  `, [0, 0, 1, 2, 3, 1, 0])
+  check(`export function f(k) {
+    const a = [7]
+    function index() { a.push(8); return -1 }
+    const b = new Int32Array(0)
+    let calls = 0
+    const i = { valueOf() { calls++; return k ? 1n : 0 } }
+    let empty
+    try { empty = b.at(i) } catch(e) { empty = e instanceof TypeError ? 'TypeError' : e }
+    return [a.at(index()), empty, calls, a.at(...[-1])]
+  }`, [0, 1, 1, 0])
+})
+
+test('method receivers: nullable builtins throw before evaluating arguments', () => {
+  for (const [receivers, operation] of [
+    ['[[7, 8], null]', 'a.at(pos())'],
+    ['[new Int32Array([7, 8]), null]', 'a.at(pos())'],
+    ['[new Int32Array([7, 8]), null]', 'Array.from(a.slice(pos()))'],
+    ['[new Int32Array([7, 8]), null]', 'Array.from(a.subarray(pos()))'],
+    ['[new Int32Array([7, 8]), null]', 'a.includes(pos())'],
+    ['[new BigInt64Array([7n, 9221120245631025152n]).subarray(1), null]', 'a.at(pos())'],
+    ["['ab', null]", 'a.slice(pos())'],
+    ['[new ArrayBuffer(2)]', 'a.slice(pos()).byteLength'],
+  ]) check(`export function f(k) {
+    let trace = ''
+    const xs = ${receivers}
+    function recv() { trace += 'r'; return xs[k] }
+    function pos() { trace += 'p'; return 0 }
+    try { const a = recv(); return [${operation}, trace] }
+    catch(e) { return [e.name, trace] }
+  }`, [0, 0, 1, 2, -1, 0])
+  check(`const a = new BigInt64Array([7n, 9221120237041090562n, 9221120245631025152n])
+    export function f(i) {
+      let calls = 0
+      function radix() { calls++; return 10 }
+      try { return [a[i].toString(radix()), calls] }
+      catch(e) { return [e.name, calls] }
+    }
+  `, [0, 0, 1, 2, 3, -1, 0])
+})
+
+test('ToNumber: reject raw, boxed and converted BigInts at implicit boundaries', () => {
+  check(`
+    function split(v) { try { return 'a,b'.split(',', v).length } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function abs(v) { try { return Math.abs(v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function store(v) { try { const a=new Float64Array(1); a[0]=v; return a[0] } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function raw() { try { return 'a,b'.split(',', 1n).length } catch(e) { return e instanceof TypeError } }
+    export function f(mode) {
+      let trace = ''
+      const a = mode === 0 ? [] : [1n]
+      const o = { valueOf() { trace += 'v'; if(mode === 3) throw 17; return mode === 1 ? 1n : mode === 2 ? o : 1 },
+        toString() { trace += 's'; return 2n } }
+      const out = [raw(), split(a[0]), split(mode ? 1n : 1), abs(mode ? 1n : -1),
+        store(mode ? 1n : 1), split(o), store(o)]
+      return [out, trace]
+    }
+  `, [0, 0, 1, 2, 3, 1, 0])
+})
+
+test('Number: explicit conversion retains BigInt payloads and nullable results', () => {
+  check(`
+    function number(v) { return Number(v) }
+    export function f(mode) {
+      let trace = ''
+      const a = mode === 0 ? [] : [9221120245631025152n]
+      const o = { valueOf() { trace += 'v'; if(mode === 3) throw 17; return mode === 1 ? 7n : mode === 2 ? o : 2 },
+        toString() { trace += 's'; return 8n } }
+      let converted
+      try { converted = Number(o) } catch(e) { converted = 'throw:' + e }
+      return [Number(7n), number(mode ? 7n : '2'), Number(mode ? true : 2),
+        Number(a[0]), number(a[0]), Number(null), Number(undefined), converted, trace]
+    }
+  `, [0, 0, 1, 2, 3, 1, 0])
+})
+
+test('ToNumber: typed BigInt presence and payloads survive explicit conversion', () => {
+  check(`
+    const a = new BigInt64Array([1n, 9221120245631025152n, -1n])
+    export function f(i) {
+      i |= 0
+      let checked, present
+      try { checked = +a[i] } catch(e) { checked = e instanceof TypeError ? 'TypeError' : e }
+      try { present = +a[0] } catch(e) { present = e instanceof TypeError ? 'TypeError' : e }
+      return [Number(a[i]), Number(a[0]), checked, present]
+    }
+  `, [-1, 0, 0, 1, 2, 3, 0])
+})
+
+test('ToNumber: string positions reject BigInt and preserve conversion effects', () => {
+  check(`
+    function char(v) { try { return 'abc'.charAt(v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function code(v) { try { return 'abc'.charCodeAt(v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function point(v) { try { return 'abc'.codePointAt(v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function at(v) { try { return 'abc'.at(v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function slice(v) { try { return 'abc'.slice(v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function sub(v) { try { return 'abc'.substring(v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function length(v) { try { return 'abc'.substr(0, v) } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    function plus(v) { try { return +v } catch(e) { return e instanceof TypeError ? 'TypeError' : e } }
+    export function f(mode) {
+      let calls = 0
+      const o = { valueOf() { calls++; if(mode === 3) throw 17; return mode === 1 ? 1n : mode === 2 ? -0 : 1 } }
+      const a = mode ? [1n] : []
+      return [char(o), code(o), point(o), at(o), slice(o), sub(o), length(o), plus(o),
+        plus(a[0]), char(mode ? 1n : 4294967296), char(1n), slice(1n), calls]
+    }
+  `, [0, 0, 1, 2, 3, 1, 0])
+})
+
 test('ToPrimitive: absent and non-callable own methods stay distinct', () => {
   check(`
     function str(o) { try { return String(o) } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }

@@ -9,7 +9,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 const sharedMem = () => new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true })
 const run = (code) => jz(code, { sharedMemory: true, memory: sharedMem() }).exports
@@ -117,4 +118,24 @@ test('atomics: BigInt64Array — i64 ops, BigInt values in and out', () => {
   let err
   try { jz.compile('export let f = () => { let a = new BigInt64Array(2); return Number(Atomics.store(a, 0, 5)) }', { sharedMemory: true }) } catch (x) { err = x }
   ok(err && /BigInt values/.test(err.message), 'number value on BigInt64Array receiver rejects')
+})
+
+test('atomics: result identity, explicit conversion and bounds survive reuse', () => {
+  if (onWasi() || onKernel()) return
+  for (const [ctor, suffix] of [['Int32Array', ''], ['BigInt64Array', 'n']]) {
+    const src = `export function f(i) {
+      const a = new ${ctor}(2)
+      try {
+        Atomics.store(a, i, 7${suffix})
+        const old = Atomics.add(a, i, 2${suffix})
+        const value = Atomics.load(a, i)
+        return [old, value, typeof old, Number(value)]
+      } catch(e) { return e.name }
+    }`
+    const expected = oracle(src).f
+    for (const optimize of levels(false, 2, 3, 'size')) {
+      const f = jz(src, { optimize, sharedMemory: true, memory: sharedMem() }).exports.f
+      for (const i of [0, 0, 1, 2, -1, 0]) is(f(i), expected(i), `${ctor}, O${optimize || 0}, index ${i}`)
+    }
+  }
 })

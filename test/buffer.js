@@ -5,7 +5,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, funcWat } from './util.js'
 
 // === Allocation + byteLength ===
 
@@ -19,7 +19,7 @@ test('new ArrayBuffer(n) — basic allocation + byteLength', () => {
   is(exports.main(), 16)
 })
 
-test('unsupported buffer growth and object-coercion shapes reject cleanly', () => {
+test('unsupported buffer growth rejects cleanly', () => {
   const { fixed } = jz(`export let fixed = () => {
     let b = new SharedArrayBuffer(8)
     return b.byteLength + b.maxByteLength + (b.growable ? 100 : 0)
@@ -27,11 +27,12 @@ test('unsupported buffer growth and object-coercion shapes reject cleanly', () =
   is(fixed(), 16, 'fixed-length SharedArrayBuffer subset keeps fixed proposal accessors')
   throws(() => jz('export let f = () => new SharedArrayBuffer(8, { maxByteLength: 16 })'), /ArrayBuffer options are not supported/)
   throws(() => jz('export let f = () => new ArrayBuffer(8, { maxByteLength: 16 })'), /ArrayBuffer options are not supported/)
-  throws(() => jz(`export let f = () => {
+  const { slice } = jz(`export let slice = () => {
     let b = new ArrayBuffer(8)
-    let start = { valueOf: () => 0 }
+    let start = { valueOf: () => '2' }
     return b.slice(start).byteLength
-  }`), /object index coercion is not supported/)
+  }`).exports
+  is(slice(), 6, 'slice converts an object position with the numeric hint')
 })
 
 test('DataView setters return undefined in value position', () => {
@@ -505,6 +506,56 @@ test('subview — Float64Array aliases parent', () => {
 
 // === Subview: runtime dispatch (view passed as function argument) ===
 
+test('generic typed indexing: one layout decode across owned, view and empty storage', () => {
+  const ctors = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array',
+    'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
+  if (typeof Float16Array === 'function') ctors.push('Float16Array')
+  ctors.push('BigInt64Array', 'BigUint64Array')
+  const init = ctors.map((ctor, i) => {
+    const values = ctor.startsWith('Big') ? '7n, 19n, 9221120245631025152n' : '-257.5, 65535, 0.1'
+    return `const a${i} = new ${ctor}([${values}]);`
+  }).join('\n')
+  const members = ctors.flatMap((ctor, i) => [`a${i}`, `a${i}.subarray(1)`, `new ${ctor}(0)`])
+  members.push('new DataView(new ArrayBuffer(16), 4, 8)', 'new DataView(new ArrayBuffer(0))',
+    '[3, 5]', '[]', 'null', 'undefined')
+  const src = `${init} const sources = [${members.join(',')}];
+    export function read(which, i) {
+      const a = sources[which];
+      try { return [a[i], a.length] } catch (e) { return e.name }
+    }`
+  const expected = oracle(src).read
+  const order = [0, 0, ...members.map((_, i) => i), 0]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { read } = jz(src, { optimize }).exports
+    for (const which of order) for (const i of [-1, 0, 1, 2, 3, 4, 2147483647, 0])
+      is(read(which, i), expected(which, i), `O${optimize}, storage ${which}, index ${i}`)
+  }
+  const wat = jz.compile(src, { optimize: { level: 2, watr: false }, wat: true })
+  const body = funcWat(wat, '__typed_idx')
+  ok(body.includes('call $__typed_shift'), 'generic reader uses the decoded element kind')
+  ok(!body.includes('call $__len'), 'generic reader does not decode the layout again through __len')
+})
+
+test('subarray preserves specialized element flags after erasure', () => {
+  const ctors = ['Uint8ClampedArray']
+  if (typeof Float16Array === 'function') ctors.push('Float16Array')
+  const init = ctors.map((ctor, i) => `const a${i} = new ${ctor}(4); const v${i} = a${i}.subarray(1, 3);`).join('\n')
+  const src = `${init}
+    const bases = [${ctors.map((_, i) => `a${i}`).join(',')}], views = [${ctors.map((_, i) => `v${i}`).join(',')}];
+    export function f(mode, value) {
+      const base = bases[mode], view = views[mode], nested = view.subarray(0);
+      nested[0] = value;
+      return [nested[0], view[0], base[1], base[0], nested.length];
+    }`
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const mode of [0, 0, ...ctors.map((_, i) => i), 0])
+      for (const value of [-1, 0, 1.5, 2.5, 255.5, 256, NaN, Infinity, 65535, 0.1])
+        is(f(mode, value), expected(mode, value), `O${optimize}, ${ctors[mode]}, ${value}`)
+  }
+})
+
 test('subview — runtime __typed_idx on view argument', () => {
   // Function parameters get no compile-time typedElem tracking.
   // Indexing falls to __typed_idx which must detect aux bit 3.
@@ -942,5 +993,31 @@ test('typed-array descriptor provenance crosses calls and closures', () => {
       }
     `)
     is(e.main(), 20, name)
+  }
+})
+
+// A typed array constructor's argument (23.2.5.1): a primitive is ToIndex
+// (its ToNumber converts a string, reads true as 1 and null as 0, and throws
+// a TypeError for a BigInt); an array, a typed array and a buffer copy or
+// view; a Set or a Map iterates; another object is an array-like. The
+// argument of a kind the summary cannot name dispatches at run time, where
+// a string reads as 0 and an array-like is not copied (the conversion and
+// the dynamic reads would cost a numeric kernel their whole size).
+test('typed array constructor: ToIndex on primitives, iterable and array-like sources', () => {
+  const src = `export function main() {
+    const s = new Set([1, 2, 2]), m = new Map([[1, 2]]), o = { length: 3 }
+    const bigint = (() => { try { return new Float64Array(2n).length } catch (e) { return e.name } })()
+    return [new Float64Array('2').length, new Uint8Array(true).length, new Uint8Array(null).length, new Uint8Array('x').length,
+      new Float64Array(new Set([3, 4])).length, new Float64Array(s)[1], new Int32Array(m).length, new Float64Array(o).length,
+      new Float64Array({ length: 2 }).length, new Uint8Array([7, 8])[1], new Float64Array(new Float64Array([1.5]))[0], bigint]
+  }
+  export function dyn(x) { try { return new Float64Array(x).length } catch (e) { return e.name } }
+  export function internal() { const f = (x) => new Float64Array(x).length; return [f(2), f([1, 2]), f(new Set([1, 2])), f(new Map([[1, 2]]))] }`
+  const want = [2, 1, 0, 0, 2, 2, 1, 3, 2, 8, 1.5, 'TypeError']
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    is(m.main(), want, `O${optimize}: static argument kinds`)
+    is([m.dyn(2), m.dyn(true), m.dyn(null), m.dyn(new Float64Array(5)), m.dyn([1, 2, 3])], [2, 1, 0, 5, 3], `O${optimize}: a host argument dispatches at run time`)
+    is(m.internal(), [2, 2, 2, 1], `O${optimize}: an internal call's argument kinds`)
   }
 })

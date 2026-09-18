@@ -431,6 +431,9 @@ export default (ctx) => {
       // log(<0)=NaN). x=-Infinity is its OWN case, not "negative": |x|=Infinity means Math.pow
       // ignores the sign for a non-integer exponent (c > 0 in this branch's guard, so the result
       // is +Infinity). x=+0/-0/+∞/NaN carry correctly through power + fifthroot.
+      // The fifthroot fold is within tens of ulp of the true value (four Newton
+      // steps, see $math.fifthroot): the transcendental-kernel class the README
+      // documents, so it stays the default; under crPow it is the opt-in `approxPow`.
       const fifthrootGate = crPow ? ctx.transform.optimize?.approxPow : true
       if (fifthrootGate && Number.isFinite(c) && c > 0 && c < 5 && !Number.isInteger(c) && Number.isInteger(c * 5)) {
         inc('math.fifthroot')
@@ -455,10 +458,11 @@ export default (ctx) => {
           // kernel) rather than fdlibm's manual y1/y2 chop — so a single f64.const suffices.
           return typed(['call', '$math.pow_fold', irA, ['f64.const', c]], 'f64')
         }
-      } else if (Number.isFinite(c) && !Number.isInteger(c) && c !== 0.5 && c !== -0.5) {
-        return (inc('math.exp'), inc('math.log'),
-          typed(['call', '$math.exp', ['f64.mul', irB, ['call', '$math.log', irA]]], 'f64'))
       }
+      // Otherwise the constant exponent takes the same kernel as a runtime one
+      // ($math.pow's fdlibm tail, within an ulp of the host), so `x ** 2.4` and
+      // `Math.pow(x, 2.4)` agree bit for bit; exp(c·log(x)) was a second
+      // algorithm with its own rounding.
     }
     // base 2 → dedicated 2^y (exp2 is exact for integer y, and skips exp's ×ln2/÷ln2).
     // Every other literal base keeps $math.pow: `exp(y·ln base)` would lose ulps and,
@@ -1366,7 +1370,13 @@ export default (ctx) => {
     (local.set $r (f64.div (f64.sub (local.get $r) (local.get $t)) (f64.add (local.get $w) (local.get $r))))
     (f64.add (local.get $t) (f64.mul (local.get $t) (local.get $r))))`)
 
-  // Fifth root of v ≥ 0 — same bit-hack seed (÷5 of the raw bits) + 3 Newton steps t=(4t+v/t⁴)/5.
+  // Fifth root of v ≥ 0 — same bit-hack seed (÷5 of the raw bits, within ~4%) + 4 Newton
+  // steps t=(4t+v/t⁴)/5, the last one as a correction t + (v/t⁴ − t)/5. Newton squares
+  // the relative error each step (×2 for a fifth root): 4e-2 → 3e-3 → 2e-5 → 6e-10 →
+  // below f64 precision, so the root is within an ulp or two; the k/5 pow fold built on
+  // it (x^p · fifthroot(x^r)) measures a worst case of ~30 ulp across its exponents
+  // (test/pow.js pins the bound). Three steps stopped at ~6e-10, a million-ulp
+  // approximation.
   // Caller (constant-exponent pow with denominator 5, e.g. the sRGB 2.4 gamma) guarantees v ≥ 0.
   wat('math.fifthroot', `(func $math.fifthroot (param $v f64) (result f64)
     (local $t f64) (local $s f64) (local $q f64)
@@ -1385,6 +1395,9 @@ export default (ctx) => {
     (local.set $t (f64.mul (f64.add (f64.mul (f64.const 4.0) (local.get $t)) (f64.div (local.get $v) (f64.mul (local.get $q) (local.get $q)))) (f64.const 0.2)))
     (local.set $q (f64.mul (local.get $t) (local.get $t)))
     (local.set $t (f64.mul (f64.add (f64.mul (f64.const 4.0) (local.get $t)) (f64.div (local.get $v) (f64.mul (local.get $q) (local.get $q)))) (f64.const 0.2)))
+    ;; the last step as a correction, t + (v/t⁴ − t)/5: one rounding on a term ~1e-9 of t
+    (local.set $q (f64.mul (local.get $t) (local.get $t)))
+    (local.set $t (f64.add (local.get $t) (f64.mul (f64.sub (f64.div (local.get $v) (f64.mul (local.get $q) (local.get $q))) (local.get $t)) (f64.const 0.2))))
     (f64.mul (local.get $t) (local.get $s)))`)
 
   // Small finite-test helper (NaN→0, ±Inf→0, finite→1). Used by transcendental

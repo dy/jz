@@ -9,14 +9,14 @@
  * @module type/loop-versioning-nest
  */
 import {
-  isReassigned, MUTATE_OPS, walkAst, some, someDeep, REFS_THROUGH_ARROWS,
+  MUTATE_OPS, walkAst, some, someDeep, REFS_THROUGH_ARROWS,
 } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
-import { idxKey, redeclaresName } from './canonical-bounds.js'
+import { idxKey, redeclaresName, lengthRecv } from './canonical-bounds.js'
 import { intervalIdxRanges } from './interval-proof.js'
 import { containsNestedClosure } from './loop-unroll.js'
-import { versionableTypedFor, typedIdxProven } from './loop-versioning.js'
+import { versionableTypedFor, typedIdxProven, stableLoopNames } from './loop-versioning.js'
 import { exprType } from './expr-type.js'
 
 /** Nest-level versioning scan: the intercepted loop PLUS every nested loop whose
@@ -48,7 +48,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   // dynamic-length param table is exactly this shape.
   const rangeOnly = (c2, b2) => {
     const cands = [], seen = new Set()
-    const stable2 = (nm) => !isReassigned(b2, nm) && !redeclaresName(b2, nm)
+    const stable2 = stableLoopNames(b2, c2)
     const scan = (n) => {
       if (n[0] === '=>') return false
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string'
@@ -102,8 +102,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     for (let k = 1; k < n.length; k++) scanStmts(n[k])
   }
   walkLoop(init, cond, step, body, null, true)
-  const stableTop = (name) => typeof name !== 'string'
-    || (!isReassigned(body, name) && !redeclaresName(body, name))
+  const stableTop = stableLoopNames(body, cond, step)
   const exprNames = (e, out) => someDeep(e, n => { if (typeof n === 'string') out.push(n); return false })
   const keepPre = levels.filter((L) => {
     // A numeric hull that already exceeds a receiver's STATIC length can never
@@ -118,6 +117,8 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     })
     if (!L.cands.length) return false
     if (!L.top) {
+      const recv = lengthRecv(L.bound)
+      if (recv != null && ctx.summary?.at(ctx.func.current).mayBeNullishExpr(recv) !== false) return false
       if (!L.rangeOnly && L.startC == null) return false
       const n0 = L.cands.length
       // an induction whose ENTRY is a static init literal (`for (let j=0, k=0; …)`)
@@ -135,6 +136,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     if (typeof L.bound === 'string') names.push(L.bound)
     for (const c of L.cands) {
       names.push(c.recv)
+      if (c.presence) continue
       if (c.range != null) { if (c.range.hiName != null) names.push(c.range.hiName); continue }
       if (c.ind != null) { names.push(c.ind); if (typeof c.slope === 'string') names.push(c.slope) }
       else if (c.cursor != null) names.push(c.cursor)
@@ -143,7 +145,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     // the top level's own iv/bound legitimately live in the top body — only names
     // read by LIFTED (inner) guards need top-stability; the top spec re-checks
     // nothing new here beyond its own scan
-    return L.top || names.every(stableTop)
+    return L.top || names.every(name => typeof name !== 'string' || stableTop(name))
   })
   const keep = keepPre
   if (!keep.length) return null
@@ -184,7 +186,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     else if (n[0] === 'for' && n.length === 5) allLoopBodies.push(n[4])
   } })
   const keptBodies = new Set(keep.map(L => L.bodyNode))
-  const covered = new Set(keep.filter(L => L.top).flatMap(L => L.cands.map(c => idxKey(c.recv, c.idx))))
+  const covered = new Set(keep.filter(L => L.top).flatMap(L => L.cands.filter(c => !c.presence).map(c => idxKey(c.recv, c.idx))))
   const cursors = []
   for (const [name, w] of cursorWrites) {
     if (w == null) continue
@@ -204,7 +206,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[2] === name
           && !covered.has(idxKey(n[1], n[2]))
           && ctx.func.typedElem?.has(n[1])
-          && !isReassigned(body, n[1]) && !redeclaresName(body, n[1]))
+          && stableTop(n[1]))
         cands.push({ recv: n[1], idx: n[2], post: seenWrite })
     }
     walkAst(body, { enter: scanC })

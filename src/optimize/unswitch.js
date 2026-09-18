@@ -100,16 +100,27 @@ export function unswitchTypedParamLoop(fn) {
   // `drops` accumulates every condition traversed on the path to the
   // matched call (the STRING-wrapper case nests a second guard); the caller
   // dedupes across every read site by structural equality before hoisting.
-  function receiverGuardedRead(n, p, drops = []) {
+  function receiverGuardedRead(n, p, drops = [], subst = null) {
     if (!Array.isArray(n)) return null
-    if (typedIdx(n, p)) return { drops, call: n }
+    if (typedIdx(n, p)) {
+      const ix = n[3]
+      const index = subst && Array.isArray(ix) && ix[0] === 'local.get' && subst.has(ix[1]) ? subst.get(ix[1]) : ix
+      return { drops, call: n, index }
+    }
+    // The inline array arm ahead of the typed read (module/array.js
+    // arrayFast): the index lands in a temp before the tag test, and the
+    // typed read takes the temp; the clone takes the index expression.
+    if (n[0] === 'block' && n.length === 4 && Array.isArray(n[1]) && n[1][0] === 'result' && n[1][1] === 'f64' &&
+        Array.isArray(n[2]) && n[2][0] === 'local.set' && typeof n[2][1] === 'string' && n[2].length === 3 &&
+        Array.isArray(n[3]) && n[3][0] === 'if')
+      return receiverGuardedRead(n[3], p, drops, new Map([...(subst ?? []), [n[2][1], n[2][2]]]))
     if (n[0] !== 'if' || n.length < 4) return null
     if (!Array.isArray(n[1]) || n[1][0] !== 'result' || n[1][1] !== 'f64') return null
     if (!has(n[2], (x) => reintParam(x, p))) return null
     for (let k = 3; k < n.length; k++) {
       const a = n[k]
       if (!Array.isArray(a) || (a[0] !== 'then' && a[0] !== 'else') || a.length !== 2) continue
-      const found = receiverGuardedRead(a[1], p, [...drops, n[2]])
+      const found = receiverGuardedRead(a[1], p, [...drops, n[2]], subst)
       if (found) return found
     }
     return null
@@ -130,7 +141,7 @@ export function unswitchTypedParamLoop(fn) {
     const guarded = n[0] === 'if' ? receiverGuardedRead(n, p) : null
     if (guarded) {
       for (const d of guarded.drops) { const key = JSON.stringify(d); if (!hoisted.has(key)) hoisted.set(key, cloneIR(d)) }
-      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(guarded.call[3]), ['i32.const', 3]]]]
+      return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(guarded.index), ['i32.const', 3]]]]
     }
     return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base, hoisted))
   }

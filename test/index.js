@@ -34,6 +34,8 @@ const TESTS = [
   'static-storage',
   'mem',
   'allocation',
+  'frame-effects',
+  'lanes',
   'buffer',
   'workers',
   'generators',

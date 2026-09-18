@@ -140,6 +140,60 @@ test('interop: null/undefined sentinels round-trip', () => {
   is(exports.f(42), 42)
 })
 
+test('interop: property dispatch converts once regardless of declaration order', () => {
+  if (onWasi() || onKernel()) return
+  const named = `export function named(){return get().value}`
+  const computed = `export function f(k){let calls=0;const key={toString(){calls++;return k}};
+    const o=get();return [o[key],calls]}`
+  for (const declarations of [[computed, named], [named, computed], [computed]])
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    let value = 7, reads = 0
+    const object = new class { get value() { reads++; return value } }
+    const src = `import {get} from 'host'; ${declarations.join('\n')}`
+    const bytes = compile(src, { optimize, imports: { host: { get: { params: 0 } } } })
+    const { exports } = interop.instantiate(bytes, { imports: { host: { get: () => object } } })
+    for (const next of [7, 7, 13, undefined, 7]) {
+      value = next
+      is(exports.f('value'), [value, 1], `O${optimize}: computed host property`)
+      is(exports.f('absent'), [undefined, 1], `O${optimize}: missing host property`)
+      if (exports.named) is(exports.named(), value, `O${optimize}: prehashed host property`)
+    }
+    is(reads, exports.named ? 10 : 5, 'one host getter invocation per present-key read')
+  }
+})
+
+test('interop: computed host reads preserve empty keys, errors and optional receivers', () => {
+  if (onWasi() || onKernel()) return
+  const src = `export function read(o,k){return o[k]}
+    export function optional(o,k){return o?.[k]}`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { exports } = interop.instantiate(compile(src, { optimize }))
+    const a = new class { get value() { return 7 } get bad() { throw new RangeError('host getter') } }
+    const b = new class { get value() { return 13 } }
+    a[''] = 9
+    for (const obj of [a, a, b, a]) {
+      for (const key of ['value', '', 'missing']) {
+        is(exports.read(obj, key), obj[key], `O${optimize}: direct ${key}`)
+        is(exports.optional(obj, key), obj?.[key], `O${optimize}: optional ${key}`)
+      }
+    }
+    for (const obj of [null, undefined]) {
+      is(exports.optional(obj, 'value'), undefined, `O${optimize}: optional nullish`)
+      throws(() => exports.read(obj, 'value'), TypeError, `O${optimize}: nullish receiver`)
+    }
+    throws(() => exports.read(a, 'bad'), RangeError, 'host getter failure propagates')
+    is(exports.read(a, 'value'), 7, 'same instance works after a throwing getter')
+    for (const src of [
+      `export function f(){let k='Math';return globalThis[k].PI}`,
+      `function read(o,k){return o[k]} export function f(){return read(globalThis,'Math').PI}`,
+      `function read(o,k){return o[k].PI} export function f(){return read(globalThis,'Math')}`
+    ]) {
+      const global = interop.instantiate(compile(src, { optimize }))
+      is(global.exports.f(), Math.PI, 'host-global ingress reaches a reader emitted before its caller')
+    }
+  }
+})
+
 // ── NaN-box codec helpers (used by tooling around prebuilt wasm) ────────────
 
 test('interop: ptr/offset/type/aux codec round-trips', () => {

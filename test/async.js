@@ -284,3 +284,23 @@ test('async: finally overrides rejection with return or throw', async () => {
     try { await Promise.reject('E') } catch(e) { log += e; throw 'C' } finally { log += 'F' }
   } export let f = () => g().catch(e => log + e)`), 'EFC')
 })
+
+test('async: an await anywhere in an expression suspends at a statement, in source order', async () => {
+  if (onWasi() || onKernel()) return
+  const g = 'let log = ""; const g = async (x) => { log += x; return x };'
+  const cases = {
+    operand: [`const q = async (a) => { return await a + 1 }; export let f = () => q(4)`, 5],
+    argumentsInOrder: [`${g} const add = (a, b, c) => a * 100 + b * 10 + c; const q = async () => add(await g(1), 2, await g(3)); export let f = async () => (await q()) * 10 + log.length`, 1232],
+    conditionalArms: [`${g} const q = async (c) => c ? await g(1) : await g(2); export let f = async () => (await q(true)) * 10 + (await q(false)) + log.length * 100`, 212],
+    shortCircuit: [`${g} const q = async (c) => c && await g(7); export let f = async () => (await q(true)) * 10 + ((await q(false)) === false ? 1 : 0) + log.length * 100`, 171],
+    ifTest: [`${g} const q = async () => { if (await g(1)) return 5; return 6 }; export let f = () => q()`, 5],
+    whileTest: [`let n = 0; const more = async () => n++ < 3; const q = async () => { let s = 0; while (await more()) s += 2; return s }; export let f = () => q()`, 6],
+    forTest: [`let n = 0; const more = async () => n++ < 3; const q = async () => { let s = 0; for (let i = 0; await more(); i++) s += i; return s }; export let f = () => q()`, 3],
+    memberOfAwait: [`const g = async (x) => ({ v: x }); const q = async () => (await g(3)).v + 1; export let f = () => q()`, 4],
+    forOfSource: [`const g = async () => [1, 2, 3]; const q = async () => { let s = 0; for (const v of await g()) s += v; return s }; export let f = () => q()`, 6],
+    literalValue: [`${g} const q = async () => ({ a: await g(1), b: [await g(2)] }); export let f = async () => { const o = await q(); return o.a * 10 + o.b[0] }`, 12],
+    compound: [`${g} const q = async () => { let v = await g(2); v += await g(3) * 2; return v }; export let f = () => q()`, 8],
+    thrown: [`const q = async () => { throw new Error('e' + await Promise.resolve(1)) }; export let f = async () => { try { await q(); return 0 } catch (e) { return e.message } }`, 'e1'],
+  }
+  for (const [name, [src, want]] of Object.entries(cases)) is(await val(src), want, name)
+})

@@ -64,6 +64,23 @@ test('features.external ON: untyped .prop read — __ext_prop import present', (
   is(hasImport(w, '__ext_prop'), true)
 })
 
+test('features.external: computed reads use receiver facts, not previous demand', () => {
+  for (const expr of ['o[k]', 'o?.[k]']) {
+    const w = wat(`export function f(o,k){return ${expr}}`)
+    is(hasImport(w, '__ext_prop'), !onWasi(), expr)
+  }
+  for (const init of ['{a:7}', 'new Float64Array([3,5])']) {
+    const w = wat(`export function f(k){const o=${init};return o[k]}`)
+    is(hasImport(w, '__ext_prop'), false, init)
+  }
+  const numeric = wat(`export function f(a){let s=0;for(let i=0;i<a.length;i++)s+=a[i];return s}`)
+  is(hasImport(numeric, '__ext_prop'), false, 'numeric array boundary stays internal')
+  const closed = wat(`export function f(){return /abc/.exec('xabcy')[0]}`)
+  is(hasImport(closed, '__ext_prop'), false, 'closed program has no host ingress')
+  const again = wat(`export function f(o,k){return o[k]}`)
+  is(hasImport(again, '__ext_prop'), !onWasi(), 'ingress facts reset for the next compile')
+})
+
 test('features.external ON: untyped ?.prop read — __ext_prop import present', () => {
   if (onWasi()) return  // wasi: external object
   // `?.` on an unknown receiver delegates to the SAME emitPropAccess arm the
@@ -230,6 +247,15 @@ test('collection: literal keys prehash; probes bit-eq before the equality call',
   // the slot address reaches the first key load as a get or as the tee propagation sinks there
   ok(/\(i64\.eq \(i64\.load offset=8 \(local\.(get|tee) \$slot\b/.test(flat))
   ok(flat.includes('(then (i32.const 1)) (else (call $__same_value_zero'))
+})
+
+test('collection: proven runtime string keys bypass generic hash dispatch', () => {
+  const w=wat(`function probe(m,s,k){const key='field'+k;return m.get(key)+m.has(key)+s.has(key)}
+    export function f(k){return probe(new Map(),new Set(),k)}`,{optimize:{sourceInline:false}})
+  const at=w.indexOf('(func $probe'),body=w.slice(at,w.indexOf('(func',at+1))
+  ok(at>=0,'inspect the separate probe body')
+  for(const name of ['__map_get_h','__map_has_h','__set_has_h','__str_hash'])ok(hasCall(body,name),name)
+  is(hasCall(body,'__map_hash'),false,'string proof removes the generic hash dispatcher')
 })
 
 test('features.map OFF: scalar-only — no map stdlibs', () => {

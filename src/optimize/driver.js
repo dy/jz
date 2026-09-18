@@ -8,6 +8,7 @@
  *
  * @module optimize/driver
  */
+import { representationProgramHasBigint } from '../compile/representation-plan.js'
 import { DBG_INVARIANTS } from '../debug.js'
 import { ctx } from '../ctx.js'
 import { verifyFn } from '../ir.js'
@@ -77,7 +78,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // Run at both maturity points (idempotent): pre-fusedRewrite catches the raw
   // ToInt32/ptr-offset/arithmetic shapes; post-hoistAddrBase catches cell loads.
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
-  if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn)
+  if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, representationProgramHasBigint(ctx), !cfg?.leanRuntime)
   if (cfg && cfg.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64 &&
       fn.some(n => Array.isArray(n) && n[0] === 'local' && typeof n[1] === 'string' && n[1].endsWith('$ccsso')))
     unswitchStringRepLoop(fn)

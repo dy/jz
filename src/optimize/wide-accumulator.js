@@ -44,10 +44,9 @@
  */
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
+import { int32Operand } from '../ir/numeric.js'
 
 const isArr = Array.isArray
-const isInf = (n) => isArr(n) && n[0] === 'f64.const' && (n[1] === Infinity || n[1] === 'inf' || n[1] === 'Infinity')
-const isZero32 = (n) => isArr(n) && n[0] === 'i32.const' && Number(n[1]) === 0
 const isLabel = (s) => typeof s === 'string' && s[0] === '$'
 const isConv = (n) => isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n.length === 2
 const intConst = (n) => isArr(n) && n[0] === 'f64.const' && typeof n[1] === 'number' && Number.isInteger(n[1]) && !Object.is(n[1], -0) && Math.abs(n[1]) <= 2 ** 32 ? n[1] : null
@@ -62,25 +61,6 @@ const intTree = (n, name) => {
     const a = intTree(n[1], name), b = intTree(n[2], name)
     return a && b && !(a.self && b.self) ? { k: a.k + b.k, self: a.self || b.self } : null
   }
-  return null
-}
-
-// The f64 operand under a ToInt32 sink shape, or null:
-//   (select (i32.wrap_i64 (i64.trunc_sat_f64_s E)) (i32.const 0) (f64.ne E' inf))   toI32's guard, E' re-reading E
-//   (i32.wrap_i64 (i64.trunc_sat_f64_s E))                                           the finite-proven form
-//   (call $__to_int32 E)                                                             the exact store conversion
-const sinkOperand = (n) => {
-  if (!isArr(n)) return null
-  if (n[0] === 'select' && n.length === 4 && isZero32(n[2])) {
-    const w = n[1], c = n[3]
-    if (!(isArr(w) && w[0] === 'i32.wrap_i64' && isArr(w[1]) && w[1][0] === 'i64.trunc_sat_f64_s')) return null
-    const e = w[1][1]
-    if (!(isArr(c) && c[0] === 'f64.ne' && isInf(c[2]))) return null
-    const reread = isArr(e) && (e[0] === 'local.tee' || e[0] === 'local.get') ? e[1] : null
-    return reread != null && isArr(c[1]) && c[1][0] === 'local.get' && c[1][1] === reread ? e : null
-  }
-  if (n[0] === 'i32.wrap_i64' && isArr(n[1]) && n[1][0] === 'i64.trunc_sat_f64_s') return n[1][1]
-  if (n[0] === 'call' && n[1] === '$__to_int32' && n.length === 3) return n[2]
   return null
 }
 
@@ -161,7 +141,7 @@ export function wideAccumulator(fn) {
       if (!isArr(n) || !ok) return n
       if (n[0] === 'local.get' && wide.has(n[1])) { ok = false; return n }
       if (n[0] === 'local.set' && wide.has(n[1])) return ['local.set', wide.get(n[1]), mk64(n[2])]
-      const e = sinkOperand(n)
+      const e = int32Operand(n)
       if (e != null) {
         const v = isArr(e) && e[0] === 'local.tee' && e.length === 3 ? e[2] : e
         const name = accOf(v), t = name != null && intTree(v, name)

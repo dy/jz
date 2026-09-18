@@ -20,6 +20,7 @@ import {
 } from '../../optimize/index.js'
 import { dataLen } from '../../static-data.js'
 import { appendLateStdlib } from './stdlib-pull.js'
+import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
 /**
  * Phase: whole-module + per-function optimization passes.
  */
@@ -39,23 +40,16 @@ export function optimizeModule(sec, profiler) {
   // Its precise call graph also subsumes the old coarse volatility census.
   let reachableWrites
   const globalWrites = () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(allFuncs))
-  // Offset-hoist BEFORE promoteGlobals (inside optimizeFunc): value-promoting a
-  // stable-pointee global to a $_pg local would destroy the global.get pattern
-  // this pass matches, reverting rfft/diffusion to per-iteration resolves. After
-  // the hoist, the surviving global.get count is 1 (the entry snap) — naturally
-  // below promoteGlobals' threshold, so the two passes compose either way.
-  if (!cfg || cfg.hoistGlobalPtrOffset !== false) t('hoistGlobalPtr', () => {
+  // Share function-entry snapshots with the loop-scoped complement. Both use
+  // the same write proof and run before promoteGlobals hides global.get.
+  if (!cfg || cfg.hoistGlobalPtrOffset !== false || cfg.hoistLoopGlobalPtrOffset !== false) t('hoistGlobalPtr', () => {
     const stable = stablePtrGlobalNames()
-    if (stable.size) { const writes = globalWrites(); for (const s of allFuncs) hoistGlobalPtrOffset(s, stable, writes) }
-  })
-  // Per-loop complement: a function the whole-function pass above declined
-  // (an unrelated call_indirect / write ANYWHERE in the function poisons
-  // every global for it) may still have individual loops that are clean on
-  // their own narrower scope — e.g. a char-scan loop inside a devirtualized
-  // Pratt-loop trampoline that also inlines unrelated operator dispatch.
-  if (!cfg || cfg.hoistLoopGlobalPtrOffset !== false) t('hoistLoopGlobalPtr', () => {
-    const stable = stablePtrGlobalNames()
-    if (stable.size) { const writes = globalWrites(); for (const s of allFuncs) hoistLoopGlobalPtrOffset(s, stable, writes) }
+    if (!stable.size) return
+    const writes = globalWrites()
+    for (const s of allFuncs) {
+      const snapshots = cfg?.hoistGlobalPtrOffset !== false ? hoistGlobalPtrOffset(s, stable, writes) : null
+      if (cfg?.hoistLoopGlobalPtrOffset !== false) hoistLoopGlobalPtrOffset(s, stable, writes, snapshots)
+    }
   })
   // Build the pure-function map for tryPerPixelColor's Phase-2 lane inline BEFORE the
   // per-function vectorizer runs — the vectorizer is jz lowering (pre-watr), so it needs
@@ -106,6 +100,9 @@ export function optimizeModule(sec, profiler) {
     const writes = cfg?.promoteGlobals !== false ? globalWrites() : null
     for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, null, writes)
   })
+  // Per-iteration arena rewinds go in once the vectorizer has matched its loop
+  // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.
+  if (ctx.plans.rewindLoopNodes) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopNodes); ctx.plans.rewindLoopNodes = null })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
     // The guarded form necessarily writes a declared v128 local. Keep scalar

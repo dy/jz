@@ -9,7 +9,7 @@ import { errorCodeLiteral, ERR } from '../../../err-codes.js'
 import { isReassigned } from '../../ast.js'
 import { ctx, err } from '../../ctx.js'
 import {
-  asF64, asI64, boxBigInt, coerceNullishToNum, deferBigintBox, fromI64, rawBigInt, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
+  asF64, asI64, boxBigInt, coerceNullishToNum, deferBigintBox, fromI64, rawBigInt, isBigIntBox, isPlanTaggedBigint, isSchemaSlotBigintPossible, isTaggedElemRead, isUndef, materializeDeferredBigint, maybeUnboxBigInt, readI64, temp, tempI32, tempI64, throwErrorIR, toNumF64, typed,
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -124,6 +124,7 @@ function bigIntDomain(node) {
   // runtime evidence an internal (non-exported) helper previously discarded,
   // causing arithmetic to reinterpret the box as a Number.
   if (summaryTag !== K.NUMBER && (isPlanTaggedBigint(node) ||
+      representationProgramHasBigint(ctx) && Array.isArray(node) && valTypeOf(node[1]) === VAL.TYPED && isTaggedElemRead(node) ||
       ((summaryOnlyNumberBigint || hostField) && isSchemaSlotBigintPossible(node)))) return 'tagged'
   if ((vt === VAL.BIGINT || summaryExactBigint) &&
       (censusMaybeUndefinedKind(node) === VAL.BIGINT || view?.mayBeNullishExpr(node))) return 'census'
@@ -164,7 +165,7 @@ export const hasBigintDomain = node => {
   return domain === 'bigint' || domain === 'census' || domain === 'tagged'
 }
 
-/** A Number-only operand (unary `+`, `>>>`) that can be a BigInt at runtime
+/** A Number-only operand (`>>>`) that can be a BigInt at runtime
  *  (a nullable or tagged carrier): its number, or the TypeError `code` when
  *  the value is a BigInt. Null when the operand cannot be a BigInt; a
  *  compile-time error when it always is. */
@@ -185,10 +186,6 @@ export function bigIntNumericOperand(node, code, what) {
       ['then', throwIR],
       ['else', coerceNullishToNum(get)]]], 'f64')
 }
-/** Emit unary plus when a nullable/tagged operand can be BigInt at runtime. */
-export const bigIntUnaryPlus = node =>
-  bigIntNumericOperand(node, ERR.BIGINT_UNDEF_MIX, 'unary `+` on a BigInt is a TypeError in JS — use Number(x)')
-
 // Runtime "is this f64 bit pattern a BigInt carrier" heuristic — mirrors
 // TYPEOF.bigint's own arm verbatim (finite, nonzero, subnormal magnitude),
 // the SAME documented, permanent divergence that arm already accepts (a
@@ -337,7 +334,7 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, numGeneri
   const censusNum = get => typed(['select', ['f64.const', 'nan'], get, isUndef(get)], 'f64')
   // A partner in the Number arm is any value: ToNumber, as the generic path applies.
   const numOperand = (dom, node, get, partner) => partner ? toNumF64(node, typed(get, 'f64'))
-    : dom === 'census' ? censusNum(get) : typed(get, 'f64')
+    : dom === 'census' ? censusNum(get) : dom === 'tagged' ? toNumF64(node, coerceNullishToNum(typed(get, 'f64'))) : typed(get, 'f64')
   // The generic arm: the flagged side's temp holds its Number (a census
   // undefined turned NaN in place), the partner's temp its raw value.
   const numGenericArm = () => {
@@ -476,7 +473,16 @@ export function bigIntOperand(node) {
 // '?:' handler's own doc comment already flags for this identical select-
 // vs-if tradeoff) — so boxing switches to the `if`/`else` control-flow form
 // instead, matching that established discipline.
-export function bigIntUnary(node, mkI64, undefF64, box) {
+export function bigIntUnary(node, mkI64, mkNumber, box) {
+  const undefF64 = mkNumber(typed(['f64.const', 'nan'], 'f64'))
+  if (bigIntDomain(node) === 'tagged') {
+    const t = temp('unaryBig'), get = typed(['local.get', `$${t}`], 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(materializeDeferredBigint(emit(node)))],
+      ['if', ['result', 'f64'], isBigIntBox(get, t),
+        ['then', boxBigInt(mkI64(maybeUnboxBigInt(get)))],
+        ['else', mkNumber(toNumF64(node, coerceNullishToNum(get)))]]], 'f64')
+  }
   const emitted = emit(node)
   const deferred = emitted && typeof emitted.bigintBox === 'function'
   const maybeAbsent = deferred || censusMaybeUndefinedKind(node) === VAL.BIGINT ||

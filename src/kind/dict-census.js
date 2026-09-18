@@ -48,7 +48,9 @@ export function censusMaybeUndefinedKind(node) {
     const flow = ctx.func.localValTypesOverlay?.get(node)
     if (typeof flow === 'number') return hasTag(flow, K.ABSENT) || hasTag(flow, K.NULLISH) ? valOf(core(flow)) : null
     const r = repOf(node)
-    return r?.mayBeUndefined ? r.presentVal ?? r.val ?? null : null
+    // A flow-known payload can refine an otherwise heterogeneous binding.
+    // Its storage still admits absence even when the whole-binding payload is unknown.
+    return r?.mayBeUndefined ? (typeof flow === 'string' ? flow : r.presentVal ?? r.val ?? null) : null
   }
   if (censusShapedNode(node)) {
     if (node[0] === '[]' || node[0] === '.') return dictValueKindOf(node[1])

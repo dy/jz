@@ -1787,6 +1787,24 @@ test('optional chain reads a marshalled object arg like a plain member read', ()
   is(opt.f(null), 1)
 })
 
+// The continuation of a lifted optional chain joins the undefined arm, so a
+// BOOL continuation (a Set's or Map's `has`, an Array's `includes`, a String's
+// `startsWith`) carries its true/false atom, not the raw 0/1 its typed emitter
+// yields. Reference: ECMA-262 13.3.9.1 OptionalChain, 13.5.3 typeof.
+test('optional chain boolean continuation carries its atom', () => {
+  const { set, map, arr, str } = run(`
+    let s = null, m = null, a = null, t = null
+    export let set = () => { const before = s?.has(1) === true; s = new Set([1]); return [before, s?.has(1) === true, s?.has(2) === true, typeof s?.has(1), s?.has(1)] }
+    export let map = () => { const before = m?.has(1) === true; m = new Map([[1, 2]]); return [before, m?.has(1) === true, typeof m?.has(1), m?.get(1)] }
+    export let arr = () => { a = [1, 2]; return [a?.includes(1) === true, a?.includes(3), typeof a?.includes(1)] }
+    export let str = () => { t = 'abc'; return [t?.startsWith('a') === true, t?.startsWith('b'), typeof t?.startsWith('a')] }
+  `)
+  is(set(), [false, true, false, 'boolean', true])
+  is(map(), [false, true, 'boolean', 2])
+  is(arr(), [true, false, 'boolean'])
+  is(str(), [true, false, 'boolean'])
+})
+
 // Plain-object fields sharing a name with a TypedArray accessor misresolve when
 // the receiver arrives through a call arg — the whole name class, one per symptom:
 // `buffer` reads NaN/garbage (missing-field read is NOT undefined, so the lazy-init

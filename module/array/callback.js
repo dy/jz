@@ -16,14 +16,14 @@
  * @module array/callback
  */
 import { DBG_INVARIANTS } from '../../src/debug.js'
-import { typed, asF64, UNDEF_NAN, temp } from '../../src/ir.js'
+import { typed, asF64, UNDEF_NAN, temp, throwTypeErrorIR, ptrTypeEq, undefExpr } from '../../src/ir.js'
 import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
 import { plannedTypedStorageCtor } from '../../src/compile/typed-storage-plan.js'
 import { extractParams, refsName, REFS_IN_EXPR } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
-import { ctx } from '../../src/ctx.js'
+import { ctx, PTR } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
 
 export function hoistArrayValue(arr) {
@@ -31,6 +31,23 @@ export function hoistArrayValue(arr) {
   return {
     setup: ['local.set', `$${recv}`, asF64(emit(arr))],
     value: typed(['local.get', `$${recv}`], 'f64'),
+  }
+}
+
+// Capture first; check only after the caller has evaluated its other arguments.
+// Even an empty loop must reject a non-callable callback.
+export function captureCallback(fn, name = temp('af')) {
+  ctx.module.include('fn')
+  const value = typed(['local.get', `$${name}`], 'f64')
+  const known = valTypeOf(fn) === VAL.CLOSURE &&
+    ctx.summary?.at(ctx.func.current).mayBeNullishExpr(fn) === false
+  const call = args => ctx.closure.call(value, args)
+  return {
+    setup: ['local.set', `$${name}`, fn == null ? undefExpr() : storedValue(fn)],
+    check: known ? ['nop'] : ['if', ['i32.eqz', ['i32.and',
+      ['f64.ne', value, value], ptrTypeEq(value, PTR.CLOSURE)]],
+      ['then', ['drop', throwTypeErrorIR('call')]]],
+    value, dynamic: true, call, stored: call,
   }
 }
 
@@ -136,6 +153,7 @@ export function makeCallback(fn, argReps) {
       }
       return {
         setup: ['nop'],
+        check: ['nop'],
         usedParams,
         call: (argExprs) => inline(argExprs, emit),
         stored: (argExprs) => inline(argExprs, stored),
@@ -144,15 +162,7 @@ export function makeCallback(fn, argReps) {
   }
   // Fallback: closure call — all params are potentially used; a closure's
   // result already crosses its ABI in the store's form.
-  const cb = temp('af')
-  const call = (argExprs) => ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'), argExprs)
-  return {
-    setup: ['local.set', `$${cb}`, asF64(emit(fn))],
-    value: typed(['local.get', `$${cb}`], 'f64'),
-    dynamic: true,
-    call,
-    stored: call,
-  }
+  return captureCallback(fn)
 }
 
 // Derive callback argReps from a receiver AST. For .map/.filter/etc., callbacks

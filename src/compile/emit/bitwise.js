@@ -86,7 +86,7 @@ export const bitwiseOps = {
     // UNDEF_NAN sentinel bits (see emitNeg's identical substitution above).
     // The full summary kind keeps nullable BigInt producers on this branch.
     if (hasBigintDomain(a))
-      return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1], computedBoxOf(self))
+      return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], v => ['f64.convert_i32_s', ['i32.xor', toInt32(v), ['i32.const', -1]]], computedBoxOf(self))
     const v = emit(a); return isLit(v) ? emitNum(~int32(litVal(v))) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
   },
   ...Object.fromEntries([

@@ -34,6 +34,8 @@ const dynImportRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
  * @param {string} entryFile - absolute or cwd-relative path to the entry module.
  * @param {object} [opts]
  * @param {boolean} [opts.resolveNode] - resolve bare specifiers via Node resolution.
+ * @param {Record<string,string>} [opts.sources] - module sources by path suffix, standing in
+ *   for the files they match (a host-only module replaced by a stub, say).
  * @param {string[]} [opts.external] - bare specifiers (a package name matches
  *   itself and its subpaths) left unbundled: the compile binds them as host
  *   imports (`imports: { '<specifier>': {…} }`) – the codec, device and
@@ -43,7 +45,9 @@ const dynImportRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
  *   reachable absolute path to its (also-rewritten) source; `externals` lists
  *   the names imported from each external specifier.
  */
-export function resolveModuleGraph(entryFile, { resolveNode = false, external = [] } = {}) {
+export function resolveModuleGraph(entryFile, { resolveNode = false, external = [], sources = {} } = {}) {
+  // a source override stands in for the file whose resolved path ends with its key
+  const sourceOf = (abs) => { for (const k of Object.keys(sources)) if (abs.endsWith(k)) return sources[k]; return null }
   // a package name matches itself and its subpaths; an entry with a path
   // (`src/AudioWorklet.js`) matches the resolved file by suffix
   const isExternal = (spec, abs) => external.some(e => e.includes('/') && !e.startsWith('@')
@@ -128,7 +132,7 @@ export function resolveModuleGraph(entryFile, { resolveNode = false, external = 
     const abs = resolveAbsPath(specifier, fromDir)
     if (!abs || seenPaths.has(abs)) return
     seenPaths.add(abs)
-    let src; try { src = readFileSync(abs, 'utf8') } catch { return }
+    let src = sourceOf(abs); if (src == null) try { src = readFileSync(abs, 'utf8') } catch { return }
     modules[abs] = rewriteImports(src, dirname(abs))
     for (const spec of specifiersIn(src)) resolveModule(spec, dirname(abs))
   }

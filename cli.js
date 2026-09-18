@@ -69,6 +69,7 @@ Options:
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
   --why-not-simd            Report, per loop, why the auto-vectorizer declined it
+  --why-not-rewind          Report, per function, why its arena is not rewound at return
   --stencil                 Force neighbour-load stencil vectorization (a[i±1]) at
                             levels where it's off (on by default at -O2+)
   --outer-strip             Force pixel-loop strip-mining over an inner reduction to
@@ -191,7 +192,7 @@ function printStats(profile) {
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
   let optimize, host, alloc = true, names = false, stats = false, noSimd = false, noTailCall = false, noEhAbort = false
-  let memory, maxMemory, importMemory = false, define, whyNotSimd = false, stencil = false, outerStrip = false
+  let memory, maxMemory, importMemory = false, define, whyNotSimd = false, whyNotRewind = false, stencil = false, outerStrip = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -211,6 +212,7 @@ async function handleCompile(args) {
     else if (a === '--no-alloc') alloc = false
     else if (a === '--no-simd') noSimd = true
     else if (a === '--why-not-simd') whyNotSimd = true
+    else if (a === '--why-not-rewind') whyNotRewind = true
     else if (a === '--stencil' || a === '--experimental-stencil') stencil = true
     else if (a === '--outer-strip' || a === '--experimental-outer-strip') outerStrip = true
     else if (a === '--no-tail-call') noTailCall = true
@@ -247,6 +249,7 @@ async function handleCompile(args) {
     ...(alloc === false && { alloc: false }),
     ...(noSimd && { noSimd: true }),
     ...(whyNotSimd && { whyNotSimd: true }),
+    ...(whyNotRewind && { whyNotRewind: true }),
     ...(stencil && { stencil: true }),
     ...(outerStrip && { outerStrip: true }),
     ...(noTailCall && { noTailCall: true }),

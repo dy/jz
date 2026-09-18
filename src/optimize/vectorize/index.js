@@ -162,13 +162,45 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma, slp)
   if (newLocalDeclsAll.length) simdFired = true
 
+  // The locals live out of the loop at the end of `chain` ([parent, idx]
+  // pairs from the body root down): read along the continuation before a
+  // write reaches them. Reads count from anywhere; a write kills only for
+  // the rest of its own straight line (a branch, block or loop body scans
+  // with its own copy of the kills, so a write one path may skip never
+  // kills past it); an enclosing loop's body is a continuation too (its
+  // back edge).
+  function liveOutOf(chain) {
+    const live = new Set()
+    const scan = (n, kills) => {
+      if (!isArr(n)) return
+      const op = n[0]
+      if (op === 'local.get') { if (typeof n[1] === 'string' && !kills.has(n[1])) live.add(n[1]); return }
+      if (op === 'local.set' || op === 'local.tee') {
+        for (let i = 2; i < n.length; i++) scan(n[i], kills)
+        if (typeof n[1] === 'string') kills.add(n[1])
+        return
+      }
+      if (op === 'if') { scan(n[1], kills); scan(n[2], kills); for (let i = 3; i < n.length; i++) scan(n[i], new Set(kills)); return }
+      if (op === 'block' || op === 'loop' || op === 'then' || op === 'else') { const k = new Set(kills); for (let i = 1; i < n.length; i++) scan(n[i], k); return }
+      for (let i = 1; i < n.length; i++) scan(n[i], kills)
+    }
+    const kills = new Set()
+    for (let d = chain.length - 1; d >= 0; d--) {
+      const [parent, idx] = chain[d]
+      for (let i = idx + 1; i < parent.length; i++) scan(parent[i], kills)
+      if (parent[0] === 'loop') for (let i = 1; i < parent.length; i++) scan(parent[i], new Set(kills))
+    }
+    return live
+  }
+
   // Walk body recursively. Process inner-most matches first (post-order)
   // so we don't try to vectorize an outer loop whose inner is the lane-local one.
-  function walk(parent, idx) {
+  function walk(parent, idx, chain = []) {
     const node = parent[idx]
     if (!isArr(node)) return
+    const here = [...chain, [parent, idx]]
     for (let i = 0; i < node.length; i++) {
-      if (isArr(node[i])) walk(node, i)
+      if (isArr(node[i])) walk(node, i, here)
     }
     if (node[0] === 'block') {
       if (vecState.whyNotActive) vecState.whyNotReason = null
@@ -206,6 +238,10 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       if (bl) {
         const link = ctx.plans.loweringLinks.get(node)
         if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)
+        // A lane-local the function reads outside this loop (`last = a[i]`
+        // returned after it) is live out: the lift's v128 shadow never lands
+        // in the scalar local, and the scalar tail runs only past the lanes.
+        bl.outsideReads = liveOutOf(here)
       }
       // LoopPlan classification (stage-3 slice 1): the OUTER-pixel scaffold is
       // matched ONCE here — the five outer-family recognizers consume this

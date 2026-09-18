@@ -7,10 +7,11 @@
  * @module ir/pointers
  */
 
-import { PTR, LAYOUT, inc } from '../ctx.js'
+import { PTR, LAYOUT, ctx, inc } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
+import { tempI32 } from './locals.js'
 
 /** NaN-box prefix for a pointer of VAL kind K with aux bits: `0x7FF8 | type<<47 | aux<<32`. */
 function ptrBoxPrefix(ptrType, aux = 0) {
@@ -127,6 +128,7 @@ export function mkPtrIR(type, aux, offset) {
 // The kinds whose header never relocates (layout.js FORWARDING_MASK names the
 // ones that do): their payload offset is the box's low word, no helper call.
 const FIXED_OFFSET_KINDS = new Set([VAL.OBJECT, VAL.TYPED, VAL.BUFFER, VAL.CLOSURE, VAL.DATE, VAL.REGEX])
+const GROWABLE_KINDS = new Set([VAL.ARRAY, VAL.SET, VAL.MAP, VAL.HASH])
 export function ptrOffsetIR(valIR, valType) {
   if (valIR.ptrKind != null && valIR.ptrKind !== VAL.ARRAY) return valIR
   if (valType != null && FIXED_OFFSET_KINDS.has(valType) && valIR.type === 'f64')
@@ -137,8 +139,27 @@ export function ptrOffsetIR(valIR, valType) {
        valIR.srcPtrKind === VAL.BUFFER || valIR.srcPtrKind === VAL.CLOSURE) &&
       valIR[0] === 'f64.reinterpret_i64' && valIR[1]?.[0] === 'i64.or' &&
       valIR[1][2]?.[0] === 'i64.extend_i32_u') return valIR[1][2][1]
+  if ((valIR.ptrKind === VAL.ARRAY || GROWABLE_KINDS.has(valType)) && !ctx.transform.optimize?.leanRuntime) return fwdOffsetIR(valIR)
   inc('__ptr_offset')
   return ['call', '$__ptr_offset', ['i64.reinterpret_f64', valIR]]
+}
+
+/** Data offset of a growable container (ARRAY/SET/MAP/HASH) known present:
+ *  the payload offset with one forwarding hop inline (growth leaves `cap =
+ *  -1` at -4 and the new offset at -8); a longer chain stays outlined in
+ *  `__ptr_offset_fwd`. Every known-array element read and length otherwise
+ *  paid a `__ptr_offset` call frame for this one test; the size tier keeps
+ *  the call (ptrOffsetIR, module/array.js arrBase). */
+export function fwdOffsetIR(valIR) {
+  const off = tempI32('fo')
+  const raw = valIR.type === 'i32' ? valIR
+    : ['i32.wrap_i64', valIR.type === 'i64' ? valIR : ['i64.reinterpret_f64', valIR]]
+  inc('__ptr_offset_fwd')
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${off}`, raw],
+    ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
+      ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
+    ['local.get', `$${off}`]], 'i32')
 }
 
 /** Map VAL.* → PTR.* when unambiguous. STRING is ambiguous (heap vs SSO). ARRAY maps

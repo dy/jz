@@ -9,7 +9,8 @@
  */
 
 import { ctx, emitter, registerName } from './ctx.js'
-import { callWithArgs, typed, undefExpr, asF64, asI32, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow } from './ir.js'
+import { callWithArgs, typed, undefExpr, asF64, asI32, asI32Sat, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow, temp, tempI32, toNumF64, isUndef } from './ir.js'
+import { isUndefinedLiteral } from './ast.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from './compile/representation-plan.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
 import { VAL } from './reps.js'
@@ -88,6 +89,32 @@ export const storedFieldValue = (node, sid, prop, boxed = ctx.schema.slotBigintB
 // module/core.js's typeof operand — this is the bridged copy for module/*.js
 // consumers (.work/archive/todo.md §deletion-sweep).
 export const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)
+
+/** Capture argument values before reading a method's length or coercing its
+ * positions. A conversion hook may mutate later arguments or throw; neither
+ * can skip their evaluation. Numeric operands keep their existing carrier. */
+export function positionArgs(nodes) {
+  const setup = []
+  const args = nodes.map(node => {
+    if (node == null || isUndefinedLiteral(node)) return null
+    const kind = valTypeOf(node), numeric = kind === VAL.NUMBER || kind === VAL.BOOL
+    const ir = numeric ? emit(node) : storedValue(node)
+    const word = numeric && ir.type === 'i32' && !ir.unsigned
+    const name = word ? tempI32('pos') : temp('pos')
+    setup.push(['local.set', `$${name}`, word ? ir : asF64(ir)])
+    // A boxed temporary must use its own facts, not the source's raw BigInt
+    // plan. Unknown arguments need the full ToNumber implementation.
+    return { node: numeric ? node : name, numeric, value: typed(['local.get', `$${name}`], word ? 'i32' : 'f64') }
+  })
+  return { setup, index(i, fallback) {
+    const arg = args[i]
+    if (!arg) return fallback ?? ['i32.const', 0]
+    if (!arg.numeric) ctx.module.include('number')
+    const value = asI32Sat(toNumF64(arg.node, arg.value))
+    return fallback == null || arg.value.type === 'i32' ? value
+      : ['if', ['result', 'i32'], isUndef(arg.value), ['then', fallback], ['else', value]]
+  } }
+}
 
 export const flat = (...a) => ctx.bridge.flat(...a)
 export const body = (...a) => ctx.bridge.body(...a)

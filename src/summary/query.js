@@ -1,8 +1,9 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
 import { ACCESSOR_GET, CLASS_T, isBrand, schemaKey, isArrayIndexKey } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
-import { builtinCalleeVal, methodValType } from '../kind-traits.js'
+import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
+import { typedElementKey } from '../typed-provenance.js'
 import { NONE_CONTRACT, readContract } from './contract.js'
 
 import {
@@ -11,9 +12,9 @@ import {
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS } from './kind.js'
 
 export function summaryQueries(facts, internal = false) {
-  const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys,
+  const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
-    schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, openSchemas,
+    schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
@@ -55,9 +56,11 @@ export function summaryQueries(facts, internal = false) {
     }
     return join(a, b)
   }
+  // A callable's result away from a call site: a forwarded argument's result is unknown here.
+  const resultOfId = (id) => join(results.get(id) ?? K.NONE, forwards.get(id)?.size ? ANY : K.NONE)
   const closureResult = id => {
     let result = K.NONE
-    for (const member of membersOf(id)) result = join(result, canon(results.get(member) ?? K.NONE))
+    for (const member of membersOf(id)) result = join(result, canon(resultOfId(member)))
     return result
   }
   const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return join(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
@@ -77,6 +80,14 @@ export function summaryQueries(facts, internal = false) {
   const anySideOf = sid => { let k = sideWild.get(sid) ?? K.NONE; for (const pk of sideProps.get(sid)?.values() ?? []) k = merge(k, pk); return k }
   const builtinReceiverMayHaveOwn = (t, prop) => (t === K.ARRAY || t === K.TYPED || t === K.MAP || t === K.SET || t === K.REGEX || t === K.CLOSURE) && ((builtinOwnProps.get(prop) ?? 0) & (kind(t) & ~UNKNOWN)) !== 0
   const typedElemKind = recv => paramOf(recv) === UNKNOWN ? join(NUMBER, BIGINT) : paramOf(recv) & TYPED_ELEM_BIGINT_FLAG ? BIGINT : NUMBER
+  // The named properties a typed receiver may carry: its element type's cell
+  // and the cell of receivers of unknown type; an unknown type joins every cell.
+  const typedPropsOf = recv => {
+    let out = elems[typedProps]
+    if (paramOf(recv) === UNKNOWN) { for (const c of typedPropsByAux.values()) out = join(out, elems[c]) }
+    else { const c = typedPropsByAux.get(paramOf(recv)); if (c !== undefined) out = join(out, elems[c]) }
+    return out
+  }
   const builtinMethodResult = (recv, name) => {
     const v = valOf(core(recv))
     return v == null || v === VAL.OBJECT || v === VAL.HASH || v === VAL.CLOSURE ? ANY : kindOfVal(methodValType(name, null, v, null))
@@ -106,6 +117,10 @@ export function summaryQueries(facts, internal = false) {
     if (name === 'Number' || name.startsWith('Math.') || name.startsWith('Number.')) return NUMBER
     return ANY
   }
+  // The union of every named kind: the unknown kind names nothing.
+  const ALL_TAGS = TAGS & ~NULL_BITS
+  let kindUnion = 0
+  for (const k of kinds) if (k != null && (k & ALL_TAGS) !== ALL_TAGS) kindUnion |= k
   const views = new Map()
   const view = scope => {
     let cached = views.get(scope)
@@ -132,12 +147,16 @@ export function summaryQueries(facts, internal = false) {
       return nameKeys.get(name) ?? null
     }
     const readKey = key => { if (key === null) return K.NONE; if (typeof key === 'number') return canon(kinds[key] ?? K.NONE); let k = K.NONE; for (const kk of key) k = join(k, canon(kinds[kk] ?? K.NONE)); return k }
-    const readKind = name => readKey(keyOfAnywhere(name))
+    // An emission temp standing for the present value of an expression (an
+    // optional chain's guarded head): its kind is the expression's, without
+    // the nullishness the guard excluded.
+    const aliases = new Map()
+    const readKind = name => aliases.has(name) ? core(kindOfExpr(aliases.get(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
     const selectedExpr = (n, mask) => {
       const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
       if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
-      if (typeof n === 'string') { const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY) : readKey(key) }
+      if (typeof n === 'string') { if (aliases.has(n)) return core(kindOfExpr(aliases.get(n))); const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY) : readKey(key) }
       if (typeof n === 'number') return NUMBER
       if (!Array.isArray(n)) return ANY
       const op = n[0]
@@ -186,7 +205,7 @@ export function summaryQueries(facts, internal = false) {
       }
       if (op === '[]') {
         const r = kindOfExpr(n[1]), t = tagOf(r)
-        if (Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
+        if (Array.isArray(n[2]) && (n[2][0] == null || n[2][0] === 'str') && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
         // `o[1]` on an object is the property "1"
         if (t === K.OBJECT && (typeof n[2] === 'number' || Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'number'))
           return kindOfExpr(['.', n[1], String(typeof n[2] === 'number' ? n[2] : n[2][1])])
@@ -196,20 +215,28 @@ export function summaryQueries(facts, internal = false) {
           if (row && Number.isInteger(i) && i >= 0) return row[i] ?? kind(K.ABSENT)
         }
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
-        return t === K.TYPED ? typedReadPresent(scope, n) ? typedElemKind(r) : orAbsent(typedElemKind(r)) : t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
+        if (t === K.TYPED) return !typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) ? core(kindOfExpr(n[2])) === NUMBER ? orAbsent(merge(typedElemKind(r), typedPropsOf(r))) : ANY
+          : typedReadPresent(scope, n) ? typedElemKind(r) : orAbsent(typedElemKind(r))
+        return t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
         if (n[1].startsWith('new.') && TYPED_CTOR.test(n[1])) return builtinResult(n[1])
         const key = keyOf(n[1])
-        if (key === null && funcNames.has(n[1])) return results.get(n[1]) ?? ANY
+        if (key === null && funcNames.has(n[1])) return siteResults.get(n) ?? (results.has(n[1]) ? resultOfId(n[1]) : ANY)
         const k = key === null ? undefined : kinds[key]
         if (k !== undefined) {
           if (tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN) return ANY
+          const at = siteResults.get(n)
+          if (at !== undefined) return at
           let r = K.NONE
-          for (const id of membersOf(paramOf(k))) r = join(r, results.get(id) ?? ANY)
+          for (const id of membersOf(paramOf(k))) r = join(r, results.has(id) ? resultOfId(id) : ANY)
           return r
         }
-        if (n[1] === 'Object.assign') { const t = kindOfExpr(args(n[2])[0]); if ((tagOf(t) === K.ARRAY || tagOf(t) === K.HASH) && paramOf(t) !== UNKNOWN) return t }   // the solver's rule: the array target
+        if (n[1] === 'Object.assign') { const t = kindOfExpr(args(n[2])[0]); if ((tagOf(t) === K.ARRAY || tagOf(t) === K.HASH || tagOf(t) === K.OBJECT) && paramOf(t) !== UNKNOWN) return t }   // the solver's rule: the target
+        if (ATOMICS_VALUE_OPS.has(n[1])) {
+          const recv = kindOfExpr(args(n[2])[0])
+          return tagOf(recv) === K.NONE ? K.NONE : tagOf(recv) === K.TYPED ? typedElemKind(recv) : join(NUMBER, BIGINT)
+        }
         return imports.has(n[1]) ? kindOfVal(imports.get(n[1])) : builtinResult(n[1])
       }
       if (op === '()' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') {
@@ -227,7 +254,7 @@ export function summaryQueries(facts, internal = false) {
         const v = kindOfExpr(n[2]), t = n[1]
         if (!Array.isArray(t) || t[0] !== '[]' || Array.isArray(t[2]) && t[2][0] == null && typeof t[2][1] === 'string') return v
         const r = kindOfExpr(t[1])
-        return tagOf(r) === K.TYPED ? typedStore(typedElemKind(r), v) : v
+        return tagOf(r) === K.TYPED && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? typedStore(typedElemKind(r), v) : v
       }
       if (op === '?' || op === '?:') return merge(kindOfExpr(n[2]), kindOfExpr(n[3]))
       if (logical) return merge(selectedExpr(n[1], mask & logical), selectedExpr(n[2], mask))
@@ -250,7 +277,7 @@ export function summaryQueries(facts, internal = false) {
         const i = schemas[paramOf(r)].indexOf(prop)
         if (i >= 0) return slotKind(paramOf(r), i)
         const getter = classMember(r, getterOf(prop)), fn = getter ?? (classMember(r, prop) ? binderOf(classMember(r, prop)) : null)
-        if (fn) return memberMayBeOwn(prop) ? ANY : results.get(fn) ?? ANY
+        if (fn) return memberMayBeOwn(prop) ? ANY : results.has(fn) ? resultOfId(fn) : ANY
         if (!lostSchema(paramOf(r))) return merge(NULLISH, sideOf(paramOf(r), prop))
         return memberMayBeOwn(prop) ? ANY : NULLISH
       }
@@ -275,7 +302,7 @@ export function summaryQueries(facts, internal = false) {
       const fn = classMember(r, name)
       let result
       {
-        if (fn) result = !memberMayBeOwn(name) ? results.get(fn) ?? ANY : ANY
+        if (fn) result = !memberMayBeOwn(name) ? results.has(fn) ? resultOfId(fn) : ANY : ANY
         else if (builtinReceiverMayHaveOwn(t, name)) result = ANY
         else if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
           const i = schemas[paramOf(r)].indexOf(name), fk = i < 0 ? K.NONE : slotKind(paramOf(r), i)
@@ -320,6 +347,11 @@ export function summaryQueries(facts, internal = false) {
     }
     cached = {
       kindOf: name => pub(readKind(name)), kindOfExpr: e => pub(kindOfExpr(e)), calleeOf, keyOfName: keyOf,
+      // An emission temp holding the present value of `e` (see `aliases`), for
+      // the span of its continuation: temp names recur across the closure
+      // bodies this scope covers, so an alias never outlives its use.
+      alias: (name, e) => { aliases.set(name, e) },
+      unalias: (name) => { aliases.delete(name) },
       // The result contract of the callable a call reaches, or null (contract.js).
       calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && publicSid(k) !== UNKNOWN ? publicSid(k) : null },
@@ -392,6 +424,9 @@ export function summaryQueries(facts, internal = false) {
     valOfKind: valOf,
     fieldKind,
     hostSchema: sid => hostLayouts.has(sid),
+    // Whether any binding of the program holds a value of this tag: a
+    // runtime arm for a kind no binding can hold is dead weight.
+    holdsKind: tag => hasTag(kindUnion, tag),
     opaqueSchema: sid => opaqueLayouts.has(sid),
     // A layout a `delete` can reach: a deleted receiver's, or any lost layout
     // once a delete went through a receiver of unknown shape.
@@ -399,11 +434,12 @@ export function summaryQueries(facts, internal = false) {
     fieldVal: (sid, prop) => valOf(fieldKind(sid, prop)),
     fieldTypedCtor: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
     fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },
-    resultOf: name => pub(results.get(name) ?? K.NONE),
-    resultVal: name => valOf(results.get(name) ?? K.NONE),
+    resultOf: name => pub(resultOfId(name)),
+    resultVal: name => valOf(resultOfId(name)),
     memberMayBeOwn,
     memberMayBeOwnOn: (prop, valueKind) => builtinReceiverMayHaveOwn(tagOf(kindOfVal(valueKind)), prop),
     builtinMemberMayBeOwn: prop => builtinOwnProps.has(prop),
+    typedPropertiesAbsent: () => elems[typedProps] === K.NONE && [...typedPropsByAux.values()].every(c => elems[c] === K.NONE),
     hasTypedFields: fields.some(a => a?.some(k => tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k))),
     escaped: facts.escaped,
   }

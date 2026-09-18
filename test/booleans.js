@@ -16,7 +16,8 @@ const wat = (code) => jz.compile(code, { wat: true, optimize: { watr: false } })
 // `(i32.or (i32.const 4) <bit>)` fed to `$__mkptr` — inside its `$f$exp` boundary
 // wrapper, the boolean carrier's only footprint. A number-returning export has no
 // boundary wrapper at all. (Quiet-NaN ABI: the atom rides f64, no i64 carrier.)
-const boxesResult = (code) => /\(func \$f\$exp[\s\S]*?i32\.or\s+\(i32\.const 4\)/.test(wat(code))
+// The export thunk's boolean box: a select of the two atoms (boolBoxIR).
+const boxesResult = (code) => /\(func \$f\$exp[\s\S]*?\(select\s+\(f64\.const nan:0x7FF8000500000000\)\s+\(f64\.const nan:0x7FF8000400000000\)/.test(wat(code))
 
 // ============================================
 // Surface as a real boolean at the host boundary
@@ -117,7 +118,7 @@ test('bool: boolean-returning export is the only boxed-result footprint', () => 
 
 test('bool: boolean export boxes the clean carrier without __is_truthy', () => {
   // The inner func's f64 result is a clean 0/1 carrier — never a NaN-atom — so the
-  // export thunk extracts the bit with a single f64.ne and boxes `4|bit` directly.
+  // export thunk extracts the bit with a single f64.ne and selects the atom directly.
   // The full __is_truthy NaN-discrimination would be dead weight on every boolean
   // export; pin its absence so the wrapper can't silently regrow it.
   ok(!/__is_truthy/.test(wat('export let f = (a, b) => a < b')),

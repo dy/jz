@@ -2,17 +2,29 @@ import { ctx } from '../ctx.js'
 import { MUTATE_OPS, T, walkAst } from '../ast.js'
 import { typedCtorRawOf } from '../static.js'
 import { VAL } from '../reps.js'
+import { K, tagOf, paramOf } from '../summary/kind.js'
+import { TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
 
+// A receiver the program holds as a typed array: its declaring constructor, or
+// the summary's kind (`let a = mk(); a[i]`, a view, a parameter every caller
+// proves). `bigint` says whether the elements are BigInt.
+const typedRecv = (name) => {
+  const raw = typedCtorRawOf(name)
+  if (raw != null) return { bigint: /^new\.Big/.test(raw) }
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(name)
+  if (k == null || tagOf(k) !== K.TYPED) return null
+  return { bigint: (paramOf(k) & TYPED_ELEM_BIGINT_FLAG) !== 0 }
+}
 // `recv[i] = v` into a numeric typed array: SetValueInBuffer ToNumbers the value,
 // so the store slot is a ToNumber-forcing use like `*`. BigInt arrays ToBigInt.
 const numericTypedStore = (node) => node[0] === '=' && node.length === 3
   && Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string'
-  && /^new\.(?!Big)\w+Array$/.test(typedCtorRawOf(node[1][1]) ?? '')
+  && typedRecv(node[1][1])?.bigint === false
 // `recv[i]` on a typed array: the index is numeric-COMPATIBLE, not proving (a
 // canonical numeric string indexes the same element; jz coerces indices to i32,
 // README "what differs"). An untyped receiver keeps its dynamic-key possibility.
 const typedIndex = (node) => node[0] === '[]' && node.length === 3
-  && typeof node[1] === 'string' && typedCtorRawOf(node[1]) != null
+  && typeof node[1] === 'string' && typedRecv(node[1]) != null
 
 // ── Loop-invariant exported-param coercion hoist ────────────────────────────
 //

@@ -22,5 +22,5 @@ export {
 } from './kind/dict-census.js'
 export { shapeOf, jsonConstString } from './kind/shape.js'
 export {
-  hasAmbiguousBoolMerge, valTypeOf, shapeOfObjectLiteralAst, numericDenied,
+  hasAmbiguousBoolMerge, valTypeOf, isPresentNumber, shapeOfObjectLiteralAst, numericDenied,
 } from './kind/val-type-of.js'

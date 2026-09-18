@@ -21,8 +21,8 @@
  * @module string
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
-import { emit, emitIdentitySafe, argIR, bool, method, deps, general, wat, bind } from '../src/bridge.js'
+import { typed, asF64, asI32Sat, asI64, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { emit, emitIdentitySafe, argIR, storedValue, positionArgs, bool, method, deps, general, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
@@ -204,15 +204,16 @@ export default (ctx) => {
     __str_idx: ['__char_unit'],
     __sso_norm: [],
     __bytes_decode: ['__typed_data', '__byte_length', '__ptr_type', '__utf8_decode'],
-    __str_eq: lean ? ['__char_at', '__str_length'] : ['__str_eq_cold'],
-    __str_eq_cold: ['__char_at', '__str_length'],
+    __str_eq: lean || !ctx.features.sso ? ['__char_at', '__str_length'] : ['__str_eq_cold'],
+    __str_eq_cold: [],
     __str_cmp: ['__char_at', '__str_length'],
     __str_range_eq: ['__char_at', '__str_length'],
     __str_substring_eq: ['__str_length', '__str_range_eq'],
     __str_slice_eq: ['__str_length', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-compile auto-scan unreliable — test/self-compile-includes.js)
     __str_pad: ['__str_length', '__str_copy', '__alloc'],
-    __str_join: ['__str_concat', '__to_str', '__str_length', '__len', '__ptr_offset', '__mkptr', '__join_elem'],
-    __join_elem: ['__is_nullish'],  // FN template: __mkptr body-called, must be manual (self-compile auto-scan diverges)
+    __str_join: () => ['__to_str', '__str_length', '__str_copy', '__len', '__alloc', '__mkptr', '__sso_norm', '__join_elem',
+      representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'],
+    __join_elem: ['__is_nullish'],
     __str_encode: ['__str_length', '__alloc_hdr_n', '__utf8_encode', '__mkptr'],
     __encodeURIComponent: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
     __decodeURIComponent: ['__to_str', '__str_length', '__char_at', '__alloc', '__mkptr', '__uri_hex', '__sso_norm'],
@@ -405,20 +406,10 @@ export default (ctx) => {
           ;; so __char_unit routes those to a heap one-unit string.
           (else (call $__char_unit (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))))`)
 
-  // Hot: ~53M calls in watr self-compile. Bit-eq covers identity. SSO/SSO with !bit-eq
-  // guarantees content differs. Heap/heap compares UTF-16 units with word loads
-  // and a code-unit tail — no per-unit function calls.
-  // Mixed SSO×heap is rare; falls back to __char_at.
-  // Hot/cold split: the prefix every comparison runs (bit-eq, both-SSO,
-  // both-canonical, heap length mismatch) is LOOP-FREE and small enough for
-  // the engine's wasm inliner — the call overhead disappears at every site
-  // while the byte-walk lives in __str_eq_cold. Mirrors the __ptr_offset_fwd
-  // split; a body containing a loop is excluded from V8's inliner.
-  // Size tier (`leanRuntime`): the same decision as the tiered pair below in one
-  // loop-free prelude plus the byte walk through the encoding-agnostic accessors
-  // the cold path already links (`__str_length`, `__char_at`). No hot/cold
-  // split, no canonical-interned arm, no word loads.
-  wat('__str_eq', () => lean ? `(func $__str_eq (param $a i64) (param $b i64) (result i32)
+  // The loop-free prelude decides identity, SSO and unequal lengths once.
+  // The cold loop receives two heap offsets and their equal UTF-16 length.
+  // Size mode and the heap-only configuration retain the shared char accessors.
+  wat('__str_eq', () => lean || !ctx.features.sso ? `(func $__str_eq (param $a i64) (param $b i64) (result i32)
     (local $len i32) (local $i i32)
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
@@ -440,109 +431,58 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (i32.const 1))` : `(func $__str_eq (param $a i64) (param $b i64) (result i32)
-    (local $axA i32) (local $axB i32) (local $offA i32) (local $offB i32)
+    (local $axA i32) (local $axB i32) (local $offA i32) (local $offB i32) (local $len i32)
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
     (local.set $axA (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT}))))
     (local.set $axB (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT}))))
-    ${ctx.features.sso ? `
-    ;; ANY SSO operand ⇒ bit-ne decided content-ne: ≤${MAX_SSO}-ASCII content is
-    ;; always SSO (module invariant), so an SSO can equal neither a bit-different
-    ;; SSO nor any heap string. Kills the mixed SSO×heap byte-walk class outright.
+    ;; Short ASCII is always SSO; bit-different SSO cannot equal a heap string.
+    ;; The durable dictionary tombstone also carries SSO_BIT and exits here.
     (if (i32.or
           (i32.and (local.get $axA) (i32.const ${LAYOUT.SSO_BIT}))
           (i32.and (local.get $axB) (i32.const ${LAYOUT.SSO_BIT})))
-      (then (return (i32.const 0))))` : `
-    ;; both SSO ⇒ bit-ne already decided content-ne
-    (if (i32.and
-          (i32.and (local.get $axA) (i32.const ${LAYOUT.SSO_BIT}))
-          (i32.and (local.get $axB) (i32.const ${LAYOUT.SSO_BIT})))
-      (then (return (i32.const 0))))`}
+      (then (return (i32.const 0))))
     ;; both CANONICAL interned heap strings ⇒ bit-ne ⇒ content-ne
     (if (i32.and
           (i32.eq (i32.and (local.get $axA) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | 0x1})) (i32.const 0x1))
           (i32.eq (i32.and (local.get $axB) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT | 0x1})) (i32.const 0x1)))
       (then (return (i32.const 0))))
-    ;; both PLAIN heap (not SSO, not slice): length mismatch exits without bytes
-    (if (i32.eqz (i32.or
-          (i32.and (i32.or (local.get $axA) (local.get $axB)) (i32.const ${LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT}))
-          (i32.const 0)))
-      (then
-        (local.set $offA (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
-        (local.set $offB (i32.wrap_i64 (i64.and (local.get $b) (i64.const ${LAYOUT.OFFSET_MASK}))))
-        (if (i32.and (i32.ge_u (local.get $offA) (i32.const 4)) (i32.ge_u (local.get $offB) (i32.const 4)))
-          (then
-            (if (i32.ne
-                  (i32.load (i32.sub (local.get $offA) (i32.const 4)))
-                  (i32.load (i32.sub (local.get $offB) (i32.const 4))))
-              (then (return (i32.const 0))))))))
-    (call $__str_eq_cold (local.get $a) (local.get $b)))`)
-
-  wat('__str_eq_cold', `(func $__str_eq_cold (param $a i64) (param $b i64) (result i32)
-    (local $len i32) (local $lenB i32) (local $i i32)
-    (local $ta i32) (local $tb i32)
-    (local $offA i32) (local $offB i32)
-    (local $ssoA i32) (local $ssoB i32)
-    ;; Sole caller is __str_eq, which already returned for bit-equal pointers, both-SSO
-    ;; (bit-ne ⇒ content-ne), both-canonical-interned (bit-ne ⇒ content-ne) and both-plain-
-    ;; heap length mismatch. Re-testing them here is dead work on every cold call — skip to
-    ;; the byte walk. (__str_eq/__str_eq_cold are ~14% of self-compile runtime; this trims the
-    ;; per-call fixed cost.) The heap/mixed paths below still decide every case correctly
-    ;; on their own, so this stays correct even if a future caller skips the prelude.
-    (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-    (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-    (local.set $offA (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $offB (i32.wrap_i64 (i64.and (local.get $b) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $ssoA (i32.and
-      (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT})))
-      (i32.const ${LAYOUT.SSO_BIT})))
-    (local.set $ssoB (i32.and
-      (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT})))
-      (i32.const ${LAYOUT.SSO_BIT})))
-    ;; Compare four UTF-16 units per unaligned load, then the remaining units.
-    ;; Every load stays within the logical string, including substring views.
-    (if (i32.and
-          (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING})) (i32.eqz (local.get $ssoA)))
-          (i32.and (i32.eq (local.get $tb) (i32.const ${PTR.STRING})) (i32.eqz (local.get $ssoB))))
-      (then
-        (if (i32.or (i32.lt_u (local.get $offA) (i32.const 4)) (i32.lt_u (local.get $offB) (i32.const 4)))
-          (then (return (i32.const 0))))
-        (local.set $len ${heapLenExpr('$a', '$offA')})
-        (local.set $lenB ${heapLenExpr('$b', '$offB')})
-        (if (i32.ne (local.get $len) (local.get $lenB))
-          (then (return (i32.const 0))))
-        (local.set $len (i32.shl (local.get $len) (i32.const 1)))
-        (local.set $lenB (i32.and (local.get $len) (i32.const -8)))
-        (block $d4 (loop $l4
-          (br_if $d4 (i32.ge_s (local.get $i) (local.get $lenB)))
-          (if (i64.ne
-                (i64.load (i32.add (local.get $offA) (local.get $i)))
-                (i64.load (i32.add (local.get $offB) (local.get $i))))
-            (then (return (i32.const 0))))
-          (local.set $i (i32.add (local.get $i) (i32.const 8)))
-          (br $l4)))
-        (block $dh (loop $lh
-          (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
-          (if (i32.ne
-                (i32.load16_u (i32.add (local.get $offA) (local.get $i)))
-                (i32.load16_u (i32.add (local.get $offB) (local.get $i))))
-            (then (return (i32.const 0))))
-          (local.set $i (i32.add (local.get $i) (i32.const 2)))
-          (br $lh)))
-        (return (i32.const 1))))
-    ;; Mixed (SSO×heap) or anything else: compute len per side then per-byte via __char_at.
-    ;; __str_length handles SSO, slice (SLICE_BIT) and own-heap encodings uniformly.
-    (local.set $len (call $__str_length (local.get $a)))
-    (local.set $lenB (call $__str_length (local.get $b)))
-    (if (i32.ne (local.get $len) (local.get $lenB))
+    (local.set $offA (i32.wrap_i64 (local.get $a)))
+    (local.set $offB (i32.wrap_i64 (local.get $b)))
+    (if (i32.or (i32.lt_u (local.get $offA) (i32.const 4)) (i32.lt_u (local.get $offB) (i32.const 4)))
       (then (return (i32.const 0))))
-    (block $dm (loop $lm
-      (br_if $dm (i32.ge_s (local.get $i) (local.get $len)))
-      (if (i32.ne (call $__char_at (local.get $a) (local.get $i))
-                  (call $__char_at (local.get $b) (local.get $i)))
+    (if (i32.eqz (i32.and (i32.or (local.get $axA) (local.get $axB)) (i32.const ${LAYOUT.SLICE_BIT})))
+      (then
+        (local.set $len (i32.load (i32.sub (local.get $offA) (i32.const 4))))
+        (if (i32.ne (local.get $len) (i32.load (i32.sub (local.get $offB) (i32.const 4))))
+          (then (return (i32.const 0)))))
+      (else
+        (local.set $len ${heapLenExpr('$a', '$offA')})
+        (if (i32.ne (local.get $len) ${heapLenExpr('$b', '$offB')})
+          (then (return (i32.const 0))))))
+    (call $__str_eq_cold (local.get $offA) (local.get $offB) (local.get $len)))`)
+
+  wat('__str_eq_cold', `(func $__str_eq_cold (param $offA i32) (param $offB i32) (param $len i32) (result i32)
+    (local $lenB i32) (local $i i32)
+    ;; Four UTF-16 units per load, then the tail; no read crosses the view.
+    (local.set $len (i32.shl (local.get $len) (i32.const 1)))
+    (local.set $lenB (i32.and (local.get $len) (i32.const -8)))
+    (block $d4 (loop $l4
+      (br_if $d4 (i32.ge_s (local.get $i) (local.get $lenB)))
+      (if (i64.ne
+            (i64.load (i32.add (local.get $offA) (local.get $i)))
+            (i64.load (i32.add (local.get $offB) (local.get $i))))
         (then (return (i32.const 0))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $lm)))
+      (local.set $i (i32.add (local.get $i) (i32.const 8)))
+      (br $l4)))
+    (block $dh (loop $lh
+      (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
+      (if (i32.ne
+            (i32.load16_u (i32.add (local.get $offA) (local.get $i)))
+            (i32.load16_u (i32.add (local.get $offB) (local.get $i))))
+        (then (return (i32.const 0))))
+      (local.set $i (i32.add (local.get $i) (i32.const 2)))
+      (br $lh)))
     (i32.const 1))`)
 
   // Unsigned UTF-16 unit comparison, matching JavaScript's relational order.
@@ -1694,67 +1634,69 @@ export default (ctx) => {
         (call $__str_slice (local.get $str) (local.get $piece_start) (local.get $slen)))))
     (call $__mkptr (i32.const 1) (i32.const 0) (local.get $arr)))`)
 
-  // Array (type=1) → join(",") like JS Array.toString().
-  // When the typedarray module is loaded, also handles PTR.TYPED (type=3) arrays:
-  // promoteIntArrayLiterals rewrites [int,...] → new Int32Array([...]) internally,
-  // so a.map(fn).join() may receive a PTR.TYPED result. Use __typed_idx to load
-  // each element correctly (it returns f64 for any element type / stride).
+  // Join snapshots length, converts the separator, then reads and converts
+  // elements in order. Keep each string once so conversion effects cannot be
+  // replayed while sizing/copying, and allocate the result without prefix copies.
   // Array.prototype.join renders null and undefined elements as the empty string.
   wat('__join_elem', `(func $__join_elem (param $v i64) (result i64)
     (select (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)}) (local.get $v) (call $__is_nullish (local.get $v))))`)
   wat('__str_join', () => {
-    if (!ctx.module.modules.typedarray) {
-      // ARRAY-only fast path — no __typed_idx overhead.
-      return `(func $__str_join (param $arr i64) (param $sep i64) (result f64)
-    (local $off i32) (local $len i32) (local $i i32) (local $result f64)
-    (local.set $off (call $__ptr_offset (local.get $arr)))
-    (local.set $len (call $__len (local.get $arr)))
-    (if (i32.eqz (local.get $len))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    (local.set $result (f64.reinterpret_i64 (call $__to_str (call $__join_elem (i64.load (local.get $off))))))
-    (local.set $i (i32.const 1))
-    (block $done (loop $loop
-      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result)) (local.get $sep)))
-      (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result))
-        (call $__join_elem (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $loop)))
-    (local.get $result))`
-    }
-    // ARRAY + TYPED path: runtime dispatch on ptr type.
-    // PTR.TYPED (type=3): elements have typed-array stride; __typed_idx reads correctly.
-    // PTR.ARRAY (type=1): elements are 8-byte NaN-boxed f64 slots; i64.load is correct.
+    const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
+    // Built-in conversions only allocate temporaries. A user conversion may
+    // publish allocations; shared heaps may have concurrent allocations too.
+    const reclaim = !ctx.memory.shared && !ctx.funcs.runtimeRoots.has('__jz_tp_str')
     return `(func $__str_join (param $arr i64) (param $sep i64) (result f64)
-    (local $off i32) (local $len i32) (local $i i32) (local $result f64) (local $isTyped i32)
-    (local.set $isTyped
-      (i32.eq
-        (i32.and (i32.wrap_i64 (i64.shr_u (local.get $arr) (i64.const ${LAYOUT.TAG_SHIFT})))
-                 (i32.const ${LAYOUT.TAG_MASK}))
-        (i32.const ${PTR.TYPED})))
-    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local $len i32) (local $i i32) (local $parts i32) (local $part i64)
+    (local $slen i32) (local $plen i32) (local $total i64) (local $out i32) (local $dst i32)
     (local.set $len (call $__len (local.get $arr)))
+    (local.set $sep (if (result i64) (i64.eq (local.get $sep) (i64.const ${UNDEF_NAN}))
+      (then (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (i32.const 44))))
+      (else (call $__to_str (local.get $sep)))))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    (local.set $result
-      (f64.reinterpret_i64
-        (call $__to_str
-          (if (result i64) (local.get $isTyped)
-            (then (i64.reinterpret_f64 (call $__typed_idx (local.get $arr) (i32.const 0))))
-            (else (call $__join_elem (i64.load (local.get $off))))))))
-    (local.set $i (i32.const 1))
-    (block $done (loop $loop
-      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result)) (local.get $sep)))
-      (local.set $result
-        (call $__str_concat
-          (i64.reinterpret_f64 (local.get $result))
-          (if (result i64) (local.get $isTyped)
-            (then (i64.reinterpret_f64 (call $__typed_idx (local.get $arr) (local.get $i))))
-            (else (call $__join_elem (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))
+    (if (i32.eq (local.get $len) (i32.const 1))
+      (then (return (f64.reinterpret_i64 (call $__to_str (call $__join_elem
+        (i64.reinterpret_f64 (call $${read} (local.get $arr) (i32.const 0)))))))))
+    ;; Guard byte-size arithmetic before shifting a word-sized length.
+    (if (i32.gt_u (local.get $len) (i32.const 536870910)) (then (unreachable)))
+    (local.set $parts (call $__alloc (i32.shl (local.get $len) (i32.const 3))))
+    (local.set $slen (call $__str_length (local.get $sep)))
+    (local.set $total (i64.mul (i64.extend_i32_u (i32.sub (local.get $len) (i32.const 1)))
+      (i64.extend_i32_u (local.get $slen))))
+    (loop $convert
+      (local.set $part (call $__to_str (call $__join_elem
+        (i64.reinterpret_f64 (call $${read} (local.get $arr) (local.get $i))))))
+      (i64.store (i32.add (local.get $parts) (i32.shl (local.get $i) (i32.const 3))) (local.get $part))
+      (local.set $total (i64.add (local.get $total) (i64.extend_i32_u (call $__str_length (local.get $part)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $loop)))
-    (local.get $result))`
+      (br_if $convert (i32.lt_u (local.get $i) (local.get $len))))
+    (if (i64.gt_u (local.get $total) (i64.const 2147483640)) (then (unreachable)))
+    (local.set $out (call $__alloc (i32.add (i32.const 8) (i32.shl (i32.wrap_i64 (local.get $total)) (i32.const 1)))))
+    (i32.store (local.get $out) (i32.const 0))
+    (i32.store offset=4 (local.get $out) (i32.wrap_i64 (local.get $total)))
+    (local.set $out (i32.add (local.get $out) (i32.const 8)))
+    (local.set $dst (local.get $out))
+    (local.set $i (i32.const 0))
+    (loop $copy
+      (local.set $part (i64.load (i32.add (local.get $parts) (i32.shl (local.get $i) (i32.const 3)))))
+      (local.set $plen (call $__str_length (local.get $part)))
+      (call $__str_copy (local.get $part) (local.get $dst) (local.get $plen))
+      (local.set $dst (i32.add (local.get $dst) (i32.shl (local.get $plen) (i32.const 1))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (block $done
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (call $__str_copy (local.get $sep) (local.get $dst) (local.get $slen))
+      (local.set $dst (i32.add (local.get $dst) (i32.shl (local.get $slen) (i32.const 1))))
+      (br $copy)))
+    ${reclaim ? `(local.set $plen (i32.add (i32.const 8) (i32.shl (i32.wrap_i64 (local.get $total)) (i32.const 1))))
+    (memory.copy (local.get $parts) (i32.sub (local.get $out) (i32.const 8)) (local.get $plen))
+    (global.set $__heap (i32.add (local.get $parts) (i32.and (i32.add (local.get $plen) (i32.const 7)) (i32.const -8))))
+    (local.set $out (i32.add (local.get $parts) (i32.const 8)))` : ''}
+    (local.set $part (i64.reinterpret_f64 (call $__sso_norm
+      (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $out)))))
+    ${reclaim ? `(if (i64.ne (i64.and (local.get $part) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+      (then (global.set $__heap (local.get $parts))))` : ''}
+    (f64.reinterpret_i64 (local.get $part)))`
   })
 
   // Source string copied via __str_copy (handles SSO/heap with memory.copy where possible).
@@ -1767,6 +1709,9 @@ export default (ctx) => {
     (if (i32.ge_s (local.get $slen) (local.get $target))
       (then (return (f64.reinterpret_i64 (local.get $str)))))
     (local.set $plen (call $__str_length (local.get $pad)))
+    (if (i32.eqz (local.get $plen))
+      (then (return (f64.reinterpret_i64 (local.get $str)))))
+    (if (i32.gt_u (local.get $target) (i32.const 2147483640)) (then (unreachable)))
     (local.set $fill (i32.sub (local.get $target) (local.get $slen)))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $target) (i32.const 1)))))
     (i32.store (local.get $off) (local.get $target))
@@ -1839,29 +1784,6 @@ export default (ctx) => {
   // override to return the primitive — strings already covered by .string:valueOf.
   bind('.valueOf', (val) => asF64(emit(val)))
 
-  // `.slice` lowering, parametrised on the backing helper: __str_slice copies
-  // bytes; __str_slice_view returns a no-copy SLICE_BIT view — used only when
-  // escape analysis proved the result never outlives its parent buffer (see
-  // scanSliceViews / emitDecl). The `#view` key cannot be produced by method
-  // dispatch (`#` is not a legal identifier char), so the view variant is
-  // reachable only through the explicit emitDecl route.
-  const sliceEmitter = (fn) => (str, start, end) => {
-    inc(fn)
-    // ToIntegerOrInfinity position args (22.1.3.21 step 1/3) — asI32Sat, not asI32: a
-    // start/end past i32/i64 range (incl. literal Infinity) must SATURATE to INT32_MAX so
-    // __clamp_idx reads it as "past the end", not asI32's ToInt32-WRAP fallback, which
-    // read Infinity back as -1 ("one before the end") — see asI32Sat's doc (src/ir.js).
-    const startIR = start == null ? ['i32.const', 0] : asI32Sat(emit(start))
-    if (end != null) return typed(['call', `$${fn}`, asI64(emit(str)), startIR, asI32Sat(emit(end))], 'f64')
-    const t = temp('t')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', `$${fn}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]], startIR,
-        ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
-  }
-  bind('.string:slice', sliceEmitter('__str_slice'))
-  bind('.string:slice#view', sliceEmitter('__str_slice_view'))
-
   // ToIntegerOrInfinity for a string-method position argument: ToNumber (so
   // string / boolean / null / undefined positions coerce per spec) then trunc.
   // trunc_sat maps NaN→0 and ±∞→±maxint — both clamp correctly downstream.
@@ -1871,28 +1793,28 @@ export default (ctx) => {
     if (node == null) return ['i32.const', 0]
     return asI32Sat(toNumF64(node, emit(node)))
   }
-
-  // ToString(searchString) per spec step 3. __str_indexof's internal __to_str
-  // covers string/number/null/undefined needles, but two cases need help here:
-  // a BOOL rides the 0/1 carrier (→ "0"/"1" not "true"/"false"), and an OBJECT
-  // needs compile-time ToPrimitive(string) (__to_str can't invoke user toString).
-  // Coerce the search operand to a string AT THE CALL SITE (21.1.3.x ToString step),
-  // so the `__str_indexof` family carries no embedded `__to_str`. A known-STRING arg
-  // (the overwhelmingly common `s.indexOf("x")` / `s.indexOf(t)` shape) passes raw —
-  // dropping the whole ToString → float-formatter dep tree (~4 KB) that an internal,
-  // unconditional coercion forced into every search-method program. Mirrors
-  // `stringSearchMethod` (startsWith/endsWith), which has always coerced here.
-  const searchArg = (search) => {
-    const vt = valTypeOf(search)
-    if (vt === VAL.STRING) return asI64(emit(search))
-    if (vt === VAL.BOOL) return asI64(bool(search))
-    if (vt === VAL.OBJECT || vt === VAL.HASH || Array.isArray(search) && search[0] === '{}')
-      return toStrI64(search, emit(search))
-    inc('__to_str')
-    return ['call', '$__to_str', asI64(emit(search))]
+  // Slice copies bytes; slice#view borrows the backing storage only when
+  // escape analysis proves that the result cannot outlive its parent.
+  const sliceEmitter = (fn) => {
+    const handler = (str, ...args) => {
+      inc(fn, '__str_length')
+      const receiver = asF64(emit(str)), positions = positionArgs(args), t = temp('strRange')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, receiver], ...positions.setup,
+        ['call', `$${fn}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]], positions.index(0),
+          positions.index(1, ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]])]], 'f64')
+    }
+    handler.argc = 3
+    return handler
   }
-  // Replacement operand of .replace/.replaceAll — same call-site ToString as searchArg.
-  const strReplArg = searchArg
+  bind('.string:slice', sliceEmitter('__str_slice'))
+  bind('.string:slice#view', sliceEmitter('__str_slice_view'))
+
+  // String operands share the interpolation conversion: preserve mixed-value
+  // identities, with no runtime conversion for proven strings.
+  const partStrI64 = (p, v) => valTypeOf(p) === VAL.BOOL && !censusMaybeUndefined(p)
+    ? asI64(bool(p)) : toStrI64(p, v ?? argIR(p))
+  const searchArg = (search) => partStrI64(search ?? [, undefined])
 
   bind('.string:indexOf', (str, search, from) => {
     inc('__str_indexof')
@@ -1901,13 +1823,13 @@ export default (ctx) => {
   })
 
   // String.prototype.lastIndexOf: search from the end, returning the last
-  // byte-offset of `search` in `str` at or before `fromIndex` (or -1).
+  // code-unit offset of `search` in `str` at or before `fromIndex` (or -1).
   // Per spec the `from` default is +∞ (search from the very end), which we
   // map to 0x7fffffff — __str_lastindexof clamps it to hlen-nlen anyway.
   bind('.string:lastIndexOf', (str, search, from) => {
     inc('__str_lastindexof')
     const hay = asI64(emit(str)), ndl = searchArg(search)
-    const fromIR = from == null ? ['i32.const', 0x7fffffff] : asI32Sat(emit(from))
+    const fromIR = from == null ? ['i32.const', 0x7fffffff] : posIndex(from)
     return typed(['f64.convert_i32_s', ['call', '$__str_lastindexof', hay, ndl, fromIR]], 'f64')
   })
 
@@ -1928,22 +1850,7 @@ export default (ctx) => {
       ['i32.ge_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)], ['i32.const', 0]]], 'f64')
   })
 
-  // Generic (no collision)
-  // ToIntegerOrInfinity position args (21.1.3.24 step 3/4) — asI32Sat throughout this
-  // method + .substr below, same as sliceEmitter/posIndex above (see asI32Sat's doc,
-  // src/ir.js): __str_substring clamps through __clamp_idx exactly like __str_slice, so
-  // an unsaturated asI32 wrap on an out-of-range start/end (incl. Infinity) reads back as
-  // "near the end" instead of "past the end" — confirmed live, `"…".substring(NaN,
-  // Infinity)` returned "" instead of the whole string.
-  bind('.substring', (str, start, end) => {
-    inc('__str_substring')
-    if (end != null) return typed(['call', '$__str_substring', asI64(emit(str)), asI32Sat(emit(start)), asI32Sat(emit(end))], 'f64')
-    const t = temp('t')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32Sat(emit(start)),
-        ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
-  })
+  bind('.substring', sliceEmitter('__str_substring'))
 
   // .substr(start, length) — Annex B / legacy. Equivalent to substring(start, start+length).
   // __str_substring clamps start/end to the string length, so negative
@@ -1959,21 +1866,21 @@ export default (ctx) => {
     if (length != null) {
       const s = tempI32('substrS')
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${s}`, asI32Sat(emit(start))],
+        ['local.set', `$${s}`, posIndex(start)],
         ['call', '$__str_substring', asI64(emit(str)),
           ['local.get', `$${s}`],
-          ['i32.add', ['local.get', `$${s}`], asI32Sat(emit(length))]]
+          ['i32.add', ['local.get', `$${s}`], posIndex(length)]]
       ], 'f64')
     }
     const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32Sat(emit(start)),
+      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], posIndex(start),
         ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   })
 
   // Search args go through ToString per spec — coerce non-string-typed args
-  // via __to_str so the underlying byte-compare receives an actual string.
+  // via __to_str so the underlying code-unit comparison receives an actual string.
   const stringSearchMethod = (name) => (str, sfx, pos) => {
     // The position argument was silently DROPPED (compiled as position 0) —
     // silent wrong beats loud missing, so reject until the helper threads an
@@ -1982,15 +1889,7 @@ export default (ctx) => {
     if (pos !== undefined) err(`${name === '__str_startswith' ? 'startsWith' : 'endsWith'} position argument not supported — slice the receiver first`)
     const guard = regexpSearchGuard(sfx); if (guard) return guard
     inc(name)
-    const esfx = emit(sfx)
-    let sfxArg = asI64(esfx)
-    if (valTypeOf(sfx) === VAL.OBJECT) {
-      sfxArg = toStrI64(sfx, esfx)
-    } else if (valTypeOf(sfx) !== VAL.STRING) {
-      inc('__to_str')
-      sfxArg = ['call', '$__to_str', sfxArg]
-    }
-    return typed(['f64.convert_i32_s', ['call', `$${name}`, asI64(emit(str)), sfxArg]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', `$${name}`, asI64(emit(str)), searchArg(sfx)]], 'f64')
   }
   bind('.startsWith', stringSearchMethod('__str_startswith'))
   bind('.endsWith', stringSearchMethod('__str_endswith'))
@@ -1998,22 +1897,39 @@ export default (ctx) => {
   bind('.trimStart', method('__str_trimStart',  'I'))
   bind('.trimEnd', method('__str_trimEnd',    'I'))
   bind('.repeat', method('__str_repeat',     'Ii'))
-  // split(sep, limit): both args are optional.
-  // - No args (undefined sep) → [str]: JS spec step 3 treats undefined separator
-  //   as returning a single-element array of the whole string (not splitting at all).
-  // - 1 arg → no limit (sentinel 0x7fffffff = MAX_I32).
-  // - 2 args → honour limit: 0 → [], N → at most N pieces.
+  // Evaluate arguments before converting limit, then separator (even at limit
+  // zero). Undefined separates nothing, and limits use ToUint32.
   bind('.split', (str, sep, limit) => {
-    if (sep === undefined) {
-      // split() → [str]: wrap the whole string in a 1-element array
+    if (sep === undefined && limit === undefined) {
       inc('__wrap1')
       return typed(['call', '$__wrap1', asI64(emit(str))], 'f64')
     }
     inc('__str_split')
-    const limitIR = limit === undefined
-      ? ['i32.const', 0x7fffffff]
-      : ['i32.trunc_sat_f64_u', asF64(emit(limit))]
-    return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep)), limitIR], 'f64')
+    if (valTypeOf(sep) === VAL.STRING && !censusMaybeUndefined(sep) && limit === undefined)
+      return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep)), ['i32.const', 0x7fffffff]], 'f64')
+    inc('__wrap1', '__alloc_hdr')
+    const s = temp('sps'), q = temp('spq'), l = temp('spl'), r = temp('spr'), n = tempI32('spn')
+    const sv = typed(['local.get', `$${s}`], 'f64')
+    const qv = typed(['local.get', `$${q}`], 'f64')
+    const lv = typed(['local.get', `$${l}`], 'f64')
+    const missing = v => ['i64.eq', asI64(v), ['i64.const', UNDEF_NAN]]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${q}`, storedValue(sep ?? [, undefined])],
+      ['local.set', `$${l}`, storedValue(limit ?? [, undefined])],
+      ['local.set', `$${n}`, limit === undefined ? ['i32.const', 0x7fffffff] :
+        ['if', ['result', 'i32'], missing(lv), ['then', ['i32.const', 0x7fffffff]],
+          ['else', toInt32(toNumF64(limit, lv))]]],
+      // A wasm32 string cannot supply more than INT32_MAX pieces.
+      ['if', ['i32.lt_s', ['local.get', `$${n}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${n}`, ['i32.const', 0x7fffffff]]]],
+      // The temporary is boxed; only strings keep the source carrier unchanged.
+      ['local.set', `$${r}`, ['f64.reinterpret_i64', toStrI64(valTypeOf(sep) === VAL.STRING ? sep : q, qv)]],
+      ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${n}`]],
+        ['then', mkPtrIR(PTR.ARRAY, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', 0]])],
+        ['else', ['if', ['result', 'f64'], missing(qv),
+          ['then', ['call', '$__wrap1', asI64(sv)]],
+          ['else', ['call', '$__str_split', asI64(sv), ['i64.reinterpret_f64', ['local.get', `$${r}`]], ['local.get', `$${n}`]]]]]]], 'f64')
   })
 
   // replace(search, replacement). When `replacement` is a function, replace the
@@ -2043,7 +1959,7 @@ export default (ctx) => {
         ['call', '$__str_length', sI64()]], 'f64')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
-        ['local.set', `$${q}`, asF64(emit(search))],
+        ['local.set', `$${q}`, ['f64.reinterpret_i64', searchArg(search)]],
         ['local.set', `$${fnL}`, asF64(emit(repl))],
         ['local.set', `$${mlen}`, ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
         ['local.set', `$${idx}`, ['call', '$__str_indexof', sI64(), ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
@@ -2059,12 +1975,12 @@ export default (ctx) => {
     inc(kernel)
     // search/repl ToString'd at the call site (searchArg) — __str_replace's __str_indexof
     // no longer coerces internally, so a non-string search must be stringified here.
-    return typed(['call', `$${kernel}`, asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
+    return typed(['call', `$${kernel}`, asI64(emit(str)), searchArg(search), searchArg(repl)], 'f64')
   })
   bind('.replaceAll', (str, search, repl) => {
     const kernel = replacementHasPatterns(repl) ? '__str_replaceall_subst' : '__str_replaceall'
     inc(kernel)
-    return typed(['call', `$${kernel}`, asI64(emit(str)), searchArg(search), strReplArg(repl)], 'f64')
+    return typed(['call', `$${kernel}`, asI64(emit(str)), searchArg(search), searchArg(repl)], 'f64')
   })
 
   const caseMethod = (lo, hi, delta) => (str) => {
@@ -2082,27 +1998,41 @@ export default (ctx) => {
 
   const padMethod = (start) => (str, len, pad) => {
     inc('__str_pad')
-    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, ssoAux(1), 32)]
-    return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', start]], 'f64')
+    const space = () => ['i64.reinterpret_f64', mkPtrIR(PTR.STRING, ssoAux(1), 32)]
+    // Proven strings need no fill conversion. Keep the ordinary literal path
+    // compact; the kernel itself checks whether any padding is needed.
+    const lk = valTypeOf(len)
+    if ((len === undefined || lk === VAL.NUMBER || lk === VAL.BOOL) &&
+        (pad === undefined || valTypeOf(pad) === VAL.STRING && !censusMaybeUndefined(pad)))
+      return typed(['call', '$__str_pad', asI64(emit(str)),
+        asI32Sat(toNumF64(len ?? [, undefined], emit(len ?? [, undefined]))),
+        pad === undefined ? space() : asI64(emit(pad)), ['i32.const', start]], 'f64')
+    inc('__str_length')
+    const s = temp('pds'), l = temp('pdl'), p = temp('pdp'), n = tempI32('pdn')
+    const get = name => typed(['local.get', `$${name}`], 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${l}`, storedValue(len ?? [, undefined])],
+      ['local.set', `$${p}`, storedValue(pad ?? [, undefined])],
+      ['local.set', `$${n}`, asI32Sat(toNumF64(
+        valTypeOf(len) === VAL.NUMBER && !hasAmbiguousBoolMerge(len) ? len : l, get(l)))],
+      ['if', ['result', 'f64'],
+        ['i32.le_s', ['local.get', `$${n}`], ['call', '$__str_length', asI64(get(s))]],
+        ['then', get(s)],
+        ['else', ['call', '$__str_pad', asI64(get(s)), ['local.get', `$${n}`],
+          ['if', ['result', 'i64'], ['i64.eq', asI64(get(p)), ['i64.const', UNDEF_NAN]],
+            ['then', space()], ['else', toStrI64(p, get(p))]], ['i32.const', start]]]]], 'f64')
   }
   bind('.padStart', padMethod(1))
   bind('.padEnd', padMethod(0))
 
   // Code-unit ordering only; locale-aware collation tables are not shipped.
-  bind('.localeCompare', method('__str_cmp', 'II', 'i32'))
-
-  bind('.string:concat', (str, ...others) => {
-    inc('__str_concat')
-    let result = asF64(emit(str))
-    for (const other of others) result = typed(['call', '$__str_concat', ['i64.reinterpret_f64', result], asI64(emit(other))], 'f64')
-    return result
+  bind('.localeCompare', (str, other) => {
+    inc('__str_cmp')
+    return typed(['call', '$__str_cmp', asI64(emit(str)), searchArg(other)], 'i32')
   })
 
-  // A VAL.BOOL part rides the 0/1 carrier, so __to_str would render "1"/"0".
-  // bool selects the interned "true"/"false" literal (constant-folded
-  // when the operand is known); every other part goes through __to_str.
-  // `v` is the part's pre-emitted value when the caller already emitted it.
-  const partStrI64 = (p, v) => valTypeOf(p) === VAL.BOOL ? asI64(bool(p)) : toStrI64(p, v ?? argIR(p))
+  bind('.string:concat', (str, ...others) => ctx.core.emit.strcat(str, ...others))
 
   bind('strcat', (...parts) => {
     if (!parts.length) return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
@@ -2225,7 +2155,7 @@ export default (ctx) => {
     const s = temp('cs'), i = tempI32('ci')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
-      ['local.set', `$${i}`, asI32(emit(idx))],
+      ['local.set', `$${i}`, posIndex(idx)],
       charAtOr(`$${s}`, `$${i}`,
         ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], emptyStr)], 'f64')
   })
@@ -2238,7 +2168,7 @@ export default (ctx) => {
   // (`0 <= 32` is true, `NaN <= 32` is false). The narrower may re-narrow the
   // result to i32 where it can prove the index in-bounds.
   bind('.charCodeAt', (str, idx) =>
-    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32Sat(toNumF64(idx, emit(idx))), ctx, true), 'f64'))
+    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), posIndex(idx), ctx, true), 'f64'))
 
   // Read one code point at a unit index; isolated surrogates remain unchanged.
   wat('__codepoint_at', `(func $__codepoint_at (param $s i64) (param $i i32) (result f64)
@@ -2257,7 +2187,7 @@ export default (ctx) => {
     (f64.convert_i32_u (local.get $a)))`)
   bind('.codePointAt', (str, idx) => {
     inc('__codepoint_at')
-    return typed(['call', '$__codepoint_at', asI64(emit(str)), asI32Sat(toNumF64(idx, emit(idx)))], 'f64')
+    return typed(['call', '$__codepoint_at', asI64(emit(str)), posIndex(idx)], 'f64')
   })
 
   // One code unit, packed only when ASCII.
@@ -2408,7 +2338,7 @@ export default (ctx) => {
       // at(-Infinity)` returned "h" instead of undefined. asI32Sat(-Infinity)=INT32_MIN
       // fixes both directions: it IS negative, so `t+=len` fires and leaves it deeply
       // negative, correctly failing charAtOr's `t>=0` check.
-      ['local.set', `$${t}`, asI32Sat(emit(idx))],
+      ['local.set', `$${t}`, posIndex(idx)],
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
@@ -2419,7 +2349,7 @@ export default (ctx) => {
   // .search(str) → indexOf (same as indexOf for string args)
   bind('.search', (str, search) => {
     inc('__str_indexof')
-    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), searchArg(search), ['i32.const', 0]]], 'f64')
   })
 
   // .match(str) → [match] array if found, or 0 (null) if not
@@ -2430,7 +2360,7 @@ export default (ctx) => {
     // indexOf, then if >= 0, create 1-element array with the match slice
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
-      ['local.set', `$${q}`, asF64(emit(search))],
+      ['local.set', `$${q}`, ['f64.reinterpret_i64', searchArg(search)]],
       ['local.set', `$${idx}`, ['call', '$__str_indexof', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],  // null

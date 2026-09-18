@@ -1129,7 +1129,7 @@ export default (ctx) => {
       const liGlobal = `$__re_lastIndex_${id}`
       inc(`__regex_search_from_${id}`)
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${s}`, asF64(emit(str))],
+        ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
         ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
           ['call', `$__regex_search_from_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]], lastIndexRead(liGlobal)]]],
         ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${mstart}`], ['i32.const', 0]],
@@ -1137,7 +1137,7 @@ export default (ctx) => {
           ['else', ['global.set', liGlobal, ['f64.convert_i32_s', ['local.get', `$${mend}`]]], ['f64.const', 1]]]], 'f64')
     }
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
       ...lastIndexTouch(id),
       ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
         ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
@@ -1164,7 +1164,7 @@ export default (ctx) => {
       const liGlobal = `$__re_lastIndex_${id}`
       inc(`__regex_search_from_${id}`)
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${s}`, asF64(emit(str))],
+        ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
         ['local.set', `$${ms}`, ['local.set', `$${me}`,
           ['call', `$__regex_search_from_${id}`,
             ['i64.reinterpret_f64', ['local.get', `$${s}`]],
@@ -1178,7 +1178,7 @@ export default (ctx) => {
             buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
     }
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${s}`, asF64(emit(['()', 'String', str ?? [, undefined]]))],
       ...lastIndexTouch(id),
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
         ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
@@ -1251,11 +1251,7 @@ export default (ctx) => {
   // str.search(/re/) → first match position or -1
   ctx.core.emit['.string:search'] = (str, search) => {
     const id = resolveRegex(search)
-    if (id == null) {
-      // Fall back to string search (indexOf)
-      inc('__str_indexof')
-      return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]]], 'f64')
-    }
+    if (id == null) return ctx.core.emit['.search'](str, search)
     const s = temp('ss'), ms = tempI32('ssms'), me = tempI32('ssme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -1267,23 +1263,7 @@ export default (ctx) => {
   // str.match(/re/) → [match_text] or 0
   ctx.core.emit['.string:match'] = (str, search) => {
     const id = resolveRegex(search)
-    if (id == null) {
-      // Fall back to string match
-      inc('__str_indexof', '__str_slice', '__wrap1', '__str_length')
-      const s = temp('ms'), q = temp('mq'), idx = tempI32('mi')
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${s}`, asF64(emit(str))],
-        ['local.set', `$${q}`, asF64(emit(search))],
-        ['local.set', `$${idx}`, ['call', '$__str_indexof', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
-        ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
-          ['then', ['f64.const', 0]],
-          ['else',
-            ['call', '$__wrap1',
-              ['i64.reinterpret_f64',
-                ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
-                  ['local.get', `$${idx}`],
-                  ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
-    }
+    if (id == null) return ctx.core.emit['.match'](str, search)
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     const s = temp('sm'), ms = tempI32('smms'), me = tempI32('smme')
@@ -1344,6 +1324,7 @@ export default (ctx) => {
   // replaced (a per-regex loop, mirroring split); otherwise only the first.
   ctx.core.emit['.string:replace'] = (str, search, repl) => {
     const id = resolveRegex(search)
+    if (id == null) return ctx.core.emit['.replace'](str, search, repl)
     const isFn = valTypeOf(repl) === VAL.CLOSURE && ctx.closure?.call
     // ToString(fn(match, p1..pn, offset, string)) → i64 string (ES 22.1.3.19:
     // the callback receives the match, each capture group — undefined when
@@ -1355,38 +1336,6 @@ export default (ctx) => {
     const callbackRepl = (fnL, matchStrIR, extra = []) =>
       ['call', '$__to_str', asI64(ctx.closure.call(typed(['local.get', `$${fnL}`], 'f64'),
         [matchStrIR, ...extra].slice(0, ctx.closure.width ?? MAX_CLOSURE_ARITY)))]
-    if (id == null) {
-      if (isFn) {
-        // String search + callback: replace the FIRST occurrence (spec: a string
-        // search matches once). Mirror string.js `.replace`'s callback path.
-        inc('__str_indexof', '__str_slice', '__str_concat', '__str_length', '__to_str')
-        const s = temp('rps'), q = temp('rpq'), fnL = temp('rpf'), idx = tempI32('rpi'), mlen = tempI32('rpm')
-        const sI64 = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
-        const match = typed(['call', '$__str_slice', sI64(), ['local.get', `$${idx}`],
-          ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]]], 'f64')
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${s}`, asF64(emit(str))],
-          ['local.set', `$${q}`, asF64(emit(search))],
-          ['local.set', `$${fnL}`, asF64(emit(repl))],
-          ['local.set', `$${mlen}`, ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]],
-          ['local.set', `$${idx}`, ['call', '$__str_indexof', sI64(), ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
-          ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
-            ['then', ['local.get', `$${s}`]],
-            ['else', typed(['call', '$__str_concat',
-              asI64(typed(['call', '$__str_concat',
-                asI64(typed(['call', '$__str_slice', sI64(), ['i32.const', 0], ['local.get', `$${idx}`]], 'f64')),
-                callbackRepl(fnL, match, [
-                  typed(['f64.convert_i32_s', ['local.get', `$${idx}`]], 'f64'),
-                  typed(['local.get', `$${s}`], 'f64')])], 'f64')),
-              asI64(typed(['call', '$__str_slice', sI64(),
-                ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${mlen}`]],
-                ['call', '$__str_length', sI64()]], 'f64'))], 'f64')]]], 'f64')
-      }
-      // Fall back to string replace
-      const kernel = replacementHasPatterns(repl) ? '__str_replace_subst' : '__str_replace'
-      inc(kernel)
-      return typed(['call', `$${kernel}`, asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
-    }
     // GetSubstitution operands for a `$`-carrying replacement: a literal
     // resolves `$<name>` to its group number now; a runtime string keeps a
     // names table. The (start, end) table of the groups is filled per match.
@@ -1602,31 +1551,8 @@ export default (ctx) => {
 
   // str.split(/re/) → array of substrings
   ctx.core.emit['.string:split'] = (str, sep, limit) => {
-    // split() with NO separator arg at all (`sep` is the raw JS `undefined` a
-    // missing callee arg parses as here, not an AST node for the value
-    // `undefined`) → [str]: JS spec step 3, whole string as one element, no
-    // regex/string search involved. Mirrors module/string.js's bare `.split`
-    // handler's identical `sep === undefined` special case (this fork exists
-    // for the SAME property name, dispatched here instead whenever this
-    // receiver is proven STRING — see tryStaticDispatch) — that handler
-    // guards this before ever touching `sep`; this one didn't, so `resolveRegex`
-    // correctly said "not a regex" (null) and the fallback below tried
-    // `emit(sep)` on a bare JS `undefined`, not an AST node — "expected
-    // emitted IR value, got empty value". Exposed by widening `split`'s
-    // autoload row to include `regex` (this key's owner) for EVERY
-    // proven-string receiver, not just ones already reaching it via some
-    // OTHER regex use in the same program — a latent gap this fork's own
-    // `sep`-optionality was never exercised against before.
-    if (sep === undefined) { inc('__wrap1'); return typed(['call', '$__wrap1', asI64(emit(str))], 'f64') }
     const id = resolveRegex(sep)
-    if (id == null) {
-      // Fall back to string split, forwarding the optional limit (0x7fffffff = no limit).
-      // __str_split is 3-param (str, sep, limit); a 2-arg call here trips a wasm arity
-      // error in any program with a known-string `.split` (e.g. the watr self-compile).
-      inc('__str_split')
-      const limitIR = limit == null ? ['i32.const', 0x7fffffff] : ['i32.trunc_sat_f64_u', asF64(emit(limit))]
-      return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep)), limitIR], 'f64')
-    }
+    if (id == null) return ctx.core.emit['.split'](str, sep, limit)
 
     // Generate a split-by-regex WAT function for this regex
     const splitName = `__regex_split_${id}`

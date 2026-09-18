@@ -40,6 +40,17 @@ export const isExportedIn = (funcs, f) => {
 }
 export const isExported = f => isExportedIn(ctx.funcs, f)
 
+/** Query after planning: imports and public parameter carriers are settled.
+ *  Helper demand cannot prove ingress; it depends on emission order. */
+export const hasExternalIngress = () => {
+  if (ctx.transform.targetProfile.envImports && ctx.core.hostGlobals.size) return true
+  if (ctx.facts.externalIngress == null) ctx.facts.externalIngress = ctx.transform.targetProfile.envImports && (
+    ctx.module.imports.some(i => i[3]?.[0] === 'func') ||
+    ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64'))
+  )
+  return ctx.facts.externalIngress
+}
+
 /** Collect JS-visible export names that resolve to `funcName` (as an array).
  *  Used to emit per-export ABI metadata in custom sections — one entry per
  *  JS-visible name, since the host (interop.js wrap) keys by export name. */

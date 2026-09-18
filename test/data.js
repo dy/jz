@@ -3615,8 +3615,8 @@ test('RepresentationPlan: a forwarded, genuinely monomorphic array param is trus
     const start = wat.indexOf(`(func $${fname}`)
     return wat.slice(start, wat.indexOf('\n  (func ', start + 1))
   }
-  ok(!/__dyn_get_expr/.test(extractBody('uleb')), "O0: uleb's forwarded, genuinely-monomorphic array param keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_expr/.test(extractBody('pushInto')), 'O0: pushInto (exported, genuinely unprovable) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the uleb result above is not vacuous')
+  ok(!/__dyn_get_(?:expr|any)/.test(extractBody('uleb')), "O0: uleb's forwarded, genuinely-monomorphic array param keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_(?:expr|any)/.test(extractBody('pushInto')), 'O0: pushInto (exported, genuinely unprovable) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the uleb result above is not vacuous')
   is(jz(src, { optimize: false }).exports.useIt(), 9, 'O0: uleb(300) ULEB128-encodes to 2 bytes (0xAC,0x02) — .length=2, plus useClosure()=7')
 })
 
@@ -3650,7 +3650,7 @@ test('RepresentationPlan: a forwarded param stays untrusted when its OWN source 
   const wat = String(compile(src, { optimize: false, wat: true }))
   const start = wat.indexOf('(func $sink')
   const body = wat.slice(start, wat.indexOf('\n  (func ', start + 1))
-  ok(/__dyn_get_expr/.test(body), "O0: sink's buf param stays runtime-dispatched — the wider census still catches the genuine polymorphism reaching it through forward, not just the ordering artifact the positive pin above fixes")
+  ok(/__dyn_get_(?:expr|any)/.test(body), "O0: sink's buf param stays runtime-dispatched — the wider census still catches the genuine polymorphism reaching it through forward, not just the ordering artifact the positive pin above fixes")
   for (const optimize of levels(false, 2, 3)) {
     // makeHijack's object has no .length — buf.length legitimately reads
     // undefined -> NaN through the real (runtime-dispatched) property read,
@@ -4093,7 +4093,7 @@ test('object passed as a parameter: a param that is only READ keeps its direct (
   const start = wat.indexOf('(func $sumArr')
   const next = wat.indexOf('\n  (func ', start + 1)
   const body = wat.slice(start, next)
-  ok(!/__dyn_get_expr/.test(body), 'O0: sumArr never probes for an own-property shadow — a.length/a[i] compile straight through')
+  ok(!/__dyn_get_(?:expr|any)/.test(body), 'O0: sumArr never probes for an own-property shadow — a.length/a[i] compile straight through')
   ok(/(?:i32|f64)\.const 5/.test(body), 'O0: unanimous caller length lowers directly to a constant')
 })
 
@@ -4221,9 +4221,9 @@ test('object read via a parameter: the STRING-guess WAT-dispatch shape — unpro
   }
   const provenBody = extractBody(String(compile(provenSrc, { optimize: false, wat: true })))
   const unprovenBody = extractBody(String(compile(unprovenSrc, { optimize: false, wat: true })))
-  ok(!/__dyn_get_expr/.test(provenBody), 'O0: a call-site-proven (paramReps) string param keeps direct STRING dispatch — no shadow probe inserted')
+  ok(!/__dyn_get_(?:expr|any)/.test(provenBody), 'O0: a call-site-proven (paramReps) string param keeps direct STRING dispatch — no shadow probe inserted')
   ok(/ccbase/.test(provenBody), 'O0: the proven param still reaches the SSO/heap charCodeAt fast decoder')
-  ok(/__dyn_get_expr/.test(unprovenBody), 'O0: an unproven param (no call-site proof, methodEvidence retired) DOES get the own-property shadow probe — confirms the fix changes real codegen, not vacuously')
+  ok(/__dyn_get_(?:expr|any)/.test(unprovenBody), 'O0: an unproven param (no call-site proof, methodEvidence retired) DOES get the own-property shadow probe — confirms the fix changes real codegen, not vacuously')
 })
 
 test('closed computed-dispatch table: a member forwarded into a named function gets its param proven from the table\'s own callers (positive) vs stays runtime-dispatched once the table escapes (negative control)', () => {
@@ -4279,8 +4279,8 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   }
   const closedWat = String(compile(closedSrc, { optimize: false, wat: true }))
   const escapedWat = String(compile(escapedSrc, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractBody(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_expr/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also reaches the host — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
+  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_(?:expr|any)/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also reaches the host — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
   for (const optimize of levels(false, 2, 3)) {
     is(jz(closedSrc, { optimize }).exports.main(), 2, `O${optimize || 0}: closed-table computed dispatch still computes the correct value (push2 pushes 5 then 6)`)
   }
@@ -4345,7 +4345,7 @@ test('closed computed-dispatch table: an unresolvable SIBLING argument no longer
     return wat.slice(start, next)
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's buf param (2nd position) proves ARRAY and keeps direct codegen even though its sibling argument (lookup(idx, list)) only resolves through a genuinely-unknown body-local — one unresolvable position no longer poisons the whole synthesized call")
+  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), "O0: grab's buf param (2nd position) proves ARRAY and keeps direct codegen even though its sibling argument (lookup(idx, list)) only resolves through a genuinely-unknown body-local — one unresolvable position no longer poisons the whole synthesized call")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 1, `O${optimize || 0}: list.shift() empties the array (idx=7, list=[]), lookup(7,[]) is undefined, grab pushes it once — computes the JS-correct length regardless of which positions the census could prove`)
 })
@@ -4391,7 +4391,7 @@ test('closed computed-dispatch table: a member reached by a SHORT outer call dec
     return wat.slice(start, next)
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractBody(wat, 'write')), "O0: write's buf param, fed only by relay's own if(out)-guarded internal call, proves ARRAY and keeps direct codegen — relay.out stays clean because the SHORT 2-arg call from `short`/`b` (relay's own out unsuppliable there) is declined outright instead of poisoning relay.out with a false 'missing, no default' fact")
+  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'write')), "O0: write's buf param, fed only by relay's own if(out)-guarded internal call, proves ARRAY and keeps direct codegen — relay.out stays clean because the SHORT 2-arg call from `short`/`b` (relay's own out unsuppliable there) is declined outright instead of poisoning relay.out with a false 'missing, no default' fact")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 3, `O${optimize || 0}: instr(a) pushes 5 into out and 5 into scratch (out.length=1, scratch.length=1); short(b) pushes 9 into out with no 3rd arg, out param undefined so write never runs (out.length=2) — total scratch(1)+out(2)=3, JS-correct regardless of which positions the census could prove`)
 })
@@ -4435,8 +4435,8 @@ test('RepresentationPlan: a param fed only a `.`-property read of a proven-schem
     return wat.slice(start, next)
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed only dispatch's own `c.items` property read, proves ARRAY through the receiver's schemaId + SlotFact kind census and keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_expr/.test(extractBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the grab result above is not vacuous')
+  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed only dispatch's own `c.items` property read, proves ARRAY through the receiver's schemaId + SlotFact kind census and keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the grab result above is not vacuous')
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.useProp(), 20, `O${optimize || 0}: dispatch(1, CTX) -> grab(1, CTX.items) -> CTX.items[1] === 20, JS-correct`)
 })
@@ -4461,7 +4461,7 @@ test('RepresentationPlan: a `.`-property read chained off a proven array-element
     return wat.slice(start, next)
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed rows[i].items (an array-element read chained with a property), proves ARRAY and keeps direct array codegen")
+  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed rows[i].items (an array-element read chained with a property), proves ARRAY and keeps direct array codegen")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.useArrElem(), 40, `O${optimize || 0}: rows[1].items[0] === 40, JS-correct`)
 })
@@ -4483,7 +4483,7 @@ test('RepresentationPlan: unrelated records share storage without poisoning call
     return wat.slice(start, next)
   }
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), 'grab receives only A.items, a proven array')
+  ok(!/__dyn_get_(?:expr|any)/.test(extractBody(wat, 'grab')), 'grab receives only A.items, a proven array')
   const { useA, pick } = jz(src, { optimize: false }).exports
   is(useA(), 20)
   is(pick(1), 'oops')
@@ -4596,8 +4596,8 @@ test('DictKindIndex: a for-in-unrolled array-as-dictionary proves a direct `.`-p
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, fed only assemble's own ctx.type read, proves ARRAY through the for-in-unroll census and keeps direct array codegen — no shadow probe")
-  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the id result above is not vacuous')
+  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param, fed only assemble's own ctx.type read, proves ARRAY through the for-in-unroll census and keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the id result above is not vacuous')
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 42, `O${optimize || 0}: assemble() -> ctx.type.push(42); id(0, ctx.type) === 42, JS-correct`)
 })
@@ -4630,7 +4630,7 @@ test('DictKindIndex: the for-in-unroll census survives a same-module named-funct
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
+  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
   ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 22, `O${optimize || 0}: instr(['funcidx',1], ctx) -> id(1, ctx.func) === 22, JS-correct`)
@@ -4663,8 +4663,8 @@ test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the sa
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through TABLE's array-of-arrows forward (position 1, past a shorter-arity sibling member), still proves ARRAY")
-  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through TABLE's array-of-arrows forward (position 1, past a shorter-arity sibling member), still proves ARRAY")
+  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 77, `O${optimize || 0}: dispatch(1,[1,2,3],ctx) -> id(0, ctx.type) === 77, JS-correct`)
 })
@@ -4690,7 +4690,7 @@ test('DictKindIndex: `??=`/`||=`/`&&=` fold their RHS the same as a plain `=` wr
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param proves ARRAY even though its target's `meta` key is only ever ??='d, never poisoning the OTHER, unrelated `type` key")
+  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: id's list param proves ARRAY even though its target's `meta` key is only ever ??='d, never poisoning the OTHER, unrelated `type` key")
   for (const optimize of levels(false, 2, 3))
     is(jz(src, { optimize }).exports.main(), 9, `O${optimize || 0}: JS-correct through the ??= write`)
 })
@@ -4712,7 +4712,7 @@ test('DictKindIndex: an alias through a function that returns its argument is th
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: leak() returns its argument, so `alias` and `ctx` are one array in the summary: `alias.type = [5]` reaches ctx.type, an array still, direct codegen")
+  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'id')), "O0: leak() returns its argument, so `alias` and `ctx` are one array in the summary: `alias.type = [5]` reaches ctx.type, an array still, direct codegen")
   is(jz(src, { optimize: false }).exports.main(), 5, 'O0: JS-correct')
 })
 
@@ -4734,8 +4734,8 @@ test('DictKindIndex negative: a same-key kind disagreement declines only that ke
     export function otherUse(o, k) { return useUnproven(o, k) }
   `
   const wat = String(compile(src, { optimize: false, wat: true }))
-  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'idA')), "O0: idA reads ctx.type, the KEY a conditional write disagrees with — must decline (precise, per-key poison, never guess)")
-  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'idB')), 'O0: idB reads ctx.func, a SIBLING key of the SAME target that never disagreed — must stay clean, proving the poison is per-key, not whole-target')
+  ok(/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'idA')), "O0: idA reads ctx.type, the KEY a conditional write disagrees with — must decline (precise, per-key poison, never guess)")
+  ok(!/__dyn_get_(?:expr|any)/.test(extractFnBody(wat, 'idB')), 'O0: idB reads ctx.func, a SIBLING key of the SAME target that never disagreed — must stay clean, proving the poison is per-key, not whole-target')
 })
 
 test('DictKindIndex: a non-constant (reassignable) source object: the read of a never-written key is absent', () => {
@@ -4754,12 +4754,11 @@ test('DictKindIndex: a non-constant (reassignable) source object: the read of a 
   `
   // SECTION is reassigned (corrupt()) before the unroll, so `ctx.type` is
   // never written: the summary reads it as absent (ABSENT beside the
-  // entries' array kind), the parameter carries the presence, and the read
-  // returns undefined where JS would throw on `undefined[0]` (a divergence
-  // of the absent-read class, .work/ledger-correctness.md 9).
+  // entries' array kind), the parameter carries the presence, and reading
+  // through that missing receiver must throw, just as `undefined[0]` does.
   const insp = _compileInProcess(src, { optimize: false, wat: true, inspect: true }).inspect
   ok(insp.functions.id.callerReps[1].mayBeUndefined, 'O0: the entry may be absent')
-  is(jz(src, { optimize: false }).exports.main(), undefined)
+  throws(() => jz(src, { optimize: false }).exports.main(), TypeError)
 })
 
 test('DictKindIndex: pass-order-independent — swapping the target/reader declaration order yields byte-identical codegen for the reader', () => {
@@ -4781,7 +4780,7 @@ test('DictKindIndex: pass-order-independent — swapping the target/reader decla
   ]
   const bodies = perms.map(src => extractFnBody(String(compile(src, { optimize: 3, wat: true })), 'id'))
   ok(bodies.every(b => b === bodies[0]), "O3: id()'s own compiled body is byte-identical across every declaration-order permutation of SECTION/ctx/id/assemble")
-  ok(!/__dyn_get_expr/.test(bodies[0]), 'O3: and the census genuinely resolved (no shadow probe), not vacuously identical because every permutation declined equally')
+  ok(!/__dyn_get_(?:expr|any)/.test(bodies[0]), 'O3: and the census genuinely resolved (no shadow probe), not vacuously identical because every permutation declined equally')
 })
 
 // The four pins below are ported from the shelved fix/shape8-member-callee

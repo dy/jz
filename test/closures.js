@@ -1975,3 +1975,13 @@ test('scalar builtin callbacks retain predicate types and binary parameter count
   const ex = jz(src).exports
   for (const key of Object.keys(js)) is(ex[key](), js[key](), key)
 })
+
+test('call and apply on a closure value invoke it with the remaining arguments', () => {
+  // A closure takes no receiver: `fn.call(this, e)` on a stored arrow (an event
+  // emitter's dispatch) is the closure's own call after the dropped `this`.
+  const src = `
+    class E { constructor() { this.list = [] } on(fn) { this.list.push(fn) } emit(e) { let n = 0; for (let fn of this.list) n += fn.call(this, e); return n } }
+    class F { constructor() { this.set = new Set() } on(fn) { this.set.add(fn) } sum(a, b) { let n = 0; for (let fn of this.set) n += fn.apply(null, [a, b]); return n } }
+    export let go = () => { const e = new E(); e.on((x) => x + 1); e.on((x) => x * 10); const f = new F(); f.on((x, y) => x + y); f.on((x, y) => x * y); return e.emit(2) * 100 + f.sum(2, 3) }`
+  for (const optimize of levels(0, 2, 3)) is(runHost(src, { optimize }).go(), 2311, `O${optimize}`)
+})

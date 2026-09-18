@@ -13,7 +13,11 @@ import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { ctx, inc } from '../../ctx.js'
 import { createFunction } from '../../function.js'
 import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from '../../ast.js'
-import { asF64, asI64, isNullish, isUndef, temp, throwTypeErrorIR, typed } from '../../ir.js'
+import { asF64, asI64, boolBoxIR, isNullish, isUndef, rawBigInt, temp, throwTypeErrorIR, typed } from '../../ir.js'
+import { valTypeOf } from '../../kind.js'
+import { VAL } from '../../reps.js'
+import { callContractOf } from '../representation-plan.js'
+import { CARRIER } from '../../summary/contract.js'
 import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
 import { emit } from '../../bridge.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
@@ -78,11 +82,27 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held) {
 }
 
 const withReceiver = (recv, args) => args.length === 0 ? recv : [',', recv, ...args]
+const argList = (args) => args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+
+/** The class function's result in the representation the access `node` has
+ *  to its readers: a BOOL result stays the raw 0/1 only where the reader's
+ *  own valTypeOf proves the access BOOL (a receiver of one named class);
+ *  where the readers cannot type the receiver it carries its atom. A
+ *  dispatcher's result is tagged already (emit-func.js). */
+const carried = (node, call) => {
+  const ir = emit(call)
+  if (valTypeOf(call) === VAL.BOOL && valTypeOf(node) !== VAL.BOOL) return boolBoxIR(ir)
+  // A raw BigInt result (the class function's contract) is marked for the
+  // carrier edges its readers cross (an optional chain's undefined join).
+  if (valTypeOf(call) === VAL.BIGINT && callContractOf(ctx, call)?.carrier === CARRIER.RAW_I64) rawBigInt(ir)
+  return ir
+}
 
 /** `obj.method(args)` through the class's function; `rest(recv)` dispatches any other receiver. */
 export function classMethodCall(obj, method, args, rest) {
   if (!classes()) return undefined
-  const r = dispatch(obj, method, e => e.methods.get(method) ?? null, (fn, recv) => emit(['()', fn, withReceiver(recv, args)]), rest, dispatcherName(method, 'call'))
+  const node = ['()', ['.', obj, method], argList(args)]
+  const r = dispatch(obj, method, e => e.methods.get(method) ?? null, (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(method, 'call'))
   return typeof r === 'string' ? emit(['()', r, withReceiver(obj, args)]) : r
 }
 
@@ -98,7 +118,8 @@ export function classMethodValue(obj, method, rest) {
 export function classAccessor(obj, slot, args, rest, held) {
   if (!classes() || !classesWith(slot).length) return undefined
   const prop = slot.endsWith(ACCESSOR_GET) ? slot.slice(0, -ACCESSOR_GET.length) : slot.slice(0, -ACCESSOR_SET.length)
-  const r = dispatch(obj, prop, e => e.methods.get(slot) ?? null, (fn, recv) => emit(['()', fn, withReceiver(recv, args)]), rest, dispatcherName(slot, 'call'), held)
+  const node = args.length ? ['=', ['.', obj, prop], args[0]] : ['.', obj, prop]
+  const r = dispatch(obj, prop, e => e.methods.get(slot) ?? null, (fn, recv) => carried(node, ['()', fn, withReceiver(recv, args)]), rest, dispatcherName(slot, 'call'), held)
   return typeof r === 'string' ? emit(['()', r, withReceiver(held ?? obj, args)]) : r
 }
 
@@ -131,8 +152,8 @@ export function memberUses() {
     if (!Array.isArray(n)) return
     const op = n[0], m = n.length > 1 ? memberOf(n[1]) : null
     if (op === ':' && typeof n[1] === 'string') defined.add(n[1])
-    // a call through a computed key reads the member as a value first
-    if ((op === '()' || op === '?.()') && m != null) { (n[1][0] === '[]' ? read : called).add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
+    // a call through a computed key, or an optional call, reads the member as a value first
+    if ((op === '()' || op === '?.()') && m != null) { (n[1][0] === '[]' || op === '?.()' ? read : called).add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
     if (MUTATE_OPS.has(op) && m != null) { written.add(m); if (op !== '=') read.add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
     const own = memberOf(n)
     if (own != null) { read.add(own); walk(n[1]); return }

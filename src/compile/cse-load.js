@@ -21,6 +21,7 @@
  */
 
 import { ASSIGN_OPS, walkAst } from '../ast.js'
+import { NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS } from '../kind-traits.js'
 
 const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-compile a builtin as a first-class value
 const isName = (x) => typeof x === 'string'
@@ -111,9 +112,12 @@ function provablyDiffer(idx, idx2, F) {
  * @param body        function-body AST (mutated in place)
  * @param isTypedArray (name) => boolean — receiver is a pure typed-array load
  * @param freshName   () => string — unique temp local name
+ * @param isNumeric   (node) => boolean — payload is Number, possibly absent
+ * @param isReadonlyCall (callNode) => boolean — the callee writes no storage that exists before
+ *                    the call (frame-effects.js), so cached loads survive it
  * @returns number of loads eliminated
  */
-export function cseLoads(body, isTypedArray, freshName) {
+export function cseLoads(body, isTypedArray, freshName, isNumeric, isReadonlyCall = null) {
   if (!isArr(body)) return 0
   const F = buildFacts(body)
   let eliminated = 0
@@ -158,13 +162,19 @@ export function cseLoads(body, isTypedArray, freshName) {
         return
       }
       if (node[0] === '[]' && isName(node[1]) && isTypedArray(node[1]) && stableIdx(node[2])) {
-        const arr = node[1], key = `${arr}|${idxKey(node[2])}`
-        if (key === noCseKey) return
+        const arr = node[1], rawKey = `${arr}|${idxKey(node[2])}`
+        if (rawKey === noCseKey) return
+        // A Number|undefined read consumed arithmetically can normalize its
+        // miss once. Keep identity-observing uses in a separate cache entry.
+        const numeric = isNumeric(node) && (NUMERIC_BINARY_OPS.includes(parent[0]) ||
+          NUMERIC_UNARY_OPS.has(parent[0]) || parent[0] === '+' && isNumeric(parent))
+        const key = numeric ? `number:${rawKey}` : rawKey
         const e = avail.get(key)
         if (e) {
           if (e.temp === null) {
             e.temp = freshName()
-            inserts.push({ at: e.firstStmt, binding: ['let', ['=', e.temp, ['[]', arr, e.idxNode]]] })
+            const read = ['[]', arr, e.idxNode]
+            inserts.push({ at: e.firstStmt, binding: ['let', ['=', e.temp, numeric ? ['u+', read] : read]] })
             e.firstParent[e.firstIdx] = e.temp           // rewrite the 1st occurrence to read the temp
           }
           parent[pi] = e.temp                            // rewrite this (2nd+) occurrence
@@ -175,7 +185,7 @@ export function cseLoads(body, isTypedArray, freshName) {
         avail.set(key, { arr, idxNode: node[2], idxVars: vars, temp: null, firstParent: parent, firstIdx: pi, firstStmt: si })
         return                                            // don't descend into a stable index
       }
-      if (node[0] === '()' || node[0] === 'call') { flush(); for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey); return }
+      if (node[0] === '()' || node[0] === 'call') { if (!(isReadonlyCall && isReadonlyCall(node))) flush(); for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey); return }
       for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey)
     }
 

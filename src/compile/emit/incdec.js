@@ -11,7 +11,7 @@ import {
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { typedIdxProven } from '../../type.js'
-import { REP_EDGE_BOX, REP_EDGE_REJECT, representationUnaryUpdateAction } from '../representation-plan.js'
+import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationUnaryUpdateAction } from '../representation-plan.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
 import { numericStep, hasBigintDomain } from './bigint.js'
@@ -92,7 +92,7 @@ export const incdecOps = {
   ...Object.fromEntries([['+1', '+', 'add'], ['-1', '-', 'sub']].map(([op, sym, fn]) => [op, n => {
     if (valTypeOf(n) === VAL.BIGINT)
       return rawBigInt(fromI64([`i64.${fn}`, readI64(n, emit(n)), ['i64.const', 1]]))
-    if (ctx.features.bigint && valTypeOf(n) == null) return numericStep(n, fn)
+    if (representationProgramHasBigint(ctx) && valTypeOf(n) == null) return numericStep(n, fn)
     // Self-referential typed-int-element increment (`count[d]++` — the
     // histogram/bucket-fill idiom): `n` is ALWAYS the exact same '[]' member
     // node this op's result is written straight back into (prepare's own

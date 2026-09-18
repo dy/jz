@@ -1125,7 +1125,10 @@ const handlers = {
       return fallback
     }
     includeForArrayAccess()
-    return ['[]', prep(args[0]), prep(args[1])]
+    // A key that is a static string (`o[KEY]` after `const KEY = 'k'`) is the
+    // literal key: the read or store is the slot access `o.k` compiles to.
+    const key = typeof args[1] === 'string' ? staticStringExpr(args[1]) : null
+    return ['[]', prep(args[0]), key != null ? staticString(key) : prep(args[1])]
   },
 
   // Bare block statement: push scope for let/const shadowing

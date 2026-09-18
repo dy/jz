@@ -284,7 +284,9 @@ export function devirtSchemaReads(fn) {
   // iteration 2. Replacing a read drops its operand evaluation — legal for
   // exactly the pure class rewrite() enforces; tee'd operands refuse (their
   // set would vanish).
-  const READONLY_CALL = /^\$(__dyn_get|__ptr_type$|math\.)/
+  // A receiver-error helper only constructs and throws an error; it cannot
+  // change a cached field on a path that continues to the next read.
+  const READONLY_CALL = /^\$(__dyn_get|__ptr_type$|__throw_property_nullish$|math\.)/
   const isClobberNode = (x) => {
     const op = x[0]
     if (op === 'call' && !x.dvProp && typeof x[1] === 'string' && !READONLY_CALL.test(x[1])) return true

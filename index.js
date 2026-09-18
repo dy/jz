@@ -606,6 +606,12 @@ const jzCompileInner = (code, opts = {}) => {
   // a diagnostic to find loops that are "one op away" from SIMD. Rides the
   // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
   if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
+  // opts.whyNotRewind (CLI --why-not-rewind): why a function that could rewind
+  // its arena was declined — an escaping allocation, an unsafe callee, a host
+  // import, or no allocation at all (optimize/arena-rewind.js). `true` emits a
+  // `rewind-why-not` warning per function; a function receives (name, reason).
+  if (typeof opts.whyNotRewind === 'function') ctx.transform.whyNotRewind = opts.whyNotRewind
+  else if (opts.whyNotRewind) ctx.transform.whyNotRewind = (name, reason) => warn('rewind-why-not', `${name}: ${reason}`, { fn: name.slice(1) })
 
   // opts.stencil: the neighbour-load stencil vectorizer (a[i±1] / 2-D 5-point).
   // Now default-on at optimize:'speed' (proven bit-exact corpus-wide); the opt is two-way so an

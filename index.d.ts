@@ -60,6 +60,8 @@ export interface CompileOptions {
   alloc?: boolean
   noSimd?: boolean
   whyNotSimd?: boolean
+  /** Why a function's arena is not rewound at return: `true` emits a `rewind-why-not` warning per function, a callback receives (name, reason). */
+  whyNotRewind?: boolean | ((name: string, reason: string) => void)
   stencil?: boolean
   outerStrip?: boolean
   toneMap?: boolean

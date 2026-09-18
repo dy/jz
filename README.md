@@ -46,11 +46,13 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`:
 | `host: 'js' \| 'wasi' \| 'native'` | Runtime-service lowering. Default `js`; `wasi` for standalone runtimes; `native` targets the wasm2c/native lane (same module shape as `js`, tail calls off). |
 | `optimize` | `false`/`0` off, `1` minimal, `true`/`2` default (all stable passes), `3`/`'speed'` trades size for speed, `'size'` for smallest wasm, `'fast'` for fastest compile (default passes, final wat optimizer off). (Object form for per-pass overrides is internal/unstable.) |
 | `define` | Compile-time constants injected as top-level bindings, e.g. `{ DEBUG: false, PORT: 8080 }` (numbers, booleans, strings, null, or literal arrays/objects). |
-| `strict: true` | Skip jzify lowering and reject dynamic fallbacks such as `obj[k]`, `for-in`, and unknown receiver methods. |
+| `importMetaUrl` | String that `import.meta.url` resolves to at compile time; without it the reference is a compile error. |
+| `strict: true` | Skip jzify lowering: reject the forms it lowers (`var`, `function`, `class`, `this`, `switch`, `==`, `void`, labels, `using`, generators, async) and dynamic fallbacks such as `obj[k]`, `for-in`, and unknown receiver methods. |
 | `sourceType: 'jz' \| 'script' \| 'module'` | Select the parse goal. `jz` is the default export-as-ABI dialect; `script` rejects imports/exports; `module` applies Module early errors and implicit strict mode. |
 | `alloc: false` | Raw standalone ABI for modules that never marshal heap values: omit allocator/reset exports, closure-table and decoded-error metadata, and reset-only state healing. Do not use `memory.reset()` when module-owned heap state must survive it. |
 | `noSimd: true` | Disable auto-vectorization. Explicit `f32x4` and `i32x4` intrinsics still compile. |
 | `whyNotSimd: true` | Report the first operation that prevented each loop from being vectorized. Warnings go to the `warnings` sink. |
+| `whyNotRewind: true` | Report, per function, why its heap allocations are not reclaimed at return: an allocation that escapes the frame, a callee that lets one escape, a host import, or no allocation. Warnings go to the `warnings` sink; a function `(name, reason) => …` receives them directly. |
 | `stencil` / `outerStrip` / `toneMap` | Structure vectorizers: neighbour-load stencils (`b[i] = f(a[i-1], a[i], a[i+1])`, 2-D 5-point), strip-mined pixel loops over an inner reduction, and log-tonemap islands — all to f64x2, bit-exact vs scalar. On by default at `optimize` 2+; pass `false` to disable one, `true` to force it at lower levels. |
 | `noTailCall: true` | Use ordinary call frames instead of `return_call` for engines/tools without the tail-call proposal. |
 | `noEhAbort: true` | Lower internal throws to `unreachable` in genuinely catch-free modules even when source has a bare `throw` — drops the exceptions tag for consumers with no wasm-EH (wasm2c, w2c2). |
@@ -121,6 +123,7 @@ Options:
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
   --why-not-simd            Report, per loop, why the auto-vectorizer declined it
+  --why-not-rewind          Report, per function, why its arena is not rewound at return
   --stencil                 Force neighbour-load stencil vectorization (a[i±1]) at
                             levels where it's off (on by default at -O2+)
   --outer-strip             Force pixel-loop strip-mining over an inner reduction to
@@ -162,28 +165,32 @@ See [all examples](https://jz.js.org/examples/).
 ┌────────────────────────────────────────────────────────────────────────┐
 │ ┌────────────────────────────────────────────────────────────────────┐ │
 │ │ jz strict                                                          │ │
-│ │   let/const  arrows  rest  destructuring  import/export            │ │
-│ │   if/else  for/while/do-while/of  break/continue                   │ │
-│ │   try/catch/finally  throw                                         │ │
-│ │   numbers  strings  booleans  arrays  objects  template literals   │ │
-│ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
-│ │   ArrayBuffer  DataView  typed arrays  Map  Set  Atomics           │ │
-│ │   Float16Array  base64/hex codecs  TextEncoder  timers  Date       │ │
-│ │   crypto randomness  URLSearchParams  structuredClone  Set algebra │ │
-│ │   WASI file I/O                                                    │ │
+│ │   let/const  arrows  default/rest params  spread  destructuring    │ │
+│ │   import/export  if/else  for/while/do-while/of  break/continue    │ │
+│ │   try/catch/finally  throw  ?.  ??  ??=  **  in  instanceof        │ │
+│ │   call/apply/bind  template literals  tagged templates             │ │
+│ │   numbers  BigInt  strings  booleans  arrays  objects  Symbol      │ │
+│ │   Math  Number  String  Array  Object  JSON  RegExp  Date  Error   │ │
+│ │   ArrayBuffer  DataView  typed arrays  Float16Array  Map  Set      │ │
+│ │   Atomics  SharedArrayBuffer  TextEncoder/Decoder  base64/hex      │ │
+│ │   URI codecs  structuredClone  crypto randomness  console  timers  │ │
+│ │   performance.now  navigator.hardwareConcurrency  WASI file I/O    │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 │ jz default (jzify)                                                     │
-│   var  function  arguments  switch                                     │
-│   class  new  this  extends  super  private/static fields              │
-│   generators  iterator helpers  async/await  Promise  for await        │
-│   loose equality  instanceof  WeakMap  WeakSet  WeakRef                │
+│   var  function  arguments  this  switch  for-in  labels  ==  void     │
+│   class  new  extends  super  static  #private  get/set  static {}     │
+│   prototype methods  generators  yield*  iterator helpers              │
+│   async/await  Promise  queueMicrotask  async generators  for await    │
+│   using  Symbol.iterator/dispose  WeakMap  WeakSet  WeakRef            │
+│   FinalizationRegistry  URLSearchParams  fetch                         │
 │   EventTarget  Event  CustomEvent  DOMException                        │
 └────────────────────────────────────────────────────────────────────────┘
 
 not supported
-  eval  Function  with  Proxy  Reflect
-  property descriptors  live prototypes
-  dynamic import  DOM  Intl  Temporal  Node APIs
+  eval  Function  with  Proxy  Reflect  globalThis  new.target
+  top-level await  dynamic import  decorators  String.raw
+  property descriptors  live prototypes  Set algebra
+  DOM  Intl  Temporal  Node APIs  crypto.subtle
 ```
 
 </details>
@@ -199,13 +206,20 @@ not supported
   that tagged value, whether `undefined`, a pointer or an internal error, where
   JS sees a plain NaN.
 - **BigInt.** BigInt is a signed 64-bit integer, not arbitrary precision; it
-  wraps past its range. Security cryptography is outside the scope.
+  wraps past its range and has no `**`. Security cryptography is outside the
+  scope.
 - **Math.** Basic operations are IEEE-exact. Transcendentals use JZ's own kernels
   and may differ from the host library in their last bits. `Math.sumPrecise`
   accumulates exactly and rounds once.
-- **Strings.** Case conversion is ASCII-only; Unicode property classes,
-  normalization, and locale tables are unsupported. `TextDecoder` supports UTF-8
-  with `fatal` and `ignoreBOM`; streaming and other encodings are unsupported.
+- **Strings.** Case conversion is ASCII-only. There are no locale tables:
+  `normalize` returns its input, `localeCompare` compares code units, and
+  `toLocaleString` is absent. Only cooked template strings are kept:
+  `String.raw` is unsupported. `TextDecoder` supports UTF-8 with `fatal` and
+  `ignoreBOM`; streaming and other encodings are unsupported.
+- **RegExp.** Patterns compile at build time, so `new RegExp(pattern)` needs a
+  string literal. Named groups, lookbehind, backreferences, and the `g`, `i`,
+  `s`, `u`, `y` flags work; the `m` flag is ignored, and Unicode property
+  classes (`\p{…}`) and the `d` and `v` flags are unsupported.
 - **Objects.** Literal fields have fixed slots; computed keys use hash storage.
   Class and literal `get`/`set` accessors are methods with property syntax,
   resolved statically on a known shape. Live prototype chains, property
@@ -216,7 +230,10 @@ not supported
   class is an empty object, `Object.getOwnPropertyDescriptor` reports a data
   descriptor, and `Object.defineProperty` stores the value (an accessor
   descriptor is a TypeError). Literal shapes are fixed, so `delete o[k]`
-  works only in dictionary mode.
+  works only in dictionary mode. `Object.freeze` returns its argument without
+  freezing it, and `Object.isFrozen` reports `false`.
+- **Errors.** An error carries `name` and `message`; `stack` and `cause` are
+  `undefined`.
 - **Dynamic keys.** Runtime boolean keys use their numeric carrier, so `o[b]`
   reads `'1'` for `true`. Static boolean keys fold correctly.
 - **Array indices.** Indices coerce to `i32`. Plain arrays are bounds checked;
@@ -237,8 +254,9 @@ not supported
 - **Generators and async.** Both lower to state machines. Jobs drain at host
   boundaries; a `finally` that yields is unsupported.
 - **Dates.** Date getters and `toString` use UTC (the zone renders as
-  `GMT+0000 (Coordinated Universal Time)`). Intl and Temporal are absent: ICU,
-  CLDR, and timezone tables exceed the intended module size.
+  `GMT+0000 (Coordinated Universal Time)`); local-zone setters such as
+  `setHours` and `getTimezoneOffset` are unsupported. Intl and Temporal are
+  absent: ICU, CLDR, and timezone tables exceed the intended module size.
 - **Functions as strings.** A function has no source text at runtime;
   `String(fn)` renders `function () { [native code] }`.
 - **Runtime compilation.** `eval`, the `Function` constructor, and `with` would
@@ -474,7 +492,12 @@ At the default `optimize: 2`, JZ applies:
 - Type and representation inference from syntax and use sites for parameters,
   results, objects, and arrays. Ambiguous values remain dynamic.
 - Direct typed-array memory access with proven bounds and aliases.
-- Escape analysis and arena rewind for short-lived aggregates.
+- Frame-effect analysis: a function whose allocations cannot outlive its frame
+  restores the heap pointer at return, so its temporaries cost nothing across
+  calls; a callee that writes no outer storage keeps the caller's cached loads.
+- Record parameters as lanes: a function that reads a parameter only field by
+  field takes the fields as scalars, and a literal record at the call is never
+  allocated.
 - Constant folding, common-subexpression and dead-store elimination, inlining,
   invariant hoisting, induction reduction, and loop unrolling.
 - SIMD-128 vectorization of independent maps, reductions, conditionals, and byte
@@ -626,6 +649,10 @@ NaN constants). Kernel byte identity is not promised across releases.
 - DataView indexed own properties are unsupported; indexed writes reject.
   Use its setters for bytes. Unextended views have no `.length` or indexed
   elements; `.byteLength` and `.byteOffset` describe byte bounds.
+- Resizable `ArrayBuffer` (`maxByteLength`, `resize`, `transfer`) is
+  unsupported: the JZ heap is one bump-allocated linear memory.
+- Async generator functions work; async generator methods (`async *m()`) and
+  `await using` reject.
 - Ambiguous Boolean/Number locals whose stored identity escapes reject;
   truthiness-only uses compile. Full support needs a tagged Boolean carrier.
 - Rest-parameter BigInt elements lack boundary evidence and reject.

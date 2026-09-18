@@ -3,10 +3,10 @@
   "float": 784,
   "mixed": 1137,
   "cond": 581,
-  "buf": 15034,
-  "nest": 22626,
-  "slice": 76920,
-  "ring": 50400,
-  "condref": 89053,
+  "buf": 14584,
+  "nest": 16625,
+  "slice": 69312,
+  "ring": 53800,
+  "condref": 86588,
   "fgather": 5960
 }

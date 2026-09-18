@@ -345,7 +345,7 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   const initStmts = []
   if (base) {
     // `super(a, b)` passes its arguments; a constructor without one, or none, forwards its own
-    const given = split.args == null ? null : split.args.length === 0 ? [] : Array.isArray(split.args[0]) && split.args[0][0] === ',' ? split.args[0].slice(1) : split.args
+    const given = split.args == null ? null : split.args.length === 0 || split.args[0] == null ? [] : Array.isArray(split.args[0]) && split.args[0][0] === ',' ? split.args[0].slice(1) : split.args
     const superArgs = given ?? ctorList.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? p : Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string' ? p[1] : null)
     if (superArgs.includes(null)) jzifyError('a derived class constructor with a destructured parameter must call super(…) itself')
     initStmts.push(['()', base.init, [',', self, ...superArgs]])
@@ -378,9 +378,11 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
     }
     const rhs = kind === 'gen'
       ? transform(['function*', null, value[2], renameThis(value[3], cls)])
-      : kind
-        ? transform(['=>', value[1], block(renameThis(value[2], cls))])
-        : value == null ? UNDEF : transform(renameThis(value, cls))
+      : kind === 'async'
+        ? transform(['async', ['=>', value[1], block(renameThis(value[2], cls))]])
+        : kind
+          ? transform(['=>', value[1], block(renameThis(value[2], cls))])
+          : value == null ? UNDEF : transform(renameThis(value, cls))
     trailers.push(['=', ['.', cls, sname], rhs])
   }
   return factory
@@ -462,6 +464,13 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       const key = constStringKey(it[1][1], constStrings)
       if (key == null) jzifyError(JC.computedStaticMember)
       statics.push([key, it[1][2], true])
+      continue
+    }
+    // `static async m() {}` — the parser wraps the method arrow in async.
+    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === 'async' && Array.isArray(it[1][2][1]) && it[1][2][1][0] === '=>') {
+      const key = constStringKey(it[1][1], constStrings)
+      if (key == null) jzifyError(JC.computedStaticMember)
+      statics.push([key, it[1][2][1], 'async'])
       continue
     }
     if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === 'function*') {
@@ -581,9 +590,11 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     }
     const rhs = kind === 'gen'
       ? transform(['function*', null, value[2], renameThis(value[3], cls)])
-      : kind
-        ? transform(['=>', value[1], block(renameThis(value[2], cls))])
-        : value == null ? UNDEF : transform(renameThis(value, cls))
+      : kind === 'async'
+        ? transform(['async', ['=>', value[1], block(renameThis(value[2], cls))]])
+        : kind
+          ? transform(['=>', value[1], block(renameThis(value[2], cls))])
+          : value == null ? UNDEF : transform(renameThis(value, cls))
     staticStmts.push(['=', ['.', cls, sname], rhs])
   }
   staticStmts.push(['return', cls])

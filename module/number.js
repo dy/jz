@@ -9,9 +9,9 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, throwErrorIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
-import { emit, bool, deps, reg } from '../src/bridge.js'
+import { emit, storedValue, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned, isUndefinedLiteral } from '../src/ast.js'
 import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
 import { stringBytes } from '../src/string-data.js'
@@ -43,10 +43,23 @@ const SSO_BIT_I64 = ssoBitI64Hex()
 const NAN_BITS = nanPrefixHex()
 const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))'
 
-/** In-place byte reversal of buf[i..j] (WAT fragment). __itoa/__radix_str emit the
+// Decimal width of an unsigned i32; shared by sizing and writing.
+const uintDigitsWat = value => `(if (result i32) (i32.lt_u ${value} (i32.const 100000))
+  (then (if (result i32) (i32.lt_u ${value} (i32.const 100))
+    (then (select (i32.const 1) (i32.const 2) (i32.lt_u ${value} (i32.const 10))))
+    (else (if (result i32) (i32.lt_u ${value} (i32.const 1000))
+      (then (i32.const 3))
+      (else (select (i32.const 4) (i32.const 5) (i32.lt_u ${value} (i32.const 10000))))))))
+  (else (if (result i32) (i32.lt_u ${value} (i32.const 10000000))
+    (then (select (i32.const 6) (i32.const 7) (i32.lt_u ${value} (i32.const 1000000))))
+    (else (if (result i32) (i32.lt_u ${value} (i32.const 100000000))
+      (then (i32.const 8))
+      (else (select (i32.const 9) (i32.const 10) (i32.lt_u ${value} (i32.const 1000000000)))))))))`
+
+/** In-place UTF-16 reversal of buf[i..j]. __num_radix/__radix_str emit the
  *  least-significant digit first, then flip the run. Caller pre-sets `j` to the last
  *  index and leaves `i` at 0; `tmp` is scratch. Labels $rev/$revl are block-local. */
-const reverseBytesWat = (buf = '$buf', i = '$i', j = '$j', tmp = '$tmp') =>
+const reverseUnitsWat = (buf = '$buf', i = '$i', j = '$j', tmp = '$tmp') =>
   `(block $rev (loop $revl
       (br_if $rev (i32.ge_s (local.get ${i}) (local.get ${j})))
       (local.set ${tmp} (i32.load16_u (i32.add (local.get ${buf}) (i32.shl (local.get ${i}) (i32.const 1)))))
@@ -399,6 +412,7 @@ export default (ctx) => {
     __radix_str: ['__mkstr'],
     __num_radix: ['__ftoa', '__mkstr'],
     __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux', '__is_object'],
+    __number: ['__to_num', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
     __str_to_bigint: ['__char_at', '__str_length'],
     __to_bigint: ['__str_to_bigint', '__num_to_bigint', '__ptr_type', '__ptr_offset'],
@@ -441,47 +455,29 @@ export default (ctx) => {
       (then (local.set $r (f64.mul (local.get $r) (f64.const 1e256)))))
     (local.get $r))`
 
-  // __itoa(val: i32, buf: i32) → i32 (digit count). Writes decimal digits to buf.
+  // Write decimal UTF-16 digits directly into their final positions.
   ctx.core.stdlib['__itoa'] = `(func $__itoa (param $val i32) (param $buf i32) (result i32)
-    (local $len i32) (local $i i32) (local $j i32) (local $tmp i32)
-    (if (i32.eqz (local.get $val))
-      (then (i32.store16 (local.get $buf) (i32.const 48)) (return (i32.const 1))))
-    (local.set $tmp (local.get $val))
-    (block $d (loop $l
-      (br_if $d (i32.eqz (local.get $tmp)))
-      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))) (i32.add (i32.const 48) (i32.rem_u (local.get $tmp) (i32.const 10))))
-      (local.set $tmp (i32.div_u (local.get $tmp) (i32.const 10)))
-      (local.set $len (i32.add (local.get $len) (i32.const 1)))
-      (br $l)))
-    ;; Reverse
-    (local.set $j (i32.sub (local.get $len) (i32.const 1)))
-    ${reverseBytesWat()}
+    (local $len i32) (local $end i32)
+    (local.set $len ${uintDigitsWat('(local.get $val)')})
+    (local.set $end (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))))
+    (loop $l
+      (local.set $end (i32.sub (local.get $end) (i32.const 2)))
+      (i32.store16 (local.get $end) (i32.add (i32.const 48) (i32.rem_u (local.get $val) (i32.const 10))))
+      (local.set $val (i32.div_u (local.get $val) (i32.const 10)))
+      (br_if $l (local.get $val)))
     (local.get $len))`
 
-  // __ilen(val: i32) → i32 — exact byte length of ToString(val): sign + decimal
-  // digits over the unsigned magnitude (INT_MIN negates to itself; read unsigned the
-  // ladder still lands on 10). Must agree with __itoa_s byte-for-byte: the fused
-  // concat emitters alloc from __ilen totals and render with __itoa_s at the cursor —
-  // a one-byte disagreement is heap corruption (pinned differentially in test/strings.js).
+  // Signed decimal width: sign plus the unsigned magnitude's digit count.
+  // Negation leaves INT_MIN's magnitude in its unsigned i32 bit pattern.
   ctx.core.stdlib['__ilen'] = `(func $__ilen (param $val i32) (result i32)
-    (local $u i32) (local $n i32)
-    (local.set $u (local.get $val))
+    (local $n i32)
     (if (i32.lt_s (local.get $val) (i32.const 0))
       (then
-        (local.set $u (i32.sub (i32.const 0) (local.get $val)))
+        (local.set $val (i32.sub (i32.const 0) (local.get $val)))
         (local.set $n (i32.const 1))))
-    (if (i32.lt_u (local.get $u) (i32.const 10)) (then (return (i32.add (local.get $n) (i32.const 1)))))
-    (if (i32.lt_u (local.get $u) (i32.const 100)) (then (return (i32.add (local.get $n) (i32.const 2)))))
-    (if (i32.lt_u (local.get $u) (i32.const 1000)) (then (return (i32.add (local.get $n) (i32.const 3)))))
-    (if (i32.lt_u (local.get $u) (i32.const 10000)) (then (return (i32.add (local.get $n) (i32.const 4)))))
-    (if (i32.lt_u (local.get $u) (i32.const 100000)) (then (return (i32.add (local.get $n) (i32.const 5)))))
-    (if (i32.lt_u (local.get $u) (i32.const 1000000)) (then (return (i32.add (local.get $n) (i32.const 6)))))
-    (if (i32.lt_u (local.get $u) (i32.const 10000000)) (then (return (i32.add (local.get $n) (i32.const 7)))))
-    (if (i32.lt_u (local.get $u) (i32.const 100000000)) (then (return (i32.add (local.get $n) (i32.const 8)))))
-    (if (i32.lt_u (local.get $u) (i32.const 1000000000)) (then (return (i32.add (local.get $n) (i32.const 9)))))
-    (i32.add (local.get $n) (i32.const 10)))`
+    (i32.add (local.get $n) ${uintDigitsWat('(local.get $val)')}))`
 
-  // __itoa_s(val: i32, buf: i32) → i32 (bytes written) — signed decimal render at
+  // __itoa_s(val: i32, buf: i32) → i32 (code units written) — signed decimal render at
   // buf: '-' + digits over the unsigned magnitude. The render core shared by
   // __i32_to_str (temp-string ToString) and the fused concat emitters (render
   // directly at the destination cursor — no temp string, no copy).
@@ -530,7 +526,7 @@ export default (ctx) => {
       (then (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 45))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
     (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
-    ${reverseBytesWat()}
+    ${reverseUnitsWat()}
     (call $__mkstr (local.get $buf) (local.get $pos)))`
 
   // __num_radix(val: f64, radix: i32) → f64 (NaN-boxed string)
@@ -573,14 +569,7 @@ export default (ctx) => {
       (then (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 45))
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
     (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
-    (block $rb (loop $rl
-      (br_if $rb (i32.ge_s (local.get $i) (local.get $j)))
-      (local.set $tmp (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1)))))
-      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $i) (i32.const 1))) (i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1)))))
-      (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $j) (i32.const 1))) (local.get $tmp))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
-      (br $rl)))
+    ${reverseUnitsWat()}
     (if (f64.gt (local.get $frac) (f64.const 0))
       (then
         (i32.store16 (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))) (i32.const 46))
@@ -1687,6 +1676,22 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
     (local.get $i))`
 
+  // Number() permits a BigInt primitive, including one returned by a user
+  // conversion. All other parsing and primitive conversions stay in ToNumber.
+  ctx.core.stdlib['__number'] = () => `(func $__number (param $v i64) (result f64)
+    (local $f f64) (local $t i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+      (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
+    ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if
+      ${ctx.module.modules.date && ctx.schema.dateSid != null
+        ? `(i32.and (i32.eq (local.get $t) (i32.const ${PTR.OBJECT})) (i32.ne (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))`
+        : `(i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))`}
+      (then (return (call $__number (i64.reinterpret_f64 (call $__jz_tp_num (local.get $f)))))))` : ''}
+    (call $__to_num (local.get $v)))`
+
   ctx.core.stdlib['__to_num'] = () => `(func $__to_num (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
@@ -1709,10 +1714,11 @@ export default (ctx) => {
     (if (i32.and (i32.eqz (local.get $t))
                  (i32.ge_u (call $__ptr_aux (local.get $v)) (i32.const 16)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.SYMBOL_TO_NUMBER)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.SYMBOL_TO_NUMBER)}))))
-    ;; Dynamic BigInt is always tagged; ToNumber reads its mathematical i64
-    ;; payload. Raw BigInt is confined to statically-proven paths.
+    ;; Implicit ToNumber rejects BigInt. Only the explicit Number entry above
+    ;; may read its payload as a floating-point number.
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
-      (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.BIGINT_TO_NUMBER)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.BIGINT_TO_NUMBER)}))))
     ;; ToPrimitive(number) for an object: a Date is its time value; a user
     ;; valueOf/toString goes through the prelude (compile/emit/to-primitive.js).
     (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
@@ -1911,7 +1917,7 @@ export default (ctx) => {
       (then (return (call $__num_to_bigint (local.get $f)))))
     (local.set $t (call $__ptr_type (local.get $v)))
     ;; ToBigInt(bigint) is the identity (ES2024 21.2.1.1 step 2b via BigInt()'s
-    ;; own ToPrimitive+dispatch) — mirrors __to_num's identical PTR.BIGINT arm
+    ;; own ToPrimitive+dispatch) — mirrors __number's identical PTR.BIGINT arm
     ;; a few lines above it in this same file: a genuine boxed BigInt crossing
     ;; here (phase-c C4b: an exported param feeding BigInt(x) now gets
     ;; host-tag ingress evidence, so a plain host bigint arrives boxed)
@@ -2160,11 +2166,20 @@ export default (ctx) => {
   // Number(x) — identity for numbers, i64→f64 conversion for BigInt
   ctx.core.emit['Number'] = (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
+    const vt = valTypeOf(x)
     // A BigInt by its valType, or by the representation plan (a reassigned raw
     // parameter's valType is unknown to the body; its bits are still an i64).
-    if (valTypeOf(x) === VAL.BIGINT || isPlanRawBigint(x))
-      return typed(['f64.convert_i64_s', readI64(x, emit(x))], 'f64')
-    return toNumF64(x, emit(x))
+    if (vt === VAL.BIGINT || vt == null && isPlanRawBigint(x)) {
+      const v = emit(x)
+      if (v.bigintRaw || !censusMaybeUndefined(x) && ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(x) !== true)
+        return typed(['f64.convert_i64_s', readI64(x, v)], 'f64')
+      inc('__number')
+      return typed(['call', '$__number', asI64(materializeDeferredBigint(v))], 'f64')
+    }
+    if (vt === VAL.NUMBER || vt === VAL.BOOL || vt === VAL.STRING || vt === VAL.DATE)
+      return toNumF64(x, emit(x))
+    inc('__number')
+    return typed(['call', '$__number', asI64(storedValue(x))], 'f64')
   }
 
   // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64).

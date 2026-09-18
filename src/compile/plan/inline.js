@@ -175,11 +175,12 @@ const lhsWrites = (n) => {
 }
 const prefixCommutesWithLhs = (prefix, lhs) => {
   if (typeof lhs === 'string' || !prefix.length) return true
+  const body = [';', ...prefix]
+  const written = lhsWrites(body)
+  if (written === true || written && refsAny(lhs, written, REFS_IN_EXPR)) return false
   const seen = lhsWrites(lhs)
   if (seen === false) return true
   if (seen === true) return false
-  const body = [';', ...prefix]
-  if (some(body, n => n[0] === '()' || n[0] === 'new' || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string'))) return false
   for (const x of seen) if (refsName(body, x, REFS_IN_EXPR)) return false
   return true
 }

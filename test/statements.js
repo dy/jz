@@ -1149,7 +1149,7 @@ test('statements: BigInt mixed ops', () => {
   is(run(`export let f = () => Number(2n + 3n)`).f(), 5)
   throws(() => run(`export let f = () => Number(1n + 1)`), /Cannot mix BigInt/)
   throws(() => run(`export let f = () => Number(1n * 2)`), /Cannot mix BigInt/)
-  throws(() => run(`export let f = () => +(1n)`), /TypeError/)
+  is(run(`export let f = () => { try { return +(1n) } catch(e) { return e instanceof TypeError } }`).f(), true)
   throws(() => run(`export let f = () => Number(2n ** 3n)`), /exponentiation/)
 })
 

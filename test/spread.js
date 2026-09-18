@@ -1,7 +1,7 @@
 // Comprehensive spread operator tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run, oracle } from './util.js'
+import { run, oracle, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
 
@@ -159,6 +159,271 @@ test('spread in optional call: mixed positional + spread args', () => {
 // ============================================
 // SPREAD IN ARRAY METHODS
 // ============================================
+
+test('spread: fixed methods preserve positions, empty arguments and typed views', () => {
+  const src = `export function f(k) {
+    const args = k === 0 ? [] : k === 1 ? [1] : k === 2 ? [1,2] : k === 3 ? [1,undefined] : [1,2,99]
+    const a = new Int32Array([7,8,9,10]).subarray(1)
+    const b = new BigInt64Array([7n,9221120237041090562n,9221120245631025152n]).subarray(1)
+    return [Array.from(a.slice(...args)), Array.from(a.subarray(...args)),
+      a.at(...args), b.at(...args), [7,8,9].slice(...args), 'abcd'.slice(...args),
+      'abcd'.substring(...args), Array.from(a.slice(...[1], ...[], 2, ...[99]))]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [2,2,0,1,3,4,0,2]) is(f(k), js(k), `O${optimize}, arguments ${k}`)
+  }
+})
+
+test('spread: Map.set and Set.add consume one argument list', () => {
+  const src = `export function f(k) {
+    const args = k === 0 ? [] : k === 1 ? [7] : k === 2 ? [7,true] : [7,9,11]
+    const m = new Map(), s = new Set()
+    const mr = m.set(...args), sr = s.add(...args)
+    return [mr === m, sr === s, m.size, m.get(7), m.has(undefined),
+      s.size, s.has(7), s.has(9), s.has(undefined)]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [2,2,0,1,3,0,2]) is(f(k), js(k), `O${optimize}, arguments ${k}`)
+  }
+})
+
+test('spread: fixed methods share iterable normalization and literal argument lowering', () => {
+  const src = `export function f(k) {
+    const a = new Int32Array([7,8,9]), maybe = k ? [1,2] : null
+    let error
+    try { a.at(...new BigInt64Array([1n])) } catch(e) { error=e.name }
+    return [Array.from(a.slice(...new Set([1,2]))), Array.from(a.slice(...'12')),
+      Array.from(a.slice(...new Uint8Array([1,2]))), Array.from(a.slice(...[,2])),
+      new Set(maybe).size, new Map(k ? [[1,2]] : null).size, error]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,0]) is(f(k), js(k), `O${optimize}, iterable ${k}`)
+  }
+  const wat = compile(`export function f(){return new Int32Array([7,8,9]).slice(...[1,2])[0]}`, { wat: true })
+  ok(!wat.includes('$__to_num'), 'literal numeric arguments retain their numeric proof')
+  const body = funcWat(wat, 'f')
+  ok(body && !body.includes('(loop'), 'literal argument list needs no iteration loop')
+})
+
+test('spread: fixed methods capture receiver and arguments before conversions', () => {
+  const src = `export function f(k) {
+    let trace = ''
+    const a = new Int32Array([7,8,9]), args = [1]
+    const start = { valueOf() { trace += 'v'; return 1 } }
+    function receiver() { trace += 'r'; return a }
+    function first() { trace += 'a'; return start }
+    function tail() { trace += 'b'; if (k === 1) throw 1; return [2] }
+    function extra() { trace += 'c'; args[0] = 2; return 99 }
+    try {
+      const b = receiver().slice(first(), ...tail(), extra())
+      const c = a.slice(...args, (args[0] = 0, 3))
+      return [trace, Array.from(b), Array.from(c)]
+    } catch (e) { return [trace] }
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,0]) is(f(k), js(k), `O${optimize}, effects ${k}`)
+  }
+})
+
+test('spread: fixed methods distinguish missing from explicit undefined arguments', () => {
+  const src = `export function f(k) {
+    const args = k === 0 ? [1] : k === 1 ? [1,undefined] : []
+    const a = new Date(12345678)
+    const time = a.setUTCSeconds(...args)
+    function add(a,b) { return a === undefined ? 100 : a+b }
+    function plus(a,b) { return a+b }
+    const reduceArgs = k === 0 ? [add] : [add,undefined]
+    const sum = new Int32Array([7,8,9]).reduce(...reduceArgs)
+    const nullableArgs = k === 0 ? [plus] : [plus,undefined]
+    return [time, sum, new Int32Array([7,8,9]).reduce(...nullableArgs)]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,2,0]) is(f(k), js(k), `O${optimize}, omission ${k}`)
+  }
+})
+
+test('spread: fixed methods retain regex identity and handle missing required arguments', () => {
+  const src = `export function f(k) {
+    const a = new Int32Array([7,8]), args = k ? [7] : []
+    const positions = k ? [1,3] : []
+    const cb = x => x+1, callbacks = k ? [cb] : []
+    const r = /7/g, text = k ? ['7'] : []
+    let typed, array, empty
+    try { typed = Array.from(a.map(...callbacks)) } catch(e) { typed = e.name }
+    try { array = [7,8].map(...callbacks) } catch(e) { array = e.name }
+    try { new Int32Array(0).map(...[]) } catch(e) { empty = e.name }
+    return [a.includes(...args), a.indexOf(...args), a.lastIndexOf(...args),
+      Array.from(a.with(...positions)), typed, array, empty, r.test(...text), r.test(...text), /undefined/.exec(...[])?.[0]]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,0]) is(f(k), js(k), `O${optimize}, required ${k}`)
+  }
+})
+
+test('spread: nullable receivers throw before spreads and ignore surplus only after evaluation', () => {
+  const src = `export function f(k) {
+    let trace=''
+    const xs=[new Int32Array([7,8])]
+    function args(){trace+='a';if(k===2)throw 1;return k===3?null:[1]}
+    function extra(){trace+='b';return 9}
+    try { const a=xs[k===1?1:0];return [a.at(...args(),...[],extra()),trace] }
+    catch(e){return [e===1?'one':e.name,trace]}
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,2,3,0]) is(f(k), js(k), `O${optimize}, abrupt ${k}`)
+  }
+})
+
+test('spread: callbacks validate before empty loops without a function elsewhere in the module', () => {
+  const src = `export function f(k) {
+    const a = new Int32Array(0), args = k ? [undefined] : []
+    try { a.map(...args); return 'returned' } catch(e) { return e.name }
+  }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,0]) is(f(k), 'TypeError', `O${optimize}, callback ${k}`)
+  }
+})
+
+test('spread: callback families reject absent and noncallable values before iteration', () => {
+  const methods = ['map', 'filter', 'forEach', 'find', 'findIndex', 'findLast', 'findLastIndex', 'some', 'every', 'reduce']
+  const sources = ['Array.from({length:n},()=>7)', 'new Int32Array(n)', 'new BigInt64Array(n)']
+  const src = sources.flatMap((source, c) => methods.map((method, m) => `
+    export function f${c}_${m}(k,n) {
+      const a=${source}; let calls=0
+      const cb=x=>{calls++;return ${c === 2 ? '1n' : '1'}}, args=k===0?[]:k===1?[undefined]:k===2?[null]:k===3?[7]:k===4?[{}]:[cb]
+      try { a.${method}(...args); return ['ok',calls] } catch(e) { return [e.name,calls] }
+    }`)).join('\n')
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const wasm = run(src, { optimize })
+    for (const name of Object.keys(js))
+      for (const [k,n] of [[5,2],[5,2],[0,0],[1,0],[2,0],[3,0],[4,0],[1,1],[5,0],[5,2]])
+        is(wasm[name](k,n), js[name](k,n), `O${optimize}, ${name}(${k},${n})`)
+  }
+})
+
+test('callbacks: receiver and reducer seed evaluate before callback validation', () => {
+  const src = `export function f(k) {
+    let trace=''
+    function receiver(){trace+='r';return new Int32Array(0)}
+    function callback(){trace+='c';return undefined}
+    function seed(){trace+='s';if(k)throw 7;return 1}
+    let reduced, mapped, plain, right
+    try { receiver().reduce(callback(),seed()) } catch(e) { reduced=e===7?'seven':e.name }
+    const reduceTrace=trace;trace=''
+    try { receiver().map(callback()) } catch(e) { mapped=e.name }
+    const mapTrace=trace;trace=''
+    try { [].reduce(callback(),seed()) } catch(e) { plain=e===7?'seven':e.name }
+    const plainTrace=trace;trace=''
+    try { [].reduceRight(callback(),seed()) } catch(e) { right=e===7?'seven':e.name }
+    return [reduced,reduceTrace,mapped,mapTrace,plain,plainTrace,right,trace]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0,0,1,0]) is(f(k), js(k), `O${optimize}, effects ${k}`)
+  }
+})
+
+test('typed findLast: reverse traversal observes mutations and stops at a match or throw', () => {
+  const src = `export function f(n,k) {
+    const a=new Int32Array(n),b=new BigInt64Array(n)
+    let trace='',bigTrace='',error
+    const value=a.findLast((x,i)=>{trace+=i;if(i===2)a[1]=7;return x===7})
+    try { b.findLastIndex((x,i)=>{bigTrace+=i;if(k)throw 7;return i===1}) }
+    catch(e){error=e}
+    return [value,trace,bigTrace,error]
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const [n,k] of [[3,0],[3,0],[0,0],[1,0],[3,1],[0,1],[3,0]])
+      is(f(n,k), js(n,k), `O${optimize}, reverse ${n}/${k}`)
+  }
+})
+
+test('spread: bulk push and unshift consume arguments before mutating one captured receiver', () => {
+  for (const method of ['push', 'unshift']) {
+    const src = `export function f(n,k) {
+      let a=[7],target=a,values=[],trace=''
+      for(let i=0;i<n;i++)values.push(i)
+      function receiver(){trace+='r';return a}
+      function tail(){trace+='t';values[0]=9;a=[99];return k?a:[]}
+      const length=receiver().${method}(1,...values,tail().length,...values)
+      return [a,target,length,trace]
+    }
+    export function alias(k) {
+      let a=[7,8],target=a,b=k?[2,3]:[]
+      const length=a.${method}(...(a=b))
+      return [a,target,length]
+    }
+    export function self() {
+      const a=[7,8]
+      const first=a.${method}(1,...a)
+      const length=a.${method}(...a,...a)
+      const empty=[],zero=empty.${method}(...empty)
+      return [a,first,length,empty,zero]
+    }`
+    const js = oracle(src)
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const wasm = run(src, { optimize })
+      for (const [n,k] of [[0,0],[0,0],[3,1],[33,0],[1,1],[0,0]])
+        is(wasm.f(n,k), js.f(n,k), `${method} O${optimize}, arguments ${n}/${k}`)
+      for (const k of [0,0,1,0]) is(wasm.alias(k), js.alias(k), `${method} O${optimize}, alias ${k}`)
+      is(wasm.self(), js.self(), `${method} O${optimize}, self alias`)
+    }
+  }
+})
+
+test('spread: bulk mutations retain empty calls, abrupt arguments and tagged values', () => {
+  for (const method of ['push', 'unshift']) {
+    const src = `export function f(k) {
+      const a=[7],empty=[],big=new BigInt64Array(2)
+      let calls=0,error
+      function later(){calls++;return 8}
+      const plain=a.${method}(),zero=a.${method}(...empty)
+      try {a.${method}(1,...(k?null:empty),later())} catch(e){error=e.name}
+      const length=a.${method}(...big,true,undefined,'')
+      return [a,plain,zero,length,calls,error]
+    }`
+    const js = oracle(src).f
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const { f } = run(src, { optimize })
+      for (const k of [0,0,1,0]) is(f(k), js(k), `${method} O${optimize}, abrupt ${k}`)
+    }
+  }
+})
+
+test('spread: bulk mutations retain relocated receivers across loop iterations', () => {
+  for (const method of ['push','unshift']) for (const receiver of ['a','box.a','receiver()']) {
+    const src = `export function f(n){
+      const a=[],box={a},b=[1,2,3,4]
+      function receiver(){return a}
+      for(let i=0;i<n;i++)${receiver}.${method}(...b)
+      return [a.length,a[n],a[0],a[a.length-1]]
+    }`
+    const js = oracle(src).f
+    for (const optimize of levels(0,1,2,3,'size')) {
+      const { f } = run(src, { optimize })
+      for (const n of [0,1,16,256,256,0]) is(f(n),js(n),`${method} ${receiver} O${optimize}, growth ${n}`)
+    }
+  }
+})
 
 test('spread: .push(...values)', () => {
   const { f } = run(`export let f = () => {
@@ -496,9 +761,8 @@ test('unshift: multi-arg inserts in argument order, returns new length', () => {
 })
 
 test('unshift: spread args land in argument order', () => {
-  // Prepends compose right-to-left: the spread loop must run AFTER any normal
-  // args are staged and walk its elements end→start, or `a.unshift(1, ...ys)`
-  // yields [...ys, 1, ...] instead of [1, ...ys, ...]. Kernel instance:
+  // Scalar and spread arguments must retain their source order when prepended:
+  // `a.unshift(1, ...ys)` yields [1, ...ys, ...a]. Kernel instance:
   // assemble.js `inject.unshift(setBase, ...snapSlots)` — the gsnap reorder.
   const r = run(`
     export let go = () => {
@@ -560,9 +824,8 @@ test('spread into a method: the source is staged once, by its kind', () => {
 })
 
 test('spread into a method: a program without a string of its own compiles', () => {
-  // `unshift(...t)` walks the source by an index the emitter minted: the read
-  // is an element read, never ToPropertyKey's runtime dispatch, which owns
-  // the string module (__to_str) when it is emitted at all.
+  // Copying spread elements needs no ToPropertyKey dispatch or incidental
+  // string-module dependency.
   const src = `const a = []; for (let i = 0; i < 1000; i++) a.push(i)
     const t = [1, 2]
     const run = (i) => { a.unshift(...t); a.shift(); return a.shift() }

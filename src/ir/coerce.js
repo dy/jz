@@ -10,17 +10,17 @@
  */
 
 import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
-import { ERR_CLASS_NAMES } from '../../err-codes.js'
+import { ERR_CLASS_NAMES, ERR, errorCodeLiteral } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { VAL, repOf, numericStorage } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied } from '../kind.js'
 import { intExprRange } from '../static.js'
-import { K, bitOf, NULL_BITS, TAGS } from '../summary/kind.js'
+import { K, bitOf, hasTag, NULL_BITS, TAGS } from '../summary/kind.js'
 import { typed } from './tag.js'
 import { temp, tempI32, tempI64, block64 } from './locals.js'
 import { ptrTypeEq } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
-import { isPlanTaggedBigint, materializeDeferredBigint, readI64 } from './bigint.js'
+import { isPlanTaggedBigint, isPlanRawBigint, materializeDeferredBigint, readI64 } from './bigint.js'
 import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
@@ -151,7 +151,8 @@ export const coerceNullishToStr = (valIR) => {
 
 /** Coerce an emitted IR value to a plain f64 Number per JS `ToNumber`.
  *  Skips coercion when static type proves the value is already numeric
- *  (i32 node, compile-time literal, known VAL.NUMBER/VAL.BIGINT). When the full
+ *  (i32 node, compile-time literal, known VAL.NUMBER). BigInt is rejected.
+ *  When the full
  *  string-parsing `__to_num` isn't loaded (no string module → no strings can
  *  exist) nullish *literals* still fold statically (null→+0, undefined→NaN);
  *  non-literal values pass through uncoerced — except bindings flagged
@@ -196,11 +197,25 @@ export function toNumF64(node, v) {
         ? ['else', foldArm(c[1])] : c), 'f64')
     if (v[0] === 'block') {   // (block (result f64) …sets (select load UNDEF in))
       const tail = v[v.length - 1]
+      if (tail?.checkedNumRead)
+        return typed([...v.slice(0, -1), toNumF64(node, tail)], 'f64')
       if (Array.isArray(tail) && tail[0] === 'select')
         return typed([...v.slice(0, -1), ['select', tail[1], foldArm(tail[2]), tail[3]]], 'f64')
     }
   }
   const vt = valTypeOf(node)
+  if (vt === VAL.BIGINT || vt == null && isPlanRawBigint(node)) {
+    if (!v.bigintRaw && (censusMaybeUndefined(node) || ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true)) {
+      ctx.module.include('number')
+      inc('__to_num')
+      return typed(['call', '$__to_num', asI64(materializeDeferredBigint(v))], 'f64')
+    }
+    ctx.runtime.throws = true
+    const code = errorCodeLiteral(ERR.BIGINT_TO_NUMBER)
+    return typed(['block', ['result', 'f64'], ['drop', asF64(v)],
+      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
+      ['throw', '$__jz_err', ['f64.const', code]]], 'f64')
+  }
   if (vt === VAL.BOOL) return typeof node === 'string' && ctx.func.maybeNullish?.has(node)
     ? coerceAtomsToNum(asF64(v)) : typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
   // Slice 7 widening (.work/archive/todo.md §deletion-sweep §14/§15's own
@@ -211,19 +226,13 @@ export function toNumF64(node, v) {
   // ever WRITTEN was NUMBER" fact the branch below already trusts once
   // `valTypeOf` itself happens to prove it (currently only the param case,
   // where `val` IS `vt`'s own source — see that function's own doc comment).
-  // Consult it directly instead of waiting on `vt`, strictly for NUMBER —
-  // never BIGINT, for the exact reason the comment just below stays unchanged
-  // (ToNumber(bigint) throws in real JS; this whole family stays as
-  // permissively unsound for BIGINT as it always was, not newly closed here).
+  // Consult it directly instead of waiting on `vt`, strictly for NUMBER.
   const censusNum = vt == null && censusMaybeUndefinedKind(node) === VAL.NUMBER
-  if (vt === VAL.NUMBER || vt === VAL.BIGINT || censusNum) {
+  if (vt === VAL.NUMBER || censusNum) {
     // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1a): a dict-census
     // NUMBER claim is a "every value ever WRITTEN" fact, not a "this key
     // exists" proof — an absent key reads real `undefined` at runtime. Gated
-    // on VAL.NUMBER only (never BIGINT: real JS THROWS mixing BigInt and
-    // undefined in arithmetic, coerceNullishToNum's undefined→NaN answer
-    // would be wrong there — left exactly as unsound as today, not newly
-    // broken, not closed by this fix). censusMaybeUndefined short-circuits on
+    // on VAL.NUMBER only. censusMaybeUndefined short-circuits on
     // node[0] before touching ctx.func.localReps, so every proven-NUMBER
     // site that isn't a dict-mode `[]`/`.` read (loop counters, schema slots,
     // the overwhelming hot-path case) pays zero new cost — same node object,
@@ -239,6 +248,10 @@ export function toNumF64(node, v) {
           ['local.set', `$${t}`, asF64(v)],
           coerceNullishToNum(typed(['local.get', `$${t}`], 'f64'))], 'f64')
       }
+      const flow = ctx.func.localValTypesOverlay?.get(node)
+      if (typeof flow === 'number' && !hasTag(flow, K.NULLISH))
+        return typed(['select', ['f64.const', 'nan'], asF64(v),
+          ['i64.eq', ['i64.reinterpret_f64', asF64(v)], ['i64.const', UNDEF_NAN]]], 'f64')
       return coerceNullishToNum(asF64(v))
     }
     return asF64(v)
@@ -258,9 +271,9 @@ export function toNumF64(node, v) {
   if (vt === VAL.OBJECT) {
     const prim = objectToPrimitive(v, 'number')
     if (prim) {
-      // No `__to_num` helper → the program provably has no strings, so the
-      // primitive is a non-string value already usable as an f64.
-      if (!ctx.core.stdlib['__to_num']) return asF64(prim)
+      // A user conversion can return any primitive, including BigInt or an
+      // undefined/boolean atom. Module presence is not a numeric proof.
+      ctx.module.include('number')
       inc('__to_num')
       return typed(['call', '$__to_num', prim], 'f64')
     }
@@ -303,6 +316,12 @@ export function toNumF64(node, v) {
       inc('__length')
       return typed(['call', '$__length', v[2]], 'f64')
     }
+    // The inline array-length arm over the ordinary helper (module/core.js
+    // emitLengthAccess): the same arms over the numeric helper.
+    if (typeof v.numericLength === 'function') {
+      inc('__length')
+      return v.numericLength()
+    }
     // __ptr_type returns i32 tag, __ptr_offset returns i32 offset — both numeric.
     if (v[0] === 'call' && (v[1] === '$__ptr_type' || v[1] === '$__ptr_offset')) return v
   }
@@ -326,7 +345,7 @@ export function toNumF64(node, v) {
   // module included, and an inline fold of the nullish and boolean atoms.
   if (!ctx.core.stdlib['__to_num'] && ctx.summary && numericDenied(node)) {
     const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
-    const nonNumeric = k & ~(bitOf(K.NUMBER) | bitOf(K.BIGINT) | bitOf(K.BOOL) | NULL_BITS) & TAGS
+    const nonNumeric = k & ~(bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS) & TAGS
     if (nonNumeric !== 0) ctx.module.include('number')
     else if ((k & (bitOf(K.BOOL) | NULL_BITS)) !== 0) {
       const t = temp('atom')

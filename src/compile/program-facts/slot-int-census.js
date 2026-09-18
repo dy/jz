@@ -1,6 +1,8 @@
 /** Whole-program integer range proofs for schema slots. */
 import { DBG_INVARIANTS } from '../../debug.js'
 import { MUTATE_OPS, walkAst } from '../../ast.js'
+
+const isStringKeyIndex = (t) => t[0] === '[]' && Array.isArray(t[2]) && (t[2][0] == null || t[2][0] === 'str') && typeof t[2][1] === 'string'
 import { ctx, err, getFactStore } from '../../ctx.js'
 import { ANY, K, hasTag } from '../../summary/kind.js'
 import { repOf } from '../../reps.js'
@@ -120,8 +122,9 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
         const sid = ctx.schema.register(parsed.names)
         for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, isInt(parsed.values[i]))
       }
-    } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '.') {
-      const [, obj, prop] = node[1]
+    } else if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '.' || isStringKeyIndex(node[1]))) {
+      // `o.k = v` and `o['k'] = v` (a literal or folded constant key) write the same slot.
+      const obj = node[1][1], prop = node[1][0] === '.' ? node[1][2] : node[1][2][1]
       if (typeof obj === 'string') {
         // Same precise-path resolution as ctx.schema.slotVT — no structural
         // fallback (slot index could differ across schemas with the same prop).

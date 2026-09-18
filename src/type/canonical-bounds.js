@@ -12,7 +12,7 @@
  */
 import { isReassigned, some, walkAst } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { intLiteralValue } from '../static.js'
+import { intLiteralValue, constIntExpr, intExprRange } from '../static.js'
 
 /** Structural key for a `recv[idx]` site — the assumedBounds channel between the
  *  versioning scan and typedIdxProven. JSON is structural, so the key matches even
@@ -397,4 +397,52 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
     return seq(n.slice(1))
   }
   return eff(root)
+}
+
+/** A guarded extent proof applies only inside its versioned loop. */
+export function activeBoundsAssumption(ctx, recv, idx) {
+  // a versioned assumption is scoped to its OWNING loop: honored only while that
+  // loop's frame is on the emission stack (a textual twin of the access OUTSIDE
+  // the loop sees the cursor past its bound and must stay checked)
+  const owner = ctx.types.assumedBounds?.get(idxKey(recv, idx))
+  if (owner != null && ctx.func.stack?.some(f => f.bodyNode === owner)) return true
+  // 4b. per-RECEIVER guarded const hull — the value-level twin of the key channel.
+  //     The versioned guard proved every CONSTANT extent ≤ hull.max < recv.length,
+  //     so any read whose index is a compile-time constant within the hull is
+  //     in-bounds regardless of how many clone/rename layers (plan unroll, per-arm
+  //     emit unroll, inline suffixes) rewrote the index NODE since the scan — the
+  //     AST-JSON assumption keys break under those; the receiver name + value do
+  //     not. Same owner-frame scoping as the key channel.
+  const hull = ctx.types.assumedConstHull?.get(recv)
+  if (hull != null && ctx.func.stack?.some(f => f.bodyNode === hull.owner)) {
+    const v = constIntExpr(idx)
+    if (v != null && v >= 0 && v <= hull.max) return true
+  }
+  return false
+}
+
+/** Read existing index proofs without invoking the interval interpreter. */
+export function typedIndexKnown(ctx, recv, idx) {
+  if (typeof recv !== 'string') return false
+  if (activeBoundsAssumption(ctx, recv, idx)) return true
+  if (ctx.facts.ipProven.get(ctx.func.body)?.has(idxKey(recv, idx))) return true
+  if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
+  const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
+    ?? ctx.func.localReps?.get(recv)?.arrayLen
+  if (len == null) return false
+  const k = intLiteralValue(idx)
+  if (k != null) return k >= 0 && k < len
+  if (Array.isArray(idx) && idx[0] === '&' && idx.length === 3) {
+    const m = intLiteralValue(idx[1]) ?? intLiteralValue(idx[2])
+    if (m != null) return m >= 0 && m < len
+  }
+  if (typeof idx === 'string') {
+    const B = litBoundArrIdx(ctx).get(recv + '\x00' + idx)
+    if (B != null) return B <= len
+    if (ctx.func.locals?.get(idx) === 'i32') {
+      const range = intExprRange(idx)
+      if (range && range[0] >= 0 && range[1] < len) return true
+    }
+  }
+  return false
 }

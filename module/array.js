@@ -9,10 +9,10 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef, isNullish, toStrI64 } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef, isNullish, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
-import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
-import { valTypeOf } from '../src/kind.js'
+import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
+import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
@@ -30,6 +30,9 @@ import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageW
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
 import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY } from '../src/compile/analyze-scans.js'
 import { restViewRead } from '../src/compile/rest-view.js'
+import { core, isNullable, K, NUMBER, tagOf, valOf } from '../src/summary/kind.js'
+import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
+import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { hoistArrayValue, makeCallback, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
@@ -173,13 +176,13 @@ export default (ctx) => {
   // Slice 4c/4e (RepresentationPlan v2): ONE plan-driven representation
   // decision for every fresh VALUE slot an array producer stores — literals
   // (4c) and the mutator family push/unshift/fill/Array.from (4e). Checked
-  // per call (not at registration): ctx.features.bigint settles after module
+  // per call (not at registration): the representation plan settles after module
   // registration. REJECT or a bigint-free program falls back to storedValue.
   // splice is deletion-only in the subset (no insert slots); copyWithin moves
   // already-stored bits; struct/packed/union pushes store schema-typed i32
   // fields (bigint-free by the slotI32Certain packing precondition) — exempt.
   const taggedStoredValue = (node) => {
-    if (!ctx.features.bigint) return storedValue(node)
+    if (!representationProgramHasBigint(ctx)) return storedValue(node)
     const action = representationStorageWriteAction(ctx, node)
     return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
   }
@@ -204,7 +207,7 @@ export default (ctx) => {
     __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_typed_set_idx: () => ['__ptr_type', '__ptr_aux', '__len', '__arr_set_idx_ptr',
-      representationProgramHasBigint(ctx) ? '__typed_set_idx_tagged' : '__typed_set_idx'],
+      representationProgramHasBigint(ctx) || ctx.core.includes.has('__typed_set_idx_tagged') ? '__typed_set_idx_tagged' : '__typed_set_idx'],
     __arr_typed_obj_set_idx: () => ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set', '__i32_to_str',
       ...(ctx.linkDemand.external ? ['__ext_set'] : [])],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -485,19 +488,19 @@ export default (ctx) => {
   // the speed-tier Float64 unswitch then removes this call from its fast arm.
   ctx.core.stdlib['__arr_typed_set_idx'] = () => {
     const tagged = representationProgramHasBigint(ctx)
-    const typedSet = tagged ? '__typed_set_idx_tagged' : '__typed_set_idx'
-    const domainParam = tagged ? ' (param $domain i32)' : ''
-    const domainArg = tagged ? ' (local.get $domain)' : ''
-    return `(func $__arr_typed_set_idx (param $ptr i64) (param $i i32) (param $val f64)${domainParam} (result f64)
+    const store = tagged || ctx.core.includes.has('__typed_set_idx_tagged')
+      ? `(drop (call $__typed_set_idx_tagged (local.get $ptr) (local.get $i) (local.get $val) (local.get $domain)))`
+      : `(if (i32.or (i32.lt_u (local.get $i) (call $__len (local.get $ptr)))
+                    (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${DATA_VIEW_FLAG})))
+          (then (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)))))`
+    return `(func $__arr_typed_set_idx (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
       (local $t i32)
       (local.set $t (call $__ptr_type (local.get $ptr)))
       (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
         (then (return (call $__arr_set_idx_ptr (local.get $ptr) (local.get $i) (local.get $val)))))
       (if (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
         (then
-          (if (i32.or (i32.lt_u (local.get $i) (call $__len (local.get $ptr)))
-                     (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${DATA_VIEW_FLAG})))
-            (then (drop (call $${typedSet} (local.get $ptr) (local.get $i) (local.get $val)${domainArg}))))
+          ${store}
           (return (f64.reinterpret_i64 (local.get $ptr)))))
       (f64.reinterpret_i64 (local.get $ptr)))`
   }
@@ -506,16 +509,13 @@ export default (ctx) => {
   // OBJECT/HASH. The expensive key/string helpers were already required by
   // that fallback; outlining keeps their dispatch out of the hot loop body.
   ctx.core.stdlib['__arr_typed_obj_set_idx'] = () => {
-    const tagged = representationProgramHasBigint(ctx)
-    const domainParam = tagged ? ' (param $domain i32)' : ''
-    const domainArg = tagged ? ' (local.get $domain)' : ''
-    return `(func $__arr_typed_obj_set_idx (param $ptr i64) (param $i i32) (param $val f64)${domainParam} (result f64)
+    return `(func $__arr_typed_obj_set_idx (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
     (local $t i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     ${requireReceiverWat('(local.get $ptr)')}
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
                 (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
-      (then (return (call $__arr_typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)${domainArg}))))
+      (then (return (call $__arr_typed_set_idx (local.get $ptr) (local.get $i) (local.get $val) (local.get $domain)))))
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
                 (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
       (then
@@ -715,6 +715,10 @@ export default (ctx) => {
   // === Index read ===
 
   ctx.core.emit['[]'] = (arr, idx) => {
+    // A rest slot view reads the argument slot (compile/rest-view.js).
+    if (typeof arr === 'string' && ctx.func.restView?.has(arr)) return restViewRead(ctx.func.restView.get(arr), idx)
+    const nullable = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
+      !(typeof arr === 'string' && (repOf(arr)?.ptrKind != null || ctx.func.refinements?.get(arr)?.val != null || activeBoundsAssumption(ctx, arr, idx)))
     // A literal NEGATIVE index on an array, a typed array or a string is out of
     // range → undefined (JS semantics), never a raw `payload + (-1)*8` load that
     // reads heap before the allocation. A side-effecting receiver still
@@ -723,31 +727,57 @@ export default (ctx) => {
     // VT['[]'] returning null for the same case.
     { const li = intLiteralValue(idx)
       const rvt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
-      if (li != null && li < 0 && (rvt === VAL.ARRAY || rvt === VAL.TYPED || rvt === VAL.STRING))
+      if (!nullable && li != null && li < 0 && (rvt === VAL.ARRAY || rvt === VAL.TYPED || rvt === VAL.STRING))
         return typeof arr === 'string'
           ? undefExpr()
           : typed(['block', ['result', 'f64'], ['drop', asF64(emit(arr))], undefExpr()], 'f64') }
-    // A rest slot view reads the argument slot (compile/rest-view.js).
-    if (typeof arr === 'string' && ctx.func.restView?.has(arr)) return restViewRead(ctx.func.restView.get(arr), idx)
     // Hoist non-identifier arr so side-effecting sources (e.g. `foo.shift()[i]`) execute once.
     // The rest of the handler inlines `emit(arr)` into multiple IR positions, which would
     // otherwise re-execute the source expression per use at runtime.
-    if (typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
-      const vtArr = valTypeOf(arr)
+    if (nullable || typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
+      // Past the nullish check below the receiver is its payload kind: a
+      // typed array that may be unset (`let x; … x = new Float64Array(n)`)
+      // still indexes as a typed array, with an i32 index, not through the
+      // generic keyed read.
+      const view = nullable ? ctx.summary?.at(ctx.func.current) : null
+      const vtArr = valTypeOf(arr) ?? (view ? valOf(core(view.kindOfExpr(arr))) : null)
       const h = temp('ai')
       // Transient seed on the fresh hoist-temp `h` (slice 3c-a): overlay, not
       // durable reps — the temp lives one expression.
       if (vtArr) ctx.func.localValTypesOverlay.set(h, vtArr)
-      const typedCtor = vtArr === VAL.TYPED ? plannedTypedStorageCtor(ctx, arr) : null
+      // The temp inherits the receiver's presence: a slot the summary proves
+      // holds a typed array is never nullish.
+      if (vtArr === VAL.TYPED && !nullable) (ctx.func.presentTemps ??= new Set()).add(h)
+      const typedCtor = vtArr === VAL.TYPED ? plannedTypedStorageCtor(ctx, arr) ?? view?.typedPayloadCtorOfExpr(arr) ?? null : null
       if (typedCtor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, typedCtor)
-      const setup = ['local.set', `$${h}`, asF64(emit(arr))]
-      const result = ctx.core.emit['[]'](h, idx)
-      const wrapped = typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')
+      const setup = [['local.set', `$${h}`, asF64(emit(arr))]]
+      let key = idx
+      if (nullable) {
+        // GetV evaluates the key before rejecting the receiver, but converts
+        // an object key only after that check. Keep the captured receiver and
+        // key even if computing the key reassigns the source binding; a name
+        // or a literal computes nothing and stays in place (an i32 counter
+        // then indexes as i32).
+        if (!(typeof idx === 'string' || (Array.isArray(idx) && idx[0] == null))) {
+          key = temp('key')
+          const keyType = valTypeOf(idx)
+          const presentNumber = isPresentNumber(ctx, idx)
+          setup.push(['local.set', `$${key}`, storedValue(idx)])
+          if (keyType) ctx.func.localValTypesOverlay.set(key, presentNumber ? NUMBER : keyType)
+        }
+        setup.push(['if', isNullish(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
+      }
+      const result = ctx.core.emit['[]'](h, key)
+      const wrapped = typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
+      if (result?.checkedNumRead) wrapped.checkedNumRead = true
+      if (result?.indexValid) wrapped.indexValid = result.indexValid
       if (result && typeof result.bigintBox === 'function')
-        deferBigintBox(wrapped, () => typed(['block', ['result', 'f64'], setup, asF64(result.bigintBox())], 'f64'))
+        deferBigintBox(wrapped, () => typed(['block', ['result', 'f64'], ...setup, asF64(result.bigintBox())], 'f64'))
       return wrapped
     }
     const keyType = typeof idx === 'string' ? lookupValType(idx) : valTypeOf(idx)
+    const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
+    const numericKey = (vt == null || vt === VAL.TYPED) && keyType === VAL.NUMBER && isPresentNumber(ctx, idx)
     // An object key needs ToPropertyKey even when produced by an expression.
     // Primitive keys keep the checked atom/BigInt and numeric-index paths below.
     if (keyType != null && keyType !== VAL.STRING && keyType !== VAL.NUMBER &&
@@ -784,7 +814,45 @@ export default (ctx) => {
     }
     // TypedArray: type-aware load
     if (typeof arr === 'string' && ctx.core.emit['.typed:[]'] &&
-        lookupValType(arr) === 'typed') {
+        vt === VAL.TYPED) {
+      if (!numericKey && !((keyType === VAL.NUMBER || censusMaybeUndefinedKind(idx) === VAL.NUMBER) && ctx.summary.typedPropertiesAbsent())) {
+        ctx.module.include('collection')
+        ctx.module.include('string')
+        setLinkDemand('typedProperties')
+        // A concrete ctor is payload provenance; a missing outer array slot
+        // still has an undefined receiver tag, which the runtime must check.
+        const present = repOf(arr)?.ptrKind === VAL.TYPED || ctx.func.presentTemps?.has(arr) || ctx.summary?.at(ctx.func.current).mayBeNullishExpr(arr) === false
+        const fn = present ? '__dyn_get_t' : '__dyn_get'
+        // A typed array answers a number key from its elements alone (an
+        // integer-indexed exotic object: an invalid index reads undefined and
+        // never a property), so a key the summary cannot type still indexes
+        // directly once a runtime test proves it an integer the i32 index
+        // holds exactly: every non-number is a NaN box and fails the test, and
+        // a property name, an undefined key or a huge integer keeps the
+        // dynamic get. A key known not to be a number skips the test; a
+        // BigInt element stays tagged.
+        const keyKind = present ? ctx.summary?.at(ctx.func.current).kindOfExpr(idx) : null
+        const keyTag = keyKind == null ? K.ANY : tagOf(core(keyKind))
+        const ctor = present && (keyTag === K.NUMBER || keyTag === K.ANY) ? plannedTypedStorageCtor(ctx, arr) : null
+        if (ctor && !/Big/.test(ctor)) {
+          // The key as stored (for the dynamic get) and, once the test holds,
+          // as the i32 index the typed read takes.
+          const kt = temp('key'), ki = tempI32('ki')
+          ctx.func.localValTypesOverlay.set(ki, NUMBER)
+          const fast = ctx.core.emit['.typed:[]'](arr, ki)
+          if (fast) {
+            inc('__dyn_get_t')
+            return typed(['block', ['result', 'f64'],
+              ['local.set', `$${kt}`, storedValue(idx)],
+              ['if', ['result', 'f64'], ['f64.eq', ['local.get', `$${kt}`], ['f64.convert_i32_s', ['local.tee', `$${ki}`, ['i32.trunc_sat_f64_s', ['local.get', `$${kt}`]]]]],
+                ['then', asF64(fast)],
+                ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_t', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${kt}`]], ['i32.const', PTR.TYPED]]]]]], 'f64')
+          }
+        }
+        inc(fn)
+        return typed(['f64.reinterpret_i64', ['call', `$${fn}`, asI64(emit(arr)), asI64(storedValue(idx)),
+          ...(present ? [['i32.const', PTR.TYPED]] : [])]], 'f64')
+      }
       const r = ctx.core.emit['.typed:[]'](arr, idx)
       if (r) return r
     }
@@ -815,7 +883,6 @@ export default (ctx) => {
     }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
-    const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     // An unresolved receiver may be any host-provided TypedArray even when the
     // source names no typed constructor. Keep __typed_idx's runtime aux-width
     // dispatch live; otherwise its reachability factory collapses to the
@@ -824,16 +891,15 @@ export default (ctx) => {
     // rejected at an evidence-free boundary; internal constructors set their
     // own specialized demand flags.
     if (vt == null) {
+      if (!numericKey) {
+        ctx.module.include('typedarray')
+        setLinkDemand('typedProperties')
+      }
       setLinkDemand('typedarray')
       setLinkDemand('typedRuntime')
     }
-    // Literal string key on a receiver that isn't a known array/typed/string:
-    // `x['a']` IS `x.a` — delegate to the dot emitter so an untyped/OBJECT/external
-    // receiver gets the same polymorphic dispatch (__dyn_get_any_t_h, host-external
-    // aware). The local `dynLoad` fallback below calls __dyn_get, which only probes
-    // the internal HASH layout — so `x['a']` on a host object silently returned
-    // undefined while `x.a` worked. (Known ARRAY/TYPED/STRING fall through unchanged:
-    // their string-key semantics differ from a HASH/OBJECT property read.)
+    // Literal keys on other receiver kinds share dot access's schema and host
+    // dispatch. ARRAY/TYPED/STRING keep their own string-key semantics below.
     if (litKey != null && vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING)
       return emit(['.', arr, litKey])
     // emitIndex (not bare asI32(emit)) narrows integer index arithmetic — incl. a
@@ -842,13 +908,13 @@ export default (ctx) => {
     // asI32(emit) inside emitIndex, so this is a strict improvement for every branch.
     const va = emit(arr), vi = emitIndex(idx)
     const ptrExpr = asF64(va)
-    // Preserve host fallback only when another explicit external producer in
-    // this program already established the capability. A bare exported param
-    // alone marshals supported arrays/typed arrays into linear memory; making
-    // every such hot index pull env.__ext_prop regresses standalone modules.
-    const hostOpaque = vt == null && ctx.transform.targetProfile.envImports && ctx.linkDemand.external
+    // Unknown property receivers can be host objects, just as for dot reads.
+    // Numeric element paths do not request this fallback.
     const ensureHostOpaqueGet = () => {
-      if (!hostOpaque) return false
+      if (vt != null || !ctx.transform.targetProfile.envImports) return false
+      // The shared helper resolves its host arm at link time, after every
+      // producer has been emitted. Closed programs keep the internal body.
+      if (hasExternalIngress()) setLinkDemand('external')
       ctx.module.include('collection')
       inc('__dyn_get_any')
       return true
@@ -877,7 +943,33 @@ export default (ctx) => {
       ? '__typed_idx_tagged' : '__typed_idx'
     if (vt === VAL.TYPED || vt == null) setLinkDemand('typedRuntime')
     if (runtimeElemRead === '__typed_idx_tagged') inc(runtimeElemRead)
-    const arrayLoad = (['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi])
+    // The array arm inline, ahead of the helper: the tag test (an array's
+    // offset is a heap address; `__heap_end64` is not a validity bound, it
+    // lags the host's own allocations), one forwarding hop (the chase stays
+    // outlined), the bounds test, the load. An unresolved
+    // receiver is an array at nearly every site that reaches here (an AST
+    // node under a walker), and the helper's own dispatch, its second header
+    // walk and its call frame were the price of every element read there.
+    // `ptrExpr` is a plain read (the receiver was hoisted above); the index
+    // lands in a temp once.
+    const arrayFast = (slow) => {
+      const off = tempI32('ao'), ix = tempI32('ax')
+      inc('__ptr_offset_fwd')
+      return ['block', ['result', 'f64'],
+        ['local.set', `$${ix}`, vi],
+        ['if', ['result', 'f64'],
+          ['i32.and', ptrTypeEq(ptrExpr, PTR.ARRAY),
+            ['i32.ge_u', ['local.tee', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ptrExpr]]], ['i32.const', 8]]],
+          ['then',
+            ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
+              ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
+            ['if', ['result', 'f64'],
+              ['i32.lt_u', ['local.get', `$${ix}`], ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
+              ['then', ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`])],
+              ['else', undefExpr()]]],
+          ['else', slow(['local.get', `$${ix}`])]]]
+    }
+    const arrayLoad = arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], ix])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       // ToPropertyKey of an atom key is the string module's `__to_str`: own
@@ -967,11 +1059,12 @@ export default (ctx) => {
       // Presence is independent of the element kind. The checked array
       // helper handles an absent receiver before touching its header.
       if (mayBeUndefined(arr)) {
-        inc('__arr_idx')
-        const read = key => ['call', '$__arr_idx', asI64(ptrExpr), key]
-        return useRuntimeKeyDispatch && keyType !== VAL.NUMBER
-          ? emitDynamicKeyDispatch(ptrExpr, key => read(asI32(typed(key, 'f64'))))
-          : typed(read(vi), 'f64')
+        if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER) {
+          inc('__arr_idx')
+          return emitDynamicKeyDispatch(ptrExpr, key => ['call', '$__arr_idx', asI64(ptrExpr), asI32(typed(key, 'f64'))])
+        }
+        // An absent receiver reads undefined, as the helper answers.
+        return typed(arrayFast(() => undefExpr()), 'f64')
       }
       // Base offset of the array's data region. A binding proven never relocated
       // (scanNeverGrown — a fresh array literal whose every use is a pure read, so no
@@ -986,7 +1079,8 @@ export default (ctx) => {
       const neverGrown = typeof arr === 'string' && ctx.func.localReps?.get(arr)?.neverGrown === true
       const arrBase = () => neverGrown || (typeof arr === 'string' && currentBinding(arr))
         ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptrExpr], ['i64.const', LAYOUT.OFFSET_MASK]]]
-        : (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]])
+        : ctx.transform.optimize?.leanRuntime ? (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]])
+        : fwdOffsetIR(ptrExpr)
       // structInline Array<S>: element i is K consecutive inline f64 schema
       // cells — no per-row heap object, no stored element pointer. `arr[i]` is
       // the byte address of the element's first cell, returned as a first-class
@@ -1249,9 +1343,11 @@ export default (ctx) => {
       // when keyType === VAL.NUMBER, which is what an ambiguous BOOL∪NUMBER
       // merge key statically collapses to; the cold arm must see the boxed
       // atom, not the raw collapsed bits.
+      // The hot arm is `arrayLoad`: the array read inline (an AST node under
+      // a walker reads `node[0]` here), the typed read through the helper.
       const guarded = ['if', ['result', 'f64'],
         ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
-        ['then', ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]],
+        ['then', arrayLoad],
         ['else', opaqueDynExprLoad(ptrExpr, storedValue(idx))] ]
       if (ctx.module.modules['string'] && !notString)
         return typed(['if', ['result', 'f64'],
@@ -1515,9 +1611,27 @@ export default (ctx) => {
     const t = temp('po'), len = tempI32('pl')
     // Known ARRAY → inline len (skips __len dispatch tree).
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
-    const rawLen = vt === VAL.ARRAY
-      ? ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', 8]]]
-      : ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
+    if (vt === VAL.ARRAY) {
+      // The data offset once, with the forwarding hop inline (the chase stays
+      // outlined); a shrink never relocates, so it serves the load too.
+      const off = tempI32('pf')
+      inc('__ptr_offset_fwd')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, va],
+        ['local.set', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+        ['if', ['i32.and', ['i32.ge_u', ['local.get', `$${off}`], ['i32.const', 8]],
+                 ['i32.and', ['i64.le_u', ['i64.extend_i32_u', ['local.get', `$${off}`]], ['global.get', '$__heap_end64']],
+                             ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]]]],
+          ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
+        ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
+        ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${len}`]],
+          ['then', undefExpr()],
+          ['else',
+            ['local.set', `$${len}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
+            ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
+            ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]]]], 'f64')
+    }
+    const rawLen = ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['local.set', `$${len}`, rawLen],
@@ -1583,14 +1697,19 @@ export default (ctx) => {
   // INT_MAX end sentinel clamps to length in the helper, which also normalizes negatives.
   ctx.core.emit['.fill'] = (arr, val, start, end) => {
     inc('__arr_fill')
-    return typed(['call', '$__arr_fill',
-      asI64(emit(arr)),
-      val == null ? undefExpr() : taggedStoredValue(val),
-      // ToIntegerOrInfinity position args (23.1.3.7 step 6/8) — asI32Sat, not asI32:
-      // __clamp_idx needs ±Infinity to saturate to INT32_MAX/MIN, not wrap (see asI32Sat's
-      // doc comment in src/ir.js).
-      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
+    // The receiver and the value first, then the positions: ToIntegerOrInfinity
+    // (23.1.3.7 steps 6/8) through positionArgs, which converts a string,
+    // rejects a BigInt and saturates ±Infinity for __clamp_idx.
+    const recv = temp('afr'), value = temp('afv'), positions = positionArgs([start, end])
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${recv}`, asF64(emit(arr))],
+      ['local.set', `$${value}`, val == null ? undefExpr() : asF64(taggedStoredValue(val))],
+      ...positions.setup,
+      ['call', '$__arr_fill',
+        ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
+        ['local.get', `$${value}`],
+        positions.index(0, ['i32.const', 0]),
+        positions.index(1, ['i32.const', 0x7FFFFFFF])]], 'f64')
   }
 
   ctx.core.stdlib['__arr_fill'] = `(func $__arr_fill (param $arr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
@@ -1627,7 +1746,8 @@ export default (ctx) => {
     // ToIntegerOrInfinity position arg (23.1.3.30 step 3) — asI32Sat, not asI32 (see
     // src/ir.js's doc comment): ±Infinity must saturate to INT32_MAX/MIN so the inline
     // [0,len] clamp below reads it as "past the end", not asI32's wrap-to -1/0.
-    const vs = asI32Sat(emit(start))
+    const positions = positionArgs([start, deleteCount])
+    const vs = positions.index(0, ['i32.const', 0])
     const s = tempI32('sps'), cnt = tempI32('spc'), len = tempI32('spl'), off = tempI32('spo'), j = tempI32('spj')
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${cnt}`], tag: 'sp' })
     const id = freshId(ctx)
@@ -1638,6 +1758,7 @@ export default (ctx) => {
       : ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]]
     const body = [
       recv.setup,
+      ...positions.setup,
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
       lenInit,
       durableArrSnapNode(off),
@@ -1660,7 +1781,7 @@ export default (ctx) => {
             // wraps negative, which would skip the clamp-down branch entirely (real bug: an
             // uncaught deleteCount:Infinity would fall through with cnt still at INT32_MAX and
             // OOB the removed-elements memory.copy below).
-            ['local.set', `$${cnt}`, asI32Sat(emit(deleteCount))],
+            ['local.set', `$${cnt}`, positions.index(1, ['i32.const', 0])],
             ['if', ['i32.lt_s', ['local.get', `$${cnt}`], ['i32.const', 0]],
               ['then', ['local.set', `$${cnt}`, ['i32.const', 0]]]],
             ['if', ['i32.gt_s',
@@ -1701,10 +1822,11 @@ export default (ctx) => {
   // `inject.unshift(setBase, ...stores)`, the last byte-parity ordering
   // divergence.)
   ctx.core.emit['.unshift'] = (arr, ...rawVals) => {
-    inc('__arr_unshift')
     // Flatten comma-grouped args: [',', v1, v2] → [v1, v2] (same unwrap as '{}')
     const vals = rawVals.length === 1 && Array.isArray(rawVals[0]) && rawVals[0][0] === ','
       ? rawVals[0].slice(1) : rawVals
+    if (!vals.length) return emit(['.', arr, 'length'])
+    inc('__arr_unshift')
     if (vals.length <= 1) {
       const val = vals[0]
       return typed(['call', '$__arr_unshift', asI64(emit(arr)), val === undefined ? undefExpr() : taggedStoredValue(val)], 'f64')
@@ -1882,7 +2004,7 @@ export default (ctx) => {
     inc('__ptr_offset')
     return typed(['block', ['result', 'f64'],
       recv.setup,
-      cb.setup,
+      cb.setup, cb.check,
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, arrayLenFromPtr(base)],
       out.init,
@@ -1929,7 +2051,7 @@ export default (ctx) => {
     inc('__ptr_offset')
     return typed(['block', ['result', 'f64'],
       recv.setup,
-      cb.setup,
+      cb.setup, cb.check,
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${maxLen}`, arrayLenFromPtr(base)],
       out.init,
@@ -1975,6 +2097,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         recv.setup, mapCb.setup, redCb.setup,
         ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
+        redCb.check,
         ...loop, reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
     }
     // .filter(f).reduce(g, init) → single loop: test f, accumulate with g if passes
@@ -2011,6 +2134,7 @@ export default (ctx) => {
         ...(fpos ? [['local.set', `$${fpos}`, ['i32.const', 0]]] : []),
         ...(seeded ? [['local.set', `$${seeded}`, ['i32.const', 0]]] : []),
         ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
+        redCb.check,
         ...loop, reductionResult(acc, seeded)], 'f64')
     }
     const recv = hoistArrayValue(arr)
@@ -2038,6 +2162,7 @@ export default (ctx) => {
       recv.setup,
       cb.setup,
       ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
+      cb.check,
       ...loop,
       reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
   }
@@ -2066,6 +2191,7 @@ export default (ctx) => {
       recv.setup,
       cb.setup,
       ['local.set', `$${acc}`, init !== undefined ? storedValue(init) : ['f64.const', 0]],
+      cb.check,
       ...loop,
       reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
   }
@@ -2082,7 +2208,7 @@ export default (ctx) => {
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
         ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(forCb, i)]))]
       ])
-      return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
+      return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, forCb.check, ...loop, ['f64.const', 0]], 'f64')
     }
     if (up && up.method === 'filter' && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
@@ -2093,7 +2219,7 @@ export default (ctx) => {
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i), arrArg(filterCb, recv.value)])),
           ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxArg(forCb, i)]))]]]
       ])
-      return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
+      return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, forCb.check, ...loop, ['f64.const', 0]], 'f64')
     }
     const recv = hoistArrayValue(arr)
     const tmp = temp('ft')
@@ -2101,7 +2227,7 @@ export default (ctx) => {
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)]))]
     ])
-    return typed(['block', ['result', 'f64'], recv.setup, cb.setup, ...loop, ['f64.const', 0]], 'f64')
+    return typed(['block', ['result', 'f64'], recv.setup, cb.setup, cb.check, ...loop, ['f64.const', 0]], 'f64')
   }
 
   // .reverse() → in-place swap arr[i] ↔ arr[len-1-i], returns the array.
@@ -2252,15 +2378,16 @@ export default (ctx) => {
     inc('__arr_from', '__ptr_offset')
     ctx.runtime.throws = true
     const c = temp('awc'), base = tempI32('awb'), len = tempI32('awl'), idx = tempI32('awi')
+    const positions = positionArgs([index])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${c}`, typed(['call', '$__arr_from', asI64(emit(arr))], 'f64')],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${c}`]]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
-      // ToIntegerOrInfinity position arg (23.1.3.42 step 3) — asI32Sat, not asI32: an
-      // Infinity index must saturate to INT32_MAX (so the range check below throws, per
-      // spec) instead of asI32's wrap-to -1 (silently treated as a valid negative index,
-      // resolving to len-1 — no throw, wrong element written).
-      ['local.set', `$${idx}`, asI32Sat(emit(index))],
+      // ToIntegerOrInfinity position arg (23.1.3.42 step 3) through positionArgs:
+      // a string converts, a BigInt throws, ±Infinity saturates so the range
+      // check below throws instead of wrapping to a valid negative index.
+      ...positions.setup,
+      ['local.set', `$${idx}`, positions.index(0)],
       ['if', ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['then', ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${len}`]]]]],
       ['if', ['i32.or',
@@ -2278,12 +2405,15 @@ export default (ctx) => {
   // element-kind-aware __typed_copyWithin, plain arrays need no direction loop.
   ctx.core.emit['.copyWithin'] = (arr, target, start, end) => {
     inc('__arr_copyWithin')
-    // ToIntegerOrInfinity position args (23.1.3.4 step 3/5/7) — asI32Sat, not asI32: see
-    // src/ir.js's doc comment; __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN.
-    return typed(['call', '$__arr_copyWithin', asI64(emit(arr)),
-      target == null ? ['i32.const', 0] : asI32Sat(emit(target)),
-      start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
-      end == null ? ['i32.const', 0x7FFFFFFF] : asI32Sat(emit(end))], 'f64')
+    // ToIntegerOrInfinity position args (23.1.3.4 steps 3/5/7) through positionArgs.
+    const recv = temp('acr'), positions = positionArgs([target, start, end])
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${recv}`, asF64(emit(arr))],
+      ...positions.setup,
+      ['call', '$__arr_copyWithin', ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
+        positions.index(0, ['i32.const', 0]),
+        positions.index(1, ['i32.const', 0]),
+        positions.index(2, ['i32.const', 0x7FFFFFFF])]], 'f64')
   }
   ctx.core.stdlib['__arr_copyWithin'] = `(func $__arr_copyWithin (param $arr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
     (local $off i32) (local $len i32) (local $count i32)
@@ -2322,18 +2452,41 @@ export default (ctx) => {
     return (item, vv) => ['call', '$__eq', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vv]]
   }
 
-  ctx.core.emit['.indexOf'] = (arr, val) => {
+  // The search methods' fromIndex (23.1.3.17 steps 4-9, 23.1.3.20 steps 4-8):
+  // ToIntegerOrInfinity through positionArgs, a negative one counted from the
+  // end and clamped at 0; lastIndexOf's default is the last index and a
+  // positive one clamps to it.
+  const fromIndexIR = (positions, len, last) => {
+    const from = tempI32('from')
+    const fromLen = ['local.get', `$${len}`]
+    const value = positions.index(0, last ? ['i32.sub', fromLen, ['i32.const', 1]] : ['i32.const', 0])
+    return { local: from, setup: [
+      ['local.set', `$${from}`, value],
+      ['if', ['i32.lt_s', ['local.get', `$${from}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${from}`, ['i32.add', ['local.get', `$${from}`], fromLen]],
+          ['if', ['i32.lt_s', ['local.get', `$${from}`], ['i32.const', 0]], ['then', ['local.set', `$${from}`, ['i32.const', last ? -1 : 0]]]]],
+        ...(last ? [['else', ['if', ['i32.ge_s', ['local.get', `$${from}`], fromLen], ['then', ['local.set', `$${from}`, ['i32.sub', fromLen, ['i32.const', 1]]]]]]] : [])],
+    ] }
+  }
+  ctx.core.emit['.indexOf'] = (arr, val, fromIndex) => {
     const recv = hoistArrayValue(arr)
     const vv = val === undefined ? undefExpr() : storedValue(val)
+    const positions = positionArgs([fromIndex])
     const eq = arrEqIR(val)
-    const result = tempI32('ix')
+    const result = tempI32('ix'), len = tempI32('ixl'), ptr = tempI32('ixp')
+    const from = fromIndexIR(positions, len, false)
     const exit = `$exit${freshId(ctx)}`
+    inc('__ptr_offset')
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item, vv),
         ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
-    ])
+    ], len, ptr, false, ['local.get', `$${from.local}`])
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ...positions.setup,
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
+      ...from.setup,
       ['local.set', `$${result}`, ['i32.const', -1]],
       ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
@@ -2342,9 +2495,10 @@ export default (ctx) => {
   // Array.prototype.includes compares by SameValueZero (23.1.3.16): NaN finds
   // NaN, unlike indexOf. A number-NaN is only ever the canonical pattern, so
   // for a proven-number search value the NaN case is one bit compare.
-  ctx.core.emit['.includes'] = (arr, val) => {
+  ctx.core.emit['.includes'] = (arr, val, fromIndex) => {
     const recv = hoistArrayValue(arr)
     const vv = temp('icv')
+    const positions = positionArgs([fromIndex])
     const vget = typed(['local.get', `$${vv}`], 'f64')
     let eq
     if (resolveValType(val, valTypeOf, lookupValType) === VAL.NUMBER) {
@@ -2356,15 +2510,21 @@ export default (ctx) => {
       inc('__same_value_zero')
       eq = (item) => ['call', '$__same_value_zero', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vget]]
     }
-    const result = tempI32('ic')
+    const result = tempI32('ic'), len = tempI32('icl'), ptr = tempI32('icp')
+    const from = fromIndexIR(positions, len, false)
     const exit = `$exit${freshId(ctx)}`
+    inc('__ptr_offset')
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item),
         ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
-    ])
+    ], len, ptr, false, ['local.get', `$${from.local}`])
     return typed(['block', ['result', 'f64'],
       recv.setup,
       ['local.set', `$${vv}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
+      ...positions.setup,
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
+      ...from.setup,
       ['local.set', `$${result}`, ['i32.const', 0]],
       ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
@@ -2374,97 +2534,83 @@ export default (ctx) => {
   // Registering it (alongside .string:lastIndexOf) is what lets lastIndexOf leave STRING_ONLY_METHODS:
   // an untyped receiver now forks string-vs-array at runtime instead of force-narrowing to string
   // (which returned -1 for every array). fromIndex is unsupported, matching .indexOf's array path.
-  ctx.core.emit['.lastIndexOf'] = (arr, val) => {
+  ctx.core.emit['.lastIndexOf'] = (arr, val, fromIndex) => {
     const recv = hoistArrayValue(arr)
     const vv = val === undefined ? undefExpr() : storedValue(val)
+    const positions = positionArgs([fromIndex])
     const eq = arrEqIR(val)
-    const result = tempI32('lx')
+    const result = tempI32('lx'), len = tempI32('lxl'), ptr = tempI32('lxp')
+    const from = fromIndexIR(positions, len, true)
+    const exit = `$exit${freshId(ctx)}`
+    inc('__ptr_offset')
+    // Backwards from fromIndex: the first hit is the last occurrence.
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', eq(item, vv),
-        ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]]]]
-    ])
+        ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
+    ], len, ptr, true, ['local.get', `$${from.local}`])
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ...positions.setup,
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
+      ...from.setup,
       ['local.set', `$${result}`, ['i32.const', -1]],
-      ...loop,
+      ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
-  // .at(i) → array element with negative index support
-  // 23.1.3.1 step 4/5: relativeIndex = ToIntegerOrInfinity(index); k = relativeIndex>=0
-  // ? relativeIndex : len+relativeIndex; k<0 || k>=len -> undefined. Two saturation bugs
-  // fixed together: (1) asI32Sat, not asI32 — an Infinity/huge index must saturate to
-  // INT32_MAX so it reads as "positive and past the end" below, not asI32's wrap-to -1
-  // (silently treated as a valid negative index, resolving to the LAST element instead
-  // of undefined — e.g. `[1,2,3].at(Infinity)` would return 3). (2) the upper-bound
-  // check itself was MISSING entirely (no `t>=len` guard at all) — even a plain in-range
-  // finite OOB index like `.at(10)` on a 3-element array read raw adjacent heap memory
-  // instead of returning undefined; with saturation alone (no bound check) `.at(Infinity)`
-  // would instead OOB-trap the whole module (off + INT32_MAX*8 is nowhere near allocated
-  // memory) — strictly worse. Both must land together.
+  // Relative positions use the original length and saturate huge numbers.
+  // An out-of-range position yields undefined without touching element storage.
   const undefNanIR = () => ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]
-  ctx.core.emit['.array:at'] = (arr, idx) => {
-    const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
-    if (vt === VAL.ARRAY) {
-      inc('__ptr_offset')
-      const t = tempI32('ai'), off = tempI32('ao'), len = tempI32('al')
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]]],
-        ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
-        ['local.set', `$${t}`, idx === undefined ? ['i32.const', 0] : asI32Sat(emit(idx))],
-        ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
-          ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
-        ['if', ['result', 'f64'],
-          ['i32.or', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]], ['i32.ge_s', ['local.get', `$${t}`], ['local.get', `$${len}`]]],
-          ['then', undefNanIR()],
-          ['else', ['f64.load', ['i32.add', ['local.get', `$${off}`],
-            ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]]]], 'f64')
-    }
-    const t = tempI32('ai'), a = temp('aa'), len = tempI32('al')
+  ctx.core.emit['.array:at'] = (arr, ...args) => {
+    const vt = valTypeOf(arr), kind = valTypeOf(args[0])
+    const recv = hoistArrayValue(arr), positions = positionArgs(args)
+    const t = tempI32('ai'), off = tempI32('ao'), len = tempI32('al')
+    const mayMutate = args[0] != null && kind !== VAL.NUMBER && kind !== VAL.BOOL && kind !== VAL.STRING
+    inc('__ptr_offset')
+    const read = mayMutate ? (vt === VAL.ARRAY ? '__arr_idx_known' : '__arr_idx') : null
+    if (read) inc(read)
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${a}`, asF64(emit(arr))],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${a}`]]]],
-      ['local.set', `$${t}`, idx === undefined ? ['i32.const', 0] : asI32Sat(emit(idx))],
-      // Negative index: t += length
+      recv.setup,
+      ...positions.setup,
+      ['local.set', `$${off}`, ['call', '$__ptr_offset', asI64(recv.value)]],
+      ['local.set', `$${len}`, vt === VAL.ARRAY ? arrayLenFromPtr(off) : ['call', '$__len', asI64(recv.value)]],
+      ['local.set', `$${t}`, positions.index(0)],
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['local.get', `$${len}`]]]]],
       ['if', ['result', 'f64'],
         ['i32.or', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]], ['i32.ge_s', ['local.get', `$${t}`], ['local.get', `$${len}`]]],
         ['then', undefNanIR()],
-        ['else', ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${a}`]]],
-          ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]]]], 'f64')
+        // Conversion can grow/forward or shrink the receiver. Keep the original
+        // relative length, but read the current element through the shared helper.
+        ['else', read ? ['call', `$${read}`, asI64(recv.value), ['local.get', `$${t}`]]
+          : ['f64.load', ['i32.add', ['local.get', `$${off}`],
+            ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]]]], 'f64')
   }
+  ctx.core.emit['.array:at'].argc = 2
   ctx.core.emit['.at'] = ctx.core.emit['.array:at']
 
-  ctx.core.emit['.slice'] = (arr, start, end) => {
+  ctx.core.emit['.slice'] = (arr, start, end, ...extra) => {
     // BUFFER slice → byte-level copy handled in typedarray module.
-    if (typeof arr === 'string') {
-      const vt = lookupValType(arr)
-      const ctor = plannedTypedStorageCtor(ctx, arr)
-      if ((vt === VAL.BUFFER || ctor === 'new.ArrayBuffer') && ctx.core.emit['.buf:slice'])
-        return ctx.core.emit['.buf:slice'](arr, start, end)
-    }
+    const ctor = typeof arr === 'string' ? plannedTypedStorageCtor(ctx, arr) : null
+    if ((valTypeOf(arr) === VAL.BUFFER || ctor === 'new.ArrayBuffer') && ctx.core.emit['.buf:slice'])
+      return ctx.core.emit['.buf:slice'](arr, start, end, ...extra)
     const recv = hoistArrayValue(arr)
     const s = tempI32('ss'), e = tempI32('se'), len = tempI32('sl'), outLen = tempI32('sn'), ptr = tempI32('sp')
     // ToIntegerOrInfinity position args (23.1.3.28 step 3/5) — asI32Sat, not asI32: an
     // Infinity/NaN/fractional start or end must saturate (INT32_MAX/MIN), not asI32's
     // ToInt32-WRAP fallback — with asI32's wrap, `[1,2,3,4,5].slice(NaN, Infinity)` would
     // drop the last element (Infinity wraps to -1, read downstream as "one before the end").
-    const bound = (expr, fallback) => {
-      if (expr == null || isUndefinedLiteral(expr)) return fallback
-      if (valTypeOf(expr) != null && !(typeof expr === 'string' && (mayBeUndefined(expr) || repOf(expr)?.nullable)))
-        return asI32Sat(emit(expr))
-      const t = temp('sbd')
-      return ['block', ['result', 'i32'],
-        ['local.set', `$${t}`, asF64(emit(expr))],
-        ['if', ['result', 'i32'], isUndef(['local.get', `$${t}`]),
-          ['then', fallback], ['else', asI32Sat(typed(['local.get', `$${t}`], 'f64'))]]]
-    }
-    const rawStart = bound(start, ['i32.const', 0])
-    const rawEnd = bound(end, ['local.get', `$${len}`])
+    // ToIntegerOrInfinity through positionArgs (a string converts, a BigInt
+    // throws, undefined takes the default); the arguments are captured
+    // before the receiver's length is read.
+    const positions = positionArgs([start, end])
+    const rawStart = positions.index(0, ['i32.const', 0])
+    const rawEnd = positions.index(1, ['local.get', `$${len}`])
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${outLen}`], tag: 'so' })
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ...positions.setup,
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
       ['local.set', `$${s}`, rawStart],
@@ -2626,5 +2772,5 @@ export default (ctx) => {
 
   // .join(sep) → concatenate array elements with separator string
   ctx.core.emit['.join'] = (arr, sep) => (inc('__str_join'),
-    typed(['call', '$__str_join', asI64(emit(arr)), asI64(emit(sep == null ? ['str', ','] : sep))], 'f64'))
+    typed(['call', '$__str_join', asI64(emit(arr)), asI64(storedValue(sep == null ? ['str', ','] : sep))], 'f64'))
 }

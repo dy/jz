@@ -7,9 +7,828 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onKernel, withBigintStrict, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
+
+test('property dispatch preserves key effects, misses and array relocation', () => {
+  const src = `export function f(mode,kind){
+    const a=[3,5],d={};d['0']=7;const o=mode?d:a;o.label='owned';let calls=0;
+    const key={toString(){calls++;if(kind===2)throw 29;
+      if(kind===1){if(!mode)for(let i=0;i<40;i++)a.push(i);o[0]=11;return '0'}
+      return kind===3?'absent':'label'}};
+    try{return [o[key],calls,o[0]]}catch(e){return [e,calls,o[0]]}}
+  `
+  const expected = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const kind of [0, 1, 2, 3])
+      for (const mode of [0, 0, 1, 0]) is(f(mode, kind), expected(mode, kind), `O${optimize}, ${mode}/${kind}`)
+  }
+})
+
+test('typed BigInt keys and updates retain identity without BigInt literals', () => {
+  // `key = '' + key`: the export boundary is numeric for a parameter used only
+  // as a typed-array index (README, "Host boundary"); a program that wants the
+  // host's property keys takes them as strings, JS's own ToPropertyKey.
+  const src = `export function f(key,k) {
+    key = '' + key
+    const a=new BigInt64Array(3),d=new DataView(a.buffer)
+    if(k){d.setUint32(8,1,true);d.setUint32(20,2146959362,true)}
+    a.label='named'
+    const old=a[key],items=[]
+    items.push(old);items.unshift(a[1])
+    return [typeof old,old,items,typeof a.length,a.length]
+  }
+  export function step(key) {
+    key = '' + key
+    const a=new BigInt64Array(2)
+    const before=a[key]++,after=--a[key]
+    return [before,after,a[key]]
+  }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = jz(src, { optimize }).exports
+    for (const [key,k] of [[0,0],[0,0],['1',1],['2',1],['length',0],['label',0],[3,0],[0,0]])
+      is(wasm.f(key,k), js.f(key,k), `O${optimize}, key ${key}/${k}`)
+    for (const key of [0,'1',0]) is(wasm.step(key), js.step(key), `O${optimize}, update ${key}`)
+  }
+})
+
+test('typed-array property keys preserve named values and canonical numeric indexing', () => {
+  const src = `export function f(key, value) {
+    key = '' + key
+    const a = new Int32Array([9, 11])
+    const assigned = a[key] = value
+    return [assigned, a[key], a['label'], a[0], a[1], a.length]
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const key of ['label', '0', '01', '-0', '-1', '1.5', 'NaN', 'Infinity', '1e0', '', 'é', 'a\0b',
+      '1.0', '+1', ' 1', '2147483647', '9007199254740993',
+      null, undefined, false, 0, -0, -2, 1, 1.5, NaN, Infinity, 'label'])
+      for (const value of [4294967294, 1.5, 'text', '17', true])
+        is(f(key, value), expected(key, value), `O${optimize}: ${String(key)}, ${String(value)}`)
+  }
+})
+
+// The export boundary (README, "Host boundary"): a parameter used only as a
+// typed-array index takes an f64 slot, so the host's key converts as `+key` and
+// the index coerces to i32 ("Array indices coerce to i32"). Property semantics
+// for string keys hold wherever the program holds the key as a string: an
+// internal helper whose callers pass strings.
+test('exported typed-array index parameters take the numeric boundary; internal string keys keep property semantics', () => {
+  for (const exports of [
+    `export function get(key) { return a[key] }
+     export function mixed(key) { return a[key] + (key | 0) }`,
+    `export const get = key => a[key];
+     export const mixed = key => a[key] + (key | 0);`
+  ]) {
+    const src = `const a = new Float64Array([3, 5]); ${exports}`
+    const ref = new Float64Array([3, 5])
+    const at = (key) => { const i = +key | 0; return i >= 0 && i < ref.length ? ref[i] : undefined }
+    const expected = { get: at, mixed: (key) => at(key) + (key | 0) }
+    for (const optimize of [...levels(0, 2, 3), 'size']) {
+      const wasm = jz(src, { optimize }).exports
+      for (const name of ['get', 'mixed'])
+        for (const key of ['length', 'byteLength', 'byteOffset', 0, '1', '', 'length\0', 'length'])
+          is(wasm[name](key), expected[name](key), `O${optimize}: ${name}(${key})`)
+    }
+  }
+  const internal = `const a = new Float64Array([3, 5]);
+    function get(key) { return a[key] }
+    export function props() { return [get('length'), get('byteLength'), get('byteOffset'), get('1'), get(''), get('length\\0')] }`
+  for (const optimize of [...levels(0, 2, 3), 'size'])
+    is(jz(internal, { optimize }).exports.props(), [2, 16, 0, 5, undefined, undefined], `O${optimize}: string keys through an internal helper`)
+})
+
+test('exported typed-array stores take the numeric boundary for key and value; internal named keys stay properties', () => {
+  const src = `const a = new Float64Array([3, 5]);
+    export function put(key, value) { a[key] = value; }
+    export function get(key) { return a[key]; }`
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const wasm = jz(src, { optimize }).exports, ref = new Float64Array([3, 5])
+    const at = (key) => { const i = +key | 0; return i >= 0 && i < ref.length ? ref[i] : undefined }
+    for (const [key, value] of [['note', 'text'], ['note', undefined], ['01', 9], [0, '11'], ['1', 13], ['', false]]) {
+      wasm.put(key, value)
+      const i = +key | 0
+      if (i >= 0 && i < ref.length) ref[i] = +value
+      for (const key of ['note', '01', 0, 1, '', 'length'])
+        is(wasm.get(key), at(key), `O${optimize}: stored ${key}`)
+    }
+  }
+  const internal = `const a = new Float64Array([3, 5]);
+    function put(key, value) { a[key] = value }
+    function get(key) { return a[key] }
+    export function probe() { put('note', 'text'); put('01', 9); put('1', 13); return [get('note'), get('01'), get('1'), get('0'), get('length')] }`
+  for (const optimize of [...levels(0, 2, 3), 'size'])
+    // '01' is not a canonical numeric string: an ordinary property on the typed array, like 'note'.
+    is(jz(internal, { optimize }).exports.probe(), ['text', 9, 13, 3, 2], `O${optimize}: named keys through internal helpers`)
+})
+
+test('typed-array named slots survive aliases, views, deletion and reuse', () => {
+  const src = `const base = new Int32Array([3, 5, 7]);
+    const view = base.subarray(1); const empty = new Int32Array(0);
+    export function f(key, mode) {
+      const a = mode ? view : empty, alias = a;
+      a[key] = { n: 4294967294 };
+      const first = alias[key].n;
+      alias[key] = undefined;
+      const present = key in a;
+      delete a[key];
+      const absent = !(key in alias);
+      alias[key] = 7n;
+      return [first, present, absent, a[key], base[0], base[1], base[2]];
+    }
+    export function missing() {
+      const a = new Int32Array(1); a.undefined = 'missing';
+      const b = new Int32Array(0); const index = b[0];
+      return [a[b[0]], a[index]];
+    }`
+  const expected = oracle(src)
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const wasm = jz(src, { optimize }).exports
+    for (const mode of [0, 1, 1, 0])
+      for (const key of ['label', '01', 'é', undefined, null, false, 'label'])
+        is(wasm.f(key, mode), expected.f(key, mode), `O${optimize}: view=${mode}, ${key}`)
+    is(wasm.missing(), ['missing', 'missing'], 'missing typed index retains its named key through a local')
+  }
+})
+
+test('proven integer index locals retain element dispatch after nullable summaries', () => {
+  const src = `export function f() {
+    const indices = new Int32Array([0, 1, 2]), values = new Int32Array(3);
+    for (let i = 0; i < indices.length; i++) { const k = indices[i]; values[k] = (values[k] + 1) | 0 }
+    return values[2];
+  }`
+  for (const optimize of [2, 'size']) {
+    is(jz(src, { optimize }).exports.f(), 1)
+    ok(!compile(src, { optimize, wat: true }).includes('(func $__dyn_get'), 'present integer keys need no property runtime')
+  }
+})
+
+test('typed-array dynamic reads retain BigInt and Number arithmetic domains', () => {
+  const src = `export function f(key) {
+    key = '' + key
+    const a = new BigInt64Array([9221120245631025152n]);
+    a.note = '4'; a.zero = 0;
+    return [a[key], a[key] - a[key], -a[key], ~a[key]];
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const key of [0, '0', 1, 'note', 'zero', undefined, null, 'absent'])
+      is(f(key), expected(key), `O${optimize}: ${String(key)}`)
+  }
+})
+
+test('typed-array missing numeric keys need no named-property lookup on closed arrays', () => {
+  const src = `export function f() {
+    const a = new Int32Array([17]), b = new Int32Array(0);
+    const key = b[0];
+    return [a[b[0]], a[key]];
+  }`
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    is(jz(src, { optimize }).exports.f(), [undefined, undefined])
+    ok(!compile(src, { optimize, wat: true }).includes('(func $__dyn_get'), 'existing index presence checks suffice')
+  }
+})
+
+test('typed-array reads parse indices without the numeric string-conversion runtime', () => {
+  const src = `function make() { return new Float64Array([1.5, 2.5, 3.5]) }
+    export function f(key) { key = '' + key; const a = make(); return a[key] }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const key of [0, '0', '2', '3', '01', '-0', '-1', '1.5', '1e0', 'NaN', 'Infinity',
+      '2147483647', '2147483648', '9007199254740993', 'length', 'byteLength', 'byteOffset', '', null, undefined])
+      is(f(key), expected(key), `O${optimize}: ${String(key)}`)
+    const wat = compile(src, { optimize, wat: true })
+    ok(!wat.includes('$__typed_key_idx') && !wat.includes('$__to_num'), 'reads need only an integer-index parser')
+  }
+})
+
+test('typed-array string keys share checked reads and preserve presence', () => {
+  for (const ctor of ['Float64Array', 'BigInt64Array']) {
+    const values = ctor === 'Float64Array' ? '3, NaN' : '9221120245631025152n, -1n'
+    const src = `const base = new ${ctor}([${values}]);
+      const views = [base, new ${ctor}(0), base.subarray(1)];
+      export function f(key, mode) { const a = views[mode]; return [a[key], key in a] }`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { f } = jz(src, { optimize }).exports
+      for (const mode of [0, 0, 1, 2, 0])
+        for (const key of ['0', '0', '1', '2', '-0', '-1', '01', '0\0', '2147483647',
+          '2147483648', '4294967294', 'length', '', '0'])
+          is(f(key, mode), expected(key, mode), `${ctor}, O${optimize}: ${mode}/${key}`)
+    }
+    const wat = compile(src, { optimize: { level: 2, watr: false }, wat: true })
+    const read = funcWat(wat, '__dyn_get_t_h'), has = funcWat(wat, '__dyn_get_t_hm')
+    ok(read.includes('call $__typed_idx'), 'value lookup delegates to the checked element reader')
+    is((read.match(/call \$__len\b/g) || []).length, 0, 'value lookup does not repeat the bounds check')
+    is((has.match(/call \$__len\b/g) || []).length, 1, 'presence still checks the element bounds')
+  }
+})
+
+test('computed typed-array accessors follow own properties on owned, empty and view receivers', () => {
+  const src = `const base = new Float64Array([3, 5, 7]);
+    const views = [base, base.subarray(1), new Float64Array(0), new DataView(base.buffer, 8, 8),
+      base.subarray(base.length), new DataView(base.buffer, base.byteLength, 0)];
+    export function read(key, mode) { const a = views[mode]; return [a[key], key in a] }
+    export function shadow(key, mode) {
+      const a = views[mode], inherited = a[key];
+      Object.defineProperty(a, key, { value: 99, configurable: true, writable: true });
+      const own = a[key];
+      Object.defineProperty(a, key, { value: undefined, configurable: true, writable: true });
+      const value = a[key], present = key in a;
+      delete a[key];
+      return [inherited, own, value, present, a[key], key in a];
+    }`
+  const expected = oracle(src)
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const wasm = jz(src, { optimize }).exports
+    for (const mode of [0, 0, 1, 2, 3, 4, 5, 0])
+      for (const key of ['length', 'byteLength', 'byteOffset', 'length\0', 'byteLength\0']) {
+        is(wasm.read(key, mode), expected.read(key, mode), `O${optimize}: ${key}, receiver=${mode}`)
+        is(wasm.shadow(key, mode), expected.shadow(key, mode), `O${optimize}: shadow/delete ${key}, receiver=${mode}`)
+      }
+  }
+})
+
+test('typed payload provenance preserves missing receivers through locals and aliases', () => {
+  const src = `export function read(which, key) {
+      key = '' + key
+      const xs = [new Float64Array([7])]; const a = xs[which], alias = a;
+      return alias[key];
+    }
+    export function value(which) {
+      const xs = [new Float64Array([7])]; const a = xs[which]; return a;
+    }
+    export function hole(which, key) {
+      key = '' + key
+      const xs = new Array(2); xs[0] = new Float64Array([7]); const a = xs[which]; return a[key];
+    }
+    export function effects(which, key) {
+      key = '' + key
+      let calls = 0; const xs = [new Float64Array([7])];
+      try { const a = xs[which]; a[(calls++, key)]; }
+      catch (e) { return [calls, e.name]; }
+      return [calls, 'ok'];
+    }`
+  const expected = oracle(src)
+  for (const optimize of [0, 2, 3, 'size']) {
+    const wasm = jz(src, { optimize }).exports
+    for (const which of [0, 0, 1, -1, 0]) {
+      is(wasm.value(which), expected.value(which), `O${optimize}: value ${which}`)
+      for (const key of [0, '0', -1, '-1', 'length', 'absent']) {
+        is(wasm.effects(which, key), expected.effects(which, key), `O${optimize}: key effects ${which}, ${key}`)
+        for (const name of ['read', 'hole']) {
+          if (which !== 0) throws(() => wasm[name](which, key), TypeError, `O${optimize}: ${name}(${which}, ${key})`)
+          else is(wasm[name](which, key), expected[name](which, key), `O${optimize}: ${name}(${which}, ${key})`)
+        }
+      }
+    }
+  }
+})
+
+test('direct nullable receivers preserve values, holes and field/index failures', () => {
+  for (const [value, access] of [['{ x: 7 }', '.x'], ['{ length: 7 }', '.length'],
+    ['new Float64Array([7])', '[0]'], ['new Float64Array([7])', '.length'],
+    ['new BigInt64Array([7n])', '[0]']]) {
+    const src = `export function read(i) {
+      const xs = [${value}, null, undefined]; const a = xs[i], alias = a;
+      return alias${access};
+    }
+    export function hole(i) {
+      const xs = new Array(2); xs[0] = ${value}; const a = xs[i]; return a${access};
+    }
+    export function value(i) { const xs = [${value}]; const a = xs[i]; return a; }`
+    const expected = oracle(src)
+    for (const optimize of [0, 2, 3, 'size']) {
+      const wasm = jz(src, { optimize }).exports
+      for (const i of [0, 0, 1, 2, 3, -1, 0]) {
+        is(wasm.value(i), expected.value(i), `O${optimize}: ${value}, value(${i})`)
+        for (const name of ['read', 'hole']) {
+          if (i === 0) is(wasm[name](i), expected[name](i), `O${optimize}: ${value}${access}`)
+          else throws(() => wasm[name](i), TypeError, `O${optimize}: ${value}${access}, ${name}(${i})`)
+        }
+      }
+    }
+  }
+})
+
+test('nullable index guards retain the receiver and defer object-key conversion', () => {
+  const src = `export function f(empty) {
+    let events = 0, a = empty ? undefined : new Float64Array([7]);
+    const key = { toString() { events = events * 10 + 3; return '0'; } };
+    try {
+      const result = a[(events = events * 10 + 1, a = new Float64Array([9]), events = events * 10 + 2, key)];
+      return [result, events];
+    } catch (e) { return [e.name, events]; }
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const empty of [0, 0, 1, 1, 0]) is(f(empty), expected(empty), `O${optimize}: empty=${empty}`)
+  }
+})
+
+test('nullable typed stores preserve assignment values and reject missing receivers', () => {
+  for (const ctor of ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
+    'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array']) {
+    const big = ctor.startsWith('Big'), initial = big ? '3n' : '3', value = big ? '7n' : '7'
+    const src = `export function f(which, key) {
+      const base = new ${ctor}([${initial}, ${initial}]);
+      const xs = [base, new ${ctor}(0), null, undefined, base.subarray(1)];
+      const a = xs[which], index = key | 0;
+      try { const assigned = (a[index] = ${value}); return [assigned, a[0], base[0], base[1]]; }
+      catch (e) { return e.name; }
+    }
+    export function direct(which) {
+      const a = [new ${ctor}([${initial}])][which];
+      try { const assigned = (a[0] = ${value}); return [assigned, a[0]]; }
+      catch (e) { return e.name; }
+    }
+    export function store(which) {
+      const xs = [new ${ctor}([${initial}])], a = xs[which];
+      a[0] = ${value}; return a[0];
+    }`
+    const expected = oracle(src).f
+    for (const optimize of [0, 2, 3, 'size']) {
+      const { f, direct, store } = jz(src, { optimize }).exports
+      const directExpected = oracle(src).direct
+      for (const which of [0, 0, 1, -1, 0])
+        is(direct(which), directExpected(which), `O${optimize}: ${ctor}, direct receiver=${which}`)
+      is(store(0), big ? 7n : 7, `O${optimize}: ${ctor}, known constructor`)
+      throws(() => store(1), TypeError, `O${optimize}: ${ctor}, absent receiver`)
+      is(store(0), big ? 7n : 7, `O${optimize}: ${ctor}, reuse after throw`)
+      for (const which of [0, 0, 1, 2, 3, 4, 5, -1, 0])
+        for (const key of [0, 1, 2, -1, 0])
+          is(f(which, key), expected(which, key), `O${optimize}: ${ctor}, receiver=${which}, index=${key}`)
+    }
+  }
+})
+
+test('nullable typed stores capture the reference and evaluate RHS before rejecting it', () => {
+  const src = `export function f(which, fail) {
+    const original = new Float64Array([3]), replacement = new Float64Array([5]);
+    let a = [original, null, undefined][which], events = 0;
+    function rhs() { events = events * 10 + 2; if (fail) throw new RangeError('rhs'); return 7; }
+    try {
+      const assigned = a[(events = events * 10 + 1, a = replacement, 0)] = rhs();
+      return [assigned, events, original[0], replacement[0]];
+    } catch (e) { return [e.name, events, original[0], replacement[0]]; }
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const which of [0, 0, 1, 2, 3, -1, 0])
+      for (const fail of [0, 1, 0]) is(f(which, fail), expected(which, fail), `O${optimize}: ${which}, throw=${fail}`)
+  }
+})
+
+test('runtime typed stores reject a missing receiver before value coercion', () => {
+  for (const ctor of ['Float64Array', 'Float32Array', 'Uint8Array']) {
+    const src = `export function f(which) {
+      let events = 0; const a = [new ${ctor}([3]), new ${ctor}(0), null, undefined][which];
+      function rhs() { events = events * 10 + 2; return { valueOf() { events = events * 10 + 3; return 7; } }; }
+      try { a[(events = events * 10 + 1, 0)] = rhs(); return [events, a[0]]; }
+      catch (e) { return [events, e.name]; }
+    }`
+    const expected = oracle(src).f
+    for (const optimize of [0, 2, 3, 'size']) {
+      const { f } = jz(src, { optimize }).exports
+      for (const which of [0, 0, 1, 2, 3, 4, -1, 0]) is(f(which), expected(which), `O${optimize}: ${ctor}, receiver=${which}`)
+    }
+  }
+})
+
+test('nullable BigInt fields retain raw and boxed payloads through catch and optional reads', () => {
+  for (const value of ['0n', '7n', '-7n', '9223372036854775807n', '-9223372036854775808n',
+    '0x7ff8000200000000n', '0x7ffa800000000008n']) {
+    for (const written of ['', `item.x = ${value};`]) {
+      const src = `export function f(i) {
+        const item = { x: ${value} }; ${written} const a = [item][i];
+        try { const alias = a; return [a.x, alias['x'], a?.x]; } catch (e) { return e.name; }
+      }
+      export function direct(i) { const a = [{ x: ${value} }][i]; try { return a.x; } catch (e) { return e.name; } }
+      export function expression(i) { try { return ([{ x: ${value} }][i]).x; } catch (e) { return e.name; } }
+      export function optional(i) { const a = [{ x: ${value} }][i]; return a?.x; }`
+      const expected = oracle(src)
+      for (const optimize of [0, 2, 3, 'size']) {
+        const wasm = jz(src, { optimize }).exports
+        for (const name of ['f', 'direct', 'expression', 'optional'])
+          for (const i of [0, 0, 1, -1, 0]) is(wasm[name](i), expected[name](i), `O${optimize}: ${name}, ${value}, i=${i}, write=${!!written}`)
+      }
+    }
+  }
+})
+
+test('dynamic typed assignment results keep their tagged BigInt carrier', () => {
+  const src = `export function f(i, key) {
+    key = '' + key
+    const a = [new BigInt64Array([3n])][i];
+    try { const assigned = (a[key] = 7n); return [assigned, a[0]]; } catch (e) { return e.name; }
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const i of [0, 0, 1, -1, 0])
+      for (const key of [0, 1, -1, '0', 'label', '1.5']) is(f(i, key), expected(i, key), `O${optimize}: i=${i}, key=${key}`)
+  }
+})
+
+test('expression field stores retain schema carriers and the original receiver', () => {
+  for (const value of ['8n', '-9223372036854775808n', '0x7ffa800000000008n']) {
+    const src = `export function direct(i) {
+      const xs = [{ x: 7n }]; xs[0].x = ${value}; const a = xs[i];
+      try { return a.x; } catch (e) { return e.name; }
+    }
+    export function effects(i) {
+      let events = 0; const original = { x: 7n }, replacement = { x: 9n };
+      const xs = [original, null, undefined];
+      function rhs() { events++; xs[0] = replacement; return ${value}; }
+      try { const assigned = (xs[i].x = rhs()); return [assigned, original.x, replacement.x, events]; }
+      catch (e) { return [e.name, original.x, replacement.x, events]; }
+    }
+    export function bracket(i) {
+      const xs = [{ x: 7n }]; xs[0]['x'] = ${value};
+      try { return xs[i]['x']; } catch (e) { return e.name; }
+    }`
+    const expected = oracle(src)
+    for (const optimize of [0, 2, 3, 'size']) {
+      const wasm = jz(src, { optimize }).exports
+      for (const name of ['direct', 'effects', 'bracket'])
+        for (const i of [0, 0, 1, 2, 3, -1, 0]) is(wasm[name](i), expected[name](i), `O${optimize}: ${name}, ${value}, i=${i}`)
+    }
+  }
+})
+
+test('nullable typed reads keep missing elements distinct from numeric conversion', () => {
+  for (const ctor of ['Float64Array', 'BigInt64Array']) {
+    const src = `export function f(i, k) {
+      const xs = [new ${ctor}([${ctor === 'BigInt64Array' ? '7n' : '7'}])]; const a = xs[i];
+      return [a[0], a[-1], a[k]${ctor === 'Float64Array' ? ', a[k] - a[k]' : ''}];
+    }`
+    const expected = oracle(src).f
+    for (const optimize of [0, 2, 3, 'size']) {
+      const { f } = jz(src, { optimize }).exports
+      for (const k of [0, 1, -1, 0]) {
+        is(f(0, k), expected(0, k), `O${optimize}: ${ctor}, k=${k}`)
+        throws(() => f(1, k), TypeError, `O${optimize}: ${ctor}, absent receiver`)
+      }
+    }
+  }
+})
+
+test('nullable compound references throw before key coercion and the RHS', () => {
+  const src = `export function f(empty) {
+    let events = 0; const a = empty ? undefined : new Float64Array([7]);
+    const key = { toString() { events = events * 10 + 2; return '0'; } };
+    try {
+      a[(events = events * 10 + 1, key)] += (events = events * 10 + 3, 2);
+      return [events, a[0]];
+    } catch (e) { return [events, e.name]; }
+  }`
+  // GetValue stores the converted key in the Reference (ECMA-262 6.2.5.5).
+  // Node 25 converts it twice; test/to-primitive.js pins this divergence too.
+  for (const optimize of [0, 2, 3, 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const empty of [0, 0, 1, 1, 0])
+      is(f(empty), empty ? [1, 'TypeError'] : [123, 9], `O${optimize}: empty=${empty}`)
+  }
+})
+
+test('compound writes retain the converted key through PutValue', () => {
+  for (const op of ['+= 2', '++']) {
+    const src = `export function f() {
+      let calls = 0; const o = { x: 7, y: 100 };
+      const key = { toString() { return ++calls === 1 ? 'x' : 'y'; } };
+      const result = o[key] ${op}; return [result, o.x, o.y, calls];
+    }`
+    const expected = oracle(src.replace('const result = o[key]', 'const prop = String(key); const result = o[prop]')).f
+    for (const optimize of [0, 2, 3, 'size']) {
+      const { f } = jz(src, { optimize }).exports
+      is(f(), expected(), `O${optimize}: ${op}`)
+      is(f(), expected(), `O${optimize}: repeated ${op}`)
+    }
+  }
+})
+
+test('nullable receiver unions preserve non-number assignment keys', () => {
+  for (const key of ['true', "({ toString() { return '0'; } })"]) {
+    const src = `export function f(empty) {
+      const a = empty ? undefined : new Float64Array([7]);
+      try { const assigned = a[${key}] = 9; return [assigned, a[${key}], a[0]]; }
+      catch (e) { return e.name; }
+    }`
+    const expected = oracle(src).f
+    for (const optimize of [0, 2, 3, 'size']) {
+      const { f } = jz(src, { optimize }).exports
+      for (const empty of [0, 0, 1, 1, 0]) is(f(empty), expected(empty), `O${optimize}: ${key}, empty=${empty}`)
+    }
+  }
+})
+
+test('loop versioning does not inspect absent buffers on zero-work calls', () => {
+  const src = `let p;
+    export function init() { p = new Float64Array([2, 3, 4]); }
+    export function sum(n) { let s = 0; for (let i = 0; i < n; i++) s += p[i]; return s; }
+    export function nested(n) {
+      let s = 0; for (let j = 0; j < n; j++) for (let i = 0; i < p.length; i++) s += p[i]; return s;
+    }`
+  for (const optimize of [0, 2, 3, 'size']) {
+    const wasm = jz(src, { optimize }).exports, expected = oracle(src)
+    for (const name of ['sum', 'nested']) {
+      for (const n of [0, 0, -1, 1, 0]) {
+        if (n > 0) throws(() => wasm[name](n), TypeError, `O${optimize}: ${name} before init`)
+        else is(wasm[name](n), expected[name](n), `O${optimize}: ${name} zero work`)
+      }
+    }
+    wasm.init(); expected.init()
+    for (const name of ['sum', 'nested']) for (const n of [0, 1, 3, 0, 3])
+      is(wasm[name](n), expected[name](n), `O${optimize}: ${name} after init`)
+  }
+})
+
+test('loop receiver presence does not prove unrelated index bounds', () => {
+  const src = `let a;
+    export function init() { a = new Float64Array([2, 3, 4, 5]); }
+    export function sum(n, k) {
+      let s = 0; for (let i = 0; i < n; i++) { s += a[i & 3]; s += a[k]; } return s;
+    }`
+  for (const optimize of [0, 2, 3, 'size']) {
+    const wasm = jz(src, { optimize }).exports, expected = oracle(src)
+    is(wasm.sum(0, 100), 0)
+    throws(() => wasm.sum(1, 0), TypeError)
+    is(wasm.sum(0, 0), 0)
+    wasm.init(); expected.init()
+    for (const k of [0, 0, 3, 4, -1, 100, 0])
+      is(wasm.sum(4, k), expected.sum(4, k), `O${optimize}: index ${k}`)
+  }
+})
+
+test('loop guards reject buffer replacement through helper calls', () => {
+  for (const replacement of ['undefined', 'null', 'new Float64Array([7])']) {
+    const src = `let a;
+      export function init() { a = new Float64Array([2, 3, 4, 5]); }
+      function change(k) { if (k) a = ${replacement}; else a = new Float64Array(2); }
+      function forward(k) { change(k); }
+      export function sum(n) {
+        let s = 0; for (let i = 0; i < n; i++) {
+          s += a[i & 3]; if (i === 0) forward(1); s += a[(i + 1) & 3];
+        } return s;
+      }`
+    for (const optimize of [0, 2, 3, 'size', { level: 2, sourceInline: false }, { level: 3, sourceInline: false }]) {
+      const wasm = jz(src, { optimize }).exports, expected = oracle(src)
+      for (let run = 0; run < 2; run++) {
+        is(wasm.sum(0), 0)
+        wasm.init(); expected.init()
+        if (replacement.startsWith('new')) is(wasm.sum(2), expected.sum(2))
+        else throws(() => wasm.sum(2), TypeError, `${JSON.stringify(optimize)}: ${replacement}`)
+        is(wasm.sum(0), 0)
+      }
+    }
+  }
+})
+
+test('loop guards account for Math argument coercion and captured receivers', () => {
+  const sources = [
+    `let a; export function init() { a = new Float64Array([2, 3, 4, 5]); }
+     export function sum(n) {
+       const k = { valueOf() { a = undefined; return 0; } };
+       let s = 0; for (let i = 0; i < n; i++) { s += a[i & 3]; Math.abs(k); s += a[(i + 1) & 3]; } return s;
+     }`,
+    `export function init() {}
+     export function sum(n) {
+       let a = new Float64Array([2, 3, 4, 5]); const clear = () => { a = undefined; };
+       let s = 0; for (let i = 0; i < n; i++) { s += a[i & 3]; clear(); s += a[(i + 1) & 3]; } return s;
+     }`,
+  ]
+  for (const src of sources) for (const optimize of [0, 2, 3, 'size', { level: 3, sourceInline: false }]) {
+    const wasm = jz(src, { optimize }).exports
+    for (let run = 0; run < 2; run++) {
+      wasm.init(); is(wasm.sum(0), 0)
+      throws(() => wasm.sum(1), TypeError, JSON.stringify(optimize))
+    }
+  }
+})
+
+test('loop guards include helper defaults and loop-header writes', () => {
+  for (const loop of [
+    'for (let i = 0; i < n; i++) { s += a[i]; forward(); s += a[i + 1]; }',
+    'for (let i = 0; i < n; i++, change()) s += a[i];',
+    'for (let i = 0; i < n && (i === 0 || change()); i++) s += a[i];',
+  ]) {
+    const src = `let a;
+      export function init() { a = new Float64Array([2, 3, 4, 5]); }
+      function change() { a = undefined; return true; }
+      function forward(k = change()) { return k; }
+      export function sum(n) { let s = 0; ${loop} return s; }`
+    for (const optimize of [0, 2, 3, { level: 3, sourceInline: false }]) {
+      const wasm = jz(src, { optimize }).exports
+      is(wasm.sum(0), 0)
+      wasm.init(); throws(() => wasm.sum(2), TypeError)
+      is(wasm.sum(0), 0)
+    }
+  }
+})
+
+test('loop guards reject changes to bounds, offsets and duplicate cursor steps', () => {
+  const sources = [
+    `let off = 0; function move() { off = 10; }
+     export function sum(n) {
+       off = 0; const a = new Float64Array([2, 3, 4, 5]); let s = 0;
+       for (let i = 0; i < n; i++) { s += a[i + off]; move(); } return s;
+     }`,
+    ...['limit', 'limit + 1'].map(bound => `let limit = 0; function move() { limit = 5; }
+     export function sum(n) {
+       limit = n; const a = new Float64Array([2, 3, 4]); let s = 0;
+       for (let i = 0; i < ${bound}; i++) { s += a[i]; move(); } return s;
+     }`),
+    `export function sum(n) {
+       const a = new Float64Array([2, 3, 4]); let s = 0;
+       for (let i = 0, k = 0; i < n; i++, k += 1, k += 1) s += a[k]; return s;
+     }`,
+  ]
+  for (const src of sources) for (const optimize of [0, 2, 3, { level: 2, sourceInline: false }, { level: 3, sourceInline: false }]) {
+    const wasm = jz(src, { optimize }).exports, expected = oracle(src)
+    for (const n of [0, 0, 1, 2, 3, 0]) is(wasm.sum(n), expected.sum(n), JSON.stringify(optimize))
+  }
+})
+
+test('cached typed loads preserve absence separately from numeric arithmetic', () => {
+  const src = `export function f(n) {
+    const a = new Float64Array(n), value = a[0];
+    return [value, value - value, value + 1];
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 0, 1, 0, 1]) is(f(n), expected(n), `O${optimize}: n=${n}`)
+  }
+})
+
+test('numeric local storage publishes the converted value kind', () => {
+  const src = `export function f(n, positive) {
+    const a = new Uint8Array(n);
+    let r = 0, x = 7;
+    if (positive) { const d = a[r++]; x = positive ? x + d : x - d }
+    return x;
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 1]) for (const positive of [0, 1])
+      is(f(n, positive), expected(n, positive), `O${optimize}: n=${n}, positive=${positive}`)
+    ok(!compile(src, { optimize, wat: true }).includes('(func $__str_concat'), 'numeric storage cannot concatenate')
+  }
+})
+
+test('load reuse separates numeric conversion from raw typed-element identity', () => {
+  for (const [ctor, values] of [['Float64Array', '2, 3'], ['BigInt64Array', '2n, 3n']]) {
+    // Global receivers enter the load census before emission; the former
+    // local-array fixture passed even when source load reuse was broken.
+    const src = `const a = new ${ctor}([${values}]);
+    export function f(i) {
+      i |= 0;
+      const first = a[i], difference = a[i] - a[i], last = a[i];
+      const neg = -a[i], bits = ~a[i];
+      let sum; sum = a[i] + a[i];
+      return [first, difference, last, neg, bits, sum];
+    }`
+    const expected = oracle(src).f
+    for (const optimize of [...levels(0, 2, 3), 'size', { level: 3, loadCSE: false }]) {
+      const { f } = jz(src, { optimize }).exports
+      for (const i of [2, 2, 0, 1, -1, 2, 0]) is(f(i), expected(i), `${ctor}, O${optimize}: i=${i}`)
+    }
+    if (ctor === 'Float64Array') {
+      const loads = loadCSE => (compile(src, { optimize: { level: 3, loadCSE }, wat: true }).match(/f64\.load/g) || []).length
+      ok(loads(true) < loads(false), 'the regression exercises load reuse')
+    }
+  }
+})
+
+test('typed-array named slots can refer back to the receiver', () => {
+  const src = `export function f() {
+    const a = new Int32Array([9]); a.self = a;
+    a.box = { inner: a }; a.box.inner.note = 17;
+    return [a.self.note, a.self[0]];
+  }`
+  for (const optimize of [...levels(0, 2, 3), 'size'])
+    is(jz(src, { optimize }).exports.f(), [17, 9])
+})
+
+test('typed-array numeric string membership works without element reads or writes', () => {
+  const src = `export function f(key) { const a = new Int32Array(2); return key in a }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const key of ['0', '1', '2', '-0', '01', 'NaN', '', 0, 2, undefined])
+      is(f(key), expected(key), `O${optimize}: ${key}`)
+  }
+})
+
+test('typed-array dynamic index stores respect empty and nonempty view boundaries', () => {
+  const src = `export function f(key, end) {
+    key = '' + key
+    const base = new Int32Array([3, 5, 7]); const a = base.subarray(1, end);
+    a[key] = 17;
+    return [base[0], base[1], base[2], a.length];
+  }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const end of [1, 2])
+      for (const key of [-2, -1, 0, 1, 2, '-2', '-1', '0', '1', '2', '1.5', 'NaN', 'label'])
+        is(f(key, end), expected(key, end), `O${optimize}: ${key}, end=${end}`)
+  }
+})
+
+test('typed-array invalid numeric keys still convert the RHS; named keys do not', () => {
+  const src = `export function f(key) {
+    key = '' + key
+    const a = new BigInt64Array(1);
+    try { a[key] = 4; return a[key] } catch (e) { return e.name }
+  }
+  export function g(key) {
+    key = '' + key
+    const a = new Int32Array(1);
+    try { a[key] = 4n; return a[key] } catch (e) { return e.name }
+  }`
+  const expected = oracle(src)
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const wasm = jz(src, { optimize }).exports
+    for (const key of ['label', '01', '0', '-0', '-2', 'NaN', 0, -2, 1.5, Infinity])
+      for (const name of ['f', 'g']) is(wasm[name](key), expected[name](key), `O${optimize}: ${name}(${key})`)
+  }
+})
+
+test('polymorphic indexed stores convert before bounds and preserve assignment values', () => {
+  const src = `export function f(kind, n, value) {
+    const a = kind ? new Int32Array(n) : [];
+    const result = a[0] = value;
+    return [result, a[0], a.length];
+  }
+  export function g(kind, n) {
+    const a = kind ? new Int32Array(n) : [];
+    try { a[0] = 7n; return a[0] } catch (e) { return e.name }
+  }`
+  const expected = oracle(src)
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const wasm = jz(src, { optimize }).exports
+    const scalar = jz(src.slice(0, src.indexOf('export function g')), { optimize }).exports
+    for (const kind of [0, 1]) for (const n of [0, 1]) {
+      for (const value of ['17', true, null, undefined, 4294967294]) {
+        is(wasm.f(kind, n, value), expected.f(kind, n, value), `O${optimize}: kind=${kind}, n=${n}, value=${value}`)
+        is(scalar.f(kind, n, value), expected.f(kind, n, value), `O${optimize}: same conversion without BigInt support`)
+      }
+      is(wasm.g(kind, n), expected.g(kind, n), `O${optimize}: kind=${kind}, n=${n}, BigInt`)
+    }
+  }
+})
+
+test('typed stores retain a global receiver across direct and called RHS writes', () => {
+  const src = `let a;
+    function replace() { a = new Int32Array([7, 9]); return 11 }
+    export function f(called) {
+      a = new Int32Array([3, 5]); const original = a;
+      if (called) a[0] = replace();
+      else a[0] = (a = new Int32Array([7, 9]), 11);
+      return [original[0], original[1], a[0], a[1]];
+    }`
+  const expected = oracle(src).f
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const { f } = jz(src, { optimize }).exports
+    for (const called of [0, 0, 1, 0, 1]) is(f(called), expected(called), `O${optimize}: called=${called}`)
+  }
+})
+
+test('typed-array dynamic stores preserve the reference before RHS effects', () => {
+  const src = `export function f(key) {
+    let a = new Int32Array([3, 5]); const original = a;
+    a[key] = (a = new Int32Array([7, 9]), key = 'label', 11);
+    return [original[0], original[1], original.label, a[0], a[1], a.label];
+  }
+  export function g(key) {
+    const a = new Int32Array([3, 5]); let calls = 0;
+    function rhs() { calls++; key = 'label'; return 13; }
+    a[key] = rhs();
+    return [a[0], a[1], a.label, calls];
+  }
+  export function h(key) {
+    let a = new Int32Array([3, 5]); const original = a;
+    a[(a = new Int32Array([7, 9]), key)] = 11;
+    return [original[0], original[1], original.label, a[0], a[1], a.label];
+  }`
+  const expected = oracle(src)
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const wasm = jz(src, { optimize }).exports
+    for (const key of [0, 1, 'label', '01', undefined])
+      for (const name of ['f', 'g', 'h']) is(wasm[name](key), expected[name](key), `O${optimize}: ${name}(${key})`)
+  }
+})
 
 test('schema lookup preserves content equality and slot lifetime for every key form', () => {
   const fields = { '': 1, a: 2, abcdef: 3, abcdefg: 4, é: 5, '😀': 6, 'a\0b': 7, secondLong: 8 }
@@ -116,8 +935,7 @@ test('dyn-keys: ToPropertyKey for atom keys (the prec[undefined] class)', () => 
 // 2026-07-29. Root: module/array.js's generic `arr[i]` fallback ("Unknown ->
 // runtime dispatch") assumed a numeric key on an unproven receiver is always
 // ARRAY/TYPED access, routing straight to __typed_idx — sound for ARRAY/TYPED,
-// but __typed_idx's own non-ARRAY/TYPED fallback bounds-checks against __len
-// (0 for OBJECT), which has nothing to do with dyn-props key presence: an
+// but __typed_idx has no object-property lookup: an
 // empty-schema OBJECT with a literal-string-key write (`o={}; o['1']=9` — a
 // LITERAL key, invisible to dynWriteVars, so `o` never qualifies as dict-mode
 // HASH) silently read undefined instead of the stored value for ANY numeric

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { belowOpt, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
-import { run, wat } from './util.js'
+import { run, wat, oracle } from './util.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -197,9 +197,10 @@ test('SIMD AoS - stride-3 transcendentals (cbrt/exp/pow) vectorize, bit-exact, o
   ok(/math\.cbrt_v/.test(w), 'cbrt lifts to its f64x2 mirror')
 })
 
-test('SIMD AoS - constant-exponent pow lifts to 2-wide exp∘log (not per-lane pow2)', () => {
-  // spow's `av ** e` (constant e via inline) == exp(e·log av) bit-for-bit → both lanes through
-  // log_v/exp_v, not the per-lane scalar $math.pow2. The sign/abs ternaries lower to bitselect.
+test('SIMD AoS - constant-exponent pow lifts per lane through the pow kernel (bit-exact with scalar)', () => {
+  // spow's `av ** e` (constant e via inline) is the scalar $math.pow kernel (an ulp of the host);
+  // the lift calls it per lane ($math.pow2), never a second algorithm (the 2-wide exp_v∘log_v
+  // it used to take was ~1e-9 relative off). The sign/abs ternaries lower to bitselect.
   const src = `
     const N = 200
     const spow = (a, e) => { const s = a<0?-1:1, av = a<0?-a:a; return s * av ** e }
@@ -210,8 +211,8 @@ test('SIMD AoS - constant-exponent pow lifts to 2-wide exp∘log (not per-lane p
       let h=0; for(let i=0;i<N*3;i++) h+=d[i]*(i+1); return h }`
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'stride-3 signed-pow bit-exact')
   const w = wat(src, SIMD_OPT)
-  ok(/math\.exp_v/.test(w) && /math\.log_v/.test(w), 'constant-exp pow lifts to exp_v∘log_v')
-  ok(!/math\.pow2/.test(w), 'no per-lane scalar pow2 for the constant exponent')
+  ok(/math\.pow2/.test(w), 'constant-exp pow lifts per lane through $math.pow2')
+  ok(!/math\.exp_v/.test(w) && !/math\.log_v/.test(w), 'no 2-wide exp∘log second algorithm')
 })
 
 test('SIMD AoS - mixed stride (struct loads + array stores) bails, stays correct', () => {
@@ -2983,6 +2984,7 @@ test('SIMD stencil - in-place (a[i]=a[i-1]+a[i]) is loop-carried: bails, stays c
       return s
     }`
   is(runVec(src, STENCIL).main(), runVec(src, SCALAR).main(), 'in-place stays bit-exact (bailed)')
+  is(runVec(src, STENCIL).main(), oracle(src).main(), 'the dependent updates also match native JS')
   // The store-back is the signature: an in-place stencil that vectorized would v128.store
   // the computed lane back to `a`. The legit loops don't store-vectorize (the `i%7` init
   // isn't lane-pure; the reduction accumulates in a local), so NO v128.store ⇒ the stencil
@@ -3074,8 +3076,8 @@ test('per-pixel-color f64x2 - sin+sqrt+pow kernel (interference shape: bit-exact
   const w = wat(PPC_POW, PPC_ON)
   ok(/__ppc/.test(w), 'pow kernel takes the per-pixel-color path')
   ok(/call \$math\.sin2/.test(w) && /f64x2\.sqrt/.test(w), 'sin + sqrt vectorized 2-wide')
-  ok(/call \$math\.log_v/.test(w) && /call \$math\.exp_v/.test(w), 'a**γ → exp_v∘log_v: constant-γ pow inlined as exp·log, both TRUE 2-wide (Phase 2)')
-  ok(!/call \$math\.pow2/.test(w), 'no per-lane-scalar $math.pow2 — the inlined exp·log vectorizes fully')
+  ok(/call \$math\.pow2/.test(w), 'a**γ → per-lane $math.pow2: the scalar pow kernel on both lanes, bit-exact with the scalar loop')
+  ok(!/call \$math\.log_v/.test(w) && !/call \$math\.exp_v/.test(w), 'no 2-wide exp∘log second algorithm')
 })
 
 // ── Multi-caller SIMD-helper inlining ─────────────────────────────────────────────────────

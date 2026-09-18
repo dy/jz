@@ -1,4 +1,5 @@
 import { OPTF } from '../src/ctx.js'
+import print from 'watr/print'
 /**
  * Core module — NaN-boxing, bump allocator, property dispatch.
  *
@@ -10,7 +11,7 @@ import { OPTF } from '../src/ctx.js'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, isPlanTaggedBigint } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, isNullish, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, isPlanTaggedBigint, throwTypeErrorIR, valueTruthyIR } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
@@ -22,7 +23,7 @@ import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
-import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../layout.js'
+import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
@@ -30,11 +31,22 @@ import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses, throwErrorWat, requireReceiverWat } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
-import { isExported } from '../src/compile/func-exports.js'
+import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
+import { bitOf, isNullable, K } from '../src/summary/kind.js'
+import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 
 const NAN_BITS = nanPrefixHex()
+
+// Element count from a validated TYPED offset and decoded aux bits.
+// Views carry byte length in their descriptor; DataView has no indexed elements.
+const typedLengthWat = `(if (result i32) (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG}))
+  (then (i32.const 0))
+  (else (i32.shr_u
+    (i32.load (select (local.get $off) (i32.sub (local.get $off) (i32.const 8))
+      (i32.and (local.get $aux) (i32.const 8))))
+    (call $__typed_shift (i32.and (local.get $aux) (i32.const 7))))))`
 
 // A never-relocated (neverGrown) or own-name-current (ownCurrent) array binding
 // always holds the live pointer: its base is the raw offset, no forwarding follow
@@ -68,6 +80,7 @@ export default (ctx) => {
     __ptr_offset: ['__ptr_offset_fwd'],
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
+    __is_truthy: () => representationProgramHasBigint(ctx) ? ['__ptr_type', '__ptr_offset'] : [],
     __str_len: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     // '__durable_fwd_log'/'__durable_arr_snap' are explicit edges (mirrors
     // array.js's arrayGrowDeps comment): __set_len's body calls durableLenLogIR
@@ -265,42 +278,12 @@ export default (ctx) => {
 
   // Truthy check: handles regular numbers AND NaN-boxed pointers
   // Falsy: 0, -0, NaN, null, undefined, "" (empty SSO)
-  // CARRIER PROGRAM Slice 3's BIGINT arm below is gated on ctx.features.bigint
-  // (not unconditional): $__is_truthy is reachable from EVERY dynamic boolean
-  // coercion (incl. the boundary boolean-boxing wrapper every exported boolean
-  // return uses), so an unconditional `i64.load`/`call $__ptr_offset` reference
-  // in its body would force memory declaration on every such program via
-  // pullStdlib's needsMemory scan — even one with no BigInt syntax anywhere,
-  // regressing the heap-free-minimal-output contract (found live: `(a) => a >
-  // 0`'s boolean export wrapper). No program lacking ctx.features.bigint can
-  // ever construct a PTR.BIGINT box (neither the test-only __box_bigint
-  // intrinsic nor carrier-box's write-side wiring — both require real bigint
-  // syntax), so the gate never hides a reachable case.
+  // The representation proof includes BigInt typed arrays and DataView reads,
+  // not just BigInt syntax. Scalar-only programs retain their memory-free path.
   ctx.core.stdlib['__is_truthy'] = () => `(func $__is_truthy (param $v i64) (result i32)
     (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (if (result i32) (f64.eq (local.get $f) (local.get $f))
-      (then (f64.ne (local.get $f) (f64.const 0)))
-      (else
-        ${ctx.features.bigint ? `
-        ;; a boxed BigInt's truthiness is VALUE-dependent (0n falsy, everything
-        ;; else truthy — unlike every other heap kind reaching this dispatch,
-        ;; always truthy regardless of "emptiness"), so it can't share the
-        ;; blanket non-sentinel-pointer default below. Registry-derived
-        ;; (layout-kinds.js KIND_REGISTRY.BIGINT.identity: content, not
-        ;; pointer-bits).
-        (if (result i32) (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.BIGINT}))
-          (then (i64.ne (i64.load (call $__ptr_offset (local.get $v))) (i64.const 0)))
-          (else` : ''}
-        (i32.and
-          (i32.and
-            (i32.and
-              (i64.ne (local.get $v) (i64.const ${NAN_BITS}))
-              (i64.ne (local.get $v) (i64.const ${NULL_NAN})))
-            (i32.and
-              (i64.ne (local.get $v) (i64.const ${UNDEF_NAN}))
-              (i64.ne (local.get $v) (i64.const 0x7FFA400000000000))))
-          (i64.ne (local.get $v) (i64.const ${FALSE_NAN})))${ctx.features.bigint ? ')))' : ')'}))`
+    ${print(valueTruthyIR(['local.get', '$f'], representationProgramHasBigint(ctx)))})`
 
   ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v i64) (result i32)
     (local $f f64)
@@ -380,40 +363,33 @@ export default (ctx) => {
           (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (else (f64.const nan:${UNDEF_NAN}))))))
     ${requireReceiverWat('(local.get $ptr)')}
-    ;; Every consumer below masks aux low bits; high tag/prefix bits are inert.
+    (if (i32.or (i32.ne (local.get $t) (i32.const ${PTR.TYPED}))
+          (i32.lt_u (local.get $off) (i32.const 8)))
+      (then (return (f64.const nan:${UNDEF_NAN}))))
+    ;; Keep the descriptor offset until the bounds check has consumed its length.
     (local.set $aux (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT}))))
-    ${ctx.linkDemand.typedView ? `(if
-      (i32.and
-        (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-        (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
+    (if (i32.ge_u (local.get $i) ${typedLengthWat})
+      (then (return (f64.const nan:${UNDEF_NAN}))))
+    ${ctx.linkDemand.typedView ? `(if (i32.and (local.get $aux) (i32.const 8))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))` : ''}
-    (if (result f64)
-      (i32.ge_u (local.get $i) (call $__len (local.get $ptr)))
-      (then (f64.const nan:${UNDEF_NAN}))
-      (else
-        (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-          (then
-            (local.set $et (i32.and (local.get $aux) (i32.const 7)))
-            (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
-              (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
-                (then ${ctx.features.bigint ? `(if (result f64) (i32.and (local.get $aux) (i32.const 16))
-                  (then (f64.reinterpret_i64 (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
-                  (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))` : `(f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))`})
-                (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
-              (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
-                (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
-                  (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
-                  (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
-                (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
-                  (then ${ctx.linkDemand.f16 ? `(if (result f64) (i32.and (local.get $aux) (i32.const 32))
-                    (then (call $__f16_to_f64 (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
-                    (else ` : ''}(if (result f64) (i32.and (local.get $et) (i32.const 1))
-                    (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
-                    (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))))${ctx.linkDemand.f16 ? '))' : ''})
-                  (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
-                    (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
-                    (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
-          (else (f64.const nan:${UNDEF_NAN})))))))`
+    (local.set $et (i32.and (local.get $aux) (i32.const 7)))
+    (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
+      (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
+        (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+        (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+      (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
+        (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+          (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
+          (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+        (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
+          (then ${ctx.linkDemand.f16 ? `(if (result f64) (i32.and (local.get $aux) (i32.const 32))
+            (then (call $__f16_to_f64 (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
+            (else ` : ''}(if (result f64) (i32.and (local.get $et) (i32.const 1))
+            (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
+            (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1)))))))${ctx.linkDemand.f16 ? '))' : ''})
+          (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
+            (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
+            (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))`
   }
 
   // Representation-safe sibling for an element read whose concrete typed
@@ -427,9 +403,11 @@ export default (ctx) => {
     (local $off i32)
     ;; Only BigInt elements need a tagged result. All other reads retain the
     ;; ordinary helper's own bounds check, without a second length lookup.
+    ;; The tag and the flag come straight off the box: an array (the common
+    ;; receiver) pays two masks, no calls.
     (if (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
-        (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})) (i32.const 0)))
+        (i64.eq (i64.and (local.get $ptr) (i64.const ${i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))})) (i64.const ${i64Hex(BigInt(PTR.TYPED) << BigInt(LAYOUT.TAG_SHIFT))}))
+        (i64.ne (i64.and (local.get $ptr) (i64.const ${i64Hex(BigInt(TYPED_ELEM_BIGINT_FLAG) << BigInt(LAYOUT.AUX_SHIFT))})) (i64.const 0)))
       (then
         (if (i32.ge_u (local.get $i) (call $__len (local.get $ptr)))
           (then (return (f64.const nan:${UNDEF_NAN}))))
@@ -977,12 +955,11 @@ export default (ctx) => {
   // For TYPED subviews (aux bit 3 set): offset points to a 16-byte descriptor
   //   [0:byteLen(i32)][4:dataOff(i32)][8:parentOff(i32)][12:pad]
   // elemType = aux & 7, isView = aux & 8.
+  // Callers mask to the eight element codes: shifts 0,0,1,1,2,2,2,3.
+  // Only Float32 (code 6) differs from code >> 1.
   ctx.core.stdlib['__typed_shift'] = `(func $__typed_shift (param $et i32) (result i32)
-    (if (result i32) (i32.eq (local.get $et) (i32.const 7))
-      (then (i32.const 3))
-      (else (if (result i32) (i32.ge_u (local.get $et) (i32.const 4))
-        (then (i32.const 2))
-        (else (i32.shr_u (local.get $et) (i32.const 1)))))))`
+    (i32.sub (i32.shr_u (local.get $et) (i32.const 1))
+      (i32.eq (local.get $et) (i32.const 6))))`
 
   // Real data address for any TYPED ptr: owned → offset, view → [offset+4].
   ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr i64) (result i32)
@@ -1046,13 +1023,7 @@ export default (ctx) => {
             (if (result i32) (i32.eq (local.get $t) (i32.const 3))
               (then
                 (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
-                ;; DataView has byte bounds but no indexed elements.
-                (if (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG})) (then (return (i32.const 0))))
-                (if (result i32) (i32.and (local.get $aux) (i32.const 8))
-                  (then (i32.shr_u (i32.load (local.get $off))
-                                   (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
-                  (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 8)))
-                                   (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))))
+                ${typedLengthWat})
               ;; HASH/SET/MAP/BUFFER: re-resolve offset so grown SET/MAP follow the
               ;; forwarding chain (HASH/BUFFER never forward → same inline offset).
               (else (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8))))))
@@ -1329,7 +1300,26 @@ export default (ctx) => {
     inc('__length.value')
     setLinkDemand('typedarray')
     ctx.runtime.throws = true
-    return typed(['call', '$__length.value', ['i64.reinterpret_f64', va]], 'f64')
+    // The array arm inline ahead of the dispatcher (an AST node under a
+    // walker is the receiver at nearly every unresolved `.length`): the tag
+    // test, one forwarding hop, the header word. Everything else dispatches.
+    const t = temp('ln'), off = tempI32('lo')
+    inc('__ptr_offset_fwd')
+    const arm = helper => typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, va],
+      ['if', ['result', 'f64'],
+        ['i32.and', ptrTypeEq(['local.get', `$${t}`], PTR.ARRAY),
+          ['i32.ge_u', ['local.tee', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', 8]]],
+        ['then',
+          ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
+            ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
+          ['f64.convert_i32_s', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]]],
+        ['else', ['call', `$${helper}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]], 'f64')
+    const node = arm('__length.value')
+    // A numeric consumer (src/ir/coerce.js toNumF64) takes the same arms
+    // over the numeric helper, as it does for the bare `__length.value` call.
+    node.numericLength = () => arm('__length')
+    return node
   }
 
   // Known-schema fields live in the object payload. Dynamic sidecars are only
@@ -1742,20 +1732,12 @@ export default (ctx) => {
   // An unknown chain can carry a host object through aliases, helpers, and
   // imported results. Keep that branch only when the program has a host-object
   // ingress; known native roots retain the smaller internal path.
-  let externalIngress
-  const hasExternalIngress = () => {
-    if (externalIngress == null) externalIngress = ctx.transform.targetProfile.envImports && (
-      ctx.module.imports.some(i => i[3]?.[0] === 'func') ||
-      ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64'))
-    )
-    return externalIngress
-  }
   const opaquePropertyRoot = node => {
     while (Array.isArray(node) && (node[0] === '.' || node[0] === '?.' || node[0] === '[]' || node[0] === '?.[]'))
       node = node[1]
     return node
   }
-  const nestedMayBeExternal = node => hasExternalIngress() && valTypeOf(opaquePropertyRoot(node)) == null
+  const nestedMayBeExternal = node => ctx.transform.targetProfile.envImports && valTypeOf(opaquePropertyRoot(node)) == null
 
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
   function emitPropAccess(va, obj, prop) {
@@ -1933,7 +1915,7 @@ export default (ctx) => {
     // dynamic read, the host-aware one when an earlier read in the chain may
     // have returned a host object (the shared dispatcher stays the fallback).
     const external = nestedMayBeExternal(obj)
-    if (external) setLinkDemand('external')
+    if (external && hasExternalIngress()) setLinkDemand('external')
     const chainVT = valTypeOf(obj)
     const slow = () => external ? emitDynGetAnyTyped(va, key, null, prop, false) : emitDynGetExprTyped(va, key, chainVT === VAL.OBJECT ? chainVT : null, prop)
     const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
@@ -2075,10 +2057,31 @@ export default (ctx) => {
       const acc = accessorRead(obj, prop)
       if (acc) return acc
     }
-    // A class method read as a value is the method bound to its receiver.
+    // Class dispatch already checks nullable receivers and preserves binding.
     if (!raw) {
       const bound = classMethodValue(obj, prop, (recv) => dotRead(recv, prop, true))
       if (bound !== undefined) return bound
+    }
+    // An element read the interval prover puts in bounds is present: absence
+    // is the one nullishness an in-range read of an array of objects carries.
+    const receiverKind = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+    const inRange = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
+    if (isNullable(inRange ? receiverKind & ~bitOf(K.ABSENT) : receiverKind) &&
+        !(typeof obj === 'string' && (repOf(obj)?.ptrKind != null || ctx.func.refinements?.get(obj)?.val != null))) {
+      // A dot read has no key expression between its receiver check and use.
+      // Keep a plain local's identity so schema dispatch and load reuse share it.
+      const receiver = emit(obj)
+      // An admitted inline cell is a raw address, with its own packed layout.
+      // It cannot pass through the boxed receiver path without losing that layout.
+      if (receiver.ptrKind == null) {
+        const value = asF64(receiver)
+        if (typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`)
+          return typed(['block', ['result', 'f64'],
+            ['if', isNullish(value), ['then', ['drop', throwTypeErrorIR()]]],
+            asF64(readHoistedProp(obj, prop, obj, raw))], 'f64')
+        const t = temp()
+        return optionalGuard(t, value, readHoistedProp(obj, prop, t, raw), throwTypeErrorIR())
+      }
     }
     // `C.prototype` of a class (a factory closure): jz classes have no
     // prototype object – methods live on the instance – so the read is a
@@ -2253,13 +2256,13 @@ export default (ctx) => {
   // asF64 on the taken arm: the dispatched access may come back i32-narrowed
   // (an int-certain slot read at O0 keeps its raw i32), and the f64-typed if
   // fails validation ("type error in fallthru: expected f64, got i32").
-  const optionalGuard = (t, va, thenIR) =>
+  const optionalGuard = (t, va, thenIR, otherwise = undefExpr()) =>
     typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['if', ['result', 'f64'],
         notNullish(typed(['local.get', `$${t}`], 'f64')),
         ['then', asF64(thenIR)],
-        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
+        ['else', otherwise]]], 'f64')
 
   // Receiver-evaluate-once: allocate a fresh hoist-temp `$t`, emit `value` into
   // it, then call `useFn(t)` to build the consumer IR — wrapping both in an
@@ -2281,7 +2284,15 @@ export default (ctx) => {
   // diverged: it lacked emitPropAccess's `VAL.OBJECT off-schema → __dyn_get_expr`
   // branch and fell to `__hash_get`, which mis-reads fixed-shape OBJECT memory
   // (a self-compile miscompile — `o?.x` returned undefined under the kernel).
-  ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, (t) => {
+  ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, t => {
+    const value = readHoistedProp(obj, prop, t)
+    const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+    // The nullish arm is a tagged undefined. Box a raw BigInt only in the
+    // present arm: its payload may have exactly the same bits as that sentinel.
+    return sid != null && ctx.schema.slotVTBySid(sid, prop) === VAL.BIGINT && ctx.schema.slotBigintRawAt(obj, prop)
+      ? boxBigInt(asI64(value)) : value
+  })
+  const readHoistedProp = (obj, prop, t, raw = false) => {
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
     if (prop === 'length')
@@ -2302,9 +2313,18 @@ export default (ctx) => {
     if (g && ctx.core.getters.has(gKey)) return g(t)
     // an accessor name reads through the hoisted temp's own `.` dispatch
     // (the runtime probe; the receiver is evaluated once either way)
-    if (ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)) return emit(['.', t, prop])
-    return emitPropAccess(typed(['local.get', `$${t}`], 'f64'), obj, prop)
-  })
+    if (!raw && ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)) return emit(['.', t, prop])
+    const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+    let receiver = typed(['local.get', `$${t}`], 'f64')
+    // The enclosing null check establishes presence. Retain the summary's
+    // exact layout on this captured receiver, including raw BigInt fields.
+    if (sid != null) {
+      receiver = typed(['i32.wrap_i64', asI64(receiver)], 'i32')
+      receiver.ptrKind = VAL.OBJECT
+      receiver.ptrAux = sid
+    }
+    return emitPropAccess(receiver, obj, prop)
+  }
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
   // Cache base in temp, propagate valType so []'s type dispatch works

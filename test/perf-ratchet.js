@@ -20,6 +20,7 @@ import { join } from 'path'
 import jz from '../index.js'
 import parseWat from 'watr/parse'
 import { CATEGORIES, genProgram } from '../scripts/perf-corpus.mjs'
+import { onWasi } from './_matrix.js'
 
 const SEEDS = 40
 const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
@@ -68,6 +69,17 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // Set probe makes one call, not two. watr inlines the arm into the collection
 // helpers' own loops (copy, rehash), which this count includes: nest 21900 ->
 // 22538, slice 74808 -> 76664. Timing/size/memory caps do not move.
+// Known-array reads and lengths (2026-09-18) take their forwarding hop inline
+// (src/ir/pointers.js fwdOffsetIR: the offset, one header compare, the chase
+// outlined) where a `__ptr_offset` call stood, and a number key on a receiver
+// the summary cannot type reads the array arm inline ahead of the typed
+// helper (module/array.js arrayFast): ring 50400 -> 53800, the hop's nodes per
+// access in its loops. The warm self-compile gate, which pays those calls,
+// went from 1.16x to 1.03x across the same changes. Strict equality and
+// nullish tests inline their bit compares, a boxed boolean selects its atom,
+// and the string hash reads a heap length in place, which shrinks the runtime
+// loops this count includes: buf 15034 -> 14584, nest 22626 -> 16625, slice
+// 76920 -> 69312, condref 89053 -> 86588. Timing/size/memory caps do not move.
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
 // A wide-accumulator versioning (src/optimize/wide-accumulator.js) keeps the
 // original loop as the cold fallback, the last child of its `$__wa…d` block:
@@ -92,7 +104,8 @@ const measure = () => {
   for (const cat of Object.keys(CATEGORIES)) {
     let sum = 0
     for (let s = 1; s <= SEEDS; s++) {
-      try { sum += loopBodyOps(jz.compile(genProgram(cat, s), { optimize: 2, wat: true })) } catch { /* skip non-compiling */ }
+      try { sum += loopBodyOps(jz.compile(genProgram(cat, s), { optimize: 2, wat: true })) }
+      catch (cause) { throw new Error(`perf corpus ${cat}, seed ${s} failed to compile`, { cause }) }
     }
     totals[cat] = sum
   }
@@ -104,10 +117,15 @@ if (process.argv.includes('--update')) {
   writeFileSync(BASELINE, JSON.stringify(totals, null, 2) + '\n')
   console.log('updated perf-ratchet baseline:', totals)
 } else {
+  // The baseline is the JS host's. Under wasi the export wrapper carries the
+  // argument conversion loops the JS bridge performs outside the module
+  // (condref's `$f$exp`: 838 loop-body ops against 358), so the counts are
+  // host-specific there and the gate holds on the JS host alone.
   const base = JSON.parse(readFileSync(BASELINE, 'utf8'))
-  const cur = measure()
+  const cur = onWasi() ? null : measure()
   for (const cat of Object.keys(base)) {
     test(`perf-ratchet: ${cat} loop-body op count ≤ baseline (machine-independent codegen gate)`, () => {
+      if (onWasi()) return
       ok(cur[cat] <= base[cat],
         `${cat}: ${cur[cat]} loop-body ops > baseline ${base[cat]} (+${cur[cat] - base[cat]}) — a codegen regression ` +
         `(a hot-loop optimization stopped firing?). If intentional, justify and re-baseline: node test/perf-ratchet.js --update`)

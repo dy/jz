@@ -441,6 +441,8 @@ const someNode = (node, pred, stop) => {
 }
 
 const isArrowNode = node => node[0] === '=>'
+/** A node that opens a function body: a declaration, an arrow, or a class. */
+export const isFunctionNode = node => Array.isArray(node) && (node[0] === 'function' || node[0] === '=>' || node[0] === 'class')
 
 /** Options: `boundary(node)` names the nodes whose children are not searched;
  *  without it, `skipArrow` (default true) stops at `=>` bodies. */

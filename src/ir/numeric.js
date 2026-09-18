@@ -115,12 +115,12 @@ export const asI32 = n => {
  *  -> INT32_MAX/MIN, NaN -> 0, in-range -> truncated value) with no i64 detour needed —
  *  the ONE-op direct form is not just correct here but cheaper than asI32's fallback. */
 export const asI32Sat = n => {
-  if (n.type === 'i32') return n
-  if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u')) {
+  if (n.type === 'i32' && !n.unsigned) return n
+  if (Array.isArray(n) && n[0] === 'f64.convert_i32_s') {
     const inner = n[1]
     return Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
-  return typed(['i32.trunc_sat_f64_s', n], 'i32')
+  return typed(['i32.trunc_sat_f64_s', asF64(n)], 'i32')
 }
 
 /** Coerce node to i32 offset for a ptr-narrowed return / store. Same-kind unboxed
@@ -293,6 +293,9 @@ export const f64Range = (n, get, allowNaN = false) => {
       if (seen.has(n[1])) return null               // loop-carried / cyclic def → unknown
       const def = typeof get === 'function' ? get(n[1]) : get.get(n[1])
       if (!def) return null
+      // The caller may supply a finite all-writes enclosure for a counted
+      // recurrence, instead of a single defining expression.
+      if (!Array.isArray(def)) return fin(Math.min(0, def.lo), Math.max(0, def.hi))
       seen.add(n[1]); const rng = r(def); seen.delete(n[1])
       // A conditional or skipped definition leaves the Wasm local at zero.
       // Include it before composing arithmetic around the read, not only at
@@ -341,6 +344,24 @@ export const f64Range = (n, get, allowNaN = false) => {
     return null
   }
   return r(n)
+}
+
+/** Operand of a ToInt32 conversion. An arbitrary select is not a conversion:
+ *  its zero arm and infinity test must refer to the value actually converted. */
+export const int32Operand = n => {
+  if (!Array.isArray(n)) return null
+  if (n[0] === 'select' && n.length === 4 && n[2]?.[0] === 'i32.const' && Number(n[2][1]) === 0) {
+    const w = n[1], c = n[3], inf = c?.[2]
+    if (w?.[0] !== 'i32.wrap_i64' || w[1]?.[0] !== 'i64.trunc_sat_f64_s' ||
+        c?.[0] !== 'f64.ne' || inf?.[0] !== 'f64.const' ||
+        (inf[1] !== Infinity && inf[1] !== 'inf' && inf[1] !== 'Infinity')) return null
+    const e = w[1][1]
+    const name = e?.[0] === 'local.tee' || e?.[0] === 'local.get' ? e[1] : null
+    return name != null && c[1]?.[0] === 'local.get' && c[1][1] === name ? e : null
+  }
+  if (n[0] === 'i32.wrap_i64' && n[1]?.[0] === 'i64.trunc_sat_f64_s') return n[1][1]
+  if (n[0] === 'call' && n[1] === '$__to_int32' && n.length === 3) return n[2]
+  return null
 }
 
 /** The compile-time ToInt32 lowerings every conversion shares: an i32-backed

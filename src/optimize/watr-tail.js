@@ -230,8 +230,15 @@ function legalizeCommandEntries(module) {
     if (!innerFunc || hasParams(innerFunc)) continue // parametric entries keep their direct f64 export
 
     removeExport()
+    // The wrapper discards every result: a scalarized tuple result is several
+    // values. Nested `local.set` folds consume them one by one; watr's vacuum
+    // turns the dead outermost set into a drop and keeps the rest, where a run
+    // of bare drops after a multi-value call folds into one.
+    const results = innerFunc.flatMap(x => Array.isArray(x) && x[0] === 'result' ? x.slice(1) : [])
+    let body = ['call', inner]
+    for (let k = results.length - 1; k >= 0; k--) body = ['local.set', `$r${k}`, body]
     insertLikeCompileFuncsPush(module,
-      ['func', `$${exportName}$wasi`, ['export', wantExport], ['drop', ['call', inner]]])
+      ['func', `$${exportName}$wasi`, ['export', wantExport], ...results.map((t, k) => ['local', `$r${k}`, t]), body])
   }
 }
 

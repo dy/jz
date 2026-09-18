@@ -11,6 +11,7 @@
  * @module ir/bigint
  */
 
+import { isPresentNumber } from '../kind.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
@@ -303,12 +304,12 @@ const isTaggedCallResult = node => {
  *  indexed read of any non-typed receiver carries a box, and a write's own
  *  value is the stored carrier. Schema slots (a static key on an object)
  *  own their carrier: isSchemaSlotBigintPossible. */
-const isTaggedElemRead = node => {
+export const isTaggedElemRead = node => {
   if (!Array.isArray(node)) return false
   if (node[0] === '=') return isTaggedElemRead(node[1]) || isSchemaSlotBigintPossible(node[1])
   if (node[0] !== '[]') return false
   const recv = valTypeOf(node[1])
-  return recv !== VAL.TYPED && recv !== VAL.OBJECT
+  return recv === VAL.TYPED ? !isPresentNumber(ctx, node[2]) : recv !== VAL.OBJECT
 }
 
 export const readI64MayUnbox = node =>

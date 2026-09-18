@@ -10,9 +10,9 @@ import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
-import { BIGINT_JOINT_BINARY_OPS, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
+import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../../reps.js'
 import { seedSummaryShape } from '../func-entry.js'
 import { toNumF64 } from '../../ir/coerce.js'
@@ -22,13 +22,14 @@ import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OP, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
 import { withArrayLiteralEscape } from '../flow-state.js'
+import { mixedBoolKind } from '../analyze/body-facts.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX, representationBindingWriteAction, representationCallArgAction,
 } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectCondOK } from './shared.js'
-import { K, core as summaryCore, tagOf as summaryTagOf } from '../../summary/kind.js'
+import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf } from '../../summary/kind.js'
 
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
@@ -536,7 +537,7 @@ export const TYPED_HI_MASK = '0xFFFFFFFF00000000'
 // correctly accepts) — a real over-rejection caught by this fix's own test
 // suite (test/errors.js "does NOT reject … truthiness"), not by the audit.
 export function rejectAmbiguousBoolIdentity(name, expr) {
-  if (typeof name !== 'string' || !hasAmbiguousBoolMerge(expr)) return
+  if (typeof name !== 'string' || !hasAmbiguousBoolMerge(expr) || boolTaggedBinding(name)) return
   const summary = scanBindingUses(ctx.func.body).get(name)
   const uses = summary ? summary[BINDING_USE_USES] : []
   const unsupported = uses.some(use =>
@@ -544,6 +545,26 @@ export function rejectAmbiguousBoolIdentity(name, expr) {
     !(use[BINDING_USE_KIND] === USE.BOOL_TEST && use[BINDING_USE_OP] !== 'typeof'))
   if (unsupported)
     err(`Binding '${name}' can be both Boolean and Number, but its stored carrier erases that identity — use the merge expression directly or normalize with Boolean()/Number()`)
+}
+
+/** A binding that holds a Boolean beside another kind (`let v; if (k) v =
+ *  true; else v = 1`, `let x = c && 1`) and whose reads observe its identity
+ *  (a return, a `typeof`, a strict compare, a store: the numeric demand pass
+ *  denied it a number) carries the Boolean as its atom: every store boxes it
+ *  (boolCarrier), the storage is the tagged f64 (analyze/body-facts.js Pass
+ *  E), and the reads take the dynamic forms a mixed kind already takes. A
+ *  binding some plan typed as one concrete non-Boolean kind is not tagged;
+ *  rejectAmbiguousBoolIdentity keeps the correct-or-reject contract there. */
+export function boolTaggedBinding(name) {
+  if (typeof name !== 'string') return false
+  const view = ctx.summary?.at(ctx.func.current)
+  if (!view) return false
+  return mixedBoolKind(view.kindOfExpr(name)) && !view.numericDemand(name) && lookupValType(name) == null
+}
+
+/** The value a store into `name` lands: a Boolean's atom for a tagged binding. */
+export function boolCarrier(name, node, ir) {
+  return boolTaggedBinding(name) && valTypeOf(node) === VAL.BOOL ? boolBoxIR(ir) : ir
 }
 
 /** Emit let/const initializations as typed local.set instructions. */
@@ -758,12 +779,15 @@ export function emitDecl(...inits) {
     const ambiguousIdentity = typeof name === 'string' && hasAmbiguousBoolMerge(init)
     if (ambiguousIdentity && !neverEscapes) rejectAmbiguousBoolIdentity(name, init)
     const identityCapture = ambiguousIdentity && ctx.func.capturedNames?.has(name)
+    // A tagged Boolean binding (boolTaggedBinding): a merge keeps its Boolean
+    // arm boxed (emitIdentitySafe), a Boolean initializer boxes below.
+    const tagged = !identityCapture && !neverEscapes && boolTaggedBinding(name)
     let identityShadowName = null
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
       if (!identityCapture) {
         if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
           return ctx.core.emit['[capacity'](name, init.slice(1))
-        return emit(init)
+        return tagged && ambiguousIdentity ? emitIdentitySafe(init) : emit(init)
       }
       identityShadowName = `${T}idbox_${name}`
       ctx.func.locals.set(identityShadowName, 'f64')
@@ -787,6 +811,7 @@ export function emitDecl(...inits) {
     })
     if (identityShadowName) (ctx.func.identityShadow ??= new Map()).set(name, identityShadowName)
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
+    if (tagged && !viewInit) val = boolCarrier(name, init, val)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -798,7 +823,7 @@ export function emitDecl(...inits) {
     // (and therefore into `len`'s own init two decls later in the same `let`) — every
     // downstream `arrVar[i]`/`.length` in the loop then takes the ARRAY-known fast path
     // instead of falling to the generic __typed_idx/__length dispatch.
-    setFlowVal(name, valTypeOf(init), init)
+    setFlowVal(name, valTypeOf(init), init, val)
     // The summary's exact shape for the binding, as a parameter takes it.
     if (!isGlobal(name)) seedSummaryShape(name, ctx.summary?.at(ctx.func.current))
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
@@ -949,7 +974,11 @@ export function emitDecl(...inits) {
     // unrolling flattens iteration bodies into one scope, so the 2nd+ `let x = 0` are
     // genuine RE-inits between iterations (e.g. a nested reduce's accumulator). Elide only
     // the FIRST per name; emit the rest as resets. (Names are preserved — no renaming.)
-    if (localType === 'f64' && numericStorage(name)) coerced = toNumF64(init, val)
+    if (localType === 'f64' && numericStorage(name)) {
+      coerced = toNumF64(init, val)
+      // The binding stores the normalized Number, not the initializer's absence.
+      ctx.func.localValTypesOverlay?.set(name, NUMBER)
+    }
     const zeroInit = isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length
     if (!zeroInit || ctx.func.zeroInitSeen?.has(name)) {
       result.push(['local.set', `$${name}`, coerced])
@@ -994,7 +1023,7 @@ export function emitVoid(node) {
 // themselves at their emit site (emitDecl, right after each `emit(init)`); this helper
 // covers the remaining case emitBlockBody drives directly: a bare `name = rhs`
 // reassignment statement.
-function setFlowVal(name, vt, expr) {
+function setFlowVal(name, vt, expr, value) {
   if (!ctx.func.localValTypesOverlay || !isBoundName(name)) return
   // A name reassigned somewhere inside a LOOP body (while/do/for/for-in/for-of,
   // at any nesting depth within it) carries NO overlay fact anywhere in this
@@ -1009,8 +1038,18 @@ function setFlowVal(name, vt, expr) {
   // nestedWritesOf's doc comment for why those invalidate position-sensitively
   // instead, in emitBlockBody's own per-statement loop.
   if (ctx.func.flowValBlocked?.has(name)) return
-  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
-  if (vt) ctx.func.localValTypesOverlay.set(name, k != null && ctx.summary.valOfKind(k) === vt ? k : vt)
+  // A tagged Boolean binding reads through its mixed kind at every use: a
+  // flow fact of one store's kind would read its atom as a raw number.
+  if (boolTaggedBinding(name)) { ctx.func.localValTypesOverlay?.delete(name); return }
+  const k = value?.checkedNumRead ? orAbsent(NUMBER)
+    : vt === VAL.NUMBER && isPresentNumber(ctx, expr) ? NUMBER : ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
+  // A nullable BigInt operation also produces Number on its absent arm.
+  // Its payload-oriented VT must not turn the stored union into raw BigInt.
+  if (vt === VAL.BIGINT && k != null && hasTag(k, K.NUMBER)) {
+    ctx.func.localValTypesOverlay.set(name, k)
+    return
+  }
+  if (vt) ctx.func.localValTypesOverlay.set(name, k != null && ctx.summary.valOfKind(vt === VAL.NUMBER ? summaryCore(k) : k) === vt ? k : vt)
   else ctx.func.localValTypesOverlay.delete(name)
 }
 
@@ -1360,12 +1399,30 @@ function liftOptionalChain(node) {
     summaryTagOf(summaryCore(ctx.summary?.at(ctx.func.current)?.kindOfExpr(path[optIdx - 1]) ?? 0)) === K.BIGINT &&
     ctx.summary.at(ctx.func.current).typedPayloadCtorOfExpr(opt[1]) != null
   return withNullGuard(asF64(emit(opt[1])), t => {
+    // The temp holds the head's present value: the continuation resolves a
+    // Map's method or an object's slot through the head's own kind.
+    // Only a head of one concrete value kind seeds the temp (an object with
+    // its shape known): a union or an unknown shape keeps the generic reads.
+    // A BigInt keeps its representation plan: the temp holds a boxed carrier
+    // no plan describes, so it stays untyped there.
+    const view = ctx.summary?.at(ctx.func.current)
+    const headKind = view?.kindOfExpr(opt[1])
+    const headVt = view && headKind && !hasTag(headKind, K.BIGINT) ? valOf(summaryCore(headKind)) : null
+    const seed = headVt && (headVt !== VAL.OBJECT || view.objectSidOfExpr(opt[1]) != null)
+    if (seed) { view.alias(t, opt[1]); ctx.func.localValTypesOverlay.set(t, headVt) }
     let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
                 : opt[0] === '?.[]' ? ['[]', t, opt[2]]
                                     : ['()', t, ...opt.slice(2)]
     for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
-    const result = emit(rebuilt)
-    return asF64(boxedTypedReduce ? boxBigInt(asI64(result)) : result)
+    // The arm joins the undefined atom, so the continuation crosses tagged:
+    // a BOOL (a Set's `has`, a class method's result) as its atom, a raw
+    // BigInt payload (a class function's, a typed reduce's) boxed; its type
+    // resolves while the alias holds.
+    try {
+      const result = emit(rebuilt)
+      return boxedTypedReduce || result.bigintRaw === true ? asF64(boxBigInt(asI64(result)))
+        : carrierF64Narrow(rebuilt, materializeDeferredBigint(result))
+    } finally { if (seed) view.unalias(t) }
   }, 'oc')
 }
 

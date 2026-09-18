@@ -663,30 +663,21 @@ export function liftExprV(expr, ctx) {
     return liftExprV(arg, ctx)
   }
 
-  // `$math.pow(x, c)` with a CONSTANT non-integer exponent, found only during vectorization
-  // (`ctx.constLocals`) — e.g. spow's `av ** nv` after pure-function inlining substitutes the
-  // literal (module/math.js's own `emitPow` const-exponent fold never reaches here: its constant
-  // exponent is known at EMIT time, so it already lowers straight to the scalar const-exponent
-  // path, picked up by the generic PPC_CALL2 lift below). `optimize.crPow` picks the lowering,
-  // mirroring emitPow's own default/crPow split (see the authoritative comment above emitPow):
-  //   OFF (DEFAULT): truly-2-wide `exp_v(c · log_v(x))` — bit-identical to the scalar `$math.pow`
-  //     for EVERY x when c is non-integer (verified: negative base → NaN and x=0 → 0/∞ both carry
-  //     through log/exp identically; only the integer fast path differs, and it is excluded).
-  //   ON: the truly-2-wide correctly-rounded `$math.pow_fold_v` (module/math.js) — the SIMD twin
-  //     of the scalar `$math.pow_fold` (c needs no pre-split; the shared kernel twoProd-splits
-  //     both multiply operands internally — see its own comment). Bit-identical to the scalar
-  //     `$math.pow_fold` for every x — same function, called on both lanes.
-  if (op === 'call' && ctx.laneType === 'f64' && expr[1] === '$math.pow' && expr.length === 4) {
+  // `$math.pow(x, c)` with a CONSTANT non-integer exponent under `optimize.crPow`: the
+  // truly-2-wide correctly-rounded `$math.pow_fold_v` (module/math.js), the SIMD twin of the
+  // scalar `$math.pow_fold` (c needs no pre-split; the shared kernel twoProd-splits both
+  // multiply operands internally). Off crPow the scalar path is `$math.pow` itself (an ulp of
+  // the host, one implementation for constant and runtime exponents), so the lift is the
+  // per-lane `$math.pow2` of PPC_CALL2 below — bit-exact with the scalar loop. The 2-wide
+  // `exp_v(c · log_v(x))` this used to take was a ~1e-9-relative second algorithm.
+  if (op === 'call' && ctx.laneType === 'f64' && expr[1] === '$math.pow' && expr.length === 4 && vecState.crPow) {
     const ex = expr[3]
     let c = null
     if (isArr(ex) && ex[0] === 'f64.const') c = +ex[1]
     else if (isArr(ex) && ex[0] === 'local.get' && ctx.constLocals && ctx.constLocals.has(ex[1])) c = ctx.constLocals.get(ex[1])
     if (c != null && Number.isFinite(c) && !Number.isInteger(c)) {
       const base = liftExprV(expr[2], ctx); if (ctx.fail) return null
-      if (vecState.crPow) {
-        return ['call', '$math.pow_fold_v', base, ['f64x2.splat', ['f64.const', c]]]
-      }
-      return ['call', '$math.exp_v', ['f64x2.mul', ['f64x2.splat', ex], ['call', '$math.log_v', base]]]
+      return ['call', '$math.pow_fold_v', base, ['f64x2.splat', ['f64.const', c]]]
     }
   }
 

@@ -5,6 +5,7 @@
  */
 
 import { callWithArgs } from '../../ir.js'
+import { positionArgs } from '../../bridge.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
@@ -13,7 +14,7 @@ import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, allocPtr, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, carrierF64, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, allocPtr, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, carrierF64, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
@@ -23,6 +24,7 @@ import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, represen
 import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable, materializeMulti } from './call-args.js'
 import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
+import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { stringOps } from './shared.js'
 
 
@@ -106,7 +108,9 @@ function tryConcatBufCharCodeAt(callee, obj, method, parsed) {
   if (method !== 'charCodeAt' || parsed.hasSpread || parsed.normal.length !== 1 || typeof obj !== 'string') return
   const bufR = ctx.func.concatBufs?.get(obj)
   if (!bufR) return
-  const rawLoad = (i) => ['f64.convert_i32_u', ['i32.load8_u', ['i32.add', ['local.get', `$${bufR.buf}`], i]]]
+  // The buffer holds UTF-16 code units (tryConcatBufferDecl stores i32.store16 per
+  // unit): a unit at position `i` is the 16-bit load at byte offset `i << 1`.
+  const rawLoad = (i) => ['f64.convert_i32_u', ['i32.load16_u', ['i32.add', ['local.get', `$${bufR.buf}`], ['i32.shl', i, ['i32.const', 1]]]]]
   if (inBoundsCharCodeAt(ctx).has(callee))
     return typed(rawLoad(asI32(emit(parsed.normal[0]))), 'f64')
   const idxIR = asI32(emit(parsed.normal[0]))
@@ -156,13 +160,54 @@ function trySpliceInsert(callee, obj, method, parsed) {
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const inserts = combined.slice(2)
     const headSpread = combined[0]?.[0] === '__spread' || combined[1]?.[0] === '__spread'
-    if (inserts.length && !headSpread) {
+    if (headSpread) {
+      // `splice(...args)`: the arity is the array's at runtime. The whole
+      // argument list lands in one array, and the call reads its positions
+      // from it: no start is 0, no count deletes to the end, an explicit
+      // count coerces (23.1.3.31 steps 3-8); the rest are the inserts.
+      inc('__arr_splice', '__arr_idx', '__len', '__ptr_offset')
+      ctx.module.include('number'); inc('__to_num')
+      const recv = temp('spr'), args = temp('spa'), n = tempI32('spn'), start = tempI32('sps'), count = tempI32('spd'), off = tempI32('spo')
+      const arg = (i) => ['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${args}`]], ['i32.const', i]]
+      const toIndex = (f64) => { const t = temp('spv'); return ['block', ['result', 'i32'], ['local.set', `$${t}`, f64],
+        ['i32.trunc_sat_f64_s', ['if', ['result', 'f64'], ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]], ['then', ['local.get', `$${t}`]],
+          ['else', ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]]] }
+      const recvLen = ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]], ['i32.const', 8]]]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${recv}`, asF64(emit(obj))],
+        ['local.set', `$${args}`, asF64(buildArrayWithSpreads(combined))],
+        ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.tee', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${args}`]]]], ['i32.const', 8]]]],
+        ['local.set', `$${start}`, ['if', ['result', 'i32'], ['i32.eqz', ['local.get', `$${n}`]], ['then', ['i32.const', 0]], ['else', toIndex(arg(0))]]],
+        ['if', ['i32.lt_s', ['local.get', `$${start}`], ['i32.const', 0]],
+          ['then', ['local.set', `$${start}`, ['i32.add', ['local.get', `$${start}`], recvLen]],
+            ['if', ['i32.lt_s', ['local.get', `$${start}`], ['i32.const', 0]], ['then', ['local.set', `$${start}`, ['i32.const', 0]]]]]],
+        ['if', ['i32.gt_s', ['local.get', `$${start}`], recvLen], ['then', ['local.set', `$${start}`, recvLen]]],
+        ['local.set', `$${count}`, ['if', ['result', 'i32'], ['i32.eqz', ['local.get', `$${n}`]], ['then', ['i32.const', 0]],
+          ['else', ['if', ['result', 'i32'], ['i32.eq', ['local.get', `$${n}`], ['i32.const', 1]], ['then', ['i32.sub', recvLen, ['local.get', `$${start}`]]],
+            ['else', toIndex(arg(1))]]]]],
+        ['if', ['i32.lt_s', ['local.get', `$${count}`], ['i32.const', 0]], ['then', ['local.set', `$${count}`, ['i32.const', 0]]]],
+        ['if', ['i32.gt_s', ['local.get', `$${count}`], ['i32.sub', recvLen, ['local.get', `$${start}`]]],
+          ['then', ['local.set', `$${count}`, ['i32.sub', recvLen, ['local.get', `$${start}`]]]]],
+        // the inserts: the argument array past its first two slots, in place
+        ['if', ['i32.gt_s', ['local.get', `$${n}`], ['i32.const', 2]],
+          ['then',
+            ['memory.copy', ['local.get', `$${off}`], ['i32.add', ['local.get', `$${off}`], ['i32.const', 16]], ['i32.shl', ['i32.sub', ['local.get', `$${n}`], ['i32.const', 2]], ['i32.const', 3]]],
+            ['i32.store', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]], ['i32.sub', ['local.get', `$${n}`], ['i32.const', 2]]]],
+          ['else', ['i32.store', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]], ['i32.const', 0]]]],
+        ['call', '$__arr_splice', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${start}`], ['local.get', `$${count}`], ['i64.reinterpret_f64', ['local.get', `$${args}`]]]], 'f64')
+    }
+    if (inserts.length) {
+      const positions = positionArgs([combined[0], combined[1]])
       inc('__arr_splice')
-      return typed(['call', '$__arr_splice',
-        asI64(emit(obj)),
-        asI32(emit(combined[0])),
-        asI32(emit(combined[1])),
-        asI64(buildArrayWithSpreads(inserts))], 'f64')
+      const recv = temp('spr')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${recv}`, asF64(emit(obj))],
+        ...positions.setup,
+        ['call', '$__arr_splice',
+          ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
+          positions.index(0),
+          positions.index(1),
+          asI64(buildArrayWithSpreads(inserts))]], 'f64')
     }
   }
 }
@@ -759,16 +804,30 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
             ['i64.reinterpret_f64', asF64(emit(['str', method]))],
             ['i64.reinterpret_f64', extArrayIR]]]],
           ['else', missing]]
-    const dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
+    let dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
       ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread)],
       ['else', fallback]]
+    // `f.call(thisArg, …args)` and `f.apply(thisArg, args)` on a closure value: a
+    // closure takes no receiver (arrows bind `this` lexically; a function using
+    // `this` is rejected at prepare), so the call is the closure's own with the
+    // arguments after the first, which is evaluated and dropped.
+    const borrow = !parsed.hasSpread && closureArgs.length >= 1 && (method === 'call' || (method === 'apply' && closureArgs.length === 2))
+    if (borrow) {
+      const own = method === 'call'
+        ? ctx.closure.call(typed(['local.get', `$${objTmp}`], 'f64'), closureArgs.slice(1), false)
+        : ctx.closure.call(typed(['local.get', `$${objTmp}`], 'f64'), [closureArgs[1]], true)
+      dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.CLOSURE),
+        ['then', own],
+        ['else', dispatch]]
+    }
     return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ...(slot < 0 && (vt == null || censusMaybeUndefined(obj))
         ? [['if', isNullish(typed(['local.get', `$${objTmp}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]]]
         : []),
+      ...(borrow ? setup : []),
       ['local.set', `$${propTmp}`, propRead],
-      ...setup, dispatch)
+      ...(borrow ? [] : setup), dispatch)
   }
 }
 
@@ -909,7 +968,29 @@ export function emitMethodCall(callee, parsed, callArgs) {
   // strategies keep the simple `callMethod(receiver, emitter)` shape.
   const c = {
     obj, method, parsed, vt,
-    callMethod: (objArg, methodEmitter) => emitMethodCallSpread(objArg, methodEmitter, parsed, method),
+    callMethod: (objArg, methodEmitter) => {
+      // A known kind does not prove presence. GetV rejects a missing receiver
+      // before argument evaluation, for qualified and generic builtin handlers.
+      if (ctx.summary?.at(ctx.func.current).mayBeNullishExpr(objArg) !== true ||
+          typeof objArg === 'string' && repOf(objArg)?.ptrKind != null)
+        return emitMethodCallSpread(objArg, methodEmitter, parsed, method)
+      const recv = temp('methodRecv'), value = storedValue(objArg)
+      const kind = valTypeOf(objArg), ctor = plannedTypedStorageCtor(ctx, objArg)
+      if (kind) ctx.func.localValTypesOverlay.set(recv, kind)
+      ctx.func.taggedLocals ??= new Set()
+      ctx.func.taggedLocals.add(recv)
+      if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(recv, ctor)
+      const setup = [
+        ['local.set', `$${recv}`, value],
+        ['if', isNullish(typed(['local.get', `$${recv}`], 'f64')), ['then', ['drop', throwTypeErrorIR('read')]]],
+      ]
+      const result = emitMethodCallSpread(recv, methodEmitter, parsed, method)
+      const wrap = ir => typed(['block', ['result', ir.type], ...setup, ir], ir.type)
+      const guarded = wrap(result)
+      if (result.bigintRaw) guarded.bigintRaw = true
+      if (result.bigintBox) deferBigintBox(guarded, () => wrap(materializeDeferredBigint(result)))
+      return guarded
+    },
   }
   const cls = tryClassMethodCall(c)
   return cls !== undefined ? cls : runTyped(c)

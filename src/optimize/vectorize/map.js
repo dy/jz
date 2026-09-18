@@ -195,6 +195,9 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
         if (k) { firstKind = k; break }
       }
       if (firstKind === 'read') return null  // loop-carried (reduction or stencil)
+      // A lane-local live out of the loop (`last = a[i]`, returned after)
+      // must land in its scalar local, which the lift's v128 shadow never does.
+      if (bl.outsideReads?.has(name)) return null
       // Discriminate lane-data vs address-tee. Address tees hold i32 addresses,
       // not vector data. We classify by checking the local's declared type.
       const decl = fnLocals.get(name)

@@ -75,6 +75,7 @@ import { captureFuncInspect } from './func-inspect.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
 import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc } from './emit-func.js'
+import { transitiveFrameEffects } from './analyze/frame-effects.js'
 import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'
 
 // Optional profiling; pass behavior is identical without a profiler.
@@ -173,6 +174,21 @@ export function assemble(ast, profiler) {
   // A module global's declaration-time literal length holds only while nothing
   // rewrites the binding (the element kind is an all-writers fact already).
   for (const name of programFacts.typedRedefs) ctx.scope.globalTypedLen?.delete(name)
+  // Frame effects (analyze/frame-effects.js): which functions write storage
+  // that exists before the call, and which let an allocation escape their
+  // frame. Load CSE reads the first across calls (analyze-for-emit.js); the
+  // arena rewind records below read the second, recomputed once variants exist.
+  const censusFrames = () => {
+    const loops = ctx.plans.rewindLoops = new WeakSet()
+    ctx.plans.rewindLoopNodes = null
+    for (const [name, frame] of transitiveFrameEffects(ctx.funcs.list)) {
+      const f = ctx.funcs.map.get(name)
+      if (!f) continue
+      f.frame = frame
+      for (const body of frame.loops) loops.add(body)
+    }
+  }
+  timePhase(profiler, 'frameEffects', censusFrames)
 
   // Closure-table planning is post-plan so every scan sees the final AST.
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
@@ -252,17 +268,18 @@ export function assemble(ast, profiler) {
         publishPlan(clone, facts)
         captureFuncInspect(clone, facts, programFacts)
       }
-      // Only an admitted local cursor unboxes to a cell address; an
-      // unadmitted one keeps its box, where the member schema lives
-      // (ptr-eligibility.js). The verdict lands after analysis, so the
-      // admitted cursors' storage is settled here on the published plan.
-      if (ctx.schema.inlineUnionCursors?.size) for (const func of ctx.funcs.list) {
-        const cursors = !func.raw && reachableForLowering(func) ? ctx.schema.inlineUnionCursors.get(func.sig) : null
-        if (!cursors) continue
-        unboxAdmittedCursors(ctx, functionPlanOf(ctx, func), func, cursors)
-      }
     })
   }
+  // Admission, for homogeneous and union cells alike, settles after analysis.
+  // Both carriers need raw cursor storage to retain their packed layout.
+  if (ctx.schema.inlineCellCursors.size || ctx.schema.inlineUnionCursors.size)
+    for (const func of ctx.funcs.list) {
+      if (func.raw || !reachableForLowering(func)) continue
+      for (const registry of [ctx.schema.inlineCellCursors, ctx.schema.inlineUnionCursors]) {
+        const cursors = registry.get(func.sig)
+        if (cursors) unboxAdmittedCursors(ctx, functionPlanOf(ctx, func), func, cursors)
+      }
+    }
   // Every specialization producer has now run, including union-cursor clones.
   // Close the disjoint variant ID space before emission and prove each variant's
   // signature, parameter facts, and FunctionPlan were derived rather than shared.
@@ -272,6 +289,9 @@ export function assemble(ast, profiler) {
   // Concrete Wasm function IDs: one assignment of the final emission order,
   // freezing the registry list so no later writer reorders or grows it.
   // Emission and assembly ordering below read this order, not the registry.
+  // Specialization added variants with their own records: refresh the census
+  // while every body is still present (emission may release them).
+  timePhase(profiler, 'frameEffectsRefresh', censusFrames)
   timePhase(profiler, 'finalizeConcreteFunctionIds', () =>
     programFacts.programIndex.finalizeConcreteFunctionIds())
   // Parameter-ABI ownership transfer: the lattice's settled rows move to
@@ -759,14 +779,28 @@ export function assemble(ast, profiler) {
     ...sec.tags, ...sec.table, ...sec.globals, ...sec.stdlib, ...sec.funcs, ...(startFn ? [startFn] : []),
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
-  // A function's record allows an arena rewind when it takes nothing and
-  // returns one scalar that is not a pointer (a boxed f64 result must be a
-  // number); link decides from the body.
-  const rewindable = new Map()
+  // A function's record allows an arena rewind when it returns one scalar
+  // that is not a pointer (a boxed f64 result must be a number) and lets no
+  // allocation escape its frame (analyze/frame-effects.js: no heap value
+  // stored into outer storage, no growth of an outer container, no unknown
+  // or host callee); link decides the rest from the body. Parameters are
+  // fine: they exist before the call, and a store through one is an escape
+  // the census counts. `unsafe` names every function whose frame lets an
+  // allocation escape, so a caller cannot rewind over a call to it.
+  // Threads sharing one heap pointer (sharedMemory) cannot rewind: one thread's
+  // restore would discard every other thread's allocations.
+  const rewindable = new Map(), unsafe = new Set()
   for (const f of ctx.funcs.list) {
-    if (f.raw || f.sig.params.length !== 0 || f.sig.results.length !== 1 || f.sig.ptrKind != null) continue
+    if (f.raw || ctx.memory.atomic) continue
+    const frame = f.frame
+    if (frame == null || frame.arenaUnsafe) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + (frame?.why ?? 'no census')); continue }
+    // A rewound frame returns a scalar: a heap result (a pointer kind, a
+    // tagged f64 the plan cannot prove a number) lives in the arena it would
+    // free; a multi-value or void result has no place for the saved pointer.
+    if (f.sig.results.length !== 1 || f.sig.ptrKind != null) { ctx.transform.whyNotRewind?.(`$${f.name}`, f.sig.ptrKind != null ? 'result: heap value' : 'result: not one scalar'); continue }
     const ty = f.sig.results[0]
     if (ty === 'i32' || (ty === 'f64' && f.valResult === VAL.NUMBER)) rewindable.set(`$${f.name}`, ty)
+    else ctx.transform.whyNotRewind?.(`$${f.name}`, 'result: not a proven number')
   }
   // Snapshot the settled field contract before handing plain data to link.
   // Numeric refinements are part of this boundary too, not just value kinds.
@@ -789,7 +823,8 @@ export function assemble(ast, profiler) {
   return { module, link: {
     optimize: ctx.transform.optimize,
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
-    rewindable, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
+    rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
+    report: ctx.transform.whyNotRewind ?? null,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries,
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false,

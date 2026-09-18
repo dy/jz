@@ -51,6 +51,7 @@ import {
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
+import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
 import {
   scalarizeFunctionTypedArrays, scalarizeFunctionArrayLiterals,
@@ -123,6 +124,9 @@ export default function plan(ast, profiler, summarize) {
   sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
   if (optimizing()) {
     sweep('splitCharScan', splitCharScanLoops)
+    // Record parameters read field by field become lanes before the object
+    // scalarizer looks: a literal passed to such a callee has no reader left.
+    sweep('laneRecordParams', () => laneRecordParams(facts()))
     sweep('scalarizeArrayLiterals', scalarizeFunctionArrayLiterals)
     sweep('scalarizeObjectLiterals', scalarizeFunctionObjectLiterals)
     // Promotion runs AFTER literal scalarization (those that fully reduce to scalars

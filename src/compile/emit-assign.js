@@ -18,13 +18,14 @@ import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, s
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
-import { valTypeOf, shapeOf } from '../kind.js'
+import { isPresentNumber, valTypeOf, shapeOf } from '../kind.js'
+import { NUMBER } from '../summary/kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
-  freshId, boxBigInt,
+  freshId, boxBigInt, isNullish, throwTypeErrorIR,
 } from '../ir.js'
 import { emit, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
@@ -151,6 +152,7 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, valueDomain, pe
   ctx.module.include('typedarray')
   setLinkDemand('typedarray')
   setLinkDemand('typedRuntime')
+  if (valueDomain !== 2) inc('__typed_set_idx_tagged')
   const runtimeStore = mayBeObject ? '__arr_typed_obj_set_idx' : '__arr_typed_set_idx'
   if (mayBeObject) ctx.module.include('collection')
   inc(runtimeStore)
@@ -162,7 +164,7 @@ function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, valueDomain, pe
     ['local.set', `$${ptrTmp}`, ['call', `$${runtimeStore}`,
       ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
       ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`],
-      ...(representationProgramHasBigint(ctx) ? [['i32.const', valueDomain]] : [])]],
+      ['i32.const', valueDomain]]],
     ...(persist ? [persist(['local.get', `$${ptrTmp}`])] : []),
     ['local.get', `$${valTmp}`])
 }
@@ -366,6 +368,10 @@ function tryStructInlineReplaceStore(arr, idx, val) {
 }
 
 export function emitElementAssign(arr, idx, val) {
+  // A static object key is a field write, with the same carrier and setter
+  // semantics as dot syntax. Keep expression receivers on that one path too.
+  if (isLiteralStr(idx) && ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null)
+    return emitPropertyAssign(arr, idx[1], val)
   // 0. `obj.prop[idx] = val` where `obj`'s type is fully unknown (so `obj`
   // could be a host EXTERNAL object at runtime) — `__ext_prop` (interop.js)
   // always re-marshals a FRESH, disconnected copy of a container-valued
@@ -440,6 +446,13 @@ export function emitElementAssign(arr, idx, val) {
   // up front so the typed-array element-write path can elide the value materialize.
   const void_ = ctx.func._expect === 'void'
   const keyType = valTypeOf(idx)
+  const numericKey = keyType === VAL.NUMBER && isPresentNumber(ctx, idx)
+  if (!numericKey && (valTypeOf(arr) === VAL.TYPED || valTypeOf(arr) == null)) {
+    ctx.module.include('typedarray')
+    ctx.module.include('collection')
+    ctx.module.include('string')
+    setLinkDemand('typedProperties')
+  }
   // A provably-numeric index name — an int-certain loop counter or a NUMBER-typed
   // local — can never be a string key, so the runtime `__is_str_key` → `__dyn_set`
   // dispatch is dead. Mirrors the index *read* path (`intIndexIR`), closing the
@@ -477,14 +490,14 @@ export function emitElementAssign(arr, idx, val) {
   // statically-known BigInt64Array even though nothing ambiguous is
   // happening. `storedValueNarrow` never fires for an inline expression,
   // only for a bare name independently proven boxed elsewhere.
-  const arrProvenTyped = valTypeOf(arr) === VAL.TYPED && plannedTypedStorageInfo(ctx, arr) != null
+  const arrProvenTyped = numericKey && valTypeOf(arr) === VAL.TYPED && plannedTypedStorageInfo(ctx, arr) != null
   const valueExpr = arrProvenTyped ? storedValueNarrow(val) : storedValue(val)
   // A runtime-typed destination needs a self-describing value. A definite
   // BigInt source may lawfully stay raw under its ordinary RepresentationPlan
   // edge, so materialize the PTR.BIGINT tag specifically for the polymorphic
   // typed writer. Mixed sources already arrive tagged through storedValue.
   const valueVT = valTypeOf(val)
-  const valueDomain = valueVT === VAL.BIGINT ? 1 : valueVT != null ? 0 : -1
+  const valueDomain = valueVT === VAL.NUMBER ? 2 : valueVT === VAL.BIGINT ? 1 : valueVT != null ? 0 : -1
   const taggedValueExpr = () => valueVT === VAL.BIGINT &&
       representationStorageWriteAction(ctx, val) !== REP_EDGE_BOX
     ? boxBigInt(asI64(valueExpr)) : valueExpr
@@ -549,8 +562,9 @@ export function emitElementAssign(arr, idx, val) {
   if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY)
     return storeArrayPayload(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), valueExpr, persistBinding(arr))
 
-  // 4. Known-STRING key → __dyn_set (after schema/SRoA literal-key paths).
-  if (keyType === VAL.STRING) return dynSetCall(arr, keyExpr, valueExpr)
+  // 4. Known non-number keys require ToPropertyKey, after RHS evaluation.
+  // A receiver union must not send an object/boolean key through index truncation.
+  if (keyType != null && keyType !== VAL.NUMBER) return dynSetCall(arr, keyExpr, valueExpr)
 
   // 5. Typed-array receiver → __typed_set_idx (or per-ctor element write).
   //    Also fires for a nested `arr[c]` receiver whose array's elements are typed
@@ -559,16 +573,30 @@ export function emitElementAssign(arr, idx, val) {
   const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr)
   if (ctx.core.emit['.typed:[]='] &&
       (valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver)) {
+    if (!numericKey) {
+      const slow = dynSetCall(arr, keyExpr, taggedValueExpr())
+      // A stable dynamic key keeps the numeric RMW path behind a key guard.
+      // The other arm retains named-property semantics and the original facts.
+      if (void_ && !plannedTypedReceiver?.isBigInt && valTypeOf(val) === VAL.NUMBER &&
+          (keyType == null || keyType === VAL.NUMBER) && typeof idx === 'string') {
+        const overlay = ctx.func.localValTypesOverlay, old = overlay.get(idx)
+        let fast
+        overlay.set(idx, NUMBER)
+        try { fast = ctx.core.emit['.typed:[]='](arr, idx, val, true) }
+        finally { if (old === undefined) overlay.delete(idx); else overlay.set(idx, old) }
+        if (fast) return typed(['if', ['f64.eq', asF64(keyExpr), ['f64.trunc', asF64(keyExpr)]],
+          ['then', fast], ['else', ['drop', asF64(slow)]]], 'void')
+      }
+      return slow
+    }
     const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
     if (r) return r
     // Element ctor unknown — runtime aux-byte dispatch over the generic tagged
     // value channel. Numeric and BigInt destinations validate/coerce without
     // guessing from raw payload magnitude.
-    const runtimeSet = representationProgramHasBigint(ctx) ? '__typed_set_idx_tagged' : '__typed_set_idx'
-    inc(runtimeSet)
-    return typed(['call', `$${runtimeSet}`,
-      asI64(emit(arr)), asI32(emit(idx)), runtimeTypedValueExpr(),
-      ...(runtimeSet === '__typed_set_idx_tagged' ? [['i32.const', valueDomain]] : [])], 'f64')
+    inc('__typed_set_idx_tagged')
+    return typed(['call', '$__typed_set_idx_tagged',
+      asI64(emit(arr)), asI32(emit(idx)), runtimeTypedValueExpr(), ['i32.const', valueDomain]], 'f64')
   }
 
   // 6. Boxed schema array — payload pointer is stored at the receiver's payload offset.
@@ -868,15 +896,24 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   // value was lost (read returned the stale slot). This is what corrupted the
   // self-compile `ctx.func.X = …` writes (e.g. finallyStack), dropping try/finally.
   if (typeof obj !== 'string') {
+    const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
     const sh = shapeOf(obj)
-    if (sh?.val === VAL.OBJECT && sh.names) {
-      const i = sh.names.indexOf(prop)
+    const names = sid != null ? ctx.schema.list[sid] : sh?.val === VAL.OBJECT ? sh.names : null
+    if (names) {
+      const i = names.indexOf(prop)
       // The slot is the field's only home (module/collection.js
       // buildObjectSchemaSetArm): a dynamic read finds it through the schema arm.
-      if (i >= 0)
-        return withTemp(storedValue(val), t => [
-          ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), i, ['local.get', `$${t}`]),
-          ['local.get', `$${t}`]])
+      if (i >= 0) {
+        const receiver = temp('ref'), value = temp()
+        const get = () => typed(['local.get', `$${receiver}`], 'f64')
+        return block64(
+          ['local.set', `$${receiver}`, asF64(emit(obj))],
+          ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop) : storedValue(val)],
+          ...(ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) !== false
+            ? [['if', isNullish(get()), ['then', ['drop', throwTypeErrorIR()]]]] : []),
+          ctx.abi.object.ops.store(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`]),
+          ['local.get', `$${value}`])
+      }
     }
   }
   if (typeof obj === 'string') {

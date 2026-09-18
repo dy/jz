@@ -8,8 +8,8 @@ import { ctx, err, inc } from '../../ctx.js'
 import {
   applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
-import { valTypeOf } from '../../kind.js'
-import { VAL } from '../../reps.js'
+import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { VAL, repOf } from '../../reps.js'
 import { emitElementAssign, emitPropertyAssign } from '../emit-assign.js'
 import { withInitializerScope } from '../flow-state.js'
 import {
@@ -17,7 +17,7 @@ import {
 } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
-import { emit, rejectAmbiguousBoolIdentity } from './dispatch.js'
+import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier } from './dispatch.js'
 import { isSideEffectFree } from './shared.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
@@ -42,7 +42,10 @@ function stagedReference(name, update = true, rhs) {
     if (!always && !effectful(node)) return node
     const h = temp(tag)
     const vt = valTypeOf(node)
-    if (vt) ctx.func.localValTypesOverlay.set(h, vt)
+    if (vt) {
+      const k = ctx.summary?.at(ctx.func.current).kindOfExpr(node)
+      ctx.func.localValTypesOverlay.set(h, k != null && ctx.summary.valOfKind(k) === vt ? k : vt)
+    }
     const ctor = vt === VAL.TYPED ? plannedTypedStorageCtor(ctx, node) : null
     if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, ctor)
     const sid = vt === VAL.OBJECT ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(node) : null
@@ -51,7 +54,8 @@ function stagedReference(name, update = true, rhs) {
     pre.push(['local.set', `$${h}`, asF64(value)])
     // GetValue rejects a nullish base after evaluating the key expression,
     // but before invoking that key's conversion hooks.
-    if (key && !valTypeOf(recv))
+    if (key && ctx.summary?.at(ctx.func.current).mayBeNullishExpr(recv) !== false &&
+        !(typeof recv === 'string' && repOf(recv)?.ptrKind != null))
       pre.push(['if', isNullish(asF64(emit(recv))), ['then', ['drop', throwTypeErrorIR()]]])
     if (key && vt) {
       pre.push(['local.set', `$${h}`, ['f64.reinterpret_i64', toStrI64(node, typed(['local.get', `$${h}`], 'f64'))]])
@@ -217,6 +221,7 @@ export const assignmentOps = {
     // helper, same contract: rejects only when SOME use of `name` actually
     // observes its identity — a truthiness-only reassignment still compiles.
     rejectAmbiguousBoolIdentity(name, val)
+    const tagged = boolTaggedBinding(name)
     if (isNullishLit(val)) (ctx.func.maybeNullish ??= new Set()).add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'
     // Self-accumulation `x = x + …` (incl. desugared `x += …`): the new value REPLACES x, so x's
@@ -242,10 +247,11 @@ export const assignmentOps = {
     const objectLiteral = Array.isArray(val) && val[0] === '{}' && val.length > 1
     let ev
     if (objectLiteral) ctx.schema.targetStack.push({ name, active: true })
-    try { ev = withInitializerScope(selfAccum ? name : null, neverEscapes, () => emit(val)) }
+    try { ev = withInitializerScope(selfAccum ? name : null, neverEscapes, () => tagged && hasAmbiguousBoolMerge(val) ? emitIdentitySafe(val) : emit(val)) }
     finally { if (objectLiteral) ctx.schema.targetStack.pop() }
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBigintRepresentationAction(ev, val, repAction)
+    if (tagged) ev = boolCarrier(name, val, ev)
     return writeVar(name, ev, void_, val)
   },
 

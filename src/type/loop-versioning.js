@@ -10,16 +10,51 @@
  *
  * @module type/loop-versioning
  */
-import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst } from '../ast.js'
+import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs } from '../ast.js'
 import { ctx } from '../ctx.js'
+import { isNullable, core, NUMBER } from '../summary/kind.js'
+import { repOf } from '../reps.js'
+import { typedStorageNameCtor } from '../typed-context.js'
 import { intLiteralValue, intExprRange, constIntExpr } from '../static.js'
 import {
-  idxKey, inBoundsArrIdx, litBoundArrIdx, redeclaresName, collectDecls, lengthRecv,
+  idxKey, typedIndexKnown, activeBoundsAssumption, redeclaresName, collectDecls, lengthRecv,
   isUnitIncrement,
 } from './canonical-bounds.js'
 import { intervalProvenIdx, intervalIdxRanges } from './interval-proof.js'
 import { exprType } from './expr-type.js'
 import { containsNestedClosure } from './loop-unroll.js'
+
+/** Entry guards survive direct writes and calls alike. Calls cannot replace
+ *  an uncaptured local, but may replace a global/cell with a shorter buffer or
+ *  a nullish value. Numeric Math calls have no such effects; object arguments
+ *  do not qualify because their coercion can invoke user code. */
+export function stableLoopNames(body, cond, step) {
+  const roots = [body, cond, step]
+  const cache = new Map()
+  return name => {
+    if (roots.some(root => isReassigned(root, name)) || redeclaresName(body, name)) return false
+    if (ctx.func.locals?.has(name) && !ctx.func.boxed?.has(name)) return true
+    if (cache.has(name)) return cache.get(name)
+    const seen = new Set()
+    const changes = (root, owner) => {
+      if (isReassigned(root, name)) return true
+      if (seen.has(root)) return false
+      seen.add(root)
+      return some(root, n => {
+        if (n[0] === '()' && n.length === 2) return false
+        if (n[0] !== '()' && n[0] !== '?.()' && n[0] !== 'new') return false
+        const callee = n[1], fn = typeof callee === 'string' && ctx.funcs.map?.get(callee)
+        if (fn && !fn.raw) return changes(fn.body, fn.sig) || Object.values(fn.defaults || {}).some(d => changes(d, fn.sig))
+        const math = typeof callee === 'string' ? /^(?:Math|math)\./.test(callee)
+          : Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math'
+        return !math || n[0] !== '()' || !callArgs(n).every(arg => core(ctx.summary?.at(owner).kindOfExpr(arg)) === NUMBER)
+      })
+    }
+    const stable = !roots.some(root => changes(root, ctx.func.current))
+    cache.set(name, stable)
+    return stable
+  }
+}
 
 /** Static element count for `new T(<int literal>)` / `new T([literals…])`, or null
  *  for views (buffer, off, len), buffer/array copies, ternaries and computed sizes.
@@ -64,34 +99,10 @@ export function typedStaticLen(rhs) {
  *     chains (incl. the clamp idiom) provably fit a static receiver length. */
 export function typedIdxProven(recv, idx) {
   if (typeof recv !== 'string') return false
-  // a versioned assumption is scoped to its OWNING loop: honored only while that
-  // loop's frame is on the emission stack (a textual twin of the access OUTSIDE
-  // the loop sees the cursor past its bound and must stay checked)
-  const owner = ctx.types.assumedBounds?.get(idxKey(recv, idx))
-  if (owner != null && ctx.func.stack?.some(f => f.bodyNode === owner)) return true
-  // 4b. per-RECEIVER guarded const hull — the value-level twin of the key channel.
-  //     The versioned guard proved every CONSTANT extent ≤ hull.max < recv.length,
-  //     so any read whose index is a compile-time constant within the hull is
-  //     in-bounds regardless of how many clone/rename layers (plan unroll, per-arm
-  //     emit unroll, inline suffixes) rewrote the index NODE since the scan — the
-  //     AST-JSON assumption keys break under those; the receiver name + value do
-  //     not. Same owner-frame scoping as the key channel.
-  const hull = ctx.types.assumedConstHull?.get(recv)
-  if (hull != null && ctx.func.stack?.some(f => f.bodyNode === hull.owner)) {
-    const v = constIntExpr(idx)
-    if (v != null && v >= 0 && v <= hull.max) return true
-  }
-  if (intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
-  if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
+  if (typedIndexKnown(ctx, recv, idx) || intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
   const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
     ?? ctx.func.localReps?.get(recv)?.arrayLen
   if (len == null) return false
-  const k = intLiteralValue(idx)
-  if (k != null) return k >= 0 && k < len
-  if (Array.isArray(idx) && idx[0] === '&' && idx.length === 3) {
-    const m = intLiteralValue(idx[1]) ?? intLiteralValue(idx[2])
-    if (m != null) return m >= 0 && m < len
-  }
   // 6. refined-range proof: an i32-typed index whose closed hull (branch-local
   //    compare refinements ∩ ranged decl reps ∩ const chains) fits [0, len).
   //    The i32 gate makes the int-tightened refinement bounds sound (a
@@ -99,10 +110,6 @@ export function typedIdxProven(recv, idx) {
   if (exprType(idx, ctx.func.locals) === 'i32') {
     const r = intExprRange(idx)
     if (r && r[0] >= 0 && r[1] < len) return true
-  }
-  if (typeof idx === 'string') {
-    const B = litBoundArrIdx(ctx).get(recv + '\x00' + idx)
-    if (B != null) return B <= len
   }
   return false
 }
@@ -342,7 +349,8 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // bound inside its final iteration (cond passes at B-1, the increment runs mid-
   // body), so the max-iv widens by LIT (`bump`). Any other write shape rejects.
   // a name the guard re-reads must denote the same binding for the whole loop
-  const stable = (name) => !isReassigned(body, name) && !redeclaresName(body, name)
+  const stable = stableLoopNames(body, cond, step)
+  const stableExpr = e => !someDeep(e, n => typeof n === 'string' && !stable(n))
   let bump = 0, inds = null, stepBy = null
   if (isUnitIncrement(step, iv)) {
     if (isReassigned(body, iv)) return null
@@ -355,8 +363,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     // `stride ≥ 1` conjunct (zero/negative falls to the checked arm).
     const x = step[0] === '+=' ? step[2] : step[2][1] === iv ? step[2][2] : step[2][1]
     const lit = intLiteralValue(x)
-    if (lit != null ? lit < 1 : !(typeof x === 'string' && x !== iv
-        && !isReassigned(body, x) && !redeclaresName(body, x))) return null
+    if (lit != null ? lit < 1 : !(typeof x === 'string' && x !== iv && stable(x))) return null
     if (isReassigned(body, iv)) return null
     stepBy = lit != null ? { lit } : { name: x, kind: exprType(x, locals) === 'i32' ? 'i32' : 'f64' }
   } else if (Array.isArray(step) && step[0] === ',') {
@@ -366,10 +373,11 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     // plain `arr[cursor]` access guards by its two endpoints (either slope sign).
     let unit = 0
     inds = new Map()
+    const stableCursor = stableLoopNames(body, cond)
     for (const p of step.slice(1)) {
       if (isUnitIncrement(p, iv)) { unit++; continue }
       if (Array.isArray(p) && p[0] === '+=' && typeof p[1] === 'string' && p[1] !== iv
-          && stable(p[1])
+          && !inds.has(p[1]) && stableCursor(p[1])
           && (intLiteralValue(p[2]) != null || (typeof p[2] === 'string' && p[2] !== iv && stable(p[2])))) {
         inds.set(p[1], p[2]); continue
       }
@@ -408,11 +416,11 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   //     abs-compare fails and the checked arm takes over; a genuine number converts
   //     exactly via ceil/floor + trunc_sat (never traps, saturation is conjunct-dead).
   const bKind = intLiteralValue(bound) != null ? 'i32'
-    : (() => { const r = lengthRecv(bound); return r != null && ctx.func.typedElem?.has(r) && stable(r) })() ? 'i32'
+    : (() => { const r = lengthRecv(bound); return r != null && typedStorageNameCtor(ctx, r) && stable(r) })() ? 'i32'
     : typeof bound === 'string' && stable(bound) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
     // an invariant pure EXPRESSION bound (`x < w - 1` — the stencil interior) re-
     // evaluates safely in the guard; machine-f64 rides the runtime-conjunct path
-    : invariantIdxExpr(bound, iv, body, null) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
+    : invariantIdxExpr(bound, iv, body, null) && stableExpr(bound) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
     : null
   if (bKind == null) return null
   const env = bodyAffineEnv(body, iv)
@@ -455,9 +463,17 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   const isPost = () => !forcePre && bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
   const scan = (n) => {
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
-        && ctx.func.typedElem?.has(n[1]) && stable(n[1])) {
+        && typedStorageNameCtor(ctx, n[1]) && stable(n[1])) {
       const key = idxKey(n[1], n[2])
-      if (!seen.has(key) && !typedIdxProven(n[1], n[2])) {
+      // Stored length bounds do not prove the receiver exists. Versioning can
+      // establish both facts once, keeping nullable globals out of hot reads.
+      const absent = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(n[1])) &&
+        repOf(n[1])?.ptrKind == null && ctx.func.refinements?.get(n[1])?.val == null &&
+        !activeBoundsAssumption(ctx, n[1], n[2])
+      const bounded = typedIdxProven(n[1], n[2])
+      if (!seen.has(key) && absent && bounded) {
+        seen.add(key); cands.push({ recv: n[1], idx: n[2], presence: true })
+      } else if (!seen.has(key) && !bounded) {
         if (typeof n[2] === 'string' && inds?.has(n[2])) {
           seen.add(key)
           cands.push({ recv: n[1], idx: n[2], ind: n[2], slope: inds.get(n[2]),
@@ -466,7 +482,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
           const aff = affineIdxOfIV(n[2], iv, body, env)
           // symbolic slots: i32-machine exprs are exact; any other rides the f64
           // path with runtime `integral ∧ |v| ≤ 2^31` conjuncts (kind 'f64')
-          if (aff
+          if (aff && aff.slots.every(t => stableExpr(t.e))
               // statically-negative low extent: the checked form IS the semantics, a
               // guard would always fail (runtime-entry loops keep the runtime lo check)
               && !(aff.slots.length === 0 && startC != null && aff.a * startC + aff.bConst < 0)) {
@@ -498,6 +514,9 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
             }
           }
         }
+      }
+      if (!seen.has(key) && absent) {
+        seen.add(key); cands.push({ recv: n[1], idx: n[2], presence: true })
       }
     }
   }

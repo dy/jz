@@ -366,6 +366,7 @@ export function resolveIncludes(realize = true) {
  */
 function createFactStore() {
   return {
+    externalIngress: null,
     programFacts: { gen: 0, walkCache: new WeakMap(), moduleInitSlot: new WeakMap(), bodyIntCertain: new WeakMap(), hazard: null },
     bodyFacts: new Map(),
     bindingUses: new WeakMap(),
@@ -742,6 +743,7 @@ export function reset(proto, globals, bridge) {
     strict: false,      // when true, dynamic features (obj[k], for-in) error at compile time
                         // instead of pulling in dynamic-dispatch stdlib. See ProgramFacts walk.
     alloc: true,        // when false, omit raw allocator exports like _alloc/_clear from wasm output.
+    whyNotRewind: null, // opts.whyNotRewind: (name, reason) => void, why an arena-rewind candidate was declined (optimize/arena-rewind.js)
     optimize: null,     // resolved {watr, hoistPtrType, ...} config — set in index.js via resolveOptimize().
                         // Read by optimizeModule() (compile.js) and the post-watr pass (index.js).
                         // null is treated as level 2 (all on) for back-compat with internal callers.
@@ -870,6 +872,7 @@ export function reset(proto, globals, bridge) {
   ctx.linkDemand = {
     external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
     typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
+    typedProperties: false, // computed keys may address typed elements or named properties
     typedRuntime: false, // an open-ctor indexed read/write uses the polymorphic typed helpers; pins them against hot-loop inlining.
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.

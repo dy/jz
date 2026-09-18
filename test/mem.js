@@ -591,8 +591,9 @@ test('memory.reset(): module-global heap values survive a reset (rewind to post-
 })
 
 test('memory.reset(): own memory grows without reset', () => {
+  // The array escapes (it is returned), so the frame cannot rewind it away.
   const { exports, memory } = jz`
-    export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }
+    export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs }
   `
   const before = memory.buffer.byteLength
   for (let i = 0; i < 500; i++) exports.f(100)
@@ -602,7 +603,7 @@ test('memory.reset(): own memory grows without reset', () => {
 test('memory.reset(): shared memory rewinds heap pointer to 1024', () => {
   if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = jz.memory()
-  const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }', { memory })
+  const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs }', { memory })
   exports.f(100)
   const dv = () => new DataView(memory.buffer)
   ok(dv().getInt32(1020, true) > 1024, 'heap advanced after allocations')
@@ -1010,6 +1011,25 @@ test('host allocator: odd allocation survives Wasm allocator handoff', () => {
   is([...mem.read(p)], [123])
   mem.Uint8Array([99])
   is([...mem.read(p)], [123])
+})
+
+test('shared string pools include literals emitted by runtime helpers', () => {
+  if (onWasi() || onKernel()) return
+  const source = n => `const make = () => new Float64Array(${n});
+    export function read(key) { key = '' + key; const a = make(); return a[key]; }
+    export function sliced(key) { return read(('!' + key + '!').slice(1, -1)); }`
+  for (const optimize of [0, 2, 3, 'size']) {
+    const memory = jz.memory()
+    const first = jz(source(3), { optimize, memory })
+    for (const name of ['read', 'sliced']) {
+      for (const [key, value] of [['byteLength', 24], ['byteLength', 24], ['byteOffset', 0],
+        ['length', 3], ['', undefined], ['byteLength\0', undefined], ['byteLength', 24]])
+        is(first.exports[name](key), value, `O${optimize}: ${name}(${key})`)
+    }
+    const second = jz(source(0), { optimize, memory })
+    is(second.exports.read('byteLength'), 0, `O${optimize}: empty receiver in the next module`)
+    is(first.exports.read('byteLength'), 24, `O${optimize}: prior module retains its pool`)
+  }
 })
 
 test('memory.write: growth and a failed marshal preserve destination atomicity', () => {

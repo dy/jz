@@ -3,10 +3,39 @@
 // String-method tests (charAt/charCodeAt/at/search/match) live in strings.js.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { run, cases } from './util.js'
+import { run, cases, wat, funcWat } from './util.js'
 import { levels } from './_matrix.js'
+import encodeWat from 'watr/compile'
 
 // === toString ===
+
+test('integer formatting: exact UTF-16 writes at decimal and memory boundaries', () => {
+  const text = wat(`export let f = (i, v) => 'x' + (i|0) + ',' + (v|0) + '!'`,
+    { optimize: { level: 2, watr: false } })
+  // Isolate the actual helpers so a wrong width cannot hide in spare heap space.
+  const names = ['__itoa', '__itoa_s', '__ilen']
+  const { memory, __itoa, __itoa_s, __ilen } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(`(module
+    (memory (export "memory") 1)
+    ${names.map(name => funcWat(text, name) + `(export "${name}" (func $${name}))`).join('\n')}
+  )`))).exports
+  const units = new Uint16Array(memory.buffer)
+  const edges = [0, 0, 1, 2147483647, 2147483648, 4294967295]
+  for (let n = 10; n <= 1e9; n *= 10) edges.push(n - 1, n, n + 1)
+  edges.push(42, 42, 4294967295, 42)
+  for (const signed of [false, true]) for (const edge of edges) {
+    const value = signed ? edge | 0 : edge
+    const expected = String(value)
+    if (signed) is(__ilen(value), expected.length, `width of ${value}`)
+    for (const start of [8, units.length - expected.length]) {
+      units.fill(0xcafe)
+      const length = (signed ? __itoa_s : __itoa)(value, start * 2)
+      is(length, expected.length, `written length of ${value}`)
+      is(String.fromCharCode(...units.subarray(start, start + length)), expected, `digits of ${value}`)
+      is(units[start - 1], 0xcafe, 'prefix untouched')
+      if (start + length < units.length) is(units[start + length], 0xcafe, 'suffix untouched')
+    }
+  }
+})
 
 test('Number: toString', () => {
   cases([
@@ -50,6 +79,15 @@ test('Number: toString(radix)', () => {
     ['toString(dyn-radix) ok', '(r) => { try { return (255).toString(r).length } catch (e) { return -1 } }', 2, 16],
     ['toString(dyn-radix) bad', '(r) => { try { return (255).toString(r).length } catch (e) { return -1 } }', -1, 50],
   ])
+})
+
+test('Number: radix digits and sign survive reversal', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = run('export let f = (n, r) => n.toString(r)', { optimize })
+    for (const radix of [2, 8, 16, 36])
+      for (const n of [0, 1, -1, 17, -255, 1024, 2147483647, -2147483648, 4294967295, 1.5, -15.5])
+        is(f(n, radix), n.toString(radix), `O${optimize}: ${n} in base ${radix}`)
+  }
 })
 
 // === toFixed ===

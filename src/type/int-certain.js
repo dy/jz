@@ -100,6 +100,8 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
       const aux = typedElemAux(typedStorageNameCtor(ctx, expr[1]))
       if (aux != null && (aux & 7) <= 5 && !(aux & 32)) return (aux & 7) === 5 ? 1 : 2
     }
+    // `o['k']` (a literal or folded constant key) reads the slot `o.k` does.
+    if (op === '[]' && Array.isArray(expr[2]) && (expr[2][0] == null || expr[2][0] === 'str') && typeof expr[2][1] === 'string') return levelOf(['.', expr[1], expr[2][1]])
     if (op === '.') {
       // Slot-census resolver (analyzeSchemaSlotIntCertain's optimistic
       // fixpoint): a censused slot answers definitively — including 0

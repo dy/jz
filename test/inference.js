@@ -423,7 +423,7 @@ test('inferArrElemSchema: consistent caller schemas → direct slot load', () =>
   ok(/(f64|i32)\.load offset=\d+/.test(wat), 'expected direct schema-slot load')
 })
 
-test('inferArrElemSchema: inline array-literal call argument stays generic (not a structInline producer)', () => {
+test('inferArrElemSchema: inline array-literal arguments retain boxed record layout', () => {
   if (belowOpt(1)) return
   // subscript's register(d) → dispatch([d, ...]) shape, minus the spread: an
   // array literal built AND passed in one expression (never bound to a local
@@ -434,28 +434,10 @@ test('inferArrElemSchema: inline array-literal call argument stays generic (not 
   // mergeRule does — dispatch's `ops` param genuinely gets arrayElemSchema
   // (every element IS that schema; the fact itself is sound).
   //
-  // That fact alone used to also fold `ops[i].y` to a direct structInline
-  // slot load (zero __dyn_get_ calls) — this test originally asserted exactly
-  // that and passed. It was a false positive: array-literal syntax always
-  // boxes each element as its own heap object (taggedLinear), the same as
-  // `[1,2,3]` or any other literal — never analyzeStructInline's required
-  // "born from empty `[]` grown by structInline .push" shape. `ops[i]` is a
-  // boxed element POINTER, not an inline record cell, so the direct slot load
-  // read the pointer's raw NaN-boxed bits as `.y` itself: `main()` silently
-  // returned -655360, not 6 (JS). Root cause: analyzeStructInline's
-  // verifyCall (src/compile/analyze.js) only cross-checked named-variable and
-  // nested-user-call arguments against the callee's param fact — an inline
-  // array-literal argument fell through unverified, so its element schema
-  // never got poisoned out of ctx.schema.inlineArray. A second gap let a
-  // schema-free caller (no tracked array of its own, no Array<S>-returning
-  // function anywhere) skip the call-site walk entirely, so a CALLER like
-  // `build` here was never even inspected. Both closed: a non-empty
-  // array-literal argument now always poisons the callee param's candidate
-  // sid, and any function with a schema'd PARAM (not just a schema'd RETURN)
-  // forces the walk. `ops[i].y` now correctly stays on the generic dyn-get
-  // path — the WAT assertion below proves the unsound fast path didn't fire;
-  // the value assertion is what actually matters (WAT shape alone is exactly
-  // what gave false confidence before).
+  // An element is a boxed object pointer, not an inline record cell. Reading
+  // it as a cell once returned -655360 instead of 6. A direct schema read is
+  // safe after decoding that pointer, so requiring __dyn_get is not a layout
+  // proof; pin the values that exposed the original corruption.
   const src = `
     const dispatch = (ops) => {
       let s = 0
@@ -465,8 +447,6 @@ test('inferArrElemSchema: inline array-literal call argument stays generic (not 
     const build = (d) => dispatch([d])
     export const main = () => (build({x: 1, y: 2}) + build({x: 3, y: 4})) | 0
   `
-  const wat = jz.compile(src, { wat: true })
-  ok(count(wat, /\$__dyn_get_/g) > 0, 'array-literal call arg is not structInline-eligible — generic dyn-get path stays')
   is(jz(src).exports.main(), 6, 'runtime value is JS-correct: build({x:1,y:2})=2, build({x:3,y:4})=4, sum=6')
 })
 
@@ -488,30 +468,20 @@ test('inferArrElemSchema: heterogeneous literal elements stay generic', () => {
   ok(count(wat, /\$__dyn_get_/g) > 0, 'heterogeneous element shapes must stay generic')
 })
 
-test('inferArrElemSchema: spread element stays generic (subscript register/dispatch gap)', () => {
+test('inferArrElemSchema: spread records retain their values across empty and nonempty inputs', () => {
   if (belowOpt(1)) return
-  // Negative, and the ACTUAL diagnosed gap behind subscript's parse.js
-  // dispatch loop (register(d) → lookup[c] = dispatch([d, ...fn.ops], …)):
-  // the array is rebuilt via `[d, ...prior]` rather than a plain literal.
-  // inferArrElemSchema fails closed on a spread element (mirrors analyze.js's
-  // own `arr.push(...x)` poison, static.js/analyze.js) rather than tracing the
-  // spread source — a spread of a value recovered through a returned
-  // closure's own property, read back through a dynamically-indexed global,
-  // would need whole-program alias tracking over that global, a materially
-  // larger mechanism this fix does not attempt. Documents that dispatch's
-  // `ops` param stays UNCLASSIFIED for this shape — the real reason jessie's
-  // descriptor-record reads (`d.op`/`d.l`/`d.p`/`d.map`/`d.word`/`d.kw`)
-  // don't fold even after the plain-literal admission above.
-  const wat = jz.compile(`
+  // The register/dispatch pattern rebuilds an array of boxed records. The
+  // summary may resolve their schema; it must still use their object layout.
+  const { main } = jz(`
     const dispatch = (ops) => {
       let s = 0
       for (let i = 0; i < ops.length; i++) s = s + ops[i].y
       return s
     }
     const register = (d, prior) => dispatch(prior ? [d, ...prior] : [d])
-    export const main = () => (register({x: 1, y: 2}, null) + register({x: 3, y: 4}, [{x: 9, y: 9}])) | 0
-  `, { wat: true })
-  ok(count(wat, /\$__dyn_get_/g) > 0, 'spread element must stay generic (fail-closed)')
+    export const main = (full) => (register({x: 1, y: 2}, null) + register({x: 3, y: 4}, full ? [{x: 9, y: 9}] : [])) | 0
+  `).exports
+  for (const full of [1, 1, 0, 1]) is(main(full), full ? 15 : 6, `boxed spread records, full=${full}`)
 })
 
 test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
@@ -704,8 +674,9 @@ test('paramAllUsesNumeric: bare Math.* + `+` prove a numeric param inside a nest
 test('paramAllUsesNumeric: a `+`-with-string-literal use stays a real concat (soundness)', () => {
   // The numeric proof must NOT swallow genuine concatenation: a `+` with a string
   // literal operand is concat intent, so the param stays polymorphic (not narrowed).
-  const wat = jz.compile(`export let f = (s) => { let r = s + "!"; return r }`, { wat: true })
-  ok(/\$__str_concat\b/.test(wat), '`+` with a string literal stays a real concat')
+  const { f } = jz(`export let f = (s) => { let r = s + "!"; return r }`).exports
+  for (const value of ['text', 12, true, null, undefined])
+    is(f(value), String(value) + '!', 'the parameter retains its string conversion')
 })
 
 test('paramNeverString: additive exported f64 param skips the per-iteration string fork', () => {
@@ -857,12 +828,24 @@ test('inferModuleLetTypes: global aliased from a typed-returning user fn', () =>
 test('inferModuleLetTypes: global aliased from a ctor-preserving typed method', () => {
   if (belowOpt(1)) return  // codegen-SHAPE pin — see above
   // `.subarray()` / `.slice()` return the receiver's typed-array kind.
-  const wat = jz.compile(`
+  const src = `
     let a, b
     export let init = (n) => { a = new Float64Array(n); b = a.subarray(0, n) }
+    export let write = (i, v) => { a[i] = v }
     export let f = (w) => { let s = 0.0, i = 0; while (i < w) { s = s + b[i]; i++ } return s }
-  `, { wat: true })
-  noFork(wat, 'global from .subarray() must inherit the typed kind')
+  `
+  // init's boundary-unknown position needs ToNumber. Its cold helpers must
+  // not count as dispatch in f; inspect f before watr can inline helper bodies.
+  const hot = watTree(src, { level: 2, watr: false }).filter(n => n[0] === 'func' && n[1] === '$f')
+  is(hot.length, 1, 'the hot function is present')
+  is(callsOutside(hot, FORK_CALL), 0, 'global from .subarray() keeps direct typed reads')
+  const { init, write, f } = jz(src).exports
+  init(0); is(f(0), 0, 'empty view')
+  init(3); write(0, 7); write(1, 8)
+  is(f(2), 15, 'view aliases the typed source')
+  is(f(2), 15, 'repeated read')
+  init(1); write(0, -2)
+  is(f(1), -2, 'replacement view uses its new source')
 })
 
 test('inferModuleLetTypes: alias to a NON-typed value stays polymorphic (soundness)', () => {
@@ -2869,9 +2852,10 @@ test('Map summary: new Map(seed) remains conservative and executes correctly', (
     export let get = (k) => seeded.get(k)
   `
   jz.compile(src, { wat: true })
-  is(mapValueKindOf('seeded'), null,
-    'an unmodeled constructor input makes no single-kind claim')
-  is(run(src).get('a'), 1, 'seeded Map still functions correctly (generic .get path)')
+  // The pair rows keep their positions through the join, so the values are numbers.
+  is(mapValueKindOf('seeded'), 'number', 'a literal pair list is a modeled constructor input')
+  is(run(src).get('a'), 1, 'seeded Map still functions correctly')
+  is(run(src).get('zz'), undefined, 'a missing key reads undefined')
 })
 
 test('Map summary: bundled moduleInit Map.set (watr\'s memo shape, C-style for) tracks module-global values', () => {

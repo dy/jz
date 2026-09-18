@@ -13,7 +13,7 @@ import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { VAL, updateRep } from '../../reps.js'
 import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
-import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN, kind } from '../../summary/index.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
@@ -705,6 +705,22 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
     for (const [name, level] of intLevels)
       if (level === 1 && locals.get(name) === 'i32' && bareEscapes.has(name)) locals.set(name, 'f64')
   }
+  // Pass E: a binding that holds a Boolean beside another kind and whose
+  // reads observe its identity (the numeric demand pass denied it a number)
+  // carries the Boolean as its atom (emit/assignment.js boolCarrier), so its
+  // storage is the tagged f64, never the raw i32 the stores alone suggest.
+  const view = ctx.summary?.at(body)
+  if (view) for (const [name, t] of locals) {
+    if (t !== 'i32') continue
+    if (mixedBoolKind(view.kindOfExpr(name)) && !view.numericDemand(name)) locals.set(name, 'f64')
+  }
+}
+
+/** A known kind holding a Boolean beside another kind: a union of named
+ *  tags, never the unknown kind (which carries every tag). */
+export const mixedBoolKind = k => {
+  const c = core(k) & ~UNKNOWN
+  return hasTag(c, K.BOOL) && tagOf(c) === K.ANY && c !== (core(kind(K.ANY)) & ~UNKNOWN)
 }
 
 /** Drop the cached analyzeBody entry for this body. Used by emitFunc after

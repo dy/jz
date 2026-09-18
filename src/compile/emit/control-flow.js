@@ -10,7 +10,7 @@ import {
 } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc } from '../../ctx.js'
 import {
-  asF64, asI32, freshId, isLit, litVal, loopTop, readVar, temp, tempI32, tempI64, toBoolFromEmitted, typed, undefExpr,
+  asF64, asI32, freshId, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, toBoolFromEmitted, typed, undefExpr,
 } from '../../ir.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { constIntExpr, forCounterRange, guardCounterName, intExprRange, intLiteralValue } from '../../static.js'
@@ -23,6 +23,7 @@ import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit, emitVoid, toBool } from './dispatch.js'
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
+import { isNullable } from '../../summary/kind.js'
 
 
 // Flow-sensitive type refinement moved to ./flow-types.js (extractRefinements,
@@ -506,10 +507,16 @@ export const controlFlowOps = {
         // the guard costs per LOOP ENTRY on re-entered inner nests (fft measured
         // 1.35x with calls, parity without); unresolved receivers keep $__len.
         const len64Of = (recv) => {
+          const absent = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(recv)) && repOf(recv)?.ptrKind == null
+          // Speculation must not throw for a loop that executes no accesses.
+          // A missing receiver has no valid extent; the checked arm will throw
+          // only if an actual read/store is reached.
+          const checked = len => absent ? ['if', ['result', 'i64'], isNullish(asF64(emit(recv))),
+            ['then', ['i64.const', 0]], ['else', len]] : len
           const aux = plannedTypedStorageInfo(ctx, recv)?.aux
           if (aux == null) {
             inc('__len')
-            return ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]
+            return checked(['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]])
           }
           const et = aux & 7, isView = (aux & 8) !== 0
           const shift = (aux & 16) ? 3 : et <= 1 ? 0 : et <= 3 ? 1 : et <= 6 ? 2 : 3
@@ -527,8 +534,8 @@ export const controlFlowOps = {
           const base = narrowed
             ? recvIR
             : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(recvIR)], ['i64.const', LAYOUT.OFFSET_MASK]]]
-          return ['i64.extend_i32_u', ['i32.shr_u',
-            ['i32.load', isView ? base : ['i32.sub', base, ['i32.const', 8]]], ['i32.const', shift]]]
+          return checked(['i64.extend_i32_u', ['i32.shr_u',
+            ['i32.load', isView ? base : ['i32.sub', base, ['i32.const', 8]]], ['i32.const', shift]]])
         }
         // one guard covers the whole NEST — each level contributes its own max-iv
         // and extent conjuncts (nested recognizers need the BARE nest in the fast
@@ -572,6 +579,11 @@ export const controlFlowOps = {
           return out
         }
         for (const vs of levels) {
+          for (const c of vs.cands) {
+            if (!isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(c.recv)) || freeRefs.get(c.recv)?.val) continue
+            conjs.push(['i32.eqz', isNullish(asF64(emit(c.recv)))])
+            freeRefs.set(c.recv, { val: VAL.TYPED })
+          }
           // max iv as i64. An 'f64' bound (untyped param, unknown box) converts via
           // ceil (`<`: the max int iv under B) / floor (`<=`) + trunc_sat — never
           // traps — with a `|B| ≤ 2^31` conjunct making the conversion exact: NaN and
@@ -581,6 +593,7 @@ export const controlFlowOps = {
           // a RANGE-ONLY level guards hull conjuncts alone — no iv, no max-iv
           if (vs.rangeOnly) {
             for (const c of vs.cands) {
+              if (c.presence) continue
               if (c.range.hiName != null) {
                 const cS = slotI64(c.range.hiName, exprType(c.range.hiName, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
                 conjs.push(['i64.ge_s', cS, i64c(c.range.entryHi + 1)])
@@ -649,6 +662,7 @@ export const controlFlowOps = {
           // start proves it, read from the live iv local otherwise (top level only)
           const groups = new Map(), indGroups = new Map(), cursorGroups = new Map()
           for (const c of vs.cands) {
+            if (c.presence) continue
             if (c.range != null) {
               // interval-hulled idx against a dynamic length (the affine fallback).
               // Numeric hull: one `hi < len` conjunct. Symbolic hull (wrap cursor vs
@@ -783,6 +797,7 @@ export const controlFlowOps = {
         ctx.types.assumedConstHull = new Map(savedHull ?? [])
         for (const vs of levels)
           for (const c of vs.cands) {
+            if (c.presence) continue
             if (c.range == null && c.ind == null && c.a === 0 && (!c.slots || !c.slots.length) && c.bConst >= 0) {
               const h = ctx.types.assumedConstHull.get(c.recv)
               if (!h || c.bConst > h.max) ctx.types.assumedConstHull.set(c.recv, { max: c.bConst, owner: body })
@@ -911,6 +926,17 @@ export const controlFlowOps = {
     if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
+    // Per-iteration arena rewind (compile/analyze/frame-effects.js): an iteration
+    // that lets no allocation escape and builds a value restores the heap pointer
+    // at its start, so its temporaries never accumulate. Recorded here, inserted
+    // after the vectorizer has matched loop shapes (optimize/loop-rewind.js), and
+    // validated against the body's callees at link (optimize/arena-rewind.js).
+    // The heap pointer's home (the `$__heap` global of an owned memory, the
+    // reserved word of a shared one) is declared with the allocator after
+    // emission; the pass checks for it at link.
+    if (ctx.plans.rewindLoops?.has(bodyNode0) && !ctx.memory.atomic
+        && (!ctx.transform.optimize || ctx.transform.optimize.arenaRewind !== false))
+      (ctx.plans.rewindLoopNodes ??= new WeakSet()).add(loopBlockNode)
     // HIR provenance link (.work/evidence.md §BodyModel slice 4; pre-
     // emission move): stamp this WAT loop's originating HIR facts so the vectorizer's
     // dispatch can shadow-assert against them — see ir.js's loopPlanLink doc for the

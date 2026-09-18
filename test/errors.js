@@ -411,33 +411,33 @@ test('error: strict mode dynamic property access message', () => {
   ok(error.message.includes('strict'), `message should mention strict mode: ${error.message}`)
 })
 
-// audit-#12 BOOL_CARRIER: the ambiguous-identity REJECT (`Binding '…' can be
-// both Boolean and Number…`) previously fired only on a decl-with-init
-// (`let x = false ?? 1`, emitDecl). A PLAIN reassignment to an already-
-// declared binding (`let x; x = false ?? 1`) reached a different emitter
-// ('=' in emit.js) that skipped the check entirely — the ambiguous merge
-// silently kept its collapsed raw-NUMBER carrier, so `typeof x`/`x===false`
-// read wrong with NO error at all. Both paths now share
-// rejectAmbiguousBoolIdentity — was ACCEPTED-WRONG, now loudly REJECTS
-// (README.md's documented v1 limitation: full support needs the tagged-
-// Boolean-carrier plan; reject is the correct interim per the semantics
-// contract, "reject rather than silently choose … a value").
-test('error: ambiguous BOOL∪NUMBER identity rejects on plain reassignment too (audit-#12, was silently WRONG)', () => {
-  let error
-  try { compile('export let f = () => { let x; x = false ?? 1; return typeof x }') } catch (e) { error = e }
-  ok(error, 'should throw — was silently accepted with x reading as NUMBER')
-  ok(error.message.includes('Boolean and Number'), `message should name the ambiguity: ${error.message}`)
+// A binding that can hold a Boolean beside a Number (`let x = false ?? 1`,
+// `let x; x = c && 1`, separate stores of `true` and `1`) and whose reads
+// observe its identity (typeof, ===, a return) used to be rejected at
+// compile time (`Binding '…' can be both Boolean and Number…`), and a plain
+// reassignment once skipped even that and read the Boolean as a raw
+// number. The binding is now a tagged carrier: every Boolean store lands
+// as its atom (src/compile/emit/dispatch.js boolTaggedBinding, boolCarrier)
+// and the reads take the dynamic forms a mixed kind takes. Reference:
+// ECMA-262 13.15.2 (the value of `??`/`&&` is one operand, unconverted),
+// 13.5.3 typeof (a Boolean reads "boolean"), 7.2.15 IsStrictlyEqual.
+test('mixed Boolean and Number binding keeps its identity on plain reassignment', () => {
+  const { f, g } = jz(`export let f = () => { let x; x = false ?? 1; return [typeof x, x === false, x] }
+    export let g = (k) => { let v; if (k) v = true; else v = 1; return [typeof v, v === true, v] }`).exports
+  is(f(), ['boolean', true, false])
+  is(g(1), ['boolean', true, true])
+  is(g(0), ['number', false, 1])
 })
-test('error: ambiguous BOOL∪NUMBER identity still rejects on decl-with-init (regression guard)', () => {
-  let error
-  try { compile('export let f = () => { let x = false ?? 1; return typeof x }') } catch (e) { error = e }
-  ok(error, 'should throw — pre-existing decl-path reject must stay intact')
-  ok(error.message.includes('Boolean and Number'), `message should name the ambiguity: ${error.message}`)
+test('mixed Boolean and Number binding keeps its identity on decl-with-init', () => {
+  const { f, h } = jz(`export let f = () => { let x = false ?? 1; return [typeof x, x === false] }
+    export let h = (x) => { let v = x > 0 && 1; return [v, typeof v, v === false] }`).exports
+  is(f(), ['boolean', true])
+  is(h(1), [1, 'number', false])
+  is(h(0), [false, 'boolean', true])
 })
-test('error: plain reassignment does NOT reject when the ambiguous merge only escapes via truthiness (no regression)', () => {
-  // rejectAmbiguousBoolIdentity only fires on an IDENTITY-observing use
-  // (typeof, ===) — a truthiness-only consumer (if/!/&&/||/?: condition)
-  // stays exempt on both the decl and the assignment path alike.
+test('a mixed Boolean and Number binding used for truthiness only keeps the raw carrier and compiles', () => {
+  // A truthiness-only consumer (if/!/&&/||/?: condition) needs no atom: the
+  // numeric demand pass proves every read converts, so the binding stays raw.
   let error, result
   try { result = compile('export let f = () => { let x; x = false ?? 1; return x ? 1 : 0 }') } catch (e) { error = e }
   ok(!error, `truthiness-only use should compile fine: ${error?.message}`)

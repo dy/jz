@@ -2,8 +2,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { adaptI64 } from './_matrix.js'
-import { run } from './util.js'
+import { adaptI64, levels } from './_matrix.js'
+import { run, oracle } from './util.js'
 
 
 // === Object destruct alias ===
@@ -221,6 +221,45 @@ test('Map: literal numeric get uses prehashed lookup', () => {
   }`, { wat: true, optimize: { watr: false } })
   ok(/\((return_call|call) \$__map_get_h\b/.test(wat))
   ok(!/\(call \$__map_get\s/.test(wat))
+})
+
+test('collection: string probes capture receiver and key before ignored argument effects', () => {
+  const src = `export function f(n,kind) {
+    const m=new Map(),s=new Set();let trace='',key=n?'héllo🙂':'',other='other'
+    m.set(key,7);s.add(key)
+    function recv(){trace+='r';return m}
+    function read(){trace+='k';return key}
+    function later(){trace+='i';m.set(key,9);key=other;return 0}
+    const value=recv().get(read(),later())
+    const hit=m.has(n?'héllo🙂':'',trace+='h'),setHit=s.has(n?'héllo🙂':'',trace+='s')
+    const coll=kind?m:s,dynamic=coll.has(n?'héllo🙂':'')
+    let error;try{m.get(read(),fail())}catch(e){error=e.name}
+    function fail(){trace+='e';throw new Error('stop')}
+    return [value,hit,setHit,dynamic,error,trace,key]
+  }`
+  const js=oracle(src).f
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const f=run(src,{optimize}).f
+    for(const [n,k] of [[0,0],[0,0],[1,1],[1,0],[0,1],[0,0]])
+      is(f(n,k),js(n,k),`O${optimize}, key ${n}, receiver ${k}`)
+  }
+})
+
+test('collection: nullable string keys keep generic hashing across growth and deletion', () => {
+  const src = `export function f(n) {
+    const m=new Map(),s=new Set(),keys=['short','long unicode 🙂 key']
+    m.set(undefined,71);s.add(undefined)
+    for(let i=0;i<100;i++){const key='key'+i;m.set(key,i);s.add(key)}
+    m.set(keys[0],7);m.set(keys[1],9);s.add(keys[0]);s.add(keys[1])
+    const key=keys[n],before=[m.get(key),m.has(key),s.has(key)]
+    m.delete(key);s.delete(key)
+    return [before,m.get(key),m.has(key),s.has(key)]
+  }`
+  const js=oracle(src).f
+  for(const optimize of levels(0,1,2,3,'size')) {
+    const f=run(src,{optimize}).f
+    for(const n of [0,0,1,2,100,1,0])is(f(n),js(n),`O${optimize}, index ${n}`)
+  }
 })
 
 test('Map: get missing returns nullish', () => {

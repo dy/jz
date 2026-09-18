@@ -40,6 +40,23 @@ test('summary fields: empty and sparse schema tables retain independent readers'
   }
 })
 
+test('summary queries: atomic results retain their element kind without absence', () => {
+  for (const [ctor, k] of [['Int32Array', K.NUMBER], ['BigInt64Array', K.BIGINT]]) {
+    const ops = ['load', 'store', 'add', 'sub', 'and', 'or', 'xor', 'exchange', 'compareExchange']
+    const reads = ops.map(op => ['()', 'Atomics.' + op, [',', 'a', lit(0),
+      lit(k === K.BIGINT ? 1n : 1), lit(k === K.BIGINT ? 2n : 2)]])
+    const summary = summarize([';', ['const', ['=', 'a', ['()', 'new.' + ctor, lit(2)]]],
+      ...reads.map((read, i) => ['let', ['=', 'r' + i, read]])], {
+      funcs: [], schemas: [], brandOf: () => null, imports: new Map(), exported: () => false,
+    })
+    for (let i = 0; i < reads.length; i++) {
+      is(summary.kindOf('r' + i), kind(k), `${ctor}.${ops[i]} binding`)
+      is(summary.at('').kindOfExpr(reads[i]), kind(k), `${ctor}.${ops[i]} expression`)
+      is(summary.at('').mayBeNullishExpr(reads[i]), false, `${ctor}.${ops[i]} throws instead of returning undefined`)
+    }
+  }
+})
+
 function program() {
   const params = [',', 'acc', 'element']
   const ast = [';',
@@ -662,7 +679,8 @@ test('summary objects: allocation-set capacity and overflow keep storage conserv
       funcs: [], schemas: [['value']], brandOf: () => null,
       imports: new Map(), exported: () => false,
     })
-    is(summary.objectSidOfExpr('selected'), count && count <= 32 ? 0 : null, `${count} construction sites`)
+    // Past the set's capacity the layout's sites fold into it: one shape, joined slots.
+    is(summary.objectSidOfExpr('selected'), count ? 0 : null, `${count} construction sites`)
     is(summary.fieldKind(0, 'value'), count ? kind(K.BIGINT) : K.NONE)
     is(summary.opaqueSchema(0), count > 1, 'joined or lost allocations use tagged storage')
   }

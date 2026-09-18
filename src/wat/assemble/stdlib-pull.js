@@ -168,6 +168,17 @@ function collapseTwins(sec) {
 export function pullStdlib(sec) {
   installHelperCounters()
   resolveIncludes()
+  // Helper templates can intern literals. Finalize the shared pool after
+  // their realization, before reachability and the post-init heap snapshot.
+  if (strPoolLen()) {
+    const total = strPoolLen()
+    let start = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+    if (!start) sec.start.push(start = ['func', '$__start'], ['start', '$__start'])
+    start.splice(findBodyStart(start), 0,
+      ['global.set', '$__strBase', ['call', '$__alloc', ['i32.const', total]]],
+      ['memory.init', '$__strPool', ['global.get', '$__strBase'], ['i32.const', 0], ['i32.const', total]],
+      ['data.drop', '$__strPool'])
+  }
   if (ctx.transform.optimize?.leanRuntime) collapseTwins(sec)
 
   // Reachability, not inclusion, decides what the output needs. `ctx.core.includes`

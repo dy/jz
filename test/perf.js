@@ -922,11 +922,17 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
     }
   `, { wat: true })
   const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
-  const loop = run.match(/\(loop[\s\S]*\(br /)?.[0] || ''
-  is((loop.match(/i64\.reinterpret_f64/g) || []).length, 0,
+  let decodes = 0, loopDecodes = 0
+  walkWat(parseWat(run), (n, inside) => {
+    // Null checks also reinterpret atoms; only extracting an offset decodes a base.
+    if (n[0] !== 'i32.wrap_i64' || !['i64.and', 'i64.reinterpret_f64'].includes(n[1]?.[0])) return
+    decodes++
+    if (inside) loopDecodes++
+  })
+  is(loopDecodes, 0,
     'no per-access pointer decode inside the loop — base is hoisted to entry')
   // Exactly one decode survives: the entry snapshot of the buffer base.
-  is((run.match(/i64\.reinterpret_f64/g) || []).length, 1, 'base decoded once at function entry')
+  is(decodes, 1, 'base decoded once at function entry')
   // Correctness floor: identical to the same source run as plain JS.
   const { exports } = jz(`
     let p, N = 0
@@ -1138,7 +1144,7 @@ test('codegen: unknown-receiver index with NUMBER key guards receiver kind once,
   is(nu(/__is_str_key/g), 0, 'NUMBER key never needs the call-site string-key dispatch')
   ok(nu(/call \$__ptr_type\b/g) >= 1, 'receiver pointer-kind is tag-tested')
   is(nu(/call \$__typed_idx\b/g), 1, 'ARRAY/TYPED receiver still takes the lean typed-index read')
-  is(nu(/call \$__dyn_get_expr\b/g), 1, 'OBJECT/HASH receiver takes the ToPropertyKey dyn-props read')
+  is(nu(/call \$__dyn_get_(?:expr|any)\b/g), 1, 'OBJECT/HASH receiver takes the ToPropertyKey dyn-props read')
 
   // Optimized shape: watr's inliner may dissolve __typed_idx (and, in this
   // isolated single-call-site snippet, __dyn_get_expr too) entirely into $f —
@@ -1210,7 +1216,7 @@ test('codegen: genuinely unproven receiver (ARRAY vs OBJECT) keeps the numeric-k
     }
   `
   const wat = compile(src, { wat: true, optimize: 2 })
-  ok((wat.match(/\$__dyn_get_expr/g) || []).length >= 1,
+  ok((wat.match(/\$__dyn_get_(?:expr|any)/g) || []).length >= 1,
     'ARRAY-vs-OBJECT disagreement keeps the ToPropertyKey dyn-props fallback')
   // Value-correctness: o[i] for i in [0,n) is a genuine dyn-props hit, not undefined.
   const inst = jz(src)
@@ -1719,6 +1725,8 @@ golden('typed-array loop', `export let f = (arr) => {
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 1466)
+}`, 1545)
+// 1466→1545: the boundary copy's element dispatch inlines at level 2 (+65), and the
+// frame rewind saves and restores the heap pointer around the Float64Array copy (+14).
 // 930→1111: watr-HEAD codegen era (pre-dates every session-7 jz commit — measured 1113 at
 // a7c2eb3 with the same linked watr; timing caps green).

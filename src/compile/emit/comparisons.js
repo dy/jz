@@ -5,7 +5,7 @@
  * @module compile/emit/comparisons
  */
 
-import { i64Hex } from '../../../layout.js'
+import { i64Hex, nanPrefixHex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
@@ -124,10 +124,10 @@ function emitTypeofCmp(a, b, cmpOp) {
     // decides, as $__typeof and $__to_num decide. The former magnitude
     // heuristic (finite, nonzero, subnormal) read a genuine subnormal Number
     // as a BigInt: the kernel spelled the literal 5e-324 by its bits.
-    // A program without bigint syntax constructs no box, but this guard is
-    // itself the evidence that boxes a host BigInt into an exported
-    // parameter (jz:hostabi's tag slot), so the tag is read inline: the
-    // $__ptr_type helper would pull memory into a memoryless module.
+    // Without BigInt literals, this guard can still admit a host BigInt
+    // (jz:hostabi's tag slot). Inline tag extraction preserves the memoryless
+    // path. Both branches test the same tag, including boxes
+    // originating from typed storage without a BigInt literal.
     if (!ctx.features.bigint) {
       const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
       const tag = ['i64.and', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]
@@ -563,8 +563,26 @@ function emitLooseEq(a, b, negate, strict) {
   // Fully dynamic operands retain their tagged kinds. Only loose equality
   // converts primitives and treats null and undefined as equal.
   inc(strict ? '__eq_strict' : '__eq')
-  const call = typed(['call', strict ? '$__eq_strict' : '$__eq', asI64(va), asI64(vb)], 'i32')
-  return negate ? typed(['i32.eqz', call], 'i32') : call
+  if (!strict) {
+    const call = typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')
+    return negate ? typed(['i32.eqz', call], 'i32') : call
+  }
+  // Strict equality inline for the two answers a bit test settles: equal
+  // bits are equal values (a NaN's own bits excepted), and two packed strings
+  // with different bits are different strings (an AST walker compares its
+  // operator names this way); everything else is the helper's chain.
+  const ia = tempI64('seq'), ib = tempI64('seq'), aG = ['local.get', `$${ia}`], bG = ['local.get', `$${ib}`]
+  const ssoMask = i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT)) | (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)))
+  const ssoString = i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT)) | (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)))
+  const isSso = g => ['i64.eq', ['i64.and', g, ['i64.const', ssoMask]], ['i64.const', ssoString]]
+  const eq = typed(['block', ['result', 'i32'],
+    ['local.set', `$${ia}`, asI64(va)], ['local.set', `$${ib}`, asI64(vb)],
+    ['if', ['result', 'i32'], ['i64.eq', aG, bG],
+      ['then', ['i64.ne', aG, ['i64.const', nanPrefixHex()]]],
+      ['else', ['if', ['result', 'i32'], ['i32.and', isSso(aG), isSso(bG)],
+        ['then', ['i32.const', 0]],
+        ['else', ['call', '$__eq_strict', aG, bG]]]]]], 'i32')
+  return negate ? typed(['i32.eqz', eq], 'i32') : eq
 }
 
 // True when `node` is a `?:`/`&&`/`||`/`??` join with a structurally-reachable

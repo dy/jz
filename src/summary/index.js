@@ -51,7 +51,8 @@
 import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { VAL } from '../reps.js'
-import { builtinCalleeVal, methodValType } from '../kind-traits.js'
+import { typedElementKey } from '../typed-provenance.js'
+import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
 export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
@@ -122,7 +123,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const byProp = new Map()
   schemas.forEach((props, sid) => props.forEach((p, i) => { let b = byProp.get(p); if (!b) byProp.set(p, b = []); b.push([sid, i]) }))
   const objectSite = (node, layout) => {
-    if (layout < 0) return layout
+    if (layout < 0 || foldedLayouts.has(layout)) return layout
     let byLayout = sites.get(node)
     if (!byLayout) sites.set(node, byLayout = new Map())
     let sid = byLayout.get(layout)
@@ -154,8 +155,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Two closures joined are a closure set (a dispatch table's members, an
   // array of handlers): a call through the join calls each member. The
   // set's id is interned above SET_BASE; `membersOf` reads either form. A
-  // set past SET_MAX members escapes them all instead.
-  const SET_BASE = 1 << 15, SET_MAX = 32
+  // set past CLOSURE_SET_MAX members escapes them all instead (a wrapper's
+  // callback parameter collects every callback the program passes it).
+  const SET_BASE = 1 << 15, SET_MAX = 32, CLOSURE_SET_MAX = 1024
   const closureSets = [], closureSetIds = new Map()
   const singles = []             // closure id → [id], the one-member list, allocated once
   const membersOf = (id) => id >= SET_BASE ? closureSets[id - SET_BASE] : singles[id] ?? (singles[id] = [id])
@@ -174,7 +176,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     let id = unions.get(pair)
     if (id !== undefined) return id
     const ids = [...new Set([...membersOf(a), ...membersOf(b)])].sort((x, y) => typeof x === typeof y ? (x < y ? -1 : x > y ? 1 : 0) : typeof x === 'number' ? -1 : 1)
-    if (ids.length > SET_MAX || SET_BASE + closureSets.length >= UNKNOWN) { for (const id of ids) escapeId(id); id = UNKNOWN }
+    if (ids.length > CLOSURE_SET_MAX || SET_BASE + closureSets.length >= UNKNOWN) { for (const id of ids) escapeId(id); id = UNKNOWN }
     else id = closureSet(ids)
     unions.set(pair, id); unions.set(b * 65536 + a, id)
     return id
@@ -194,8 +196,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const pair = a * 65536 + b
     let id = shapeUnions.get(pair)
     if (id !== undefined) return id
-    const ids = [...new Set([...shapesOf(a), ...shapesOf(b)])].sort((x, y) => x - y)
-    if (ids.length > SET_MAX || SET_BASE + closureSets.length >= UNKNOWN) { for (const sid of ids) loseShape(sid); id = UNKNOWN }
+    let ids = [...new Set([...shapesOf(a), ...shapesOf(b)].map(canonSid))].sort((x, y) => x - y)
+    if (ids.length > SET_MAX) {
+      for (const l of new Set(ids.map(sid => layouts[sid]))) foldLayout(l)
+      ids = [...new Set(ids.map(canonSid))].sort((x, y) => x - y)
+    }
+    if (ids.length === 1) id = ids[0]
+    else if (ids.length > SET_MAX || SET_BASE + closureSets.length >= UNKNOWN) { for (const sid of ids) loseShape(sid); id = UNKNOWN }
     else id = closureSet(ids)
     shapeUnions.set(pair, id); shapeUnions.set(b * 65536 + a, id)
     return id
@@ -219,9 +226,24 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (!(da && db)) { const o = da ? b : a; if (tagOf(o) === K.OBJECT && paramOf(o) !== UNKNOWN) addCellShapes(c, shapesOf(paramOf(o))); else if (hasTag(o, K.OBJECT)) addCellLost(c) }
         return (j & ~UNKNOWN) | c
       }
+      // A shape beside primitives (`typeof x === 'string' && fn`, `found || false`)
+      // keeps its identity in a cell of its own: a read or store through the
+      // join reaches the shape, as through a dictionary that may hold it.
+      if ((j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0 && (sidOf(a) !== UNKNOWN || sidOf(b) !== UNKNOWN || tagOf(a) === K.OBJECT && paramOf(a) !== UNKNOWN || tagOf(b) === K.OBJECT && paramOf(b) !== UNKNOWN)) {
+        const c = mixedCell(a, b)
+        for (const o of [a, b]) { if (tagOf(o) === K.OBJECT && paramOf(o) !== UNKNOWN) addCellShapes(c, shapesOf(paramOf(o))); else if (hasTag(o, K.OBJECT)) addCellLost(c) }
+        return (j & ~UNKNOWN) | bitOf(K.HASH) | c
+      }
       lose(a); lose(b)
     }
     return j
+  }
+  const mixedCells = new Map()   // the joined pair → its cell
+  const mixedCell = (a, b) => {
+    const key = a + '|' + b
+    let id = mixedCells.get(key)
+    if (id === undefined) { id = elems.length; elems.push(K.NONE); cellUp.push(id); mixedCells.set(key, id); mixedCells.set(b + '|' + a, id) }
+    return cell(id)
   }
   const lose = (k) => { if (paramOf(k) !== UNKNOWN) escape(k) }
   const slots = (sid) => fields[sid] ??= new Array(schemas[sid].length).fill(K.NONE)
@@ -239,10 +261,28 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if (opaqueSchemas.has(sid) || hostSchemas.has(sid)) escape(k); const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if (opaqueSchemas.has(sid) || hostSchemas.has(sid)) escape(k); const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
+  // A layout with more construction sites than a shape set holds is one shape:
+  // its sites fold into it, and a fact raised on any of them reaches them all.
+  const foldedLayouts = new Set()
+  const forFolded = (sid, fn) => { const l = layouts[sid]; if (!foldedLayouts.has(l)) return; if (sid !== l) fn(l); else for (const site of sitesByLayout.get(l) ?? []) if (site !== l) fn(site) }
+  const canonSid = (sid) => foldedLayouts.has(layouts[sid]) ? layouts[sid] : sid
+  const foldLayout = (l) => {
+    if (foldedLayouts.has(l)) return
+    foldedLayouts.add(l); changed = true
+    for (const site of sitesByLayout.get(l) ?? []) {
+      if (site === l) continue
+      slots(site).forEach((k, i) => raiseSlot(l, i, k))
+      for (const [p, k] of sideProps.get(site) ?? []) raiseSide(l, p, k)
+      if (sideWild.has(site)) raiseSideWild(l, sideWild.get(site))
+      if (openSchemas.has(site)) openSchema(l)
+      if (opaqueSchemas.has(site)) loseShape(l)
+      if (hostSchemas.has(site)) escapeToHost(kind(K.OBJECT, l))
+    }
+  }
   const NO_SLOTS = []
   const openSchemas = new Set()
-  const openSchema = sid => { if (!openSchemas.has(sid)) { openSchemas.add(sid); changed = true } }
+  const openSchema = sid => { if (!openSchemas.has(sid)) { openSchemas.add(sid); changed = true; forFolded(sid, openSchema) } }
   const raiseAllSlots = (sid, k) => { openSchema(sid); const a = slots(sid); for (let i = 0; i < a.length; i++) raiseSlot(sid, i, k) }
   const poisonSchema = (sid) => raiseAllSlots(sid, ANY)
   // A store through a receiver of unknown shape reaches an object only after
@@ -263,6 +303,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const deleteReach = { unknown: false }
   const wildProps = new Map()   // literal name → the values stored under it through a receiver of unknown shape
   const lostSchema = (sid) => opaqueSchemas.has(sid) || hostSchemas.has(sid)
+  /** An object kind whose every shape the summary can enumerate. */
+  const knownShapes = (k) => tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !shapesOf(paramOf(k)).some(lostSchema)
   // Names stored beside a shape's slots (`o.x = v` on a shape without `x`):
   // the kinds under each name and under an unknown name, per shape, and under
   // each name across shapes for a receiver of unknown shape. A read of a name
@@ -276,10 +318,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const raiseSide = (sid, prop, k) => {
     sideLost(sid, k)
     let m = sideProps.get(sid); if (!m) sideProps.set(sid, m = new Map())
-    const old = m.get(prop) ?? K.NONE, nk = merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true }
+    const old = m.get(prop) ?? K.NONE, nk = merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true; forFolded(sid, s => raiseSide(s, prop, nk)) }
     const oldAll = sideByProp.get(prop) ?? K.NONE, nkAll = merge(oldAll, k); if (nkAll !== oldAll) { sideByProp.set(prop, nkAll); changed = true }
   }
-  const raiseSideWild = (sid, k) => { sideLost(sid, k); const old = sideWild.get(sid) ?? K.NONE, nk = merge(old, k); if (nk !== old) { sideWild.set(sid, nk); changed = true } }
+  const raiseSideWild = (sid, k) => { sideLost(sid, k); const old = sideWild.get(sid) ?? K.NONE, nk = merge(old, k); if (nk !== old) { sideWild.set(sid, nk); changed = true; forFolded(sid, s => raiseSideWild(s, nk)) } }
   const poisonProp = (prop, v = ANY) => {
     const k = merge(wildProps.get(prop) ?? K.NONE, v)
     if (k === wildProps.get(prop)) return
@@ -350,12 +392,32 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const hostClosures = new Set() // callable results the host can receive
   const tuples = new Map()       // cell root → positional kinds; null after mutation, union or a mixed read
   const cellUp = []              // cell id → its parent; a root is its own
+  // Typed elements have fixed widths; named properties keep ordinary values.
+  // One cell per element type covers the typed receivers of that constructor;
+  // the cell below covers a receiver whose constructor is unknown, and so
+  // reaches them all: a store or an escape through it raises every read, a
+  // read through it joins every cell.
+  const typedProps = elems.length
+  elems.push(K.NONE); cellUp.push(typedProps)
+  const typedPropsByAux = new Map()
+  const typedPropsCell = (aux) => { let c = typedPropsByAux.get(aux); if (c === undefined) { c = elems.length; elems.push(K.NONE); cellUp.push(c); typedPropsByAux.set(aux, c) } return c }
+  const typedAuxOf = (k) => tagOf(k) === K.TYPED ? paramOf(k) : UNKNOWN
+  const typedPropsCellOf = (k) => typedAuxOf(k) === UNKNOWN ? typedProps : typedPropsCell(typedAuxOf(k))
+  const typedPropsOf = (k) => {
+    let out = elems[typedProps]
+    if (typedAuxOf(k) === UNKNOWN) { for (const c of typedPropsByAux.values()) out = join(out, elems[c]) }
+    else { const c = typedPropsByAux.get(typedAuxOf(k)); if (c !== undefined) out = join(out, elems[c]) }
+    return out
+  }
   const cells = new Map()        // construction node (an array literal, a `new Map`) → cell id
   const cell = (id) => { while (cellUp[id] !== id) id = cellUp[id] = cellUp[cellUp[id]]; return id }
   const canon = (k) => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
+  // A string literal key (`o['k']`, or a folded `o[KEY]`) names a slot.
+  const literalKeyOf = (idx) => Array.isArray(idx) && (idx[0] == null || idx[0] === 'str') && typeof idx[1] === 'string' ? idx[1] : null
   const elemOf = (k) => {
     if (!celled(k)) return ANY
     const id = cell(paramOf(k)), elem = elems[id]
+    if (setCells.has(id)) enumerateKeys(id)
     // A dynamic read uses the joined element. Only now can a heterogeneous
     // tuple lose the identities its positional reads still follow.
     if (paramOf(elem) === UNKNOWN) invalidateTuple(k)
@@ -383,8 +445,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       else if (t === K.STRING) value = STRING
       else if (t !== K.NONE && t !== K.NULLISH && t !== K.ABSENT) value = ANY
     }
-    return cellOf(node, K.SET, value)
+    const set = cellOf(node, K.SET, value)
+    if (paramOf(set) !== UNKNOWN) setCells.add(cell(paramOf(set)))
+    return set
   }
+  // A Set's members are handed out only by enumeration, like a map's keys: a
+  // member whose identity the join drops is held until the set enumerates.
+  const setCells = new Set()   // cell roots of Sets
   const mapOf = (node, base, count) => {
     let value = K.NONE
     if (count) {
@@ -422,7 +489,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const id = cell(paramOf(arr))
     if (hostArrays.has(id) && retainedArrays.has(id)) { retain(k); escapeToHost(k); k = ANY; literal = false }
     if (!literal) invalidateTuple(arr)
-    const nk = merge(elems[id], k, !!tuples.get(id))
+    const held = setCells.has(id) && !enumerated.has(id)
+    const nk = merge(elems[id], k, !!tuples.get(id) || held)
+    if (held && paramOf(nk) === UNKNOWN) { holdKey(id, elems[id]); holdKey(id, k) }
     if (nk !== elems[id]) { elems[id] = nk; changed = true }
     // A keyed dictionary's entry stored under a name the summary does not see.
     if (!keyed && hasTag(arr, K.HASH) && keyedCells.has(id)) raiseWildCell(id, k)
@@ -431,16 +500,24 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const unify = (a, b) => {
     a = cell(a); b = cell(b)
     if (a === b) return a
-    invalidateTuple(kind(K.ARRAY, a)); invalidateTuple(kind(K.ARRAY, b))
+    // Two rows of one length unify by position (`[[m, 'a'], [n, 'b']]`: the pair
+    // a destructuring reads keeps its identities); any other pair is no row.
+    const ra = tuples.get(a), rb = tuples.get(b), rows = !!(ra && rb && ra.length === rb.length)
+    if (!rows) { invalidateTuple(kind(K.ARRAY, a)); invalidateTuple(kind(K.ARRAY, b)) }
     cellUp[b] = a; changed = true
+    // The cells are one before the rows merge: a row that reaches itself ends here.
+    if (rows) { tuples.set(b, null); for (let i = 0; i < ra.length; i++) { const nk = merge(ra[i], rb[i]); if (nk !== ra[i]) ra[i] = nk } }
     if (hostArrays.has(b)) hostArrays.add(a)
     if (retainedArrays.has(b)) retainedArrays.add(a)
-    raiseElem(kind(K.ARRAY, a), elems[b])
+    raiseElem(kind(K.ARRAY, a), elems[b], rows)
     if (keyedCells.has(a) && !keyedCells.has(b)) keyedCells.delete(a)
     if (cellShapes.has(b)) addCellShapes(a, cellShapes.get(b))
     if (cellLostObject.has(b)) addCellLost(a)
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
+    if (setCells.has(b)) setCells.add(a)
+    if (enumerated.has(b)) enumerateKeys(a)
+    if (heldKeys.has(b)) for (const k of heldKeys.get(b)) holdKey(a, k)
     if (mapKeys.has(b)) raiseKey(kind(K.MAP, a), mapKeys.get(b))
     return a
   }
@@ -464,11 +541,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A map's keys: stored by `set`, handed out only by enumeration (keys(),
   // entries(), forEach, iteration, a copy). A key kept in a map is lost when
   // the map enumerates or is itself lost, not when it is stored.
+  // A key whose identity the keys' join drops (a shape stored beside an
+  // unknown key) is held until the keys are handed out: a map read only by
+  // `get`/`has` never shows its keys, so they keep their shapes.
   const mapKeys = new Map()   // cell root → the keys' kind
-  const keysOf = (k) => celled(k) ? mapKeys.get(cell(paramOf(k))) ?? K.NONE : ANY
+  const heldKeys = new Map()  // cell root → kinds the keys' join dropped, escaped on enumeration
+  const enumerated = new Set()   // cell roots whose keys were handed out
+  const enumerateKeys = (c) => {
+    if (enumerated.has(c)) return
+    enumerated.add(c); changed = true
+    const held = heldKeys.get(c); if (held) { heldKeys.delete(c); for (const k of held) escape(k) }
+  }
+  const holdKey = (c, k) => { if (paramOf(k) === UNKNOWN) return; if (enumerated.has(c)) escape(k); else { let h = heldKeys.get(c); if (!h) heldKeys.set(c, h = new Set()); if (!h.has(k)) { h.add(k); changed = true } } }
+  const keysOf = (k) => { if (!celled(k)) return ANY; const c = cell(paramOf(k)); enumerateKeys(c); return mapKeys.get(c) ?? K.NONE }
   const raiseKey = (map, k) => {
     if (!celled(map)) { escape(k); return }
-    const c = cell(paramOf(map)), old = mapKeys.get(c) ?? K.NONE, nk = merge(old, k)
+    const c = cell(paramOf(map)), old = mapKeys.get(c) ?? K.NONE, quiet = !enumerated.has(c), nk = merge(old, k, quiet)
+    if (quiet && paramOf(nk) === UNKNOWN) { holdKey(c, old); holdKey(c, k) }
     if (nk !== old) { mapKeys.set(c, nk); changed = true }
   }
   const pairNodes = new Map()   // an entries() call → its pair array's cell key
@@ -492,16 +581,26 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   /** A value the summary no longer follows: a closure's callers become unknown, an array's elements too. */
   // A lost shape's fields are read through receivers the summary cannot
   // name: their values are lost with it (`raiseSlot` loses later stores).
-  const loseShape = (sid) => { if (!opaqueSchemas.has(sid)) { opaqueSchemas.add(sid); changed = true; poisonLost(sid); for (const s of slots(sid)) escape(s); escape(anySideOf(sid)) } }
+  const loseShape = (sid) => { if (!opaqueSchemas.has(sid)) { opaqueSchemas.add(sid); changed = true; poisonLost(sid); for (const s of slots(sid)) escape(s); escape(anySideOf(sid)); forFolded(sid, loseShape) } }
+  // A typed array's named properties come from stores the walk sees, or from
+  // a builtin that writes its argument (escapeObject): the host holds a view
+  // of the elements alone, so an escape opens no cell.
+  const escapeTypedProps = (k) => {
+    const c = typedPropsCellOf(k), previous = elems[c]
+    if (previous === ANY) return
+    // Publish the top value before following aliases back into this cell.
+    elems[c] = ANY; changed = true
+    escape(previous)
+  }
   const escape = (k) => {
     if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) loseShape(sid)
     if (tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) for (const id of membersOf(paramOf(k))) escapeId(id)
     // The cell goes to ANY before its elements escape: an array of itself ends there.
     if (celled(k)) {
-      invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) }
+      invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (setCells.has(id)) enumerateKeys(id); if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) }
       if (tagOf(k) === K.ARRAY || hasTag(k, K.HASH)) { const w = cellWild.get(id) ?? K.NONE; if (w !== ANY) { for (const pk of cellProps.get(id)?.values() ?? []) escape(pk); escape(w); raiseWild(k, ANY) } }
       if (cellShapes.has(id)) { for (const sid of cellShapes.get(id)) loseShape(sid); addCellLost(id) }
-      if (tagOf(k) === K.MAP) { const kk = mapKeys.get(id) ?? K.NONE; if (kk !== ANY) { mapKeys.set(id, ANY); changed = true; escape(kk) } }
+      if (tagOf(k) === K.MAP) { enumerateKeys(id); const kk = mapKeys.get(id) ?? K.NONE; if (kk !== ANY) { mapKeys.set(id, ANY); changed = true; escape(kk) } }
     }
   }
   /** An object handed to code the summary cannot see: its fields may be stored to. */
@@ -514,7 +613,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Own properties on builtin receiver families are tracked by family, not as
   // one global name set: `{push: fn}` must not pessimize every real Array#push.
   const builtinOwnProps = new Map()
-  const escapeObject = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) poisonSchema(sid); escape(k) }
+  const escapeObject = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) poisonSchema(sid); if (hasTag(k, K.TYPED)) escapeTypedProps(k); escape(k) }
   const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   /** A value the host holds (an export's result, an exported global, an import's argument): every closure it reaches may be called with anything. */
   const escapeToHost = (k, seen = new Set()) => {
@@ -528,6 +627,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       for (const v of tuples.get(c) ?? []) escapeToHost(v, seen)
       escapeToHost(elems[c], seen)
       for (const sid of shapesInCell(c)) escapeToHost(kind(K.OBJECT, sid), seen)
+      if (t === K.MAP || setCells.has(c)) { for (const k of heldKeys.get(c) ?? []) escapeToHost(k, seen); enumerateKeys(c) }
       if (t === K.MAP) escapeToHost(mapKeys.get(c) ?? K.NONE, seen)
       if (t === K.ARRAY) {
         for (const v of cellProps.get(c)?.values() ?? []) escapeToHost(v, seen)
@@ -539,6 +639,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else if (t === K.OBJECT) for (const sid of shapesOf(p)) {
       if (seen.has(sid) || hostSchemas.has(sid)) continue
       seen.add(sid); hostSchemas.add(sid); changed = true
+      forFolded(sid, s => escapeToHost(kind(K.OBJECT, s), seen))
       poisonLost(sid)
       const row = slots(sid)
       for (let i = 0; i < row.length; i++) { retain(row[i]); escapeToHost(row[i], seen) }
@@ -566,6 +667,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       retain(elems[c], seen)
       for (const v of cellProps.get(c)?.values() ?? []) retain(v, seen)
       retain(cellWild.get(c) ?? K.NONE, seen)
+      if (t === K.MAP || setCells.has(c)) for (const k of heldKeys.get(c) ?? []) retain(k, seen)
       if (t === K.MAP) retain(mapKeys.get(c) ?? K.NONE, seen)
       for (const sid of shapesInCell(c)) retain(kind(K.OBJECT, sid), seen)
       retainedArrays.add(c)
@@ -669,6 +771,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   /** The frame's first spread slot, or `n`. */
   const spreadAt = (base, n) => { for (let i = 0; i < n; i++) if (kspread[base + i]) return i; return n }
+  // A spread occupies one analysis slot, not one runtime argument. Every
+  // position from the first spread onward may take a tail value or be absent.
+  const argumentAt = (base, n, index) => {
+    const s = spreadAt(base, n)
+    if (index < s) return ks[base + index]
+    let k = NULLISH
+    for (let i = s; i < n; i++) k = merge(k, ks[base + i])
+    return k
+  }
   const escapeArgs = (base, n) => { for (let i = 0; i < n; i++) escape(ks[base + i]) }
   /** `callee(k0, …frame)`: the frame's kinds behind a receiver, in a frame of their own. */
   const callWith = (callee, k0, base = 0, n = 0) => {
@@ -738,6 +849,53 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       else for (let i = names.rest; i < n; i++) escape(ks[base + i])
     }
   }
+  // An iterable read by index: an array, a typed array or a buffer is itself;
+  // a Set, a Map or a string materializes its members, the [key, value] pairs
+  // (as `entries()` builds them) or the code points. Null for another kind.
+  const iterArray = (node, src) => {
+    const t = tagOf(src)
+    if (t === K.ARRAY || t === K.TYPED || t === K.BUFFER) return src
+    if (t !== K.SET && t !== K.MAP && t !== K.STRING) return null
+    const out = arrayOf(node, K.NONE)
+    if (t === K.SET) raiseElem(out, elemOf(src))
+    else if (t === K.STRING) raiseElem(out, STRING)
+    else { const pair = tuplePair(node, keysOf(src), elemOf(src)); raiseElem(out, pair) }
+    return out
+  }
+  // The array-pattern protocol (src/iterator-pattern.js) over an indexed
+  // source reads it by position: `__it_open` binds a cursor, each `__it_step`
+  // or `__it_skip` takes the next element, `__it_rest` the remainder. The
+  // protocol's functions still run over the source's kind, without its
+  // identity: they read the source and never store into it. A source of
+  // another kind runs the protocol alone.
+  const ITER_OPEN = /\$__it_open$/, ITER_STEP = /\$__it_(step|skip|rest|close)$/
+  const cursors = new Map()   // cursor binding key → [source, next position, cursor record]
+  const cursorAt = new Map()  // a step's call node → its position
+  const cursorOpen = (name, init) => {
+    if (!Array.isArray(init) || init[0] !== '()' || init.length !== 3 || typeof init[1] !== 'string' || !ITER_OPEN.test(init[1])) return null
+    const key = keyOf(name)
+    if (key === null) return null
+    const src = expr(init[2]), source = tagOf(src) === K.NONE ? K.NONE : iterArray(init, src)
+    if (source === null) { cursors.delete(key); return null }
+    const b = sp; pushK(src | UNKNOWN); const record = call(init[1], b, 1); sp = b
+    cursors.set(key, [source, 0, record])
+    return record
+  }
+  const cursorStep = (callee, node) => {
+    const arg = node[2], name = typeof arg === 'string' ? arg : Array.isArray(arg) && arg[0] === ',' && typeof arg[1] === 'string' ? arg[1] : null
+    const c = name === null ? undefined : cursors.get(keyOf(name))
+    if (c === undefined) return null
+    const b = sp; pushK(c[2]); if (name !== arg) pushK(BOOL); call(callee, b, sp - b); sp = b
+    if (callee.endsWith('close')) return NULLISH
+    let i = cursorAt.get(node)
+    if (i === undefined) { cursorAt.set(node, i = c[1]); c[1]++ }
+    if (callee.endsWith('skip')) return NULLISH
+    if (c[0] === K.NONE) return K.NONE
+    if (callee.endsWith('step')) return elemAt(c[0], i)
+    const row = rowOf(c[0]); let k = K.NONE
+    if (row) for (let j = i; j < row.length; j++) k = merge(k, row[j]); else k = iterElemOf(c[0])
+    return arrayOf(node, k)
+  }
   const call = (callee, base, n, node = null) => {
     if (typeof callee === 'string') {
       if (callee.startsWith('new.')) {
@@ -761,30 +919,36 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // an array it materializes, an iterable of unknown kind as the runtime resolves it;
       // `__keys_ro` is `for…in`'s key list.
       if (callee === '__iter_arr') {
-        const t = n ? tagOf(ks[base]) : K.NONE, src = n ? ks[base] : K.NONE
-        if (t === K.ARRAY || t === K.TYPED || t === K.BUFFER) return src
+        const src = n ? ks[base] : K.NONE, t = tagOf(src)
         if (t === K.NONE) return K.NONE
-        // A Set, Map or string materializes its members: the elements, the
-        // [key, value] pairs (as `entries()` builds them) or the code points.
-        if ((t === K.SET || t === K.MAP || t === K.STRING) && node) {
-          const out = arrayOf(node, K.NONE)
-          if (t === K.SET) raiseElem(out, elemOf(src))
-          else if (t === K.STRING) raiseElem(out, STRING)
-          else { const pair = tuplePair(node, keysOf(src), elemOf(src)); raiseElem(out, pair) }
-          return out
-        }
+        const arr = node ? iterArray(node, src) : null
+        if (arr !== null) return arr
         if (t === K.MAP) { escape(keysOf(src)); escape(elemOf(src)) }
         return t === K.MAP || t === K.SET || t === K.STRING ? kind(K.ARRAY) : ANY
       }
+      if (node && ITER_STEP.test(callee)) { const r = cursorStep(callee, node); if (r !== null) return r }
       if (callee === '__keys_ro') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
         if (!escaped.has(callee)) bind(callee, paramNamesOf(f), base, n, f.defaults)
-        return results.get(callee) ?? K.NONE
+        return resultAt(callee, base, n, node)
       }
       const key = keyOf(callee), k = key === null ? undefined : kinds[key]
-      if (k !== undefined && tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) return callClosure(paramOf(k), base, n)
+      const site = node ? fwdSites.get(node) : undefined
+      if (site?.calleeParam != null) {
+        addForward(site.fn, site.calleeParam)
+        if (k !== undefined && tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) bindClosure(paramOf(k), base, n)
+        else if (k !== undefined && tagOf(k) !== K.NONE) escapeArgs(base, n)
+        return K.NONE
+      }
+      if (k !== undefined && tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) return callClosure(paramOf(k), base, n, node)
       if (k === undefined && key !== null) return K.NONE  // a local callee not known yet
+      // Atomic value operations return an element or throw; unlike indexed
+      // reads, an out-of-bounds index never contributes undefined.
+      if (ATOMICS_VALUE_OPS.has(callee)) {
+        const recv = n ? ks[base] : K.NONE
+        return tagOf(recv) === K.NONE ? K.NONE : tagOf(recv) === K.TYPED ? typedElemKind(recv) : join(NUMBER, BIGINT)
+      }
       // A host import returns the kind it declares; a builtin the kind its trait says (kind-traits.js).
       if (imports.has(callee)) { for (let i = 0; i < n; i++) { retain(ks[base + i]); escapeToHost(ks[base + i]); escape(ks[base + i]) } return kindOfValue(imports.get(callee)) }
       // `Object.assign` onto an array: a source of known shape stores its slots
@@ -794,9 +958,32 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const target = ks[base]
         for (let i = 1; i < n; i++) {
           const s = ks[base + i]
-          if (sidOf(s) !== UNKNOWN && !kspread[base + i]) { const sid = sidOf(s), sl = slots(sid); schemas[sid].forEach((p, j) => { if (tagOf(target) === K.HASH) raiseElem(target, sl[j]); else raiseProp(target, p, sl[j]) }) }
+          if (knownShapes(s) && !kspread[base + i]) for (const sid of shapesOf(paramOf(s))) {
+            const sl = slots(sid)
+            schemas[sid].forEach((p, j) => { if (tagOf(target) === K.HASH) raiseElem(target, sl[j]); else raiseProp(target, p, sl[j]) })
+            for (const [p, k] of sideProps.get(sid) ?? []) { if (tagOf(target) === K.HASH) raiseElem(target, k); else raiseProp(target, p, k) }
+            const w = sideWild.get(sid) ?? K.NONE; if (w !== K.NONE) { if (tagOf(target) === K.HASH) raiseElem(target, w); else raiseWild(target, w) }
+          }
           else if (tagOf(target) === K.HASH && tagOf(s) === K.HASH && !kspread[base + i]) raiseElem(target, elemOf(s))
-          else { escape(target); escape(s) }
+          else if (tagOf(s) !== K.NONE && tagOf(s) !== K.NULLISH) { escape(target); escape(s) }
+        }
+        return target
+      }
+      // `Object.assign` onto an object of known shape: each source slot is a
+      // member store; a source of unknown shape may store anything.
+      if (callee === 'Object.assign' && n > 0 && knownShapes(ks[base])) {
+        const target = ks[base]
+        for (let i = 1; i < n; i++) {
+          const s = ks[base + i]
+          if (knownShapes(s) && !kspread[base + i]) for (const sid of shapesOf(paramOf(s))) {
+            const sl = slots(sid)
+            for (const tsid of shapesOf(paramOf(target))) {
+              schemas[sid].forEach((p, j) => storeMember(tsid, p, sl[j]))
+              for (const [p, k] of sideProps.get(sid) ?? []) storeMember(tsid, p, k)
+              const w = sideWild.get(sid) ?? K.NONE; if (w !== K.NONE) { openSchema(tsid); raiseAllSlots(tsid, w); raiseSideWild(tsid, w) }
+            }
+          }
+          else if (tagOf(s) !== K.NONE && tagOf(s) !== K.NULLISH) { escapeObject(target); escape(s) }
         }
         return target
       }
@@ -818,12 +1005,82 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return ANY
   }
   const callableParams = id => typeof id === 'string' ? paramNamesOf(funcByName.get(id)) : closureParams[id]
+  const callableDefaults = id => typeof id === 'string' ? funcByName.get(id).defaults : closureDefaults[id]
+  // A wrapper hands back what a closure argument returns (`t = (_, fn) => fn()`,
+  // `time(name, fn) { const r = fn(); …; return r }`): its result at a call is
+  // the argument's result, not the join over every callback it ever ran. A
+  // return that calls a parameter binds nothing into the wrapper's result: the
+  // call site reads the argument's closure result. A return that passes a
+  // parameter on to another wrapper forwards through it. Only a parameter the
+  // body never reassigns forwards, and only a local returned untouched.
+  const forwards = new Map()      // callable id → Set of forwarded parameter indices
+  const fwdSites = new Map()      // a returned call node → { fn, calleeParam, argParams: Map(position → parameter index) }
+  const siteResults = new Map()   // a call of a forwarding callable → its result there, for the read layer
+  const fwdScanned = new Set()
+  const addForward = (id, i) => { let l = forwards.get(id); if (!l) forwards.set(id, l = new Set()); if (!l.has(i)) { l.add(i); changed = true } }
+  const argList = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
+  const scanForwards = (id, body, params) => {
+    if (!params || fwdScanned.has(body)) return
+    fwdScanned.add(body)
+    const bad = new Set(reassignedIn(body, params))
+    const index = (name) => { const i = typeof name === 'string' ? params.indexOf(name) : -1; return i >= 0 && !bad.has(name) ? i : -1 }
+    const site = (e) => {
+      if (!Array.isArray(e)) return
+      if (e[0] === '?:') { site(e[2]); site(e[3]); return }
+      if (e[0] !== '()' || e.length !== 3) return
+      const args = argList(e[2]), calleeParam = index(e[1]), argParams = new Map()
+      if (!args.some(isSpread)) args.forEach((a, j) => { const i = index(a); if (i >= 0) argParams.set(j, i) })
+      if (calleeParam >= 0 || argParams.size) fwdSites.set(e, { fn: id, calleeParam: calleeParam >= 0 ? calleeParam : null, argParams })
+    }
+    if (!isBlock(body)) { site(body); return }
+    const counts = new Map()
+    const count = (n) => { if (typeof n === 'string') counts.set(n, (counts.get(n) ?? 0) + 1); else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) count(n[i]) }
+    count(body)
+    const inits = new Map()   // `const r = call()` → the call
+    const walk = (n) => {
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (op === '=>') return
+      if (op === 'const' && n.length === 2 && Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string' && Array.isArray(n[1][2]) && n[1][2][0] === '()') inits.set(n[1][1], n[1][2])
+      if (op === 'return' && n.length > 1) { const e = n[1]; if (typeof e === 'string' && counts.get(e) === 2 && inits.has(e)) site(inits.get(e)); else site(e) }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(body)
+  }
+  // What a closure argument returns: the join over its members; a member that
+  // forwards its own parameters returns what those were called with, unknown here.
+  const forwardedOf = (k, pure) => {
+    if (tagOf(k) === K.NONE) return K.NONE
+    if (tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN) return ANY
+    let r = K.NONE
+    for (const id of membersOf(paramOf(k))) { const x = forwards.get(id)?.size ? ANY : results.get(id) ?? K.NONE; r = pure ? join(r, x) : merge(r, x) }
+    return r
+  }
+  // A callable's result at a call: its own returns, then what each forwarded
+  // argument returns. At a return that passes the caller's own parameter on,
+  // that position is the caller's to forward, not a result here; the read
+  // layer still sees the whole value at the site.
+  const resultAt = (id, base, n, node) => {
+    let r = results.get(id) ?? K.NONE
+    const l = forwards.get(id)
+    if (!l?.size) return r
+    const site = node ? fwdSites.get(node) : undefined
+    let full = r
+    for (const j of l) {
+      const arg = j < n ? ks[base + j] : NULLISH, p = site?.argParams.get(j)
+      if (p === undefined) { const y = forwardedOf(arg, false); r = merge(r, y); full = join(full, y) }
+      else { addForward(site.fn, p); full = join(full, forwardedOf(arg, true)) }
+    }
+    if (node) siteResults.set(node, full)
+    return r
+  }
+  const bindClosure = (param, base, n) => { for (const id of membersOf(param)) if (!escaped.has(id)) bind(id, callableParams(id), base, n, callableDefaults(id)) }
   /** Call a closure or each member of a closure set; the result is the join of theirs. */
-  const callClosure = (param, base, n) => {
+  const callClosure = (param, base, n, node = null) => {
     let r = K.NONE
     for (const id of membersOf(param)) {
-      if (!escaped.has(id)) bind(id, callableParams(id), base, n, typeof id === 'string' ? funcByName.get(id).defaults : closureDefaults[id])
-      r = merge(r, results.get(id) ?? K.NONE)
+      if (!escaped.has(id)) bind(id, callableParams(id), base, n, callableDefaults(id))
+      r = merge(r, resultAt(id, base, n, node))
     }
     return r
   }
@@ -916,8 +1173,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // monotone part of the surrounding summary fixpoint.
   const reduceResult = (recv, base, n) => {
     const elem = tagOf(recv) === K.TYPED ? typedElemKind(recv) : elemOf(recv)
-    const initial = n > 1 ? ks[base + 1] : elem
-    const cb = n > 0 ? ks[base] : K.NONE
+    const initial = spreadAt(base, n) < n ? merge(elem, argumentAt(base, n, 1)) : n > 1 ? ks[base + 1] : elem
+    const cb = argumentAt(base, n, 0)
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) {
       escapeArgs(base, n)
       return ANY
@@ -933,7 +1190,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // predicates keep the elements, `reduce` recurs through its accumulator.
   const ARRAY_CALLBACKS = new Set(['map', 'filter', 'forEach', 'find', 'findLast', 'findIndex', 'findLastIndex', 'some', 'every', 'flatMap'])
   const arrayCallback = (node, recv, name, base, n) => {
-    const cb = n > 0 ? ks[base] : K.NONE
+    const cb = argumentAt(base, n, 0)
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); return ANY }
     for (let i = 1; i < n; i++) escape(ks[base + i])
     const elem = elemOf(recv)
@@ -1052,7 +1309,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const sid = paramOf(recv), i = schemas[sid].indexOf(name)
       if (i >= 0) {
         const fk = slots(sid)[i]
-        if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n)
+        if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node)
         if (tagOf(fk) !== K.NONE) { escapeArgs(base, n); return ANY }
         return K.NONE
       }
@@ -1067,7 +1324,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // holds is a call of undefined, which throws.
     if (t === K.OBJECT) {
       const fk = member('.', recv, name)
-      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n)
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node)
       if (tagOf(core(fk)) === K.NONE) return K.NONE
     }
     if (t === K.TYPED) {
@@ -1114,7 +1371,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         for (let i = Math.min(2, spreadAt(base, n)); i < n; i++) raiseElem(name === 'splice' ? recv : out, ks[base + i])
         return out
       }
-      if (name === 'with' && node) { const out = arrayOf(node, K.NONE); raiseElem(out, elemOf(recv)); if (n > 1) raiseElem(out, ks[base + 1]); return out }
+      if (name === 'with' && node) { const out = arrayOf(node, K.NONE); raiseElem(out, elemOf(recv)); raiseElem(out, argumentAt(base, n, 1)); return out }
       if ((name === 'toSorted' || name === 'toReversed' || name === 'flat') && node) {
         escapeArgs(base, n)
         const out = arrayOf(node, K.NONE), e = elemOf(recv)
@@ -1126,7 +1383,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (name === 'includes' || name === 'some' || name === 'every') { escapeArgs(base, n); return BOOL }
     }
     if (t === K.MAP) {
-      if (name === 'set') { if (n > 0) raiseKey(recv, ks[base]); if (n > 1) raiseElem(recv, ks[base + 1]); return recv }
+      if (name === 'set') { raiseKey(recv, argumentAt(base, n, 0)); raiseElem(recv, argumentAt(base, n, 1)); return recv }
       if (name === 'get') return orAbsent(elemOf(recv))
       if (name === 'has' || name === 'delete') return BOOL
       if (name === 'clear') return NULLISH
@@ -1140,7 +1397,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         return out
       }
       if (name === 'forEach') {
-        const cb = n > 0 ? ks[base] : K.NONE
+        const cb = argumentAt(base, n, 0)
         if (tagOf(cb) === K.CLOSURE && paramOf(cb) !== UNKNOWN) {
           for (let i = 1; i < n; i++) escape(ks[base + i])
           const b = sp; pushK(elemOf(recv)); pushK(keysOf(recv)); pushK(recv); callClosure(paramOf(cb), b, 3); sp = b
@@ -1151,7 +1408,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (t === K.SET) {
       // Membership tests compare by SameValueZero and keep nothing.
-      if (name === 'add') { if (n > 0) raiseElem(recv, ks[base]); return recv }
+      if (name === 'add') { raiseElem(recv, argumentAt(base, n, 0)); return recv }
       if (name === 'has' || name === 'delete') return BOOL
       if (name === 'clear') return NULLISH
       if (name === 'values' || name === 'keys' || name === 'entries') {
@@ -1162,7 +1419,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         return out
       }
       if (name === 'forEach') {
-        const cb = n > 0 ? ks[base] : K.NONE
+        const cb = argumentAt(base, n, 0)
         if (tagOf(cb) === K.CLOSURE && paramOf(cb) !== UNKNOWN) {
           for (let i = 1; i < n; i++) escape(ks[base + i])
           const b = sp; pushK(elemOf(recv)); pushK(elemOf(recv)); pushK(recv); callClosure(paramOf(cb), b, 3); sp = b
@@ -1241,9 +1498,20 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         }
         // Conditional insertion uses a dictionary even when every present
         // source has one schema: an absent key differs from an undefined slot.
-        if (p[1]?.[0] === '&&' || isNullable(source) || !ids.length || ids.some(sid => openSchemas.has(sid) || lostSchema(sid) || !schemas[sid])) {
+        // A lost shape may hold anything under any name; an open shape's side
+        // entries are known by name. A nullish source spreads nothing.
+        if (p[1]?.[0] === '&&' || !ids.length || ids.some(sid => lostSchema(sid) || !schemas[sid])) {
           escape(source)
           dynamic = true; wildKind = ANY
+          continue
+        }
+        if (isNullable(source) || ids.some(sid => openSchemas.has(sid))) {
+          dynamic = true
+          for (const sid of ids) {
+            for (let j = 0; j < schemas[sid].length; j++) if (!isBrand(schemas[sid][j])) add(schemas[sid][j], slots(sid)[j])
+            for (const [name, k] of sideProps.get(sid) ?? []) add(name, k)
+            if (sideWild.has(sid)) wildKind = merge(wildKind, sideWild.get(sid))
+          }
           continue
         }
         // Sources of different layouts fill a dictionary: the entry under a
@@ -1418,13 +1686,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (op === '[]') {
       const recv = receiver(n[1]), idx = n[2], t = tagOf(recv)
-      if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return member('.', recv, idx[1])
+      if (literalKeyOf(idx) !== null) return member('.', recv, literalKeyOf(idx))
       // `o[1]` on an object is the property "1" (ToPropertyKey of a number literal)
       if (t === K.OBJECT && (typeof idx === 'number' || Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'number'))
         return member('.', recv, String(typeof idx === 'number' ? idx : idx[1]))
       const ik = expr(idx)
       if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return K.NONE
-      if (t === K.TYPED) return typedReadPresent(current ?? MODULE, n) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
+      if (t === K.TYPED) return ik === K.NONE ? K.NONE : !typedElementKey(idx, ik === NUMBER) ? core(ik) === NUMBER ? orAbsent(merge(typedElemKind(recv), typedPropsOf(recv))) : ANY
+        : typedReadPresent(current ?? MODULE, n) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
       if (t === K.HASH) return orAbsent(elemOf(recv))
       if (t === K.ARRAY) {
         const row = paramOf(recv) === UNKNOWN ? null : tuples.get(cell(paramOf(recv)))
@@ -1454,7 +1723,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       else if (callee === 'new.Map') r = mapOf(n, base, count)
       else if (callee === 'new.Set') r = setOf(n, base, count)
-      else if (callee === '__iter_arr') r = call(callee, base, count, n)
+      else if (callee === '__iter_arr' || (typeof callee === 'string' && ITER_STEP.test(callee))) r = call(callee, base, count, n)
       else if (callee === 'Object.keys' || callee === 'Object.values') {
         const source = count ? ks[base] : ANY, t = tagOf(source)
         let value = callee === 'Object.keys' ? STRING : ANY
@@ -1472,11 +1741,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       else if (callee === 'Array.of') r = arrayOfArgs(n, base, count)
       else if (callee === 'Array.from') r = arrayFrom(n, base, count)
       else if (callee === 'JSON.parse') r = jsonParse(n, base, count)
-      else if (typeof callee === 'string') r = call(callee, base, count)
+      else if (typeof callee === 'string') r = call(callee, base, count, n)
       else {
         const ck = expr(callee)
         if (tagOf(ck) === K.NONE) r = K.NONE
-        else if (tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN) r = callClosure(paramOf(ck), base, count)
+        else if (tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN) r = callClosure(paramOf(ck), base, count, n)
         else { escapeArgs(base, count); r = ANY }
       }
       sp = base
@@ -1541,29 +1810,32 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else { openSchema(sid); dynamicProps.add(prop); raiseSide(sid, prop, v) }
   }
   /** `target op= value`: the stored kind reaches the binding or the slot; returns the expression's kind. */
+  const assignName = (name, v) => {
+    const key = keyOf(name)
+    if (key !== null) {
+      pre.delete(key); refined.delete(key)
+      // A straight-line assignment is the value the reads after it see; one on a path is not.
+      if (branch === 0 && current !== null) post.set(key, v); else post.delete(key)
+      raise(kinds, key, v)
+    }
+    return v
+  }
   const assign = (op, target, value) => {
     const logical = op === '||=' || op === '&&=' || op === '??='
     let v
-    if (op === '=') v = expr(value)
+    if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) : null) ?? expr(value)
     else if (op === '+=') v = plus(expr(target), expr(value))
     else if (logical) v = merge(expr(target), expr(value))
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
-    if (typeof target === 'string') {
-      const key = keyOf(target)
-      if (key !== null) {
-        pre.delete(key); refined.delete(key)
-        // A straight-line assignment is the value the reads after it see; one on a path is not.
-        if (branch === 0 && current !== null) post.set(key, v); else post.delete(key)
-        raise(kinds, key, v)
-      }
-      return v
-    }
+    if (typeof target === 'string') return assignName(target, v)
+    if (Array.isArray(target) && (target[0] === '{}' || target[0] === '[]') && !(target[0] === '[]' && target.length === 3)) { destructure(target, v); return v }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       // A store through a nullish receiver throws before storing.
       if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return v
       if (typeof prop !== 'string') { poisonAll(recv, expr(prop), v); escape(v); return v }
       markBuiltinOwn(t, prop)
+      if (hasTag(recv, K.TYPED)) raise(elems, typedPropsCellOf(recv), v)
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) for (const sid of shapesOf(paramOf(recv))) storeMember(sid, prop, v)
       else if (dictOrObject(recv)) {
         const c = cell(paramOf(recv))
@@ -1581,12 +1853,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (Array.isArray(target) && target[0] === '[]') {
       const recv = receiver(target[1]), idx = target[2], t = tagOf(recv)
-      if (Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'string') return assign(op, ['.', target[1], idx[1]], value)
+      if (literalKeyOf(idx) !== null) return assign(op, ['.', target[1], literalKeyOf(idx)], value)
       const ik = expr(idx)
+      if (ik !== K.NONE && hasTag(recv, K.TYPED) && !typedElementKey(idx, ik === NUMBER)) raise(elems, typedPropsCellOf(recv), v)
       if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) raiseEntry(recv, ik, v); else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseWild(recv, v); else escape(v) }
       else if (dictOrObject(recv)) { const c = cell(paramOf(recv)); raiseWild(recv, v); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, v); raiseSideWild(sid, v) } if (cellLostObject.has(c)) poisonAll(recv, ik, v) }
-      else if (t === K.TYPED) return typedStore(typedElemKind(recv), v)
+      else if (t === K.TYPED) {
+        if (ik === K.NONE) return K.NONE
+        if (typedElementKey(idx, ik === NUMBER)) return typedStore(typedElemKind(recv), v)
+        escape(v)
+      }
       else if (t !== K.NONE && t !== K.STRING) { poisonAll(recv, ik, v); escape(v) }
       return v
     }
@@ -1684,7 +1961,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make).
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], literalInto(d[1], d[2])); else { escape(expr(d[2])); pattern(d[1]) } } } }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])); else destructure(d[1], expr(d[2])) } } }
   // A `{}` declared into a name is allocated as the runtime allocates it
   // (module/object.js's `{}`): with the binding's schema when that holds every
   // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
@@ -1700,7 +1977,40 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (props && coversShape(props, shape)) return staticLiteral(value, bound)
     return expr(value)
   }
-  const pattern = (p) => { if (typeof p === 'string') declare(p, ANY); else if (Array.isArray(p)) for (let i = 1; i < p.length; i++) pattern(Array.isArray(p[i]) && p[i][0] === ':' ? p[i][2] : Array.isArray(p[i]) && p[i][0] === '=' ? p[i][1] : p[i]) }
+  // A pattern reads through its source: an object pattern's names read the
+  // source's members (`const { sig = null } = o` binds `o.sig`, or the default
+  // when that is undefined), an array pattern's names read its elements, a
+  // rest element copies the remaining elements into a fresh array. A computed
+  // key or an object rest enumerates the source, which is read as a whole.
+  const iterElemOf = (it) => tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY
+  const rowOf = (src) => tagOf(src) === K.ARRAY && paramOf(src) !== UNKNOWN ? tuples.get(cell(paramOf(src))) : null
+  const elemAt = (src, i) => { const row = rowOf(src); return row ? row[i] ?? ABSENT : orAbsent(iterElemOf(src)) }
+  const entriesOf = (p) => p == null ? [] : Array.isArray(p) && p[0] === ',' ? p.slice(1) : [p]
+  const destructure = (target, src) => {
+    if (typeof target === 'string') return assignName(target, src)
+    if (!Array.isArray(target)) return
+    const op = target[0]
+    if (op === '=') return destructure(target[1], merge(src, expr(target[2])))
+    if (op === '{}') {
+      for (const e of entriesOf(target[1])) {
+        if (typeof e === 'string') destructure(e, member('.', src, e))
+        else if (e[0] === '=' && typeof e[1] === 'string') destructure(e, member('.', src, e[1]))
+        else if (e[0] === ':' && typeof e[1] === 'string') destructure(e[2], member('.', src, e[1]))
+        else { if (e[0] === ':') expr(e[1]); escape(src); destructure(e[0] === ':' ? e[2] : e[1], ANY) }
+      }
+      return
+    }
+    if (op === '[]') {
+      let i = 0
+      for (const e of entriesOf(target[1])) {
+        if (e == null) { i++; continue }
+        if (Array.isArray(e) && e[0] === '...') destructure(e[1], cellOf(e, K.ARRAY, iterElemOf(src)))
+        else destructure(e, elemAt(src, i++))
+      }
+      return
+    }
+    escape(src)
+  }
 
   // Scopes: a function (its name), a closure (its id) or the module (null).
   // A scope declares its parameters, its `let`/`const`/`var` names, loop
@@ -1828,8 +2138,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
       loopAssigns(n)
       const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
-      if (typeof target === 'string') declare(target, op === 'for-in' ? STRING : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY)
-      else pattern(target)
+      destructure(target, op === 'for-in' ? STRING : iterElemOf(it))
       branch++; stmt(n[3]); branch--
       return
     }
@@ -1992,6 +2301,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()
+    scanForwards(key, body, params)
     if (defaults) for (const p of defaultNamesOf(defaults)) bindParam(keyIn(key, p), expr(defaults[p]))
     if (params) for (const p of reassignedIn(body, params)) { const id = keyIn(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
@@ -2031,11 +2341,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (cls) methods.set(sid, new Map(cls.methods))
   }
   const queryFacts = {
-    kinds, incoming, fields, results, closures, declared, parent, nameKeys,
+    kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
-    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, openSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
+    numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject,
     contracts: null,   // the result contracts, built at the freeze below
   }
@@ -2140,7 +2450,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const t = n[1]
       if (typeof t === 'string') { useOf(n[2], FLOW, keyOf(t)); return }
       if (Array.isArray(t) && t[0] === '.' && typeof t[2] === 'string') { demand(t[1]); const keys = slotKeysOf(t[1], t[2]); if (keys.length) useOf(n[2], FLOW, keys); else demand(n[2]); return }
-      if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); demand(t[2]); demand(n[2], tagOf(r) === K.TYPED && !(paramOf(r) & 16) ? NUM : OTHER); return }
+      if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); demand(t[2]); demand(n[2], tagOf(r) === K.TYPED && !(paramOf(r) & 16) && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER); return }
       demand(t); demand(n[2]); return
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.

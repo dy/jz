@@ -35,7 +35,8 @@ function canThrow(body, seen = new Set()) {
   if (ctx.funcs.runtimeRoots.has('__jz_tp_num') && COERCING_OPS.has(op)) return true
   // Any unresolved property receiver can be nullish. Its runtime check must
   // retain catch/finally even without an explicit throw or call in the source.
-  if ((op === '.' || op === '[]') && valTypeOf(body[1]) == null) return true
+  if ((op === '.' || op === '[]') && (valTypeOf(body[1]) == null ||
+      ctx.summary?.at(ctx.func.current).mayBeNullishExpr(body[1]))) return true
   // Typed element assignment can throw during ToNumber/ToBigInt even for an
   // OOB index. Keep a surrounding catch visible; the typed emitter either
   // emits the supported runtime throw or rejects an unrepresentable catch.

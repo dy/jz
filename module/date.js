@@ -651,7 +651,7 @@ export default (ctx) => {
     // under CSE (it hoists the arg without emitting its local.set).
     const t = temp('st')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, typed(['call', '$__date_time_clip', toNumF64(ms, emit(ms))], 'f64')],
+      ['local.set', `$${t}`, typed(['call', '$__date_time_clip', dateArg(ms, 0, true)], 'f64')],
       ['f64.store', ['i32.wrap_i64', ['i64.reinterpret_f64', d]], ['local.get', `$${t}`]],
       ['local.get', `$${t}`]], 'f64')
   }
@@ -752,86 +752,86 @@ export default (ctx) => {
 
   ctx.core.emit['.setUTCDate'] = (dateExpr, dt) => {
     inc('__date_set_utc_date')
-    return typed(['call', '$__date_set_utc_date', emitDatePtr(dateExpr), emitDateLoad(dateExpr), asF64(toNumF64(dt, emit(dt)))], 'f64')
+    return typed(['call', '$__date_set_utc_date', emitDatePtr(dateExpr), emitDateLoad(dateExpr), dateArg(dt, 0, true)], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:setUTCDate`] = ctx.core.emit['.setUTCDate']
 
   ctx.core.emit['.setUTCMonth'] = (dateExpr, month, dt) => {
     inc('__date_set_utc_month')
-    const m = asF64(toNumF64(month, emit(month)))
+    const m = dateArg(month, 0, true)
     const t = emitDateLoad(dateExpr)
     const d = missingArg(dt)
       ? (inc('__date_date_from_time'), typed(['call', '$__date_date_from_time', t], 'f64'))
-      : asF64(toNumF64(dt, emit(dt)))
+      : dateArg(dt, 0, true)
     return typed(['call', '$__date_set_utc_month', emitDatePtr(dateExpr), t, m, d], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:setUTCMonth`] = ctx.core.emit['.setUTCMonth']
 
   ctx.core.emit['.setUTCFullYear'] = (dateExpr, year, month, dt) => {
     inc('__date_set_utc_full_year')
-    const y = asF64(toNumF64(year, emit(year)))
+    const y = dateArg(year, 0, true)
     const t = emitDateLoad(dateExpr)
     const m = missingArg(month)
       ? (inc('__date_month_from_time'), typed(['if', ['result', 'f64'],
           ['f64.ne', t, t],
           ['then', ['f64.const', 0]],
           ['else', ['call', '$__date_month_from_time', t]]], 'f64'))
-      : asF64(toNumF64(month, emit(month)))
+      : dateArg(month, 0, true)
     const d = missingArg(dt)
       ? (inc('__date_date_from_time'), typed(['if', ['result', 'f64'],
           ['f64.ne', t, t],
           ['then', ['f64.const', 1]],
           ['else', ['call', '$__date_date_from_time', t]]], 'f64'))
-      : asF64(toNumF64(dt, emit(dt)))
+      : dateArg(dt, 0, true)
     return typed(['call', '$__date_set_utc_full_year', emitDatePtr(dateExpr), t, y, m, d], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:setUTCFullYear`] = ctx.core.emit['.setUTCFullYear']
 
   ctx.core.emit['.setUTCHours'] = (dateExpr, hour, min, sec, ms) => {
     inc('__date_set_utc_hours')
-    const h = asF64(toNumF64(hour, emit(hour)))
+    const h = dateArg(hour, 0, true)
     const t = emitDateLoad(dateExpr)
     const m = missingArg(min)
       ? (inc('__date_min_from_time'), typed(['call', '$__date_min_from_time', t], 'f64'))
-      : asF64(toNumF64(min, emit(min)))
+      : dateArg(min, 0, true)
     const s = missingArg(sec)
       ? (inc('__date_sec_from_time'), typed(['call', '$__date_sec_from_time', t], 'f64'))
-      : asF64(toNumF64(sec, emit(sec)))
+      : dateArg(sec, 0, true)
     const msec = missingArg(ms)
       ? (inc('__date_ms_from_time'), typed(['call', '$__date_ms_from_time', t], 'f64'))
-      : asF64(toNumF64(ms, emit(ms)))
+      : dateArg(ms, 0, true)
     return typed(['call', '$__date_set_utc_hours', emitDatePtr(dateExpr), t, h, m, s, msec], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:setUTCHours`] = ctx.core.emit['.setUTCHours']
 
   ctx.core.emit['.setUTCMinutes'] = (dateExpr, min, sec, ms) => {
     inc('__date_set_utc_minutes')
-    const m = asF64(toNumF64(min, emit(min)))
+    const m = dateArg(min, 0, true)
     const t = emitDateLoad(dateExpr)
     const s = missingArg(sec)
       ? (inc('__date_sec_from_time'), typed(['call', '$__date_sec_from_time', t], 'f64'))
-      : asF64(toNumF64(sec, emit(sec)))
+      : dateArg(sec, 0, true)
     const msec = missingArg(ms)
       ? (inc('__date_ms_from_time'), typed(['call', '$__date_ms_from_time', t], 'f64'))
-      : asF64(toNumF64(ms, emit(ms)))
+      : dateArg(ms, 0, true)
     return typed(['call', '$__date_set_utc_minutes', emitDatePtr(dateExpr), t, m, s, msec], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:setUTCMinutes`] = ctx.core.emit['.setUTCMinutes']
 
   ctx.core.emit['.setUTCSeconds'] = (dateExpr, sec, ms) => {
     inc('__date_set_utc_seconds')
-    const s = asF64(toNumF64(sec, emit(sec)))
+    const s = dateArg(sec, 0, true)
     const t = emitDateLoad(dateExpr)
     const msec = missingArg(ms)
       ? (inc('__date_ms_from_time'), typed(['call', '$__date_ms_from_time', t], 'f64'))
-      : asF64(toNumF64(ms, emit(ms)))
+      : dateArg(ms, 0, true)
     return typed(['call', '$__date_set_utc_seconds', emitDatePtr(dateExpr), t, s, msec], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:setUTCSeconds`] = ctx.core.emit['.setUTCSeconds']
 
   ctx.core.emit['.setUTCMilliseconds'] = (dateExpr, ms) => {
     inc('__date_set_utc_milliseconds')
-    return typed(['call', '$__date_set_utc_milliseconds', emitDatePtr(dateExpr), emitDateLoad(dateExpr), asF64(toNumF64(ms, emit(ms)))], 'f64')
+    return typed(['call', '$__date_set_utc_milliseconds', emitDatePtr(dateExpr), emitDateLoad(dateExpr), dateArg(ms, 0, true)], 'f64')
   }
   ctx.core.emit[`.${VAL.DATE}:setUTCMilliseconds`] = ctx.core.emit['.setUTCMilliseconds']
 

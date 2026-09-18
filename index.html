@@ -1393,17 +1393,17 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans prose">
-            <p>A minimal modern functional JS subset – no dynamic constructs or reflection. The jzify layer lowers legacy patterns, generators, and async/await.</p>
+            <p>A minimal modern functional JS subset – no dynamic constructs or reflection. The jzify layer lowers legacy patterns, classes, generators, and async/await.</p>
             <div class="subset">
               <div class="ring out">
                 <span class="rl">Not supported</span>
-                <span class="t">eval</span><span class="t">Proxy Reflect</span><span class="t">defineProperty</span><span class="t">getters/setters</span><span class="t">DOM</span><span class="t">Node Intl</span>
+                <span class="t">eval</span><span class="t">with</span><span class="t">Proxy Reflect</span><span class="t">globalThis</span><span class="t">new.target</span><span class="t">top-level await</span><span class="t">import()</span><span class="t">decorators</span><span class="t">descriptors</span><span class="t">prototype chains</span><span class="t">Set algebra</span><span class="t">DOM</span><span class="t">Node Intl Temporal</span>
                 <div class="ring mid">
                   <span class="rl">Compat</span>
-                  <span class="t">var</span><span class="t">function</span><span class="t">switch</span><span class="t">class extends</span><span class="t">this super</span><span class="t">static #private</span><span class="t">function* yield</span><span class="t">async/await</span><span class="t">async function*</span><span class="t">for await</span><span class="t">Promise</span><span class="t">using</span><span class="t">prototype</span><span class="t">== !=</span><span class="t">instanceof</span><a class="t" href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">more →</a>
+                  <span class="t">var</span><span class="t">function</span><span class="t">arguments</span><span class="t">this</span><span class="t">switch</span><span class="t">for-in</span><span class="t">labels</span><span class="t">== !=</span><span class="t">class extends</span><span class="t">super</span><span class="t">static #private</span><span class="t">get/set</span><span class="t">prototype</span><span class="t">function* yield</span><span class="t">yield*</span><span class="t">iterator helpers</span><span class="t">async/await</span><span class="t">async function*</span><span class="t">for await</span><span class="t">Promise</span><span class="t">using</span><span class="t">WeakMap WeakRef</span><span class="t">URLSearchParams</span><span class="t">EventTarget</span><span class="t">fetch</span><a class="t" href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">more →</a>
                   <div class="ring in">
                     <span class="rl">Strict</span>
-                    <span class="t">let/const</span><span class="t">=&gt;</span><span class="t">…spread</span><span class="t">destructuring</span><span class="t">import/export</span><span class="t">if/for/while</span><span class="t">try/catch</span><span class="t">numbers</span><span class="t">strings</span><span class="t">arrays objects</span><span class="t">typed arrays</span><span class="t">Math JSON RegExp</span><span class="t">Map Set</span><span class="t">iterator helpers</span><span class="t">Atomics</span>
+                    <span class="t">let/const</span><span class="t">=&gt;</span><span class="t">…spread</span><span class="t">destructuring</span><span class="t">import/export</span><span class="t">if/for/while</span><span class="t">try/catch</span><span class="t">?. ??</span><span class="t">`${}`</span><span class="t">numbers</span><span class="t">BigInt</span><span class="t">strings</span><span class="t">arrays objects</span><span class="t">typed arrays</span><span class="t">Math JSON RegExp</span><span class="t">Map Set</span><span class="t">Date</span><span class="t">Atomics</span><span class="t">TextEncoder</span><span class="t">base64/hex</span><span class="t">crypto</span><span class="t">structuredClone</span><span class="t">console timers</span>
                   </div>
                 </div>
               </div>

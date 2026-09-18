@@ -19,7 +19,7 @@ import { VAL, lookupValType } from '../reps.js'
 import { valTypeOf } from '../kind.js'
 import { atomNanHex, nanPrefixHex, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
-import { temp } from './locals.js'
+import { temp, tempI64 } from './locals.js'
 import { mkPtrIR } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
 import { bigintStrict, bigintEraseErr } from './bigint.js'
@@ -40,7 +40,7 @@ export const UNDEF_NAN = atomNanHex(2)
  *  module/core.js): written over a healed durable dict entry's KEY so probes and
  *  enumeration skip it. Unforgeable: ATOM tag with a saturated aux+offset no
  *  boxing path ever produces (real atom ids are tiny). Every equality family is
- *  deref-free on it: i64.eq mismatches, __str_eq bails on the non-STRING tag,
+ *  deref-free on it: i64.eq mismatches, __str_eq's SSO guard rejects its aux bits,
  *  __same_value_zero's atom arm is bit-equality. */
 export const TOMB_NAN = '0x7FF87FFFFFFFFFFF'
 
@@ -91,8 +91,15 @@ export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
 export function boolBoxIR(e) {
   const i = truthyIR(e)
   if (Array.isArray(i) && i[0] === 'i32.const') return typed((i[1] ? TRUE_IR : FALSE_IR).slice(), 'f64')
-  return mkPtrIR(['i32.const', PTR.ATOM], ['i32.or', ['i32.const', BOOL_ATOM_BASE], i], ['i32.const', 0])
+  // A select of the two atoms: no pointer arithmetic, no helper frame
+  // (`__mkptr` with a computed aux); truthyIR reads the condition back.
+  return typed(['select', TRUE_IR.slice(), FALSE_IR.slice(), i], 'f64')
 }
+
+/** The i32 condition a boolBoxIR select carries, else null. */
+const boolSelectCond = (e) => Array.isArray(e) && e[0] === 'select' && e.length === 4 &&
+  Array.isArray(e[1]) && e[1][0] === 'f64.const' && e[1][1] === TRUE_IR[1] &&
+  Array.isArray(e[2]) && e[2][0] === 'f64.const' && e[2][1] === FALSE_IR[1] ? e[3] : null
 
 /** Canonical carrier for BOOL|nullish. Evaluate once, preserve null/undefined
  *  and an existing boolean atom, and box only a raw present boolean. Unlike BigInt, raw 0/1 cannot collide with
@@ -138,6 +145,8 @@ export function unboxBoolIR(f64expr) {
     if (bits === TRUE_NAN) return typed(['i32.const', 1], 'i32')
     if (bits === FALSE_NAN) return typed(['i32.const', 0], 'i32')
   }
+  const cond = boolSelectCond(f64expr)
+  if (cond) return typed(cond, 'i32')
   return typed(['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', f64expr], ['i64.const', String(LAYOUT.AUX_SHIFT)]]], ['i32.const', 1]], 'i32')
 }
 
@@ -169,6 +178,23 @@ const I32_BOOL_OPS = new Set(['i32.eq', 'i32.ne', 'i32.lt_s', 'i32.lt_u', 'i32.g
   'i64.eq', 'i64.ne', 'i64.lt_s', 'i64.lt_u', 'i64.gt_s', 'i64.gt_u',
   'i64.le_s', 'i64.le_u', 'i64.ge_s', 'i64.ge_u', 'i64.eqz'])
 
+// A local.get or local.tee is evaluated once; subsequent uses read its local.
+// Runtime helpers and their inline expansion share this complete predicate.
+export function valueTruthyIR(ref, bigint = false) {
+  const value = ['local.get', ref[1]], bits = ['i64.reinterpret_f64', value]
+  let boxed = ['i32.and',
+    ['i32.and',
+      ['i32.and', ['i64.ne', bits, ['i64.const', nanPrefixHex()]], ['i64.ne', bits, ['i64.const', NULL_NAN]]],
+      ['i32.and', ['i64.ne', bits, ['i64.const', UNDEF_NAN]], ['i64.ne', bits, ['i64.const', '0x7FFA400000000000']]]],
+    ['i64.ne', bits, ['i64.const', FALSE_NAN]]]
+  if (bigint) boxed = ['if', ['result', 'i32'],
+    ['i32.eq', ['call', '$__ptr_type', bits], ['i32.const', PTR.BIGINT]],
+    ['then', ['i64.ne', ['i64.load', ['call', '$__ptr_offset', bits]], ['i64.const', 0]]],
+    ['else', boxed]]
+  return ['if', ['result', 'i32'], ['f64.eq', ref, value],
+    ['then', ['f64.ne', value, ['f64.const', 0]]], ['else', boxed]]
+}
+
 export function truthyIR(e) {
   // An i32 *constant* is a concrete number, not a known 0/1 boolean — fold it to its
   // truthiness (nonzero → 1).
@@ -197,6 +223,9 @@ export function truthyIR(e) {
       if (bits === TRUE_NAN) return typed(['i32.const', 1], 'i32')
       if (bits === FALSE_NAN || bits === UNDEF_NAN || bits === NULL_NAN) return typed(['i32.const', 0], 'i32')
     }
+    // A boxed boolean (boolBoxIR) is as truthy as the condition it selects on.
+    const cond = boolSelectCond(e)
+    if (cond) return typed(cond, 'i32')
     // Fold NaN-boxed pointer literals: UNDEF/NULL/canonical-NaN sentinels are falsy;
     // all other NaN-boxed pointers (SSO strings, heap ptrs, etc.) are truthy.
     if (e[0] === 'f64.reinterpret_i64' && Array.isArray(e[1]) && e[1][0] === 'i64.const') {
@@ -267,16 +296,20 @@ const matchF64Bits = (f64expr, onBits, fallback) => {
 export const isNullish = (f64expr) => matchF64Bits(f64expr,
   bits => constI32(bits === NULL_NAN || bits === UNDEF_NAN),
   (e) => {
-    // (local.get $x): inline the test, reinterpreting twice (V8 CSEs it). Other
-    // exprs call $__is_nullish — keeps binary size stable and evaluates once.
+    // (local.get $x): inline the test, reinterpreting twice (V8 CSEs it). Any
+    // other expression evaluates once into an i64 temp: the two compares
+    // inline cost less than the helper's frame at every nullish test of a
+    // read (`r.done == null`, an optional chain's head).
     if (Array.isArray(e) && e[0] === 'local.get') {
       const bits = ['i64.reinterpret_f64', e]
       return typed(['i32.or',
         ['i64.eq', bits, ['i64.const', NULL_NAN]],
         ['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', UNDEF_NAN]]], 'i32')
     }
-    inc('__is_nullish')
-    return typed(['call', '$__is_nullish', ['i64.reinterpret_f64', e]], 'i32')
+    const t = tempI64('nz')
+    return typed(['i32.or',
+      ['i64.eq', ['local.tee', `$${t}`, ['i64.reinterpret_f64', e]], ['i64.const', NULL_NAN]],
+      ['i64.eq', ['local.get', `$${t}`], ['i64.const', UNDEF_NAN]]], 'i32')
   })
 
 /** Check if f64 expr is exactly `undefined` (UNDEF_NAN). Returns i32.

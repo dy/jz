@@ -23,7 +23,21 @@ import { onKernel } from './_matrix.js'
 import { deriveMethodModules } from '../scripts/gen-prop-modules.mjs'
 import { DERIVED_PROP_MODULES } from '../src/prop-modules.generated.js'
 import * as stdlibManifest from '../module/index.js'
-import { STDLIB } from '../src/autoload.js'
+import { STDLIB, includeAllMods } from '../src/autoload.js'
+import { INTRINSIC_ARITY } from '../src/builtin-signatures.js'
+
+test('self-compile: method signatures cover registered handler parameters without reflection', () => {
+  if (onKernel()) return
+  compile('')
+  includeAllMods()
+  for (const [key, handler] of Object.entries(ctx.core.emit)) {
+    if (!key.startsWith('.') || typeof handler !== 'function' || ctx.core.getters.has(key)) continue
+    const method = key.slice(key.lastIndexOf(':') + 1).replace(/^\./, '')
+    if (!/^[a-zA-Z][a-zA-Z0-9]*$/.test(method)) continue
+    const arity = handler.argc ?? handler.length
+    ok(INTRINSIC_ARITY['.' + method] >= arity, key + ': signature covers every handler parameter')
+  }
+})
 
 // Broad surface so most templates register (each compile resets ctx; accumulate across compiles).
 const PROBES = [

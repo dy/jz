@@ -24,8 +24,9 @@ const binding = (fn, bare) => {
 const kindOf = (fn, bare) => ctx.summary.at(fn).kindOf(binding(fn, bare))
 const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join())
 // The summary read after a compile is of the program the plan rewrote; these tests
-// pin the source's own functions, so the inliner is off (the speed tier splices callees).
-const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }); return ctx.summary }
+// pin the source's own functions, so the inliner is off (the speed tier splices callees)
+// and so is the record-parameter lane pass (it replaces a field-reading callee).
+const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false } }); return ctx.summary }
 
 test('summary: testing data fields does not lose the argument shape at an open join', () => {
   for (const condition of ['!!x?.enabled', "x?.name === 'f'", "typeof x?.nested === 'object'", 'x?.nested?.enabled === true']) {
@@ -414,7 +415,9 @@ test('summary codegen: a method called through an array of instances, an exporte
   is(jz(src).exports.run(4), 2 * 0.5 * 1.5 * 2.5)
   // Nullish receiver checks retain the private error signal: 3060 → 3132 B.
   // A control build omitting only those checks restores 3060; keep the same slack.
-  if (OPT_LEVEL === 2) ok(compile(src).length < 3172, `the typed tier's size class (${compile(src).length} B)`)
+  // Known-array reads and lengths take their forwarding hop inline in the
+  // speed tiers (src/ir/pointers.js fwdOffsetIR): 3132 → 3184 B, two hops.
+  if (OPT_LEVEL === 2) ok(compile(src).length < 3224, `the typed tier's size class (${compile(src).length} B)`)
   // An exported class: its constructor parameter is read only through a slot
   // every read of which multiplies, so the f64 boundary is the coercion.
   const cls = `export class Gain { constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
@@ -700,4 +703,75 @@ test('summary: a decided condition prunes its dead arm; a nullish receiver read 
   ok(paramOf(kindOf('mk', 'o')) !== UNKNOWN, 'and keeps its shape')
   is(jz(`const mk = (opts) => { const o = opts === undefined ? {} : opts; const sig = o.sig === undefined ? null : o.sig; return { current: sig } }
     export const f = () => { const frame = mk({ sig: { params: [1], results: [] } }); return frame.current.params.length }`).exports.f(), 1)
+})
+
+test('summary: a destructuring reads through its source', () => {
+  // An object pattern's names read the source's members, a default merges in
+  // when the member may be undefined; an array pattern reads by position.
+  const src = `const mk = (opts) => { const { sig = null, body = null, uniq = 0 } = opts; return { current: sig, body, uniq } }
+    const rows = [[new Map([[1, 2]]), 'x'], [new Map(), 'y']]
+    export const f = () => { const frame = mk({ sig: { params: [1, 2], results: [] } }); return frame.current.params.length + frame.uniq }
+    export const g = () => { let n = 0; for (const [m, k] of rows) n += m.size + k.length; const [first, , third = 7] = [1, 2]; return n + first + third }`
+  summarize(src)
+  is(tagOf(kindOf('mk', 'sig')), K.OBJECT, 'a defaulted object-pattern name keeps the argument member shape')
+  ok(isNullable(kindOf('mk', 'sig')), 'and the null default')
+  is(tagOf(kindOf('g', 'm')), K.MAP, 'a pattern over a row array reads the row position')
+  is(tagOf(kindOf('g', 'k')), K.STRING, 'each position keeps its own kind')
+  const js = oracle(src)
+  for (const level of levels(0, 2)) { is(jz(src, { optimize: level }).exports.f(), js.f(), `O${level}: object pattern`); is(jz(src, { optimize: level }).exports.g(), js.g(), `O${level}: array pattern`) }
+})
+
+test('summary: a static string key is the literal key', () => {
+  // `o[KEY]` with `const KEY = 'k'` is the slot access `o.k` compiles to: prepare
+  // folds the key, so no dynamic read or store remains.
+  const src = `const K = 'sig'
+    export const f = (n) => { const o = { sig: 1, body: 2 }; const field = 'body'; o[field] = n; return o[K] + o[field] }`
+  const wat = compile(src, { optimize: 1, wat: true })
+  ok(!/__dyn_get|__hash_get/.test(typeof wat === 'string' ? wat : wat.wat ?? ''), 'no dynamic read for a const string key')
+  is(jz(src).exports.f(5), oracle(src).f(5))
+})
+
+test('summary: a container hands out its members only by enumeration', () => {
+  // A record stored as a map key or set member beside an unknown one keeps its
+  // shape while the map is read by get/has; enumerating the keys loses it.
+  const src = `const byRec = new Map(), seen = new Set()
+    export const f = (k) => { const r = { sig: { params: [1] } }; byRec.set(k, 1); byRec.set(r, 2); seen.add(k); seen.add(r); return byRec.get(r) + (seen.has(r) ? r.sig.params.length : 0) }
+    export const g = (k) => { const r = { tag: { params: [1] } }; const m = new Map([[k, 1], [r, 2]]); let n = 0; for (const key of m.keys()) n += key === r ? 1 : 0; return n + r.tag.params.length }`
+  summarize(src)
+  ok(!ctx.summary.opaqueSchema(sidOf(['sig'])), 'a key read only by get/has keeps its shape')
+  ok(ctx.summary.opaqueSchema(sidOf(['tag'])), 'an enumerated key is lost')
+  const js = oracle(src)
+  for (const level of levels(0, 2)) { is(jz(src, { optimize: level }).exports.f('a'), js.f('a'), `O${level}: map key`); is(jz(src, { optimize: level }).exports.g('a'), js.g('a'), `O${level}: enumerated`) }
+})
+
+test('summary: a wrapper hands back what its closure argument returns', () => {
+  // The result at a call is the argument's result, not the join over every
+  // callback the wrapper ever ran; a wrapper passing its parameter on forwards.
+  const src = `const t = (_, fn) => fn()
+    const timed = (name, fn) => { const r = fn(); return r }
+    const phase = (p, name, fn) => p?.time ? p.time(name, fn) : fn()
+    export const f = () => { const o = t('a', () => ({ a: 1 })); const m = t('b', () => new Map([[1, 2]])); const q = timed('c', () => ({ b: 2 })); const w = phase(null, 'd', () => ({ c: 3 })); return o.a + m.size + q.b + w.c }`
+  summarize(src)
+  is(tagOf(kindOf('f', 'o')), K.OBJECT, 'an expression-bodied wrapper forwards')
+  is(tagOf(kindOf('f', 'm')), K.MAP, 'each call site reads its own argument')
+  is(tagOf(kindOf('f', 'q')), K.OBJECT, 'a passive local returned untouched forwards')
+  is(tagOf(kindOf('f', 'w')), K.OBJECT, 'a wrapper passing its parameter to another forwards through it')
+  is(tagOf(ctx.summary.resultOf('t')), K.ANY, 'away from a call site a forwarded result is unknown')
+  for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(), oracle(src).f(), `O${level}`)
+})
+
+test('summary: Object.assign onto a shape stores each source slot; a shape beside primitives keeps its identity', () => {
+  const src = `export const f = (flag) => {
+    const target = { a: 1, b: 2 }, extra = flag ? { a: 3, c: 4 } : { a: 5, d: 6 }
+    Object.assign(target, extra)
+    const rec = { sig: { params: [1, 2] } }
+    const fn = typeof flag === 'boolean' && rec
+    const n = fn ? fn.sig.params.length : 0
+    return target.a + n
+  }`
+  summarize(src)
+  is(tagOf(ctx.summary.fieldKind(sidOf(['a', 'b']), 'a')), K.NUMBER, 'a source slot stores into the target slot')
+  ok(!ctx.summary.opaqueSchema(sidOf(['a', 'b'])), 'the target keeps its shape')
+  is(tagOf(kindOf('f', 'n')), K.NUMBER, 'a record joined with a boolean is read through the join')
+  for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(true), oracle(src).f(true), `O${level}`)
 })

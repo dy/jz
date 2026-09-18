@@ -57,6 +57,7 @@ export function unboxablePtrs(body, locals, boxed) {
   // assignment the whole program agrees is one pointer kind (a typed field
   // read through a parameter, `const b = o.buf`) is that kind here too.
   const valOf = name => ctx.func.localReps?.get(name)?.val ?? (ctx.summary ? summaryVal(ctx.summary.kindOf(name)) : null)
+  const summary = ctx.summary?.at(ctx.func.current)
   const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.DATE])
 
   // RHS must produce a fresh, non-null pointer of the declared VAL kind.
@@ -86,7 +87,7 @@ export function unboxablePtrs(body, locals, boxed) {
       // (since ptrOffsetIR sees ptrKind=OBJECT and skips the per-access wrap).
       if (expr[0] === '[]' && typeof expr[1] === 'string') {
         const r = ctx.func.localReps?.get(expr[1])
-        if (r?.arrayElemSchema != null) return true
+        if (r?.arrayElemSchema != null) return summary?.mayBeNullishExpr(expr) === false
         // Closed-union element: the member schema lives in the box's aux
         // bits and a raw offset cannot carry it back (a rebox would stamp
         // schema 0, and a dynamic read then misses every other member's
@@ -110,10 +111,10 @@ export function unboxablePtrs(body, locals, boxed) {
       const f = ctx.funcs.map?.get(callee)
       if (f?.sig?.ptrKind === kind) return true
     }
-    // Every concrete typed-result chain (map/filter/slice/change-by-copy,
-    // subarray views, and receiver-returning mutators) is a fresh/non-null
-    // typed pointer. The shared provenance helper owns method semantics.
-    if (kind === VAL.TYPED && typedStorageCtorFromContext(ctx, expr)) return true
+    // Constructor provenance describes storage, not presence: a field or
+    // indexed read can carry the same ctor and still return undefined.
+    if (kind === VAL.TYPED && (expr[0] === '()' || summary?.mayBeNullishExpr(expr) === false) &&
+        typedStorageCtorFromContext(ctx, expr)) return true
     return false
   }
   // A policy over `scanBindingUses`: an UNBOXABLE-kind `let/const` local with a
@@ -354,8 +355,8 @@ export function cseSafeLoadBases(body, locals, localReps) {
   return safe
 }
 
-/** Settle an admitted union cursor's storage on its published plan: a local
- *  `const o = rows[i]` the union registry admitted holds a packed-cell
+/** Settle an admitted cursor's storage on its published plan: a local
+ *  `const o = rows[i]` the inline registry admitted holds a packed-cell
  *  address, so it takes i32 storage with the OBJECT pointer kind, exactly
  *  what unboxablePtrs would have chosen had the verdict preceded analysis. */
 export function unboxAdmittedCursors(ctx, plan, func, cursors) {

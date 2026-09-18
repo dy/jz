@@ -747,15 +747,16 @@ export let f = (s) => g(s) === false`
 // reverted self-compile miscompiles touching just ONE — out of this pass's
 // bounded scope. Pinned below ('direct-closure inlined bare-return'), not
 // fixed.
-test('kernel oracle: ambiguous BOOL|NUMBER local storage rejects instead of erasing identity', () => {
+test('kernel oracle: ambiguous BOOL|NUMBER local storage keeps its identity through a capturing closure', () => {
   if (onWasi()) return
   const rows = [
-    `export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`,
-    `export let f = (x) => { let v = x > 0 && 1; const g = () => typeof v; return g() }`,
+    [`export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`, [1, false]],
+    [`export let f = (x) => { let v = x > 0 && 1; const g = () => typeof v; return g() }`, ['number', 'boolean']],
   ]
-  for (const src of rows) for (const opt of levels(0, 2, 3)) {
-    throws(() => runNative(src, opt), /can be both Boolean and Number/, `native O${opt}: correct-or-reject`)
-    throws(() => runKernel(src, opt), /can be both Boolean and Number/, `kernel O${opt}: same rejection`)
+  for (const [src, [want1, want0]] of rows) for (const opt of levels(0, 2, 3)) {
+    const native = runNative(src, opt), kernel = runKernel(src, opt)
+    is(native.f(1), want1, `native O${opt}: the Number arm`); is(native.f(0), want0, `native O${opt}: the Boolean arm keeps its identity`)
+    is(kernel.f(1), want1, `kernel O${opt}: the Number arm`); is(kernel.f(0), want0, `kernel O${opt}: the same values`)
   }
 })
 

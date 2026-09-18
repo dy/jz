@@ -38,7 +38,7 @@ export function elemStore(ptr, i, val) {
  *  re-loading from ptr-8.
  *  Optional `ptrLocal`: caller already has the resolved ARRAY data pointer in
  *  an i32 local. Reuses it instead of calling __ptr_offset again. */
-export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse) {
+export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from) {
   const arr = ptrLocal ? null : temp('aa'), ptr = ptrLocal ?? tempI32('ap'), i = tempI32('ai'), item = temp('av')
   const len = lenLocal ?? tempI32('al')
   const id = freshId(ctx)
@@ -53,7 +53,9 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse) {
   if (!lenLocal) setup.push(
     ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]])
   // Forward: i 0→len-1. Reverse (findLast*): i len-1→0, same elem indices.
-  const start = reverse ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]
+  // Optional `from`: an i32 expression for the first index (indexOf's
+  // fromIndex, already resolved against the length by the caller).
+  const start = from ?? (reverse ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0])
   const done = reverse ? ['i32.lt_s', ['local.get', `$${i}`], ['i32.const', 0]]
                        : ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]
   const step = ['i32.const', reverse ? -1 : 1]

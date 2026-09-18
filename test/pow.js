@@ -211,12 +211,35 @@ test('x ** 2.4 under crPow + approxPow opts back into $math.fifthroot', () => {
 // sRGB EOTF gamma colorlch/colorconv actually use; the others cover the other reachable
 // k/5 shapes.
 const FIFTH_EXPS = [0.2, 0.4, 0.6, 0.8, 1.2, 1.4, 1.6, 1.8, 2.2, 2.4, 2.6, 2.8, 3.2, 3.4, 3.6, 3.8, 4.2, 4.4, 4.6, 4.8]
-// Generous regression ceiling — roughly 2x the measured ~2.65M ulp worst case (3 Newton
-// steps), tight enough to catch a genuinely broken correction (e.g. a dropped step) while
-// tolerating the known 3-step accuracy floor and ordinary machine/input variance.
-const ULP_CEILING = 5_000_000
+// The fold computes the exact rational power x^(k/5); Math.pow(x, c) raises to the
+// DOUBLE c, which differs from k/5 by up to 2^-53·c, so the two differ by a factor
+// x^(c − k/5) ≈ 1 + (c − k/5)·ln x: ~150 ulp at x = 10^75 for c = 1.6, nothing near 1.
+// The reference is therefore the correctly rounded exact rational power, decided in
+// integer arithmetic: the double y with y^5 nearest x^k (IEEE 754-2019 §9.2 defines
+// pow on the exact real operands; the exponent here is the rational k/5 itself).
+const f64 = new Float64Array(1), u64 = new BigUint64Array(f64.buffer)
+const mantExp = (x) => { f64[0] = x; const b = u64[0], e = Number((b >> 52n) & 0x7FFn), m = b & ((1n << 52n) - 1n); return e === 0 ? [m, -1074] : [m | (1n << 52n), e - 1075] }
+// sign of m·2^e − n·2^f, exactly
+const cmpScaled = (m, e, n, f) => { const d = e - f; const a = d >= 0 ? m << BigInt(d) : m, b = d >= 0 ? n : n << BigInt(-d); return a < b ? -1 : a > b ? 1 : 0 }
+const exactFifthPow = (x, k) => {
+  const [mx, ex] = mantExp(x), xk = mx ** BigInt(k), exk = ex * k          // x^k = xk · 2^exk
+  const above = (y) => { if (!Number.isFinite(y)) return 1; const [my, ey] = mantExp(y); return cmpScaled(my ** 5n, ey * 5, xk, exk) }   // sign of y^5 − x^k
+  const step = (y, dir) => { f64[0] = y; u64[0] += BigInt(dir); return f64[0] }
+  let y = Math.pow(x, k / 5)
+  if (!Number.isFinite(y) || y < 2.2250738585072014e-308) return y   // overflow and underflow: the host's own value
+  while (above(y) > 0) y = step(y, -1)         // the largest double with y^5 ≤ x^k
+  while (above(step(y, 1)) <= 0) y = step(y, 1)
+  const [my, ey] = mantExp(y)                   // the midpoint to the next double: (2·my + 1) · 2^(ey − 1)
+  return cmpScaled((2n * my + 1n) ** 5n, (ey - 1) * 5, xk, exk) < 0 ? step(y, 1) : y
+}
+// Regression ceiling against that reference: the fold measures a worst case of ~40 ulp
+// across these exponents on this grid (four Newton steps, the last a correction —
+// module/math.js $math.fifthroot; the x^p · fifthroot(x^r) composition adds the rest),
+// so 96 catches a dropped step (three steps left a ~2.65M ulp floor) while tolerating
+// machine/input variance.
+const ULP_CEILING = 96
 
-test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs host (regression guard)`, () => {
+test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING} ulp vs the exact rational power (regression guard)`, () => {
   const rng = mkRng(0x51DEC0DE)
   const fifth = run(perExp(FIFTH_EXPS))
   let worstOverall = 0
@@ -230,8 +253,9 @@ test(`fifthroot pow fold (default path) — worst case stays under ${ULP_CEILING
     for (let e = -75; e <= 75; e += 3) xs.push(10 ** e)
     for (let i = 0; i < 200; i++) xs.push(10 ** ((rng() - 0.5) * 150))
     let worst = 0
+    const k = Math.round(c * 5)
     for (const x of xs) {
-      const u = ulpDiff(f(x), Math.pow(x, c))
+      const u = ulpDiff(f(x), exactFifthPow(x, k))
       if (u > worst) worst = u
     }
     if (worst > worstOverall) worstOverall = worst

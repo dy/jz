@@ -57,6 +57,7 @@ test('refactor-oracle: Web Audio uses the benchmark library graph and host bound
   const spec = specs.find(s => s.name === 'bench:webaudio')
   is(spec.opts.jzify, true, 'library lowering is enabled')
   is(Object.keys(spec.opts.modules).some(p => p.endsWith('/web-audio-api/index.js')), true, 'audio engine source is resolved')
-  is(Object.keys(spec.opts.imports).some(p => p.includes('AudioWorklet')), true, 'unused worklet host stays external')
+  is(Object.keys(spec.opts.imports).some(p => p.includes('AudioWorklet')), false, 'the worklet host is a stub source, not a host import: every context constructs its AudioWorklet')
+  is(Object.keys(spec.opts.imports).some(p => p.includes('@audio/')), true, 'the device and codec adapters stay external')
   is(WebAssembly.validate(compile(spec.code, { ...spec.opts, optimize: 3 })), true, 'the complete audit specimen compiles')
 })

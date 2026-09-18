@@ -85,6 +85,10 @@ export function emitFunc(func, functionPlan, programFacts) {
   // every non-bool-mixed function, period — are untouched either way.
   ctx.func.valResult = func.valResult
   ctx.func.valResultMayBeUndefined = !!func.valResultMayBeUndefined
+  // A class dispatcher returns into a tagged f64 slot for readers that cannot
+  // type the access: its class arms box a BOOL result as its atom, like the
+  // fallback arm's generic call already does.
+  if (func.sig.dispatcher) ctx.func.boxedResult = true
   {
     const returns = isBlockBody(body) ? returnExprs(body) : [body]
     ctx.func.mixedAtomReturn = func.valResult !== VAL.BOOL &&

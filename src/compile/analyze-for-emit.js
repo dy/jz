@@ -4,6 +4,7 @@ import { constIntExpr } from '../static.js'
 import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
+import { valTypeOf } from '../kind.js'
 import { paramValTrustworthy } from '../param-reps.js'
 import { I32_MIN, I32_MAX } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
@@ -237,7 +238,8 @@ export function analyzeFuncForEmit(func, programFacts) {
   // mapOrOverlaySize (not `.size` directly): ctx.func.typedElem is now a MapOverlay
   // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
   if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem))
-    cseLoads(body, n => ctx.func.typedElem.has(n), freshCseName)
+    cseLoads(body, n => ctx.func.typedElem.has(n), freshCseName, n => valTypeOf(n) === VAL.NUMBER,
+      n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false)
 
   if (block) {
     seedLocalIntConsts(body)

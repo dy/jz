@@ -319,20 +319,20 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
 }
 
 /** Generate lookup probe function.
- *  wantValue=true: return slot value, missing => `undefined` (UNDEF_NAN) — a
- *    missing Map entry / object property reads as `undefined` in JS, never null.
+ *  wantValue=true: return slot value, or `missing` (default: undefined).
  *  wantValue=false: return i32 0/1 existence flag.
- *  hasExt: emit EXTERNAL fallthrough (delegate to __ext_prop/__ext_has). */
-function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, hasExt) {
+ *  hasExt: emit EXTERNAL fallthrough (delegate to __ext_prop/__ext_has).
+ *  hashFn=null: accept the hash as a parameter instead of computing it. */
+function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue = true, hasExt = false, missing = UNDEF_NAN) {
   const rt = wantValue ? 'i64' : 'i32'
   const onEmpty = wantValue
-    ? `(return (i64.const ${UNDEF_NAN}))`
+    ? `(return (i64.const ${missing}))`
     : '(return (i32.const 0))'
   const onFound = wantValue
     ? '(return (i64.load offset=16 (local.get $slot)))'
     : '(return (i32.const 1))'
   const notFound = wantValue
-    ? `(i64.const ${UNDEF_NAN})`
+    ? `(i64.const ${missing})`
     : '(i32.const 0)'
   const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const typeGuard = hasExt
@@ -342,8 +342,8 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
           : '(call $__ext_has (local.get $coll) (local.get $key))'}))
         (else ${onEmpty}))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then ${onEmpty}))`
-  return `(func $${name} (param $coll i64) (param $key i64) (result ${rt})
-    (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32) (local $tries i32)
+  return `(func $${name} (param $coll i64) (param $key i64) ${hashFn ? '' : '(param $h i32)'} (result ${rt})
+    (local $off i32) (local $cap i32) ${hashFn ? '(local $h i32)' : ''} (local $end i32) (local $slot i32) (local $tries i32)
     ${laneLocals}
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (local.get $coll)))
@@ -353,7 +353,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
       (then
         (local.set $off (call $__ptr_offset_fwd (local.get $off)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
-    (local.set $h (call ${hashFn} (local.get $key)))
+    ${hashFn ? `(local.set $h (call ${hashFn} (local.get $key)))` : ''}
     ${probeStart(entrySize)}
     (block $done (loop $probe
       ${probeHashLoad()}
@@ -755,50 +755,6 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
     (i64.const ${missing}))`
 }
 
-// wantValue=true (default): return the slot value, missing → `missing` (i64). wantValue=false:
-// return an i32 0/1 existence flag (for `.has`). Mirrors genLookup's two-mode shape, prehashed.
-function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing = UNDEF_NAN, hasExt = false, wantValue = true) {
-  const rt = wantValue ? 'i64' : 'i32'
-  const onEmpty = wantValue ? `(return (i64.const ${missing}))` : '(return (i32.const 0))'
-  const onFound = wantValue ? '(return (i64.load offset=16 (local.get $slot)))' : '(return (i32.const 1))'
-  const notFound = wantValue ? `(i64.const ${missing})` : '(i32.const 0)'
-  const extHit = wantValue ? '(call $__ext_prop (local.get $coll) (local.get $key))' : '(call $__ext_has (local.get $coll) (local.get $key))'
-  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
-  const typeGuard = hasExt
-    ? `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
-      (then
-        (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
-          (then (return ${extHit}))
-          (else ${onEmpty}))))`
-    : `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
-      (then ${onEmpty}))`
-  return `(func $${name} (param $coll i64) (param $key i64) (param $h i32) (result ${rt})
-    (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $tries i32)
-    ${laneLocals}
-    ${typeGuard}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
-    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
-    ${probeStart(entrySize)}
-    (block $done (loop $probe
-      ${probeHashLoad()}
-      (if (i32.eqz (local.get $hw)) (then ${onEmpty}))
-      (if (i32.eq (local.get $hw) (local.get $h))
-        (then
-          ${slotFromLane(entrySize)}
-          (if ${eqExpr} (then ${onFound}))))
-      ${probeNext(entrySize)}
-      (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
-      (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
-      (br $probe)))
-    ${notFound})`
-}
-
 // `hasVal` (region-arena rebuild fix, .work/evidence.md §Region arena):
 // added so PTR.SET (16-byte, key-only entries — no room for a value word at
 // slot+16) can share this generator instead of a hand-duplicated copy —
@@ -869,5 +825,5 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
 export {
   genUpsert, genLookup, genDelete, genUpsertGrow,
   genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict,
-  genLookupStrictPrehashed, genUpsertStrictPrehashed,
+  genUpsertStrictPrehashed,
 }

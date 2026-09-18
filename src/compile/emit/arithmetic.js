@@ -4,6 +4,7 @@
  * @module compile/emit/arithmetic
  */
 
+import { representationProgramHasBigint } from '../representation-plan.js'
 import { ctx, inc, LAYOUT } from '../../ctx.js'
 import { asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
@@ -14,7 +15,7 @@ import { K, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '.
 import { exprType } from '../../type.js'
 import { storedValue } from '../../bridge.js'
 import {
-  bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigIntUnaryPlus, bigintMemberAssignTarget, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain, numericStep,
+  bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigintMemberAssignTarget, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain, numericStep,
 } from './bigint.js'
 import { emit, emitBoolStr, tryConcatChain } from './dispatch.js'
 import {
@@ -119,7 +120,7 @@ const emitNeg = (a, self) => {
   // Use the full summary kind as well as legacy value-type evidence so a
   // present-or-undefined BigInt producer still takes the branch-aware path.
   if (hasBigintDomain(a))
-    return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'], computedBoxOf(self))
+    return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], v => ['f64.neg', v], computedBoxOf(self))
   const v = emit(a)
   // `.unsigned` carries its uint32 value as a signed i32 bit pattern (litVal/i32.sub
   // both read that raw pattern), so negating either fast path directly negates the
@@ -213,7 +214,7 @@ export const arithmeticOps = {
     // bigintMemberAssignTarget above.
     if (isLit1(b) && bigintMemberAssignTarget(a))
       return postfixBigint(['i64.add', readI64(a, emit(a)), ['i64.const', 1]], self)
-    if (ctx.features.bigint && isPostfixRecovery('+', a, b) && valTypeOf(a) == null)
+    if (representationProgramHasBigint(ctx) && isPostfixRecovery('+', a, b) && valTypeOf(a) == null)
       return numericStep(a, 'add')
     // A self-accumulation `a = a + …` lets the concat bump-EXTEND `a` in place (a is dead-after).
     // Read it for THIS concat, then clear so nested operands (not the accumulation target) stay fresh.
@@ -421,7 +422,7 @@ export const arithmeticOps = {
     // bigintMemberAssignTarget above ('+').
     if (isLit1(b) && bigintMemberAssignTarget(a))
       return postfixBigint(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]], self)
-    if (ctx.features.bigint && isPostfixRecovery('-', a, b) && valTypeOf(a) == null)
+    if (representationProgramHasBigint(ctx) && isPostfixRecovery('-', a, b) && valTypeOf(a) == null)
       return numericStep(a, 'sub')
     // §14 point 4: joint runtime-domain dispatch (see bigIntDomain's own doc
     // comment) — binary form only; `b === undefined` here is unary minus
@@ -464,27 +465,8 @@ export const arithmeticOps = {
     return typed(['f64.sub', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   'u+': a => {
-    const bigint = bigIntUnaryPlus(a)
-    if (bigint) return bigint
-    const v = emit(a)
-    if (v.type === 'i32') return asF64(v)
-    // Deliberately NOT routed through toNumF64 for every non-NUMBER operand
-    // (fix/wrong-values-2 tried exactly that, to fix `+{valueOf:()=>2}`'s
-    // ToPrimitive gap — no test262 entry actually needed it in the end, since
-    // Iterator take/drop's own `+n` runs on an untyped parameter that never
-    // reaches toNumF64's VAL.OBJECT gate either way). Reverted: it broke
-    // test/watr.js's "simd load/store" bug-pin (37/37 -> 36/37) by changing
-    // codegen for a STRING operand read inside a discarded short-circuit
-    // expression whose LEFT side is itself an assignment (watr's own
-    // compile.js memarg(): `if (align) ((align = Math.log2(align)) % 1) &&
-    // err(...)` — align starts '1'-derived-via-unary-plus, discarded-value
-    // context) — the nested `align = Math.log2(align)` reassignment stopped
-    // taking effect, a genuine toNumF64/discarded-value codegen bug exposed
-    // by, not created by, routing a STRING operand through it. Out of scope
-    // to chase further here; flagged, not fixed.
-    if (valTypeOf(a) === VAL.NUMBER) return toNumF64(a, v)
-    inc('__to_num')
-    return typed(['call', '$__to_num', asI64(v)], 'f64')
+    ctx.module.include('number')
+    return toNumF64(a, emit(a))
   },
   'u-': (a, self) => emitNeg(a, self),
   '*': (a, b, self) => {

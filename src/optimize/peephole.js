@@ -11,16 +11,16 @@
 import { simplifyCast } from 'watr/optimize'
 import { LAYOUT, FORWARDING_MASK } from '../ctx.js'
 import { nanboxF64 } from '../abi/index.js'
-import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR } from '../ir.js'
-import { foldIntCompare, narrowI32 } from '../ir/numeric.js'
+import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR, valueTruthyIR } from '../ir.js'
+import { foldIntCompare, narrowI32, int32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
+import { constNum, matchExitBrIf, matchInc1 } from './vectorize/addr-model.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()
 const NULL_BITS = atomNanHex(1)
 const UNDEF_BITS = atomNanHex(2)
-const FALSE_BITS = atomNanHex(4)
 
 // wasm comparison ops — each yields an i32 that is exactly 0 or 1.
 const BOOL_RESULT_OPS = new Set([
@@ -206,18 +206,18 @@ export function inlinePtrOffsetFastPass(fn) {
 }
 
 // Fused bottom-up walk applying three orthogonal pattern sets at each node:
-//   inlinePtrType  — call $__ptr_type / __ptr_aux / __is_nullish / __is_null / __is_truthy
+//   inlinePtrType  — call $__ptr_type / __ptr_aux / __is_nullish / __is_null
 //                    (skipped inside $__ptr_*/__is_* helper bodies themselves)
 //   peephole       — rebox/unbox round-trips: i64.reinterpret_f64 / f64.reinterpret_i64 /
 //                    i32.wrap_i64 over (i64.extend_i32_u/_s X) or (i64.or HIGH_ONLY extend X)
 //   foldMemarg     — (load/store (i32.add base (i32.const N)) …) → (load/store offset=N base …)
 // They discriminate on node[0] and don't overlap, so one visit suffices for all three.
-export function fusedRewrite(fn) {
+export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
   if (!Array.isArray(fn) || fn[0] !== 'func') {
     if (Array.isArray(fn)) {
       for (let i = 0; i < fn.length; i++) {
         const c = fn[i]
-        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, null, null)
+        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, null, null, null, bigint, inlineTruthy)
       }
     }
     return
@@ -232,8 +232,12 @@ export function fusedRewrite(fn) {
   // pre+post phases both run this pass — continue numbering past any scratch
   // locals the earlier phase already declared, or the decls collide.
   let scratchN = 0
-  for (let i = 2; i < fn.length; i++) {
+  const params = new Set(), floatLocals = new Set()
+  for (let i = 2; i < bodyStart; i++) {
     const d = fn[i]
+    if (!Array.isArray(d)) continue
+    if (d[0] === 'param' && typeof d[1] === 'string') params.add(d[1])
+    if (d[0] === 'local' && d[2] === 'f64') floatLocals.add(d[1])
     if (Array.isArray(d) && d[0] === 'local' && typeof d[1] === 'string') {
       const m = d[1].match(/^\$__eq[tf](\d+)$/)
       if (m) scratchN = Math.max(scratchN, +m[1] + 1)
@@ -243,8 +247,8 @@ export function fusedRewrite(fn) {
   const freshF64 = () => { const n = `$__eqf${scratchN++}`; newDecls.push(['local', n, 'f64']); return n }
   // Single-textual-def locals → their defining value node, so the trunc_sat range fold (below)
   // can see through the temps inlining introduces when proving an index/packed value fits i32.
-  // Multi-def (incl. loop-carried self-referential) locals are excluded: their value is not the
-  // one def's, so its range wouldn't bound them. PARAMS are excluded outright: a param carries an
+  // Multi-def locals need a separate all-writes bound; they cannot resolve to one
+  // defining expression. PARAMS are excluded outright: a param carries an
   // IMPLICIT entry def the textual scan can't see, and it is the one local class whose pre-write
   // value is externally controlled — `f = (p) => { use(1 >>> Math.abs(p)); p = 0 }` resolved p→0,
   // claimed range [0,0], and the collapsed bare trunc_sat saturated an incoming -Infinity to a
@@ -253,36 +257,126 @@ export function fusedRewrite(fn) {
   // textual rule stays sound for every other local. Pure read of the IR — value-preserving
   // rewrites during this same walk keep the captured def's RANGE intact, so a lazily-built map
   // stays sound. Built on first query only.
-  let defVal
-  const get = (name) => {
+  let defVal, defs, bounds, owners, numericLocals
+  const get = (name, recurrence = false) => {
+    // A parameter has an unknown entry definition regardless of later stores.
+    if (params.has(name)) return null
     if (defVal === undefined) {
-      defVal = new Map(); const defCnt = new Map()
-      for (let i = 2; i < fn.length; i++) {
-        const d = fn[i]
-        if (Array.isArray(d) && d[0] === 'param' && typeof d[1] === 'string') defCnt.set(d[1], 2)
-      }
-      const recordDef = n => {
-        if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
-          defCnt.set(n[1], (defCnt.get(n[1]) || 0) + 1); defVal.set(n[1], n[2])
+      defVal = new Map(); defs = new Map(); bounds = new Map(); owners = new Map()
+      numericLocals = false
+      // Keep only statement ancestry, alongside the existing write census.
+      // Expression operands cannot supply a dominating statement initializer.
+      const scan = (n, parent = null, index = -1, scope = null, loop = null) => {
+        if (!Array.isArray(n)) return
+        const op = n[0]
+        if (op === 'func' || op === 'block' || op === 'loop' || op === 'then' || op === 'else')
+          scope = { node: n, parent: scope, index: scope?.node === parent ? index : -1 }
+        if (op === 'loop') loop = scope
+        if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof n[1] !== 'string') numericLocals = true
+        if (op === 'local.set' || op === 'local.tee') {
+          let ws = defs.get(n[1]); if (!ws) defs.set(n[1], ws = [])
+          ws.push(n)
+          if (floatLocals.has(n[1])) owners.set(n, owners.has(n) ? null : loop)
         }
+        for (let i = 1; i < n.length; i++) scan(n[i], n, i, scope, loop)
       }
-      for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: recordDef })
-      for (const [k, c] of defCnt) if (c > 1) defVal.delete(k)
+      scan(fn)
+      for (const [k, ws] of defs) if (ws.length === 1 && !params.has(k)) defVal.set(k, ws[0][2])
     }
-    return defVal.get(name) || null
+    if (defVal.has(name)) return defVal.get(name)
+    if (!recurrence || numericLocals || !floatLocals.has(name)) return null
+    if (!bounds.has(name)) bounds.set(name, boundedFloatLocal(name, defs.get(name), owners, params))
+    return bounds.get(name)
   }
   for (let i = bodyStart; i < fn.length; i++) {
     const c = fn[i]
-    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, freshI64, freshF64, get)
+    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, freshI64, freshF64, get, bigint, inlineTruthy)
   }
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
-function walkRewrite(node, doInline, freshI64, freshF64, get) {
+// All writes must be constants or one constant increment per counted iteration.
+// Integer enclosures avoid assuming repeated floating addition equals N * step:
+// rounding is monotone, and each integral bound + floor/ceil(step) is exact
+// while its magnitude stays within 2^53. These are magnitude bounds, not an
+// integer-value proof; the accumulator itself remains f64.
+function boundedFloatLocal(name, writes, owners, params) {
+  if (!writes) return null
+  let lo = 0, hi = 0
+  const changes = (n, key) => {
+    let found = false
+    walkAst(n, { enter: x => { if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === key) found = true } })
+    return found
+  }
+  const initial = (key, info) => {
+    if (params.has(key)) return null
+    for (let f = info; f.parent; f = f.parent) {
+      if (f.index < 0) return null
+      const p = f.parent.node
+      // Crossing another loop would mistake its first entry for every entry.
+      if (!['func', 'block', 'loop', 'then', 'else'].includes(p[0])) return null
+      for (let j = f.index - 1; j >= 1; j--) {
+        const s = p[j]
+        if (!Array.isArray(s)) continue
+        if (s[0] === 'local.set' && s[1] === key && /^(i32|f64)\.const$/.test(s[2]?.[0])) {
+          const v = s[2][1]
+          return typeof v === 'number' && Number.isFinite(v) ? v : null
+        }
+        if (changes(s, key)) return null
+      }
+      if (p[0] === 'loop') return null
+    }
+    return 0 // a non-parameter Wasm local's implicit entry value
+  }
+  for (const w of writes) {
+    const v = w[2]
+    if (v[0] === 'f64.const' && typeof v[1] === 'number' && Number.isFinite(v[1])) {
+      lo = Math.min(lo, v[1]); hi = Math.max(hi, v[1]); continue
+    }
+    const op = v[0], a = v[1], b = v[2]
+    const self = x => x?.[0] === 'local.get' && x[1] === name
+    const c = self(a) ? b : op === 'f64.add' && self(b) ? a : null
+    if ((op !== 'f64.add' && op !== 'f64.sub') || c?.[0] !== 'f64.const' || typeof c[1] !== 'number' || !Number.isFinite(c[1])) return null
+    const delta = (op === 'f64.sub' ? -1 : 1) * c[1]
+    const info = owners.get(w), loop = info?.node
+    if (!loop) return null
+    const parent = info.parent?.node, back = loop.at(-1), inc = loop.at(-2)
+    if (!parent) return null
+    const ctr = matchInc1(inc), exit = matchExitBrIf(loop[2], parent[1])
+    const bound = exit && constNum(exit.bound)
+    if (parent[0] !== 'block' || back?.[0] !== 'br' || back[1] !== loop[1] ||
+        !ctr || exit?.ind !== ctr || bound == null || !Number.isInteger(bound) || bound < 0 || bound > I32_MAX) return null
+    let ctrWrites = 0, valueWrites = 0, backedges = 0, numericBranch = false
+    walkAst(loop, { enter: n => {
+      if (n[0] === 'local.set' || n[0] === 'local.tee') {
+        if (n[1] === ctr) ctrWrites++
+        if (n[1] === name) valueWrites++
+      }
+      if (n[0] === 'br' || n[0] === 'br_if' || n[0] === 'br_table')
+        for (let i = 1; i < n.length; i++) {
+          if (typeof n[i] === 'number') numericBranch = true
+          if (n[i] === loop[1]) backedges++
+        }
+    } })
+    if (ctrWrites !== 1 || valueWrites !== 1 || backedges !== 1 || numericBranch) return null
+    const start = initial(name, info), from = initial(ctr, info)
+    if (start == null || from == null || !Number.isInteger(from) || from < 0 || from > I32_MAX) return null
+    const count = Math.max(0, bound - from)
+    const down = count * Math.min(0, Math.floor(delta)), up = count * Math.max(0, Math.ceil(delta))
+    if (!Number.isSafeInteger(down) || !Number.isSafeInteger(up)) return null
+    const low = Math.floor(start) + down
+    const high = Math.ceil(start) + up
+    if (!Number.isSafeInteger(low) || !Number.isSafeInteger(high)) return null
+    lo = Math.min(lo, low); hi = Math.max(hi, high)
+  }
+  return { lo, hi }
+}
+
+function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTruthy) {
   if (!Array.isArray(node)) return node
   for (let i = 0; i < node.length; i++) {
     const c = node[i]
-    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, freshI64, freshF64, get)
+    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, freshI64, freshF64, get, bigint, inlineTruthy)
   }
   const op = node[0]
 
@@ -354,7 +448,7 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
     }
   }
 
-  // Inline-ptr-helpers: $__ptr_type / $__ptr_aux / $__is_nullish / $__is_null / $__is_truthy
+  // Inline fixed tag tests and the shared runtime truthiness predicate.
   if (doInline && op === 'call' && node.length === 3 && typeof node[1] === 'string') {
     const fname = node[1]
     if (fname === '$__ptr_type') return ['i32.and',
@@ -368,40 +462,14 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
         && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') return ['i32.or',
       ['i64.eq', node[2], ['i64.const', NULL_BITS]],
       ['i64.eq', node[2], ['i64.const', UNDEF_BITS]]]
-    // Expression-arg __is_truthy: evaluate once into an f64 scratch via tee —
-    // the local.tee form below then expands inline (covers `(c = next()) || …`
-    // and every condition the emitter didn't pre-hoist).
-    if (fname === '$__is_truthy' && freshF64 && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
-        && Array.isArray(node[2][1])
-        && node[2][1][0] !== 'local.get' && node[2][1][0] !== 'local.tee') {
-      node[2] = ['i64.reinterpret_f64', ['local.tee', freshF64(), node[2][1]]]
-    }
-    if (fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
-        && Array.isArray(node[2][1]) && (node[2][1][0] === 'local.get' || node[2][1][0] === 'local.tee')) {
-      // `local.tee $x SRC` evaluates SRC once, stores to $x, returns the value —
-      // hot for `a || b` lowering (`__is_truthy(local.tee $t …)`). Keep the tee
-      // as the first use (the `if` condition runs before then/else, and f64.eq's
-      // left operand runs first), so $x is set before every `local.get` repeat.
-      const ref = node[2][1]
-      const lname = ref[1]
-      const lget = ['local.get', lname]
-      const first = ref[0] === 'local.tee' ? ref : lget
-      const bits = ['i64.reinterpret_f64', lget]
-      // Mirror $__is_truthy (module/core.js) exactly: FIVE falsy patterns —
-      // canonical NaN, null, undefined, the empty SSO string, AND boolean
-      // false. Omitting FALSE made inlined `x || y` treat false as truthy.
-      return ['if', ['result', 'i32'],
-        ['f64.eq', first, lget],
-        ['then', ['f64.ne', lget, ['f64.const', 0]]],
-        ['else', ['i32.and',
-          ['i32.and',
-            ['i32.and',
-              ['i64.ne', bits, ['i64.const', NAN_BITS]],
-              ['i64.ne', bits, ['i64.const', NULL_BITS]]],
-            ['i32.and',
-              ['i64.ne', bits, ['i64.const', UNDEF_BITS]],
-              ['i64.ne', bits, ['i64.const', '0x7FFA400000000000']]]],
-          ['i64.ne', bits, ['i64.const', FALSE_BITS]]]]]
+    if (inlineTruthy && fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
+        && Array.isArray(node[2][1])) {
+      let ref = node[2][1]
+      if (ref[0] !== 'local.get' && ref[0] !== 'local.tee') {
+        if (!freshF64) return node
+        ref = ['local.tee', freshF64(), ref]
+      }
+      return valueTruthyIR(ref, bigint)
     }
   }
 
@@ -440,27 +508,29 @@ function walkRewrite(node, doInline, freshI64, freshF64, get) {
   // Folding here drops the f64 round-trip AND turns int `s += a[i]` reductions and
   // `a[i] = cond ? … : …` conditional maps into pure i32 the vectorizer lifts (i32x4.add /
   // i32x4 bitselect). FALLBACK/COND (which recompute the same ToInt32 from T) are dropped.
-  if (op === 'select' && node.length >= 4) {
+  if (op === 'select' && node.length === 4) {
     const v = node[1]
     if (Array.isArray(v) && v[0] === 'i32.wrap_i64' && Array.isArray(v[1]) && v[1][0] === 'i64.trunc_sat_f64_s' && v[1].length === 2) {
       let inner = v[1][1]
+      const conversion = int32Operand(node)
+      const cond = node[3], read = cond?.[1]?.[1]
+      const present = node[2]?.[0] === 'i32.const' && node[2][1] === -1 &&
+        cond?.[0] === 'i64.ne' && cond[1]?.[0] === 'i64.reinterpret_f64' &&
+        read?.[0] === 'local.get' && (inner[0] === 'local.get' || inner[0] === 'local.tee') && read[1] === inner[1] &&
+        cond[2]?.[0] === 'i64.const' && cond[2][1] === UNDEF_BITS
+      if (!conversion && !present) return node
       if (Array.isArray(inner) && inner[0] === 'local.tee' && inner.length === 3) inner = inner[2]
       // ToInt32(integer-valued f64 expr) → its i32 form: covers (i32±i32)|0 sums AND the
       // conditional `?:` (toI32 distributes through `(if result f64)`, recursively).
-      const i = narrowI32(inner, true)?.node
+      const i = conversion && narrowI32(inner, true)?.node
       if (i) return i
-      // Range fallback for the NON-integer-ring values toI32 rejects (`floor(scale·v)`,
-      // `base + scale·v` — every grid/lattice/colour index): when the def chain — resolved
-      // through single-def inlining temps via `get` — yields i32-range values or NaN,
-      // the +∞ guard is dead AND trunc_sat can't saturate, so the whole guarded select collapses
-      // to one `i32.trunc_sat_f64_s`. SOUND: f64Range admits only pure nodes and proves
-      // no infinity (kills the guard) + in-range (kills saturation); NaN maps to zero,
-      // ToInt32 on every value the program can produce. Drops the i64 round-trip + guard on all
-      // runtimes (this is the post-inline twin of the emit-time fold at ir.js toI32).
-      // A missing-index select falls back to -1, not ToInt32's zero. Its
-      // absence test may disappear only with the original finite proof.
-      const rng = f64Range(inner, get, node[2]?.[0] === 'i32.const' && node[2][1] === 0)
+      const rng = f64Range(inner, get, !!conversion)
       if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', inner]
+      // Loop invariants only remove the guard, preserving the captured value.
+      // Keep i64 here: V8 ARM64's optimizing i32 trunc_sat path adds a float
+      // round-trip and range checks; the i64 conversion lowers directly.
+      const bound = conversion && get && f64Range(inner, name => get(name, true), true)
+      if (bound && bound.lo >= I32_MIN && bound.hi <= I32_MAX) return v
     }
   }
   // The exact element-store conversion (toInt32's `call $__to_int32 X`) folds the

@@ -12,7 +12,8 @@
  * @module collection
  */
 
-import { typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, boolBoxIR, freshId } from '../src/ir.js'
+import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
+import { typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, boolBoxIR, freshId, callWithArgs } from '../src/ir.js'
 import { emit, deps, call, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -145,6 +146,22 @@ const litKeyHash = (key) => {
   return null
 }
 
+// A proven string uses the same content hash without generic key dispatch.
+const probeKeyHash = key => litKeyHash(key) ?? (valTypeOf(key) === VAL.STRING &&
+  ctx.summary?.at(ctx.func.current).mayBeNullishExpr(key) === false ? '__str_hash' : null)
+const collectionProbe = (name, fmt) => (recv, key, ...ignored) => {
+  const h = probeKeyHash(key)
+  if (h == null) return call(name, 'II', fmt)(recv, key, ...ignored)
+  if (typeof h === 'number') return call(name + '_h', 'IIi', fmt)(recv, key, [null, h], ...ignored)
+  inc(name + '_h', h)
+  const r = asI64(storedValue(recv)), k = asI64(storedValue(key)), local = tempI64('probeKey')
+  const args = [r, ['local.tee', `$${local}`, k], ['call', `$${h}`, ['local.get', `$${local}`]]]
+  const c = ignored.length ? callWithArgs(name + '_h', [...args, ...ignored.map(node => emit(node))], {
+    params: [{ type: 'i64' }, { type: 'i64' }, { type: 'i32' }], results: [fmt],
+  }) : ['call', `$${name}_h`, ...args]
+  return typed([fmt === 'i64' ? 'f64.reinterpret_i64' : 'f64.convert_i32_s', c], 'f64')
+}
+
 // Key-equality expressions for probe templates — run only after a hash hit
 // (the probe skeleton compares hashes; these decide the hit). The inline
 // `storedKey == queryKey` bit-eq decides the overwhelmingly-common identity case
@@ -161,7 +178,7 @@ const strEqG = keyEq('(call $__str_eq (i64.load offset=8 (local.get $slot)) (loc
 const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
 const bitEq = '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
 
-import { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genLookupStrictPrehashed, genUpsertStrictPrehashed } from './collection/upsert.js'
+import { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 // Re-exported from their new home (module/collection/upsert.js — the
 // hash-table probe/upsert/lookup/delete pipeline, pure-moved out of this
 // file) so module/core.js's `collectionLaneBytes` import and
@@ -263,8 +280,8 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
-    __dyn_get_t_hm: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux'],
+    __dyn_get_t_h: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_hm: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
@@ -280,11 +297,13 @@ export default (ctx) => {
       '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
     ],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: ['__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux'],
+    __dyn_set: () => ['__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
     __dyn_del: ['__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
     __str_arr_idx: ['__str_length', '__char_at'],
+    __typed_str_idx: ['__str_length', '__char_at'],
+    __typed_key_idx: ['__typed_str_idx', '__str_eq', '__to_num', '__to_str', '__ftoa', '__str_length', '__char_at', '__is_str_key'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
   })
 
@@ -388,21 +407,20 @@ export default (ctx) => {
   ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
     (local $f f64) (local $t i32) (local $h i32) (local $aux i32) (local $off i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-    ;; NaN-boxed strings carry the tag inside a NaN payload. Regular numbers
-    ;; (e.g. f64.convert_i32_s offsets used as __ihash keys) can alias mantissa
-    ;; bits onto the type slot — gate the str-hash dispatch on actual NaN.
-    ${mapHashStringArm(lean)}
-    ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
-    ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]): hash
-    ;; the PAYLOAD, not the pointer, so equal-value boxes land in the same
-    ;; bucket — a hash that disagreed with __same_value_zero's own content
-    ;; compare would silently break Set/Map lookup even after that fix.
-    ${mapHashBigintArm()}
-    (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))
-    (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $f) (local.get $f)))
-      (then (return (i32.const 3))))
-    (local.set $h (call $__hash (local.get $v)))
+    ;; Classify once: finite mantissas can alias tags, but only NaN boxes
+    ;; carry string or BigInt payloads. Ordinary numbers need no tag decode.
+    (if (f64.ne (local.get $f) (local.get $f))
+      (then
+        (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+        ${mapHashStringArm(lean)}
+        ${mapHashBigintArm()}
+        (if (i32.eqz (local.get $t)) (then (return (i32.const 3)))))
+      (else (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))))
+    ;; $__hash's mix, inline: a number key (an id, an index) is the other
+    ;; common key and pays no call.
+    (local.set $h (i32.wrap_i64 (i64.xor (local.get $v) (i64.shr_u (local.get $v) (i64.const 32)))))
+    (local.set $h (i32.mul (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 16))) (i32.const 0x85EBCA6B)))
+    (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 13))))
     (if (result i32) (i32.le_u (local.get $h) (i32.const 1))
       (then (i32.add (local.get $h) (i32.const 2)))
       (else (local.get $h))))`
@@ -499,7 +517,8 @@ export default (ctx) => {
   const collProbeDyn = (mapFn, setFn, h) => (collExpr, key, ...ignored) => {
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
-    const extra = h != null ? [['i32.const', h]] : []
+    if (typeof h === 'string') inc(h)
+    const extra = h == null ? [] : [typeof h === 'number' ? ['i32.const', h] : ['call', `$${h}`, ['local.get', `$${k}`]]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${o}`, asF64(emit(collExpr))],
       // storedValue-family, NOT raw emit: .set stores keys through the same
@@ -514,21 +533,17 @@ export default (ctx) => {
         ['then', ['call', `$${mapFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]],
         ['else', ['call', `$${setFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]]], 'i32'))], 'f64')
   }
-  // `.has` on an unproven receiver: a literal key folds its hash and uses the _h probes.
+  // A known key hash also applies when the receiver needs Map/Set dispatch.
   ctx.core.emit['.has'] = (collExpr, key, ...ignored) => {
-    const h = litKeyHash(key)
+    const h = probeKeyHash(key)
     return h != null
       ? collProbeDyn('__map_has_h', '__set_has_h', h)(collExpr, key, ...ignored)
       : collProbeDyn('__map_has', '__set_has')(collExpr, key, ...ignored)
   }
   ctx.core.emit['.delete'] = collProbeDyn('__map_delete', '__set_delete')
-  // Literal probes retain the precomputed hash; calls share argument effects
+  // Known-key probes retain the precomputed hash; calls share argument effects
   // and boxed-value conversion with every other intrinsic.
-  ctx.core.emit[`.${VAL.SET}:has`] = (collExpr, key, ...ignored) => {
-    const h = litKeyHash(key)
-    return h == null ? call('__set_has', 'II', 'i32')(collExpr, key, ...ignored)
-      : call('__set_has_h', 'IIi', 'i32')(collExpr, key, [null, h], ...ignored)
-  }
+  ctx.core.emit[`.${VAL.SET}:has`] = collectionProbe('__set_has', 'i32')
   ctx.core.emit[`.${VAL.SET}:delete`] = call('__set_delete', 'II', 'i32')
 
   // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
@@ -635,7 +650,7 @@ export default (ctx) => {
   // logical pointer.
   ctx.core.stdlib['__set_add_h'] = () => genUpsertStrictPrehashed('__set_add_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, false)
   ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
-  ctx.core.stdlib['__set_has_h'] = () => genLookupStrictPrehashed('__set_has_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, UNDEF_NAN, ctx.linkDemand.external, false)
+  ctx.core.stdlib['__set_has_h'] = () => genLookup('__set_has_h', SET_ENTRY, null, sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
   ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET)
 
   // === Map ===
@@ -659,20 +674,12 @@ export default (ctx) => {
     (!ignored.length && value != null && trySlotUpdate(map, key, value, true)) ||
     ctx.core.emit['.set'](map, key, value, ...ignored)
 
-  const emitMapGet = (mapExpr, key, ...ignored) => {
-    const h = litKeyHash(key)
-    return h == null ? call('__map_get', 'II', 'i64')(mapExpr, key, ...ignored)
-      : call('__map_get_h', 'IIi', 'i64')(mapExpr, key, [null, h], ...ignored)
-  }
+  const emitMapGet = collectionProbe('__map_get', 'i64')
 
   ctx.core.emit['.get'] = emitMapGet
   ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
 
-  ctx.core.emit[`.${VAL.MAP}:has`] = (collExpr, key, ...ignored) => {
-    const h = litKeyHash(key)
-    return h == null ? call('__map_has', 'II', 'i32')(collExpr, key, ...ignored)
-      : call('__map_has_h', 'IIi', 'i32')(collExpr, key, [null, h], ...ignored)
-  }
+  ctx.core.emit[`.${VAL.MAP}:has`] = collectionProbe('__map_has', 'i32')
   ctx.core.emit[`.${VAL.MAP}:delete`] = call('__map_delete', 'II', 'i32')
 
   // Map/Set iteration views: keys() / values() / entries() materialize a dense
@@ -1013,8 +1020,8 @@ export default (ctx) => {
   // mechanism; this is its MAP-shaped (hasVal) sibling.
   ctx.core.stdlib['__map_set_h'] = () => genUpsertStrictPrehashed('__map_set_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP)
   ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
-  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.linkDemand.external)
-  ctx.core.stdlib['__map_has_h'] = () => genLookupStrictPrehashed('__map_has_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP, UNDEF_NAN, ctx.linkDemand.external, false)
+  ctx.core.stdlib['__map_get_h'] = () => genLookup('__map_get_h', MAP_ENTRY, null, sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
+  ctx.core.stdlib['__map_has_h'] = () => genLookup('__map_has_h', MAP_ENTRY, null, sameValueZeroEqG, PTR.MAP, false, ctx.linkDemand.external)
   ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, ctx.linkDemand.external)
   ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP)
 
@@ -1138,8 +1145,12 @@ export default (ctx) => {
             (local.set $h (i32.load (local.get $cs)))
             (if (local.get $h) (then (return (local.get $h))))
             (local.set $h (i32.const 0x811c9dc5))))
+        ;; the length inline (the tag and aux are decoded already): a view's
+        ;; is in its aux, an own heap string's in its header
         (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
-          (then (local.set $len (call $__str_length (local.get $s)))))
+          (then (local.set $len (if (result i32) (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_BIT}))
+            (then (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_LEN_MASK})))
+            (else (i32.load (i32.sub (local.get $off) (i32.const 4))))))))
         ;; 4-byte unrolled FNV-1a: each iter loads i32, mixes 4 bytes (little-endian) sequentially.
         (local.set $lenA (i32.and (local.get $len) (i32.const -4)))
         (block $d4 (loop $l4
@@ -1241,12 +1252,12 @@ export default (ctx) => {
       (call $__alloc_hdr_n (i32.const 0) (local.get $want) (i32.const ${MAP_ENTRY + lane}))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH)
-  ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEqG, PTR.HASH)
+  ctx.core.stdlib['__hash_get_local_h'] = genLookup('__hash_get_local_h', MAP_ENTRY, null, strEqG, PTR.HASH)
   // The same lookup with a miss reported as TOMB_NAN (never a stored value):
   // a durable receiver's runtime write of `undefined` lives in the global table
   // beside the init-time sidecar, and the newer entry wins whatever it holds
   // (__dyn_get_t_h), so a present `undefined` must read apart from a miss.
-  ctx.core.stdlib['__hash_get_local_hm'] = genLookupStrictPrehashed('__hash_get_local_hm', MAP_ENTRY, strEqG, PTR.HASH, TOMB_NAN)
+  ctx.core.stdlib['__hash_get_local_hm'] = genLookup('__hash_get_local_hm', MAP_ENTRY, null, strEqG, PTR.HASH, true, false, TOMB_NAN)
   ctx.core.stdlib['__hash_set_local_h'] = () => genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEqG, PTR.HASH)
   // Thunked (not called eagerly) so genUpsertGrow's durableFwdLogIR reads
   // heapResetWat()'s FINAL declaration state — see collection.js's heapResetWat
@@ -1448,7 +1459,37 @@ export default (ctx) => {
   // __char_at returns the true byte (0 only past the REAL length, which
   // $__str_length bounds first), so embedded-NUL keys can't false-match.
   ctx.core.stdlib['__str_arr_idx'] = stringIndexWat('__str_arr_idx', 2147483646)
+  ctx.core.stdlib['__typed_str_idx'] = stringIndexWat('__typed_str_idx', 2147483647)
 
+  // A typed-array key is an element index, an invalid canonical numeric key
+  // (-1), or an ordinary property (-2). The latter retains a sidecar value.
+  ctx.core.stdlib['__typed_key_idx'] = `(func $__typed_key_idx (param $key i64) (result i32)
+    (local $i i32) (local $n f64)
+    (local.set $n (f64.reinterpret_i64 (local.get $key)))
+    (if (f64.eq (local.get $n) (local.get $n))
+      (then
+        (if (i32.or (f64.lt (local.get $n) (f64.const 0))
+              (f64.ne (local.get $n) (f64.trunc (local.get $n)))) (then (return (i32.const -1))))
+        (return (i32.trunc_sat_f64_s (local.get $n)))))
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))
+    (if (i32.eqz (call $__str_length (local.get $key))) (then (return (i32.const -2))))
+    (local.set $i (call $__char_at (local.get $key) (i32.const 0)))
+    (if (i32.and (i32.ge_u (i32.sub (local.get $i) (i32.const 48)) (i32.const 10))
+          (i32.and (i32.ne (local.get $i) (i32.const 45))
+            (i32.and (i32.ne (local.get $i) (i32.const 73)) (i32.ne (local.get $i) (i32.const 78)))))
+      (then (return (i32.const -2))))
+    (local.set $i (call $__typed_str_idx (local.get $key)))
+    (if (i32.ge_s (local.get $i) (i32.const 0)) (then (return (local.get $i))))
+    (if (i32.eqz (call $__str_eq (local.get $key)
+          (i64.reinterpret_f64 (call $__ftoa (call $__to_num (local.get $key)) (i32.const 0) (i32.const 0)))))
+      (then
+        (if (i32.and (i32.eq (call $__str_length (local.get $key)) (i32.const 2))
+              (i32.and (i32.eq (call $__char_at (local.get $key) (i32.const 0)) (i32.const 45))
+                (i32.eq (call $__char_at (local.get $key) (i32.const 1)) (i32.const 48))))
+          (then (return (i32.const -1))))
+        (return (i32.const -2))))
+    (i32.const -1))`
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj i64) (param $key i64) (result i64)
     (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
 
@@ -1458,7 +1499,15 @@ export default (ctx) => {
   // ToPropertyKey: a non-string key (number/bool/null/undefined) addresses the
   // same slot as its string form — o[97] ≡ o['97'] (JS spec). Writes stringify
   // (emit-assign's staticPropertyKey fold, __dyn_set below), so reads must too.
-  ctx.core.stdlib['__dyn_get_t'] = `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
+  ctx.core.stdlib['__dyn_get_t'] = () => `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
+    ${ctx.linkDemand.typedProperties ? `(if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+          (i32.and (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
+            (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))))
+      (then
+        (if (f64.ne (f64.reinterpret_i64 (local.get $key)) (f64.trunc (f64.reinterpret_i64 (local.get $key))))
+          (then (return (i64.const ${UNDEF_NAN}))))
+        (return (i64.reinterpret_f64 (call $${representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'}
+          (local.get $obj) (i32.trunc_sat_f64_s (f64.reinterpret_i64 (local.get $key))))))))` : ''}
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_str (local.get $key)))))
     (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $type) (call $__str_hash (local.get $key))))`
@@ -1474,6 +1523,10 @@ export default (ctx) => {
   const dynGetBody = (name, missNan, sidecarGet) => {
     const presence = missNan !== UNDEF_NAN
     const miss = `(i64.const ${missNan})`
+    const fallback = ctx.linkDemand.typedProperties ? `(if (result i64)
+      (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+      (then (call $__typed_prop_get (local.get $obj) (local.get $key) (local.get $h) ${miss}))
+      (else ${miss}))` : miss
     return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
@@ -1509,6 +1562,17 @@ export default (ctx) => {
       (then (return ${miss})))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${buildObjectSchemaArm(presence)}
+    ${ctx.linkDemand.typedProperties ? `(if (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+      (then
+        ;; Reads only distinguish valid indices from property lookups. Invalid
+        ;; canonical numeric keys cannot have sidecar entries: stores reject them.
+        ;; Value readers own their bounds check; presence does not read an element.
+        (local.set $idx (call $__typed_str_idx (local.get $key)))
+        (if (i32.ge_s (local.get $idx) (i32.const 0))
+          (then
+            ${presence ? `(if (i32.ge_u (local.get $idx) (call $__len (local.get $obj))) (then (return ${miss})))` : ''}
+            (return ${presence ? '(i64.const 0)' : `(i64.reinterpret_f64 (call $${representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'} (local.get $obj) (local.get $idx)))`})))))` : ''}
+
     ;; Nullish atoms have no receiver; reject before header or sidecar reads.
     ${requireReceiverWat('(local.get $obj)')}
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
@@ -1604,7 +1668,10 @@ export default (ctx) => {
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
-              (then (return (call $${sidecarGet} (local.get $props) (local.get $key) (local.get $h))))))
+              (then ${ctx.linkDemand.typedProperties ? `
+                (local.set $val (call $__hash_get_local_hm (local.get $props) (local.get $key) (local.get $h)))
+                (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val)))))`
+                : `(return (call $${sidecarGet} (local.get $props) (local.get $key) (local.get $h))))`}))
           (else (local.set $tries (i32.const -1))))
         (if (i32.eq (local.get $tries) (i32.const -1))
           (then
@@ -1617,7 +1684,7 @@ export default (ctx) => {
                   (then
                     (local.set $val (call $__hash_get_local_hm (local.get $props) (local.get $key) (local.get $h)))
                     (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val))))))))))
-        (return ${miss})))
+        (return ${fallback})))
     (block $dynDone
       (block $haveProps
         ;; Ephemeral-only from here down (durable receivers already
@@ -1714,7 +1781,7 @@ export default (ctx) => {
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
         (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
         (br $hprobe))))
-    ${miss})`
+    ${fallback})`
   }
   ctx.core.stdlib['__dyn_get_t_h'] = () => dynGetBody('__dyn_get_t_h', UNDEF_NAN, '__hash_get_local_h')
   ctx.core.stdlib['__dyn_get_t_hm'] = () => dynGetBody('__dyn_get_t_hm', TOMB_NAN, '__hash_get_local_hm')
@@ -1740,19 +1807,19 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_get_expr'] = `(func $__dyn_get_expr (param $obj i64) (param $key i64) (result i64)
     (call $__dyn_get_expr_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
 
-  ctx.core.stdlib['__dyn_get_expr_t'] = `(func $__dyn_get_expr_t (param $obj i64) (param $key i64) (param $t i32) (result i64)
-    (local $f f64) (local $idx i32) (local $base i32)
-    ;; Real-number receiver → no props; its garbage tag could match HASH and hit the
-    ;; __hash_get_local arm below (heap read at a bogus offset → OOB).
+  // Receiver dispatch is shared by expression/unknown reads, with optional
+  // prehashing and host fallback. Normalize in the selected path: doing it
+  // before dispatch hides raw typed indices and repeats the string test.
+  const dynGetExpr = (name, prehashed, external = false) => {
+    const normalize = prehashed ? '' : `(if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_str (local.get $key)))))`
+    const h = prehashed ? '(local.get $h)' : '(call $__str_hash (local.get $key))'
+    return `(func $${name} (param $obj i64) (param $key i64) (param $t i32) ${prehashed ? '(param $h i32)' : ''} (result i64)
+    ${prehashed ? '' : '(local $f f64) (local $idx i32) (local $base i32)'} ${external ? '(local $val i64)' : ''}
+    ;; A number's payload can alias a pointer tag; reject before memory reads.
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
       (then (return (i64.const ${UNDEF_NAN}))))
-    ;; ARRAY + raw integer key → ELEMENT read (JS array-index semantics), BEFORE
-    ;; ToPropertyKey. This is the generic \`a[i]\` fallback: the former
-    ;; stringify+str_hash+durable-double-probe chain taxed every numeric read
-    ;; on an unproven array (jessie's charcode tables: 3.7M reads/run). An
-    ;; in-range integer key can only live in the elements (__dyn_set routes it
-    ;; there), so OOB is definitively undefined. Fractional/negative/huge keys
-    ;; fall through to the string path (they are sidecar keys, '1.5'/'-1').
+    ${prehashed ? '' : `;; Nonnegative integer ARRAY keys address elements, before ToPropertyKey.
     (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
       (then
         (local.set $f (f64.reinterpret_i64 (local.get $key)))
@@ -1765,31 +1832,29 @@ export default (ctx) => {
                 (local.set $base (call $__ptr_offset (local.get $obj)))
                 (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $base) (i32.const 8))))
                   (then (return (i64.load (i32.add (local.get $base) (i32.shl (local.get $idx) (i32.const 3)))))))
-                (return (i64.const ${UNDEF_NAN}))))))))
-    ;; ToPropertyKey — see __dyn_get_t; normalized here so the HASH arm reads string-keyed.
-    (if (i32.eqz (call $__is_str_key (local.get $key)))
-      (then (local.set $key (call $__to_str (local.get $key)))))
-    ;; HASH receivers FIRST: hashes never carry dyn_props (those attach to
-    ;; OBJECT/ARRAY only — the invariant __dyn_get_any already exploits), so
-    ;; the former dyn_get_t-then-fallback order paid the full str_hash +
-    ;; durable double-probe chain per read just to miss.
+                (return (i64.const ${UNDEF_NAN}))))))))`}
+    ;; Dictionaries have no sidecar; their lookup owns the key's hash.
     (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-      (then (return (call $__hash_get_local (local.get $obj) (local.get $key)))))
-    (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))`
+      (then ${normalize}
+        (return (call $${prehashed ? '__hash_get_local_h' : '__hash_get_local'}
+          (local.get $obj) (local.get $key) ${prehashed ? h : ''}))))
+    ${external ? `;; Capture ToPropertyKey once for both own-property and host lookups.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
+      (then ${normalize}
+        (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) ${h}))
+        (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (local.get $val))))
+        (return (call $__ext_prop (local.get $obj) (local.get $key)))))` : ''}
+    (call $${prehashed ? '__dyn_get_t_h' : '__dyn_get_t'}
+      (local.get $obj) (local.get $key) (local.get $t) ${prehashed ? h : ''}))`
+  }
+  ctx.core.stdlib['__dyn_get_expr_t'] = () => dynGetExpr('__dyn_get_expr_t', false)
 
   // Prehashed variant of __dyn_get_expr_t for constant string keys: the FNV hash
   // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
   ctx.core.stdlib['__dyn_get_expr_h'] = `(func $__dyn_get_expr_h (param $obj i64) (param $key i64) (param $h i32) (result i64)
     (call $__dyn_get_expr_t_h (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (local.get $h)))`
 
-  ctx.core.stdlib['__dyn_get_expr_t_h'] = () => `(func $__dyn_get_expr_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
-    ;; Real-number receiver -- no props; guard the HASH arm OOB, see __dyn_get_expr_t.
-    (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then (return (i64.const ${UNDEF_NAN}))))
-    ;; HASH receivers first — same wasted-chain argument as __dyn_get_expr_t.
-    (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-      (then (return (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))))
-    (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))`
+  ctx.core.stdlib['__dyn_get_expr_t_h'] = () => dynGetExpr('__dyn_get_expr_t_h', true)
 
   // Like __dyn_get_expr but also resolves EXTERNAL host objects via __ext_prop.
   // Used at call sites where receiver type is statically unknown.
@@ -1803,51 +1868,7 @@ export default (ctx) => {
     (call $__dyn_get_any_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
   }
 
-  ctx.core.stdlib['__dyn_get_any_t'] = () => {
-    const extArm = ctx.linkDemand.external
-      ? `(if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
-            (then (call $__ext_prop (local.get $obj) (local.get $key)))
-            (else (i64.const ${UNDEF_NAN})))`
-      : `(i64.const ${UNDEF_NAN})`
-    return `(func $__dyn_get_any_t (param $obj i64) (param $key i64) (param $t i32) (result i64)
-    (local $val i64) (local $f f64) (local $idx i32) (local $base i32)
-    ;; Real-number receiver → no props, and its garbage tag could match ARRAY
-    ;; below (bogus base → OOB). Same guard the expression tail repeats.
-    (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then (return (i64.const ${UNDEF_NAN}))))
-    ;; ARRAY + raw integer key → element read, before ToPropertyKey — the same
-    ;; generic array-index arm as __dyn_get_expr_t (see there for the analysis).
-    (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
-      (then
-        (local.set $f (f64.reinterpret_i64 (local.get $key)))
-        (if (f64.eq (local.get $f) (local.get $f))
-          (then
-            (local.set $idx (i32.trunc_sat_f64_s (local.get $f)))
-            (if (i32.and (f64.eq (f64.convert_i32_s (local.get $idx)) (local.get $f))
-                         (i32.ge_s (local.get $idx) (i32.const 0)))
-              (then
-                (local.set $base (call $__ptr_offset (local.get $obj)))
-                (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $base) (i32.const 8))))
-                  (then (return (i64.load (i32.add (local.get $base) (i32.shl (local.get $idx) (i32.const 3)))))))
-                (return (i64.const ${UNDEF_NAN}))))))))
-    ;; ToPropertyKey — see __dyn_get_t; normalized here so the HASH arm reads string-keyed.
-    (if (i32.eqz (call $__is_str_key (local.get $key)))
-      (then (local.set $key (call $__to_str (local.get $key)))))
-    ;; A real number receiver (f===f — NaN-boxed pointers are NaN) has no dynamic
-    ;; props: \`(5).foo\` is undefined. Without this guard the bits are reinterpreted as
-    ;; a pointer and \`__dyn_get_t\` reads heap at a bogus offset → OOB for large values.
-    (if (result i64) (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then (i64.const ${UNDEF_NAN}))
-      (else
-        (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-          (then (call $__hash_get_local (local.get $obj) (local.get $key)))
-          (else
-            (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
-            (if (result i64)
-              (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
-              (then (local.get $val))
-              (else ${extArm})))))))`
-  }
+  ctx.core.stdlib['__dyn_get_any_t'] = () => dynGetExpr('__dyn_get_any_t', false, ctx.linkDemand.external)
 
   ctx.core.stdlib['__dyn_get_any_h'] = `(func $__dyn_get_any_h (param $obj i64) (param $key i64) (param $h i32) (result i64)
     (call $__dyn_get_any_t_h (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (local.get $h)))`
@@ -1856,27 +1877,7 @@ export default (ctx) => {
   // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
   // Hot for the layered-parser pattern — `parse.step`/`parse.space`/… reads a
   // function-object property with a literal key on every parser step.
-  ctx.core.stdlib['__dyn_get_any_t_h'] = () => {
-    const extArm = ctx.linkDemand.external
-      ? `(if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
-            (then (call $__ext_prop (local.get $obj) (local.get $key)))
-            (else (i64.const ${UNDEF_NAN})))`
-      : `(i64.const ${UNDEF_NAN})`
-    return `(func $__dyn_get_any_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
-    (local $val i64)
-    ;; Real-number receiver -- no dynamic props, see __dyn_get_any_t; guard the OOB.
-    (if (result i64) (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
-      (then (i64.const ${UNDEF_NAN}))
-      (else
-        (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-          (then (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))
-          (else
-            (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))
-            (if (result i64)
-              (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
-              (then (local.get $val))
-              (else ${extArm})))))))`
-  }
+  ctx.core.stdlib['__dyn_get_any_t_h'] = () => dynGetExpr('__dyn_get_any_t_h', true, ctx.linkDemand.external)
 
   // Hot for `node.loc = pos` patterns (e.g. watr's parser tags every nested level).
   // Defer the root insert to the end and gate it on props-ptr change: most calls hit
@@ -1930,7 +1931,15 @@ export default (ctx) => {
                       (then
                         (drop (call $__arr_set_idx_ptr (local.get $obj) (local.get $kidx) (f64.reinterpret_i64 (local.get $val))))
                         (return (local.get $val))))))))))))
-    ;; ToPropertyKey — see __dyn_get_t. Stored keys are always strings.
+    ${ctx.linkDemand.typedProperties ? `(if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+          (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj))))
+      (then
+        (local.set $kidx (call $__typed_key_idx (local.get $key)))
+        (if (i32.ne (local.get $kidx) (i32.const -2))
+          (then
+            (drop (call $__typed_set_idx_tagged (local.get $obj) (local.get $kidx) (f64.reinterpret_i64 (local.get $val)) (i32.const -1)))
+            (return (local.get $val))))))` : ''}
+    ;; ToPropertyKey — typed numeric keys have already taken their element path.
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_str (local.get $key)))))
     ;; CLOSURE with no env (offset 0): key __dyn_props on the function table index — see __dyn_get_t.
@@ -2252,6 +2261,10 @@ export default (ctx) => {
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.core.emit['in'] = (key, obj) => {
     const objType = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+    if (objType == null || objType === VAL.TYPED) {
+      ctx.module.include('typedarray')
+      setLinkDemand('typedProperties')
+    }
     // an accessor lives in its `x__get` / `x__set` slot (jzify/classes.js):
     // `'x' in o` holds through either; a computed key that happens to name an
     // accessor is a documented miss
@@ -2376,13 +2389,13 @@ export default (ctx) => {
     // entry (module/array.js's read fast paths, __dyn_get_t/_h) — a non-string key
     // (`1 in o` where `o['1']` was set) must stringify before the dyn-props probe.
     // The isStringKey/hasDynProps arm above only fires when the key is ALREADY a
-    // string; ARRAY/TYPED are excluded here (their numeric-key membership is fully
-    // decided by the in-range block above — element writes never leave a NUMERIC
-    // sidecar entry, only non-canonical string keys do) and HASH is excluded (its
-    // own arm below already stringifies). Sibling of the array.js dyn-prop read fix.
+    // string. TYPED also admits named boolean/nullish keys; its shared lookup
+    // distinguishes them from element indices. ARRAY uses the range block above
+    // and HASH's own arm below normalizes its keys.
     const isObjectLike = ['i32.or',
-      ['i32.eq', typeVal, ['i32.const', PTR.OBJECT]],
-      ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]
+      ['i32.eq', typeVal, ['i32.const', PTR.TYPED]],
+      ['i32.or', ['i32.eq', typeVal, ['i32.const', PTR.OBJECT]],
+        ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]]
 
     inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_str', '__dyn_has')
     if (ctx.linkDemand.external) inc('__ext_has')
@@ -2438,7 +2451,7 @@ export default (ctx) => {
   // Set/Map → ARRAY, everything else → x's own type, so the downstream `arr[i]`
   // / `.length` dispatch stays statically typed.
   ctx.core.emit['__iter_arr'] = (src) => {
-    const vt = valTypeOf(src)
+    const vt = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === true ? null : valTypeOf(src)
     if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.BUFFER)
       return asF64(emit(src))
     const stringPoints = ir => { ctx.module.include('string'); inc('__str_points'); return ['call', '$__str_points', ['i64.reinterpret_f64', ir]] }
@@ -2452,7 +2465,7 @@ export default (ctx) => {
     // iterable") — throw, per spec. The silent zero-iteration this replaces
     // masked two real self-compile miscompiles (a folded undefined-guard and a
     // never-armed matchAll swallowed their wrong undefineds into empty loops)
-    // before they were caught. Known-vt receivers skip the check entirely.
+    // before they were caught. Only a present, known-kind source skips it.
     ctx.runtime.throws = true
     inc('__ptr_type', '__is_nullish')
     const ptrType = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
@@ -2477,7 +2490,7 @@ export default (ctx) => {
   // skip ran fine natively (host JS semantics) but threw the __iter_arr
   // TypeError when the compiler itself runs in-kernel — the census-row class.
   ctx.core.emit['__iter_arr_ctor'] = (src) => {
-    const vt = valTypeOf(src)
+    const vt = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === true ? null : valTypeOf(src)
     if (vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.SET || vt === VAL.MAP)
       return emit(['()', '__iter_arr', src])
     inc('__is_nullish')
