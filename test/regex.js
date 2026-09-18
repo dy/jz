@@ -772,3 +772,18 @@ test('regex: RegExp.escape', () => {
   is(j(`export let f = () => RegExp.escape("_zZ9")`), '_zZ9')          // non-first alnum passthrough
   is(j(`export let f = () => RegExp.escape("").length`), 0)
 })
+
+// The `m` flag (22.2.2.4 Assertion): `^` matches at the input's start and
+// after a LineTerminator, `$` at the end and before one (LF, CR, LS, PS);
+// without the flag both anchor the input's ends. Reference values are V8's
+// for the same expressions (differential below).
+test('regex: the m flag makes ^ and $ line anchors', () => {
+  if (onKernel()) return
+  const src = `export function main() {
+    return [/^b/m.test('a\\nb'), 'b\\nb'.match(/^b/gm).length, /b$/m.test('b\\na'), /^b/.test('a\\nb'), /b$/.test('b\\na'),
+      'x\\ny\\nz'.replace(/^/gm, '-'), /^$/m.test('a\\n\\nb'), /^a$/m.test('a'), 'ab\\r\\ncd'.match(/^c/m) !== null, 'a\\u2028b'.match(/^b/m) !== null]
+  }`
+  const want = [/^b/m.test('a\nb'), 'b\nb'.match(/^b/gm).length, /b$/m.test('b\na'), /^b/.test('a\nb'), /b$/.test('b\na'),
+    'x\ny\nz'.replace(/^/gm, '-'), /^$/m.test('a\n\nb'), /^a$/m.test('a'), 'ab\r\ncd'.match(/^c/m) !== null, 'a\u2028b'.match(/^b/m) !== null]
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(), want, `O${optimize}`)
+})

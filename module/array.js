@@ -9,7 +9,7 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef, isNullish, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef, isNullish, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
@@ -269,11 +269,27 @@ export default (ctx) => {
         ['i64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${k}`], ['i32.const', 3]]], ['i64.const', UNDEF_NAN]],
         ['local.set', `$${k}`, ['i32.add', ['local.get', `$${k}`], ['i32.const', 1]]],
         ['br', `$hloop${id}`]]]]
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${n}`, len == null ? ['i32.const', 0] : asI32(emit(len))],
+    // `new Array(len)` (23.1.1.1): a Number argument is the length, and one
+    // that is not an integer in [0, 2^32) throws a RangeError; a single
+    // argument of any other kind is the array's one element.
+    const kind = len == null ? VAL.NUMBER : valTypeOf(len)
+    if (len != null && kind != null && kind !== VAL.NUMBER) return emit(['[', len])
+    const v = temp('alv'), vGet = ['local.get', `$${v}`]
+    const lengthOf = ['block', ['result', 'i32'],
+      ['local.set', `$${n}`, ['i32.trunc_sat_f64_u', vGet]],
+      ['if', ['i32.or', ['f64.ne', vGet, ['f64.convert_i32_u', nIR]], ['f64.lt', vGet, ['f64.const', 0]]],
+        ['then', ['drop', throwErrorIR('RangeError', 'Invalid array length')]]],
+      nIR]
+    const sized = ['block', ['result', 'f64'],
+      ['local.set', `$${n}`, len == null ? ['i32.const', 0] : lengthOf],
       out.init,
       ...holes,
-      out.ptr], 'f64')
+      out.ptr]
+    if (len == null) return typed(sized, 'f64')
+    // The kind settles at run time: a Number sizes (the number NaN included:
+    // it throws), anything else is one element.
+    const single = kind == null ? ['if', ['result', 'f64'], ['i32.or', ['f64.eq', vGet, vGet], numberNanIR(vGet)], ['then', sized], ['else', asF64(emit(['[', ['__raw_local', v]]))]] : sized
+    return typed(['block', ['result', 'f64'], ['local.set', `$${v}`, asF64(emit(len))], single], 'f64')
   }
 
   // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
@@ -1771,8 +1787,10 @@ export default (ctx) => {
             ['then', ['local.set', `$${s}`, ['i32.const', 0]]]]]],
       ['if', ['i32.gt_s', ['local.get', `$${s}`], ['local.get', `$${len}`]],
         ['then', ['local.set', `$${s}`, ['local.get', `$${len}`]]]],
-      // compute count
-      deleteCount === undefined
+      // compute count: no start deletes nothing, a start without a count
+      // deletes to the end (23.1.3.31 steps 7-8)
+      start === undefined ? ['local.set', `$${cnt}`, ['i32.const', 0]]
+        : deleteCount === undefined
         ? ['local.set', `$${cnt}`, ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]]
         : ['block',
             // asI32Sat (ditto): a huge/Infinity deleteCount must saturate to INT32_MAX, not

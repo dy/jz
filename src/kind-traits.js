@@ -242,7 +242,7 @@ export function methodValType(method, obj, objType, ctx) {
   // change-by-copy trio return a fresh value of the RECEIVER's kind: a typed
   // array from a typed receiver, a plain array from a plain-array receiver.
   if (method === 'subarray') return objType === VAL.TYPED ? VAL.TYPED : null
-  if (method === 'toReversed' || method === 'toSorted' || method === 'with')
+  if (method === 'toReversed' || method === 'toSorted' || method === 'toSpliced' || method === 'with')
     return objType === VAL.TYPED ? VAL.TYPED : objType === VAL.ARRAY ? VAL.ARRAY : null
   // copyWithin mutates and returns the receiver.
   if (method === 'copyWithin') return objType === VAL.TYPED || objType === VAL.ARRAY ? objType : null

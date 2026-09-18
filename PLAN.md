@@ -641,6 +641,32 @@ Those tests do not establish callback deadlines.
 - Self-compile gate 68/68 (`test/self-compile.js`); `bench:size` geomean
   jz/AssemblyScript 0.794× after the kernel-speed rules (the size tier keeps
   the `__ptr_offset` call; the speed tiers inline the hop).
+- Gates on the tree with the defects below closed: core 4501/4502, opt0
+  4306/4307, opt3 4306/4307, wasi 4359/4360 (one skip each), self-compile
+  68/68, `bench:size` geomean 0.794× (byte-identical output), warm
+  self-compile 1.006× (cap 1.03×), fresh 0.836× (cap 0.99×).
+- Defects closed after the kernel-speed rules (regression tests in
+  `test/async.js`, `regex.js`, `errors.js`, `classes.js`, `array-methods.js`,
+  `objects.js`): the parser spelled a method shorthand as an arrow, so a
+  one-statement body that was not a return or a control statement read as
+  the arrow (`{ async m() { return 2 } }` resolved 2.78e-307, a NaN-box
+  leak; `{ m() { this.x = 5 } }` failed "this not supported"; `{ m() { f() } }`
+  returned f's value); methods now parse as `function` nodes (subscript
+  commit fecc43f, `feature/accessor.js`; jz's `package.json` keeps
+  its codeload pin until that branch is pushed, `node_modules/subscript`
+  carries the change), strict mode rejects them as it rejects `function`,
+  and jzify transforms parameter defaults with the function (a method
+  shorthand in a default value reached the emitter raw). The regex `m`
+  flag makes `^`/`$` line anchors.
+  Strict mode rejected its own array-pattern lowering ("== is prohibited"
+  from the `jz:` iterator modules). `class C { static get v() { return 7 } }`
+  on one line failed "Unclosed {" and the multi-line form parsed as a static
+  field `get` plus a method `v`; `{ async *[Symbol.asyncIterator]() {} }`
+  hit an early error; class async generator members lower now, instance and
+  static. `toSpliced` is implemented (a copy, then the splice strategy);
+  `new Array(-1)` and `new Array(1.5)` throw RangeError where they trapped;
+  `splice()` with no arguments deletes nothing; the strict-mode message for
+  an async shape names every lowered form.
 - Defects fixed with the kernel-speed rules: a lifted optional chain
   returned a BOOL continuation raw (`s?.has(k) === true` read false,
   `typeof o?.ok()` read "number"; the kernel-compiled compiler dropped the

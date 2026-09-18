@@ -48,7 +48,7 @@ const COUNT_PROPS = new Map([['length', [K.ARRAY, K.TYPED, K.STRING]], ['size', 
 export const isCount = (prop, k) => COUNT_PROPS.get(prop)?.includes(tagOf(k)) === true &&
   (prop !== 'length' || tagOf(k) !== K.TYPED || paramOf(k) !== UNKNOWN)
 // Other literal names on an array are dictionary entries, not prototype members.
-export const ARRAY_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'indexOf', 'lastIndexOf', 'includes', 'join', 'concat', 'sort', 'reverse', 'find', 'findIndex', 'findLast', 'findLastIndex', 'some', 'every', 'fill', 'flat', 'flatMap', 'at', 'entries', 'keys', 'values', 'copyWithin', 'toString', 'toSorted', 'toReversed', 'with'])
+export const ARRAY_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'indexOf', 'lastIndexOf', 'includes', 'join', 'concat', 'sort', 'reverse', 'find', 'findIndex', 'findLast', 'findLastIndex', 'some', 'every', 'fill', 'flat', 'flatMap', 'at', 'entries', 'keys', 'values', 'copyWithin', 'toString', 'toSorted', 'toReversed', 'toSpliced', 'with'])
 export const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '++', '--'])
 /** Prepare's postfix recovery (handlers.js `++`/`--`): `x++` is `(++x) - 1`,
  *  `o.p++` is `(o.p = +1 o.p) - 1`, and the decrements add. The literal is the

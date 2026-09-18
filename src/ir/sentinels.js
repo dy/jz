@@ -88,6 +88,24 @@ export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
  *  is `BOOL_ATOM_BASE | bit`, so boxing is one `i32.or` then an ATOM mkptr; when
  *  the input folds to a constant 0/1 we emit the `f64.const nan:` literal directly.
  *  Used only at observation/escape sites — never in branch or arithmetic position. */
+// Sign+exponent mask isolating "negative NaN or -Infinity"; read only after
+// an f64.eq(v,v) self-check has failed (so -Infinity is excluded, leaving
+// negative NaN). Pointers and atoms are emitted sign-clear (nanPrefixMaskHex,
+// layout.js), so a sign-bit-set NaN can only be a genuine float NaN.
+export const NEG_NAN_MASK = 0xFFF0000000000000n
+
+/** The NaN payload `get` (an f64 IR that failed `f64.eq(v, v)`) is the number
+ *  NaN, not a box: the canonical box prefix (tag=ATOM aux=0, the one payload
+ *  that legitimately means NaN) or any sign-bit-set NaN. Mirrors $__typeof's
+ *  dynamic dispatch (module/core.js) bit-for-bit; `typeof x === 'number'` and
+ *  `new Array(x)` test through it. */
+export function numberNanIR(get) {
+  const bits = ['i64.reinterpret_f64', get]
+  return ['i32.or',
+    ['i64.eq', bits, ['i64.const', i64Hex(LAYOUT.NAN_PREFIX_BITS)]],
+    ['i64.eq', ['i64.and', bits, ['i64.const', i64Hex(NEG_NAN_MASK)]], ['i64.const', i64Hex(NEG_NAN_MASK)]]]
+}
+
 export function boolBoxIR(e) {
   const i = truthyIR(e)
   if (Array.isArray(i) && i[0] === 'i32.const') return typed((i[1] ? TRUE_IR : FALSE_IR).slice(), 'f64')

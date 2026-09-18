@@ -821,6 +821,31 @@ awaits tests at the top of `while (true)`. Class lowering (`jzify/classes.js`)
 takes `static async` methods on both of its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
 call binds the method as a value first (`src/compile/emit/class-dispatch.js`).
+
+A method shorthand parses as a function: `m(p) { body }` is
+`[':', 'm', ['function', null, p, body]]`, `*g()` the same with `function*`,
+`async` wrapping either, `static get v()` as `['static', ['get', …]]`
+(subscript `feature/accessor.js`, `feature/class.js`). The shape is the
+semantics: a function body is statement-shaped (`{ m() { f() } }` returns
+undefined) and its `this` is the receiver, where an arrow-valued property
+`m: () => f()` returns f's value and keeps its lexical `this`. `memberFn` in
+`classes.js` is the one recognizer of a member's function value (a
+`m: function () {}` property is a method the same way); every lowering path
+(class, struct, statics, the object-literal `this` wrapper, the prototype
+fold) builds its arrow from it through `methodValue`. Nothing downstream may
+read a member's shape from its body: the parser used to spell methods as
+arrows, and a one-statement body that was not a `return` or a control
+statement was taken for the arrow (`{ m() { this.x = 5 } }` failed, an
+`async m() { return 2 }` resolved a NaN-box leak). Strict mode rejects a
+method shorthand as it rejects `function` (the arrow property is the
+canonical spelling). Parameter defaults are transformed with the function
+(`transformParams`): a lowered form in a default value is lowered there too.
+
+Strict mode's spelling rules (`==`, `!=`, `void` are prohibited) apply to
+the program, never to the `jz:` runtime modules the program's lowerings pull
+in (`ctx.module.inStd`, `src/prepare/handlers.js`): an array pattern in
+strict mode lowers through the iterator modules, whose source spells
+`== null`.
 A class function returning BOOL yields the raw 0/1 only to a reader whose own
 `valTypeOf` proves the call BOOL (a receiver of one named class); a dispatcher
 returns into a tagged f64 slot, so it boxes its class arms' BOOL results like

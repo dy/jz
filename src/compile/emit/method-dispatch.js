@@ -212,6 +212,21 @@ function trySpliceInsert(callee, obj, method, parsed) {
   }
 }
 
+// 3b. toSpliced(start, deleteCount, ...items) (23.1.3.35): a copy of the
+// receiver, spliced in place through the splice strategy above (its
+// positions, inserts and spreads take one path), and returned.
+function tryToSpliced(callee, obj, method, parsed) {
+  if (method !== 'toSpliced' || !ctx.core.emit['.splice']) return
+  inc('__arr_from')
+  const c = temp('tsp'), copy = ['__raw_local', c]
+  ctx.func.localValTypesOverlay.set(c, VAL.ARRAY)
+  const spliced = trySpliceInsert(callee, copy, 'splice', parsed) ?? ctx.core.emit['.splice'](copy, ...parsed.normal)
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${c}`, ['call', '$__arr_from', asI64(emit(obj))]],
+    ['drop', asF64(spliced)],
+    ['local.get', `$${c}`]], 'f64')
+}
+
 // 4. Function property call: fn.prop(args) → direct call to fn$prop. Skipped when
 // the property was reassigned (wrapper composition) — then it is a mutable slot
 // and must be read dynamically before the call.
@@ -229,7 +244,7 @@ function tryFnPropCall(callee, obj, method, parsed) {
   }
 }
 
-const LEADING_STRATEGIES = [tryFlatObjectMethod, tryConcatBufCharCodeAt, tryCharCodeAtFast, trySpliceInsert, tryFnPropCall]
+const LEADING_STRATEGIES = [tryFlatObjectMethod, tryConcatBufCharCodeAt, tryCharCodeAtFast, trySpliceInsert, tryToSpliced, tryFnPropCall]
 
 // Strategies 5–12 share the receiver's resolved value type and the
 // `callMethod` shim — packaged once into a dispatch-context record `c` =

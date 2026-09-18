@@ -1372,7 +1372,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         return out
       }
       if (name === 'with' && node) { const out = arrayOf(node, K.NONE); raiseElem(out, elemOf(recv)); raiseElem(out, argumentAt(base, n, 1)); return out }
-      if ((name === 'toSorted' || name === 'toReversed' || name === 'flat') && node) {
+      if ((name === 'toSorted' || name === 'toReversed' || name === 'toSpliced' || name === 'flat') && node) {
         escapeArgs(base, n)
         const out = arrayOf(node, K.NONE), e = elemOf(recv)
         raiseElem(out, name === 'flat' && tagOf(e) === K.ARRAY ? elemOf(e) : e)

@@ -83,7 +83,7 @@ const S = { NEXT: '__s', SENT: '__sent', ERR: '__err', THR: '__thr', THRSET: '__
 // receiver) or tests `instanceof Iterator`; generator objects then mint
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
-export function createGeneratorLowering({ transform, err, generatorNames, genTemp, iterProto, lowerArguments }) {
+export function createGeneratorLowering({ transform, transformParams, err, generatorNames, genTemp, iterProto, lowerArguments }) {
   // A destructuring declaration in the body binds through a temp: the machine
   // hoists plain names only, so `let { a, b: c, d = 1 } = e` becomes the
   // declarators `t = e, a = t.a, c = t.b, d = t.d ?? 1` (arrays by index, a
@@ -588,7 +588,7 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     // Helper-bearing programs mint through __it_mk (decorated iterator —
     // map/filter/… as value-position methods); others keep the bare record.
     if (iterProto?.helpers) {
-      return ['=>', params, ['{}', [';', ...paramInit, ...decls,
+      return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls,
         ['return', ['()', '__it_mk', [',', nextFn, returnFn, throwFn]]]]]]
     }
     const genObj = ['{}', [',',
@@ -597,7 +597,7 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       [':', 'throw', throwFn],
     ]]
 
-    return ['=>', params, ['{}', [';', ...paramInit, ...decls, ['return', genObj]]]]
+    return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls, ['return', genObj]]]]
   }
 
   // ---- ES2025 iterator-helper chain fusion ----

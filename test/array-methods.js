@@ -2215,3 +2215,31 @@ test('splice with its arguments spread reads start, count and inserts at run tim
     return [a, r, b, r1, r2, r3, r4, c, r5, d, r6] })()
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(), want, `O${optimize}: the same values as V8`)
 })
+
+// `new Array(len)` (23.1.1.1): a Number that is not an integer in [0, 2^32)
+// throws a RangeError (it trapped out of memory bounds); a single argument of
+// any other kind is the array's one element. `toSpliced` (23.1.3.35) copies
+// and splices the copy; `splice()` with no arguments deletes nothing
+// (23.1.3.31 step 8). Reference values are V8's (differential below).
+test('Array constructor lengths, toSpliced, and a bare splice', () => {
+  const src = `export function main() {
+    const r = []
+    for (const f of [() => new Array(-1).length, () => new Array(1.5).length, () => new Array(4294967296).length, () => new Array(3).length,
+      () => new Array('3').length, () => new Array('3')[0], () => new Array().length, () => new Array(NaN).length]) { try { r.push(f()) } catch (e) { r.push(e.name) } }
+    const a = [1, 2, 3, 4], args = [0, 1]
+    const z = [1, 2], removed = z.splice()
+    return [r, a.toSpliced(1, 2, 'x'), a.toSpliced(...args), a.toSpliced(), a.toSpliced(-1), a.toSpliced('1', 1, 8, 9), a, z, removed.length]
+  }
+  export function dyn(x) { try { return new Array(x).length } catch (e) { return e.name } }`
+  const want = (() => { const r = []
+    for (const f of [() => new Array(-1).length, () => new Array(1.5).length, () => new Array(4294967296).length, () => new Array(3).length,
+      () => new Array('3').length, () => new Array('3')[0], () => new Array().length, () => new Array(NaN).length]) { try { r.push(f()) } catch (e) { r.push(e.name) } }
+    const a = [1, 2, 3, 4], args = [0, 1]
+    const z = [1, 2], removed = z.splice()
+    return [r, a.toSpliced(1, 2, 'x'), a.toSpliced(...args), a.toSpliced(), a.toSpliced(-1), a.toSpliced('1', 1, 8, 9), a, z, removed.length] })()
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    is(m.main(), want, `O${optimize}: the same values as V8`)
+    is([m.dyn(2), m.dyn(-2), m.dyn(2.5), m.dyn('a'), m.dyn(true), m.dyn(NaN)], [2, 'RangeError', 'RangeError', 1, 1, 'RangeError'], `O${optimize}: a host argument decides at run time`)
+  }
+})

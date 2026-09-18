@@ -1307,3 +1307,18 @@ test('instanceof: folding a constant answer still evaluates the LHS for side eff
   `
   is(jz(src, { strict: true }).exports.f(), 11, 'bump() ran once (calls=1) even though the instanceof answer folded to true')
 })
+
+// Strict mode's spelling rules (`==` is prohibited) apply to the program, not
+// to the compiler's own runtime: an array pattern lowers through the `jz:`
+// iterator modules, whose source spells `== null`, and strict mode rejected
+// its own lowering (`for (const [a, b] of pairs)`, `([a, b]) => …`).
+test('strict mode: array patterns lower through the runtime while the program\'s own == is still rejected', () => {
+  if (onKernel()) return
+  const { forOf, arrow, decl } = jz(`export const forOf = () => { const pairs = [[1, 2], [3, 4]]; let s = 0; for (const [a, b] of pairs) s += a * b; return s }
+    export const arrow = () => { const f = ([a, b]) => a + b; return f([1, 2]) }
+    export const decl = () => { const [a, ...rest] = [1, 2, 3]; return a + rest.length }`, { strict: true }).exports
+  is(forOf(), 14); is(arrow(), 3); is(decl(), 3)
+  let error
+  try { compile('export const f = (x) => x == null ? 1 : 0', { strict: true }) } catch (e) { error = e }
+  ok(error && error.message.includes('prohibited'), 'the program\'s own loose equality is still rejected')
+})

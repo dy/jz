@@ -3,7 +3,7 @@
  * @module jzify/transform
  */
 
-import { JZ_BLOCK_OPS, LABEL_BODY_OPS, STMT_ONLY_OPS, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../layout.js'
@@ -140,6 +140,11 @@ export function createTransform(opts) {
   // statement list, the list at depth 0.
   let fnDepth = 0
   const inFunction = (fn) => { fnDepth++; try { return fn() } finally { fnDepth-- } }
+  // Parameter defaults are expressions of the function's scope: a method
+  // shorthand, a `function` expression or a class in a default value lowers
+  // as one in the body does. Pattern targets stay as they are.
+  const transformParams = (params) => inFunction(() =>
+    Array.isArray(params) && params[0] === '()' ? ['()', transformPattern(params[1])] : transformPattern(params))
   function wrapArrowBody(body) {
     const t = inFunction(() => transformScope(body))
     if (!Array.isArray(t)) return ['{}', [';', t]]
@@ -162,7 +167,7 @@ export function createTransform(opts) {
 
   function hoistFnDecl(name, params, body) {
     const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
-    const decl = ['const', ['=', name, ['=>', p2, wrapArrowBody(b2)]]]
+    const decl = ['const', ['=', name, ['=>', transformParams(p2), wrapArrowBody(b2)]]]
     decl._hoisted = true
     return decl
   }
@@ -412,7 +417,7 @@ export function createTransform(opts) {
         // runs before this transform), and emit miscompiles a `let`-closure decl in
         // a concise `;`-body. Mirrors the bare-`function name` lowering below.
         return ['()', ['=>', null, ['{}', [';',
-          ['let', ['=', name, ['=>', arrowParams(p2), wrapArrowBody(b2)]]],
+          ['let', ['=', name, ['=>', transformParams(arrowParams(p2)), wrapArrowBody(b2)]]],
           ['return', ['()', name, ...rest.map(transform)]],
         ]]], null]
       }
@@ -420,7 +425,7 @@ export function createTransform(opts) {
 
     'function'(name, params, body) {
       const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
-      const arrow = ['=>', p2, wrapArrowBody(b2)]
+      const arrow = ['=>', transformParams(p2), wrapArrowBody(b2)]
       // The name of a named function expression binds only inside its body. A
       // body that never mentions it (`fn.coefs = function coefs () {}`, named
       // for stack traces) is the plain arrow, which keeps the property lift.
@@ -442,18 +447,9 @@ export function createTransform(opts) {
         if (inner != null && !(Array.isArray(inner) && inner[0] === ';')) {
           b = ['{}', [';', inner]]
         }
-      } else if (Array.isArray(b) && STMT_ONLY_OPS.has(b[0])) {
-        // Subscript's expression grammar lets statement-only ops (`if`, `for`,
-        // `return`, `;`, …) appear in concise-body position — method shorthand
-        // `m(){ stmt }` parses to `['=>', p, stmt]` with no `{}` wrap (the body
-        // braces are structural, not a group operator). A concise body must
-        // yield a value, so these void ops would otherwise be coerced into the
-        // f64 return slot ("not enough arguments on the stack for f64.convert_i32_s").
-        // Re-wrap as a block — statement bodies belong in block form.
-        b = b[0] === ';' ? ['{}', b] : ['{}', [';', b]]
       }
       const [p2, b2] = lowerArguments(params, b)
-      return ['=>', p2, inFunction(() => transform(b2))]
+      return ['=>', transformParams(p2), inFunction(() => transform(b2))]
     },
 
     'class'(name, heritage, body) { return lowerClass(name, heritage, body) },
@@ -749,5 +745,5 @@ export function createTransform(opts) {
     return out ?? node
   }
 
-  return { transform, transformScope }
+  return { transform, transformScope, transformParams }
 }

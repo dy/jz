@@ -227,11 +227,12 @@ export function prep(node) {
   }
 
   const op = node[0]
-  if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited — write `undefined`.')
+  const strictSpelling = ctx.transform.strict && !ctx.module.inStd
+  if (op === 'void' && strictSpelling) err('strict mode: `void` is prohibited — write `undefined`.')
   // jz's `==`/`!=` follow JS loose equality (statically-known mixed types coerce:
   // `1 == "1"` is true), so default mode accepts them for JS parity. strict enforces
   // the canonical subset, where `===`/`!==` are the one spelling — reject the loose form.
-  if ((op === '==' || op === '!=') && ctx.transform.strict)
+  if ((op === '==' || op === '!=') && strictSpelling)
     err(`strict mode: \`${op}\` is prohibited — use \`${op}=\` (\`jz --jzify\` converts). jz's \`${op}\` follows JS loose equality; the canonical subset spells equality \`===\`/\`!==\` only.`)
   // A builtin-namespace member alias (`let sin = Math.sin`, `let {sin} = Math`)
   // carries no storage — writing through it would silently target nothing.
@@ -2653,6 +2654,11 @@ function prepareModule(specifier, source) {
   if (ctx.module.moduleStack.length === 1) ctx.module.rootExports = savedExports
   const savedFuncCount = ctx.funcs.list.length  // track new funcs from this module
   const savedModulePrefix = ctx.module.currentPrefix
+  // The compiler's own runtime (`jz:` modules) is prepared under the
+  // program's dialect but is not the program: the strict subset's spelling
+  // rules apply to what the user wrote, never to the lowering they invoke.
+  const savedStd = ctx.module.inStd
+  ctx.module.inStd = savedStd || specifier.startsWith('jz:')
   // A module's scope holds the builtins, its own declarations and its own
   // imports (its namespace aliases included): derived from the root, not from
   // the importing module, whose bindings would otherwise leak in (`import core
@@ -2848,6 +2854,7 @@ function prepareModule(specifier, source) {
     ctx.module.namespaces = savedNamespaces
     ctx.funcs.exports = savedExports
     ctx.module.currentPrefix = savedModulePrefix
+    ctx.module.inStd = savedStd
     ctx.module.moduleStack.pop()
   }
 }

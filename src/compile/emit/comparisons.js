@@ -1,5 +1,5 @@
 /**
- * NEG_NAN_MASK, emitTypeofCmp (public); char/substring comparison fusion;
+ * emitTypeofCmp (public); char/substring comparison fusion;
  * loose/strict equality and ordered comparison emission.
  *
  * @module compile/emit/comparisons
@@ -9,7 +9,7 @@ import { i64Hex, nanPrefixHex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
 import {
-  asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
+  asF64, asI32, asI32Sat, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
@@ -21,13 +21,6 @@ import { emit, emitIdentitySafe, emitIdentitySafeArms } from './dispatch.js'
 import { emitInstanceof } from './instanceof.js'
 import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
 
-
-// Sign+exponent mask isolating "negative NaN or -Infinity" — used only after an
-// f64.eq(v,v) self-check has already failed (so -Infinity is excluded, leaving
-// only negative NaN). Pointers/atoms are always emitted sign-clear (nanPrefixMaskHex,
-// layout.js), so a sign-bit-set NaN can only be a genuine float NaN. Mirrors
-// $__typeof's dynamic dispatch (module/core.js) bit-for-bit.
-const NEG_NAN_MASK = 0xFFF0000000000000n
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 function emitTypeofCmp(a, b, cmpOp) {
@@ -89,12 +82,7 @@ function emitTypeofCmp(a, b, cmpOp) {
     // real float NaN). Must mirror $__typeof's dynamic dispatch exactly, or
     // `typeof NaN === 'number'` folds to false here while the general path says true.
     const again = ['local.get', `$${t}`]
-    const notNan = ['f64.eq', ['local.tee', `$${t}`, va], again]
-    const bits = ['i64.reinterpret_f64', again]
-    const numberNan = ['i32.or',
-      ['i64.eq', bits, ['i64.const', i64Hex(LAYOUT.NAN_PREFIX_BITS)]],
-      ['i64.eq', ['i64.and', bits, ['i64.const', i64Hex(NEG_NAN_MASK)]], ['i64.const', i64Hex(NEG_NAN_MASK)]]]
-    return wrap(['i32.or', notNan, numberNan])
+    return wrap(['i32.or', ['f64.eq', ['local.tee', `$${t}`, va], again], numberNanIR(again)])
   }
   if (code === TYPEOF.string) return isPtrKind(PTR.STRING)
   if (code === TYPEOF.undefined) return wrap(isUndef(va))

@@ -48,6 +48,17 @@ const DEFAULT_DERIVED_CTOR_ARITY = 8
 const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
 const block = b => Array.isArray(b) && b[0] === '{}' ? b : ['{}', b]
 
+// A member's function value: `m() {}` parses as `['function', null, params,
+// body]`, `*g() {}` as `function*`, `async` wrapping either (subscript
+// feature/accessor.js); `m: function () {}` spells the name `''`. A named
+// function expression is a value, not a member.
+const memberFn = value => {
+  const fn = Array.isArray(value) && value[0] === 'async' ? value[1] : value
+  return Array.isArray(fn) && (fn[0] === 'function' || fn[0] === 'function*') && !fn[1] ? fn : null
+}
+const memberKind = (value, fn) => fn[0] === 'function*' ? (value[0] === 'async' ? 'asyncgen' : 'gen') : value[0] === 'async' ? 'async' : undefined
+const mapMemberBody = (value, f) => value[0] === 'async' ? ['async', mapMemberBody(value[1], f)] : [value[0], value[1], value[2], f(value[3])]
+
 const classBodyItems = (body) =>
   body == null ? [] : Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
 
@@ -91,6 +102,8 @@ function normalizeClassIdioms(node, base) {
   if (node[0] === '=' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'this'
       && Array.isArray(node[2]) && node[2][0] === 'function' && !node[2][1])
     return ['=', node[1], ['=>', arrowParams(node[2][2] ?? null), block(normalizeClassIdioms(node[2][3], base))]]
+  // a member's body is class code; a function expression anywhere else rebinds `this`
+  if (node[0] === ':' && memberFn(node[2])) return [':', node[1], mapMemberBody(node[2], b => normalizeClassIdioms(b, base))]
   if (node[0] === 'function') return node
   if (base != null && node[0] === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'call') {
     const args = node[2] === 'this' ? [] : Array.isArray(node[2]) && node[2][0] === ',' && node[2][1] === 'this' ? node[2].slice(2) : null
@@ -198,22 +211,12 @@ function splitCtorSuper(body) {
   return { args: null, body }
 }
 
-// Object shorthand methods and arrow-valued properties both parse as `=>`.
-// Stay conservative: only statement-shaped bodies are receiver methods here;
-// expression-bodied arrows keep their lexical `this` and remain unsupported.
-const OBJ_METHOD_BODY_OPS = new Set([';', 'return', 'if', 'for', 'for-in', 'for-of',
-  'while', 'do', 'switch', 'throw', 'try', 'break', 'continue'])
-
-function isStatementBody(body) {
-  return Array.isArray(body) && OBJ_METHOD_BODY_OPS.has(body[0])
-}
-
+// An object literal's methods (`m() {}`, `m: function () {}`) take the object
+// as `this`; an arrow-valued property keeps its lexical `this`, unsupported.
 function objectMethodUsesThis(prop) {
   if (!Array.isArray(prop) || prop[0] !== ':' || typeof prop[1] !== 'string') return false
-  const value = prop[2]
-  if (!Array.isArray(value)) return false
-  if (value[0] === '=>' && isStatementBody(value[2])) return usesThis(value[2])
-  return false
+  const fn = memberFn(prop[2])
+  return fn != null && usesThis(fn[3])
 }
 
 // Object-literal accessors take the same slots as class accessors; the entry
@@ -224,8 +227,7 @@ function lowerObjectLiteralAccessors(args) {
   const out = props.map(p => {
     if (!Array.isArray(p) || (p[0] !== 'get' && p[0] !== 'set')) return p
     const [slot, params, body] = accessorMethod(p, constStrings)
-    // a statement-shaped body is what the `this` lowering recognizes as a method
-    return [':', slot, ['=>', params, isStatementBody(body) ? body : [';', body]]]
+    return [':', slot, ['function', null, params, body]]
   })
   return out.length === 1 ? [out[0]] : [[',', ...out]]
 }
@@ -239,7 +241,8 @@ function lowerObjectLiteralThis(args) {
   const litProps = props.map(p => {
     const value = p[2]
     if (objectMethodUsesThis(p)) {
-      return [':', p[1], transform(['=>', value[1], block(renameThis(value[2], self))])]
+      const fn = memberFn(value)
+      return [':', p[1], methodValue(fn[2], fn[3], memberKind(value, fn), self)]
     }
     return [':', p[1], transform(value)]
   })
@@ -271,8 +274,18 @@ function accessorMethod(it, constStrings, dynamic) {
   const key = typeof it[1] === 'string' ? it[1] : constStringKey(it[1], constStrings)
   if (key == null) jzifyError(JC.computedMember)
   recordAccessor(key, dynamic)
-  return [accessorSlot(it[0], key), arrowParams(it[2] ?? null), it[3]]
+  return [accessorSlot(it[0], key), it[2] ?? null, it[3]]
 }
+
+// A method's value: an arrow over the receiver `to` (a generator keeps its
+// function form), `this` renamed throughout the body.
+const methodValue = (mparams, mbody, kind, to) => kind === 'gen'
+  ? transform(['function*', null, mparams, renameThis(mbody, to)])
+  : kind === 'asyncgen'
+    ? transform(['async', ['function*', null, mparams, renameThis(mbody, to)]])
+  : kind === 'async'
+    ? transform(['async', ['=>', arrowParams(mparams ?? null), block(renameThis(mbody, to))]])
+    : transform(['=>', arrowParams(mparams ?? null), block(renameThis(mbody, to))])
 
 // === struct lowering ===
 //
@@ -376,13 +389,8 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
       else if (b != null) trailers.push(b)
       continue
     }
-    const rhs = kind === 'gen'
-      ? transform(['function*', null, value[2], renameThis(value[3], cls)])
-      : kind === 'async'
-        ? transform(['async', ['=>', value[1], block(renameThis(value[2], cls))]])
-        : kind
-          ? transform(['=>', value[1], block(renameThis(value[2], cls))])
-          : value == null ? UNDEF : transform(renameThis(value, cls))
+    const rhs = kind ? methodValue(value[2], value[3], kind === true ? undefined : kind, cls)
+      : value == null ? UNDEF : transform(renameThis(value, cls))
     trailers.push(['=', ['.', cls, sname], rhs])
   }
   return factory
@@ -396,44 +404,28 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     const it = items[ix]
     if (typeof it === 'string') { fields.push([it, null]); continue }   // bare `x;`
     if (!Array.isArray(it)) continue
-    // `static get x() {…}` parses as a static field `get` followed by the
-    // method `x`: the pair is a static accessor
-    if (it[0] === 'static' && (it[1] === 'get' || it[1] === 'set') && it.length === 2) {
-      const next = items[ix + 1]
-      if (Array.isArray(next) && next[0] === ':' && Array.isArray(next[2]) && next[2][0] === '=>') {
-        const key = constStringKey(next[1], constStrings)
-        if (key == null) jzifyError(JC.computedStaticMember)
-        recordAccessor(key, true)
-        statics.push([accessorSlot(it[1], key), next[2], true])
-        ix++
-        continue
-      }
+    // `static get x() {…}` / `static set x(v) {…}`
+    if (it[0] === 'static' && Array.isArray(it[1]) && (it[1][0] === 'get' || it[1][0] === 'set')) {
+      const acc = it[1]
+      const key = constStringKey(acc[1], constStrings)
+      if (key == null) jzifyError(JC.computedStaticMember)
+      recordAccessor(key, true)
+      statics.push([accessorSlot(acc[0], key), ['function', null, acc[2], acc[3]], true])
+      continue
     }
     if (it[0] === 'get' || it[0] === 'set') { methods.push(accessorMethod(it, constStrings, heritage != null)); continue }
     const bareFieldName = constStringKey(it, constStrings)
     if (bareFieldName != null) { fields.push([bareFieldName, null]); continue }
-    if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === '=>') {
+    // A method `m() {}`, `async m() {}`, `*g() {}`, `async *g() {}`: the value
+    // is a function node (memberFn); `this` is renamed like any method's.
+    if (it[0] === ':' && memberFn(it[2])) {
       const key = constStringKey(it[1], constStrings)
       if (key == null) jzifyError(JC.computedMember)
-      if (key === 'constructor' && typeof it[1] === 'string') { ctorParams = it[2][1]; ctorBody = it[2][2] }
-      else methods.push([key, it[2][1], it[2][2]])
-      continue
-    }
-    // async method `async m() {}` – an async arrow over the same self
-    if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === 'async' && Array.isArray(it[2][1]) && it[2][1][0] === '=>') {
-      const key = constStringKey(it[1], constStrings)
-      if (key == null) jzifyError(JC.computedMember)
-      methods.push([key, it[2][1][1], it[2][1][2], 'async'])
-      continue
-    }
-    // Generator method `*g() {}` — value is a function* expression (parser emits
-    // [':', key, ['function*', null, rawParams, body]]); lowers to the factory
-    // arrow via the standard generator lowering, `this` renamed like any method.
-    if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === 'function*') {
-      const key = constStringKey(it[1], constStrings)
-      if (key == null) jzifyError(JC.computedMember)
-      if (key === 'constructor' && typeof it[1] === 'string') jzifyError('`constructor` cannot be a generator')
-      methods.push([key, it[2][2], it[2][3], 'gen'])
+      const fn = memberFn(it[2]), kind = memberKind(it[2], fn)
+      if (key === 'constructor' && typeof it[1] === 'string') {
+        if (kind) jzifyError('`constructor` cannot be a generator or async')
+        ctorParams = arrowParams(fn[2] ?? null); ctorBody = fn[3]
+      } else methods.push([key, fn[2], fn[3], kind])
       continue
     }
     if (it[0] === '=') {
@@ -460,23 +452,12 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       statics.push([it[1], null])
       continue
     }
-    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === '=>') {
+    // `static m() {}` and its async/generator forms: [key, function node, kind]
+    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && memberFn(it[1][2])) {
       const key = constStringKey(it[1][1], constStrings)
       if (key == null) jzifyError(JC.computedStaticMember)
-      statics.push([key, it[1][2], true])
-      continue
-    }
-    // `static async m() {}` — the parser wraps the method arrow in async.
-    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === 'async' && Array.isArray(it[1][2][1]) && it[1][2][1][0] === '=>') {
-      const key = constStringKey(it[1][1], constStrings)
-      if (key == null) jzifyError(JC.computedStaticMember)
-      statics.push([key, it[1][2][1], 'async'])
-      continue
-    }
-    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === 'function*') {
-      const key = constStringKey(it[1][1], constStrings)
-      if (key == null) jzifyError(JC.computedStaticMember)
-      statics.push([key, it[1][2], 'gen'])
+      const fn = memberFn(it[1][2])
+      statics.push([key, fn, memberKind(it[1][2], fn) ?? true])
       continue
     }
     if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === '{}') {
@@ -525,11 +506,6 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     for (const [, , mbody] of methods) assignedThisFields(mbody, assigned)
     for (const fname of assigned) if (!fields.some(([f]) => f === fname)) litProps.push([':', fname, UNDEF])
   }
-  const methodValue = (mparams, mbody, kind, to) => kind === 'gen'
-    ? transform(['function*', null, mparams, renameThis(mbody, to)])
-    : kind === 'async'
-      ? transform(['async', ['=>', mparams ?? ['()', null], block(renameThis(mbody, to))]])
-      : transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, to))])
   for (const [mname, mparams, mbody, kind] of methods)
     litProps.push([':', mname, methodValue(mparams, mbody, kind, self)])
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
@@ -588,13 +564,8 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       else if (b != null) staticStmts.push(b)
       continue
     }
-    const rhs = kind === 'gen'
-      ? transform(['function*', null, value[2], renameThis(value[3], cls)])
-      : kind === 'async'
-        ? transform(['async', ['=>', value[1], block(renameThis(value[2], cls))]])
-        : kind
-          ? transform(['=>', value[1], block(renameThis(value[2], cls))])
-          : value == null ? UNDEF : transform(renameThis(value, cls))
+    const rhs = kind ? methodValue(value[2], value[3], kind === true ? undefined : kind, cls)
+      : value == null ? UNDEF : transform(renameThis(value, cls))
     staticStmts.push(['=', ['.', cls, sname], rhs])
   }
   staticStmts.push(['return', cls])
@@ -677,8 +648,8 @@ export function foldPseudoClassical(stmts) {
     if (Array.isArray(st) && st[0] === 'function' && typeof st[1] === 'string' && foldable.has(st[1])) {
       const ms = methods.get(st[1])
       out.push(['class', st[1], null, [';',
-        [':', 'constructor', ['=>', ['()', st[2] ?? null], st[3]]],
-        ...ms.map(m => [':', m.method, ['=>', ['()', m.params ?? null], m.body]]),
+        [':', 'constructor', ['function', null, st[2] ?? null, st[3]]],
+        ...ms.map(m => [':', m.method, ['function', null, m.params ?? null, m.body]]),
       ]])
       continue
     }

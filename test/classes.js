@@ -644,3 +644,26 @@ test('class method boolean result keeps its atom through a dispatcher and an opt
   is(optional(1), ['boolean', false])
   is(optional(3), ['undefined', false], 'a nullish receiver short-circuits to undefined')
 })
+
+// `static get v() {}` / `static set v(x) {}` on one line parsed as a static
+// field named `get` followed by a method (the multi-line form too, silently),
+// and the one-line form failed with "Unclosed {". The parser now reads the
+// accessor after `static` (subscript feature/class.js), and the class lowering
+// takes the accessor onto the constructor. Reference: ECMA-262 15.7.1
+// ClassElement: `static MethodDefinition`, with MethodDefinition covering
+// `get`/`set` accessors.
+test('class static accessors, one line or many', () => {
+  const { one, many, both, viaThis } = compile(`
+    class A { static get v() { return 7 } }
+    class B {
+      static get v() { return 8 }
+    }
+    class C { static w = 0; static set v(x) { C.w = x * 2 } static get v() { return C.w } static getter() { return 1 } }
+    class D { static n = 4; static get twice() { return this.n * 2 } }
+    export let one = () => A.v
+    export let many = () => B.v
+    export let both = () => { C.v = 3; return C.v + C.getter() }
+    export let viaThis = () => D.twice
+  `)
+  is(one(), 7); is(many(), 8); is(both(), 7); is(viaThis(), 8)
+})

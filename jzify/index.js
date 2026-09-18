@@ -168,9 +168,9 @@ const buildBuiltinScopes = root => {
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
 
 let lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses, transformSwitch
-let transform, transformScope
+let transform, transformScope, transformParams
 
-;({ transform, transformScope } = createTransform({
+;({ transform, transformScope, transformParams } = createTransform({
   names,
   lowerArguments,
   transformPattern,
@@ -194,7 +194,7 @@ const generatorNames = new Set()
 // programs without iterator producers compile byte-identically.
 const iterProto = { on: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
 const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)

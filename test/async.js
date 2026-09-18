@@ -304,3 +304,47 @@ test('async: an await anywhere in an expression suspends at a statement, in sour
   }
   for (const [name, [src, want]] of Object.entries(cases)) is(await val(src), want, name)
 })
+
+// An object-literal `async m() {}` is a method shorthand whose one-statement
+// body arrives bare (the parser's shape for every one-statement body); the
+// async lowering took it for a concise expression body and returned the
+// statement's own non-value (a NaN-box leak read as 2.78e-307). Async
+// generator members `async *g()` and `async *[computed]()` parse with the
+// async on the member's value, as `async m()` does. Reference: ECMA-262
+// 15.6 AsyncFunctionBody, 15.7 AsyncGeneratorMethod, 27.7 Promise jobs.
+test('async: object-literal method shorthands and async generator members', async () => {
+  if (onWasi() || onKernel()) return
+  const { main } = jz(`const o = {
+      async m(x) { if (x) return 5; let y = x + 1; return y },
+      async n() { return 'ab' },
+      async k(a) { return await o.m(a) },
+      async *g() { yield 1; yield 2 },
+      async *[Symbol.asyncIterator]() { yield 3 },
+    }
+    export async function main() {
+      let s = 0
+      for await (const v of o.g()) s += v
+      for await (const v of o) s += v
+      return [await o.m(1), await o.m(0), await o.n(), await o.k(3), s]
+    }`).exports
+  is(await main(), [5, 1, 'ab', 5, 6])
+})
+
+test('async: class async and async generator methods, instance and static', async () => {
+  if (onWasi() || onKernel()) return
+  const { main } = jz(`class C {
+      constructor() { this.k = 10 }
+      async *g() { yield this.k; yield 2 }
+      async m() { return 3 }
+      static async *s() { yield 4 }
+      static async t() { return 5 }
+    }
+    export async function main() {
+      let t = 0
+      const c = new C()
+      for await (const v of c.g()) t += v
+      for await (const v of C.s()) t += v
+      return t + await c.m() + await C.t()
+    }`).exports
+  is(await main(), 24)
+})

@@ -47,7 +47,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`:
 | `optimize` | `false`/`0` off, `1` minimal, `true`/`2` default (all stable passes), `3`/`'speed'` trades size for speed, `'size'` for smallest wasm, `'fast'` for fastest compile (default passes, final wat optimizer off). (Object form for per-pass overrides is internal/unstable.) |
 | `define` | Compile-time constants injected as top-level bindings, e.g. `{ DEBUG: false, PORT: 8080 }` (numbers, booleans, strings, null, or literal arrays/objects). |
 | `importMetaUrl` | String that `import.meta.url` resolves to at compile time; without it the reference is a compile error. |
-| `strict: true` | Skip jzify lowering: reject the forms it lowers (`var`, `function`, `class`, `this`, `switch`, `==`, `void`, labels, `using`, generators, async) and dynamic fallbacks such as `obj[k]`, `for-in`, and unknown receiver methods. |
+| `strict: true` | Skip jzify lowering: reject the forms it lowers (`var`, `function` and method shorthand, `class`, `this`, `switch`, `==`, `void`, labels, `using`, generators, async) and dynamic fallbacks such as `obj[k]`, `for-in`, and unknown receiver methods. |
 | `sourceType: 'jz' \| 'script' \| 'module'` | Select the parse goal. `jz` is the default export-as-ABI dialect; `script` rejects imports/exports; `module` applies Module early errors and implicit strict mode. |
 | `alloc: false` | Raw standalone ABI for modules that never marshal heap values: omit allocator/reset exports, closure-table and decoded-error metadata, and reset-only state healing. Do not use `memory.reset()` when module-owned heap state must survive it. |
 | `noSimd: true` | Disable auto-vectorization. Explicit `f32x4` and `i32x4` intrinsics still compile. |
@@ -218,8 +218,8 @@ not supported
   `ignoreBOM`; streaming and other encodings are unsupported.
 - **RegExp.** Patterns compile at build time, so `new RegExp(pattern)` needs a
   string literal. Named groups, lookbehind, backreferences, and the `g`, `i`,
-  `s`, `u`, `y` flags work; the `m` flag is ignored, and Unicode property
-  classes (`\p{…}`) and the `d` and `v` flags are unsupported.
+  `m`, `s`, `u`, `y` flags work; Unicode property classes (`\p{…}`) and the
+  `d` and `v` flags are unsupported.
 - **Objects.** Literal fields have fixed slots; computed keys use hash storage.
   Class and literal `get`/`set` accessors are methods with property syntax,
   resolved statically on a known shape. Live prototype chains, property

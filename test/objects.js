@@ -1417,6 +1417,42 @@ test('jzify: object arrow property keeps lexical this unsupported', () => {
   ok(msg.includes('`this` not supported'), 'lexical arrow this is not receiver-bound')
 })
 
+// A method shorthand is `key: function () {}` (ECMA-262 15.4 MethodDefinition):
+// its body is statement-shaped, so `{ m() { f() } }` returns undefined where
+// the arrow `m: () => f()` returns f()'s value, and `this` is the receiver
+// whatever the body's first statement is. The parser used to spell both as
+// the same arrow, so a one-statement body that was not a return, an `if`
+// or a loop read as the arrow (`this.x = 5` failed "this not supported",
+// `f()` returned f's value). `m: function () {}` is a method the same way.
+test('jzify: object methods with an expression-statement body are methods, not arrows', () => {
+  const exports = run(`const f = () => 4
+    export let assign = () => { const o = { x: 0, m() { this.x = 5 } }; o.m(); return o.x }
+    export let noReturn = () => { const o = { m() { f() } }; return o.m() === undefined }
+    export let arrowValue = () => { const o = { m: () => f() }; return o.m() }
+    export let fnValue = () => { const o = { x: 3, m: function () { return this.x } }; return o.m() }
+    export let fnNoReturn = () => { const o = { m: function () { f() } }; return o.m() === undefined }`, { jzify: true })
+  is(exports.assign(), 5); ok(exports.noReturn()); is(exports.arrowValue(), 4); is(exports.fnValue(), 3); ok(exports.fnNoReturn())
+})
+
+// A parameter default is an expression of the function's scope (ECMA-262
+// 10.2.10 FunctionDeclarationInstantiation evaluates it in the function's
+// environment): the forms jzify lowers in a body lower in a default too. They
+// used to reach the emitter untransformed, so a method shorthand or a
+// `function` expression in a default failed "function not supported".
+test('jzify: parameter defaults lower like body expressions', () => {
+  const exports = run(`function render(o = { toString() { return 'default' } }) { return String(o) }
+    function* gen(a = { k() { return 4 } }) { yield a.k() }
+    export let decl = () => render()
+    export let arrowFn = (a = function () { return 1 }) => a()
+    export let objPat = ({ m = { k() { return 2 } } } = {}) => m.k()
+    export let arrPat = ([x = { k() { return 3 } }] = []) => x.k()
+    export let generator = () => [...gen()][0]
+    export let named = () => (function f(n = { v() { return 5 } }) { return n.v() })()
+    export let receiver = (o = { x: 6, m() { return this.x } }) => o.m()`, { jzify: true })
+  is(exports.decl(), 'default'); is(exports.arrowFn(), 1); is(exports.objPat(), 2); is(exports.arrPat(), 3)
+  is(exports.generator(), 4); is(exports.named(), 5); is(exports.receiver(), 6)
+})
+
 // Computed property names — static keys map to fixed-shape slots; dynamic
 // computed keys lower to dict-side stores; effectful coercion runs and the
 // coerced key is the resolved property name. (test262 ObjectLiteral cases)

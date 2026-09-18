@@ -10,7 +10,7 @@
 
 /** Ops prepare rejects when they appear in the AST (handler or identifier). */
 export const REJECT_OPS = {
-  async: 'this `async` shape needs the jzify lowering (async fns/arrows are supported in default mode; async methods are not yet)',
+  async: 'this `async` shape needs the jzify lowering: the default mode lowers async functions, arrows, methods and generators; strict mode takes none of them',
   await: '`await` outside an async function (or in a shape the jzify lowering does not cover) — move it inside an `async` function',
   class: 'class not supported: use object literals',
   yield: 'yield outside a generator body, or in a position the generator lowering does not reach (nested inside another function/callback) — move it to the generator function\'s own top level',
@@ -20,7 +20,7 @@ export const REJECT_OPS = {
   with: '`with` not supported: deprecated',
   ':': 'labeled statements not supported — a real labeled loop needs non-strict mode (jzify lowers it there before this check runs); otherwise check for a missing `;` before this line (a common ASI misparse)',
   var: '`var` not supported: use let/const',
-  function: '`function` not supported: use arrow functions',
+  function: '`function` not supported: use arrow functions (a method shorthand `m() {}` is a function: write `m: () => {}`)',
 }
 
 /** Bare identifiers prepare rejects (no jzify lowering). */

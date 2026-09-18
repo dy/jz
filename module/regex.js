@@ -381,7 +381,7 @@ export const compileRegex = (ast, name = 'regex_match') => {
   const locals = ['$pos i32', '$save i32', '$char i32', '$match i32', '$width i32', '$low i32']
   for (let i = 1; i <= groups; i++) locals.push(`$g${i}_start i32`, `$g${i}_end i32`)
 
-  const rctx = { ignoreCase, dotAll, unicode: flags.includes('u') || flags.includes('v'), groups, labelId: 0, code: [], failLabel: null }
+  const rctx = { ignoreCase, dotAll, multiline: flags.includes('m'), unicode: flags.includes('u') || flags.includes('v'), groups, labelId: 0, code: [], failLabel: null }
   rctx.code.push('(local.set $pos (local.get $start))')
   // Init capture locals to -1 (unmatched / undefined)
   for (let i = 1; i <= groups; i++) {
@@ -754,11 +754,24 @@ const compileDot = c => {
   c.code.push(advanceChar(c))
 }
 
+// With the `m` flag `^` also matches after a LineTerminator and `$` also
+// before one (22.2.2.4 Assertion: LF, CR, LS, PS); without it the anchors
+// are the input's ends.
+const LINE_TERMINATOR = u => `(i32.or (i32.or (i32.eq ${u} (i32.const 10)) (i32.eq ${u} (i32.const 13))) (i32.or (i32.eq ${u} (i32.const 0x2028)) (i32.eq ${u} (i32.const 0x2029))))`
+const UNIT_AT = at => `(i32.load16_u (i32.add (local.get $str) (i32.shl ${at} (i32.const 1))))`
 const compileAnchorStart = c => {
+  if (c.multiline) {
+    c.code.push(`(if (i32.and (i32.ne (local.get $pos) (i32.const 0)) (i32.eqz ${LINE_TERMINATOR(UNIT_AT('(i32.sub (local.get $pos) (i32.const 1))'))}))`)
+    emitFail(c); c.code.push(')'); return
+  }
   c.code.push('(if (i32.ne (local.get $pos) (i32.const 0))'); emitFail(c); c.code.push(')')
 }
 
 const compileAnchorEnd = c => {
+  if (c.multiline) {
+    c.code.push(`(if (i32.and (i32.ne (local.get $pos) (local.get $len)) (i32.eqz ${LINE_TERMINATOR(UNIT_AT('(local.get $pos)'))}))`)
+    emitFail(c); c.code.push(')'); return
+  }
   c.code.push('(if (i32.ne (local.get $pos) (local.get $len))'); emitFail(c); c.code.push(')')
 }
 
