@@ -133,6 +133,14 @@ const SPEED = {
   // already cut watr's absolute time (1.46→1.08ms); the residual gap is the string
   // substrate, not a single hotspot.
   watr:           { v8: 'trail', as: 'na'   },
+  // jessie is the subscript parser (jz compiling a Pratt parser: descriptor
+  // dispatch, closure-set calls, AST arrays with a `loc` property). It ran at
+  // 1.48× V8 before the closure-property, loop-guard and boolean-condition
+  // work (PLAN.md, September 18) and lands 1.13× after it; `trail` pins that
+  // standing as a gate while the residual (the dispatch closure's generic
+  // truthiness on AST nodes, `node.loc = at` through __dyn_set, comment.js's
+  // for-in) closes toward `win`.
+  jessie:         { v8: 'trail', as: 'na'   },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared

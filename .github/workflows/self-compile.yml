@@ -1,8 +1,9 @@
 name: self-compile
-# Self-compile gate: builds dist/jz.wasm from scripts/self.js using the host jz
-# compiler, then instantiates that wasm and round-trips real programs through
-# `self.default(source)`. The wasm runs the whole pipeline in-wasm — parse
-# (jessie) → jzify → prepare → compile → watr-encode — so it is jz, compiled by jz.
+# The one self-compile run: dist/jz.wasm is jz compiled by jz (scripts/self.js:
+# parse → jzify → prepare → compile → watr-encode, the whole pipeline in wasm),
+# and everything here is a correctness check made with that compiler. Speed is
+# not measured on a shared runner: the self-compile perf gate is a local release
+# step (`npm run test:self:perf`, CONTRIBUTING.md "Performance & size invariant").
 on:
   push:
     paths-ignore:
@@ -30,25 +31,18 @@ jobs:
         with:
           node-version: 24
       - run: npm install
-      # Build the artifact consumed by the recursive and full-suite gates.
       - name: build dist/jz.wasm
         run: npm run build
-      # Correctness/performance gates each build a fresh private compiler;
-      # they do not reuse the disk artifact above.
+      # A fresh private compiler round-trips real programs through the in-wasm pipeline.
       - name: self-compile round-trip
         run: npm run test:self
-      # Release gate: compile the complete compiler graph recursively and
-      # validate that the resulting wasm is itself a working compiler.
-      - name: recursive jz × jz
-        run: node scripts/recursive-self-check.mjs
-      # Full gate: run the ENTIRE host test suite with the compiler being the
-      # self-compile kernel (JZ_TEST_TARGET=jz.wasm) — every program is compiled by
-      # dist/jz.wasm, so any divergence from the native run is a self-compile bug.
-      # This is the real "does jz.wasm compile and pass everything" signal.
-      # JZ_FUZZ_GATE shrinks the fuzz seed counts: every fuzz program compiles
-      # through the wasm kernel here, and the full 200×4 gate alone exceeds the
-      # 6-hour job limit on 2-core runners (native legs keep the full gate).
+      # The whole host test suite, every program compiled by dist/jz.wasm: any
+      # divergence from the native run is a self-compile bug. JZ_FUZZ_GATE shrinks
+      # the fuzz seed counts (the full gate exceeds the runner's job limit).
       - name: full suite via dist/jz.wasm
         run: npm run test:wasm
         env:
           JZ_FUZZ_GATE: '0.15'
+      # The complete compiler graph through the kernel, and the result made to compile a probe.
+      - name: recursive jz × jz
+        run: node scripts/recursive-self-check.mjs

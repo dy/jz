@@ -170,6 +170,41 @@ spread positions and recursive forwarding retain conservative argument joins.
 The registry and summary share one schema key: a serialization of the brand
 and canonical property order. Delimiter characters inside valid JS string
 keys must never merge unrelated layouts.
+
+A closure's own properties are facts of its site (`closureProps`): `fn.ops = ops`
+on a dispatcher stores the array's kind under the name for every instance of
+that closure, a read on a closure set joins its members, a name never stored
+reads undefined, and an escaped member reads as anything and escapes what it
+holds. A global the plan declares without a declaration statement (a function
+property flattened to a module global, `plan/scope.js`) is a module binding
+named by its writes, undefined until the first (`moduleGlobals`). A call through
+a binding the fixpoint knows only as nullish so far, and a spread of a nullish
+value, contribute nothing rather than escaping their operands: both throw at
+run time, and an escape is permanent. A loop's test guards its body the way an
+`if` guards its branch, and an assignment as a condition (`(d = ops[i++])`)
+proves the assigned name truthy: the emitter carries that as a `notNullish`
+refinement (`flow-types.js`), the query layer marks the name `present` for the
+body's emission so every consumer reads the kind without its nullish part, and
+`dotRead` gives a present name the summary names as one shape the receiver
+layout the guarded read retains, so its members read as direct slots. A slot's
+raw i32 load still needs the summary's field kind to be a number: the per-schema
+census marks certainty from the sites it registers, and a literal it did not
+register (one assigned to a parameter inside a closure) can store a string under
+the same schema.
+
+A condition is a boolean question, not a value: `toBool` asks each operand of
+`&&`, `||` and `!` in place, from `if`, loop tests and `!` alike (the value form
+boxed the operand the `&&` yields and tested the box through the generic
+chain, in every program). The right operand is asked under what the left
+proved, as the value form did, so a guard's `x < W && a[x]` indexes in bounds;
+a loop test's facts merge into the counter's own hull rather than replacing it
+(a second refinement map for the same name dropped its lower bound and with it
+the single-digit rendering of `'x' + i`). A value the summary knows as a Boolean or as a
+pointer kind tests as a Boolean carrier or as presence (`kindTruthyIR`). A
+Boolean rides either carrier, the raw 0/1 or the atom box: a test of a
+BOOL-typed f64 is the number test then the atom compare, never the atom's aux
+bit alone (the kernel found the first form: the compiler's own `bool && expr`
+miscompiled).
 Unknown-receiver stores propagate only when their pending effect grows. A
 newly exposed construction replays both indexed and arbitrary-key effects;
 numeric reseeding clears these pending facts before solving again. Cache-hit
@@ -1020,6 +1055,13 @@ Discipline (non-negotiable — these run in the default `speed` build that ships
 - **Ratchet +0.** `npm run test:ratchet` must stay byte-identical — recognize only the intended shape;
   don't widen the default corpus path.
 - **Run `npm run test:self`.** The dev suite runs on V8, but the self-compile build compiles JZ *with JZ*.
+  `test:self` is the correctness round-trip; `npm run test:self:perf` is the warm/fresh
+  self-compile speed gate (a local release step: it needs a quiet machine, so CI never
+  times it). CI has one self-compile workflow (`.github/workflows/self-compile.yml`):
+  it builds `dist/jz.wasm`, runs the round-trip, the whole suite through that
+  compiler (`npm run test:wasm`) and the recursive jz × jz check. The parser and
+  the encoder jz depends on are bench cases (`jessie`, `watr`) with speed pins in
+  `test/bench.js`, not workflows of their own.
   A recognizer can be bit-exact on V8 yet make `dist/jz.wasm` fail validation
   (`i64.reinterpret_f64 expected f64, found i32`) — **the V8 suite will not catch this.**
   - *Cause & fix:* a top-level **self-recursive** helper taking the `ctx` object as a param — JZ's

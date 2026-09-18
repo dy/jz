@@ -641,6 +641,65 @@ Those tests do not establish callback deadlines.
 - Self-compile gate 68/68 (`test/self-compile.js`); `bench:size` geomean
   jz/AssemblyScript 0.794× after the kernel-speed rules (the size tier keeps
   the `__ptr_offset` call; the speed tiers inline the hop).
+- Parser and encoder speed (the `jessie` and `watr` bench cases, jz against
+  V8, paired): jessie 1.48× → 1.13× through engine work on the dynamic
+  shapes a Pratt parser is made of, each measured on the case, none on the
+  input. What moved it: an `if (a && b)` condition was built as the `&&`
+  value (the operand boxed) and the box tested through the generic chain,
+  in every program (`toBool` now asks each operand in place, the right
+  operand under what the left proved, so a guard's `x < W && a[x]` still
+  indexes in bounds: 15% of the case alone); a `!` over a logical operand
+  and `toBool`'s own `!` the same way; a Boolean left operand of a value-form `&&`/`||` tests its raw i32;
+  a value the summary knows as a Boolean or a pointer kind tests as the
+  TRUE atom or as presence (`kindTruthyIR`); a loop's test guards its body
+  (summary and emitter), and `(d = ops[i++])` as a test proves `d` present
+  (`notNullish` refinement, the query layer's `present` mark), so the
+  cursor's members read as direct slots (`dotRead` gives a present shaped
+  name the layout the guarded read retained); the summary types a
+  closure's own properties (`closureProps`: `fn.ops = ops` on a dispatcher
+  no longer escapes the array), the plan's flattened function-property
+  globals (`parse.space`, `parse.comment`, `parse.newline` are closure
+  sets, an object shape, a Boolean), a call through a binding not yet
+  known and a spread of a nullish value (each escaped its operands before
+  the first fixpoint round could type them); the generic truthiness reads
+  the pointer tag inline instead of calling `__ptr_type`. What measured
+  nothing on the case, kept for what it proves: `idx` numeric, the lifted
+  functions' parameters typed. What remains on jessie (instruction-level
+  profile, `--prof` ticks over `--print-wasm-code`): the dispatch closure's
+  truthiness of AST nodes (`a`, `r`: ANY by nature), `node.loc = at`
+  through `__dyn_set` on an array (5%), comment.js's for-in (the pooled
+  keys loop), `parse.id`'s unicode layer. A `?:` whose condition is a
+  logical shape still builds the value: routing it through `toBool` threw
+  at run time on the parser and is reverted, to be understood. Two of the
+  batch's first forms were wrong and the kernel found them: a Boolean
+  rides either carrier, the raw 0/1 or the atom box, so a test of a
+  BOOL-typed f64 is the number test then the atom compare, never the
+  atom's aux bit alone (the do-while flag read false; the compiler's own
+  `bool && expr` miscompiled in the kernel: "Cannot read properties of
+  undefined" on every program with an object literal). The finder was a
+  bisect over the changed files, one tree copy each with that file at
+  HEAD, building a kernel and compiling one probe.
+- watr regressed against V8 before this work: the results snapshot
+  (e36aab3b) measured 1135 µs against V8's 865 (1.31×); the same bench
+  source on the September 18 tree measures 1.5 to 1.8×, with watr 5.10.3's
+  sources as well as 5.11.0's, so it is jz, not the workload. Its profile
+  is dictionary reads by parsed keys (`__dyn_get_expr`, 108 sites in
+  `normalize`), small-array allocation, `__dyn_set`, and string hashing
+  (a parsed key is hashed at every lookup; V8 caches a string's hash in the
+  string). A bisect over the 268 commits since the snapshot (`git archive`
+  builds in the scratchpad) is the next step; the snapshot builds and runs
+  against today's node_modules.
+- Gates on the tree with the parser work: core 4501/4502, opt0 4306/4307,
+  opt3 4306/4307, wasi 4359/4360 (one skip each), self-compile 68/68,
+  kernel parity byte-identical at O0/O2/O3, `bench:size` geomean 0.794×;
+  the self-compile perf gate improves with the compiler it compiles: warm
+  0.954× (was 1.006×), fresh 0.763× (was 0.836×).
+- CI: one self-compile workflow (build, round-trip, the suite through
+  `dist/jz.wasm`, the recursive check); `kernel-gate.yml` and `watr.yml`
+  are gone, watr and jessie being bench cases with speed pins
+  (`test/bench.js`: watr `trail`, jessie `trail` at its 1.13× standing, both
+  to ratchet toward `win`); the self-compile perf gate is `npm run
+  test:self:perf`, a local release step, out of `test:self`.
 - Gates on the tree with the defects below closed: core 4501/4502, opt0
   4306/4307, opt3 4306/4307, wasi 4359/4360 (one skip each), self-compile
   68/68, `bench:size` geomean 0.794× (byte-identical output), warm
