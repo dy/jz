@@ -29,7 +29,7 @@ import {
 } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
 import { CMP_SET, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectCondOK } from './shared.js'
-import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf } from '../../summary/kind.js'
+import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
@@ -144,10 +144,37 @@ function isI32ArithTree(e) {
 
 // Scoped FlowState combinators live in ./flow-state.js.
 
+// The summary's kind of `node` picks a truthiness cheaper than the generic
+// chain (a number test, the BigInt arm, five sentinel compares): a Boolean,
+// nullish included, is the TRUE atom exactly; a value that is never a
+// number, string, BigInt or Boolean is truthy iff present. `ir` is the
+// node's emitted f64, evaluated once here (a `local.get` reads in place).
+function kindTruthyIR(node, ir) {
+  const view = ctx.summary?.at(ctx.func.current)
+  if (!view) return null
+  const NEVER_BY_VALUE = summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING) | summaryBitOf(K.BIGINT) | summaryBitOf(K.BOOL)
+  const k = view.kindOfExpr(node)
+  if (k == null || k === 0 || summaryTagOf(k) === K.ANY) return null
+  const tags = summaryTagsOf(k) & ~SUMMARY_NULL_BITS
+  if (tags === 0) return null
+  const once = Array.isArray(ir) && ir[0] === 'local.get' ? null : temp('kt')
+  const get = () => typed(once ? ['local.get', `$${once}`] : ir, 'f64')
+  // A Boolean rides either carrier: the raw 0/1 (a number by value) or the
+  // atom box; a nullish value is a box that is not TRUE.
+  const test = tags === summaryBitOf(K.BOOL)
+    ? ['i32.or', ['i32.and', ['f64.eq', get(), get()], ['f64.ne', get(), ['f64.const', 0]]], ['i64.eq', ['i64.reinterpret_f64', get()], ['i64.const', TRUE_NAN]]]
+    : (tags & NEVER_BY_VALUE) === 0 ? ['i32.eqz', isNullish(get())]
+    : null
+  if (!test) return null
+  return typed(once ? ['block', ['result', 'i32'], ['local.set', `$${once}`, asF64(ir)], test] : test, 'i32')
+}
+
 /** Coerce an AST node to an i32 boolean, folding && / || at the boolean boundary. */
 export function toBool(node) {
   const op = Array.isArray(node) ? node[0] : null
   if (CMP_SET.has(op)) return emit(node)
+  // A negation asks the operand's boolean and flips it: no value is built.
+  if (op === '!' && node.length === 2) return typed(['i32.eqz', toBool(node[1])], 'i32')
   if (op === '__eager&&' || op === '__eager||') {
     const la = toBool(node[1]), lb = toBool(node[2])
     if (isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]) && eagerSelectOK(la, lb))
@@ -157,7 +184,9 @@ export function toBool(node) {
       : typed(['if', ['result', 'i32'], la, ['then', ['i32.const', 1]], ['else', lb]], 'i32')
   }
   if (op === '&&') {
-    const la = toBool(node[1]), lb = toBool(node[2])
+    // The right operand runs where the left held: its reads see what the
+    // left proved (a guard's conjunct `x < W && a[x]` indexes in bounds).
+    const la = toBool(node[1]), lb = withRefinements(extractRefinements(node[1], new Map(), true), node[2], () => toBool(node[2]))
     // `if (a && b)` reaches toBool directly (not the value-producing `&&`
     // emitter below), so apply the same call-free canonical-boolean rule here.
     // Requiring BOTH emitted trees pure makes a nested comparison chain fold
@@ -171,13 +200,16 @@ export function toBool(node) {
     return typed(['if', ['result', 'i32'], la, ['then', lb], ['else', ['i32.const', 0]]], 'i32')
   }
   if (op === '||') {
-    const la = toBool(node[1]), lb = toBool(node[2])
+    const la = toBool(node[1]), lb = withRefinements(extractRefinements(node[1], new Map(), false), node[2], () => toBool(node[2]))
     if (eagerSelectOK(la, lb) && ((isCmp(node[1]) && isCmp(node[2])) ||
         (boolEagerBody() && isCanonicalBoolExpr(node[1]) && isCanonicalBoolExpr(node[2]))))
       return typed(['i32.or', la, lb], 'i32')
     return typed(['if', ['result', 'i32'], la, ['then', ['i32.const', 1]], ['else', lb]], 'i32')
   }
-  return toBoolFromEmitted(emit(node))
+  const emitted = emit(node)
+  const generic = toBoolFromEmitted(emitted)
+  if (Array.isArray(generic) && generic[0] === 'call' && generic[1] === '$__is_truthy') return kindTruthyIR(node, emitted) ?? generic
+  return generic
 }
 
 /** Emit a call argument ONCE, choosing emit vs emitIdentitySafe up front — the
@@ -1286,11 +1318,34 @@ export function emitIdentitySafeArms(node) {
     const refs = extractRefinements(a, new Map(), op === '&&')
     const vtA = resolveValType(a, valTypeOf, lookupValType)
     const vtB = resolveValType(b, valTypeOf, lookupValType)
-    const t = temp()
-    const fa = vtA === VAL.BOOL ? boolBoxIR(va) : asF64(va)
     const fb0 = withRefinements(refs, b, () => emitIdentitySafe(b))
     const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
-    const teedCond = toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64'))
+    if (vtA === VAL.BOOL) {
+      // A Boolean left operand is its own condition: one raw i32 test, the
+      // atom materialized only for the arm that yields the operand itself
+      // (the tee of its box read back through the generic truthiness paid a
+      // helper call per `isArray(x) && …`).
+      const c = tempI32('lb')
+      const raw = truthyIR(va)
+      let cond
+      if (Array.isArray(raw) && raw[0] === 'call' && raw[1] === '$__is_truthy') {
+        // An f64 Boolean carrier of either form: the raw 0/1 (a number by
+        // value) or the atom box; evaluated once.
+        const t = temp('lbv'), get = () => typed(['local.get', `$${t}`], 'f64')
+        cond = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(va)],
+          ['local.tee', `$${c}`, ['i32.or', ['i32.and', ['f64.eq', get(), get()], ['f64.ne', get(), ['f64.const', 0]]], ['i64.eq', ['i64.reinterpret_f64', get()], ['i64.const', TRUE_NAN]]]]], 'i32')
+      } else cond = typed(['local.tee', `$${c}`, raw], 'i32')
+      const own = boolBoxIR(typed(['local.get', `$${c}`], 'i32'))
+      return op === '&&'
+        ? typed(['if', ['result', 'f64'], cond, ['then', fb], ['else', own]], 'f64')
+        : typed(['if', ['result', 'f64'], cond, ['then', own], ['else', fb]], 'f64')
+    }
+    const t = temp()
+    const fa = asF64(va)
+    const generic = toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64'))
+    const teedCond = Array.isArray(generic) && generic[0] === 'call' && generic[1] === '$__is_truthy'
+      ? typed(['block', ['result', 'i32'], ['local.set', `$${t}`, fa], kindTruthyIR(a, typed(['local.get', `$${t}`], 'f64')) ?? typed(['call', '$__is_truthy', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], 'i32')], 'i32')
+      : generic
     return op === '&&'
       ? typed(['if', ['result', 'f64'], teedCond, ['then', fb], ['else', ['local.get', `$${t}`]]], 'f64')
       : typed(['if', ['result', 'f64'], teedCond, ['then', ['local.get', `$${t}`]], ['else', fb]], 'f64')

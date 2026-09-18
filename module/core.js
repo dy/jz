@@ -34,7 +34,7 @@ import { registerDurableLog } from './core/durable-log.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { bitOf, isNullable, K } from '../src/summary/kind.js'
+import { bitOf, isNullable, K, tagOf as summaryTagOf } from '../src/summary/kind.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -1759,7 +1759,13 @@ export default (ctx) => {
     if (va?.ptrKind === VAL.OBJECT && va.ptrAux != null && typeof prop === 'string') {
       const sch = ctx.schema.list[va.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
-      if (si >= 0) return emitSchemaSlotRead(va, si, ctx.schema.slotI32CertainBySid?.(va.ptrAux, prop),
+      // The slot's raw i32 load needs the summary's word too: the per-schema
+      // census marks a slot int-certain from the sites it registers, and a
+      // literal it did not register (one assigned to a parameter inside a
+      // closure) stores a string under the same schema.
+      const fk = ctx.summary?.fieldKind?.(va.ptrAux, prop)
+      const numberOnly = fk != null && summaryTagOf(fk) === K.NUMBER && !isNullable(fk)
+      if (si >= 0) return emitSchemaSlotRead(va, si, numberOnly && ctx.schema.slotI32CertainBySid?.(va.ptrAux, prop),
         ctx.schema.slotBigintProvenBySid?.(va.ptrAux, prop))
     }
     let schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
@@ -2244,7 +2250,21 @@ export default (ctx) => {
     if (propEmitter && ctx.core.getters.has(propKey) &&
         ptVt !== VAL.OBJECT && ptVt !== VAL.HASH) return propEmitter(obj)
 
-    return emitPropAccess(emit(obj), obj, prop)
+    // A present receiver the summary names as one shape (a parameter, a loop
+    // cursor a guard proved) reads its slot directly, the layout the guarded
+    // read above retains (readHoistedProp); without the shape on the receiver
+    // the access dispatched on the shape set at every read.
+    const receiver = emit(obj)
+    if (typeof obj === 'string' && receiver?.type === 'f64' && receiver.ptrKind == null && !ctx.schema.isBoxed(obj)) {
+      const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+      if (sid != null && ctx.schema.list[sid]?.includes(prop)) {
+        const shaped = typed(['i32.wrap_i64', asI64(receiver)], 'i32')
+        shaped.ptrKind = VAL.OBJECT
+        shaped.ptrAux = sid
+        return emitPropAccess(shaped, obj, prop)
+      }
+    }
+    return emitPropAccess(receiver, obj, prop)
   }
 
   // Optional-chain short-circuit: store the receiver/callee into temp `$t`

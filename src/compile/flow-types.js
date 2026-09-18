@@ -41,6 +41,11 @@ export function extractRefinements(cond, out, sense = true) {
   const op = cond[0]
   // ! flips sense
   if (op === '!') return extractRefinements(cond[1], out, !sense)
+  // `(d = ops[i++])` as a condition: on the path it guards the assigned name
+  // holds a truthy value, so its summary kind reads without its nullish part
+  // (lookupValType, reps.js). A loop body whose test assigns its cursor reads
+  // the cursor's shape directly, with no nullish guard per member.
+  if (op === '=' && typeof cond[1] === 'string') { if (sense) mergeRefinement(out, cond[1], { notNullish: true }); return out }
   // && under positive sense refines with union of both branches.
   // || under negative sense (De Morgan) similarly refines the else-branch.
   if (op === '&&' && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
@@ -353,14 +358,19 @@ export function withRefinements(refs, body, fn) {
   if (!refs || refs.size === 0) return fn()
   const cur = ctx.func.refinements ??= new Map()
   // Drop names that are reassigned in the body — refinement would be unsound.
-  const saved = []
+  const saved = [], aliased = []
+  const view = ctx.summary?.at(ctx.func.current)
   for (const [name, val] of refs) {
     if (isReassigned(body, name)) continue
     saved.push([name, cur.get(name)])
     cur.set(name, val)
+    // A name a guard proved present reads, for every summary consumer, as its
+    // kind without the nullish part (the query layer's `present` mark).
+    if (val.notNullish && view?.present && !view.isPresent?.(name)) { view.present(name); aliased.push(name) }
   }
   try { return fn() }
   finally {
+    for (const name of aliased) view.unpresent(name)
     for (const [name, prev] of saved) {
       if (prev === undefined) cur.delete(name); else cur.set(name, prev)
     }

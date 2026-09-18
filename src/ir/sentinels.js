@@ -206,7 +206,7 @@ export function valueTruthyIR(ref, bigint = false) {
       ['i32.and', ['i64.ne', bits, ['i64.const', UNDEF_NAN]], ['i64.ne', bits, ['i64.const', '0x7FFA400000000000']]]],
     ['i64.ne', bits, ['i64.const', FALSE_NAN]]]
   if (bigint) boxed = ['if', ['result', 'i32'],
-    ['i32.eq', ['call', '$__ptr_type', bits], ['i32.const', PTR.BIGINT]],
+    ['i32.eq', ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bits, ['i64.const', LAYOUT.TAG_SHIFT]]], ['i32.const', LAYOUT.TAG_MASK]], ['i32.const', PTR.BIGINT]],
     ['then', ['i64.ne', ['i64.load', ['call', '$__ptr_offset', bits]], ['i64.const', 0]]],
     ['else', boxed]]
   return ['if', ['result', 'i32'], ['f64.eq', ref, value],

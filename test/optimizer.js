@@ -5261,7 +5261,13 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   const w = compile(src, { wat: true, optimize: { level: 3, watr: false, sourceInline: false } })
   const body = w.slice(w.indexOf('(func $f'))
   ok(!/\(if\s*\(result i32\)\s*\(local\.tee/.test(body), 'no value diamond in the function')
-  ok(body.includes('$__cc'), 'the jump chain is present')
+  // A condition's operands are boolean questions asked in place (toBool):
+  // each one branches to the next, no operand is boxed, none is tested
+  // through the generic truthiness, and each call runs once per test (the
+  // while loop's rotated test repeats its own).
+  ok(!body.includes('__is_truthy'), 'no generic truthiness in the chain')
+  is((body.match(/\(call \$b[\s)]/g) || []).length, 3, 'b is called once per test')
+  is((body.match(/\(call \$c[\s)]/g) || []).length, 2, 'c is called once per test')
   const ref = oracle(src).f
   for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
 })

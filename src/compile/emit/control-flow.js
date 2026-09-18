@@ -320,8 +320,12 @@ export const controlFlowOps = {
   // === Control flow ===
 
   'if': (cond, then, els) => {
+    // A logical or negated condition is a boolean question, not a value:
+    // toBool tests each operand in place (the value form boxed the operand
+    // the `&&` yields, then tested the box generically).
+    const boolShape = Array.isArray(cond) && (cond[0] === '&&' || cond[0] === '||' || cond[0] === '!')
     // Dead branch elimination: constant condition → emit only the live branch
-    const ce = emit(cond)
+    const ce = boolShape ? toBool(cond) : emit(cond)
     if (isLit(ce)) {
       const v = litVal(ce), truthy = v !== 0 && v === v
       if (truthy) return emitVoid(then)
@@ -913,7 +917,12 @@ export const controlFlowOps = {
       const hi = cond[0] === '<' ? guardBoundRange[1] - 1 : guardBoundRange[1]
       map.set(guardName, guardHadPrev ? Math.min(guardPrev, hi) : hi)
     }
-    const emitLoopBody = () => withRefinements(counterRefs, body, () => emitVoid(body))
+    // The test guards the body: what it proves about a name (a truthy assignment, a
+    // typeof, a bound) holds on every iteration's entry, merged into the counter's
+    // own hull (a second map for the same name would replace its lower bound).
+    const bodyRefs = counterRefs ? new Map(counterRefs) : new Map()
+    if (condForLoop) extractRefinements(condForLoop, bodyRefs, true)
+    const emitLoopBody = () => withRefinements(bodyRefs, body, () => emitVoid(body))
     const loopBody = []
     if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz', toBool(condForLoop)]])
     loopBody.push(...freshBoxed)

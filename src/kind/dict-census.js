@@ -45,6 +45,8 @@ export const censusShapedNode = (node) =>
 export function censusMaybeUndefinedKind(node) {
   if (numericStorage(node)) return null
   if (typeof node === 'string') {
+    // A guard proved the name present on this path (flow-types.js).
+    if (ctx.func.refinements?.get(node)?.notNullish) return null
     const flow = ctx.func.localValTypesOverlay?.get(node)
     if (typeof flow === 'number') return hasTag(flow, K.ABSENT) || hasTag(flow, K.NULLISH) ? valOf(core(flow)) : null
     const r = repOf(node)

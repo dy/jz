@@ -160,7 +160,16 @@ export const updateGlobalRep = (name, fields) => {
 
 export const lookupValType = name => {
   const r = ctx.func.refinements
-  if (r?.size) { const v = r.get(name)?.val; if (v) return v }
+  if (r?.size) {
+    const f = r.get(name)
+    if (f?.val) return f.val
+    // A guard proved the name truthy: its summary kind without the nullish part.
+    if (f?.notNullish && ctx.summary) {
+      const k = ctx.summary.at(ctx.func.current)?.kindOfExpr(name)
+      const v = k == null ? null : ctx.summary.coreValOfKind(k)
+      if (v && v !== VAL.HASH) return v
+    }
+  }
   const ov = ctx.func.localValTypesOverlay
   const hasOverlayValues = ov?.size || (ov?.mapOverlay === true && (ov.own?.size || ov.base?.size))
   if (hasOverlayValues) { const v = ov.get(name); if (v) return typeof v === 'number' ? ctx.summary.valOfKind(v) : v }
@@ -211,7 +220,7 @@ export const isDisjointFrom = (name, kindSet) => {
  * ... not migrated conceptually, only re-homed") through the named
  * projection idiom Slice 2 established — NO computation change.
  */
-export const mayBeUndefined = name => ctx.func.localReps?.get(name)?.mayBeUndefined === true
+export const mayBeUndefined = name => !ctx.func.refinements?.get(name)?.notNullish && ctx.func.localReps?.get(name)?.mayBeUndefined === true
 
 // A local read only by numeric coercions can normalize missing values on write.
 // Parameters and captured cells keep their boundary representation.

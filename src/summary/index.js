@@ -92,7 +92,7 @@ const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, 
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [], constString = () => null, constStrings = () => null }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null }) {
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -148,7 +148,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   for (const f of funcs) funcByName.set(f.name, f)
   let changed = false
 
-  const escapeId = (id) => { if (!escaped.has(id)) { escaped.add(id); changed = true; escape(results.get(id) ?? K.NONE) } }
+  const escapeId = (id) => { if (!escaped.has(id)) { escaped.add(id); changed = true; escape(results.get(id) ?? K.NONE); for (const k of closureProps.get(id)?.values() ?? []) escape(k) } }
   // Members use existing scope keys: names for declared functions, numeric
   // IDs for anonymous closures. Taking a function's address preserves its
   // identity; only an unknown use opens its parameters.
@@ -527,6 +527,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // name may read. Array-index spellings share the element cell; a computed string
   // can name an element too, so its stores also join that cell.
   const cellProps = new Map()   // cell root → Map(name → kind)
+  // A closure's own properties (`fn.ops = ops` on a dispatcher, a handler's
+  // metadata): per closure site, the join of what every instance stores under
+  // the name. A read on a set joins its members; a name never stored reads
+  // undefined. An escaped closure may be written by anyone: its properties are
+  // read as ANY and what it holds escapes with it.
+  const closureProps = new Map()   // closure id → Map(name → kind)
+  const FUNCTION_PROTO = new Set(['call', 'apply', 'bind', 'toString', 'length', 'name', 'prototype', 'constructor'])
+  const closureOwn = (recv) => tagOf(recv) === K.CLOSURE && paramOf(recv) !== UNKNOWN && !membersOf(paramOf(recv)).some(id => escaped.has(id))
+  const raiseClosureProp = (recv, prop, k) => {
+    for (const id of membersOf(paramOf(recv))) {
+      let m = closureProps.get(id); if (!m) closureProps.set(id, m = new Map())
+      const old = m.get(prop) ?? K.NONE, nk = merge(old, k)
+      if (nk !== old) { m.set(prop, nk); changed = true }
+    }
+  }
+  const closurePropOf = (recv, prop) => { let k = K.NONE; for (const id of membersOf(paramOf(recv))) k = merge(k, closureProps.get(id)?.get(prop) ?? K.NONE); return k }
   const cellWild = new Map()    // cell root → kind stored under a computed string key
   // A dictionary built by a literal with a spread or a computed key: its
   // entries are known by name (cellProps) or under an unknown name (cellWild),
@@ -942,7 +958,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         return K.NONE
       }
       if (k !== undefined && tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) return callClosure(paramOf(k), base, n, node)
-      if (k === undefined && key !== null) return K.NONE  // a local callee not known yet
+      // A binding not known yet, or known only as nullish so far (a call of
+      // undefined throws: no argument flows): nothing to escape this round.
+      if (key !== null && (k === undefined || tagOf(k) === K.NONE || tagOf(k) === K.NULLISH || tagOf(k) === K.ABSENT)) return K.NONE
       // Atomic value operations return an element or throw; unlike indexed
       // reads, an out-of-bounds index never contributes undefined.
       if (ATOMICS_VALUE_OPS.has(callee)) {
@@ -1625,6 +1643,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (t === K.ARRAY && paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return optionalResult(op, recv, orAbsent(propOf(recv, prop)))
     // A primitive holds no own property: a name outside its prototype reads undefined.
     if ((t === K.STRING || t === K.NUMBER || t === K.BOOL || t === K.BIGINT) && !PRIMITIVE_METHODS.has(prop)) return optionalResult(op, recv, NULLISH)
+    if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(prop)) return optionalResult(op, recv, orAbsent(closurePropOf(recv, prop)))
     return optionalResult(op, recv, ANY)
   }
   /** The kind of an expression, with its effects: calls bind parameters, stores raise slots. */
@@ -1795,7 +1814,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'await') return expr(n[1]) === K.NONE ? K.NONE : ANY
     // A spread reads its source's elements (an array's, a typed array's, a
     // string's characters); a source of another kind is iterated by code the summary does not model.
-    if (op === '...') { const k = expr(n[1]), t = tagOf(k); if ((t === K.ARRAY || t === K.SET) && celled(k)) return elemOf(k); if (t === K.MAP && celled(k)) { const pair = tuplePair(n, keysOf(k), elemOf(k)); return pair } if (t === K.TYPED) return typedElemKind(k); if (t === K.STRING) return STRING; if (t === K.NONE) return K.NONE; escape(k); return ANY }
+    // A spread of nothing, or of a nullish value (a TypeError), contributes no element.
+    if (op === '...') { const k = expr(n[1]), t = tagOf(k); if ((t === K.ARRAY || t === K.SET) && celled(k)) return elemOf(k); if (t === K.MAP && celled(k)) { const pair = tuplePair(n, keysOf(k), elemOf(k)); return pair } if (t === K.TYPED) return typedElemKind(k); if (t === K.STRING) return STRING; if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return K.NONE; escape(k); return ANY }
     for (let i = 1; i < n.length; i++) stmt(n[i])
     return ANY
   }
@@ -1847,6 +1867,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // A length store extends an array with holes (`a.length = n`: the new slots read undefined).
       else if (t === K.ARRAY) { if (prop === 'length') raiseElem(recv, ABSENT); else if (paramOf(recv) !== UNKNOWN) raiseProp(recv, prop, v); else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseProp(recv, prop, v); else escape(v) }
+      else if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(prop)) raiseClosureProp(recv, prop, v)
       else if (builtinReceiverTag(t)) escape(v)
       else if (t !== K.STRING) { if (unknownReceiver(recv)) { const b = sp; pushK(v); callCandidates(recv, setterOf(prop), b, 1); sp = b } poisonProp(prop, v); dynamicProps.add(prop); escape(v) }
       return v
@@ -2092,6 +2113,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
 
   let current = null  // the scope (and result key) of the function being walked; null at module scope
   for (const [scope, name] of dictUses) { current = scope === MODULE ? null : scope; const key = keyOf(name); if (key !== null) dictKeys.add(key) }
+  // A global the plan declared without a declaration statement (a function
+  // property flattened to a module global, plan/scope.js flattenFuncNamespaces)
+  // is a module binding named by its writes, undefined until the first one.
+  for (const [scope, name] of writes)
+    if (moduleGlobals.has(name) && keyOf(name, scope) === null) raise(kinds, declareIn(MODULE, name), NULLISH)
   current = null
   const definitions = new Map()
   for (const [scope, name, value] of writes) {
@@ -2134,7 +2160,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       unwind(mark)
       return
     }
-    if (op === 'for') { loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0); selectedExpr(n[3], 0); stmt(n[4]); branch--; return }
+    // A loop's test guards its body the way an `if` guards its branch.
+    if (op === 'for') { loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0); const mark = rtop; if (n[2] != null) proves(n[2], true); stmt(n[4]); unwind(mark); selectedExpr(n[3], 0); branch--; return }
     if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
       loopAssigns(n)
       const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
@@ -2153,7 +2180,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       branch--
       return
     }
-    if (op === 'while' || op === 'do') { loopAssigns(n); branch++; selectedExpr(n[1], 0); stmt(n[2]); branch--; return }
+    if (op === 'while' || op === 'do') { loopAssigns(n); branch++; selectedExpr(n[1], 0); const mark = rtop; if (op === 'while') proves(n[1], true); stmt(n[2]); unwind(mark); branch--; return }
     // Prepared try statements: `['catch', tryBody, param?, handler]`, `['finally', inner, cleanup]`.
     if (op === 'catch') { branch++; stmt(n[1]); if (typeof n[2] === 'string') declare(n[2], ANY); stmt(n[3]); branch--; return }
     if (op === 'finally') { branch++; stmt(n[1]); stmt(n[2]); branch--; return }
@@ -2249,6 +2276,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof c === 'string') { if (when) refineName(c, NOT_NULLISH); return }
     if (!Array.isArray(c)) return
     const op = c[0]
+    // `(d = ops[i++])` as a condition: the assigned name is truthy on the path it guards.
+    if (op === '=' && typeof c[1] === 'string') { if (when) refineName(c[1], NOT_NULLISH); return }
     if (op === '!') { proves(c[1], !when); return }
     if (op === '()' && c.length === 2) { proves(c[1], when); return }
     if ((op === '&&' && when) || (op === '||' && !when)) { proves(c[1], when); proves(c[2], when); return }
@@ -2346,7 +2375,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)
@@ -2589,7 +2618,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
     seed(seeded)
     fixpoint()
   }

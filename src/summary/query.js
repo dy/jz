@@ -15,11 +15,12 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
   const dictOrObject = k => paramOf(k) !== UNKNOWN && hasTag(k, K.HASH) && tagOf(k) === K.ANY && (k & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0
+  const FUNCTION_PROTO = new Set(['call', 'apply', 'bind', 'toString', 'length', 'name', 'prototype', 'constructor'])
   const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH || tagOf(k) === K.SET || dictOrObject(k)) && paramOf(k) !== UNKNOWN
   const canon = k => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
   const elemOf = k => celled(k) ? elems[cell(paramOf(k))] : ANY
@@ -151,12 +152,15 @@ export function summaryQueries(facts, internal = false) {
     // optional chain's guarded head): its kind is the expression's, without
     // the nullishness the guard excluded.
     const aliases = new Map()
-    const readKind = name => aliases.has(name) ? core(kindOfExpr(aliases.get(name))) : readKey(keyOfAnywhere(name))
+    // Names a guard proved present on the path being emitted (flow-types.js
+    // withRefinements): their kind reads without its nullish part.
+    const present = new Set()
+    const readKind = name => aliases.has(name) ? core(kindOfExpr(aliases.get(name))) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
     const selectedExpr = (n, mask) => {
       const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
       if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
-      if (typeof n === 'string') { if (aliases.has(n)) return core(kindOfExpr(aliases.get(n))); const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY) : readKey(key) }
+      if (typeof n === 'string') { if (aliases.has(n)) return core(kindOfExpr(aliases.get(n))); const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY) : present.has(n) ? core(readKey(key)) : readKey(key) }
       if (typeof n === 'number') return NUMBER
       if (!Array.isArray(n)) return ANY
       const op = n[0]
@@ -292,6 +296,14 @@ export function summaryQueries(facts, internal = false) {
       }
       if (isCount(prop, r)) return NUMBER
       if (t === K.ARRAY && paramOf(r) !== UNKNOWN && !ARRAY_METHODS.has(prop)) return orAbsent(propOf(r, prop))
+      // A closure's own property (the solver's closureProps): the join over the
+      // set's members, undefined where none stored it; an escaped member or a
+      // Function.prototype name reads as anything.
+      if (t === K.CLOSURE && paramOf(r) !== UNKNOWN && !FUNCTION_PROTO.has(prop) && !membersOf(paramOf(r)).some(id => escaped.has(id))) {
+        let k = K.NONE
+        for (const id of membersOf(paramOf(r))) k = join(k, closureProps.get(id)?.get(prop) ?? K.NONE)
+        return orAbsent(k)
+      }
       return prop === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY
     }
     /** A method call's result on a receiver of kind `r`: the solver's `method`. */
@@ -352,6 +364,9 @@ export function summaryQueries(facts, internal = false) {
       // bodies this scope covers, so an alias never outlives its use.
       alias: (name, e) => { aliases.set(name, e) },
       unalias: (name) => { aliases.delete(name) },
+      /** The name is present on the path being emitted (a guard proved it): its reads drop the nullish part. */
+      present: (name) => { present.add(name) },
+      unpresent: (name) => { present.delete(name) },
       // The result contract of the callable a call reaches, or null (contract.js).
       calleeContract: n => { const c = calleeOf(n); return c === null ? null : resultContract(c) },
       sidOf: name => { const k = readKind(name); return tagOf(k) === K.OBJECT && !isNullable(k) && publicSid(k) !== UNKNOWN ? publicSid(k) : null },
@@ -422,6 +437,8 @@ export function summaryQueries(facts, internal = false) {
       : scopeOfSig.get(x) ?? scopeOfBody.get(x) ?? closuresByBody.get(x) ?? (x?.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? ''),
     resultContract,
     valOfKind: valOf,
+    /** The value type of a kind without its nullish part (a guard proved presence). */
+    coreValOfKind: k => valOf(core(k)),
     fieldKind,
     hostSchema: sid => hostLayouts.has(sid),
     // Whether any binding of the program holds a value of this tag: a

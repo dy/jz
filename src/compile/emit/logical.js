@@ -15,7 +15,7 @@ import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
 import { tagFnArrayDispatch } from './call.js'
 import { numericVal } from './comparisons.js'
-import { emit } from './dispatch.js'
+import { emit, toBool } from './dispatch.js'
 import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, isCanonicalBoolExpr, isNumArm, selectCondOK } from './shared.js'
 
 
@@ -201,6 +201,8 @@ export const logicalOps = {
   // === Logical ===
 
   '!': a => {
+    // A logical operand is a boolean question: test it in place, no box.
+    if (Array.isArray(a) && (a[0] === '&&' || a[0] === '||' || a[0] === '!')) return typed(['i32.eqz', toBool(a)], 'i32')
     const v = emit(a)
     if (v.type === 'i32') return typed(['i32.eqz', v], 'i32')
     // Unboxed pointer offsets: falsy iff zero offset.
@@ -221,7 +223,8 @@ export const logicalOps = {
 
   '?:': (a, b, c, self) => {
     // Constant condition → emit only the live branch, but preserve the
-    // materialized join's selected edge normalization.
+    // materialized join's selected edge normalization. A logical or negated
+    // condition is a boolean question: toBool tests its operands in place.
     const ca = emit(a)
     if (isLit(ca)) {
       const v = litVal(ca), arm = (v !== 0 && v === v) ? b : c
