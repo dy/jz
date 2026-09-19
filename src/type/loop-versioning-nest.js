@@ -103,6 +103,12 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   }
   walkLoop(init, cond, step, body, null, true)
   const stableTop = stableLoopNames(body, cond, step)
+  // The top loop's own iv is written by its step by construction (`j--`). An
+  // inner access that reads it (`src[j + len]`) lifts when the top level's
+  // own hull guards that access: the lifted inner conjunct reads the iv's
+  // entry value, which only narrows the fast arm the hull already bounds.
+  const topIv = Array.isArray(step) && MUTATE_OPS.has(step[0]) && typeof step[1] === 'string' ? step[1] : null
+  const topKeys = new Set(levels[0]?.top ? levels[0].cands.filter(c => !c.presence).map(c => idxKey(c.recv, c.idx)) : [])
   const exprNames = (e, out) => someDeep(e, n => { if (typeof n === 'string') out.push(n); return false })
   const keepPre = levels.filter((L) => {
     // A numeric hull that already exceeds a receiver's STATIC length can never
@@ -131,21 +137,25 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     }
     // names the lifted guard READS at top entry (iv itself is NOT read — inner
     // entries are static by the filter above, and only the top may read its iv)
+    if (L.top) return true
     const names = []
     exprNames(L.bound, names)
     if (typeof L.bound === 'string') names.push(L.bound)
-    for (const c of L.cands) {
-      names.push(c.recv)
-      if (c.presence) continue
-      if (c.range != null) { if (c.range.hiName != null) names.push(c.range.hiName); continue }
-      if (c.ind != null) { names.push(c.ind); if (typeof c.slope === 'string') names.push(c.slope) }
-      else if (c.cursor != null) names.push(c.cursor)
-      else for (const t of c.slots) { if (typeof t.e === 'string') names.push(t.e); else exprNames(t.e, names) }
-    }
+    const stableFor = (c) => (name) => typeof name !== 'string' || stableTop(name)
+      || (name === topIv && c != null && topKeys.has(idxKey(c.recv, c.idx)))
+    if (!names.every(stableFor(null))) return false
     // the top level's own iv/bound legitimately live in the top body — only names
     // read by LIFTED (inner) guards need top-stability; the top spec re-checks
     // nothing new here beyond its own scan
-    return L.top || names.every(name => typeof name !== 'string' || stableTop(name))
+    return L.cands.every(c => {
+      const read = [c.recv]
+      if (c.presence) return stableTop(c.recv)
+      if (c.range != null) { if (c.range.hiName != null) read.push(c.range.hiName) }
+      else if (c.ind != null) { read.push(c.ind); if (typeof c.slope === 'string') read.push(c.slope) }
+      else if (c.cursor != null) read.push(c.cursor)
+      else for (const t of c.slots) { if (typeof t.e === 'string') read.push(t.e); else exprNames(t.e, read) }
+      return read.every(stableFor(c))
+    })
   })
   const keep = keepPre
   if (!keep.length) return null

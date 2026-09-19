@@ -4889,6 +4889,63 @@ export let run = (n, nStages) => {
   ok(!/nan:0x7FF8000200000000/.test(fastArm), 'fast arm carries no checked-read sentinels')
 })
 
+test('versioned nest: an inner scan reading the outer iv lifts to one guard at the nest entry', () => {
+  // The LZ match scan: a decreasing loop over candidate positions `j`, an
+  // inner while comparing bytes at `j + len` and `ip + len`. The position loop
+  // steps by the match length, so it is no versioning root: the `j` loop is
+  // the nest's top. The inner guard reads `j`, which the top step writes by
+  // construction; the top level's own hull bounds those accesses, so the inner
+  // level lifts and the nest pays one guard at entry (the hull needs the
+  // static extent `N`, as lz has: a parameter length leaves the top without a
+  // hull and the inner guard stays per iteration, which is the sound choice).
+  // Evaluating it per `j` iteration around a one-to-three-step loop cost the
+  // lz case 68%.
+  const src = `
+const N = 300
+const scan = (src) => {
+  let ip = 0, total = 0
+  while (ip < N) {
+    let start = ip - 64
+    if (start < 0) start = 0
+    let maxLen = N - ip
+    if (maxLen > 18) maxLen = 18
+    let best = 0
+    for (let j = ip - 1; j >= start; j--) {
+      let len = 0
+      while (len < maxLen && src[j + len] === src[ip + len]) len++
+      if (len > best) best = len
+    }
+    total += best
+    ip += best > 2 ? best : 1
+  }
+  return total
+}
+export let main = () => {
+  const src = new Uint8Array(N)
+  for (let i = 0; i < N; i++) src[i] = (i * 7) & 3
+  return scan(src)
+}`
+  const jsExports = oracle(src)
+  // `main`, not `run`: `run` is the reserved void WASI command entry (_matrix.js).
+  for (const optimize of levels(0, 2, 'speed')) is(run(src, { optimize }).main(), jsExports.main(), `O${optimize}: scan total JS-exact`)
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const fn = wat.split('(func ').find(f => f.includes('load8_u')) || ''
+  ok(/i64\.l[te]_s/.test(fn), 'versioned guard present')
+  // The guard sits at the `j` nest's entry (once per `ip`), so the loop that
+  // directly encloses the innermost scan carries no i64 extent compare.
+  const loops = []
+  for (let at = fn.indexOf('(loop '); at >= 0; at = fn.indexOf('(loop ', at + 1)) {
+    let d = 0
+    for (let i = at; i < fn.length; i++) {
+      if (fn[i] === '(') d++
+      else if (fn[i] === ')' && --d === 0) { loops.push({ at, end: i, text: fn.slice(at, i) }); break }
+    }
+  }
+  const innermost = loops.filter(L => !L.text.slice(6).includes('(loop '))
+  const enclosing = innermost.map(I => loops.filter(L => L !== I && L.at < I.at && L.end > I.end).sort((x, y) => (x.end - x.at) - (y.end - y.at))[0]).filter(Boolean)
+  ok(enclosing.length > 0 && enclosing.every(L => !/i64\.(l[te]|g[te])_s/.test(L.text)), 'one guard at the nest entry, none per outer iteration')
+})
+
 test('cursor-versioning: monotone stream cursor guards fast-arm bare loads, checked else preserves OOB semantics', () => {
   // glyfparse's `stream[r++]` shape: `r` is a body-advanced CURSOR (not the
   // loop's own iv) read across a countable loop's iterations — the affine

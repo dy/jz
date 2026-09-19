@@ -702,7 +702,12 @@ Typed-store summaries account for element wrapping and fresh zeroed storage.
 Truncated division preserves its quotient range only when it cannot wrap i32.
 Structural index proofs require every occurrence to succeed. Loop versioning
 groups cursor offsets by their shared extent and omits already-covered nest
-guards; negative offsets participate in the lower bound.
+guards; negative offsets participate in the lower bound. A nested level lifts
+its guard to the nest entry only when every name that guard reads is stable
+over the top loop's body, condition and step (`stableLoopNames`: a call may
+replace a global, so calls count as writes); the top loop's own iv, written by
+its step, is exempt for an access the top level's own hull already guards
+(the lifted conjunct reads the iv's entry value and only narrows the fast arm).
 
 Ephemeral dictionaries use the same zeroed header allocator as other collections.
 Allocation and fixed probes share one capacity calculation; unrepresentable

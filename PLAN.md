@@ -749,7 +749,31 @@ Those tests do not establish callback deadlines.
   0.75 floor (typed arrays only). The committed snapshot has base64 at
   0.86× and lz at 0.79× of AssemblyScript with AssemblyScript's own times
   unchanged, so jz's lz and base64 slowed between the snapshot and this
-  tree: item 3 (the dataset regeneration) is where that gets bisected.
+  tree.
+- That slowdown bisected (234 first-parent commits, one tree per step, the
+  lz case alone) to 63f4fe97, the summary widening round: lz 11.6 → 18.3
+  ms, base64 3.3 → 4.5 across that one commit. lz's inner match scan
+  (`while (len < maxLen && src[j + len] === src[ip + len])`) had its
+  typed-bounds guard lifted to the entry of the `j` loop nest; the round's
+  shared stability helper counted the top loop's step among the roots, so
+  the outer iv `j` (stepped by `j--`) read as unstable and the inner level
+  stopped lifting: four i64 extends and compares per `j` iteration around a
+  one-to-three-step loop. The iv is exempt now where the top level's own
+  hull guards the access (`loop-versioning-nest.js`; the step still
+  counts for every other name, which was the round's real fix): lz 11.25
+  ms. The other half of that round's lz delta is a correction kept: the
+  parent vectorized `if (dec[i] !== src[i]) ok = 0` without landing the
+  lane shadow in `ok` (a mismatch inside the vector part was lost; the
+  bench's data never had one), and the round's `outsideReads` gate
+  declines that lift; an any-lane landing would restore it. base64's
+  decode locals (`a = dec[src[i]]`) were i32 in the parent only because
+  its inliner reused the encode inline's locals; with unique inline
+  locals the plan types them f64 (a typed read whose index is another
+  element, unproven), four conversions per iteration: a representation
+  proof for element-valued indices is the lever there. Gates on the tree
+  with the nest fix: core 4502/4503, opt0 4308/4309, opt3 4308/4309, wasi
+  4361/4362 (one skip each), self-compile 68/68; `test/optimizer.js` pins
+  the lift on the lz shape under both hosts.
 - Gates on the tree with the defects below closed: core 4501/4502, opt0
   4306/4307, opt3 4306/4307, wasi 4359/4360 (one skip each), self-compile
   68/68, `bench:size` geomean 0.794× (byte-identical output), warm
