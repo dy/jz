@@ -774,6 +774,31 @@ Those tests do not establish callback deadlines.
   with the nest fix: core 4502/4503, opt0 4308/4309, opt3 4308/4309, wasi
   4361/4362 (one skip each), self-compile 68/68; `test/optimizer.js` pins
   the lift on the lz shape under both hosts.
+- The verify flag (`if (a[i] !== b[i]) ok = 0`) vectorizes again, correctly
+  this time: a lane-local's shadow never started from its scalar and never
+  landed back, which is why the parent's lift lost a mismatch inside the
+  vector part and why the widening round declined every live-out lane-local.
+  A constant flag (one constant, no else: `constantFlagStore`, `map.js`) is
+  the exception now: its shadow starts as the scalar's splat and the scalar
+  takes the constant after the vector loop when any lane did
+  (`v128.any_true`). base64: 4.54 → 4.09 ms in the host harness (parent
+  3.34, AssemblyScript 3.94); `test/simd.js` pins the lift and the landing
+  at every mismatch position, both element types. What remains on base64
+  is the decode locals (`a = dec[b64[i + k]]`, four f64 round trips per
+  iteration): the interval proof proves that read (index hull [0, 255],
+  length 256) in the analysis where `dec` carries main's length, and sees
+  the same structural key unproven in the analysis of `decode` on its own,
+  where `dec` is a parameter without a length; one unproven twin rejects
+  the key (`interval-proof.js`, by design against lowering clones). The
+  lever is a length fact for an inlined parameter, or a per-analysis key
+  space, and it is worth about 0.7 ms of the 1.1 ms gap to AssemblyScript.
+- watr against V8 stands at 1.77× on the bench's first call and 1.24× at
+  steady state (the tier-up finding above); no lever in this round touched
+  it. The wins there need both a smaller speed-tier module (cold paths out
+  of line, so TurboFan lands sooner and Liftoff's code is shorter) and the
+  steady-state items already listed: dictionary reads by parsed keys, the
+  small-array allocator, and a string hash cached in the string header the
+  way V8 caches it, so a parsed key hashes once.
 - Gates on the tree with the defects below closed: core 4501/4502, opt0
   4306/4307, opt3 4306/4307, wasi 4359/4360 (one skip each), self-compile
   68/68, `bench:size` geomean 0.794× (byte-identical output), warm

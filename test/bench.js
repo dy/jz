@@ -277,7 +277,6 @@ const SIZE = {
   // ~2.2× AS's lean -Oz (honest `todo`, like lz/qoi).
   hashjoin:       { as: 'todo' },
   watr:           { as: 'na'  },
-  jessie:         { as: 'na'  },
 }
 const SIZE_GEOMEAN_MAX = { as: 1.05 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.01×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
@@ -509,15 +508,17 @@ const ratioCell = (claim, num, den) => num != null && den != null ? `${mark[clai
 console.log('\nbench snapshot (speed = median ms, size = wasm bytes; "×" = jz/target):')
 console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.C        spd.as       ${'jz_sz'.padStart(7)}  sz.AS        slack`)
 console.log(`  ${'-'.repeat(13)}  ${'-'.repeat(6)}  -----------  -----------  -----------  ${'-'.repeat(7)}  -----------  ------`)
+// A case absent from a claim table has no expectation there: the cell prints
+// its ratio unmarked, and the assertion loops below never visit it.
 for (const id of Object.keys(SPEED)) {   // curated v8/as/native/size table (the fastest-wasm gate covers the full corpus below)
   const r = runs[id] || {}, sz = sizes[id] || {}
   const slack = sz.jz && sz.jzOpt ? `${((sz.jzOpt / sz.jz) * 100).toFixed(0)}%` : '  — '
   console.log(`  ${id.padEnd(13)}  ${fmtMs(r.jz?.medianUs)}  ` +
-    `${ratioCell(SPEED[id].v8, r.jz?.medianUs, r.v8?.medianUs).padEnd(11)}  ` +
+    `${ratioCell(SPEED[id]?.v8, r.jz?.medianUs, r.v8?.medianUs).padEnd(11)}  ` +
     `${ratioCell(NATIVE[id], r.jz?.medianUs, r.nat?.medianUs).padEnd(11)}  ` +
-    `${ratioCell(SPEED[id].as, r.jz?.medianUs, r.as?.medianUs).padEnd(11)}  ` +
+    `${ratioCell(SPEED[id]?.as, r.jz?.medianUs, r.as?.medianUs).padEnd(11)}  ` +
     `${fmtKb(sz.jz)}  ` +
-    `${ratioCell(SIZE[id].as, sz.jz, sz.as).padEnd(11)}  ${slack.padStart(5)}`)
+    `${ratioCell(SIZE[id]?.as, sz.jz, sz.as).padEnd(11)}  ${slack.padStart(5)}`)
 }
 
 const validTiming = r => !!r && !r.failed && Number.isFinite(r.medianUs) && r.medianUs > 0

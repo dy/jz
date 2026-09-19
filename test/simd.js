@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { belowOpt, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
-import { run, wat, oracle } from './util.js'
+import { run, wat, oracle, funcWat } from './util.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -4024,4 +4024,43 @@ test('vectorizer pass names: legacy experimental* keys stay accepted as aliases'
   // normalized cfg) must differ from the default build on this SIMD-heavy source.
   const scalar = jz.compile(src, { optimize: { level: 3 }, noSimd: true, wat: true })
   ok(on !== scalar, 'cfg plumbing is live (noSimd changes output)')
+})
+
+test('SIMD flag landing: `if (a[i] !== b[i]) ok = C` lifts, and the scalar lands the vector part', () => {
+  // The verify idiom of the lz and base64 kernels. Its lane shadow starts as
+  // the scalar's splat and lands after the vector loop (C when any lane took
+  // it): a mismatch inside the vector part once vanished (the shadow started
+  // at zero and never landed), so the lift was declined for the whole loop.
+  const src = `
+export let verify = (n, at) => {
+  const a = new Uint8Array(n), b = new Uint8Array(n)
+  for (let i = 0; i < n; i++) { a[i] = i & 7; b[i] = i & 7 }
+  if (at >= 0) b[at] = 200
+  let ok = 1
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) ok = 0
+  return ok
+}
+export let count = (n, at) => {
+  const a = new Float64Array(n), b = new Float64Array(n)
+  for (let i = 0; i < n; i++) { a[i] = i * 0.5; b[i] = i * 0.5 }
+  if (at >= 0) b[at] = -1
+  let bad = 0
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) bad = 7
+  return bad
+}`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const ex = run(src, { optimize })
+    for (const n of [0, 1, 15, 16, 17, 33, 100])
+      for (const at of [-1, 0, 1, 5, 15, 16, 17, 31, 32, n - 1]) {
+        if (at >= n) continue
+        is(ex.verify(n, at), js.verify(n, at), `O${optimize}: verify n=${n} mismatch at ${at}`)
+        is(ex.count(n, at), js.count(n, at), `O${optimize}: count n=${n} mismatch at ${at}`)
+      }
+  }
+  if (belowOpt(1) || onKernel()) return
+  const text = compile(src, { wat: true, optimize: 'speed' })
+  const fn = funcWat(text, 'verify')
+  ok(/i8x16\.ne|v128\.bitselect/.test(fn), 'the byte compare loop vectorizes')
+  ok(fn.includes('v128.any_true'), 'the flag lands from its lane shadow')
 })

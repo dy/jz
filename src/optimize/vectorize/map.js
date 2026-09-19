@@ -10,6 +10,38 @@ import { isArr } from './node-utils.js'
  * Try to vectorize the inner loop. Returns the replacement node array
  * (synthetic outer block) or null on no match.
  */
+// A lane-local written only as `if (cond) L = C` (one constant, no else): the
+// flag idiom (`if (a[i] !== b[i]) ok = 0`). Its lift reads the lane shadow
+// before writing it, so the shadow starts as a splat of the scalar, and its
+// scalar lands after the vector loop: C if any lane took it, else the entry
+// value. Returns the constant node, or null for any other write shape.
+const LANE_NE = { i8: 'i8x16.ne', i16: 'i16x8.ne', i32: 'i32x4.ne', i64: 'i64x2.ne', f32: 'f32x4.ne', f64: 'f64x2.ne' }
+function constantFlagStore(body, name) {
+  let constant = null, ok = true
+  const isConst = (v) => isArr(v) && (v[0] === 'i32.const' || v[0] === 'i64.const' || v[0] === 'f32.const' || v[0] === 'f64.const') && v.length === 2
+  const sameConst = (v) => isConst(v) && (constant == null ? (constant = v, true) : constant[0] === v[0] && constant[1] === v[1])
+  const flagIf = (n) => isArr(n) && n[0] === 'if' && n.length === 3 && isArr(n[2]) && n[2][0] === 'then' && n[2].length === 2
+    && isArr(n[2][1]) && n[2][1][0] === 'local.set' && n[2][1][1] === name && sameConst(n[2][1][2])
+  const walk = (n) => {
+    if (!ok || !isArr(n)) return
+    if (flagIf(n)) { walkAst(n[1], { enter: x => { if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) ok = false } }); return }
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) { ok = false; return }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  for (const s of body) walk(s)
+  return ok && constant ? constant : null
+}
+// The scalar of `name` as a vector of `laneType` lanes, or null when the
+// scalar's type has no exact lane splat.
+function splatScalar(name, scalarType, laneType) {
+  const get = ['local.get', name], splat = LANE_INFO[laneType].splat
+  if (scalarType === 'i32' && (laneType === 'i8' || laneType === 'i16' || laneType === 'i32')) return [splat, get]
+  if (scalarType === 'i32' && laneType === 'f64') return [splat, ['f64.convert_i32_s', get]]
+  if (scalarType === 'i32' && laneType === 'f32') return [splat, ['f32.convert_i32_s', get]]
+  if (scalarType === laneType && (laneType === 'i64' || laneType === 'f64' || laneType === 'f32')) return [splat, get]
+  return null
+}
+
 export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   // Consumes the shared scaffold descriptor (matchBlockLoop, computed once by the
   // dispatch). The LICM `$__li` preamble is cloned ahead of the SIMD block; each
@@ -182,6 +214,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   if (mirrorSites.length && aosPixelStride > 1) return null
 
   const localKind = new Map()  // name → 'lane' | 'invariant' | 'addr'
+  const flagLandings = new Map()  // lane-local → its constant, landed after the vector loop
   // Plan-level referenced-names census (bl.referenced) — every locally-touched name.
   const referenced = blReferenced
 
@@ -196,8 +229,13 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
       }
       if (firstKind === 'read') return null  // loop-carried (reduction or stencil)
       // A lane-local live out of the loop (`last = a[i]`, returned after)
-      // must land in its scalar local, which the lift's v128 shadow never does.
-      if (bl.outsideReads?.has(name)) return null
+      // must land in its scalar local, which the lift's v128 shadow never does,
+      // except a constant flag (constantFlagStore), landed after the loop.
+      if (bl.outsideReads?.has(name)) {
+        const flag = constantFlagStore(body, name)
+        if (!flag || !splatScalar(name, fnLocals.get(name), laneType)) return null
+        flagLandings.set(name, flag)
+      }
       // Discriminate lane-data vs address-tee. Address tees hold i32 addresses,
       // not vector data. We classify by checking the local's declared type.
       const decl = fnLocals.get(name)
@@ -367,11 +405,23 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
     ['i32.add', ['local.get', incVar],
       ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', mask]]]]
 
+  // A flag's lane shadow starts as the scalar's splat (its lift keeps lanes the
+  // condition spares); after the loop the scalar takes the constant when any
+  // lane did (a lane differs from the entry value only by taking it), else
+  // keeps its entry value, and the scalar tail continues from there.
+  const flagInit = [], flagLand = []
+  for (const [name, constant] of flagLandings) {
+    const laneName = newLanedLocals.get(name)
+    if (!laneName) continue
+    const splat = splatScalar(name, fnLocals.get(name), laneType)
+    flagInit.push(['local.set', laneName, splat])
+    flagLand.push(['if', ['v128.any_true', [LANE_NE[laneType], ['local.get', laneName], splat]], ['then', ['local.set', name, cloneNode(constant)]]])
+  }
   // Synthetic outer wrapper — has no result, no label, just sequences.
   // A clone of any LICM-hoisted preamble runs first (so the SIMD block sees the
   // invariant); the original block is preserved unchanged as the scalar tail (which
   // re-runs the preamble harmlessly — it is loop-invariant).
-  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
+  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, ...flagInit, simdBlock, ...flagLand, bl.blockNode]
 
   // Locals to add to function header.
   const newLocalDecls = [
