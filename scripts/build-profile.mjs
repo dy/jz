@@ -124,7 +124,10 @@ export function resolveSelfCompileBuild({
   // form. The callback form is semantically identical on a native host but an
   // O1-built compiler widened its boolean callback carrier and printed a flat
   // `(memory (export …) 1)` over three lines.
-  const watrPrintPath = Object.keys(graph.modules).find(p => p.endsWith('/node_modules/watr/src/print.js'))
+  // Match the printer wherever watr resolved from: an installed copy under
+  // node_modules, or a linked checkout (npm link / workspace), which has no
+  // node_modules segment in its path at all.
+  const watrPrintPath = Object.keys(graph.modules).find(p => p.endsWith('/watr/src/print.js'))
   if (!watrPrintPath) throw new Error('resolveSelfCompileBuild: watr/src/print.js missing from self graph')
   const printRewrites = [
     ['let flat = !!newline && node.length < 4 && !node.some(n => typeof n === \'string\' && n[0] === \';\' && n[1] === \';\')',

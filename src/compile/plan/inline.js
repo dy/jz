@@ -268,6 +268,16 @@ const inlineInExpr = (node, candidates) => {
   return out
 }
 
+// Whether a callee's own work is something the host cannot schedule around the
+// call: a call of its own, or a `**` that lowers to one. Splicing such a callee
+// out of a multi-declarator declaration puts its channels' transcendental
+// chains side by side at one level, which is the whole win there (colorlog ran
+// 1.13x V8 and runs 0.54 once its three decodes inline). A callee of plain
+// arithmetic gains nothing — a cheap call is already free for the host to
+// schedule across — and the copies only add size (fft's sine/cosine
+// polynomials grew its module 5% for no time at all).
+const transcendentalBody = (func) => !!func?.body && some(func.body, n => n[0] === '()' || n[0] === '**')
+
 const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
   if (!Array.isArray(stmt)) return null
   // Statement-position call: the result is unused, but the callee's return
@@ -286,24 +296,37 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     }
   }
   // `let/const X = call(...)` with single decl: inline as prefix + decl(value).
-  if ((stmt[0] === 'let' || stmt[0] === 'const') && stmt.length === 2) {
-    const decl = stmt[1]
-    if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates)) {
-      const args = callArgs(decl[2])
-      const shape = args && inlinedBody(candidates.get(decl[2][1]), args)
-      if (shape && shape.value !== null) {
-        const { hoisted, rest } = partitionInvariantPrefix(shape.prefix, loopVariantNames)
-        // The callee returns one of its own locals (`let self = {…}; …; return self`,
-        // a class factory): the caller's name takes the local's place, so the
-        // literal has no alias to escape into and scalar replacement sees it.
-        if (typeof shape.value === 'string' && rest.some(st => stmtDeclName(st) === shape.value)) {
-          const splice = rest.map(st => substIdents(st, new Map([[shape.value, decl[1]]])))
-          return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
+  // A declaration, however many declarators it binds. One `const r = f(a), g =
+  // f(b), b = f(c)` is the idiomatic way to read three channels at once, and it
+  // inlined nothing at all: the expression path cannot splice a body whose
+  // argument needs a temp, and this path only ever looked at a lone declarator.
+  // Each declarator becomes its own statement in the original order, so a later
+  // initializer still reads the bindings before it.
+  if (stmt[0] === 'let' || stmt[0] === 'const') {
+    const splice = [], hoisted = []
+    let any = false
+    for (let d = 1; d < stmt.length; d++) {
+      const decl = stmt[d]
+      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates)
+          && (stmt.length === 2 || transcendentalBody(candidates.get(decl[2][1])))) {
+        const args = callArgs(decl[2])
+        const shape = args && inlinedBody(candidates.get(decl[2][1]), args)
+        if (shape && shape.value !== null) {
+          const part = partitionInvariantPrefix(shape.prefix, loopVariantNames)
+          hoisted.push(...part.hoisted)
+          // The callee returns one of its own locals (`let self = {…}; …; return self`,
+          // a class factory): the caller's name takes the local's place, so the
+          // literal has no alias to escape into and scalar replacement sees it.
+          if (typeof shape.value === 'string' && part.rest.some(st => stmtDeclName(st) === shape.value))
+            splice.push(...part.rest.map(st => substIdents(st, new Map([[shape.value, decl[1]]]))))
+          else splice.push(...part.rest, [stmt[0], ['=', decl[1], shape.value]])
+          any = true
+          continue
         }
-        const splice = [...rest, [stmt[0], ['=', decl[1], shape.value]]]
-        return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
       }
+      splice.push([stmt[0], decl])
     }
+    if (any) return { node: ['{}', [';', ...splice]], changed: true, splice, hoisted }
   }
   // `X = call(...)` at statement position: inline as prefix + assign(value).
   // LHS may be a name or an indexed lvalue (`out[i] = beat(...)` in fill loops).

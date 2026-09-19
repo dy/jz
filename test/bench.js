@@ -143,6 +143,24 @@ const SPEED = {
   // closure's generic truthiness on AST nodes, `node.loc = at` through
   // __dyn_set) is what `win` waits for.
   jessie:         { v8: 'tie',   as: 'na'   },
+  // The colour-conversion family: a per-pixel transfer function (a gamma, a
+  // camera log curve, a cube root) then a 3x3 matrix. Each reads its three
+  // channels through one `const r = f(src[j]), g = …, b = …`, which inlined
+  // nothing until plan/inline.js learned multi-declarator declarations: measured
+  // against V8, colorlog went 1.13x -> 0.54, colorlch 1.13 -> 0.73, colorconv
+  // 1.10 -> 1.00 (its three cube roots are jz's own fdlibm, ~1.34x V8's per
+  // call, which is what is left). `diff`, not `win`: these are the corpus's one
+  // family whose output does NOT match V8 bit for bit — a constant-exponent
+  // `**` takes jz's fifthroot fold and `Math.pow(2, x)` its exp2, each within
+  // the documented ulp bound but not V8's exact bits — and the gate refuses to
+  // compare the speed of work that is not the same work. Asserting these wins
+  // needs either bit-exactness (giving up the fold that makes them fast) or an
+  // accepted-divergence parity class beside the existing `fma` one. colorpq
+  // stays out entirely: its PQ block is 12 runtime-exponent pow calls per pixel
+  // and trails 4.4x, waiting on a two-wide pow.
+  colorlog:       { v8: 'diff', as: 'na'   },
+  colorlch:       { v8: 'diff', as: 'na'   },
+  colorconv:      { v8: 'diff', as: 'na'   },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared

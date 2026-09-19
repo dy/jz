@@ -36,7 +36,7 @@
 // scripts/recursive-self-check.mjs is `--dist --gate recursive`.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { cpus, loadavg, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -254,7 +254,16 @@ const { corpus } = await import('./kernel-gate-corpus.js')
 // node_modules by its package-relative path), so two checkouts of the same sources
 // at different locations hash alike; the dependency's content the same way.
 const profile = resolveSelfCompileBuild()
-const relKey = (p) => { const i = p.indexOf('/node_modules/'); return i >= 0 ? p.slice(i + 1) : relative(ROOT, p) }
+// A dependency keys where an installed copy would sit, so the same sources hash
+// alike wherever they are checked out — including a LINKED watr (npm link /
+// workspace), whose real path has no node_modules segment to slice.
+const watrReal = (() => { try { return realpathSync(join(ROOT, 'node_modules/watr')) } catch { return null } })()
+const relKey = (p) => {
+  const i = p.indexOf('/node_modules/')
+  if (i >= 0) return p.slice(i + 1)
+  if (watrReal && p.startsWith(watrReal + '/')) return 'node_modules/watr/' + p.slice(watrReal.length + 1)
+  return relative(ROOT, p)
+}
 const contentHash = (entries) => sha(entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${k}\0${Buffer.byteLength(v, 'utf8')}\0${v}`).join('\0'))
 const graphEntries = [['scripts/self.js', profile.graph.code], ...Object.entries(profile.graph.modules).map(([p, s]) => [relKey(p), s])]
 const graphSha256 = contentHash(graphEntries)

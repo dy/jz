@@ -802,6 +802,51 @@ Those tests do not establish callback deadlines.
   4502/4503, opt0 4310/4311, opt3 4310/4311, wasi 4363/4364 (one skip
   each), self-compile 68/68, `bench:size` geomean 0.794× unchanged; watr's
   own suite passes with the two skips it already had.
+- Where the corpus stands against V8, measured paired over all 62 cases: 58
+  win, 4 do not. webaudio 9.5×, colorpq 4.4×, watr 1.6×, resample 1.00×.
+  Every other case is at or under parity, the median well under it.
+- Three of those losses closed in one place. A declaration binds its channels
+  at once — `const r = f(src[j]), g = f(src[j + 1]), b = f(src[j + 2])` — and
+  the source inliner read only the FIRST declarator of a declaration, so a
+  statement with three of them inlined nothing at all (the expression path
+  cannot splice a body whose argument needs a temp). Each declarator is its own
+  statement now, in the original order, so a later initializer still reads the
+  bindings before it (`plan/inline.js`). Against V8: colorlog 1.13× → 0.54,
+  colorlch 1.13 → 0.73, colorconv 1.10 → 1.00, and lz, hashjoin and jessie
+  each gained a little. The win is not the call overhead: it is that three
+  independent transcendental chains end up at one level where the host can
+  overlap them. That is also the gate on the new path — a callee whose body
+  holds a call or a `**`. fft's sine/cosine polynomials are plain arithmetic,
+  gained no time when inlined, and grew the module 5%, which is what the gate
+  keeps out (`bench:size` stays 0.794×).
+- Those three cases are the corpus's one family whose output does not match
+  V8 bit for bit: a constant-exponent `**` takes jz's fifthroot fold and
+  `Math.pow(2, x)` its exp2, each inside the documented ulp bound but not V8's
+  exact bits. `test/bench.js` therefore pins them `diff` — the ratio prints,
+  nothing is asserted — since the gate refuses to compare the speed of work
+  that is not the same work. Asserting those wins needs either bit-exactness
+  (giving up the fold that makes them fast) or an accepted-divergence parity
+  class beside the `fma` one the harness already has. That is a decision, not
+  an omission.
+- What the remaining four need. colorpq: 12 runtime-exponent pow calls per
+  pixel, and jz's pow is fdlibm, bit-exact with V8's and ~3× its time per
+  call; the lever is a two-wide pow that keeps that bit-exactness, since the
+  2-wide `exp_v(c·log_v x)` the vectorizer used to take was a second algorithm
+  (~1e-9) and was removed for that reason. cbrt is the same shape at a smaller
+  scale: fdlibm, bit-exact, ~1.34× V8 per call, which is all that stands
+  between colorconv and a win — inlining it measured 10% SLOWER (duplication
+  hurts), so the remaining ideas are the FP↔GP round trips its bit tricks pay.
+  webaudio: 52% of it is dynamic property lookup and string compare
+  (`__dyn_get_t_h`, `__schema_slot_h`, `__str_eq`) on a 120-module library
+  whose shapes the summary loses; even erasing all of that leaves ~3×, so it
+  wants inline caches and is a program, not a patch. watr: unchanged, the
+  first-call tier-up finding above.
+- jz builds against `~/projects/watr` through a symlink while the cast fold
+  waits for a release. Two scripts assumed a dependency lives under
+  `node_modules/`: the self-compile profile matched watr's printer by that
+  path, and the kernel gate keyed graph entries the same way. Both accept a
+  linked checkout now (npm link, a workspace), which is why the self-compile
+  gate passes with the link in place.
 - watr against V8 stands at 1.77× on the bench's first call and 1.24× at
   steady state (the tier-up finding above); no lever in this round touched
   it. The wins there need both a smaller speed-tier module (cold paths out
