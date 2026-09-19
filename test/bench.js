@@ -143,24 +143,32 @@ const SPEED = {
   // closure's generic truthiness on AST nodes, `node.loc = at` through
   // __dyn_set) is what `win` waits for.
   jessie:         { v8: 'tie',   as: 'na'   },
-  // The colour-conversion family: a per-pixel transfer function (a gamma, a
-  // camera log curve, a cube root) then a 3x3 matrix. Each reads its three
-  // channels through one `const r = f(src[j]), g = …, b = …`, which inlined
-  // nothing until plan/inline.js learned multi-declarator declarations: measured
-  // against V8, colorlog went 1.13x -> 0.54, colorlch 1.13 -> 0.73, colorconv
-  // 1.10 -> 1.00 (its three cube roots are jz's own fdlibm, ~1.34x V8's per
-  // call, which is what is left). `diff`, not `win`: these are the corpus's one
-  // family whose output does NOT match V8 bit for bit — a constant-exponent
-  // `**` takes jz's fifthroot fold and `Math.pow(2, x)` its exp2, each within
-  // the documented ulp bound but not V8's exact bits — and the gate refuses to
-  // compare the speed of work that is not the same work. Asserting these wins
-  // needs either bit-exactness (giving up the fold that makes them fast) or an
-  // accepted-divergence parity class beside the existing `fma` one. colorpq
-  // stays out entirely: its PQ block is 12 runtime-exponent pow calls per pixel
-  // and trails 4.4x, waiting on a two-wide pow.
-  colorlog:       { v8: 'diff', as: 'na'   },
-  colorlch:       { v8: 'diff', as: 'na'   },
-  colorconv:      { v8: 'diff', as: 'na'   },
+}
+
+// LAB cases (assets/headline.js `LAB`) answer a jz-internal question — they are
+// intrinsic gap trackers with no cross-language port — so they feed no aggregate
+// and stay out of SPEED, whose keys drive the geomeans, the fastest-wasm sweep
+// and the coverage count. Their speed is still gated here: a tracker nobody
+// asserts is a tracker that slips.
+//
+// Their jz row need not match V8 bit for bit, and where it does not, the
+// divergence is NAMED and MEASURED — that is the whole licence for comparing
+// their times. Each `why` below was measured over 200k channel values in [0,1]
+// (the range the cases feed), jz against V8:
+//
+//   colorconv/colorlch  `(c + 0.055) / 1.055) ** 2.4` takes jz's fifthroot fold
+//                       (module/math.js, the k/5 constant-exponent path): 4 ulp,
+//                       4.9e-16 relative. Their three `Math.cbrt` calls are
+//                       bit-exact with V8 (0 ulp) — jz runs the same fdlibm.
+//   colorlog            `Math.pow(2, x)` takes jz's exp2: 6.2e-9 relative, which
+//                       IS exp2's documented tolerance (module/math.js says
+//                       "~6e-9 rel. error"), not a last-bits difference. The
+//                       case exists to track exactly that gap; closing it means
+//                       a tighter exp2, at which point this entry goes away.
+const LAB_SPEED = {
+  colorlog:  { v8: 'win', why: 'Math.pow(2, x) through jz exp2 — 6.2e-9 relative, exp2 own documented tolerance' },
+  colorlch:  { v8: 'win', why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
+  colorconv: { v8: 'tie', why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared
@@ -528,13 +536,16 @@ console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.C 
 console.log(`  ${'-'.repeat(13)}  ${'-'.repeat(6)}  -----------  -----------  -----------  ${'-'.repeat(7)}  -----------  ------`)
 // A case absent from a claim table has no expectation there: the cell prints
 // its ratio unmarked, and the assertion loops below never visit it.
-for (const id of Object.keys(SPEED)) {   // curated v8/as/native/size table (the fastest-wasm gate covers the full corpus below)
+// The curated v8/as/native/size table, then the LAB trackers under it (the
+// fastest-wasm gate covers the full corpus below).
+for (const id of [...Object.keys(SPEED), ...Object.keys(LAB_SPEED)]) {
+  const claim = SPEED[id] ?? LAB_SPEED[id]
   const r = runs[id] || {}, sz = sizes[id] || {}
   const slack = sz.jz && sz.jzOpt ? `${((sz.jzOpt / sz.jz) * 100).toFixed(0)}%` : '  — '
   console.log(`  ${id.padEnd(13)}  ${fmtMs(r.jz?.medianUs)}  ` +
-    `${ratioCell(SPEED[id]?.v8, r.jz?.medianUs, r.v8?.medianUs).padEnd(11)}  ` +
+    `${ratioCell(claim?.v8, r.jz?.medianUs, r.v8?.medianUs).padEnd(11)}  ` +
     `${ratioCell(NATIVE[id], r.jz?.medianUs, r.nat?.medianUs).padEnd(11)}  ` +
-    `${ratioCell(SPEED[id]?.as, r.jz?.medianUs, r.as?.medianUs).padEnd(11)}  ` +
+    `${ratioCell(claim?.as, r.jz?.medianUs, r.as?.medianUs).padEnd(11)}  ` +
     `${fmtKb(sz.jz)}  ` +
     `${ratioCell(SIZE[id]?.as, sz.jz, sz.as).padEnd(11)}  ${slack.padStart(5)}`)
 }
@@ -583,6 +594,22 @@ for (const [id, claims] of Object.entries(SPEED)) {
     })
   }
 }
+// The LAB trackers: same tolerance vocabulary, no aggregate, and a named
+// divergence in place of the checksum-equality every SPEED case must meet.
+for (const [id, claim] of Object.entries(LAB_SPEED)) {
+  for (const tid of ['v8']) {
+    const tol = SPEED_TOL[claim[tid]]
+    if (!tol) continue
+    test(`bench: lab ${id} jz ${claim[tid]} vs ${tid} (divergence: ${claim.why})`, () => {
+      const r = runs[id]
+      ok(validTiming(r?.jz), `${id}: JZ timing unavailable: ${r?.jz?.reason ?? 'missing or invalid timing'}`)
+      ok(validTiming(r?.[tid]), `${id}: ${tid} timing unavailable: ${r?.[tid]?.reason ?? 'missing or invalid timing'}`)
+      const ratio = r.jz.medianUs / r[tid].medianUs
+      okTiming(ratio <= tol, `${id}: jz ${(r.jz.medianUs / 1000).toFixed(2)}ms / ${tid} ${(r[tid].medianUs / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${claim[tid]} limit ${tol}×`)
+    })
+  }
+}
+
 for (const tid of ['v8', 'as']) {
   if (tid === 'as' && !ascAvailable) continue
   const g = geoSpeed(tid)

@@ -819,15 +819,22 @@ Those tests do not establish callback deadlines.
   holds a call or a `**`. fft's sine/cosine polynomials are plain arithmetic,
   gained no time when inlined, and grew the module 5%, which is what the gate
   keeps out (`bench:size` stays 0.794×).
-- Those three cases are the corpus's one family whose output does not match
-  V8 bit for bit: a constant-exponent `**` takes jz's fifthroot fold and
-  `Math.pow(2, x)` its exp2, each inside the documented ulp bound but not V8's
-  exact bits. `test/bench.js` therefore pins them `diff` — the ratio prints,
-  nothing is asserted — since the gate refuses to compare the speed of work
-  that is not the same work. Asserting those wins needs either bit-exactness
-  (giving up the fold that makes them fast) or an accepted-divergence parity
-  class beside the `fma` one the harness already has. That is a decision, not
-  an omission.
+- Those three cases are the corpus's one family whose output does not match V8
+  bit for bit, so the gate could not compare their times: it refuses to compare
+  the speed of work that is not the same work. They are LAB cases — intrinsic
+  gap trackers with no cross-language port, excluded from every aggregate — so
+  they now gate through their own table (`LAB_SPEED`, `test/bench.js`), which
+  feeds no geomean and replaces checksum equality with a divergence that is
+  NAMED and MEASURED. Measured over 200k channel values in [0,1], jz against V8:
+  `(c + 0.055) / 1.055) ** 2.4` through the fifthroot fold is 4 ulp, 4.9e-16
+  relative (colorconv, colorlch), and their `Math.cbrt` is bit-exact, 0 ulp —
+  jz runs the same fdlibm. `Math.pow(2, x)` through jz's exp2 is 6.2e-9
+  relative (colorlog), which is not a last-bits difference at all: it is exp2's
+  own documented tolerance (`module/math.js`: "~6e-9 rel. error"), inherited by
+  `Math.exp` too. So colorlog's 0.56× is a real speed win bought partly with
+  nine significant digits where V8 gives sixteen, and the case exists to track
+  exactly that. Pins: colorlog and colorlch `win`, colorconv `tie` (1.00×).
+  Closing the exp2 gap would retire the colorlog entry outright.
 - What the remaining four need. colorpq: 12 runtime-exponent pow calls per
   pixel, and jz's pow is fdlibm, bit-exact with V8's and ~3× its time per
   call; the lever is a two-wide pow that keeps that bit-exactness, since the
