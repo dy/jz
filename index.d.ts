@@ -1,15 +1,12 @@
 // Public TypeScript surface for jz.
 
-/** Optimization level / preset. `2` is the default stable profile. */
-export type OptimizeLevel = boolean | 0 | 1 | 2 | 3 | 'speed' | 'size' | 'fast'
-
-/** Runtime-service lowering target. */
+/** Runtime services the module is compiled against. */
 export type Host = 'js' | 'wasi' | 'native'
 
 /** Value injectable through `define`. */
 export type DefineValue = number | boolean | string | null | DefineValue[] | { [k: string]: DefineValue }
 
-/** Raw NaN-box carrier used by the low-level memory API. */
+/** Raw NaN-box carrier used by the memory API. */
 export type JzPointer = bigint
 export type JzCarrier = number | bigint
 
@@ -19,70 +16,68 @@ export interface WarningEntry {
   fn?: string
   line?: number
   column?: number
-  [key: string]: unknown
 }
 
 export interface WarningSink {
   entries?: WarningEntry[]
-  [key: string]: unknown
+  /** Called with each entry as it is recorded. */
+  onWarning?: (warning: WarningEntry) => void
 }
 
-export interface ProfileSink {
-  entries?: unknown[]
-  totals?: Record<string, number>
-  [key: string]: unknown
+/**
+ * Owned memory: `initial` pages of 64 KiB, an optional growth `maximum`.
+ * `shared` links a threads memory (atomic heap); `import` takes `env.memory`
+ * from the host instead of exporting one.
+ */
+export interface MemoryOptions {
+  initial?: number
+  maximum?: number
+  shared?: boolean
+  import?: boolean
 }
 
-/** Intentionally opaque until a later stable inspection schema is published. */
-export type CompileInspection = Record<string, unknown>
+/**
+ * Advanced optimizer control on top of a preset `level`.
+ * `simd` and `tailCall` are engine-capability switches. `exceptions: false`
+ * traps on throw in catch-free modules and drops the exceptions tag.
+ * `alloc: false` is the raw standalone ABI (no allocator or reset exports).
+ * Any other key names an individual pass and is validated by name.
+ */
+export interface OptimizeOptions {
+  level?: boolean | 'size' | 'speed'
+  simd?: boolean
+  tailCall?: boolean
+  exceptions?: boolean
+  alloc?: boolean
+  stencil?: boolean
+  outerStrip?: boolean
+  toneMap?: boolean
+  [pass: string]: unknown
+}
 
 export interface CompileOptions {
   /** Static ES imports to bundle: `{ './dep.js': 'export let x = 1' }`. */
   modules?: Record<string, string>
-  /** Host imports wired at runtime. */
+  /** Host modules for `import { fn } from "mod"`: functions, constants, or a whole namespace. */
   imports?: Record<string, unknown>
-  /** Initial pages for owned memory, or memory shared with the module. */
-  memory?: number | WebAssembly.Memory | JzMemory
-  /** Maximum memory in 64 KiB pages. */
-  maxMemory?: number
-  /** Import `env.memory` instead of exporting owned memory. */
-  importMemory?: boolean
-  /** Runtime-service lowering. Default: `'js'`. */
-  host?: Host
-  /** Optimization level or named preset. Default: `2`. */
-  optimize?: OptimizeLevel
+  /** Compile-time constants injected as top-level bindings. */
   define?: Record<string, DefineValue>
-  /** Skip jzify and reject dynamic fallback paths. */
-  strict?: boolean
-  /** Parse goal. Default `jz` keeps export-as-ABI with Script strictness. */
-  sourceType?: 'jz' | 'script' | 'module'
-  /** Raw standalone ABI: omit host-marshalling/reset metadata and state healing. */
-  alloc?: boolean
-  noSimd?: boolean
-  whyNotSimd?: boolean
-  /** Why a function's arena is not rewound at return: `true` emits a `rewind-why-not` warning per function, a callback receives (name, reason). */
-  whyNotRewind?: boolean | ((name: string, reason: string) => void)
-  stencil?: boolean
-  outerStrip?: boolean
-  toneMap?: boolean
-  noTailCall?: boolean
-  noEhAbort?: boolean
-  sharedMemory?: boolean
-  nativeTimers?: boolean
-  warnings?: WarningSink
+  /** JS host (default), WASI, or the wasm2c native lane. */
+  host?: Host
+  /** Initial pages, a memory shared across modules, or a descriptor. */
+  memory?: number | WebAssembly.Memory | JzMemory | MemoryOptions
+  /** `true` (default) balanced, `'speed'`, `'size'`, `false` off, or an object. */
+  optimize?: boolean | 'size' | 'speed' | OptimizeOptions
+  /** Fixed seed for a reproducible `Math.random`; `true` requests host entropy. */
   randomSeed?: number | boolean
+  /** Emit the wasm `name` section for profilers and debuggers. */
   names?: boolean
+  /** Return WAT text instead of the binary. */
   wat?: boolean
-  profile?: ProfileSink
-  /** URL used to lower `import.meta.url` and static `import.meta.resolve()`. */
-  importMetaUrl?: string
-  /** Return the unstable inspection payload beside wasm/WAT. */
-  inspect?: boolean
-}
-
-export interface AllocatedTyped<T extends ArrayBufferView = ArrayBufferView> {
-  view: T
-  box: JzPointer
+  /** Sink or callback for compiler advisories. */
+  warnings?: WarningSink | ((warning: WarningEntry) => void)
+  /** Also report every loop the vectorizer and every arena the rewind declined. */
+  why?: boolean
 }
 
 export interface TypedArrayMemoryConstructor {
@@ -93,15 +88,11 @@ export interface BigIntTypedArrayMemoryConstructor {
   (data: ArrayLike<bigint>): JzPointer
 }
 
-/** Enhanced WebAssembly memory and its value-codec methods. */
+/** Enhanced WebAssembly memory: allocate values on the jz heap and read them back. */
 export interface JzMemory extends WebAssembly.Memory {
   String(str: string): JzPointer
   Array(data: ArrayLike<unknown>): JzPointer
   Object(obj: Record<string, unknown>): JzPointer
-  Hash(obj: Record<string, unknown>): JzPointer
-  Buffer(data: ArrayBuffer | ArrayBufferView | ArrayLike<number>): JzPointer
-  BigInt(value: bigint): JzPointer
-  External(value: object | Function | null | undefined): JzPointer
 
   Float64Array: TypedArrayMemoryConstructor
   Float32Array: TypedArrayMemoryConstructor
@@ -116,23 +107,18 @@ export interface JzMemory extends WebAssembly.Memory {
   BigInt64Array: BigIntTypedArrayMemoryConstructor
   BigUint64Array: BigIntTypedArrayMemoryConstructor
 
+  /** Decode a raw result (pointer, number, or multi-value) into a JS value. */
   read(value: JzCarrier | readonly JzCarrier[]): unknown
-  wrapVal(value: unknown): JzCarrier
+  /** Replace the contents of an allocated array or object in place. */
   write(pointer: JzPointer, value: ArrayLike<unknown> | Record<string, unknown>): void
-  alloc(bytes: number): number
-  allocTyped<T extends ArrayBufferView>(
-    Ctor: new (buffer: ArrayBufferLike, byteOffset: number, length: number) => T,
-    length: number,
-  ): AllocatedTyped<T>
+  /** Drop every allocation made since instantiation; invalidates earlier pointers. */
   reset(): void
-  schemas?: unknown[]
 }
 
-/** Reader returned by `memory(instance)` for a scalar, memoryless module. */
+/** Reader returned by `memory(instance)` for a module without linear memory. */
 export interface JzScalarMemory {
   readonly scalar: true
   read(value: JzCarrier | readonly JzCarrier[]): unknown
-  wrapVal(value: unknown): JzCarrier
 }
 
 export type JzExports = Record<string, any>
@@ -142,9 +128,7 @@ export interface JzInstance<E extends JzExports = JzExports> {
   memory: JzMemory | null
   instance: WebAssembly.Instance
   module: WebAssembly.Module
-  /** Present only when compilation used `{ inspect: true }`. */
-  inspect?: CompileInspection
-  /** Present when the caller supplied a warning sink. */
+  /** Present when the caller supplied a warning sink or `why`. */
   warnings?: WarningEntry[]
 }
 
@@ -155,58 +139,22 @@ export interface MemoryFactory {
   (instance: JzInstance): JzMemory | JzScalarMemory
 }
 
-export interface JzPool {
-  exports: JzExports
-  memory: JzMemory
-  module: WebAssembly.Module
-  threads: number
-  run(fn: string, ...args: unknown[]): Promise<unknown[]>
-  terminate(): Promise<unknown[]>
-}
-
-export interface PoolOptions extends Omit<CompileOptions, 'memory' | 'maxMemory' | 'sharedMemory' | 'wat' | 'inspect'> {
-  threads?: number
-  pages?: number
-  maxPages?: number
-}
-
 export interface Jz {
   (code: string, opts?: CompileOptions & { wat?: false }): JzInstance
   (strings: TemplateStringsArray, ...values: unknown[]): JzInstance
   compile: typeof compile
   memory: MemoryFactory
-  pool(source: string, opts?: PoolOptions): Promise<JzPool>
 }
-
-export interface TransformOptions {
-  onlyLowered?: boolean
-  warnings?: WarningSink | null
-}
-
-export interface InspectedWasm { wasm: Uint8Array; inspect: CompileInspection }
-export interface InspectedWat { wat: string; inspect: CompileInspection }
 
 declare const jz: Jz
 export default jz
 export { jz }
 
-export function compile(code: string, opts: CompileOptions & { wat: true; inspect: true }): InspectedWat
-export function compile(code: string, opts: CompileOptions & { wat?: false; inspect: true }): InspectedWasm
-export function compile(code: string, opts: CompileOptions & { wat: true; inspect?: false }): string
-export function compile(code: string, opts?: CompileOptions & { wat?: false; inspect?: false }): Uint8Array
-export function compile(code: string, opts?: CompileOptions): Uint8Array | string | InspectedWasm | InspectedWat
-
-export function compileModule(
-  code: string,
-  opts?: CompileOptions & { wat?: false; inspect?: false },
-): WebAssembly.Module
+export function compile(code: string, opts: CompileOptions & { wat: true }): string
+export function compile(code: string, opts?: CompileOptions & { wat?: false }): Uint8Array
+export function compile(code: string, opts?: CompileOptions): Uint8Array | string
 
 export function instantiate(
   module: WebAssembly.Module | Uint8Array | ArrayBuffer,
   opts?: CompileOptions,
 ): JzInstance
-
-export function transform(code: string, opts?: TransformOptions): string | null
-
-/** Stable presets resolve to optimizer options; the object shape is internal. */
-export function resolveWatrOpts(config: unknown, context?: { funcCount?: number; boundaryPins?: string[] }): object | false

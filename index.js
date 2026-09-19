@@ -6,7 +6,7 @@
  *   source (string)
  *     ↓  parse (subscript/jessie) — lexing + expression-oriented AST
  *   raw AST: nested arrays `[op, ...args]`, no ctx mutation
- *     ↓  jzify (default-on; skipped under opts.strict) — lower full-JS subset (var/function/class/switch) to jz-native
+ *     ↓  jzify (always on; the test-only `strict` flag skips it) — lower full JS (var/function/class/switch) to jz-native
  *   desugared AST: arrow functions + let/const/if only
  *     ↓  prepare — validate (reject disallowed ops), normalize (++/--→+=/-=, scope rename),
  *        extract (functions→ctx.funcs.list with sig), resolve (imports→ctx.module.imports),
@@ -53,11 +53,10 @@ import { frontHalf } from './src/front.js'
 import { beginSession } from './src/session.js'
 import compile, { tailFacts } from './src/compile/index.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
-import { resolveWatrOpts, watrTail } from './src/optimize/watr-tail.js'
-export { resolveWatrOpts }
+import { watrTail } from './src/optimize/watr-tail.js'
 import jzify from './jzify/index.js'
 import {
-  memory as enhanceMemory, instantiate as instantiateRuntime, toModule,
+  memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './interop.js'
 
 // A host import that's a JS function may hand back any value, including a host
@@ -241,6 +240,7 @@ jz.memory = enhanceMemory
 
 /**
  * jz.pool(source, opts) — SPMD worker pool over ONE shared memory (Workers v1).
+ * Experimental and undocumented: node worker_threads only, not in index.d.ts.
  *
  * Compiles `source` with { sharedMemory: true }, instantiates it on the main
  * thread AND in `threads` node worker_threads, all linked to the same
@@ -314,98 +314,24 @@ jz.pool = async function pool(source, opts = {}) {
 }
 
 /**
- * Compile jz source to WASM binary or WAT text. Low-level — no instantiation.
- * @param {string} code - jz source
+ * Compile jz source to a WASM binary (or WAT text with `wat: true`). No instantiation.
+ *
+ * Public options (index.d.ts is the contract):
+ *   modules, imports, define, host, memory, optimize, randomSeed, names, wat, warnings, why.
+ * `memory` takes a page count, a WebAssembly.Memory to share, or
+ * `{ initial, maximum, shared, import }`. `optimize` takes true (default), 'speed',
+ * 'size', false, or `{ level, simd, tailCall, exceptions, alloc, ...passes }`.
+ * `normalizeOptions` folds those objects onto the internal flags below.
+ *
+ * Internal/test-only options (undocumented, may change): strict, sourceType,
+ * alloc, noSimd, noTailCall, noEhAbort, nativeTimers, maxMemory, importMemory,
+ * sharedMemory, whyNotSimd, whyNotRewind, stencil, outerStrip, toneMap,
+ * importMetaUrl, profile, inspect, helperCounters, helperCallsites, _interp,
+ * _eagerStdlib, _compactCollections.
+ *
+ * @param {string} code
  * @param {object} [opts]
- * @param {boolean} [opts.wat] - Return WAT text instead of binary
- * @param {boolean} [opts.strict] - Enforce the pure canonical subset: skip jzify
- *   (so full-JS syntax like var/function/class is rejected, not lowered) and reject
- *   dynamic features (obj[k], for-in, unknown receiver method calls) at compile time.
- *   Avoids pulling dynamic-dispatch stdlib into output; large size win for static programs.
- * @param {'jz'|'script'|'module'} [opts.sourceType='jz'] - Parse goal. `jz` keeps
- *   the historical module-export ABI with Script strictness; `script` rejects
- *   import/export syntax; `module` applies ECMAScript Module early errors and
- *   implicit strict mode.
- * @param {WebAssembly.Memory|number} [opts.memory] - Owned memory's initial page
- *   count (`memory: N`, 64 KiB/page), or a `WebAssembly.Memory` to share across modules.
- * @param {number} [opts.maxMemory] - Maximum memory pages — emits a ceiling on the
- *   memory type so growth traps past it (sandbox cap). Must be ≥ the initial size.
- *   Default: unbounded.
- * @param {boolean} [opts.sharedMemory] - Import `env.memory` as a SHARED memory (wasm
- *   threads): atomic heap bump, `shared` memtype (max defaults to the 4 GiB ceiling).
- *   Link with `new WebAssembly.Memory({ initial, maximum, shared: true })`.
- * @param {boolean} [opts.importMemory] - Import `env.memory` instead of exporting an
- *   owned memory. For embedding into a host that provides the memory.
- * @param {boolean} [opts.alloc=true] - Export the JS host-marshalling ABI.
- *   False is raw standalone mode: allocator/reset exports, closure-table and decoded-error
- *   metadata, and reset-only healing are omitted.
- * @param {Object<string,*>} [opts.define] - Compile-time constants injected as
- *   top-level bindings before parse, e.g. `{ DEBUG: false, PORT: 8080 }`. Values may
- *   be numbers, booleans, strings, null, or literal arrays/objects.
- * @param {boolean|number|string|object} [opts.optimize] - Optimization level/config.
- *   - `false` / `0`: nothing. Fastest compile, largest output (live coding).
- *   - `1`: encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
- *   - `true` / `2` (default): every stable jz pass + full watr (inlineOnce +
- *     coalesce on; `inline` stays off per watr's own default).
- *   - `3` / `'speed'`: level 2 + larger array/hash initial caps (`arrayMinCap`,
- *     `hashSmallInitCap`) + `hoistConstantPool` off (inline `f64.const` over
- *     mutable globals); trades size for speed.
- *   - `'size'`: full passes with unrolling/SIMD off and tight scalar caps — smallest wasm.
- *   - `'fast'`: level-2 passes with the final wat optimizer off — fastest compile
- *     for non-trivial sources (watch loops, REPLs); larger, slower output than 2.
- *   - `{ level?, <pass>?: bool, ... }`: per-pass overrides on top of a base level.
- *     INTERNAL/unstable — pass names track compiler internals (PASS_NAMES in
- *     src/optimize/index.js) and change between versions; prefer the level/string forms.
- * @param {boolean} [opts.noSimd] - Disable auto-vectorization (no jz-emitted v128) for
- *   engines without the SIMD proposal. Explicit f32x4/i32x4 intrinsics still compile.
- * @param {boolean} [opts.whyNotSimd] - Diagnostic: emit a `simd-why-not` warning (via
- *   opts.warnings) for each canonical loop the auto-vectorizer declined, naming the
- *   first blocking op. Finds loops one op away from SIMD. Noisy — off by default.
- * @param {boolean} [opts.stencil] - Vectorize neighbour-load
- *   stencils (`b[i]=f(a[i-1],a[i],a[i+1])`, 2-D 5-point) to f64x2. Bit-exact vs scalar.
- *   Default-on at level 2+ (`false` disables, `true` forces at levels where it's off).
- * @param {boolean} [opts.outerStrip] - Strip-mine a pixel loop whose
- *   per-pixel value is an inner reduction (metaballs-shape) into f64x2 lanes (2 pixels at
- *   once). Bit-exact vs scalar. Default-on at level 2+ (`false` disables).
- * @param {boolean} [opts.toneMap] - Mixed-lane log-tonemap vectorizer: a flat
- *   `i32 dens[i] → f64 Math.log → i32 pack → px[i]` loop lifts to a 2-wide f64x2 island
- *   (fern/bifurcation/attractors). Bit-exact vs scalar; default-on at level 2+, pass `false` to disable.
- * @param {object} [opts.warnings] - Optional mutable warning sink populated with
- *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
- *   fire when a module uses the bump allocator and an export or loop retains
- *   allocations without a host-side memory.reset().
- * @param {object} [opts.profile] - Optional mutable profile sink populated with
- *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
- * @param {boolean} [opts.names] - Emit a standard wasm `name` custom section (function
- *   symbols) for profiler/debugger symbolication. (Legacy: `profile.names = true`.)
- * @param {Object<string,string>} [opts.modules] - Map of module specifier → source
- *   for compile-time `import`/`export` bundling: jz resolves the module graph
- *   in-process from this map instead of reading from disk.
- * @param {boolean} [opts.noTailCall] - Disable proper-tail-call emission (self/mutual
- *   recursion uses ordinary call frames). For engines/tools without the tail-call proposal.
- * @param {boolean} [opts.noEhAbort] - Opt-in MVP shape for consumers with no wasm-exceptions
- *   support at all (wasm2c, w2c2): lower every surviving internal `throw` to `unreachable`
- *   even when source has a bare `throw` with no reachable `try`/`catch` (the common
- *   `userThrows` case that otherwise keeps the tag section alive for nothing). A module
- *   that has ANY real `try`/`catch` anywhere is left untouched regardless of this flag —
- *   it is not a general exceptions-to-branches lowering, only a no-op-safe generalization
- *   of the always-on trap lowering for genuinely catch-free modules.
- * @param {boolean} [opts.nativeTimers] - Emit a blocking `__timer_loop` in `_start` so
- *   setTimeout/setInterval fire under a standalone runtime (e.g. the wasmtime CLI) that
- *   has no host event loop. Default: timers defer to the JS host.
- * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
- *   and static `import.meta.resolve("...")` expressions.
- * @param {number|boolean} [opts.randomSeed] - Seed for `Math.random`. Default: seeded
- *   once from host entropy on first use (crypto under `host:'js'`, `random_get` under
- *   WASI) — non-reproducible. Pass a number for a fixed, reproducible seed; `true` forces
- *   entropy explicitly. The randomness syscall is emitted only when `Math.random` is used.
- * @param {boolean} [opts.inspect] - When true, return `{ wasm, inspect }`
- *   (or `{ wat, inspect }` with `opts.wat`) instead of the bare output.
- *   `inspect.runtime` adds conservative allocation, host-call and work proofs.
- *   `inspect` carries per-function inferred shapes (params, locals, JSON shapes,
- *   cross-call paramReps) for editor hosts to drive inlay hints / hover types
- *   without re-running the analyzer. Pays a small serialization cost; off by default.
- * @returns {Uint8Array|string|{wasm: Uint8Array, inspect: object}|{wat: string, inspect: object}}
+ * @returns {Uint8Array|string}
  */
 // Test-only compile target. When set (by test/index.js under JZ_TEST_TARGET=jz.wasm)
 // every jz.compile / compile / jz() call routes through it instead of the in-process
@@ -415,7 +341,47 @@ let compileTarget = null
 export const _setCompileTarget = (fn) => { compileTarget = fn }
 // Target selection is test configuration, not per-compilation state. Native
 // inspection must not clear it and silently reroute later kernel executions.
-jz.compile = (code, opts = {}) => compileTarget ? compileTarget(code, opts) : _compileInProcess(code, opts)
+jz.compile = (code, opts = {}) => {
+  opts = normalizeOptions(opts)
+  return compileTarget ? compileTarget(code, opts) : _compileInProcess(code, opts)
+}
+
+/**
+ * Public option objects → internal flags (see jz.compile's doc). Idempotent; the
+ * caller's object is never mutated. Every advanced knob lives inside `memory` and
+ * `optimize`, so the top-level surface stays eleven keys.
+ */
+const normalizeOptions = (opts) => {
+  if (!opts) return {}
+  if (opts._normalized) return opts
+  const o = { ...opts, _normalized: true }
+  const m = o.memory
+  if (m && typeof m === 'object' && !(m instanceof WebAssembly.Memory)) {
+    // { initial, maximum, shared, import }: WebAssembly.MemoryDescriptor plus `import`
+    if (m.initial != null) o.memory = m.initial; else delete o.memory
+    if (m.maximum != null) o.maxMemory = m.maximum
+    if (m.shared) o.sharedMemory = true
+    if (m.import) o.importMemory = true
+  } else if (m instanceof WebAssembly.Memory && typeof SharedArrayBuffer !== 'undefined' && m.buffer instanceof SharedArrayBuffer) {
+    o.sharedMemory = true   // a shared Memory links only against the `shared` memtype
+  }
+  const opt = o.optimize
+  if (opt && typeof opt === 'object') {
+    const { simd, tailCall, exceptions, alloc, ...passes } = opt
+    if (simd === false) o.noSimd = true
+    if (tailCall === false) o.noTailCall = true
+    if (exceptions === false) o.noEhAbort = true
+    if (alloc === false) o.alloc = false
+    o.optimize = passes
+  }
+  if (typeof o.warnings === 'function') o.warnings = { entries: [], onWarning: o.warnings }
+  if (o.why) {
+    o.whyNotSimd = true
+    o.whyNotRewind = true
+    if (!o.warnings) o.warnings = { entries: [] }
+  }
+  return o
+}
 
 /** In-process entry for tests that inspect ctx, profiles, or analysis snapshots. */
 export function _compileInProcess(code, opts = {}) {
@@ -601,12 +567,12 @@ const jzCompileInner = (code, opts = {}) => {
     ctx.transform.optimize.slp = false
   }
 
-  // opts.whyNotSimd (CLI --why-not-simd): emit a `simd-why-not` warning per
+  // opts.whyNotSimd (CLI --why): emit a `simd-why-not` warning per
   // canonical loop that the auto-vectorizer declined, naming the blocking op —
   // a diagnostic to find loops that are "one op away" from SIMD. Rides the
   // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
   if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
-  // opts.whyNotRewind (CLI --why-not-rewind): why a function that could rewind
+  // opts.whyNotRewind (CLI --why): why a function that could rewind
   // its arena was declined — an escaping allocation, an unsafe callee, a host
   // import, or no allocation at all (optimize/arena-rewind.js). `true` emits a
   // `rewind-why-not` warning per function; a function receives (name, reason).
@@ -745,7 +711,7 @@ export default function jz(code, ...args) {
   }
 
   // String call: jz('code', opts?) — compile + instantiate + wrap
-  const callOpts = args[0] || {}
+  const callOpts = normalizeOptions(args[0])
   const out = jz.compile(code, callOpts)
   const wasm = out && typeof out === 'object' && 'wasm' in out ? out.wasm : out
   const result = instantiateRuntime(wasm, callOpts)
@@ -759,32 +725,5 @@ export { jz }
 const jzCompile = jz.compile
 export { jzCompile as compile }
 
-/**
- * Compile source to a cached `WebAssembly.Module` (compile + validate once).
- * Pair with `instantiate(module, opts)` to spin up many instances without
- * re-validating the bytes each time — the AOT compile is paid once, so repeated
- * instantiation is cheap. Returns a `WebAssembly.Module`, built with the native
- * `wasm:js-string` builtins fast path where the engine supports it.
- *
- *   import { compileModule, instantiate } from 'jz'
- *   const mod = compileModule('export let f = x => x * 2')
- *   const { exports } = instantiate(mod)   // repeat cheaply, no recompile
- *
- * @param {string} code
- * @param {object} [opts] - same options as `compile()`
- * @returns {WebAssembly.Module}
- */
-export const compileModule = (code, opts = {}) => {
-  const out = jzCompile(code, opts)
-  return toModule(out && typeof out === 'object' && 'wasm' in out ? out.wasm : out)
-}
-
 export { instantiateRuntime as instantiate }
 
-/**
- * jzify as a standalone source→source transform: full JS in, canonical jz out.
- * Same jzify/ module the compiler runs on every parse (default-on) — re-exported
- * here so browser bundles (dist/jz.js: REPL auto-jzify on paste) and node users
- * (`import { transform } from 'jz'`, also `jz/transform`) share one lowering.
- */
-export { default as transform } from './transform.js'

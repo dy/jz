@@ -674,7 +674,7 @@ drops the tag when NO catch is reachable anywhere — but it only fires when
 `userThrows` is false, and `userThrows` goes true the moment source has ANY
 bare `throw` statement, even one with zero reachable `try`/`catch` (a
 parser's `throw SyntaxError(...)` on malformed input, never caught by
-design). An opt-in flag, `--no-eh-abort` (`opts.noEhAbort`), generalizes the
+design). An opt-in switch, `optimize: { exceptions: false }`, generalizes the
 SAME lowering to fire whenever `userThrows` is the only reason it was
 gated — it is not a new mechanism, just a wider gate on the existing one,
 and it keeps the existing safety net (a real `try_table`/`catch`/`catch_all`

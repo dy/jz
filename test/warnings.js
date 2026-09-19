@@ -199,7 +199,7 @@ test('warnings: simd-aos-stride on interleaved index', () => {
   ok(ws.some(w => w.code === 'simd-aos-stride'))
 })
 
-// --why-not-simd (opts.whyNotSimd): per-loop diagnostic naming the op that blocked
+// opts.whyNotSimd (CLI --why): per-loop diagnostic naming the op that blocked
 // vectorization. A clean i32 typed-array map whose only blocker is i32.rem_s (no
 // lane-pure SIMD mapping) reaches the lifter, so the reason is op-specific.
 const remMap = `

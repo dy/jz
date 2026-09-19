@@ -15,7 +15,7 @@
  * use a real runtime — wasmtime/wasmer/deno or Node's `node:wasi`.
  *
  * @example
- *   import { instantiate } from 'jz/wasi'
+ *   import { instantiate } from 'jz/interop'
  *   const inst = instantiate(wasm)
  *   inst.exports.f()
  *

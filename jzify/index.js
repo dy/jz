@@ -328,7 +328,7 @@ function implicitStdImports(ast) {
  * @param {boolean} [opts.structs=true] - lower a module-scope class to a schema
  *   and functions of the receiver (jzify/classes.js lowerStruct). The dispatch
  *   is the compiler's (its class registry), so source that must stand alone
- *   (jz/transform) keeps every class as per-instance closures.
+ *   (the source-level lowering) keeps every class as per-instance closures.
  * @returns {Array} Transformed AST
  */
 export default function jzify(ast, { structs = true } = {}) {

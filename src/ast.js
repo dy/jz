@@ -11,7 +11,7 @@ export const T = '\uE000'
 
 // jzify's class namespace (jzify/names.js): the names a class lowers to
 // (`P\uE003len`, the receiver `\uE003self0`) may appear in lowered source
-// (jz/transform), so they take a private-use character the parser accepts
+// (the source-level lowering), so they take a private-use character the parser accepts
 // rather than the reserved prefix T.
 export const CLASS_T = '\uE003'
 // A class instance's literal carries its class as a property named with the

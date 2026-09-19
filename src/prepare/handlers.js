@@ -233,7 +233,7 @@ export function prep(node) {
   // `1 == "1"` is true), so default mode accepts them for JS parity. strict enforces
   // the canonical subset, where `===`/`!==` are the one spelling — reject the loose form.
   if ((op === '==' || op === '!=') && strictSpelling)
-    err(`strict mode: \`${op}\` is prohibited — use \`${op}=\` (\`jz --jzify\` converts). jz's \`${op}\` follows JS loose equality; the canonical subset spells equality \`===\`/\`!==\` only.`)
+    err(`strict mode: \`${op}\` is prohibited — use \`${op}=\`. jz's \`${op}\` follows JS loose equality; the canonical subset spells equality \`===\`/\`!==\` only.`)
   // A builtin-namespace member alias (`let sin = Math.sin`, `let {sin} = Math`)
   // carries no storage — writing through it would silently target nothing.
   // Catch every write form (`=`, compound `+=`-family, `++`/`--`) here, ahead
@@ -2687,7 +2687,10 @@ function prepareModule(specifier, source) {
   const savedDepth = prepState.depth; prepState.depth = 0
   const savedReassigned = prepState.reassignedTopLevel
   prepState.reassignedTopLevel = scanReassignedTopLevel(ast)
+  const savedAst = ctx.module.ast
+  ctx.module.ast = ast
   const moduleInit = prep(ast)
+  ctx.module.ast = savedAst
   prepState.reassignedTopLevel = savedReassigned
   prepState.depth = savedDepth
 

@@ -774,7 +774,7 @@ src/
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
   summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites
   ir/           tape.js, the IR tape (parallel typed arrays); the WAT-array helpers until emit builds the tape
-  wat/          assemble.js, codegen.js (AST → jz source printer), optimize.js
+  wat/          assemble.js, optimize.js
   abi/          NaN-box ABI helpers (string, array, object, number)
   op-policy.js  shared jzify/prepare reject + class-error messages
   # shared leaves — cycle-free, imported across stages:
@@ -784,10 +784,9 @@ src/
 module/         stdlib
 layout.js       NaN-box bit layout + PTR.TYPED elem-aux codec (compiler-free, shared with module/)
 interop.js      host↔wasm value marshalling: NaN-box decode/encode at the JS boundary (exports, imports, memory views)
-transform.js    jzify as standalone source→source (`jz/transform`; parse → jzify → codegen)
 err-codes.js    compile/runtime error-code registry (host decode of trapped error classes)
-wasi.js         WASI shim for the standalone/CLI targets
-cli.js          command-line driver (`jz` binary): flags → compile opts, file IO, --why-not-simd
+wasi.js         WASI shim; linked by interop.js, no public subpath
+cli.js          command-line driver (`jz` binary): flags → compile opts, file IO, --why
 ```
 
 **Folder policy:** one folder per pipeline *stage*, not per arbitrary concern. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
@@ -804,7 +803,7 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
 
 ## Architecture
 
-Current pipeline: `source → parse (subscript/jessie) → jzify (default-on; strict skips) → prepare → compile → optimize → link → watr (WAT→binary)`
+Current pipeline: `source → parse (subscript/jessie) → jzify (always on; the test-only `strict` option skips it) → prepare → compile → optimize → link → watr (WAT→binary)`
 
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
@@ -1028,7 +1027,10 @@ reads a heap string's length in place. The lane vectorizer
 (`src/optimize/vectorize`) declines a loop whose lane-local is live out of
 it (`last = a[i]`, read after the loop: the v128 shadow never lands in the
 scalar local; liveness is the straight-line scan of the continuation, a
-write on one path killing nothing past it), and the typed-param unswitch
+write on one path killing nothing past it), except a constant flag
+(`if (a[i] !== b[i]) ok = 0`: one constant, no else): its shadow starts as
+the scalar's splat and the scalar takes the constant after the vector loop
+when any lane did (`constantFlagStore`, `map.js`), and the typed-param unswitch
 (`src/optimize/unswitch.js`) looks through the inline array arm to the
 typed read it specializes. The summary keeps typed-array named properties
 per element type (`typedPropsByAux`): a property stored on a `Uint8Array`
@@ -1249,6 +1251,91 @@ the unrolled/vectorized hot kernels — say so in the commit and adjust the
 
 Prefer cases that mirror real JZ target workloads (numeric/DSP/parsing/wasm-utils) —
 the corpus *is* the guarantee, so widen it toward the code you actually ship.
+
+## Public contract and ABI
+
+The public surface is deliberately small (README owns it): the root exports
+`jz`, `compile`, `instantiate` and `jz.memory`; the `jz/interop` subpath with
+`instantiate` and `memory`; the eleven compile options in `index.d.ts`; and the
+CLI flags in `jz --help`. Everything else is internal and may change without a
+major version, including `jz.pool` (experimental SPMD worker pool, node only).
+
+`normalizeOptions` in index.js folds the public `memory` and `optimize` objects
+onto the internal flags. Tests and scripts may pass those flags directly:
+
+| Internal option | Public spelling | Notes |
+|---|---|---|
+| `maxMemory`, `importMemory`, `sharedMemory` | `memory: { maximum, import, shared }` | a shared `WebAssembly.Memory` object sets `sharedMemory` by itself |
+| `noSimd`, `noTailCall` | `optimize: { simd: false, tailCall: false }` | |
+| `noEhAbort` | `optimize: { exceptions: false }` | trap on throw in catch-free modules; the w2c bench lane uses it per case |
+| `alloc: false` | `optimize: { alloc: false }` | raw standalone ABI: no allocator/reset exports, no decoded-error metadata |
+| `whyNotSimd`, `whyNotRewind` | `why: true` | reports go to the `warnings` sink |
+| `stencil`, `outerStrip`, `toneMap` | `optimize: { stencil, … }` | pass names, validated by `resolveOptimize` |
+| `strict` | none | test-only: skips jzify and rejects the forms it lowers plus dynamic fallbacks |
+| `sourceType` | none | parse goal for test262 (`script`/`module`); the default `jz` goal keeps export-as-ABI |
+| `nativeTimers` | none | blocking `__timer_loop` in `_start` for the wasmtime CLI; a command-module auto rule is the intended replacement |
+| `importMetaUrl` | none | the CLI sets it from the entry file |
+| `profile`, `inspect`, `helperCounters`, `_eagerStdlib`, `_interp` | none | instrumentation and self-compile hooks |
+
+### Semantics contract
+
+Outside the dialect differences the README lists, accepted programs must
+preserve JavaScript values, exceptions, operand order and effects at every
+optimization level. Unsupported representations must reject. An unlisted silent
+wrong value or an accepted invalid-parse case blocks release. Early-error
+validation runs before lowering in both the JS and Wasm compiler;
+`test/test262-neg-accepts.json` gates the accepted-invalid ledger. Error classes
+and codes are stable within a major; message text may improve.
+
+### Host memory contract
+
+Strings use UTF-16 code units; UTF-8 belongs at encoding and I/O boundaries.
+`memory.Object()` and `memory.write()` enforce compiled field kinds, typed
+storage, nested schemas, integer refinements and discriminants used by lowering.
+Incompatible replacements throw `TypeError`. Nullable fields admit their value
+family and nullish values. Modules sharing memory must agree on existing schema
+contracts. Booleans preserve their identity; exposed BigInt fields are tagged,
+including shapes shared by BigInts and numbers. Returned object literals have
+independent storage, so mutating one result cannot change a later result.
+
+Plain arrays retained by the host have open element types. Typed arrays retain
+their storage policy; fresh arrays can specialize while being constructed.
+Allocations round upward to eight-byte alignment without signed address
+truncation. Allocation may grow memory and invalidate views: retain handles and
+reacquire views through `memory.read()`.
+
+Array/object writes stage replacement values before committing contents and
+length. If staging throws, the destination is unchanged; allocations remain
+until reset and user getter effects are not rolled back. `memory.reset()`
+invalidates handles allocated after the reset base; module-initialized state
+remains live. Direct writes and forged pointers bypass these checks.
+
+### Experimental ABI
+
+Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
+no independent version marker and is not frozen: NaN-box layouts, `_alloc`/`_clear`,
+the closure table, `jz:hostabi`, `jz:i64exp`, `jz:fields`, schema IDs,
+`memory.fieldContracts` and the `_`-prefixed exports are all current-toolchain
+policy, regression-tested in `test/abi.js` but not cross-release-stable. Use
+`jz/interop`'s `instantiate()` or pin the exact compiler version when
+implementing a raw host. BigInt arguments require compiler-emitted slot
+evidence; unsupported slots throw `TypeError`. Kernel byte identity is not
+promised across releases. The low-level interop helpers (`wrap`, `coerce`, bit
+conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
+`alloc`, `allocTyped`) exist at runtime but are not declared in the public types.
+
+### Known limitations
+
+- DataView indexed own properties are unsupported; indexed writes reject.
+  Unextended views have no `.length` or indexed elements.
+- Ambiguous Boolean/Number locals whose stored identity escapes reject;
+  truthiness-only uses compile.
+- Rest-parameter BigInt elements lack boundary evidence and reject.
+- Array patterns share lazy pulls, undefined-only defaults and IteratorClose on
+  early completion or binding errors. Native Map/Set views are snapshots.
+  Indexed values cannot override their iterator.
+- Resizable `ArrayBuffer` (`maxByteLength`, `resize`, `transfer`) is unsupported.
+- Async generator functions work; async generator methods and `await using` reject.
 
 ## Commits
 

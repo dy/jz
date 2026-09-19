@@ -10,32 +10,21 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
-    "./wasi": {
-      "types": "./wasi.d.ts",
-      "default": "./wasi.js"
-    },
     "./interop": {
       "types": "./interop.d.ts",
       "default": "./interop.js"
-    },
-    "./transform": {
-      "types": "./transform.d.ts",
-      "default": "./transform.js"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
     "interop.d.ts",
-    "wasi.d.ts",
-    "transform.d.ts",
     "cli.js",
     "wasi.js",
     "interop.js",
     "layout.js",
     "layout-kinds.js",
     "err-codes.js",
-    "transform.js",
     "jzify",
     "src",
     "module",

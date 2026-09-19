@@ -110,6 +110,7 @@ export default function prepare(node) {
   // `(module)` instead of a `(local.get $)` against a zero-length name. (A non-empty
   // bare identifier like `foo` parses to `'foo'` and stays a real reference.)
   if (node === '') node = [';']
+  ctx.module.ast = node
   validateCoalesceMixing(node)  // ES2020: reject unparenthesized `??` mixed with `||`/`&&`
   normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file

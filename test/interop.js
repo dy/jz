@@ -33,7 +33,7 @@ test('package: root and every public subpath ship declarations; pointer carriers
   const { readFileSync, existsSync } = await import('node:fs')
   const root = new URL('../', import.meta.url)
   const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
-  for (const subpath of ['.', './interop', './wasi', './transform']) {
+  for (const subpath of ['.', './interop']) {
     const entry = pkg.exports[subpath]
     ok(entry && typeof entry === 'object' && entry.types, `${subpath} has a types export`)
     ok(existsSync(new URL(entry.types.replace(/^\.\//, ''), root)), `${entry.types} exists`)
@@ -42,7 +42,7 @@ test('package: root and every public subpath ship declarations; pointer carriers
   const rootTypes = readFileSync(new URL('index.d.ts', root), 'utf8')
   ok(rootTypes.includes('export type JzPointer = bigint'), 'public pointer carrier is bigint')
   ok(!/String\(str: string\): number/.test(rootTypes), 'string allocator is not mistyped as number')
-  for (const name of ['interop.d.ts', 'wasi.d.ts', 'transform.d.ts'])
+  for (const name of ['interop.d.ts'])
     ok(readFileSync(new URL(name, root), 'utf8').length > 0, `${name} is non-empty`)
 })
 

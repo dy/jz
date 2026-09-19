@@ -16,7 +16,7 @@
  *
  * `host: 'wasi'`: emit `wasi_snapshot_preview1.fd_write` + `clock_time_get`.
  *   Output runs natively on wasmtime/wasmer/deno and on browsers/Node via the
- *   tiny `jz/wasi` polyfill auto-applied by the `jz()` runtime.
+ *   WASI polyfill in wasi.js, auto-applied by the `jz()` runtime.
  *
  * console.log/warn/error: variadic. fd=1 for log, fd=2 for warn/error.
  *

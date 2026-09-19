@@ -94,7 +94,7 @@ memory.reset()</code></pre>
   <p>Already have a numeric kernel? Leave it where it is. Export its functions and compile the file in your build:</p>
   <pre class="terminal" tabindex="0" aria-label="Compile an existing JavaScript file"><code>npx jz kernel.js -o kernel.wasm</code></pre>
   <p>Ship the <code>.wasm</code> and load it with <code>instantiate</code> from <code>jz/interop</code>; the compiler stays in your build. The <code>.js</code> you compiled from is still there, still running as JavaScript. <a href="https://github.com/dy/jz#usage">API and CLI reference →</a></p>
-  <p>Start with one kernel and run your existing tests against both versions. JZ is experimental and covers a <a href="https://github.com/dy/jz#what-differs-from-js">subset of JavaScript</a>, so measure the whole call, transfer included, before you trust a speedup.</p>
+  <p>Start with one kernel and run your existing tests against both versions. JZ is experimental and does not support a <a href="https://github.com/dy/jz#faq">few JavaScript features</a>, so measure the whole call, transfer included, before you trust a speedup.</p>
   <p><a href="../examples/">Find an example to adapt</a> · <a href="../bench/">See the measurements</a></p>
 </article>
 </main>

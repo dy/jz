@@ -163,7 +163,7 @@ const wasmtimeHasEH = (() => {
   let v
   return () => v ??= /\bexceptions\b/.test(spawnSync('wasmtime', ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
 })()
-// --no-eh-abort (src/compile/index.js pruneUnusedThrowRuntime, cli.js): an
+// optimize `exceptions: false` (src/compile/index.js pruneUnusedThrowRuntime): an
 // opt-in build variant for jz-w2c/jz-w2c2 that lowers every surviving internal
 // `throw` to `unreachable` even when source has a bare `throw` with no
 // reachable `try`/`catch` — the common shape that otherwise keeps NEEDS_EH's
@@ -209,7 +209,7 @@ const wasmtimeHasEH = (() => {
 //            path — but that is corpus-specific, not a structural guarantee,
 //            so it is not trusted as a green light here); (2) independently,
 //            jz-w2c's plain-CLI shell-out (compileJzW2c, below) cannot even
-//            reach codegen for this case today — it needs `--resolve` for
+//            reach codegen for this case today — it needs bare-specifier resolution for
 //            self.js's bare `watr`/`watr/print` imports, and even then hits an
 //            unrelated `--host wasi` incompatibility (a `WebAssembly.*`
 //            reference inside the self-compile graph needs an env import `js`
@@ -469,8 +469,8 @@ const compileJz = c => {
 const w2cWasmPath = c => join(caseBuild(c), `${c.id}nt.wasm`)
 const noTailIdent = c => cIdent(c.id) + 'nt'
 const compileJzW2c = c => {
-  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O3', '--no-tail-call',
-    ...(EH_ABORT_VARIANT.has(c.id) ? ['--no-eh-abort'] : []), '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+  const optimize = { level: 'speed', tailCall: false, ...(EH_ABORT_VARIANT.has(c.id) ? { exceptions: false } : {}) }
+  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O', JSON.stringify(optimize), '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 
 const benchlibHostSource = () => {
@@ -1053,7 +1053,7 @@ const targets = {
   'jz-w2c': {
     name: 'jz → wasm2c → clang -O3',
     // NEEDS_EH cases stay blocked UNLESS the EH_ABORT_VARIANT verified-safe
-    // list covers them — compileJzW2c passes --no-eh-abort for those, so the
+    // list covers them — compileJzW2c passes optimize.exceptions:false for those, so the
     // wasm this target's wasm2c step receives already has no tag section.
     available: c => (!NEEDS_EH.has(c.id) || EH_ABORT_VARIANT.has(c.id)) && has('wasm2c') && has('clang') && existsSync(join(WABT_W2C_DIR, 'wasm-rt-impl.c')),
     bin: w2cBinPath,
@@ -1078,7 +1078,7 @@ const targets = {
   // bench/README's native-lane section for the enumerated reason.
   'jz-w2c2': {
     name: 'jz → w2c2 → clang -O3',
-    // Same EH_ABORT_VARIANT carve-out as jz-w2c above — same --no-eh-abort wasm input.
+    // Same EH_ABORT_VARIANT carve-out as jz-w2c above — same exceptions:false wasm input.
     available: c => (!NEEDS_EH.has(c.id) || EH_ABORT_VARIANT.has(c.id)) && has(W2C2_BIN) && has('clang') && existsSync(join(W2C2_DIR, 'w2c2_base.h')),
     bin: w2c2BinPath,
     run: c => tryRun('jz-w2c2', c, () => {

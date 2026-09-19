@@ -157,7 +157,7 @@ select:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-
 .check input { appearance: none; width: 13px; height: 13px; border: 1px solid #6a6a6a; cursor: pointer; }
 .check input:checked { background: var(--fg); box-shadow: inset 0 0 0 2px #14141a; }
 
-/* ⚙ compile-options popover: strict · names — always on the dark pane, so its colors
+/* ⚙ compile-options popover: optimize · names — always on the dark pane, so its colors
    come from the terminal's own vars (not the themed editor --ink). */
 .gear { position: relative; display: flex; }
 .menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 10;
@@ -308,9 +308,7 @@ html.embed .brand { display: none; }
                 <label><input type="radio" name="opt" value="size"><span>size</span></label>
               </div>
             </div>
-            <label class="check"><input type="checkbox" id="strict"> strict</label>
             <label class="check"><input type="checkbox" id="names"> names</label>
-            <label class="check" title="pasted or dropped full JS (var/function/class/switch/…) is rewritten to canonical jz source; already-canonical source is left byte-intact"><input type="checkbox" id="jzify" checked> auto-jzify paste</label>
           </div>
         </div>
       </span>
@@ -335,7 +333,7 @@ import { highlight, highlightWat } from '../assets/highlight.js'
 // The whole point: the compiler runs HERE, in the page — parse, type inference,
 // WASM emit, instantiate. No server, no build step. (dist/jz.js is the
 // standalone bundle — `npm run build` regenerates it.)
-import jz, { compile, transform } from '../dist/jz.js'
+import jz, { compile } from '../dist/jz.js'
 
 const $ = id => document.getElementById(id)
 const editor = $('editor'), out = $('out'), watEl = $('wat'), stat = $('stat'), expr = $('expr')
@@ -494,7 +492,7 @@ console.log('compiled + instantiated, top-level ran')`
 // ── compile pipeline ────────────────────────────────────────────────────────
 const state = { src: '', exports: null, memory: null, bytes: null, wat: '', ok: false }
 const optVal = () => (document.querySelector('input[name=opt]:checked') || { value: '3' }).value
-const opts = () => { const o = optVal(); return { strict: $('strict').checked, optimize: o === 'size' ? 'size' : +o, names: $('names').checked } }
+const opts = () => { const o = optVal(); return { optimize: o === 'size' ? 'size' : o === '0' ? false : 'speed', names: $('names').checked } }
 
 // pretty size: B under 1k, then kB / MB (SI), trailing zeros trimmed
 const fmtB = n =>
@@ -561,7 +559,6 @@ const setHash = (src) => {
 
 let deb = 0
 editor.addEventListener('input', () => { refresh(); clearTimeout(deb); deb = setTimeout(build, 250) })
-$('strict').addEventListener('change', build)
 for (const r of document.querySelectorAll('input[name=opt]')) r.addEventListener('change', build)
 $('names').addEventListener('change', build)
 
@@ -651,7 +648,7 @@ const reportUrl = (code, jzMs, jsMs) => {
     `jz is slower than plain JS on this kernel — from the REPL bench (a slowdown on a compute kernel is a bug we want).`, '',
     `**Call:** \`${code}\``,
     `**jz (wasm):** ${jzMs.toFixed(3)} ms · **JS (V8):** ${jsMs.toFixed(3)} ms · **${slower}× slower** (median of 40, in-browser)`,
-    `**opt:** ${optVal()}${$('strict').checked ? ' · strict' : ''}`, '',
+    `**opt:** ${optVal()}`, '',
     `**Repro — REPL permalink (exact source):** ${permalink}`,
   ].join('\n')
   return `https://github.com/dy/jz/issues/new?labels=slowdown&title=${encodeURIComponent(`Slowdown: jz ${slower}× slower than JS on ${code}`)}&body=${encodeURIComponent(body)}`
@@ -752,21 +749,6 @@ makeResizer($('hdivider'), {
   target: rightEl, prop: '--wh', key: 'jz-repl-wat', min: 15, max: 85, reset: 60,
   decKey: 'ArrowUp', incKey: 'ArrowDown',
   axis: (e) => { const r = termEl.getBoundingClientRect(); return (e.clientY - r.top) / r.height * 100 },
-})
-
-// ── auto-jzify — pasted/dropped full JS (var/function/class/switch/…) rewrites to
-// canonical jz source (same jzify the compiler runs). Canonical source returns
-// null (byte-intact — comments/formatting kept); unparseable fragments pass through.
-const autoJzify = (src) => {
-  if (!$('jzify').checked) return src
-  try { return transform(src, { onlyLowered: true }) ?? src } catch { return src }
-}
-editor.addEventListener('paste', () => {
-  // after the paste lands (input event queues build at 250ms — the rewrite wins the race)
-  setTimeout(() => {
-    const t = autoJzify(editor.value)
-    if (t !== editor.value) { setSource(t); print('sys', 'jzified — full JS lowered to canonical jz (⚙ to turn off)') }
-  }, 0)
 })
 
 // ── file drop — replaces the editor content (single file; the repl compiles one source) ──

@@ -12,7 +12,7 @@ import { ctx, err } from '../ctx.js'
 import { isFuncRef } from '../ir.js'
 import { TIMER_NAMES, hasModule, includeModule } from '../autoload.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
-import { handlerArgs } from '../ast.js'
+import { handlerArgs, walkAst } from '../ast.js'
 import { hasFunc } from './closure-lift.js'
 import { stringValue } from './const-fold.js'
 import { patternItems } from './destructure.js'
@@ -35,6 +35,19 @@ const hostReturnValType = spec => {
   return null
 }
 
+/** Widest argument count `name(...)` is called with in the module being prepared; 0 when unknown. */
+const maxCallArity = (name) => {
+  let max = 0
+  walkAst(ctx.module.ast, { enter: (n) => {
+    if ((n[0] !== '()' && n[0] !== '?.()') || n[1] !== name) return
+    const raw = n[2]
+    const args = raw === undefined ? [] : Array.isArray(raw) && raw[0] === ',' ? raw.slice(1) : [raw]
+    if (args.some(a => Array.isArray(a) && a[0] === '...')) return
+    if (args.length > max) max = args.length
+  } })
+  return max
+}
+
 export const addHostImport = (mod, name, alias, spec) => {
   // A numeric host constant (e.g. `Math.PI` via `{ imports: { math: Math } }`) has no callable
   // ABI — record it so references fold to an f64 literal (see prep's identifier resolution) instead
@@ -44,7 +57,9 @@ export const addHostImport = (mod, name, alias, spec) => {
     ctx.scope.hostConsts[alias] = spec
     return
   }
-  const nParams = typeof spec === 'function' ? spec.length : (spec?.params || 0)
+  // Arity: the widest call site in the importing module, or the declared one when
+  // wider. `fn.length` alone drops arguments to variadic hosts (console.log is 0-ary).
+  const nParams = Math.max(typeof spec === 'function' ? spec.length : (spec?.params || 0), maxCallArity(alias))
   // User-supplied imports carry NaN-boxed values via i64 (not f64) so V8 cannot
   // canonicalize the NaN payload across the wasm↔JS function boundary —
   // same hazard as env.print / __ext_*. Call sites wrap args with asI64()

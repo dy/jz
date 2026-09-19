@@ -487,6 +487,7 @@ export function reset(proto, globals, bridge) {
                         // Consulted by prepareModule before falling back to ctx.transform.parse(source).
     hostImports: null,
     hostImportValTypes: new Map(),
+    ast: null,          // the module being prepared (root or bundled); host-import arity reads its call sites
     resolvedModules: new Map(),
     moduleStack: [],
     moduleInits: [],
@@ -988,6 +989,7 @@ export function warn(code, message, meta = {}, loc = null) {
     entry.column = loc - before.lastIndexOf('\n')
   }
   ctx.warnings.sink.entries.push(entry)
+  if (typeof ctx.warnings.sink.onWarning === 'function') ctx.warnings.sink.onWarning(entry)
 }
 
 /** Advise that an emit site fell back to generic runtime dispatch (the slow,

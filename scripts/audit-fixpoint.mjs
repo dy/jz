@@ -26,7 +26,8 @@
 // than the one jz configured — not jz leaving a rewrite on the table. Matching
 // the options closes the false positives; a delta that survives THIS comparison
 // is real waste, so this script exits non-zero on any.
-import { compile, resolveWatrOpts } from '../index.js'
+import { compile } from '../index.js'
+import { resolveWatrOpts } from '../src/optimize/watr-tail.js'
 import { resolveOptimize } from '../src/optimize/index.js'
 import parseWat from 'watr/parse'
 import { optimize as watOptimize } from 'watr/optimize'

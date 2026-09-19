@@ -24,7 +24,7 @@ function cliFail(...args) {
   }
 }
 
-// spawnSync variant — captures stderr even on success (for --stats).
+// spawnSync variant — captures stderr even on success (for --why).
 function cliBoth(...args) {
   const r = spawnSync('node', [CLI, ...args], { encoding: 'utf8', timeout: 10000 })
   return { stdout: r.stdout, stderr: r.stderr, status: r.status }
@@ -55,25 +55,6 @@ test('cli: --version shows version', () => {
 test('cli: -v shows version', () => {
   const out = cli('-v')
   ok(/^\d+\.\d+\.\d+/.test(out.trim()), '-v shows semver version')
-})
-
-test('cli: -e expression', () => {
-  const out = cli('-e', '1 + 2')
-  is(out.trim(), '3')
-})
-
-test('cli: -e arithmetic', () => {
-  is(cli('-e', '2 * 21').trim(), '42')
-  is(cli('-e', '10 - 3').trim(), '7')
-})
-
-test('cli: -e file', () => {
-  const file = join(tmp, 'eval.js')
-  writeFileSync(file, 'export let main = () => 99')
-  const out = cli('-e', file)
-  // A file (or module-level source) with a main() entry is called; its value is printed —
-  // rather than dumping the raw exports object as `{ main: [Function] }`.
-  ok(out.includes('99'), 'calls main entry and prints its value')
 })
 
 test('cli: compile .js → .wasm', () => {
@@ -137,17 +118,18 @@ test('cli: supplies import.meta.url for entry file', async () => {
   unlinkSync(output)
 })
 
-test('cli: -e with console.log (WASI)', () => {
-  const file = join(tmp, 'wasi-eval.js')
-  writeFileSync(file, 'export let main = () => { console.log(42); return 0 }')
-  // Should not crash — CLI provides WASI imports
-  const out = cli('-e', file)
-  ok(out.includes('42') || out.includes('main'), 'WASI eval produces output')
+test('cli: bad input exits 1', () => {
+  const file = join(tmp, 'bad.js')
+  writeFileSync(file, '???:::')
+  const { status } = cliFail(file)
+  is(status, 1)
 })
 
-test('cli: bad input exits 1', () => {
-  const { status } = cliFail('-e', '???:::')
+test('cli: unknown option exits 1', () => {
+  const file = join(tmp, 'bad.js')
+  const { stderr, status } = cliFail(file, '--bogus')
   is(status, 1)
+  ok(/unknown option/.test(stderr), 'names the option')
 })
 
 test('cli: missing file exits 1', () => {
@@ -182,7 +164,7 @@ test('cli: transitive filesystem imports', () => {
   unlinkSync(utilsFile)
 })
 
-test('cli: --resolve resolves bare modules from input directory', () => {
+test('cli: bare specifiers resolve through node_modules', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-bare-resolve-'))
   const pkgDir = join(dir, 'node_modules', 'pkg')
   const mainFile = join(dir, 'main.js')
@@ -195,7 +177,7 @@ test('cli: --resolve resolves bare modules from input directory', () => {
   writeFileSync(modFile, 'export let val = () => 42')
   writeFileSync(mainFile, 'import { val } from "pkg"; export let f = () => val()')
 
-  cli(mainFile, '--resolve', '-o', outFile)
+  cli(mainFile, '-o', outFile)
 
   const wasm = readFileSync(outFile)
   const mod = new WebAssembly.Module(wasm)
@@ -203,28 +185,20 @@ test('cli: --resolve resolves bare modules from input directory', () => {
   is(adaptI64(mod, inst.exports).f(), 42)
 })
 
-test('cli: --memory / --max-memory set the memory type', () => {
+test('cli: --memory sets initial and maximum pages', () => {
   const input = join(tmp, 'mem.js')
   const output = join(tmp, 'mem.wat')
   // Dynamic-length typed array can't be scalarized away, so it genuinely needs
   // linear memory (a const read-only array now compiles memory-free).
   writeFileSync(input, 'export let f = (n) => { let a = new Float64Array(n); a[0] = 1.5; return a[0] }')
-  cli(input, '--wat', '--memory', '4', '--max-memory', '16', '-o', output)
+  cli(input, '--wat', '--memory', '4:16', '-o', output)
   ok(flat(readFileSync(output, 'utf8')).includes('(memory (export "memory") 4 16'), 'memory min/max emitted')
   unlinkSync(output)
 })
 
-test('cli: --import-memory imports env.memory', () => {
+test('cli: --memory maximum below initial fails', () => {
   const input = join(tmp, 'mem.js')
-  const output = join(tmp, 'imem.wat')
-  cli(input, '--wat', '--import-memory', '--memory', '2', '-o', output)
-  ok(flat(readFileSync(output, 'utf8')).includes('(import "env" "memory" (memory 2'), 'memory imported from env')
-  unlinkSync(output)
-})
-
-test('cli: --max-memory below initial fails', () => {
-  const input = join(tmp, 'mem.js')
-  const { status } = cliFail(input, '--memory', '10', '--max-memory', '4', '-o', join(tmp, 'x.wasm'))
+  const { status } = cliFail(input, '--memory', '10:4', '-o', join(tmp, 'x.wasm'))
   is(status, 1)
 })
 
@@ -303,30 +277,44 @@ test('cli: --names emits a wasm name section', () => {
   unlinkSync(withNames); unlinkSync(without)
 })
 
-test('cli: --stats prints compile-phase timings to stderr', () => {
-  const input = join(tmp, 'stats.js')
-  const output = join(tmp, 'stats.wasm')
-  writeFileSync(input, 'export let f = (a, b) => a + b')
-  const { stderr, status } = cliBoth(input, '--stats', '-o', output)
-  is(status, 0)
-  ok(/compile stats/.test(stderr), 'stats header on stderr')
-  ok(/total/.test(stderr), 'total line present')
-  unlinkSync(output)
-})
-
-test('cli: -Os optimizes for size; numeric levels still work', () => {
+test('cli: -Os, -O3, -O0 and an optimize object all compile', () => {
   const input = join(tmp, 'opt.js')
   const output = join(tmp, 'opt.wasm')
   writeFileSync(input, 'export let f = (a, b) => a + b')
   cli(input, '-Os', '-o', output); ok(readFileSync(output).byteLength > 0, '-Os compiles')
   cli(input, '-O3', '-o', output); ok(readFileSync(output).byteLength > 0, '-O3 compiles')
   cli(input, '-O0', '-o', output); ok(readFileSync(output).byteLength > 0, '-O0 compiles')
+  cli(input, '-O', '{"level":"size","tailCall":false}', '-o', output); ok(readFileSync(output).byteLength > 0, '-O object compiles')
+  const { status, stderr } = cliFail(input, '-O1', '-o', output)
+  is(status, 1); ok(/unknown optimization level/.test(stderr), 'unlisted level is refused')
+  unlinkSync(output)
+})
+
+test('cli: -O object switches SIMD off like --no-simd', () => {
+  if (belowOpt(2)) return
+  const input = join(tmp, 'vec2.js')
+  const out = join(tmp, 'vec2.wat')
+  writeFileSync(input, 'export let f = (n) => { let a = new Float64Array(n); let i = 0; for (i = 0; i < n; i++) a[i] = a[i] * 2; return a[0] }')
+  cli(input, '--wat', '-O', '{"simd":false}', '-o', out)
+  ok(!/v128|f64x2|i32x4|f32x4/.test(readFileSync(out, 'utf8')), 'no v128 through the optimize object')
+  unlinkSync(out)
+})
+
+test('cli: --why reports declined loops on stderr', () => {
+  if (belowOpt(2)) return
+  const input = join(tmp, 'why.js')
+  const output = join(tmp, 'why.wasm')
+  // a loop-carried dependency: the vectorizer must decline and say why
+  writeFileSync(input, 'export let f = (n) => { let a = new Float64Array(n); for (let i = 1; i < n; i++) a[i] = a[i - 1] + 1; return a[0] }')
+  const { stderr, status } = cliBoth(input, '--why', '-o', output)
+  is(status, 0)
+  ok(/warning\[(simd-why-not|rewind-why-not)\]/.test(stderr), 'why-not report on stderr')
   unlinkSync(output)
 })
 
 // Cleanup temp files
 test('cli: cleanup', () => {
-  for (const f of ['wasi-eval.js', 'eval.js', 'add.js', 'mul.js', 'def.js',
-    'mem.js', 'def-const.js', 'vec.js', 'tc.js', 'names.js', 'stats.js', 'opt.js'])
+  for (const f of ['bad.js', 'add.js', 'mul.js', 'def.js', 'mem.js', 'def-const.js',
+    'vec.js', 'vec2.js', 'tc.js', 'tcn.js', 'tcn2.js', 'names.js', 'opt.js', 'why.js'])
     try { unlinkSync(join(tmp, f)) } catch {}
 })

@@ -1,168 +1,62 @@
 #!/usr/bin/env node
 
-/**
- * JZ CLI - Command-line interface for JZ compiler
- */
+/** jz CLI — compile a JavaScript file to WebAssembly. */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { pathToFileURL } from 'url'
-import jz, { compile } from './index.js'
-
-// Write to `file`, creating its parent directory first. `jz src.js -o dist/out.wasm`
-// must not fail just because `dist/` doesn't exist yet — a fresh checkout where the
-// output dir is gitignored (watr's `dist/`, jz's own build dir) is the common case,
-// and every compiler that takes `-o path/file` is expected to make the path. Without
-// this the CLI dies with `ENOENT: open 'dist/out.wasm'` (the watr CI build failure).
-const writeOut = (file, data) => { mkdirSync(dirname(resolve(file)), { recursive: true }); writeFileSync(file, data) }
-import transform from './transform.js'
-import { resolveModuleGraph } from './src/resolve.js'
 import { createRequire } from 'module'
+import { compile } from './index.js'
+import { resolveModuleGraph } from './src/resolve.js'
 
-const jzRequire = createRequire(import.meta.url)
-const PKG = jzRequire('./package.json')
+const PKG = createRequire(import.meta.url)('./package.json')
 
-function formatWarning(w) {
-  const where = w.line != null ? ` (${w.line}:${w.column})` : ''
-  return `warning[${w.code}]${where}: ${w.message}`
-}
-
-function showHelp() {
-  console.log(`
-jz v${PKG.version} - min JS → WASM compiler
+const HELP = `
+jz v${PKG.version} — JS → WASM compiler
 
 Usage:
-  jz <file.js>              Compile JS to WASM (full JS subset; .jz = strict)
-  jz --strict <file.js>     Strict mode — pure canonical subset, no lowering
-  jz --jzify <file.js>      Transform JS → jz source (auto-derives output file)
-  jz -e <expression>        Evaluate expression
-  jz --help, -h             Show this help
+  jz <file.js> [options]
 
 Examples:
-  jz program.js                    # → program.wasm
-  jz program.js --wat              # → program.wat
-  jz program.js -o out.wasm        # custom output name
-  jz program.js -o -               # write to stdout
-  jz program.js -O3                # optimize for speed
-  jz program.js -Os                # optimize for size
-  jz program.js -D DEBUG=false     # inject a compile-time constant
-  jz program.js --memory 64        # 64 initial pages (4 MB)
-  jz program.js --host wasi        # emit WASI Preview 1 imports
-  jz --strict program.js           # strict mode
-  jz --jzify lib.js                # → lib.jz
-  jz -e "1 + 2"
+  jz kernel.js                  # → kernel.wasm
+  jz kernel.js --wat            # → kernel.wat
+  jz kernel.js -o out.wasm      # custom output (- for stdout)
+  jz kernel.js -O3              # fastest code (-Os smallest, -O0 none)
+  jz kernel.js --host wasi      # standalone WASI module
+  jz kernel.js --why            # report what the optimizer declined
 
 Options:
-  --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
-  -O<n>, --optimize <n>     Optimization level: 0 off, 1 minimal, 2 default (all
-                            stable passes), 3 speed. -Os optimizes for size,
-                            -Ofast compiles fastest (default passes, wat optimizer off).
-  --define, -D <K=V>        Inject a compile-time constant (VALUE parsed as JSON,
-                            else string). Repeatable.
-  --host <js|wasi|native>   Runtime-service lowering (default js). 'native' targets
-                            the wasm2c/native-lowering lane (scripts/native/) —
-                            same module shape as 'js', tail calls off (wasm2c
-                            return_call + multi-value codegen bug)
-  --memory <pages>          Initial memory size in 64 KiB pages
-  --max-memory <pages>      Cap memory growth at this many pages (default unbounded)
-  --import-memory           Import env.memory instead of exporting own memory
-  --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
-  --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
-  --why-not-simd            Report, per loop, why the auto-vectorizer declined it
-  --why-not-rewind          Report, per function, why its arena is not rewound at return
-  --stencil                 Force neighbour-load stencil vectorization (a[i±1]) at
-                            levels where it's off (on by default at -O2+)
-  --outer-strip             Force pixel-loop strip-mining over an inner reduction to
-                            f64x2 at levels where it's off (on by default at -O2+)
-  --no-tail-call            Use ordinary call frames instead of return_call
-  --no-eh-abort             Lower internal throws to unreachable even with a bare throw
-                            in source (no wasm-exceptions tag), when no try/catch is reachable
-  --names                   Emit wasm name section for profilers/debuggers
-  --stats                   Print compile-phase timings to stderr
-  --strict                  Pure canonical subset: reject full-JS syntax + dynamic fallbacks
-  --jzify                   Transform JS to jz source (no compilation)
-  --eval, -e                Evaluate expression or file
-  --wat                     Output WAT text instead of binary
-  --resolve                 Resolve bare specifiers via Node.js module resolution
-  --imports <file>          JSON file with host import specs (e.g. {"env":{"fn":{"params":2}}})
-  --version, -v             Show version number
-  `)
-}
+  -o, --output <file>       Output path: .wasm, .wat, or - for stdout
+  -O0 | -O3 | -Os           Optimization: none, speed, size (default: balanced)
+  -O <json>                 Optimize object, e.g. -O '{"simd":false}'
+  -D, --define <K=V>        Compile-time constant (JSON value or string); repeatable
+  --host <js|wasi|native>   Runtime services (default js)
+  --memory <n[:max]>        Initial and maximum memory, in 64 KiB pages
+  --no-simd                 No auto-vectorization, for engines without SIMD
+  --no-tail-call            No return_call, for engines without tail calls
+  --names                   Emit the wasm name section for profilers
+  --why                     Report loops and arenas the optimizer declined
+  --wat                     Emit WAT text instead of binary
+  -v, --version             Show version
+  -h, --help                Show this help
+`
 
-async function main() {
-  const args = process.argv.slice(2)
+// `jz src.js -o dist/out.wasm` creates dist/ like every other compiler does.
+const writeOut = (file, data) => { mkdirSync(dirname(resolve(file)), { recursive: true }); writeFileSync(file, data) }
 
-  if (args.includes('--version') || args.includes('-v')) {
-    console.log(PKG.version)
-    return
-  }
+const formatWarning = w => `warning[${w.code}]${w.line != null ? ` (${w.line}:${w.column})` : ''}: ${w.message}`
 
-  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
-    showHelp()
-    return
-  }
-
-  try {
-    const evalIdx = args.indexOf('-e') !== -1 ? args.indexOf('-e') : args.indexOf('--eval')
-    const jzifyIdx = args.indexOf('--jzify')
-    if (jzifyIdx !== -1) await handleJzify(args.slice(jzifyIdx + 1))
-    else if (evalIdx !== -1) await handleEvaluate(args.slice(evalIdx + 1))
-    else await handleCompile(args)
-  } catch (error) {
-    console.error(error)
-    process.exit(1)
-  }
-}
-
-async function handleEvaluate(args) {
-  const input = args.join(' ')
-  const isFile = args.length === 1 && (args[0].endsWith('.js') || args[0].endsWith('.jz'))
-  // A bare expression ("1 + 2") is wrapped in an arrow so its value can be printed. A file, or
-  // `-e` text that is already module-level (top-level export/import), compiles as-is — wrapping it
-  // would splice `export let _ = () => export …` and crash with a garbled SyntaxError.
-  const isModule = isFile || /^\s*(export|import)\b/m.test(input)
-  const code = isFile ? readFileSync(args[0], 'utf8')
-    : isModule ? input
-    : `export let _ = () => ${input}`
-
-  const { exports } = jz(code)
-
-  if (exports._ !== undefined) console.log(exports._())                    // expression eval → print value
-  else if (typeof exports.main === 'function') console.log(exports.main()) // module with a main() entry
-  else console.log(`compiled; exports: ${Object.keys(exports).join(', ') || '(none)'}`)
-}
-
-async function handleJzify(args) {
-  let inputFile = null, outputFile = null
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
-    else if (!inputFile) inputFile = args[i]
-  }
-  if (!inputFile) throw new Error('No input file specified — usage: jz <file.js> (jz --help for options)')
-  if (!outputFile) outputFile = inputFile.replace(/\.js$/, '.jz')
-  const code = readFileSync(inputFile, 'utf8')
-  const warnings = { entries: [] }
-  const out = transform(code, { warnings }) + '\n'
-  for (const w of warnings.entries) console.warn(formatWarning(w))
-  if (outputFile === '-') {
-    process.stdout.write(out)
-  } else {
-    writeOut(outputFile, out)
-    console.log(`${inputFile} → ${outputFile} (${out.length} chars)`)
-  }
-}
-
-// -O<n> numeric levels (0–3); -Os → size preset. The 'size'/'speed' strings are
-// also accepted via `--optimize <name>` for parity with the JS API (-O3 = speed).
-const OPT_ALIAS = { s: 'size' }
+// -O0 none · -O3 speed · -Os size · -O2 default · -O '{…}' advanced object
+const OPT_LEVELS = { 0: false, 2: true, 3: 'speed', s: 'size', size: 'size', speed: 'speed' }
 function parseOptimize(v) {
-  if (v == null) return undefined
-  if (/^\d+$/.test(v)) return +v
-  return OPT_ALIAS[v] ?? v
+  if (v == null) throw new Error('-O expects a level (0, 2, 3, s) or an optimize object')
+  if (v.trimStart().startsWith('{')) return JSON.parse(v)
+  if (!(v in OPT_LEVELS)) throw new Error(`unknown optimization level '${v}' — use -O0, -O2, -O3, -Os or -O '{…}'`)
+  return OPT_LEVELS[v]
 }
 
-// -D NAME=VALUE / --define NAME=VALUE → [key, value]. VALUE is parsed as JSON when
-// it can be (numbers, booleans, null, JSON arrays/objects); otherwise a bare string.
+// -D NAME=VALUE: VALUE parses as JSON when it can (numbers, booleans, null,
+// arrays, objects), otherwise it is a bare string.
 function parseDefine(s) {
   const eq = s.indexOf('=')
   if (eq === -1) throw new Error(`--define expects NAME=VALUE (got '${s}')`)
@@ -171,118 +65,73 @@ function parseDefine(s) {
   return [s.slice(0, eq), value]
 }
 
-function parsePages(v, flag) {
-  const n = parseInt(v, 10)
-  if (!Number.isInteger(n) || n < 1) throw new Error(`${flag} expects a positive integer page count (64 KiB/page)`)
-  return n
+// --memory 16 · --memory 16:256 (initial:maximum pages)
+function parseMemory(v) {
+  const pages = (part) => {
+    const n = parseInt(part, 10)
+    if (!Number.isInteger(n) || n < 1) throw new Error(`--memory expects positive page counts (64 KiB/page), got '${v}'`)
+    return n
+  }
+  const [initial, maximum] = String(v).split(':')
+  return maximum == null ? pages(initial) : { initial: pages(initial), maximum: pages(maximum) }
 }
 
-// --stats: dump top-level compile-phase timings to stderr (stdout stays clean for
-// `-o -`). Sub-phase (optMod:*) detail is left to the programmatic `profile` sink.
-function printStats(profile) {
-  const rows = Object.entries(profile.totals || {}).filter(([n]) => !n.includes(':'))
-  if (!rows.length) return
-  const width = Math.max(5, ...rows.map(([n]) => n.length))
-  const total = rows.reduce((sum, [, ms]) => sum + ms, 0)
-  console.error('compile stats (ms):')
-  for (const [name, ms] of rows) console.error(`  ${name.padEnd(width)} ${ms.toFixed(2)}`)
-  console.error(`  ${'total'.padEnd(width)} ${total.toFixed(2)}`)
-}
+function main() {
+  const args = process.argv.slice(2)
+  if (args.includes('--version') || args.includes('-v')) return console.log(PKG.version)
+  if (args.length === 0 || args.includes('--help') || args.includes('-h')) return console.log(HELP)
 
-async function handleCompile(args) {
-  let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
-  let optimize, host, alloc = true, names = false, stats = false, noSimd = false, noTailCall = false, noEhAbort = false
-  let memory, maxMemory, importMemory = false, define, whyNotSimd = false, whyNotRewind = false, stencil = false, outerStrip = false
-
+  let inputFile = null, outputFile = null, wat = false, why = false
+  let optimize, host, memory, define, names = false, noSimd = false, noTailCall = false
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     if (a === '--output' || a === '-o') outputFile = args[++i]
     else if (a === '--wat') wat = true
-    else if (a === '--strict') strict = true
-    else if (a === '--resolve') resolveNode = true
-    else if (a === '--imports') importsFile = args[++i]
+    else if (a === '--why') why = true
+    else if (a === '--names') names = true
+    else if (a === '--no-simd') noSimd = true
+    else if (a === '--no-tail-call') noTailCall = true
+    else if (a === '--host') host = args[++i]
+    else if (a === '--memory') memory = parseMemory(args[++i])
     else if (a === '--define' || a === '-D') { const [k, v] = parseDefine(args[++i]); (define ||= {})[k] = v }
     else if (a.startsWith('-D') && a.length > 2) { const [k, v] = parseDefine(a.slice(2)); (define ||= {})[k] = v }
     else if (a === '--optimize' || a === '-O') optimize = parseOptimize(args[++i])
     else if (/^-O.+/.test(a)) optimize = parseOptimize(a.slice(2))
-    else if (a === '--host') host = args[++i]
-    else if (a === '--memory') memory = parsePages(args[++i], '--memory')
-    else if (a === '--max-memory') maxMemory = parsePages(args[++i], '--max-memory')
-    else if (a === '--import-memory') importMemory = true
-    else if (a === '--no-alloc') alloc = false
-    else if (a === '--no-simd') noSimd = true
-    else if (a === '--why-not-simd') whyNotSimd = true
-    else if (a === '--why-not-rewind') whyNotRewind = true
-    else if (a === '--stencil' || a === '--experimental-stencil') stencil = true
-    else if (a === '--outer-strip' || a === '--experimental-outer-strip') outerStrip = true
-    else if (a === '--no-tail-call') noTailCall = true
-    else if (a === '--no-eh-abort') noEhAbort = true
-    else if (a === '--names') names = true
-    else if (a === '--stats') stats = true
+    else if (a.startsWith('-') && a !== '-') throw new Error(`unknown option '${a}' (jz --help for options)`)
     else if (!inputFile) inputFile = a
+    else throw new Error(`unexpected argument '${a}' — jz compiles one entry file`)
   }
-
   if (!inputFile) throw new Error('No input file specified — usage: jz <file.js> (jz --help for options)')
-  if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
+  if (!outputFile) outputFile = inputFile.replace(/\.[cm]?js$/, '') + (wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
 
-  // Resolve imports — canonicalize every specifier to an absolute path so the
-  // same physical file always produces one module instance (see src/resolve.js).
-  const { code: codeRewritten, modules } = resolveModuleGraph(inputFile, { resolveNode })
+  // Every specifier resolves to an absolute path, so one physical file is one module
+  // instance; bare specifiers go through Node resolution from the entry's directory.
+  const { code, modules } = resolveModuleGraph(inputFile, { resolveNode: true })
   if (process.env.JZ_DEBUG_MODULES === '1') console.error('modules:', Object.keys(modules))
 
-  // jzify is default-on; strict (pure canonical subset) is opt-in.
-  // `.jz` files are treated as strict; `--strict` forces it for any extension.
-  if (inputFile.endsWith('.jz')) strict = true
   const warnings = { entries: [] }
-  const profile = stats ? {} : null
-  const opts = {
-    wat,
-    warnings,
-    strict,
+  const result = compile(code, {
+    wat, warnings, why, names,
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(optimize !== undefined && { optimize }),
     ...(host && { host }),
     ...(memory !== undefined && { memory }),
-    ...(maxMemory !== undefined && { maxMemory }),
-    ...(importMemory && { importMemory: true }),
-    ...(alloc === false && { alloc: false }),
-    ...(noSimd && { noSimd: true }),
-    ...(whyNotSimd && { whyNotSimd: true }),
-    ...(whyNotRewind && { whyNotRewind: true }),
-    ...(stencil && { stencil: true }),
-    ...(outerStrip && { outerStrip: true }),
-    ...(noTailCall && { noTailCall: true }),
-    ...(noEhAbort && { noEhAbort: true }),
     ...(define && { define }),
-    ...(names && { names: true }),
-    ...(profile && { profile }),
+    ...(noSimd && { noSimd: true }),
+    ...(noTailCall && { noTailCall: true }),
     ...(Object.keys(modules).length && { modules }),
-  }
+  })
+  for (const w of warnings.entries) console.warn(formatWarning(w))
 
-  if (importsFile) {
-    const importsPath = resolve(importsFile)
-    opts.imports = JSON.parse(readFileSync(importsPath, 'utf8'))
-  }
-
-  const result = compile(codeRewritten, opts)
-
-  for (const w of warnings.entries)
-    console.warn(formatWarning(w))
-  if (profile) printStats(profile)
-
-  if (outputFile === '-') {
-    process.stdout.write(result)
-  } else if (wat) {
+  if (outputFile === '-') process.stdout.write(result)
+  else {
     writeOut(outputFile, result)
-    console.log(`${inputFile} → ${outputFile} (${result.length} chars)`)
-  } else {
-    writeOut(outputFile, result)
-    console.log(`${inputFile} → ${outputFile} (${result.byteLength} bytes)`)
+    console.log(`${inputFile} → ${outputFile} (${wat ? result.length + ' chars' : result.byteLength + ' bytes'})`)
   }
 }
 
-main().catch(error => {
-  console.error(error)
+try { main() } catch (error) {
+  console.error(error?.message ?? error)
   process.exit(1)
-})
+}

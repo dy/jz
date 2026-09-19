@@ -44,6 +44,7 @@ const TESTS = [
   'regex',
   'simd',
   'cli',
+  'options',
   'objects',
   'js-parity',
   'conditional-spread',
@@ -98,7 +99,6 @@ const TESTS = [
   'grid-current',
   'perf-ratchet',
   'parser-bugs',
-  'transform',
   'self-build',
   'kernel-gate',
   'kernel-marks',
@@ -164,13 +164,12 @@ const argFilters = process.argv.slice(2)
 //   (2026-07-25: no remaining recorded kernel VALUE bugs in this list — the
 //   json shaped-parser asserts cleared with the elemOrigin fix; what's left
 //   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
   'self-compile-source', 'self-compile-includes', 'self-checkpoint', 'abi', 'examples', 'bench-porffor',
   'eager-stdlib-parity', 'refactor-oracle',   // native harnesses: opts._eagerStdlib passthrough and scripts/refactor-oracle.mjs drive the Node compile() directly
-  'transform',   // 'features' cleared 2026-07-23: 49/49 green once the kernel parsed literal-key shorthand methods (SKM family fix)
   // 'errors','parser-bugs','destruct','closures','json' UN-EXCLUDED FOR GOOD
   // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows
   // (Array.isArray-as-value closure-support + bool-identity closure-ABI Bad

@@ -2,12 +2,11 @@
 
 > Compile the numeric JavaScript you already test to lean GC-free WASM — same source, no rewrite, type annotations, or runtime.
 
-JZ compiles a distilled JavaScript subset, Crockford's "good parts", into native-grade WASM. Valid JZ is valid JS: the same source runs as plain JS or compiles without rewrite to .wasm – sandboxed, portable, memory-safe.
+JZ compiles JavaScript into native-grade WASM. The same source runs as plain JS or compiles without rewrite to .wasm – sandboxed, portable, memory-safe. Classes, generators, async/await, BigInt, typed arrays, Map/Set, RegExp and Date all compile; eval, Proxy, Reflect, prototype chains, the DOM and Node APIs do not.
 
 ## Docs
 
-- [README](https://jz.js.org/README.md): install, usage, the supported subset, FAQ
-- [Compatibility contract](https://jz.js.org/README.md#compatibility-contract): what stays fixed across versions
+- [README](https://jz.js.org/README.md): install, usage, options, what is not supported
 - [Contributing](https://jz.js.org/CONTRIBUTING.md): architecture, tests, performance invariants
 
 ## Try
