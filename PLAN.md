@@ -783,15 +783,25 @@ Those tests do not establish callback deadlines.
   takes the constant after the vector loop when any lane did
   (`v128.any_true`). base64: 4.54 → 4.09 ms in the host harness (parent
   3.34, AssemblyScript 3.94); `test/simd.js` pins the lift and the landing
-  at every mismatch position, both element types. What remains on base64
-  is the decode locals (`a = dec[b64[i + k]]`, four f64 round trips per
-  iteration): the interval proof proves that read (index hull [0, 255],
-  length 256) in the analysis where `dec` carries main's length, and sees
-  the same structural key unproven in the analysis of `decode` on its own,
-  where `dec` is a parameter without a length; one unproven twin rejects
-  the key (`interval-proof.js`, by design against lowering clones). The
-  lever is a length fact for an inlined parameter, or a per-analysis key
-  space, and it is worth about 0.7 ms of the 1.1 ms gap to AssemblyScript.
+  at every mismatch position, both element types.
+- base64 beats AssemblyScript now: jz 3.68 ms, AssemblyScript 4.19, V8
+  4.92 (paired). The remaining cost was not the decode locals — that first
+  reading was wrong, and the locals were i32 all along. An element read
+  used as an index (`dec[b64[i]]`) is widened to f64 by the universal value
+  model and truncated straight back, four times per iteration, and the
+  `i32.trunc_sat_f64_s(f64.convert_i32_u(…))` pair survived every fold: jz
+  never builds it (its own coercions peel both converts), watr's optimizer
+  creates it by inlining the single-def local, and watr's cast rules fold
+  same-signedness pairs only, because the mix saturates in general. It is
+  the identity wherever the converted i32 is non-negative, which the
+  operand settles by its own opcode — a zero-extending narrow load, a
+  zero-fill shift, a mask by a non-negative constant, a comparison, a tee
+  (watr commit 40be15f, with its own test; jz needs the release and a
+  dependency bump, and `node_modules` carries the fix meanwhile). lz keeps
+  11.5 ms and jessie 1.44 against V8's 1.44. Gates with the fold: core
+  4502/4503, opt0 4310/4311, opt3 4310/4311, wasi 4363/4364 (one skip
+  each), self-compile 68/68, `bench:size` geomean 0.794× unchanged; watr's
+  own suite passes with the two skips it already had.
 - watr against V8 stands at 1.77× on the bench's first call and 1.24× at
   steady state (the tier-up finding above); no lever in this round touched
   it. The wins there need both a smaller speed-tier module (cold paths out
