@@ -1001,10 +1001,10 @@ test('errors: Error ctor message coercion — bound closed-schema object (audit-
   is(j(`export let f = () => { let o = {x: 1}; return new Error(o).message }`), '[object Object]', 'bound non-empty closed-schema object now gets the same short-circuit as the literal')
   is(j(`export let f = () => { let o = {x: 1, y: 2}; return new Error(o).message }`), '[object Object]', 'multi-prop bound object, still closed')
   is(j(`export let f = () => { let o = {toString: () => 'custom'}; return new Error(o).message }`), 'custom', 'a real toString method is NOT short-circuited — the real method runs')
-  // An out-of-schema write leaves the OrdinaryToPrimitive hook set open.
-  // Until dynamic callable-property invocation is supported, fail closed.
-  throws(`export let f = () => { let o = {x: 1}; o.y = 2; return new Error(o).message }`,
-    'not supported', 'out-of-schema Error message object rejects')
+  // A literal-key write declares the key in the literal (plan/declare-written-keys.js):
+  // the hook set stays closed, and a written toString is a slot the coercion calls.
+  is(j(`export let f = () => { let o = {x: 1}; o.y = 2; return new Error(o).message }`), '[object Object]', 'a written key is a declared slot, the object still closed')
+  is(j(`export let f = () => { let o = {x: 1}; o.toString = () => 'custom'; return new Error(o).message }`), 'custom', 'a written toString runs')
 })
 
 test('errors: Error ctor message coercion — closed empty object and open dicts', () => {

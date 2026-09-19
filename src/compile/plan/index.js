@@ -50,6 +50,7 @@ import {
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
+import { declareWrittenKeys } from './declare-written-keys.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
@@ -105,6 +106,9 @@ export default function plan(ast, profiler, summarize) {
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.
   sweep('flattenFuncNamespaces', () => flattenFuncNamespaces(ast))
+  // A literal-key write outside a literal-bound name's layout becomes a
+  // declared slot of that literal (flattened function properties included).
+  sweep('declareWrittenKeys', () => declareWrittenKeys(ast))
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.
   t('devirtGlobalCalls', () => devirtGlobalCalls(ast))

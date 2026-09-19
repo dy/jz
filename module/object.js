@@ -358,6 +358,12 @@ export default (ctx) => {
     if (isHashTyped(obj)) return ro ? emitHashKeysRO(obj) : emitHashKeys(obj)
     if (arrayValType(obj)) return idxKeys(obj, '__len')
     if (stringValType(obj)) return idxKeys(obj, '__str_len')
+    // The summary's word first: a name whose objects have one closed layout
+    // enumerates that layout. The per-name write censuses below cannot see a
+    // flattened function property or a store through an alias; the summary
+    // sees the object.
+    const closed = typeof obj === 'string' ? closedLayoutOf(obj) : null
+    if (closed) return emitStringArray(closed)
     const schema = resolveSchema(obj)
     const literalUnsafe = Array.isArray(obj) && obj[0] === '{}' && hasUnsafeLiteralValueEffect(obj)
     if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj) && !literalUnsafe)
@@ -382,6 +388,18 @@ export default (ctx) => {
   // schema bare-var — arrays/strings/HASH/dyn-props/expressions — delegates to
   // Object.keys (evaluates the receiver, full runtime enumeration).
   ctx.core.emit['__keys_ro'] = (obj) => {
+    // `for (k in name = src)` assigns once, before its keys are listed (ES
+    // ForIn/OfHeadEvaluation); the receiver is the assigned value, whose
+    // layout the summary reads off the assignment expression.
+    const assigned = Array.isArray(obj) && obj[0] === '=' && typeof obj[1] === 'string'
+    const closed = typeof obj === 'string' || assigned ? closedLayoutOf(obj) : null
+    if (closed) {
+      const slots = closed.map(name => extractF64Bits(asF64(emit(['str', name]))))
+      if (slots.every(b => b !== null)) {
+        const pool = staticArrayPtr(slots)
+        return assigned ? typed(['block', ['result', 'f64'], ['drop', asF64(emit(obj))], pool], 'f64') : pool
+      }
+    }
     // Pool only when the receiver's enumerable key set is provably the static
     // schema: a bare var with NO computed-key writes (`o[k]=v`) and no literal
     // writes outside the schema — either kind adds enumerable keys the pool
@@ -968,6 +986,17 @@ const errorLiteralSchema = (obj) =>
 // below all resolve the identical node shape and must agree on its props.
 const literalProps = (node) =>
   node.length === 2 && Array.isArray(node[1]) && node[1][0] === ',' ? node[1].slice(1) : node.slice(1)
+
+// The enumerable keys of `obj` by the summary: its objects have one closed
+// layout — no computed-key store, no literal store outside the layout, no
+// escape opened it (query.js spreadSidOfExpr: the proof a spread copy needs
+// too) — and the expression is never nullish. Null when the summary cannot
+// say so, or a deletion anywhere makes presence a runtime fact.
+function closedLayoutOf(obj) {
+  if (ctx.types.anyDelete || !ctx.summary) return null
+  const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj)
+  return sid == null ? null : ctx.schema.list[sid] ?? null
+}
 
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)

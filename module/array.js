@@ -13,7 +13,7 @@ import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, asI32Sat, UNDEF_
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral } from '../src/ast.js'
+import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral, isArrayIndexKey } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
@@ -889,6 +889,10 @@ export default (ctx) => {
     // plain-load path here disagrees with the representation plan on BigInts.
     if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf?.(arr, litKey) >= 0)
       return emit(['.', arr, litKey])
+    // A static string key on a receiver the summary shapes as an object is a
+    // field read, on the same path as dot syntax (emit-assign.js's store rule).
+    if (isLiteralStr(idx) && !isArrayIndexKey(idx[1]) && ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null)
+      return emit(['.', arr, idx[1]])
     if (litKey != null && typeof arr === 'string' && lookupValType(arr) === VAL.HASH) {
       inc('__hash_get_local_h')
       return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', asI64(emit(arr)), asI64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]]], 'f64')

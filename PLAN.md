@@ -710,6 +710,46 @@ Those tests do not establish callback deadlines.
   (`test/bench.js`: watr `trail`, jessie `trail` at its 1.13× standing, both
   to ratchet toward `win`); the self-compile perf gate is `npm run
   test:self:perf`, a local release step, out of `test:self`.
+- The comment loop, the last named jessie residual (subscript's
+  `for (s in cm = parse.comment)`): every call enumerated a flattened
+  function property through the runtime merge, because shebang.js's
+  `parse.comment['#!'] = '\n'` was invisible to every static-enumeration
+  gate (the per-name write census predates flattening), and where the fold
+  did fire it was wrong: a single-module `for (s in parse.comment)` after
+  that write listed two keys of three. The root: a literal-key write outside
+  a literal-bound name's layout landed in the sidecar. The plan now declares
+  it in the literal (`plan/declare-written-keys.js`), the summary is the
+  authority for static enumeration (`spreadSidOfExpr`: one closed layout),
+  an unconditional top-level assignment or `??=` initializes a flattened
+  property like a declaration (no nullish seed; `a ??= b` holds
+  `core(a) ∪ b`), definite initialization covers an assignment-bound literal
+  and a bracket store, a bracket string key reads as dot syntax on a
+  summary-shaped receiver, and the for-in unroll takes an aliased source, a
+  loop variable declared outside and `break`/`continue` (budget 384 nodes:
+  the three-comment loop is 3 × 101). Found on the way: a flattened object
+  property with a dot write was boxed like a function namespace
+  (`materializeAutoBoxSchemas`), its store landing in the box layout's slot
+  over the object's own field (`{'//', hb}` then `parse.comment.hb = 'y'`
+  overwrote `'//'`); binding the literal's layout to the name closes it.
+  The loop's function lost its key list, its three dynamic gets and its
+  two enumeration helpers; the for-in micro-benchmark over a three-key
+  record (a million iterations) runs 1.2 ms in jz against V8's 4.5.
+  jessie, paired on a quiet machine: jz 1.32 ms, V8 1.33 (0.99×; the
+  standing was 1.13×), so `test/bench.js` pins it `tie`; watr is unchanged
+  at 1.77× first call (the tier-up finding above), 0.794× on size. The
+  perf gate itself had crashed since jessie joined its speed table (no
+  size row for it); it has one now, and a `trail` claim prints its mark.
+  Gates on this tree: core 4502/4503, opt0 4307/4308, opt3 4307/4308,
+  wasi 4360/4361 (one skip each), self-compile 68/68, `bench:size`
+  geomean 0.794×. The perf gate's remaining reds are standings this round
+  did not touch, each measured the same on a HEAD-source tree copy: watr
+  1.79× against `trail` (the tier-up finding above), base64 1.18× and lz
+  1.29× of AssemblyScript against `win` and `tie` (HEAD: 1.17×, 1.28×;
+  neither case writes an object property), percolation 0.71× against its
+  0.75 floor (typed arrays only). The committed snapshot has base64 at
+  0.86× and lz at 0.79× of AssemblyScript with AssemblyScript's own times
+  unchanged, so jz's lz and base64 slowed between the snapshot and this
+  tree: item 3 (the dataset regeneration) is where that gets bisected.
 - Gates on the tree with the defects below closed: core 4501/4502, opt0
   4306/4307, opt3 4306/4307, wasi 4359/4360 (one skip each), self-compile
   68/68, `bench:size` geomean 0.794× (byte-identical output), warm

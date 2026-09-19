@@ -163,7 +163,7 @@ const FORIN_UNROLL_MAX = 16
 // schema loop) blows up code size for no deopt win — the pooled fallback is already
 // allocation-free. Cap keys × nodeSize(body); past it, keep the loop. (Tuned above
 // every unroll the corpus actually wants — the 16-key cap test lands at 80.)
-const FORIN_UNROLL_BUDGET = 128
+const FORIN_UNROLL_BUDGET = 384
 const forInBodyCost = (node) => {
   if (!Array.isArray(node)) return 1
   let n = 1
@@ -183,54 +183,90 @@ function keysRoSrc(node) {
   return null
 }
 
-// Unroll `for (k in o)` over a static schema. Prepare lowers for-in to a plain
+// The enumerated layout by the summary (module/object.js closedLayoutOf): one
+// closed layout, a receiver that is never nullish. Read off the source
+// expression, so `name = o` resolves to the assigned object's layout.
+const closedKeysOf = (src) => {
+  const sid = ctx.summary?.at(ctx.func.current).spreadSidOfExpr(src)
+  return sid == null ? null : ctx.schema.list[sid] ?? null
+}
+// The per-name censuses' proof of a complete schema: a bare OBJECT var with no
+// computed-key write (same gate as __keys_ro pooling) and no literal-key write
+// outside its schema (such a key lands in the dyn sidecar). No proof, no unroll:
+// unrolling drops the dynamic path, so erring safe matters.
+const censusKeysOf = (src) => {
+  if (typeof src !== 'string') return null
+  if (!ctx.types.dynWriteVars || ctx.types.dynWriteVars.has(src) || ctx.schema.mayGrow(src)) return null
+  if (lookupValType(src) !== VAL.OBJECT) return null
+  const keys = ctx.schema.resolve(src)
+  if (!keys) return null
+  const lw = ctx.types.literalWriteKeys?.get(src)
+  if (lw) for (const k of lw) if (!keys.includes(k)) return null
+  return keys
+}
+
+// Unroll `for (k in o)` over a closed layout. Prepare lowers for-in to a plain
 // for-loop whose key array comes from the for-in-exclusive `__keys_ro` intrinsic,
-// so a loop carrying it IS a for-in. When `o` is a bare OBJECT var with a complete
-// static schema (no computed-key writes — same gate as __keys_ro pooling), replace
-// the loop with one substituted copy of the body per key: the loop variable becomes
-// a string literal, so `o[k]` folds to a static schema slot — no keys array, no
-// per-element dynamic get. Falls back (returns null) to the pooled loop otherwise.
+// so a loop carrying it IS a for-in. When the source's objects have one closed
+// layout (the summary's word, else the per-name census), replace the loop with
+// one substituted copy of the body per key: the loop variable becomes a string
+// literal, so `o[k]` folds to a slot read — no keys array, no per-element
+// dynamic get. Falls back (returns null) to the pooled loop otherwise.
 function unrollForIn(init, cond, step, body) {
   if (ctx.types.anyDelete) return null
   if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(init[1]) || init[1][0] !== '=') return null
   const ksVar = init[1][1]
   const src = keysRoSrc(init[1][2])
-  if (typeof src !== 'string') return null
+  // `for (k in name = o)`: the assignment runs once, before enumeration, and
+  // the body reads the alias.
+  const assigned = Array.isArray(src) && src[0] === '=' && typeof src[1] === 'string' ? src : null
+  const recv = assigned ? assigned[1] : src
+  if (typeof recv !== 'string') return null
   if (!Array.isArray(cond) || cond[0] !== '<') return null
   const ixVar = cond[1]
   if (!Array.isArray(step) || step[0] !== '++' || step[1] !== ixVar) return null
-  // body = [';', ['let', ['=', target, ['[]', ksVar, ixVar]]], ...realBody]
+  // body = [';', ['let', ['=', target, ['[]', ksVar, ixVar]]], ...realBody] — or,
+  // for a target declared outside the loop (`for (s in o)` over a `var s`),
+  // the bare assignment, whose last key stays readable after the loop.
   if (!Array.isArray(body) || body[0] !== ';') return null
   const bind = body[1]
-  if (!Array.isArray(bind) || bind[0] !== 'let' || !Array.isArray(bind[1]) || bind[1][0] !== '=') return null
-  const target = bind[1][1]
-  const acc = bind[1][2]
+  const decl = Array.isArray(bind) && bind[0] === 'let' ? bind[1] : bind
+  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
+  const target = decl[1]
+  const acc = decl[2]
   if (!Array.isArray(acc) || acc[0] !== '[]' || acc[1] !== ksVar || acc[2] !== ixVar) return null
+  const outerTarget = decl === bind
 
-  // Unroll only with PROOF the schema is complete: a computed-key write adds
-  // enumerable keys, so bail if `src` takes one — or if the fact is unavailable
-  // (no proof ⇒ no unroll; unrolling drops the dynamic path, so erring safe matters).
-  if (!ctx.types.dynWriteVars || ctx.types.dynWriteVars.has(src) || ctx.schema.mayGrow(src)) return null
-  if (lookupValType(src) !== VAL.OBJECT) return null
-  const keys = ctx.schema.resolve(src)
+  const closed = closedKeysOf(src)
+  const keys = closed ?? censusKeysOf(src)
   if (!keys || !keys.length || keys.length > FORIN_UNROLL_MAX) return null
-  // A literal-key write OUTSIDE the schema also adds an enumerable key (it
-  // lands in the dyn sidecar) — same proof obligation as computed writes.
-  const lw = ctx.types.literalWriteKeys?.get(src)
-  if (lw) for (const k of lw) if (!keys.includes(k)) return null
 
   const rest = body.slice(2)
   const realBody = rest.length === 1 ? rest[0] : [';', ...rest]
   // Keep the pooled loop when unrolling would multiply a heavy body across many keys.
   if (keys.length * forInBodyCost(realBody) > FORIN_UNROLL_BUDGET) return null
   // Substitution safety, mirroring unrollSmallConstFor: no reassignment/redeclare
-  // of the loop var, no nested closure capturing it (cloneWithSubst skips `=>`),
-  // and no break/continue targeting this loop.
-  if (hasOwnBreakOrContinue(realBody) || containsNestedClosure(realBody) || containsDeclOf(realBody, target)) return null
-  if (isReassigned(realBody, target)) return null
+  // of the loop var and no nested closure capturing it (cloneWithSubst skips `=>`).
+  // A break/continue in the body is served: a labeled one finds its statement's
+  // frame by label (a `continue` to this loop's own label keeps the loop: the
+  // caller's `labeledContinue`), an unlabeled one this loop's frame below.
+  if (containsNestedClosure(realBody) || containsDeclOf(realBody, target)) return null
+  if (isReassigned(realBody, target) || (assigned && isReassigned(realBody, recv))) return null
 
-  const out = []
-  for (const key of keys) out.push(...emitVoid(cloneWithSubst(realBody, new Map([[target, ['str', key]]]))))
+  const out = assigned ? emitVoid(assigned) : []
+  // The summary proved the source never nullish, so the receiver's reads in
+  // the body are reads of that layout's slots.
+  const refs = closed ? new Map([[recv, { notNullish: true }]]) : new Map()
+  const id = freshId(ctx), brk = `$fiu${id}`
+  const copies = withControlFrame({ brk, loop: null, bodyNode: realBody }, frame => keys.map((key, i) => {
+    // `continue` leaves this copy for the next; `break` leaves them all.
+    frame.loop = `$fiuc${id}_${i}`
+    const copy = outerTarget ? emitVoid(['=', target, ['str', key]]) : []
+    copy.push(...withRefinements(refs, realBody, () => emitVoid(cloneWithSubst(realBody, new Map([[target, ['str', key]]])))))
+    return ['block', frame.loop, ...copy]
+  }))
+  if (hasOwnBreakOrContinue(realBody)) out.push(['block', brk, ...copies])
+  else for (const copy of copies) out.push(...copy.slice(2))
   return out.length ? out : ['nop']
 }
 

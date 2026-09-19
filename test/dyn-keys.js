@@ -6,7 +6,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onKernel, withBigintStrict, levels } from './_matrix.js'
+import { onKernel, withBigintStrict, levels, belowOpt } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
@@ -1049,7 +1049,6 @@ test('in: open, aliased, deleted, and large schemas retain runtime membership di
   const cases = [
     ['alias', `let o = { fixed: undefined }; let alias = o; alias[k] = 1; return k in o`, 'added', true],
     ['computed write', `let o = { fixed: undefined }; o[k] = 1; return k in o`, 'added', true],
-    ['out-of-schema literal write', `let o = { fixed: undefined }; o.added = 1; return k in o`, 'added', true],
     ['computed delete', `let o = { fixed: undefined }; delete o[k]; return k in o`, 'fixed', false],
     ['large-schema budget', `let o = {
       a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9,
@@ -1063,6 +1062,11 @@ test('in: open, aliased, deleted, and large schemas retain runtime membership di
     ok(compile(src, { optimize: 3, wat: true }).includes('$__dyn_has'),
       `${name} bypasses the closed-schema path`)
   }
+  // A literal-key write outside the layout declares the key in the literal
+  // (plan/declare-written-keys.js): the schema stays closed, membership too.
+  const declared = `export let f = (k) => { let o = { fixed: undefined }; o.added = 1; return k in o }`
+  for (const optimize of levels(0, 2, 3)) is(jz(declared, { optimize }).exports.f('added'), true, `O${optimize}: declared literal write`)
+  ok(!compile(declared, { optimize: 3, wat: true }).includes('$__dyn_has'), 'a declared key keeps the closed-schema path')
 })
 
 // The runtime `in` (every receiver the closed-schema path cannot decide) read
@@ -2666,4 +2670,59 @@ test('control-dependent local Map BigInt unary hop preserves both domains', () =
     is(f(1), -5n)
     ok(Number.isNaN(f(0)))
   }
+})
+
+test('written literal keys: a literal-key write outside a literal-bound layout declares the slot', () => {
+  // A function property the plan flattens (the parser idiom `parse.comment[...]`),
+  // a `let` global and a bundled module's initializer each write a key their
+  // literal lacks. The key is a slot of the literal, not a sidecar entry:
+  // enumeration, `in`, JSON, values and reads agree with V8, and a for-in over
+  // the alias `cm = parse.comment` unrolls to slot reads.
+  const v8 = (src) => Function(src.replace(/export (let|function|const)/g, '$1') + '; return main')()()
+  const probe = `let r = '', cm, s; for (s in cm = parse.comment) r += s + ':' + cm[s].length + ','; return r + Object.keys(parse.comment).join('|') + '|' + ('#!' in parse.comment) + '|' + JSON.stringify(parse.comment) + '|' + Object.values(parse.comment).length`
+  const ns = `export let parse = () => 1; parse.space = () => 2; parse.comment = { '//': '\\n', '/*': '*/' }; parse.comment['#!'] = '\\n'; export function main() { ${probe} }`
+  const bundled = { code: `import { parse } from './parse.js'; import './shebang.js'; export function main() { ${probe} }`, modules: {
+    './parse.js': `export let parse = () => 1; parse.space = () => 2; parse.comment = { '//': '\\n', '/*': '*/' }`,
+    './shebang.js': `import { parse } from './parse.js'; parse.comment['#!'] = '\\n'`,
+  } }
+  const bracket = `let o = { a: 1 }; o['zz'] = 2; export function main() { let r = ''; for (const k in o) r += k; return r + '|' + Object.keys(o).length + '|' + ('zz' in o) + '|' + o.zz }`
+  // A store to a key the literal already declares must not take a boxed
+  // namespace layout (materializeAutoBoxSchemas): it once overwrote the slot beside it.
+  const declared = `export let parse = () => 1; parse.space = () => 2; parse.comment = { '//': '\\n', hb: 'x' }; parse.comment.hb = 'y'; export function main() { return JSON.stringify(parse.comment) + '|' + parse.comment.hb + '|' + parse.comment['//'] }`
+  for (const optimize of levels(0, 2, 3)) {
+    is(jz(ns, { optimize }).exports.main(), v8(ns), `O${optimize}: flattened property`)
+    is(jz(bundled.code, { optimize, modules: bundled.modules }).exports.main(), v8(ns), `O${optimize}: bundled initializer`)
+    is(jz(bracket, { optimize }).exports.main(), v8(bracket), `O${optimize}: bracket key on a let global`)
+    is(jz(declared, { optimize }).exports.main(), v8(declared), `O${optimize}: declared key store`)
+  }
+  // Dot and bracket forms of the same write declare the same slot; a key written
+  // on one path only is present on every object of the literal (jz's model for a
+  // declared slot: `in`, hasOwnProperty and enumeration read it before its store).
+  const form = (write) => jz(`let o = { a: 1 }; export function main(x) { if (x) ${write}; let r = ''; for (const k in o) r += k; return r + '|' + ('b' in o) + '|' + o.hasOwnProperty('b') + '|' + Object.keys(o).length }`).exports.main
+  is(form("o['b'] = 2")(0), form('o.b = 2')(0))
+  is(form("o['b'] = 2")(1), form('o.b = 2')(1))
+  // A top-level `??=` initializes a flattened property like a declaration: it
+  // keeps a value already there, and a conditional top-level write is no
+  // initializer: the property reads undefined until it runs.
+  const kept = `export let parse = () => 1; parse.space = () => 2; parse.comment = { a: 1 }; parse.comment ??= { a: 2 }; export function main() { return parse.comment.a }`
+  const conditional = `export let parse = () => 1; parse.space = () => 2; let on = 0; if (on) parse.comment = { a: 1 }; export function main() { return parse.comment === undefined ? 'unset' : parse.comment.a }`
+  for (const optimize of levels(0, 2, 3)) {
+    is(jz(kept, { optimize }).exports.main(), 1, `O${optimize}: ??= keeps the value already there`)
+    is(jz(conditional, { optimize }).exports.main(), 'unset', `O${optimize}: a conditional top-level write is no initializer`)
+  }
+  if (onKernel()) return
+  // The `??=` initialized property's reads in functions are slot reads, not
+  // nullable dynamic gets, at every level.
+  const lazy = `export let parse = () => 1; parse.space = () => 2; parse.comment ??= { a: 1 }; export function main() { return parse.comment.a }`
+  ok(!funcWat(compile(lazy, { wat: true, optimize: 0 }), 'main').includes('$__dyn_get'), 'a ??= initialized property reads as a slot')
+  if (belowOpt(1)) return   // the unroll is an optimization pass
+  // The unroll and the slot reads are the codegen: no key list, no dynamic get.
+  const loop = `export let parse = () => 1; parse.space = () => 2; parse.comment = { '//': '\\n', '/*': '*/' }; parse.comment['#!'] = '\\n'; export function main() { let n = 0, cm, s; for (s in cm = parse.comment) if (cm[s] === '\\n') n++; return n }`
+  const body = funcWat(compile(loop, { wat: true }), 'main')
+  ok(!body.includes('__keys_ro') && !body.includes('$__dyn_get'), 'for-in over the alias unrolls to slot reads')
+  // The declared key's `undefined` is no value the slot holds when the next
+  // statements store it (definite initialization through a bracket store):
+  // `cm[s].length` is a string length, never the generic length dispatch.
+  const len = funcWat(compile(loop.replace("if (cm[s] === '\\n') n++", 'n += cm[s].length'), { wat: true }), 'main')
+  ok(len.includes('$__str_length') && !len.includes('$__length') && !len.includes('$__dyn_get'), 'a definitely stored key reads as a string')
 })

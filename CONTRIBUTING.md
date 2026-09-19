@@ -177,7 +177,12 @@ that closure, a read on a closure set joins its members, a name never stored
 reads undefined, and an escaped member reads as anything and escapes what it
 holds. A global the plan declares without a declaration statement (a function
 property flattened to a module global, `plan/scope.js`) is a module binding
-named by its writes, undefined until the first (`moduleGlobals`). A call through
+named by its writes, undefined until the first (`moduleGlobals`) unless a
+top-level statement assigns it unconditionally (`initWrites`: initialized like
+a declaration, as `parse.comment ??= {…}` is), and `a ??= b` leaves the binding
+holding `core(a) ∪ b`. Definite initialization (a literal's `undefined` field
+that the following statements store before any other use) covers an
+assignment-bound literal and a bracket-string store too. A call through
 a binding the fixpoint knows only as nullish so far, and a spread of a nullish
 value, contribute nothing rather than escaping their operands: both throw at
 run time, and an escape is permanent. A loop's test guards its body the way an
@@ -437,8 +442,30 @@ for-in and JSON. It merges schema, init-sidecar and runtime keys: array indices
 sort numerically across all three sources; strings retain insertion order.
 Runtime values override init values without moving the key. Schema slots own
 field values; deleting and reinserting a field adds an ordering record to the
-existing property table. Static enumeration requires the schema's write census
-to rule out additions through aliases and helper parameters.
+existing property table. Static enumeration takes the summary's word first: a
+name whose objects have one closed layout (no computed-key store, no literal
+store outside the layout, no escape: `spreadSidOfExpr`, the proof a spread copy
+needs) lists that layout, whatever alias or flattened function property the
+writes went through; without the summary, the per-name write census must rule
+out additions through aliases and helper parameters. A literal-key write
+outside a literal-bound name's layout is no sidecar entry: the plan declares
+the key in the literal (`plan/declare-written-keys.js`: `{ a: 1, b: undefined }`
+for `o.b = 2` or `o['b'] = 2` anywhere in the program, bundled initializers
+included), so it is a slot of one closed layout, present before its first
+store as every declared slot is; the name's layout is bound for the per-name
+slot paths, which keeps a flattened object property out of the function
+namespace box. Empty literals (the dictionary idiom), spreads, computed keys,
+brands, index keys, `length`, a name with a computed-key write or an
+`Object.assign` (a dictionary: its keys and their order are runtime facts),
+and names that also take a non-literal value stay as they are. A bracket
+string key on a summary-shaped receiver reads as
+dot syntax. A for-in over a closed layout unrolls one body copy per key (the
+loop variable a string literal, so `o[k]` is a slot read and `k.length` a
+constant): an aliased source (`for (s in cm = o)`) assigns once first, a loop
+variable declared outside keeps its last key, `break` and `continue` target
+the copies' blocks; a body over the size budget (384 nodes in total: the
+three-comment loop of subscript is 3 × 101) or one capturing the key in a
+closure keeps the pooled static key array.
 `__prop_order` and Map/Set's `__coll_order` specialize one sorting template.
 Only property sorting allocates ranks; Map/Set read insertion sequence numbers
 from their existing slots, using a 4N-byte offset buffer instead of 12N bytes.

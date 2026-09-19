@@ -264,12 +264,20 @@ test('for-in deopt: value sum / key concat / mixed over static schema', () => {
   diff('export let run=(n)=>{let o={a:1,b:2,c:3,d:4}; let s=0; for(let i=0;i<n;i++){for(let k in o) s+=o[k]} return s}', 5)
 })
 
-test('for-in deopt: body forms that must NOT unroll still compute correctly', () => {
-  // break / continue (can't unroll — must keep loop semantics)
+test('for-in deopt: break, continue, an aliased source and an outer loop var unroll', () => {
+  // break leaves every copy, continue the current one (the copies carry the loop's frame)
   diff('export let run=(z)=>{let o={a:1,b:2,c:3,d:4}; let s=0; for(let k in o){ if(o[k]===2) break; s+=o[k] } return s}')
   diff('export let run=(z)=>{let o={a:1,b:2,c:3,d:4}; let s=0; for(let k in o){ if(o[k]===2) continue; s+=o[k] } return s}')
+  // `for (s in cm = o)` assigns once before enumeration; a loop var declared
+  // outside keeps the last key after the loop
+  diff('export let run=(z)=>{let o={a:1,b:2,c:3}; let cm, s, r=""; for(s in cm=o) r+=s+cm[s]; return r+"|"+s}')
+  diff('export let run=(z)=>{let o={a:1,b:2,c:3,d:4}; let s, n=0; for(s in o){ if(o[s]===3) break; n+=o[s] } return n+"|"+s}')
   // a closure capturing the loop key (cloneWithSubst skips `=>` bodies → no unroll)
   diff('export let run=(z)=>{let o={a:1,b:2,c:3}; let s=0; for(let k in o){ let f=()=>o[k]; s+=f() } return s}')
+  if (belowOpt(1)) return
+  const body = funcWat(compile('export let run=(z)=>{let o={a:1,b:2,c:3}; let cm, s, n=0; for(s in cm=o){ if(cm[s]===2) continue; n+=cm[s] } return n}', { wat: true }), 'run')
+  ok(!body.includes('__keys_ro'), 'no runtime key array (unrolled)')
+  ok(!body.includes('$__dyn_get'), 'reads through the alias fold to slots')
 })
 
 test('for-in deopt: key count above the unroll cap still correct (pooled loop)', () => {
@@ -281,9 +289,10 @@ test('for-in deopt: key count above the unroll cap still correct (pooled loop)',
 
 test('for-in deopt: a heavy body stays a pooled loop, not an N× unroll (size budget)', () => {
   // Unroll emits one body copy per key, so cost is keys × body — not keys alone. A
-  // multi-op body over 8 keys exceeds the size budget; unrolling it 8× is the watr
+  // multi-op body over 16 keys exceeds the size budget; unrolling it 16× is the watr
   // size-cliff. Must keep the single pooled loop (correct, and no code blow-up).
-  const heavy = 'export let run=(z)=>{let o={a:1,b:2,c:3,d:4,e:5,f:6,g:7,h:8}; let s=0; for(let k in o){ s += o[k]*o[k] + o[k]*3 - 7 } return s}'
+  const k16 = 'abcdefghijklmnop'.split('').map((c, i) => `${c}:${i + 1}`).join(',')
+  const heavy = `export let run=(z)=>{let o={${k16}}; let s=0; for(let k in o){ s += o[k]*o[k] + o[k]*3 - 7; s += o[k]*2 - o[k]; s -= o[k] % 5 } return s}`
   diff(heavy)   // VALUE is correct on every target (this is the correctness half)
   if (belowOpt(1)) return
   // The size-budget SHAPE (keys × forInBodyCost > BUDGET ⇒ stay pooled) is
@@ -315,9 +324,10 @@ test('for-in deopt: static-schema for-in unrolls — no __keys_ro, no __dyn_get'
 })
 
 test('for-in deopt: fallback for-in keeps an allocation-free pooled key array', () => {
-  // A for-in whose body breaks can't unroll, but its key array must still be the
-  // pooled __keys_ro constant — never the allocating Object.keys / emitStringArray.
-  const wat = compile('export let run=()=>{let o={a:1,b:2,c:3}; let s=0; for(let k in o){ if(o[k]===2) break; s+=o[k] } return s}', { wat: true })
+  // A for-in whose body captures the key in a closure can't unroll, but its key
+  // array must still be the pooled __keys_ro constant — never the allocating
+  // Object.keys / emitStringArray.
+  const wat = compile('export let run=()=>{let o={a:1,b:2,c:3}; let s=0; for(let k in o){ let f=()=>o[k]; s+=f() } return s}', { wat: true })
   const body = funcWat(wat, 'run')
   ok(!body.includes('__keys_ro'), 'keys pooled to a static constant, not built at runtime')
 })

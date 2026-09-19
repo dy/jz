@@ -209,6 +209,9 @@ export function valueTruthyIR(ref, bigint = false) {
     ['i32.eq', ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bits, ['i64.const', LAYOUT.TAG_SHIFT]]], ['i32.const', LAYOUT.TAG_MASK]], ['i32.const', PTR.BIGINT]],
     ['then', ['i64.ne', ['i64.load', ['call', '$__ptr_offset', bits]], ['i64.const', 0]]],
     ['else', boxed]]
+  // A branch, not a select: measured on the parser and the encoder, a select
+  // that pays both arms every time ran 7% and 17% slower than the predicted
+  // branch.
   return ['if', ['result', 'i32'], ['f64.eq', ref, value],
     ['then', ['f64.ne', value, ['f64.const', 0]]], ['else', boxed]]
 }

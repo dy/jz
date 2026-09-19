@@ -136,11 +136,13 @@ const SPEED = {
   // jessie is the subscript parser (jz compiling a Pratt parser: descriptor
   // dispatch, closure-set calls, AST arrays with a `loc` property). It ran at
   // 1.48× V8 before the closure-property, loop-guard and boolean-condition
-  // work (PLAN.md, September 18) and lands 1.13× after it; `trail` pins that
-  // standing as a gate while the residual (the dispatch closure's generic
-  // truthiness on AST nodes, `node.loc = at` through __dyn_set, comment.js's
-  // for-in) closes toward `win`.
-  jessie:         { v8: 'trail', as: 'na'   },
+  // work (PLAN.md, September 18), 1.13× after it, and 0.99× once the
+  // comment loop's for-in unrolled over its declared keys (jz 1.32 ms, V8
+  // 1.33, paired on a quiet machine). `tie` (1.05×) gates that standing
+  // without flaking on the hair's breadth; the residual (the dispatch
+  // closure's generic truthiness on AST nodes, `node.loc = at` through
+  // __dyn_set) is what `win` waits for.
+  jessie:         { v8: 'tie',   as: 'na'   },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared
@@ -275,6 +277,7 @@ const SIZE = {
   // ~2.2× AS's lean -Oz (honest `todo`, like lz/qoi).
   hashjoin:       { as: 'todo' },
   watr:           { as: 'na'  },
+  jessie:         { as: 'na'  },
 }
 const SIZE_GEOMEAN_MAX = { as: 1.05 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.01×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
@@ -500,8 +503,8 @@ for (const line of sizeOut.split('\n')) {
 // ── Snapshot table ──────────────────────────────────────────────────────────
 const fmtMs = us => us == null ? '   —  ' : (us / 1000).toFixed(2).padStart(6)
 const fmtKb = b => b == null ? '   —  ' : b < 1024 ? `${b} B`.padStart(7) : `${(b / 1024).toFixed(1)} kB`.padStart(7)
-const mark = { win: '✓', tie: '≈', near: '~', todo: '✗', diff: '?', na: ' ' }
-const ratioCell = (claim, num, den) => num != null && den != null ? `${mark[claim]} ${(num / den).toFixed(2)}×` : `${mark[claim]}  —`
+const mark = { win: '✓', tie: '≈', near: '~', trail: '↓', todo: '✗', diff: '?', na: ' ' }
+const ratioCell = (claim, num, den) => num != null && den != null ? `${mark[claim] ?? ' '} ${(num / den).toFixed(2)}×` : `${mark[claim] ?? ' '}  —`
 
 console.log('\nbench snapshot (speed = median ms, size = wasm bytes; "×" = jz/target):')
 console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.C        spd.as       ${'jz_sz'.padStart(7)}  sz.AS        slack`)

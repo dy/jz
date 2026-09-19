@@ -1845,7 +1845,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     let v
     if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) : null) ?? expr(value)
     else if (op === '+=') v = plus(expr(target), expr(value))
-    else if (logical) v = merge(expr(target), expr(value))
+    // `a ??= b` leaves a nullish `a` replaced: the binding holds the old value only when it is not nullish.
+    else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
     if (typeof target === 'string') return assignName(target, v)
     if (Array.isArray(target) && (target[0] === '{}' || target[0] === '[]') && !(target[0] === '[]' && target.length === 3)) { destructure(target, v); return v }
@@ -1939,6 +1940,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (let i = 1; i < v.length; i++) if (mentions(v[i], name, assigned)) return true
     return false
   }
+  // The member a store targets on `name`: `name.f` or `name['f']`.
+  const storedMember = (t, name) => Array.isArray(t) && t[1] === name
+    ? t[0] === '.' && typeof t[2] === 'string' ? t[2] : t[0] === '[]' && t.length === 3 ? literalKeyOf(t[2]) : null : null
   // The fields `name` is definitely assigned by the statements from `from`
   // on: a store `name.f = v` whose value does not read the object, or a call
   // `F(name, …)` to a function that so assigns its first parameter (a class
@@ -1947,9 +1951,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (let i = from; i < list.length; i++) {
       const st = list[i]
       if (!Array.isArray(st)) return
-      if (st[0] === '=' && Array.isArray(st[1]) && st[1][0] === '.' && st[1][1] === name && typeof st[1][2] === 'string') {
+      const member = st[0] === '=' ? storedMember(st[1], name) : null
+      if (member !== null) {
         if (mentions(st[2], name, assigned) || isNullishLit(st[2])) return
-        assigned.add(st[1][2])
+        assigned.add(member)
         continue
       }
       const f = st[0] === '()' && typeof st[1] === 'string' ? funcByName.get(st[1]) : undefined
@@ -1964,10 +1969,18 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   // Definite initialization is structural: a literal is examined once.
   const definiteSeen = new Set()
+  // The literal a statement binds: a declaration, or an assignment of a module
+  // binding the plan named (`parse.comment = {…}`, `parse.comment ??= {…}`).
+  const boundLiteral = (d) => {
+    if (!Array.isArray(d)) return null
+    if ((d[0] === 'let' || d[0] === 'const') && d.length === 2 && Array.isArray(d[1]) && d[1][0] === '=' && typeof d[1][1] === 'string') return [d[1][1], d[1][2]]
+    if ((d[0] === '=' || d[0] === '??=') && typeof d[1] === 'string') return [d[1], d[2]]
+    return null
+  }
   const noteDefinite = (list, from) => {
-    const d = list[from]
-    if (!Array.isArray(d) || (d[0] !== 'let' && d[0] !== 'const') || d.length !== 2 || !Array.isArray(d[1]) || d[1][0] !== '=' || typeof d[1][1] !== 'string') return
-    const name = d[1][1], lit = d[1][2]
+    const bound = boundLiteral(list[from])
+    if (!bound) return
+    const [name, lit] = bound
     if (!Array.isArray(lit) || lit[0] !== '{}' || lit.length < 2 || definiteSeen.has(lit)) return
     definiteSeen.add(lit)
     let nullish = false
@@ -2061,9 +2074,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     keys.push(key)
     return key
   }
-  const collect = (n, scope) => {
+  // Module bindings a top-level statement assigns unconditionally (`straight`:
+  // the statement position of a top, not under a branch, loop or closure).
+  // Such a binding is initialized like a declared one: no read of the program
+  // runs before module initialization.
+  const initWrites = new Set()
+  const collect = (n, scope, straight = false) => {
     if (!Array.isArray(n)) return
     const op = n[0]
+    if (straight && scope === MODULE && (op === '=' || op === '??=') && typeof n[1] === 'string') initWrites.add(n[1])
     if (op === 'let' || op === 'const' || op === 'var') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
@@ -2089,7 +2108,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // Writes make an empty literal a dictionary unless it has a materialized schema.
     if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.')) { let root = n[1][1]; while (Array.isArray(root) && root[0] === '[]') root = root[1]; if (typeof root === 'string') dictUses.push([scope, root]) }
     if (op === '()' && n[1] === 'Object.assign') { const t = args(n[2])[0]; if (typeof t === 'string') dictUses.push([scope, t]) }
-    for (let i = 1; i < n.length; i++) collect(n[i], scope)
+    for (let i = 1; i < n.length; i++) collect(n[i], scope, straight && (op === ';' || op === ','))
   }
   const dictUses = [], dictKeys = new Set()   // computed-write roots, then their resolved binding keys
   for (const f of funcs) {
@@ -2098,7 +2117,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (f.defaults) for (const name in f.defaults) collect(f.defaults[name], f.name)
     collect(f.body, f.name)
   }
-  for (const top of tops) collect(top, MODULE)
+  for (const top of tops) collect(top, MODULE, true)
   // Declarations own identity. Solver and queries reuse the same id instead
   // of probing a second table or constructing/hashing scoped strings.
   const keyIn = (scope, name) => declared.get(scope)?.get(name)
@@ -2115,9 +2134,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   for (const [scope, name] of dictUses) { current = scope === MODULE ? null : scope; const key = keyOf(name); if (key !== null) dictKeys.add(key) }
   // A global the plan declared without a declaration statement (a function
   // property flattened to a module global, plan/scope.js flattenFuncNamespaces)
-  // is a module binding named by its writes, undefined until the first one.
+  // is a module binding named by its writes: undefined until the first one,
+  // unless a top-level statement assigns it unconditionally (`initWrites`).
   for (const [scope, name] of writes)
-    if (moduleGlobals.has(name) && keyOf(name, scope) === null) raise(kinds, declareIn(MODULE, name), NULLISH)
+    if (moduleGlobals.has(name) && keyOf(name, scope) === null) {
+      const key = declareIn(MODULE, name)
+      if (!initWrites.has(name)) raise(kinds, key, NULLISH)
+    }
   current = null
   const definitions = new Map()
   for (const [scope, name, value] of writes) {
