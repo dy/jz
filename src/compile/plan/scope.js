@@ -810,16 +810,13 @@ export const materializeAutoBoxSchemas = (programFacts) => {
     // the object does not carry lands past its fields. Its dot writes take
     // the dynamic path (ctx.schema.unknownInit's doc, ctx.js).
     if (ctx.schema.unknownInit?.has(name) || ctx.schema.poisoned?.has(name)) continue
-    if (ctx.schema.vars.has(name)) {
-      const existing = ctx.schema.resolve(name)
-      const newProps = [...props].filter(prop => !existing.includes(prop))
-      if (newProps.length) {
-        const merged = [...existing, ...newProps]
-        const mergedId = ctx.schema.register(merged)
-        ctx.schema.vars.set(name, mergedId)
-      }
-      continue
-    }
+    // A name already bound to a literal's layout keeps it. Widening that layout
+    // with the keys the program writes is declareWrittenKeys' job, and it does
+    // so only for a DEFINITE store — one that runs before anything can observe
+    // the object. Merging every written key here, conditional ones included,
+    // made `if (x) o.b = 2` declare `b` on every object of the literal: `in`,
+    // hasOwnProperty, Object.keys and for-in all reported it before the store.
+    if (ctx.schema.vars.has(name)) continue
     const valueProps = [...props].filter(prop => !ctx.funcs.names.has(`${name}$${prop}`))
     if (!valueProps.length) continue
     const allProps = [...props]

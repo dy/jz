@@ -2305,7 +2305,8 @@ export default (ctx) => {
     const schemaClosed = !ctx.types.anyDelete && schemaBound && compareCost <= IN_SCHEMA_COMPARE_BUDGET &&
       ctx.types.nameEscapes != null && ctx.types.dynWriteVars != null &&
       ctx.types.literalWriteKeys != null && !ctx.types.nameEscapes.has(obj) &&
-      !ctx.types.dynWriteVars.has(obj) && !hasOutOfSchemaWrite
+      !ctx.types.dynWriteVars.has(obj) && !hasOutOfSchemaWrite &&
+      ctx.summary?.at(ctx.func.current).openSidOfExpr(obj) == null   // a store the per-name census cannot see
     if (schemaClosed) {
       if (Array.isArray(key) && key[0] === 'str')
         return typed(['i32.const', schema.includes(key[1]) ? 1 : 0], 'i32')

@@ -29,7 +29,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { MUTATE_OPS, isBrand, isLiteralStr, isArrayIndexKey, walkAst, extractParams, collectParamNames } from '../../ast.js'
+import { MUTATE_OPS, isBrand, isLiteralStr, isArrayIndexKey, walkAst, some, extractParams, collectParamNames } from '../../ast.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
 const STRUCTURAL = new Set(['length', '__proto__'])
@@ -101,6 +101,70 @@ export const declareWrittenKeys = (ast) => {
     if (fn.defaults) for (const v of Object.values(fn.defaults)) census(v)
   }
 
+  // A key may only be declared in the literal when its store is DEFINITE: it
+  // runs before anything can observe the object. Declared, a key is an own
+  // property from the literal on — `in`, hasOwnProperty, Object.keys, for-in
+  // and JSON all say so — and a store that may not have run yet made them
+  // say so falsely. Definite: a statement-level `name.k = v` / `name['k'] = v`
+  // in the same statement list as the binding, with nothing between them that
+  // could run other code — no call, no loop, no branch, no try — since without
+  // a call no closure runs and no enumeration happens. A store anywhere else
+  // is conditional, keeps its key out of the literal, and lands in the dyn
+  // sidecar as before, which every observer already reads at runtime.
+  const definite = new Map()   // literal node → Set<key>
+  // Anything that can run other code or ask an object about its keys: a call
+  // (`Object.keys`, `hasOwnProperty`, JSON, a closure), `in`, a spread, a
+  // deletion, or control flow that makes what follows conditional. A plain
+  // definition or assignment of a value that holds none of these runs nothing.
+  // `some` stops at an arrow: a function is not run by being defined.
+  const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'try', 'switch', 'for', 'for-of', 'for-in', 'for-await',
+    'while', 'do', '&&', '||', '??', 'await', 'yield', 'return', 'throw', 'break', 'continue'])
+  const observes = (n) => Array.isArray(n) && OBSERVES.has(n[0])
+  const storeOf = (st) => {
+    if (!Array.isArray(st) || st[0] !== '=' || !Array.isArray(st[1])) return null
+    const t = st[1]
+    if (t[0] === '.' && typeof t[1] === 'string' && typeof t[2] === 'string') return [t[1], t[2]]
+    if (t[0] === '[]' && t.length === 3 && typeof t[1] === 'string' && isLiteralStr(t[2])) return [t[1], t[2][1]]
+    return null
+  }
+  const bindingOf = (st) => {
+    if (!Array.isArray(st)) return null
+    if ((st[0] === '=' || st[0] === '??=') && typeof st[1] === 'string' && literalKeys(st[2])) return [st[1], st[2]]
+    if ((st[0] === 'let' || st[0] === 'const' || st[0] === 'var') && st.length === 2 && Array.isArray(st[1]) && st[1][0] === '=' && typeof st[1][1] === 'string' && literalKeys(st[1][2])) return [st[1][1], st[1][2]]
+    return null
+  }
+  const stmtList = (list) => {
+    const pending = new Map()   // name → literal node, bound in this list and unobserved since
+    for (const st of list) {
+      const store = storeOf(st)
+      if (store && pending.has(store[0])) {
+        // the value is evaluated before the store: if it observes, the store is not first
+        if (some(st[2], observes)) { pending.clear(); continue }
+        const [name, key] = store
+        if (!STRUCTURAL.has(key) && !isArrayIndexKey(key)) { const lit = pending.get(name); let set = definite.get(lit); if (!set) definite.set(lit, set = new Set()); set.add(key) }
+        continue
+      }
+      const bound = bindingOf(st)
+      if (bound) { if (some(bound[1], observes)) pending.clear(); else pending.set(bound[0], bound[1]); continue }
+      if (!some(st, observes)) continue   // a definition, or an assignment of a value that runs nothing
+      pending.clear()
+      walkLists(st)
+    }
+  }
+  const walkLists = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === ';') return stmtList(n.slice(1))
+    if (n[0] === '{}' && n.length === 2) return walkLists(n[1])
+    for (let i = 1; i < n.length; i++) walkLists(n[i])
+  }
+  // Module initializers run in order, then the entry module (start-fn.js emits
+  // exactly that sequence), before any export can be called: one statement
+  // list. A bundled `parse.comment['#!'] = …` in a later module's initializer
+  // is as definite as the same store on the next line.
+  const stmtsOf = (n) => Array.isArray(n) && n[0] === ';' ? n.slice(1) : Array.isArray(n) && n[0] === '{}' && n.length === 2 ? stmtsOf(n[1]) : [n]
+  stmtList([...(ctx.module.moduleInits ?? []).flatMap(stmtsOf), ...stmtsOf(ast)])
+  for (const fn of ctx.funcs.list) if (fn.body && !fn.raw) walkLists(fn.body)
+
   let changed = false
   for (const [name, d] of defs) {
     if (d.other || !d.lits.length || dict.has(name)) continue
@@ -108,7 +172,8 @@ export const declareWrittenKeys = (ast) => {
     const keys = writes.get(name)
     if (!keys) continue
     for (const [lit, own] of d.lits) {
-      const missing = [...keys].filter(k => !own.includes(k))
+      const sure = definite.get(lit)
+      const missing = [...keys].filter(k => !own.includes(k) && sure?.has(k))
       if (!missing.length) continue
       for (const k of missing) lit.push([':', k, [, undefined]])
       own.push(...missing)

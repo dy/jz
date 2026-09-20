@@ -73,6 +73,19 @@ export function collectWrites(node, out) {
  *   'read'  — local.get seen first
  *   null    — not referenced
  */
+/** How `body` first touches `name`, for lane classification. 'read': loop-carried
+ *  (a reduction or a stencil), not lane data. 'write': a lane-local. 'liveout': a
+ *  lane-local the continuation reads (`last = a[i]`, returned after the loop) —
+ *  the lift's v128 shadow never lands in the scalar, and at a trip count that is
+ *  a multiple of the lane width no scalar tail runs to write it either, so the
+ *  scalar keeps its entry value. Every recognizer classifies through this, so the
+ *  gate is one place, not one copy per pass. null: never touched. */
+export function laneAccess(body, name, outsideReads) {
+  let kind = null
+  for (const s of body) { const k = firstAccess(s, name); if (k) { kind = k; break } }
+  return kind === 'write' && outsideReads?.has(name) ? 'liveout' : kind
+}
+
 export function firstAccess(node, name) {
   if (!isArr(node)) return null
   const op = node[0]

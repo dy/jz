@@ -5350,3 +5350,41 @@ test('devirtSchemaReads: past the dispatch budget a read site keeps an inline ca
   is(g(1001), Array.from({ length: 1001 }, (_, i) => i % 2 ? 3 : 7).reduce((a, b) => a + b, 0), 'alternating schemas refill the cache')
   is(h(1000), Array.from({ length: 1000 }, (_, i) => i % 5 ? 4 : 100).reduce((a, b) => a + b, 0), 'a Number receiver reads undefined through the generic path')
 })
+
+test('versioned nest: an inner guard that reads the top counter is bounded by its extent, in either direction', () => {
+  // The lz shape scans DOWN (`j--`), and an inner guard lifted to the nest entry
+  // once read the counter's entry value — its maximum going down, so the upper
+  // bound held, and its MINIMUM going up, so an ascending scan's `src[j + len]`
+  // read past the array unchecked (jz returned a sum where JS returns NaN). The
+  // low bound has the mirror hole going down. The lifted term is bounded by the
+  // counter's extent now: entry and loop bound, whichever is which. The last
+  // window is the one whose entry is in bounds and whose later iterations are
+  // not — a later checked out-of-bounds read would mask the unchecked one.
+  const mk = (header, first, last) => `const N = 300
+export let main = () => {
+  const src = new Uint8Array(N)
+  for (let i = 0; i < N; i++) src[i] = (i * 7) & 255
+  let acc = 0, ip = ${first}
+  while (ip < ${last}) {
+    const start = ip - 3
+    ${header} {
+      for (let len = 0; len < 8; len++) acc += src[j + len]
+    }
+    ip += 5
+  }
+  return acc
+}`
+  const cases = {
+    up: mk('for (let j = start; j <= ip - 1; j++)', 4, 295),
+    down: mk('for (let j = ip - 1; j >= start; j--)', 4, 295),
+    downBelowZero: mk('for (let j = ip - 1; j >= start; j--)', 1, 12),
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    const expected = oracle(src).main()
+    for (const optimize of levels(0, 2, 'speed'))
+      ok(Object.is(run(src, { optimize }).main(), expected), `${name} at O${optimize}: ${run(src, { optimize }).main()} vs ${expected}`)
+    if (belowOpt(2) || onKernel()) continue
+    const text = compile(src, { wat: true, optimize: 'speed' })
+    ok(/i64\.(lt|le|gt|ge)_s/.test(text), `${name}: the inner guard still lifts`)
+  }
+})

@@ -152,23 +152,25 @@ const SPEED = {
 // asserts is a tracker that slips.
 //
 // Their jz row need not match V8 bit for bit, and where it does not, the
-// divergence is NAMED and MEASURED — that is the whole licence for comparing
-// their times. Each `why` below was measured over 200k channel values in [0,1]
-// (the range the cases feed), jz against V8:
+// divergence is NAMED, MEASURED and PINNED — that is the whole licence for
+// comparing their times. Named: each `why` below was measured over 200k channel
+// values in [0,1] (the range the cases feed), jz against V8. Pinned: `jz` is
+// the checksum of jz's own output, asserted like the harness pins an FMA
+// alternate — a name with no pin would let any output through, a miscompile
+// included, and the licence is for THIS known output only. A math helper that
+// changes its last bits changes the pin, and must say so here.
 //
 //   colorconv/colorlch  `(c + 0.055) / 1.055) ** 2.4` takes jz's fifthroot fold
 //                       (module/math.js, the k/5 constant-exponent path): 4 ulp,
 //                       4.9e-16 relative. Their three `Math.cbrt` calls are
 //                       bit-exact with V8 (0 ulp) — jz runs the same fdlibm.
-//   colorlog            `Math.pow(2, x)` takes jz's exp2: 6.2e-9 relative, which
-//                       IS exp2's documented tolerance (module/math.js says
-//                       "~6e-9 rel. error"), not a last-bits difference. The
-//                       case exists to track exactly that gap; closing it means
-//                       a tighter exp2, at which point this entry goes away.
+//   colorlog            `Math.pow(2, x)` takes jz's exp2, within 2 ulp of V8's
+//                       (module/math/trig-tables.js EXP2_C); the bench checksum
+//                       is bitwise, so two ulp is still a different sum.
 const LAB_SPEED = {
-  colorlog:  { v8: 'win', why: 'Math.pow(2, x) through jz exp2 — 6.2e-9 relative, exp2 own documented tolerance' },
-  colorlch:  { v8: 'win', why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
-  colorconv: { v8: 'tie', why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
+  colorlog:  { v8: 'win', jz: 1153077348, why: 'Math.pow(2, x) through jz exp2 — 2 ulp' },
+  colorlch:  { v8: 'win', jz: 615123418,  why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
+  colorconv: { v8: 'tie', jz: 3731035495, why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
 }
 const SPEED_TOL = { win: 1.0, tie: 1.05, near: 1.10, trail: 1.25 }
 // TIMING POLICY (extends the native-C rule below to every timing gate): a shared
@@ -594,20 +596,21 @@ for (const [id, claims] of Object.entries(SPEED)) {
     })
   }
 }
-// The LAB trackers: same tolerance vocabulary, no aggregate, and a named
-// divergence in place of the checksum-equality every SPEED case must meet.
+// The LAB trackers: same tolerance vocabulary, no aggregate, and a pinned jz
+// checksum in place of the checksum-equality every SPEED case must meet.
 for (const [id, claim] of Object.entries(LAB_SPEED)) {
-  for (const tid of ['v8']) {
-    const tol = SPEED_TOL[claim[tid]]
-    if (!tol) continue
-    test(`bench: lab ${id} jz ${claim[tid]} vs ${tid} (divergence: ${claim.why})`, () => {
-      const r = runs[id]
-      ok(validTiming(r?.jz), `${id}: JZ timing unavailable: ${r?.jz?.reason ?? 'missing or invalid timing'}`)
-      ok(validTiming(r?.[tid]), `${id}: ${tid} timing unavailable: ${r?.[tid]?.reason ?? 'missing or invalid timing'}`)
+  const tol = SPEED_TOL[claim.v8]
+  if (!tol) continue
+  test(`bench: lab ${id} jz ${claim.v8} vs v8 (divergence: ${claim.why})`, () => {
+    const r = runs[id], tid = 'v8'
+    ok(validTiming(r?.jz), `${id}: JZ timing unavailable: ${r?.jz?.reason ?? 'missing or invalid timing'}`)
+    ok(validTiming(r?.[tid]), `${id}: ${tid} timing unavailable: ${r?.[tid]?.reason ?? 'missing or invalid timing'}`)
+    ok(r.jz.checksum === claim.jz, `${id}: jz checksum ${r.jz.checksum} is not the pinned ${claim.jz} — the divergence this entry licenses is a KNOWN output; a changed one needs a new measurement and a new pin`)
+    {
       const ratio = r.jz.medianUs / r[tid].medianUs
-      okTiming(ratio <= tol, `${id}: jz ${(r.jz.medianUs / 1000).toFixed(2)}ms / ${tid} ${(r[tid].medianUs / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${claim[tid]} limit ${tol}×`)
-    })
-  }
+      okTiming(ratio <= tol, `${id}: jz ${(r.jz.medianUs / 1000).toFixed(2)}ms / ${tid} ${(r[tid].medianUs / 1000).toFixed(2)}ms = ${ratio.toFixed(3)}× > ${claim.v8} limit ${tol}×`)
+    }
+  })
 }
 
 for (const tid of ['v8', 'as']) {

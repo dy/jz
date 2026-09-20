@@ -447,14 +447,24 @@ name whose objects have one closed layout (no computed-key store, no literal
 store outside the layout, no escape: `spreadSidOfExpr`, the proof a spread copy
 needs) lists that layout, whatever alias or flattened function property the
 writes went through; without the summary, the per-name write census must rule
-out additions through aliases and helper parameters. A literal-key write
-outside a literal-bound name's layout is no sidecar entry: the plan declares
-the key in the literal (`plan/declare-written-keys.js`: `{ a: 1, b: undefined }`
-for `o.b = 2` or `o['b'] = 2` anywhere in the program, bundled initializers
-included), so it is a slot of one closed layout, present before its first
-store as every declared slot is; the name's layout is bound for the per-name
-slot paths, which keeps a flattened object property out of the function
-namespace box. Empty literals (the dictionary idiom), spreads, computed keys,
+out additions through aliases and helper parameters, and stands down
+whenever the summary knows the layout and does not certify it closed
+(`openSidOfExpr`): a store it alone sees. A DEFINITE literal-key write outside
+a literal-bound name's layout is no sidecar entry: the plan declares the key
+in the literal (`plan/declare-written-keys.js`: `{ a: 1, b: undefined }` for
+`o.b = 2` or `o['b'] = 2`), so it is a slot of one closed layout; the name's
+layout is bound for the per-name slot paths, which keeps a flattened object
+property out of the function namespace box. Definite means the store runs
+before anything can observe the object: a statement of the same list as the
+binding, with nothing between them that could run other code or ask about
+keys (a call, `in`, a spread, a deletion, a branch, a loop); module
+initializers and the entry module form one such list, in the order they run,
+so a bundled `parse.comment['#!'] = …` qualifies. A conditional store keeps
+its key out of the literal and in the sidecar, because a declared slot is an
+own property from the literal on and `in`, hasOwnProperty, for-in and
+Object.keys would all report it before the store. This is the one place a
+bound literal's layout widens; the program-facts merge used to add every
+written key. Empty literals (the dictionary idiom), spreads, computed keys,
 brands, index keys, `length`, a name with a computed-key write or an
 `Object.assign` (a dictionary: its keys and their order are runtime facts),
 and names that also take a non-literal value stay as they are. A bracket
@@ -554,7 +564,11 @@ an expression once before its sentinel checks; a computed read can run key
 conversion hooks and is never duplicated just because its stored kind is known.
 Lookup dependencies name hashing/equality directly, not mutation helpers.
 
-Source inlining builds the exported expression subset once per pass. Nested-call
+Source inlining builds the exported expression subset once per pass. A
+declaration splices each of its declarators (`const r = f(a), g = f(b), b =
+f(c)`, each its own statement in order); more than one declarator splices only
+in an innermost loop, where the call it removes is what kept the lane
+vectorizer out. Nested-call
 hoisting uses its body map for membership too, and reuses that map through the
 current function's rounds, before the function record's body is replaced.
 
@@ -705,9 +719,15 @@ groups cursor offsets by their shared extent and omits already-covered nest
 guards; negative offsets participate in the lower bound. A nested level lifts
 its guard to the nest entry only when every name that guard reads is stable
 over the top loop's body, condition and step (`stableLoopNames`: a call may
-replace a global, so calls count as writes); the top loop's own iv, written by
-its step, is exempt for an access the top level's own hull already guards
-(the lifted conjunct reads the iv's entry value and only narrows the fast arm).
+replace a global, so calls count as writes). The top loop's own counter,
+written by its step, is exempt for a slot term of an inner guard when the
+header is plain (`iv < B` with `iv++`, `iv >= B` with `iv--`): the lifted
+conjunct sits at the nest entry, where the counter holds its entry value —
+the maximum of a descending loop and the minimum of an ascending one, the
+wrong end for the other bound — so the emitter bounds that term by the
+counter's EXTENT, entry on one side and loop bound on the other
+(`versionableTypedNest`'s `topExtent`, `control-flow.js`'s `topEndsOf`),
+rather than reading it.
 
 Ephemeral dictionaries use the same zeroed header allocator as other collections.
 Allocation and fixed probes share one capacity calculation; unrepresentable
@@ -1023,14 +1043,19 @@ different strings) and calls the helper for the rest; a boxed boolean is a
 condition; the runtime templates test nullish receivers with two bit
 compares, the tagged typed read masks the tag and the BigInt flag off the
 box, the Map key hash mixes a number key in place, and the string hash
-reads a heap string's length in place. The lane vectorizer
-(`src/optimize/vectorize`) declines a loop whose lane-local is live out of
-it (`last = a[i]`, read after the loop: the v128 shadow never lands in the
-scalar local; liveness is the straight-line scan of the continuation, a
-write on one path killing nothing past it), except a constant flag
-(`if (a[i] !== b[i]) ok = 0`: one constant, no else): its shadow starts as
-the scalar's splat and the scalar takes the constant after the vector loop
-when any lane did (`constantFlagStore`, `map.js`), and the typed-param unswitch
+reads a heap string's length in place. Every lane vectorizer recognizer
+(`src/optimize/vectorize`) classifies a written local through one function
+(`laneAccess`, `addr-model.js`): a read first is loop-carried, a write first a
+lane-local, and a lane-local the continuation reads is live out (`last =
+a[i]`, read after the loop: the v128 shadow never lands in the scalar local,
+and at a trip count that is a multiple of the lane width no scalar tail runs
+to write it either; liveness is the straight-line scan of the continuation, a
+write on one path killing nothing past it). Live out declines, except a
+constant flag in `tryVectorize` (`if (a[i] !== b[i]) ok = 0`: one constant,
+no else): its shadow starts as the scalar's splat and the scalar takes the
+constant after the vector loop when any lane's BITS differ from that splat
+(`constantFlagStore`, `map.js`; a float compare read a NaN entry as changed).
+The typed-param unswitch
 (`src/optimize/unswitch.js`) looks through the inline array arm to the
 typed read it specializes. The summary keeps typed-array named properties
 per element type (`typedPropsByAux`): a property stored on a `Uint8Array`

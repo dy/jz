@@ -103,12 +103,29 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   }
   walkLoop(init, cond, step, body, null, true)
   const stableTop = stableLoopNames(body, cond, step)
-  // The top loop's own iv is written by its step by construction (`j--`). An
-  // inner access that reads it (`src[j + len]`) lifts when the top level's
-  // own hull guards that access: the lifted inner conjunct reads the iv's
-  // entry value, which only narrows the fast arm the hull already bounds.
+  // The top loop's own iv is written by its step by construction (`j--`), so an
+  // inner access that reads it (`src[j + len]`) fails the stability check. Its
+  // guard can still lift, as the counter's EXTENT: a lifted conjunct sits at the
+  // nest entry, where the counter holds its entry value — the maximum of a
+  // descending loop and the minimum of an ascending one, and the wrong end for
+  // the other bound (read as a value, an ascending scan's inner `src[j + len]`
+  // ran past the array unchecked). So a lifted slot term that is the top
+  // counter is not read but bounded, by the entry on one side and the loop bound
+  // on the other, which the emitter substitutes (control-flow.js, topEndsOf).
+  // That needs a plain header — `iv < B`/`iv <= B` with `iv++`/`iv += k`, or
+  // `iv > B`/`iv >= B` with `iv--`/`iv -= k` — and a lift reading the counter in
+  // any other form stays put.
   const topIv = Array.isArray(step) && MUTATE_OPS.has(step[0]) && typeof step[1] === 'string' ? step[1] : null
-  const topKeys = new Set(levels[0]?.top ? levels[0].cands.filter(c => !c.presence).map(c => idxKey(c.recv, c.idx)) : [])
+  const topExtent = (() => {
+    if (topIv == null || !Array.isArray(cond) || cond[1] !== topIv) return null
+    const up = cond[0] === '<' || cond[0] === '<=', down = cond[0] === '>' || cond[0] === '>='
+    const k = step.length === 3 ? intLiteralValue(step[2]) : 1
+    if (!(k > 0)) return null
+    const stepUp = step[0] === '++' || step[0] === '+=', stepDown = step[0] === '--' || step[0] === '-='
+    if (!(up && stepUp) && !(down && stepDown)) return null
+    const kind = (e) => exprType(e, locals) === 'i32' ? 'i32' : 'f64'
+    return { iv: topIv, ivKind: kind(topIv), up, bound: cond[2], boundKind: kind(cond[2]), incl: cond[0] === '<=' || cond[0] === '>=' }
+  })()
   const exprNames = (e, out) => someDeep(e, n => { if (typeof n === 'string') out.push(n); return false })
   const keepPre = levels.filter((L) => {
     // A numeric hull that already exceeds a receiver's STATIC length can never
@@ -142,7 +159,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     exprNames(L.bound, names)
     if (typeof L.bound === 'string') names.push(L.bound)
     const stableFor = (c) => (name) => typeof name !== 'string' || stableTop(name)
-      || (name === topIv && c != null && topKeys.has(idxKey(c.recv, c.idx)))
+      || (name === topIv && topExtent != null && c?.slots != null)
     if (!names.every(stableFor(null))) return false
     // the top level's own iv/bound legitimately live in the top body — only names
     // read by LIFTED (inner) guards need top-stability; the top spec re-checks
@@ -224,5 +241,6 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       kind: exprType(name, locals) === 'i32' ? 'i32' : 'f64' })
   }
   keep.cursors = cursors
+  keep.topExtent = topExtent
   return keep
 }

@@ -364,7 +364,7 @@ export default (ctx) => {
     // sees the object.
     const closed = typeof obj === 'string' ? closedLayoutOf(obj) : null
     if (closed) return emitStringArray(closed)
-    const schema = resolveSchema(obj)
+    const schema = runtimePresence(obj) ? null : resolveSchema(obj)
     const literalUnsafe = Array.isArray(obj) && obj[0] === '{}' && hasUnsafeLiteralValueEffect(obj)
     if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj) && !literalUnsafe)
       return emitStringArray(schema)
@@ -407,7 +407,7 @@ export default (ctx) => {
     // writes land in the dyn sidecar — see hasOutOfSchemaWrites).
     // The schema's write census also covers aliases and helper parameters.
     if (!ctx.types.anyDelete && typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
-      const schema = resolveSchema(obj)
+      const schema = runtimePresence(obj) ? null : resolveSchema(obj)
       if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj)) {
         const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
@@ -992,6 +992,13 @@ const literalProps = (node) =>
 // escape opened it (query.js spreadSidOfExpr: the proof a spread copy needs
 // too) — and the expression is never nullish. Null when the summary cannot
 // say so, or a deletion anywhere makes presence a runtime fact.
+// Presence is a runtime fact for this object — a deletion anywhere, or the
+// summary knows its layout and does not certify it closed (query.js
+// openSidOfExpr: a store outside the layout that only the summary sees, such as
+// a bundled initializer's `parse.comment['#!'] = …`). The per-name write
+// censuses the static paths below rest on cannot see such a store, and once
+// called it closed and enumerated two keys of three.
+const runtimePresence = (obj) => ctx.types.anyDelete || ctx.summary?.at(ctx.func.current).openSidOfExpr(obj) != null
 function closedLayoutOf(obj) {
   if (ctx.types.anyDelete || !ctx.summary) return null
   const sid = ctx.summary.at(ctx.func.current).spreadSidOfExpr(obj)

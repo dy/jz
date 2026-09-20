@@ -1,5 +1,5 @@
 import { cloneNode, walkAst } from '../../ast.js'
-import { constNum, firstAccess, isI32Const, isLocalGet } from './addr-model.js'
+import { constNum, laneAccess, isI32Const, isLocalGet } from './addr-model.js'
 import { LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { liftFail } from './lift.js'
 import { isArr } from './node-utils.js'
@@ -164,9 +164,8 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   for (const name of referenced) {
     if (name === incVar) continue
     if (writes.has(name)) {
-      let firstKind = null
-      for (const s of body) { const k = firstAccess(s, name); if (k) { firstKind = k; break } }
-      if (firstKind === 'read') return null   // loop-carried
+      const access = laneAccess(body, name, bl.outsideReads)
+      if (access === 'read' || access === 'liveout') return null   // loop-carried, or carried out
       localKind.set(name, 'lane')
     } else localKind.set(name, 'invariant')
   }

@@ -4064,3 +4064,25 @@ export let count = (n, at) => {
   ok(/i8x16\.ne|v128\.bitselect/.test(fn), 'the byte compare loop vectorizes')
   ok(fn.includes('v128.any_true'), 'the flag lands from its lane shadow')
 })
+
+test('SIMD live-out lane-locals: a NaN flag lands nothing, and a value carried out of a map is not vectorized', () => {
+  // Two ways a lane-local's v128 shadow can fail to reach its scalar. A flag
+  // whose entry value is NaN: the landing once asked a float `ne` whether any
+  // lane changed, and NaN != NaN said yes with no mismatch at all, even at zero
+  // trips — it asks the bits now. And `last = a[i]` carried out of a map loop:
+  // the general stencil lifted the write into a dropped load, and at a trip
+  // count that is a multiple of the lane width no scalar tail ran to write it
+  // either, so the scalar kept its entry value. Every recognizer classifies
+  // through laneAccess, which names that case.
+  const src = `
+export let nanFlag = (n) => { const a = new Float64Array(n), b = new Float64Array(n); for (let i = 0; i < n; i++) { a[i] = i; b[i] = i } let bad = NaN; for (let i = 0; i < n; i++) if (a[i] !== b[i]) bad = 7; return bad }
+export let last = (n) => { const a = new Float64Array(n), out = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = i * 1.5; let last = -1; for (let i = 0; i < n; i++) { out[i] = a[i] * 2; last = a[i] } return last + out[n - 1] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const ex = run(src, { optimize })
+    for (const n of [0, 1, 2, 4, 8, 9, 16, 100]) {
+      ok(Object.is(ex.nanFlag(n), js.nanFlag(n)), `O${optimize}: NaN flag n=${n}: ${ex.nanFlag(n)} vs ${js.nanFlag(n)}`)
+      if (n > 0) is(ex.last(n), js.last(n), `O${optimize}: live-out last n=${n}`)
+    }
+  }
+})

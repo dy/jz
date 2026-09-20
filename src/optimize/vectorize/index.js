@@ -235,13 +235,16 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // exactly the case where the WAT derivation is already the concrete number in one read: a
       // non-const (boundLocal) bound is never compared, so consulting the plan there would be
       // unproven. Narrowed to the proven subset (banked finding, .work/evidence.md §BodyModel).
+      // A lane-local the function reads outside this loop (`last = a[i]`
+      // returned after it) is live out: the lift's v128 shadow never lands in
+      // the scalar local, and the scalar tail runs only past the lanes. Every
+      // recognizer classifies through laneAccess with this set — the ramp map
+      // builds its own scaffold, so it takes the set directly.
+      const outsideReads = liveOutOf(here)
       if (bl) {
         const link = ctx.plans.loweringLinks.get(node)
         if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)
-        // A lane-local the function reads outside this loop (`last = a[i]`
-        // returned after it) is live out: the lift's v128 shadow never lands
-        // in the scalar local, and the scalar tail runs only past the lanes.
-        bl.outsideReads = liveOutOf(here)
+        bl.outsideReads = outsideReads
       }
       // LoopPlan classification (stage-3 slice 1): the OUTER-pixel scaffold is
       // matched ONCE here — the five outer-family recognizers consume this
@@ -265,7 +268,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
         ?? tryReduce(bl, fnLocals, freshIdRef, multiAcc)
         ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
-        ?? tryRampMap(node, fnLocals, freshIdRef)
+        ?? tryRampMap(node, fnLocals, freshIdRef, outsideReads)
         ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP)
         ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)

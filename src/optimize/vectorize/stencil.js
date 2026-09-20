@@ -1,5 +1,5 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { constNum, firstAccess, isI32Const, isLocalGet, matchStrideAddr, matchStrideOffset } from './addr-model.js'
+import { constNum, laneAccess, isI32Const, isLocalGet, matchStrideAddr, matchStrideOffset } from './addr-model.js'
 import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
@@ -180,8 +180,7 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
     let added = false
     const consider = (name, def) => {
       if (derived.has(name) || fnLocals.get(name) !== 'i32' || countSets(name) !== 1 || ivCoeff(def) !== 1) return
-      let fk = null; for (const t of body) { const k = firstAccess(t, name); if (k) { fk = k; break } }
-      if (fk === 'write') { derived.add(name); added = true }
+      if (laneAccess(body, name) === 'write') { derived.add(name); added = true }
     }
     forEachLocalDef(body, consider)
     if (!added) break
@@ -277,8 +276,8 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
     // data the same as a native-typed local — the lift lanes it as f32x4 (relaxedSimd).
     if (ty === laneType || (laneType === 'f32' && ty === 'f64')) {
       if (writes.has(name)) {
-        let fk = null; for (const s of body) { const k = firstAccess(s, name); if (k) { fk = k; break } }
-        if (fk === 'read') return null                    // loop-carried float local
+        const access = laneAccess(body, name, bl.outsideReads)
+        if (access === 'read' || access === 'liveout') return null   // loop-carried, or carried out
         localKind.set(name, 'lane')
       } else localKind.set(name, 'invariant')
       continue
@@ -504,8 +503,7 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
     let added = false
     const consider = (name, def) => {
       if (derived.has(name) || fnLocals.get(name) !== 'i32' || countSets(name) !== 1 || ivCoeff(def) !== 1) return
-      let fk = null; for (const t of body) { const k = firstAccess(t, name); if (k) { fk = k; break } }
-      if (fk === 'write') { derived.add(name); added = true }
+      if (laneAccess(body, name) === 'write') { derived.add(name); added = true }
     }
     forEachLocalDef(body, consider)
     if (!added) break
@@ -652,8 +650,8 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
     const ty = fnLocals.get(name)
     if (ty === 'i32' && (addrTees.has(name) || offTees.has(name) || derived.has(name) || _isAddrLocalGS(name))) { localKind.set(name, 'addr'); continue }
     if (writes.has(name)) {
-      let fk = null; for (const s of body) { const k = firstAccess(s, name); if (k) { fk = k; break } }
-      if (fk === 'read') return null
+      const access = laneAccess(body, name, bl.outsideReads)
+      if (access === 'read' || access === 'liveout') return null   // loop-carried, or carried out
       localKind.set(name, 'lane')
     } else localKind.set(name, 'invariant')
   }

@@ -2695,12 +2695,17 @@ test('written literal keys: a literal-key write outside a literal-bound layout d
     is(jz(bracket, { optimize }).exports.main(), v8(bracket), `O${optimize}: bracket key on a let global`)
     is(jz(declared, { optimize }).exports.main(), v8(declared), `O${optimize}: declared key store`)
   }
-  // Dot and bracket forms of the same write declare the same slot; a key written
-  // on one path only is present on every object of the literal (jz's model for a
-  // declared slot: `in`, hasOwnProperty and enumeration read it before its store).
-  const form = (write) => jz(`let o = { a: 1 }; export function main(x) { if (x) ${write}; let r = ''; for (const k in o) r += k; return r + '|' + ('b' in o) + '|' + o.hasOwnProperty('b') + '|' + Object.keys(o).length }`).exports.main
-  is(form("o['b'] = 2")(0), form('o.b = 2')(0))
-  is(form("o['b'] = 2")(1), form('o.b = 2')(1))
+  // Dot and bracket forms of the same write behave alike, and a key written on
+  // one path only is NOT present until that path runs: `in`, hasOwnProperty,
+  // for-in and Object.keys all read what JS reads. (They once read the key
+  // before its store — a conditional write declared it on every object of the
+  // literal, through two mechanisms; only a definite store may, through one.)
+  const conditionalWrite = (write) => `let o = { a: 1 }; export function main(x) { if (x) ${write}; let r = ''; for (const k in o) r += k; return r + '|' + ('b' in o) + '|' + o.hasOwnProperty('b') + '|' + Object.keys(o).length }`
+  for (const write of ["o['b'] = 2", 'o.b = 2']) for (const x of [0, 1]) {
+    const src = conditionalWrite(write)
+    const expected = Function(src.replace(/export (let|function|const)/g, '$1') + '; return main')()(x)
+    for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.main(x), expected, `${write} x=${x} at O${optimize}`)
+  }
   // A top-level `??=` initializes a flattened property like a declaration: it
   // keeps a value already there, and a conditional top-level write is no
   // initializer: the property reads undefined until it runs.

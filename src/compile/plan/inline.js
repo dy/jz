@@ -268,17 +268,10 @@ const inlineInExpr = (node, candidates) => {
   return out
 }
 
-// Whether a callee's own work is something the host cannot schedule around the
-// call: a call of its own, or a `**` that lowers to one. Splicing such a callee
-// out of a multi-declarator declaration puts its channels' transcendental
-// chains side by side at one level, which is the whole win there (colorlog ran
-// 1.13x V8 and runs 0.54 once its three decodes inline). A callee of plain
-// arithmetic gains nothing — a cheap call is already free for the host to
-// schedule across — and the copies only add size (fft's sine/cosine
-// polynomials grew its module 5% for no time at all).
-const transcendentalBody = (func) => !!func?.body && some(func.body, n => n[0] === '()' || n[0] === '**')
-
-const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
+// `hot`: the statement sits in an innermost loop — the loops the lane vectorizer
+// takes. A loop body that holds no loop of its own.
+const innermost = (body) => !some(body, n => LOOP_OPS.has(n[0]))
+const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) => {
   if (!Array.isArray(stmt)) return null
   // Statement-position call: the result is unused, but the callee's return
   // EXPRESSION may still carry side effects — an expression-bodied arrow whose body
@@ -302,13 +295,22 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
   // argument needs a temp, and this path only ever looked at a lone declarator.
   // Each declarator becomes its own statement in the original order, so a later
   // initializer still reads the bindings before it.
+  //
+  // More than one declarator splices only in an innermost loop. That is where
+  // it pays, and why: the call it removes is what kept the lane vectorizer out
+  // of the loop — colorlog's three `decode` calls became three `exp2_v` lifts
+  // and the case went from 1.13x V8 to 0.54. A site in an outer loop gains
+  // nothing, and the copies only add size: fft binds its sine and cosine
+  // polynomials once per stage, and splicing them grew the module 5% for no
+  // time at all. A lone declarator keeps the policy every other statement
+  // shape has and splices wherever its callee qualifies.
   if (stmt[0] === 'let' || stmt[0] === 'const') {
     const splice = [], hoisted = []
     let any = false
     for (let d = 1; d < stmt.length; d++) {
       const decl = stmt[d]
       if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates)
-          && (stmt.length === 2 || transcendentalBody(candidates.get(decl[2][1])))) {
+          && (stmt.length === 2 || hot)) {
         const args = callArgs(decl[2])
         const shape = args && inlinedBody(candidates.get(decl[2][1]), args)
         if (shape && shape.value !== null) {
@@ -345,7 +347,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     let changed = false
     const next = [';']
     for (let i = 1; i < stmt.length; i++) {
-      const r = inlineInStmt(stmt[i], candidates, loopVariantNames)
+      const r = inlineInStmt(stmt[i], candidates, loopVariantNames, hot)
       if (r) changed = true
       if (r?.hoisted?.length) next.push(...r.hoisted)
       if (r?.splice) next.push(...r.splice)
@@ -354,7 +356,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     return changed ? { node: next, changed: true } : null
   }
   if (op === '{}') {
-    const r = inlineInStmt(stmt[1], candidates, loopVariantNames)
+    const r = inlineInStmt(stmt[1], candidates, loopVariantNames, hot)
     if (!r) return null
     // If the child was itself a candidate call (or a let/assign-of-call), it
     // already returned a `['{}', [';', ...prefix]]` shape. Re-wrapping here
@@ -365,7 +367,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
   if (op === 'for') {
     const idx = forLoopBodyIndex(stmt)
     const vars = loopVariantNames ? new Set(loopVariantNames) : new Set()
-    const r = inlineInStmt(stmt[idx], candidates, vars.size ? vars : null)
+    const r = inlineInStmt(stmt[idx], candidates, vars.size ? vars : null, innermost(stmt[idx]))
     if (!r) return null
     return { node: withForLoopBody(stmt, r.node), changed: true, hoisted: r.hoisted }
   }
@@ -373,13 +375,13 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     const vars = loopVariantNames ? new Set(loopVariantNames) : new Set()
     const ind = whileInductionVar(stmt[1])
     if (ind) vars.add(ind)
-    const r = inlineInStmt(stmt[2], candidates, vars.size ? vars : null)
+    const r = inlineInStmt(stmt[2], candidates, vars.size ? vars : null, innermost(stmt[2]))
     if (!r) return null
     return { node: ['while', stmt[1], r.node], changed: true, hoisted: r.hoisted }
   }
   if (op === 'if') {
-    const thenR = inlineInStmt(stmt[2], candidates, loopVariantNames)
-    const elseR = stmt.length > 3 ? inlineInStmt(stmt[3], candidates, loopVariantNames) : null
+    const thenR = inlineInStmt(stmt[2], candidates, loopVariantNames, hot)
+    const elseR = stmt.length > 3 ? inlineInStmt(stmt[3], candidates, loopVariantNames, hot) : null
     if (thenR || elseR) return {
       node: stmt.length > 3 ? ['if', stmt[1], thenR ? thenR.node : stmt[2], elseR ? elseR.node : stmt[3]]
         : ['if', stmt[1], thenR ? thenR.node : stmt[2]],
@@ -393,7 +395,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     let hoisted = []
     for (let i = 1; i < stmt.length; i++) {
       const part = stmt[i]
-      const r = Array.isArray(part) ? inlineInStmt(part, candidates, loopVariantNames) : null
+      const r = Array.isArray(part) ? inlineInStmt(part, candidates, loopVariantNames, hot) : null
       if (r) changed = true
       if (r?.hoisted?.length) hoisted = hoisted.concat(r.hoisted)
       next.push(r ? r.node : part)

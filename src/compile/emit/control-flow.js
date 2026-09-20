@@ -198,6 +198,8 @@ const censusKeysOf = (src) => {
   if (typeof src !== 'string') return null
   if (!ctx.types.dynWriteVars || ctx.types.dynWriteVars.has(src) || ctx.schema.mayGrow(src)) return null
   if (lookupValType(src) !== VAL.OBJECT) return null
+  // the summary sees stores this census cannot (a bundled initializer, an alias)
+  if (ctx.summary?.at(ctx.func.current).openSidOfExpr(src) != null) return null
   const keys = ctx.schema.resolve(src)
   if (!keys) return null
   const lw = ctx.types.literalWriteKeys?.get(src)
@@ -527,9 +529,25 @@ export const controlFlowOps = {
           slots.set(key, s)
           return s
         }
+        // A lifted slot term that IS the top counter is bounded, not read: at the
+        // nest entry the counter holds its entry value, which is its maximum going
+        // down and its minimum going up, and the loop bound is the other end
+        // (versionableTypedNest's topExtent — the counter is exempt from the
+        // stability check only when this substitution is possible).
+        let topEnds
+        const topEndsOf = () => topEnds ??= (({ iv, ivKind, up, bound, boundKind, incl }) => {
+          const entry = slotI64(iv, ivKind)
+          const b = incl ? slotI64(bound, boundKind) : ['i64.add', slotI64(bound, boundKind), i64c(up ? -1 : 1)]
+          return up ? { min: entry, max: b } : { min: b, max: entry }
+        })(levels.topExtent)
         const slotSum = (base, list, lo = false) => {
           let r = base
           for (const t of list) {
+            if (levels.topExtent && t.e === levels.topExtent.iv && !t.wrap) {
+              const end = (lo !== (t.k < 0)) ? topEndsOf().min : topEndsOf().max
+              r = ['i64.add', r, t.k === 1 ? end : ['i64.mul', i64c(t.k), end]]
+              continue
+            }
             // a WRAP atom (toroidal iv ternary ∈ [0, B-1]) is one-sided: B-1 into
             // the hi extent, nothing into the lo
             if (t.wrap) {

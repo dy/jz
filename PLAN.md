@@ -813,12 +813,15 @@ Those tests do not establish callback deadlines.
   statement now, in the original order, so a later initializer still reads the
   bindings before it (`plan/inline.js`). Against V8: colorlog 1.13× → 0.54,
   colorlch 1.13 → 0.73, colorconv 1.10 → 1.00, and lz, hashjoin and jessie
-  each gained a little. The win is not the call overhead: it is that three
-  independent transcendental chains end up at one level where the host can
-  overlap them. That is also the gate on the new path — a callee whose body
-  holds a call or a `**`. fft's sine/cosine polynomials are plain arithmetic,
-  gained no time when inlined, and grew the module 5%, which is what the gate
-  keeps out (`bench:size` stays 0.794×).
+  each gained a little. The win is not the call overhead, and it is not the
+  host overlapping chains either (an earlier reading, wrong): the call was what
+  kept the lane vectorizer out of the loop, and once it is gone colorlog's three
+  `decode` calls become three `exp2_v` lifts (210 vector ops in its hot
+  function). That is the gate on the new path — more than one declarator
+  splices only in an innermost loop, the loops the vectorizer takes. fft binds
+  its sine and cosine polynomials once per stage, in an outer loop; splicing
+  them gained no time and grew the module 5%, and the gate keeps them out
+  (`bench:size` stays 0.794×).
 - Those three cases are the corpus's one family whose output does not match V8
   bit for bit, so the gate could not compare their times: it refuses to compare
   the speed of work that is not the same work. They are LAB cases — intrinsic
@@ -883,6 +886,31 @@ Those tests do not establish callback deadlines.
   the machinery (stdlib bodies can be lazy thunks; `pushStaticSlots` returns a
   data offset to bake into the WAT) but no math helper uses it yet, and the
   table and its index order would have to be mirrored in all three evaluators.
+- A review of this session's commits found four defects and fixed them at
+  their roots. The vectorized constant flag landed on a float `ne`, which reads
+  a NaN entry as changed and stored the constant with no mismatch at all, even
+  at zero trips; the landing asks the bits now (xor, any_true). Only the first
+  recognizer gated a live-out lane-local; the general stencil lifted `last =
+  a[i]` into a dropped load and, at a trip count that is a multiple of the lane
+  width, no scalar tail ran to write it, so the scalar kept its entry value —
+  every recognizer classifies through one `laneAccess` now. The nested-scan
+  lift exempted the top counter on the strength of a top-level hull that the
+  keep filter had already dropped; it held on lz only because `j--` makes an
+  entry-evaluated upper bound the strongest, and an ascending scan read past
+  the array unchecked (a sum where JS says NaN). The counter is now bounded by
+  its extent — entry and loop bound — which keeps the lift in both directions.
+  And the declared-written-keys pass, plus an older program-facts merge, made a
+  key written on one path only an own property on every object of its literal
+  before the store (`Object.keys`, hasOwnProperty, for-in); only a DEFINITE
+  store declares a key now, the older merge is gone, and the legacy static
+  enumeration stands down whenever the summary knows the layout is open —
+  which also closed the bundled `#!` drop at its root instead of papering over
+  it. Two comments overstated (Estrin's op count; exp2 at one ulp), and the
+  inliner's gate was a fitted proxy: colorlog's win came from the vectorizer
+  taking the loop once the call was gone, so the gate is now "innermost
+  loop". Pins: the NaN flag, the general-map live-out at a lane-multiple trip
+  count, both scan directions of the nest lift, and conditional stores in both
+  forms against V8.
 - jz builds against `~/projects/watr` through a symlink while the cast fold
   waits for a release. Two scripts assumed a dependency lives under
   `node_modules/`: the self-compile profile matched watr's printer by that

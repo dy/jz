@@ -1,5 +1,5 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, firstAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
+import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
 import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
@@ -15,7 +15,6 @@ import { isArr } from './node-utils.js'
 // before writing it, so the shadow starts as a splat of the scalar, and its
 // scalar lands after the vector loop: C if any lane took it, else the entry
 // value. Returns the constant node, or null for any other write shape.
-const LANE_NE = { i8: 'i8x16.ne', i16: 'i16x8.ne', i32: 'i32x4.ne', i64: 'i64x2.ne', f32: 'f32x4.ne', f64: 'f64x2.ne' }
 function constantFlagStore(body, name) {
   let constant = null, ok = true
   const isConst = (v) => isArr(v) && (v[0] === 'i32.const' || v[0] === 'i64.const' || v[0] === 'f32.const' || v[0] === 'f64.const') && v.length === 2
@@ -221,17 +220,11 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   for (const name of referenced) {
     if (name === incVar) continue
     if (writes.has(name)) {
-      // Must be lane-local: first access is a write.
-      let firstKind = null
-      for (const s of body) {
-        const k = firstAccess(s, name)
-        if (k) { firstKind = k; break }
-      }
-      if (firstKind === 'read') return null  // loop-carried (reduction or stencil)
-      // A lane-local live out of the loop (`last = a[i]`, returned after)
-      // must land in its scalar local, which the lift's v128 shadow never does,
-      // except a constant flag (constantFlagStore), landed after the loop.
-      if (bl.outsideReads?.has(name)) {
+      const access = laneAccess(body, name, bl.outsideReads)
+      if (access === 'read') return null  // loop-carried (reduction or stencil)
+      // A live-out lane-local never lands from its shadow — except a constant
+      // flag (constantFlagStore), landed after the loop.
+      if (access === 'liveout') {
         const flag = constantFlagStore(body, name)
         if (!flag || !splatScalar(name, fnLocals.get(name), laneType)) return null
         flagLandings.set(name, flag)
@@ -407,15 +400,20 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
 
   // A flag's lane shadow starts as the scalar's splat (its lift keeps lanes the
   // condition spares); after the loop the scalar takes the constant when any
-  // lane did (a lane differs from the entry value only by taking it), else
-  // keeps its entry value, and the scalar tail continues from there.
+  // lane did, else keeps its entry value, and the scalar tail continues from
+  // there. "Any lane did" is asked of the BITS — xor against the entry splat,
+  // any_true — not of a lane compare: bitselect leaves an untouched lane
+  // bit-identical to its entry, while a float `ne` reads a NaN entry as changed
+  // and would land the constant with no mismatch at all, even at zero trips.
+  // The lift allocated the shadow when it took the flag's `if`; a flag with no
+  // shadow was never lifted, and vectorizing without it would drop its stores.
   const flagInit = [], flagLand = []
   for (const [name, constant] of flagLandings) {
     const laneName = newLanedLocals.get(name)
-    if (!laneName) continue
-    const splat = splatScalar(name, fnLocals.get(name), laneType)
-    flagInit.push(['local.set', laneName, splat])
-    flagLand.push(['if', ['v128.any_true', [LANE_NE[laneType], ['local.get', laneName], splat]], ['then', ['local.set', name, cloneNode(constant)]]])
+    if (!laneName) return null
+    const splat = () => splatScalar(name, fnLocals.get(name), laneType)
+    flagInit.push(['local.set', laneName, splat()])
+    flagLand.push(['if', ['v128.any_true', ['v128.xor', ['local.get', laneName], splat()]], ['then', ['local.set', name, cloneNode(constant)]]])
   }
   // Synthetic outer wrapper — has no result, no label, just sequences.
   // A clone of any LICM-hoisted preamble runs first (so the SIMD block sees the
@@ -626,9 +624,8 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     const ty = fnLocals.get(name)
     if (ty === 'i32' && (addrTees.has(name) || offTees.has(name) || _isAddrLocalGM(name))) { localKind.set(name, 'addr'); continue }
     if (writes.has(name)) {
-      let fk = null
-      for (const s of body) { const k = firstAccess(s, name); if (k) { fk = k; break } }
-      if (fk === 'read') return null   // loop-carried scalar — not a dependence-free map
+      const access = laneAccess(body, name, bl.outsideReads)
+      if (access === 'read' || access === 'liveout') return null   // loop-carried, or carried out with no way to land it
       localKind.set(name, 'lane')
     } else localKind.set(name, 'invariant')
   }

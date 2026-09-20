@@ -1,5 +1,5 @@
 import { cloneNode, walkAst } from '../../ast.js'
-import { constNum, firstAccess, isI32Const, isLocalGet, matchLaneAddr } from './addr-model.js'
+import { constNum, laneAccess, isI32Const, isLocalGet, matchLaneAddr } from './addr-model.js'
 import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { liftExprV, liftStmt } from './lift.js'
 import { isArr } from './node-utils.js'
@@ -25,7 +25,7 @@ import { matchBlockLoop } from './scaffold.js'
 // Narrowing is truncation-exact for ANY i32 value (matching scalar store8/16):
 // `i8x16.shuffle` selects the low byte of each lane — never saturates — so no
 // value-range assumption is needed.
-export function tryRampMap(blockNode, fnLocals, freshIdRef) {
+export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
   // Strict envelope (identical to tryVectorize's) + trailing RUN of increments; the "every
   // increment shares the IV's name" check below is tryRampMap's own residual.
   const bl = matchBlockLoop(blockNode, { multiInc: true })
@@ -113,9 +113,8 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef) {
   for (const name of referenced) {
     if (name === ivName) continue
     if (writes.has(name)) {
-      let firstKind = null
-      for (const s of body) { const kAcc = firstAccess(s, name); if (kAcc) { firstKind = kAcc; break } }
-      if (firstKind === 'read') return null   // loop-carried → reduction/stencil, not a pure map
+      const access = laneAccess(body, name, outsideReads)
+      if (access === 'read' || access === 'liveout') return null   // loop-carried, or carried out
       localKind.set(name, 'lane')
     } else {
       localKind.set(name, 'invariant')

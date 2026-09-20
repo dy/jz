@@ -25,8 +25,9 @@ export const COS_C = [1, -0.5, 0.041666666666666664, -0.001388888888888889, 0.00
  * Horner's chain is one multiply-add deep per coefficient, so a series long
  * enough to be accurate spends its time waiting on itself; this tree is log2(n)
  * deep and its halves evaluate side by side. The powers repeat across the tree
- * and the WAT optimizer's CSE shares them, so the operation count is unchanged
- * and only the critical path shrinks.
+ * and the WAT optimizer's CSE shares them, so the cost over Horner is one
+ * multiply per power (x², x⁴, x⁸: log2 of the length) while the critical path
+ * shrinks by the same factor.
  *
  * `ops` supplies the three constructors for the target: a constant, a multiply
  * and an add. `x` is the variable already in the target's own form.
@@ -63,9 +64,10 @@ export const LOG_C = [1, 0.3333333333333333, 0.2, 0.14285714285714285, 0.1111111
 export const EXPM1_C = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.008333333333333333, 0.001388888888888889, 0.0001984126984126984, 0.0000248015873015873, 0.0000027557319223985893, 2.755731922398589e-7, 2.505210838544172e-8, 2.08767569878681e-9, 1.6059043836821613e-10, 1.1470745597729725e-11]
 
 // 2^f on [-0.5, 0.5] as the Maclaurin series (ln2)^n/n!, n = 0..13 — the degree
-// that lands within ONE ulp of the exact power (measured against the host over
-// 400k points in the reduced range; degree 12 stops at 3 ulp, and the degree-6
-// minimax this replaces stopped at 6.2e-9 relative, ~3.9e7 ulp). exp2 carries
+// that lands within 2 ulp of the exact power under the tree above (1 ulp as a
+// Horner chain; measured against the host over 400k points in the reduced
+// range; degree 12 stops at 3 ulp, and the degree-6 minimax this replaces
+// stopped at 6.2e-9 relative, ~3.9e7 ulp). exp2 carries
 // `Math.exp`, `Math.pow(2, x)`, sinh/cosh/tanh and the colour cases' decode, so
 // its accuracy is theirs.
 export const EXP2_C = [1, 0.6931471805599453, 0.2402265069591007, 0.055504108664821576, 0.009618129107628477, 0.0013333558146428443, 0.0001540353039338161, 1.525273380405984e-05, 1.3215486790144307e-06, 1.0178086009239699e-07, 7.054911620801122e-09, 4.4455382718708106e-10, 2.56784359934882e-11, 1.3691488853904124e-12]
