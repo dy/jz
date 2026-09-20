@@ -21,7 +21,7 @@ import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
-import { run, oracle } from './util.js'
+import { funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 
@@ -4870,9 +4870,11 @@ export let run = (n, nStages) => {
   }
   // Structural: the guarded fast arm carries ZERO checked-read sentinels.
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
-  // proc inlines into run (single caller) — find the hot function by mul count
-  const fn = wat.split('(func ').sort((a, b) =>
-    (b.match(/f64\.mul/g) || []).length - (a.match(/f64\.mul/g) || []).length)[0] || ''
+  // proc inlines into run (single caller), so the cascade lives in `run` itself.
+  // Named, not "whichever function has the most f64.mul": the math helpers this
+  // program also pulls in (Math.sin seeds the input) carry long polynomials, and
+  // one of them outranked the kernel the moment those series grew.
+  const fn = funcWat(wat, 'run')
   const guardAt = (() => { const i = fn.indexOf('i64.lt_s'); return i >= 0 ? i : fn.indexOf('i64.le_s') })()
   ok(guardAt > 0, 'versioned guard present')
   const thenAt = fn.indexOf('(then', guardAt)

@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C } from '../../module/math/trig-tables.js'
+import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C, EXPM1_C, LOG_C, polyTree } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -55,15 +55,11 @@ function nearest(x) {
   return r === 0 ? copysign(0, x) : r
 }
 
-/** Horner evaluation matching module/math.js's `horner()` builder: for
- *  cs = [c0, c1, ..., cN], returns c0 + v*(c1 + v*(c2 + ... + v*cN)). */
-function horner(cs, v) {
-  let acc = cs[cs.length - 1]
-  for (let i = cs.length - 2; i >= 0; i--) acc = cs[i] + v * acc
-  return acc
-}
+/** The shared evaluation tree (module/math/trig-tables.js `polyTree`) over plain
+ *  numbers — the same tree the scalar and 2-wide WAT builders emit, so a folded
+ *  `Math.cos(0.7)` and the compiled kernel's own answer agree bit for bit. */
+const horner = (cs, v) => polyTree(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, v)
 
-const EXPM1_COEF = [1, 1 / 2, 1 / 6, 1 / 24, 1 / 120, 1 / 720, 1 / 5040, 1 / 40320]
 
 function sinCore(x) {
   if (Number.isNaN(x)) return x
@@ -119,7 +115,7 @@ function exp2(y) {
 function exp(x) { return exp2(x * Math.LOG2E) }
 
 function expm1(x) {
-  if (Math.abs(x) < 0.5) return x * horner(EXPM1_COEF, x)
+  if (Math.abs(x) < 0.5) return x * horner(EXPM1_C, x)
   return exp(x) - 1
 }
 
@@ -135,7 +131,7 @@ function log(x) {
   if (m >= 1.4142135623730951) { m = m * 0.5; k += 1 }
   const s = (m - 1) / (m + 1)
   const z = s * s
-  return k * Math.LN2 + 2 * s * (1 + z * (0.33333333283005556 + z * (0.20000059590510924 + z * (0.14275490984342690 + z * 0.11663796426848184))))
+  return k * Math.LN2 + 2 * s * horner(LOG_C, z)
 }
 
 function log2_(x) { return log(x) / Math.LN2 }

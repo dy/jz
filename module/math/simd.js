@@ -14,7 +14,7 @@
  */
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
-import { PI, INV_PI, SIN_C, COS_C, EXP2_C } from './trig-tables.js'
+import { PI, INV_PI, SIN_C, COS_C, EXP2_C, LOG_C, polyTree } from './trig-tables.js'
 
 export const registerMathSimd = () => {
   const crPow = !!ctx.transform.optimize?.crPow
@@ -33,9 +33,13 @@ export const registerMathSimd = () => {
   //   • Sign flip for odd quadrants is `r XOR (mask & −0.0)` (mask = |q|>0.5); final
   //     min/max clamps the ~1e-8 poly overshoot to [−1,1], same as scalar.
   const splat = (c) => `(f64x2.splat (f64.const ${c}))`
-  const horner2 = (cs, v = '$r2') => cs.reduceRight((acc, c, i) =>
-    i === cs.length - 1 ? splat(c)
-      : `(f64x2.add ${splat(c)} (f64x2.mul (local.get ${v}) ${acc}))`, '')
+  // The shared evaluation tree in 2-wide WAT — bit-exact with the scalar builder
+  // and the JS folder because all three walk the same tree (trig-tables.js).
+  const horner2 = (cs, v = '$r2') => polyTree(cs, {
+    konst: splat,
+    mul: (a, b) => `(f64x2.mul ${a} ${b})`,
+    add: (a, b) => `(f64x2.add ${a} ${b})`,
+  }, `(local.get ${v})`)
   // Shared reduce → r ∈ [−π/2,π/2] in $r, quadrant parity in $q (branchless, 2 passes).
   const reduce2 = `
     (local.set $q (f64x2.nearest (f64x2.mul (local.get $x) ${splat(INV_PI)})))
@@ -136,15 +140,7 @@ export const registerMathSimd = () => {
         (local.set $z (f64x2.mul (local.get $s) (local.get $s)))
         (f64x2.add
           (f64x2.mul (local.get $k) (f64x2.splat (f64.const ${Math.LN2})))
-          (f64x2.mul (f64x2.mul (f64x2.splat (f64.const 2.0)) (local.get $s))
-            (f64x2.add (f64x2.splat (f64.const 1.0))
-              (f64x2.mul (local.get $z)
-                (f64x2.add (f64x2.splat (f64.const 0.33333333283005556))
-                  (f64x2.mul (local.get $z)
-                    (f64x2.add (f64x2.splat (f64.const 0.20000059590510924))
-                      (f64x2.mul (local.get $z)
-                        (f64x2.add (f64x2.splat (f64.const 0.14275490984342690))
-                          (f64x2.mul (local.get $z) (f64x2.splat (f64.const 0.11663796426848184)))))))))))))
+          (f64x2.mul (f64x2.mul (f64x2.splat (f64.const 2.0)) (local.get $s)) ${horner2(LOG_C, '$z')})))
       (else
         (f64x2.replace_lane 1
           (f64x2.splat (call $math.log (f64x2.extract_lane 0 (local.get $x))))

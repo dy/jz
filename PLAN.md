@@ -848,6 +848,41 @@ Those tests do not establish callback deadlines.
   whose shapes the summary loses; even erasing all of that leaves ~3×, so it
   wants inline caches and is a program, not a patch. watr: unchanged, the
   first-call tier-up finding above.
+- The transcendentals were trading seven to nine digits for speed, and an audit
+  against the host over 120k points per function said so: exp and exp2 6.1e-9,
+  sinh and tanh 2.8e-8, expm1 1.3e-8, log and its family 1.4e-11, sin and cos
+  1.2e-12 and 8.9e-12 absolute. jz's own budget is ~1e-9 (module/math.js), so
+  expm1 sat outside even that. Only sqrt, cbrt, pow and log10 were already
+  right. They now read, in ulp: exp2 2, tanh 5, expm1 6, sinh and cosh 8, exp
+  14, log 3, log2 and log1p 4, and sin and cos at 7.8e-16 and 8.4e-16 absolute,
+  tan 2.1e-14. Four mechanisms did it. A longer series with EXACT coefficients
+  where a short minimax was the whole error (exp2 6 terms -> 13, expm1 8 -> 14,
+  log 5 -> 10, sin 7 -> 10, cos 7 -> 11). Estrin evaluation, so the longer
+  series does not sit on a serial dependency chain. sinh and tanh rerouted
+  through expm1 — both computed `e^x - 1` by a subtraction that cancels the
+  answer away near zero, which is why tanh came out at 5 ulp while costing
+  nothing. And ONE shared evaluation tree (`polyTree`, trig-tables.js) for the
+  scalar WAT, the two-wide WAT and the JS constant folder, because those three
+  must agree bit for bit: a folded `Math.cos(0.7)` is checked against the
+  compiled kernel's own answer, and a vectorized loop against its scalar tail.
+  Sharing the tree makes that structural instead of three copies kept in step by
+  hand — which is exactly how the 2-wide `log_v` got missed at first, carrying
+  its own copy of the old coefficients until the SIMD bit-exactness tests caught
+  it.
+- What it cost: the functions whose series grew run 25% to 60% slower in
+  isolation, and three that beat V8 no longer do (expm1 0.75 -> 1.24, exp2 0.83
+  -> 1.26, log2 0.89 -> 1.16). In the corpus it barely shows — only colorlog
+  (0.54 -> 0.61 of V8) and deltae (0.85 -> 0.91) moved, both still winning, and
+  no case flipped. The remaining approximations are atan, asin and acos at
+  1.3e-10 to 6e-10 and atanh at 3.6e-12; the atan cluster is a DELIBERATE trade
+  (a degree-5 minimax replaced the correctly-rounded fdlibm form at ~3x the ops,
+  precisely to put those three under V8), so tightening it gives that back.
+  Buying the speed back without giving up the digits means table-assisted range
+  reduction — split the reduced argument once more, look up `2^(j/32)` in a
+  33-entry table, and eight coefficients suffice where fourteen do now. jz has
+  the machinery (stdlib bodies can be lazy thunks; `pushStaticSlots` returns a
+  data offset to bake into the WAT) but no math helper uses it yet, and the
+  table and its index order would have to be mirrored in all three evaluators.
 - jz builds against `~/projects/watr` through a symlink while the cast fold
   waits for a release. Two scripts assumed a dependency lives under
   `node_modules/`: the self-compile profile matched watr's printer by that

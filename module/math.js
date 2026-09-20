@@ -18,7 +18,7 @@ import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C } from './math/trig-tables.js'
+import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C, EXPM1_C, LOG_C, polyTree } from './math/trig-tables.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
 import { registerMathRandom } from './math/random.js'
@@ -51,9 +51,9 @@ export default (ctx) => {
     'math.asin': [],
     'math.acos': ['math.asin'],
     'math.atan2': ['math.atan'],
-    'math.sinh': ['math.exp'],
+    'math.sinh': ['math.exp', 'math.expm1'],
     'math.cosh': ['math.exp'],
-    'math.tanh': ['math.exp'],
+    'math.tanh': ['math.expm1'],
     'math.asinh': ['math.isFinite', 'math.log'],
     'math.acosh': ['math.log'],
     'math.atanh': ['math.log'],
@@ -551,9 +551,14 @@ export default (ctx) => {
   // multiply (faster — the floatbeat synth is sin-bound), and lower error (sin ≤ 1.9e-8,
   // cos ≤ 1.3e-7 vs Taylor's ~6e-8 / ~5e-7) — minimax spreads error evenly across the range
   // instead of piling unused precision near 0. Coeffs fit by scripts/minimax-trig.mjs.
-  const horner = (cs, v) => cs.reduceRight((acc, c, i) =>
-    i === cs.length - 1 ? `(f64.const ${c})`
-      : `(f64.add (f64.const ${c}) (f64.mul (local.get ${v}) ${acc}))`, '')
+  // The shared evaluation tree (module/math/trig-tables.js polyTree) in scalar
+  // WAT — the same tree the 2-wide builder and the JS constant folder use, so
+  // all three agree bit for bit.
+  const horner = (cs, v) => polyTree(cs, {
+    konst: (c) => `(f64.const ${c})`,
+    mul: (a, b) => `(f64.mul ${a} ${b})`,
+    add: (a, b) => `(f64.add ${a} ${b})`,
+  }, `(local.get ${v})`)
 
   // Round-to-nearest reduction r = x − q·π ∈ [−π/2, π/2], in pure f64 — no int conversion,
   // so it never traps and never saturates. A SECOND pass folds the q·π rounding error back
@@ -655,17 +660,12 @@ export default (ctx) => {
               (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
               (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
 
-  // Maclaurin coefficients 1/1!…1/8! for e^x−1 = x·(1 + x/2! + x²/3! + …), Horner-nested
-  // (built with an explicit right-to-left fold so the parens stay balanced — and so the
-  // builder uses only constructs the self-compile kernel can compile: Array.reduceRight is
-  // not in jz's runtime, so under the kernel it returns undefined and that token lands
-  // verbatim in the emitted WAT).
-  const expm1Coef = [1, 1 / 2, 1 / 6, 1 / 24, 1 / 120, 1 / 720, 1 / 5040, 1 / 40320]
-  let expm1Series = ''
-  for (let i = expm1Coef.length - 1; i >= 0; i--)
-    expm1Series = expm1Series
-      ? `(f64.add (f64.const ${expm1Coef[i]}) (f64.mul (local.get $x) ${expm1Series}))`
-      : `(f64.const ${expm1Coef[i]})`
+  // The shared series and the shared evaluation tree — the JS constant folder
+  // walks the same ones, so a folded `Math.expm1(0.3)` and the compiled kernel
+  // agree bit for bit. `$x` carries the leading factor, so the tree evaluates
+  // (e^x − 1)/x and the caller multiplies once.
+  const expm1Series = horner(EXPM1_C, '$x')
+
   wat('math.expm1', `(func $math.expm1 (param $x f64) (result f64)
     ;; expm1(x) = e^x − 1. For |x| < 0.5 sum the series directly: there e^x is within ~1.6
     ;; of 1, so exp(x)−1 cancels the leading digits (the prior naive form lost up to ~11%
@@ -722,15 +722,7 @@ export default (ctx) => {
     (local.set $z (f64.mul (local.get $s) (local.get $s)))
     (f64.add
       (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const ${Math.LN2}))
-      (f64.mul (f64.mul (f64.const 2.0) (local.get $s))
-        (f64.add (f64.const 1.0)
-          (f64.mul (local.get $z)
-            (f64.add (f64.const 0.33333333283005556)
-              (f64.mul (local.get $z)
-                (f64.add (f64.const 0.20000059590510924)
-                  (f64.mul (local.get $z)
-                    (f64.add (f64.const 0.14275490984342690)
-                      (f64.mul (local.get $z) (f64.const 0.11663796426848184)))))))))))))`)
+      (f64.mul (f64.mul (f64.const 2.0) (local.get $s)) ${horner(LOG_C, '$z')})))`)
 
   wat('math.log2', `(func $math.log2 (param $x f64) (result f64)
     (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`)
@@ -1281,12 +1273,24 @@ export default (ctx) => {
           (then (f64.add (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))
           (else (f64.sub (call $math.atan (f64.div (local.get $y) (local.get $x))) (f64.const ${PI})))))))))`)
 
+  // sinh through expm1 for small |x|: with t = e^|x| − 1, sinh|x| = t(t+2) / 2(t+1)
+  // exactly, and that form never subtracts two nearly equal numbers. The plain
+  // (e^x − e^−x)/2 does, and near zero it cancelled the answer away — 3.3e-13
+  // relative at |x| ≈ 8e-4, against 3e-16 here. Past |x| = 1 the two exponentials
+  // are far apart, nothing cancels, and the direct form avoids expm1's own range.
   wat('math.sinh', `(func $math.sinh (param $x f64) (result f64)
-    (local $ex f64)
+    (local $ex f64) (local $t f64)
     ;; Preserve sign of zero: sinh(±0) = ±0 (the f64.lt sign test below is false for -0).
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
-    (local.set $ex (call $math.exp (f64.abs (local.get $x))))
-    (local.set $ex (f64.mul (f64.const 0.5) (f64.sub (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))
+    (if (f64.lt (f64.abs (local.get $x)) (f64.const 1.0))
+      (then
+        (local.set $t (call $math.expm1 (f64.abs (local.get $x))))
+        (local.set $ex (f64.div
+          (f64.mul (local.get $t) (f64.add (local.get $t) (f64.const 2.0)))
+          (f64.mul (f64.const 2.0) (f64.add (local.get $t) (f64.const 1.0))))))
+      (else
+        (local.set $ex (call $math.exp (f64.abs (local.get $x))))
+        (local.set $ex (f64.mul (f64.const 0.5) (f64.sub (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))))
     (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $ex))) (else (local.get $ex))))`)
 
   wat('math.cosh', `(func $math.cosh (param $x f64) (result f64)
@@ -1299,8 +1303,12 @@ export default (ctx) => {
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (if (result f64) (f64.gt (f64.abs (local.get $x)) (f64.const 22.0))
       (then (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.const -1.0)) (else (f64.const 1.0))))
-      (else (local.set $e2x (call $math.exp (f64.mul (f64.const 2.0) (f64.abs (local.get $x)))))
-        (local.set $e2x (f64.div (f64.sub (local.get $e2x) (f64.const 1.0)) (f64.add (local.get $e2x) (f64.const 1.0))))
+      ;; t = e^2|x| − 1 through expm1, then tanh|x| = t / (t + 2). The subtraction
+      ;; the direct form does (e^2x − 1) cancels near zero and cost 4.1e-13
+      ;; relative there; this form has nothing to cancel. |x| > 22 already
+      ;; returned ±1 above, so t stays finite here.
+      (else (local.set $e2x (call $math.expm1 (f64.mul (f64.const 2.0) (f64.abs (local.get $x)))))
+        (local.set $e2x (f64.div (local.get $e2x) (f64.add (local.get $e2x) (f64.const 2.0))))
         (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $e2x))) (else (local.get $e2x))))))`)
 
   wat('math.asinh', `(func $math.asinh (param $x f64) (result f64)
