@@ -4,7 +4,7 @@
 
 **JZ** (_javascript zero_) compiles JavaScript to fast, minimal WASM.
 
-**[site](https://jz.js.org/)**  /  **[guide](https://jz.js.org/guide/)**  /  **[try it](https://jz.js.org/repl/)**  /  **[examples](https://jz.js.org/examples/)**  /  **[benchmarks](https://jz.js.org/bench/)** 
+**[site](https://jz.js.org/)**  /  **[guide](https://jz.js.org/guide/)**  /  **[try it](https://jz.js.org/repl/)**  /  **[examples](https://jz.js.org/examples/)**  /  **[benchmarks](https://jz.js.org/bench/)**
 
 | Good for | Not for |
 |---|---|
@@ -99,20 +99,19 @@ See [all examples](https://jz.js.org/examples/).
 <details>
 <summary><strong>What is not supported?</strong></summary>
 
-Modern JavaScript compiles: classes, generators, async/await, destructuring,
-BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
-What JZ refuses, at compile time:
-
 - **Runtime code:** `eval`, `Function`, `with`.
 - **Reflection:** `Proxy`, `Reflect`, property descriptors, prototype chains and `__proto__`.
 - **Module dynamics:** top-level `await`, `import()`.
 - **Platform:** DOM, Node modules, `Intl`, `Temporal`.
 
-And where behaviour differs from JS:
+Modern JavaScript is supported: classes, generators, async/await, destructuring,
+BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
+
+Where behaviour differs from JS:
 
 - **No GC.** Heap values live until `memory.reset()`. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
 - **BigInt is 64-bit.** It wraps past its range and has no `**`.
-- **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}` and the `d` and `v` flags are unsupported.
+- **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}`, `d` and `v` flags are unsupported.
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.
 
