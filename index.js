@@ -529,7 +529,7 @@ const setupCtx = (code, opts) => {
 // the compilation is over (flushWarnings), so a callback may compile again.
 let compiling = false
 const jzCompileInner = (code, opts = {}) => {
-  if (compiling) throw new Error('jz: compile() called while another compilation is running; warning callbacks are delivered after compilation, so compile from there')
+  if (compiling) throw new Error('jz: compile() called while a compilation is active; warnings are delivered after it returns, and a warning callback may compile then')
   compiling = true
   try { return compilePipeline(code, opts) }
   finally { compiling = false; flushWarnings() }

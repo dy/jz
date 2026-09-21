@@ -92,5 +92,5 @@ test('options: warning callbacks run after compilation; a nested compile during 
   is(again.length, wasm.length, 'the nested compile left the outer output intact')
   let error
   try { compile('export let f = () => [1, 2].map(x => x + 1)', { optimize: 'speed', whyNotRewind: () => { compile('export let g = () => 1') } }) } catch (e) { error = e }
-  ok(error && /another compilation is running/.test(error.message), `nested compile rejected: ${error?.message}`)
+  ok(error && /while a compilation is active/.test(error.message), `nested compile rejected: ${error?.message}`)
 })
