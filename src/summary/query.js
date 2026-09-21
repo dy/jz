@@ -391,9 +391,20 @@ export function summaryQueries(facts, internal = false) {
       // initializer, an alias), or a nullable receiver. A static enumeration
       // from a per-name census stands down there — presence is a runtime fact.
       // The names a layout's objects gain after their literal, every one a
-      // literal key of some store; null when a store under a computed or a
-      // number key reaches the layout (its keys are then runtime facts).
-      sideKeysOfSid: sid => indexedSchemas?.has(sid) || (sideWild.get(sid) ?? K.NONE) !== K.NONE ? null : [...(sideProps.get(sid)?.keys() ?? [])],
+      // literal key of some store, over the receiver's construction sites (a
+      // layout's facts are per site: two literals of one layout keep their own);
+      // null when a store under a computed or a number key reaches a site (its
+      // keys are then runtime facts).
+      sideKeysOfExpr: e => {
+        const k = kindOfExpr(e)
+        if (tagOf(core(k)) !== K.OBJECT || paramOf(k) === UNKNOWN) return null
+        const keys = new Set()
+        for (const site of shapesOf(paramOf(k))) {
+          if (indexedSchemas?.has(site) || (sideWild.get(site) ?? K.NONE) !== K.NONE) return null
+          for (const key of sideProps.get(site)?.keys() ?? []) keys.add(key)
+        }
+        return [...keys]
+      },
       openSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(core(k)) === K.OBJECT && sid !== UNKNOWN && (isNullable(k) || shapesOf(paramOf(k)).some(site => openSchemas.has(site))) ? sid : null },
       typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
       // The element cell's own kind: presence included, no absent member for a read past the end.

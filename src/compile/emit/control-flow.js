@@ -203,14 +203,14 @@ const closedKeysOf = (src) => {
 // added at run time follow through `__keys_dyn`, in insertion order. That is
 // JS order only when every key, declared or added, is a string: an array
 // index enumerates ahead of every string, so a layout holding one, or one a
-// computed or number-keyed store reaches (the summary's `sideKeysOfSid` names
-// the added keys only when every store is a literal string key), keeps the
-// pooled loop, which orders at run time.
+// computed or number-keyed store reaches (the summary's `sideKeysOfExpr` names
+// the added keys of the receiver's construction sites only when every store is
+// a literal string key), keeps the pooled loop, which orders at run time.
 const openKeysOf = (src) => {
   const view = ctx.summary?.at(ctx.func.current)
   const sid = view?.openSidOfExpr(src)
   if (sid == null || view.mayBeNullishExpr(src) !== false) return null
-  const keys = ctx.schema.list[sid] ?? null, added = view.sideKeysOfSid(sid)
+  const keys = ctx.schema.list[sid] ?? null, added = view.sideKeysOfExpr(src)
   return keys && added && !keys.some(isArrayIndexKey) && !added.some(isArrayIndexKey) ? keys : null
 }
 // The per-name censuses' proof of a complete schema: a bare OBJECT var with no

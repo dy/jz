@@ -2827,3 +2827,18 @@ export let init = () => first + '|' + second`
   want.add('c'); got.add('c')
   is(got.keys(), want.keys())
 })
+
+test('for-in: two literals of one layout keep their own added keys', () => {
+  // the added-key facts are per construction site: an index key added to the
+  // second literal alone keeps that one on the runtime order, the first unrolled
+  const src = `let a = { x: 1, y: 2 }, b = { x: 3, y: 4 }
+export let add = () => { b['0'] = 5 }
+export let ka = () => { let s = ''; for (const k in a) s += k; return s }
+export let kb = () => { let s = ''; for (const k in b) s += k; return s }`
+  const want = oracle(src), got = jz(src).exports
+  for (const fn of ['ka', 'kb']) is(got[fn](), want[fn](), fn)
+  want.add(); got.add()
+  for (const fn of ['ka', 'kb']) is(got[fn](), want[fn](), `${fn} after add`)
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
+  ok(!/__schema_tbl/.test(funcWat(wat, 'ka')) && /__schema_tbl/.test(funcWat(wat, 'kb')), 'the untouched literal unrolls, the indexed one keeps the ordered loop')
+})
