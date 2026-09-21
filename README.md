@@ -215,12 +215,9 @@ jz('import { add } from "./math.js"; export const f = (a, b) => add(a, b)',
 <details>
 <summary><strong>Is it fast? How small?</strong></summary>
 
-JZ leads V8 and AssemblyScript by geometric mean on the covered corpus and
-targets near-native speed. The release gate is stricter than an average: JZ
-must be the fastest WASM on every case. Per-case numbers, missing target
-coverage, and every measured loss stay visible on the
-[bench page](https://jz.js.org/bench/); a rival win is a bug to close,
-not an exception to hide.
+Faster than V8 and AssemblyScript on almost every kernel we measure, about 2×
+on average. Every number, and every loss, is on the
+[bench page](https://jz.js.org/bench/).
 
 Nothing ships that the program does not reach: a heap-free numeric module has
 no memory, allocator or startup, and an empty program is an empty module.
