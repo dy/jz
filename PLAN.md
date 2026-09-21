@@ -871,8 +871,15 @@ Those tests do not establish callback deadlines.
   fastest-wasm rows sdf, sort, noise, shapes, glyfparse (the known gaps)
   and, at 1.05 to 1.08, bezfit, trace, crc32, base64, radixsort – and
   tokenizer at 1.83× of AS, which is the busy machine: its build is byte
-  for byte the pre-session one and runs 48 µs against 49 in isolation. A
-  quiet rerun is the next measurement.
+  for byte the pre-session one and runs 48 µs against 49 in isolation. The
+  quiet rerun (`gate7.log`, 12 red): watr 1.16×, jessie 0.96× (a win),
+  tokenizer 0.38× of V8 and 0.78× of AS as before, the size geomean
+  0.785×. Left: percolation, alpha, tinygo, the known fastest-wasm gaps
+  (glyfparse 1.27, sdf 1.36, sort 1.40, noise 1.17, shapes 1.12,
+  wordcount 1.22) and slices and crc32 at 1.06. Sierpinski read 1.47×
+  there because this session's test runs overlapped that section; alone
+  it reads 0.82× in the corpus order (jz 458 µs, V8 560) and 1.06 to
+  1.11× run by itself, where V8's own number falls to 430 µs.
 - percolation (0.67 to 0.71× at every tree, under its 0.75 floor): `find`
   and `union` take f64 parameters because `idx = y * w + x` is f64 (`W` and
   `H` are host numbers), so the path-halving chase converts on every hop
