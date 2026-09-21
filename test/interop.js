@@ -510,7 +510,22 @@ export let a = () => new A(1), b = () => new B('s'), ra = (o) => o.x, rb = (o) =
   is(one.exports.ra(one.exports.a()), 1); is(one.exports.rb(one.exports.b()), 's')
   is(one.memory.schemas.filter(s => s.join() === 'x').length, 3, 'two branded shapes and the plain one')
   is(one.exports.ra(one.exports.plain()), 2)
-  const two = jz(`class C { constructor(x) { this.x = x } }\nexport let c = () => new C(true), rc = (o) => o.x`, { memory: one.memory })
-  is(two.exports.rc(two.exports.c()), true, 'a third class of the same field list in the same memory')
-  is(two.memory.schemas.filter(s => s.join() === 'x').length, 4)
+  // another module's class C would bind at a fourth id while its pointers carry id 0: rejected
+  throws(() => jz(`class C { constructor(x) { this.x = x } }\nexport let c = () => new C(true), rc = (o) => o.x`, { memory: one.memory }), /schema 0 \{x\} of this module binds as schema 3/)
+})
+
+test('interop: modules sharing a memory bind their schemas at the same ids or are rejected', () => {
+  if (onKernel()) return
+  const src = `export let mk = () => ({ p: 1, q: 'a' }), rp = (o) => o.p, rq = (o) => o.q`
+  const one = jz(src)
+  // a module of other names, slot orders and representations: its schema 0 would bind as schema 1
+  throws(() => jz(`export let mk = () => ({ s: true, r: 2 }), rs = (o) => o.s`, { memory: one.memory }), /schema 0 \{[rs], [rs]\} of this module binds as schema 1/)
+  // the same module again binds at the same ids: the instances' exports alternate
+  const two = jz(src, { memory: one.memory })
+  is(two.exports.rp(one.exports.mk()), 1); is(one.exports.rq(two.exports.mk()), 'a')
+  is(JSON.stringify(two.memory.read(one.exports.mk())), '{"p":1,"q":"a"}')
+  is(JSON.stringify(one.memory.read(two.exports.mk())), '{"p":1,"q":"a"}')
+  // a module without schemas shares any memory
+  const plain = jz('export let inc = (x) => x + 1', { memory: one.memory })
+  is(plain.exports.inc(one.exports.rp(one.exports.mk())), 2)
 })

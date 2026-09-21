@@ -323,15 +323,13 @@ export const memory = (src) => {
   }
 
   // The user-class brand per schema (positional, like jz:errcls): the dedup
-  // key below salts with it and with this module's own ordinal, so two
-  // classes of one field list keep their own sids and contracts, within a
-  // module and across the modules sharing this memory (a class is its
-  // module's; only plain shapes merge). `mem.brandOfSid` remembers the
-  // class by merged sid for the plain-object shape match in wrapVal.
+  // key below salts with it, so two classes of one field list keep their own
+  // sids and contracts. `mem.brandOfSid` remembers the class by sid for the
+  // plain-object shape match in wrapVal. A pointer carries the id its module
+  // compiled with, so a module whose schema would bind at another id in this
+  // memory is rejected below: modules sharing a memory agree on their ids
+  // (one compilation, or the same module again) or take memories of their own.
   const brandOfSid = mem.brandOfSid || new Map()
-  const moduleSeqs = mem._moduleSeqs || new WeakMap()
-  let moduleSeq = mod ? moduleSeqs.get(mod) : 0
-  if (mod && moduleSeq == null) moduleSeqs.set(mod, moduleSeq = (mem._moduleSeq ?? 0) + 1)
   const moduleBrands = new Map()
   const brandBytes = mod && customSection(mod, 'jz:brand')
   if (brandBytes) {
@@ -396,9 +394,17 @@ export const memory = (src) => {
     }
     const nS = r.varint(), newSchemas = []
     for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
+    const keys = newSchemas.map((s, j) => { const salt = errorSidToClass.get(j) ?? moduleBrands.get(j); return s.length + '\x01' + s.join('\x01') + (salt ? '\x02' + salt : '') })
+    // every schema binds at the id its module compiled with, or the module is
+    // rejected before the memory's tables change
+    const fresh = new Map()
+    keys.forEach((key, j) => {
+      let sid = schemaKeyToId.get(key) ?? fresh.get(key)
+      if (sid === undefined) fresh.set(key, sid = schemas.length + fresh.size)
+      if (sid !== j) throw new TypeError(`jz: schema ${j} {${newSchemas[j].join(', ')}} of this module binds as schema ${sid} in the memory it shares; modules sharing a memory must bind their schemas at the same ids (compile them together, or give each its own memory)`)
+    })
     newSchemas.forEach((s, j) => {
-      const salt = errorSidToClass.get(j) ?? (moduleBrands.has(j) ? moduleBrands.get(j) + '\x03' + moduleSeq : undefined)
-      const key = s.length + '\x01' + s.join('\x01') + (salt ? '\x02' + salt : '')
+      const key = keys[j]
       if (!schemaKeyToId.has(key)) { schemaKeyToId.set(key, schemas.length); schemas.push(s) }
       const sid = schemaKeyToId.get(key), row = incomingFields[j]
       if (moduleBrands.has(j)) brandOfSid.set(sid, moduleBrands.get(j))
@@ -418,7 +424,6 @@ export const memory = (src) => {
     mem._schemaKeyToId = schemaKeyToId
     mem.errorSidToClass = errorSidToClass
     mem.brandOfSid = brandOfSid
-    mem._moduleSeqs = moduleSeqs; mem._moduleSeq = Math.max(mem._moduleSeq ?? 0, moduleSeq)
     if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
     mem.reset = reset
     if (extMap) mem._extMap = extMap
@@ -430,7 +435,6 @@ export const memory = (src) => {
   mem._schemaKeyToId = schemaKeyToId
   mem.errorSidToClass = errorSidToClass
   mem.brandOfSid = brandOfSid
-  mem._moduleSeqs = moduleSeqs; mem._moduleSeq = Math.max(mem._moduleSeq ?? 0, moduleSeq)
   mem._extMap = extMap
 
   mem.Array = (data) => {
@@ -1322,7 +1326,9 @@ const hostRet = (state, ret, bigintEvidence = false) => {
 const WEB_GLOBALS = new Set(['fetch'])
 
 const prepareInterop = (opts) => {
-  const state = { extMap: [null], mem: null }
+  // the host references of a memory are one table for every module sharing
+  // it: an index one module hands out resolves through another's import
+  const state = { extMap: opts.memory instanceof WebAssembly.Memory && opts.memory._extMap ? opts.memory._extMap : [null], mem: null }
   opts._interp = opts._interp || {}
   // __ext_* receive NaN-boxed pointers across the env boundary as i64 (BigInt
   // in JS) — see module/collection.js header for rationale. f64 returns are

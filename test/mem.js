@@ -520,20 +520,19 @@ test('shared memory: inst.memory is the same object passed in', () => {
   ok(a.memory === memory, 'same object')
 })
 
-test('shared memory: schemas accumulate across compilations', () => {
+test('shared memory: a module binds its schemas at the ids it compiled with, or is rejected', () => {
   if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = jz.memory()
   const a = jz('export let make = () => { let o = {x: 1, y: 2}; return o }', { memory })
-  is(memory.schemas.length, 1, 'one schema after first compile')
-
-  const b = jz('export let make2 = () => { let p = {name: 0, age: 0}; return p }', { memory })
-  is(memory.schemas.length, 2, 'two schemas after second compile')
-
-  // a's objects readable from shared memory
-  const ptr = a.exports.make()
-  const obj = memory.read(ptr)
-  is(obj.x, 1)
-  is(obj.y, 2)
+  is(memory.schemas.length, 1, 'one schema after the first compile')
+  // another program's shape would bind as schema 1 while its pointers carry id 0:
+  // rejected before the memory's tables change
+  throws(() => jz('export let make2 = () => { let p = {name: 0, age: 0}; return p }', { memory }), /schema 0 \{name, age\} of this module binds as schema 1/)
+  is(memory.schemas.length, 1, 'the rejected module left no schema behind')
+  // the same program again shares the memory: its schema is the memory's schema 0
+  const b = jz('export let make = () => { let o = {x: 1, y: 2}; return o }', { memory })
+  is(memory.schemas.length, 1, 'one schema after the same program again')
+  for (const m of [a, b]) { const obj = memory.read(m.exports.make()); is(obj.x, 1); is(obj.y, 2) }
 })
 
 test('shared memory: cross-instance object passing', () => {
