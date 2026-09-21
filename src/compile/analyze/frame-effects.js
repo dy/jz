@@ -157,6 +157,7 @@ function scalarKind(view, e) {
 
 /** The receiver is a typed array or ArrayBuffer view: element stores are
  *  numbers into fixed storage. */
+const NO_NAMES = new Set()
 function typedReceiver(view, recv) {
   if (!view) return false
   let k
@@ -187,7 +188,11 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
  * run synchronously and for local arrows called from this scope.
  */
-function census(view, roots, declRoots, params) {
+function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
+  // A parameter the export boundary types (narrow/param-abi.js `boundaryTyped`)
+  // is a typed array the summary, built before the narrowing, still holds as
+  // any value: element stores into it are numbers into fixed storage.
+  const typedRecv = (recv) => typedReceiver(view, recv) || (isName(recv) && typedParams.has(recv))
   const out = { writesOuter: false, arenaUnsafe: false, allocates: false, callsUnknown: false, why: null, callees: new Set() }
 
   // 1. Fresh locals: declared here, every write a fresh initializer, no write
@@ -255,7 +260,7 @@ function census(view, roots, declRoots, params) {
     if (freshLocal(recv)) return
     if (grows) return unsafe('grows ' + (isName(recv) ? recv : '<expr>'))
     outer()
-    if (typedReceiver(view, recv)) return
+    if (typedRecv(recv)) return
     if (mayCarryFreshHeap(view, val)) unsafe('heap value into ' + (isName(recv) ? recv : '<expr>'))
   }
   const scanArrow = (arrow) => { if (!scanned.has(arrow)) { scanned.add(arrow); walkExpr(arrow[arrow.length - 1]) } }
@@ -289,7 +294,7 @@ function census(view, roots, declRoots, params) {
       if (GROW_METHODS.has(method)) {
         // `set` on a typed array copies numbers in place; on a Map it stores a
         // value and may relocate the table.
-        if (method === 'set' && typedReceiver(view, recv)) return store(recv, null, false)
+        if (method === 'set' && typedRecv(recv)) return store(recv, null, false)
         if (method === 'delete' || method === 'clear' || method === 'pop' || method === 'shift') { if (!freshLocal(recv)) outer(); return }
         allocates()
         return store(recv, null, true)
@@ -331,7 +336,7 @@ function census(view, roots, declRoots, params) {
         const recv = target[1]
         const lit = isArr(target[2]) && target[2][0] == null && typeof target[2][1] === 'string'
         if (lit && accessor(target[2][1])) unsafe('accessor ' + target[2][1])
-        else store(recv, val, !typedReceiver(view, recv) && !(lit && view?.objectSidOfExpr?.(recv) != null))
+        else store(recv, val, !typedRecv(recv) && !(lit && view?.objectSidOfExpr?.(recv) != null))
       } else if (isArr(target) && target[0] === '{}') {
         unsafe('destructuring assignment')   // targets may be member paths
       } else unsafe('assignment target')
@@ -383,11 +388,11 @@ function frameEffectsOf(func) {
   const body = func.body
   const view = ctx.summary?.at(func)
   if (body == null) return { writesOuter: true, arenaUnsafe: true, allocates: true, callsUnknown: true, why: 'no body', callees: new Set(), loops: [] }
-  const params = new Set()
-  for (const p of func.sig?.params ?? []) if (p?.name) params.add(p.name)
+  const params = new Set(), typedParams = new Set()
+  for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
-  const out = census(view, [body], [body], params)
-  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], params) }))
+  const out = census(view, [body], [body], params, typedParams)
+  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], params, typedParams) }))
   return out
 }
 

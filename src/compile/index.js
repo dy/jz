@@ -185,7 +185,7 @@ export function assemble(ast, profiler) {
   // arena rewind records below read the second, recomputed once variants exist.
   const censusFrames = () => {
     const loops = ctx.plans.rewindLoops = new WeakSet()
-    ctx.plans.rewindLoopNodes = null
+    ctx.plans.rewindLoopLabels = null
     for (const [name, frame] of transitiveFrameEffects(ctx.funcs.list)) {
       const f = ctx.funcs.map.get(name)
       if (!f) continue

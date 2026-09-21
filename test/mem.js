@@ -1190,3 +1190,35 @@ test('host memory: boolean tags survive structured construction and writes', () 
   mem.write(p, [false, true, 0, 1])
   is(mem.read(p), [false, true, 0, 1])
 })
+
+// A render loop allocates a block per iteration and lets nothing escape: the
+// per-iteration arena rewind (compile/analyze/frame-effects.js, optimize/loop-
+// rewind.js) restores the heap pointer at the top of every iteration, so the
+// memory holds flat over any number of blocks. Two things once defeated it: a
+// store into a typed-array parameter the export boundary types read as a store
+// that could grow it (fixed storage cannot grow), and the loop was found by a
+// node the peephole walk had copied away (its label survives).
+test('arena: a per-iteration rewind holds a render loop flat', () => {
+  const src = `export function render(out, blocks) {
+    let acc = 0
+    for (let b = 0; b < blocks; b++) {
+      const blk = new Float64Array(128)
+      for (let i = 0; i < 128; i++) blk[i] = Math.sin(i * 0.01 + b)
+      for (let i = 0; i < 128; i++) out[i] = blk[i]
+      acc += out[7]
+    }
+    return acc
+  }`
+  const warnings = { entries: [] }
+  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings })
+  is(warnings.entries.filter(e => e.code === 'rewind-why-not').map(e => e.message), [], 'the loop and the function rewind')
+  ok(/lrw\d+/.test(typeof wat === 'string' ? wat : wat.wat), 'the per-iteration marker is emitted')
+  const inst = jz(src, { optimize: 'speed' })
+  const out = new Float64Array(128)
+  const before = inst.memory.buffer.byteLength
+  const acc = inst.exports.render(out, 20000)
+  is(inst.memory.buffer.byteLength, before, 'twenty thousand blocks grow nothing')
+  let expect = 0
+  for (let b = 0; b < 20000; b++) expect += Math.sin(7 * 0.01 + b)
+  almost(acc, expect, 1e-6)
+})

@@ -102,7 +102,7 @@ export function optimizeModule(sec, profiler) {
   })
   // Per-iteration arena rewinds go in once the vectorizer has matched its loop
   // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.
-  if (ctx.plans.rewindLoopNodes) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopNodes); ctx.plans.rewindLoopNodes = null })
+  if (ctx.plans.rewindLoopLabels) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopLabels); ctx.plans.rewindLoopLabels = null })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
     // The guarded form necessarily writes a declared v128 local. Keep scalar

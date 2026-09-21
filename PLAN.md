@@ -24,7 +24,11 @@ Architecture
   silent, the optimization declines.
 - Frame effects gate the arena rewind: every escape vetoes it, a loop whose
   iteration lets nothing escape restores the heap pointer per iteration, and
-  `whyNotRewind` names each declined candidate.
+  `whyNotRewind` names each declined candidate. A store into a parameter the
+  export boundary types is a number into fixed storage, not a growth; the
+  loop to rewind is found by its label, which the peephole walk keeps where
+  it copies the loop's node. A render loop with a block per iteration holds
+  the memory flat (`test/mem.js`).
 - Only a DEFINITE store declares a key in a literal's layout. Static
   enumeration stands down whenever the layout is open; the open-layout for-in
   unrolls the closed keys only when neither the layout nor the keys added at
@@ -170,7 +174,23 @@ Dependencies
    i32 under integer-tolerant consumers, with the generic loop left for an
    out-of-range hop.
 
-3. **Reproducible speed, size and memory evidence.** `bench/results.json` is
+3. **Memory.** webaudio, jessie and watr peak at 151, 170 and 157 MB of
+   resident memory against V8's 71, 98 and 77 (paired, node against node,
+   this tree). The per-iteration rewind was
+   defeated twice (the boundary-typed store, the copied loop node) and holds
+   a render loop flat now, but the audio graph keeps each node's last block
+   in `_cachedBlock` until the next tick replaces it: those blocks escape by
+   design, wasm memory never shrinks, and an offline render is one call, so
+   the high-water mark is a render's worth of replaced blocks. The mechanism
+   that fits the model is reclaim on replacement, not a collector: a store
+   that replaces the value of a field which the summary proves the sole
+   holder of its allocation site's values (every store of that site is into
+   this field, nothing else retains it) frees the replaced block to a
+   size-class list the allocator reuses. It is static, per site, and a
+   bounded addition to the escape census; measure the three cases with it
+   before quoting memory.
+
+4. **Reproducible speed, size and memory evidence.** `bench/results.json` is
    stale: timed above the 4096 MB swap-validity cap, 43 comparable
    Porffor/TinyGo rows against 44 required, and alpha's w2c row no longer
    describes the tree. Regenerate through the benchmark runner on quiet
@@ -179,13 +199,13 @@ Dependencies
    Local paired timings and standalone size sweeps are diagnostics, not
    release evidence.
 
-4. **Public VST scope and identity.** The builder is JZ/macOS/mono-or-stereo.
+5. **Public VST scope and identity.** The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Choose
    the permanent vendor root before publishing derived class IDs.
    Restart-flagged edits take effect on next setup; active restart needs the
    component-handler interface. Events and wider layouts remain refused.
 
-5. **Proof and independent review.** Reachable dynamic calls can still make
+6. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation and work proofs unknown. Empirical block checks
    establish neither allocation freedom for all inputs nor callback
    deadlines; reuse entry-range facts for useful bounds, since a full-i32
@@ -195,20 +215,22 @@ Dependencies
 
 ## Gate evidence — September 21
 
-- Core suite 4528/4528 (`test/index.js`), self-compile 68/68, import lint
-  and public types clean; `bench:size` geomean 0.785× of AssemblyScript with
-  0.1% `wasm-opt` slack; the size pins carry the `jz:brand` bytes.
-- Speed geomeans, paired in a fresh process: 0.472× of V8, 0.706× of C
-  (Clang), 0.485× of AssemblyScript; the examples corpus 1.42× of V8 with
-  19 of 21 winners. watr 1.14× (`trail`, the tier-up above), jessie 0.94×
-  (`tie`). Every corpus case beats V8 except webaudio (7.6× paired, module
-  476 → 287 KB; the perf gate does not time it), colorpq and watr.
-- Twelve red rows, every one a standing this round did not touch or a noise
-  band: the fastest-wasm rows glyfparse 1.25×, sdf 1.25×, noise 1.14× and
-  shapes 1.14× (item 2 above), sort, crc32, delayline and levenshtein at
-  1.05× and bezfit at 1.055× (the band's edge; sort is 1.04× of Zig paired),
-  percolation 0.71× under the examples' 0.9× floor (item 2), alpha's stale
-  w2c row and the TinyGo builds (item 3).
+- Core suite 4531/4532 with one skip (`test/index.js`), self-compile 68/68,
+  import lint and public types clean; `bench:size` geomean 0.785× of
+  AssemblyScript with 0.1% `wasm-opt` slack; the size pins carry the
+  `jz:brand` bytes.
+- Speed geomeans, paired in a fresh process: 0.476× of V8, 0.705× of C
+  (Clang), 0.487× of AssemblyScript; the examples corpus 1.44× of V8 with
+  19 of 21 winners. watr 1.14× (`trail`, the tier-up above), jessie 0.99×
+  (`tie`). Every corpus case beats V8 except webaudio (2.2× paired at 10.4
+  ms, 9.1 ms in-process after reachability; the perf gate does not time
+  it), colorpq and watr.
+- Ten red rows, every one a standing this round did not touch or a noise
+  band: the fastest-wasm rows glyfparse 1.26×, sdf 1.36× and crc32 1.06×
+  (item 2 above; the noise and shapes rows are green this run), the
+  1.05× band's edge (sort, delayline, levenshtein, bezfit), percolation
+  0.69× under the examples' 0.9× floor (item 2; ulam's 0.79× was V8 noise,
+  1.01× on the rerun), alpha's stale w2c row and the TinyGo builds (item 4).
 - watr 5.11.1, published, replaces the checkout link: sort reads 1.09× of Zig
   and base64 0.81× of AssemblyScript paired with the installed package.
 - Correctness closed on this tree: open-object enumeration order with

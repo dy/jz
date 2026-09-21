@@ -636,6 +636,12 @@ is the slot access `o.k` compiles to. The array-pattern protocol
 summary: `__it_open` binds a cursor, each step takes the next element; the
 protocol's functions still run over the source's kind without its identity.
 
+The frame census (compile/analyze/frame-effects.js) takes a store into a
+parameter the export boundary types (`boundaryTyped`, set after the summary)
+as a number into fixed storage; the per-iteration rewind it grants is
+recorded by the loop's label and inserted after the peephole walk, which
+copies the spine of every loop it changes inside (optimize/loop-rewind.js).
+
 `E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
 indexed value's own iterator, a collection's snapshot view, a provider's
 `@@iterator` result, a machine itself; a jz builtin carries no `@@iterator`
