@@ -197,3 +197,61 @@ test('frame effects: a cached typed-array load survives a call to a read-only ca
   const m = jz(mk('h'))
   is(m.exports.f(0, 2), 0 + 0 + 1, 'the reloaded value is the written one')
 })
+
+// The census names what a member reaches instead of declaring it unknown: an
+// accessor-named read on a kind that is no object is the array's own, a
+// method on a receiver that may be nullish reaches the class's function (the
+// read throws for null before any call), a constructor called plainly is
+// fresh storage, a choice between fresh values is fresh. Each function here
+// rewinds; before, every one was declined.
+test('frame effects: members resolve through the receiver, and fresh values through a choice', () => {
+  if (onKernel()) return
+  const length = `class Buf { #n; constructor(n) { this.#n = n } get length() { return this.#n } }
+    export let mk = (n) => new Buf(n)
+    export function f(n) { const xs = [n | 0, 2, 3]; let s = 0; for (let i = 0; i < xs.length; i++) { const o = { v: xs[i] }; s += o.v } return s }`
+  ok(rewinds(length), 'an array\'s length reads plainly beside a class getter of that name: ' + whyNot(length))
+  is(jz(length, { optimize: 'speed' }).exports.f(1), 6)
+  const nullish = `class A { w(x) { return x + 1 } }
+    let make = (k) => k ? new A() : null
+    export function f(k) { const o = make(k); const r = { v: o.w(k | 0) }; return r.v }`
+  ok(rewinds(nullish), 'a method of a receiver that may be nullish is a callee: ' + whyNot(nullish))
+  const m = jz(nullish, { optimize: 'speed' })
+  is(m.exports.f(1), 2)
+  let threw = null
+  try { m.exports.f(0) } catch (e) { threw = e }
+  ok(threw instanceof TypeError, 'the nullish receiver throws')
+  const thrown = `export function f(x) { if (x < 0) throw TypeError('negative'); const o = { v: x | 0 }; return o.v }`
+  ok(rewinds(thrown), 'a constructor called plainly is fresh storage: ' + whyNot(thrown))
+  const choice = `export function f(c) { const r = c ? [1, 2] : [3]; r.push(4); return r.length + r[0] }`
+  ok(rewinds(choice), 'a choice between fresh literals is a fresh local: ' + whyNot(choice))
+  is(jz(choice, { optimize: 'speed' }).exports.f(0), 5)
+})
+
+// An object literal's getter is a closure in a declared slot: reading the
+// name through a receiver of that layout runs it, and what it stores
+// outward escapes the frame.
+test('frame effects: a literal\'s getter is code the census cannot name', () => {
+  if (onKernel()) return
+  const src = `let keep = null
+    const src = [{ get x() { keep = { v: 1 }; return 1 } }, { x: 2 }]
+    export function f(i) { const o = src[i]; const r = { v: o.x }; return r.v }
+    export function g() { const z = { v: 9 }; return keep.v + z.v }`
+  ok(!rewinds(src), 'the frame is declined: ' + whyNot(src))
+  const m = jz(src, { optimize: 'speed' })
+  is(m.exports.f(0), 1); is(m.exports.f(1), 2)
+  is(m.exports.g(), 10, 'the getter\'s store survives the call')
+})
+
+// A static pair lives on the class value: reading its name through the
+// class runs the getter, and what it stores outward escapes the frame.
+test('frame effects: a static getter on a class value is code the census cannot name', () => {
+  if (onKernel()) return
+  const src = `let keep = null
+    class K { static get tag() { keep = { v: 1 }; return 42 } }
+    export function f() { const r = { v: K.tag }; return r.v }
+    export function g() { const z = { v: 9 }; return keep.v + z.v }`
+  ok(!rewinds(src), 'the frame is declined: ' + whyNot(src))
+  const m = jz(src, { optimize: 'speed' })
+  is(m.exports.f(), 42)
+  is(m.exports.g(), 10, 'the getter\'s store survives the call')
+})

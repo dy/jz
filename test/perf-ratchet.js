@@ -80,6 +80,12 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // and the string hash reads a heap length in place, which shrinks the runtime
 // loops this count includes: buf 15034 -> 14584, nest 22626 -> 16625, slice
 // 76920 -> 69312, condref 89053 -> 86588. Timing/size/memory caps do not move.
+// Per-iteration heap restores (2026-09-21): a loop whose iteration builds a
+// temporary through a callee, or beside an accessor-named read the census now
+// resolves, rewinds the heap pointer at its start, two nodes per loop in the
+// export wrapper's inlined body (`global.set $__heap (local.get $lrw)`):
+// nest 16625 -> 16691, slice 69312 -> 69760, ring 53800 -> 54040. The loops
+// run in constant memory for that store; timing/size/memory caps do not move.
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
 // A wide-accumulator versioning (src/optimize/wide-accumulator.js) keeps the
 // original loop as the cold fallback, the last child of its `$__wa…d` block:

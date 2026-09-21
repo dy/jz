@@ -4,9 +4,9 @@
   "mixed": 1137,
   "cond": 581,
   "buf": 14584,
-  "nest": 16625,
-  "slice": 69312,
-  "ring": 53800,
+  "nest": 16691,
+  "slice": 69760,
+  "ring": 54040,
   "condref": 86588,
   "fgather": 5960
 }

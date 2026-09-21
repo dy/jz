@@ -717,3 +717,63 @@ test('for-in destructuring head: key string destructures with per-iteration bind
   }`, { jzify: true })
   is(exports.t(), 'i:i')
 })
+
+// ============================================
+// Indexed array patterns (compile/plan/index-array-patterns.js)
+// ============================================
+
+// An array pattern over a value the summary proves an array reads it by
+// index: no cursor record, no protocol calls, no unwinding. Any other source
+// (a collection, a string, a value that may be nullish) keeps the protocol.
+test('destruct: a pattern over a proven array reads by index', () => {
+  const opener = (src) => (compile(src, { wat: true, optimize: 'speed' }).match(/__it_(open|pull|step)/g) || []).length
+  ok(opener(`export let f = (p) => { const [a, b, ...r] = p; return a + b + r.length }`) > 0, 'an export\'s untyped parameter keeps the protocol')
+  const proven = `let pair = (i) => [i, i * 2]
+    export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) { const [a, b] = pair(i); s += a + b } return s }`
+  is(opener(proven), 0, 'a callee\'s fresh tuple is read by index')
+  is(jz(proven, { optimize: 'speed' }).exports.f(4), 18)
+  const nested = `let rec = () => ['m', 'f', ['func', ['type', 0]]]
+    export let f = () => { const [mod, field, [kind, ...dfn]] = rec(); return (mod === 'm') + (field === 'f') + (kind === 'func') + (dfn[0][0] === 'type') }`
+  is(opener(nested), 0, 'a nested pattern over a tuple row reads by index too')
+  is(jz(nested, { optimize: 'speed' }).exports.f(), 4)
+  const shapes = `let row = (w) => w ? [1, 2, 3] : [4]
+    export let hole = (w) => { const [, b] = row(w); return b }
+    export let dflt = (w) => { const [a = 7, b = 8, c = 9] = row(w); return a * 100 + b * 10 + c }
+    export let past = (w) => { const [a, b, c, d] = row(w); return d === undefined && (w ? c === 3 : c === undefined) }
+    export let none = (w) => { const [] = row(w); return 1 }
+    export let rest = (w) => { const [, ...r] = row(w); return r.length * 10 + (r[0] ?? 0) }`
+  is(opener(shapes), 0, 'holes, defaults, reads past the end, an empty pattern and a rest read by index')
+  const sh = jz(shapes, { optimize: 'speed' }).exports
+  is(sh.hole(1), 2); is(sh.hole(0), undefined)
+  is(sh.dflt(1), 123); is(sh.dflt(0), 489)
+  ok(sh.past(1) && sh.past(0), 'an element past the end is undefined')
+  is(sh.none(1), 1)
+  is(sh.rest(1), 22); is(sh.rest(0), 0)
+  const inner = `export let f = () => { const [[a, b], c] = [new Set([1, 2]), 3]; return a * 100 + b * 10 + c }`
+  ok(opener(inner) > 0, 'a nested pattern over a collection keeps the whole protocol (its iterator is code between two steps)')
+  is(jz(inner, { optimize: 'speed' }).exports.f(), 123)
+  const set = `export let f = () => { const [a, b] = new Set([4, 5]); return a * 10 + b }`
+  ok(opener(set) > 0, 'a collection keeps the protocol')
+  is(jz(set, { optimize: 'speed' }).exports.f(), 45)
+  const maybe = `let src = (w) => w ? [1, 2] : null
+    export let f = (w) => { const [a, b] = src(w); return a + b }`
+  ok(opener(maybe) > 0, 'a source that may be nullish keeps the protocol (it throws)')
+  const inst = jz(maybe, { optimize: 'speed' })
+  is(inst.exports.f(1), 3)
+  let threw = null
+  try { inst.exports.f(0) } catch (e) { threw = e }
+  ok(threw instanceof TypeError, 'destructuring null throws a TypeError')
+})
+
+// The array iterator is live and finishes once: a default that runs code
+// between two steps keeps the protocol, and JS semantics with it.
+test('destruct: a default that runs code between two steps keeps the protocol', () => {
+  const impure = `export let f = () => { const a = []; const [x = (a.push(1, 2), 0), y] = a; return [x, y, a.length] }`
+  ok(/__it_(open|pull|step)/.test(compile(impure, { wat: true, optimize: 'speed' })), 'the protocol stays')
+  const r = jz(impure, { optimize: 'speed' })
+  is(r.memory.read(r.exports.f()), [0, undefined, 2], 'the iterator finished before the push: y stays undefined')
+  const pure = `export let f = (w) => { const a = w ? [] : [5]; const [x = w ? 0 : 1, y = 7] = a; return x * 10 + y }`
+  ok(!/__it_(open|pull|step)/.test(compile(pure, { wat: true, optimize: 'speed' })), 'a default that runs no code reads by index')
+  const p = jz(pure, { optimize: 'speed' })
+  is(p.exports.f(1), 7); is(p.exports.f(0), 57)
+})

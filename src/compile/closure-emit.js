@@ -8,7 +8,7 @@ import {
   MAX_CLOSURE_ARITY, asF64, boxedAddr, isUndef, undefExpr, carrierF64,
   applyBigintRepresentationAction, freshId, dollar,
 } from '../ir.js'
-import { restoreActiveFunction } from './active-function.js'
+import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { enterPreparedFunction, publishPreparedFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
 import { unboxablePtrs, inheritPtrAliases, boxedCaptures, reanalyzeBody } from './analyze.js'
@@ -414,6 +414,7 @@ export function emitClosureBody(cb, functionPlan) {
   // I: Skip trailing fallback when last statement is return
   // Implicit fall-through return is `undefined` per JS spec, not 0.
   if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(undefExpr())
+  publishLoopRewinds(ctx, cb.name)
   return fn
   } finally {
     ctx.schema.vars = prevSchemaVars

@@ -635,12 +635,38 @@ is the slot access `o.k` compiles to. The array-pattern protocol
 (src/iterator-pattern.js) over an indexed source is read by position in the
 summary: `__it_open` binds a cursor, each step takes the next element; the
 protocol's functions still run over the source's kind without its identity.
+A pattern over a value the summary proves an array that is never nullish
+reads by index instead (the plan sweep `indexArrayPatterns`,
+compile/plan/index-array-patterns.js): the cursor becomes the array, a step
+its element at the position, a rest the slice from there, a skip nothing,
+and the closes nothing, so the pattern costs no record, no calls and no
+unwinding, and the frame it is in keeps its allocations its own (the
+protocol's record pool is module state). The array iterator is live and
+finishes once, so the reads replace the steps only where every pull binds a
+name with an expression that runs no code (a default of `a.push(1), 0`
+between two steps keeps the protocol). A collection, a string (iterated by
+code point) or a value that may be nullish keeps the protocol.
 
-The frame census (compile/analyze/frame-effects.js) takes a store into a
-parameter the export boundary types (`boundaryTyped`, set after the summary)
-as a number into fixed storage; the per-iteration rewind it grants is
-recorded by the loop's label and inserted after the peephole walk, which
-copies the spine of every loop it changes inside (optimize/loop-rewind.js).
+The frame census (compile/analyze/frame-effects.js) reads the summary through
+the function's own view (keyed by its signature, as the emitter reads it). It
+takes a store into a parameter the export boundary types (`boundaryTyped`,
+set after the summary) as a number into fixed storage. A member reaches the
+class functions of the receiver's listed layouts (`memberFunctions`): a
+method on a receiver that may be nullish or of several classes, an accessor's
+getter or setter, each a callee whose own census counts; a property named
+like an accessor on a kind that is no object (an array's `length`) is a plain
+read, and a layout whose schema declares the accessor slot (an object
+literal's getter or setter closure) or may carry a static pair beside its
+slots keeps the read unknown. A loop's scope declares nothing of the
+function's: its parameters are outer storage there, and a block kept in one
+outlives the iteration. A constructor called plainly (`throw TypeError(m)`) is fresh
+storage, a conditional of fresh values is fresh, and a loop's callee
+allocations count toward its rewind (they belong to the iteration that
+called). The per-iteration rewind the census grants is recorded on the frame
+by the loop's label (labels count from zero in every function), published
+under the function's WAT name once its body is emitted, and inserted after
+the peephole walk, which copies the spine of every loop it changes inside
+(optimize/loop-rewind.js).
 
 `E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
 indexed value's own iterator, a collection's snapshot view, a provider's
@@ -1009,8 +1035,10 @@ a class member on an unknown receiver as called with the family of classes
 whose member of that name is that function (`familyOf`), and a member call
 on a jz object of lost shape as the join of those members' results and of
 the closures the shapes hold under the name; `includes`, `indexOf` and
-`lastIndexOf` keep nothing of their argument, and any other name on an array
-is a property beside the elements; shape sets of up to 64 layouts. A class
+`lastIndexOf` keep nothing of their argument, `slice` yields a copy with a
+cell of its own whose elements are the row's positions from a literal start,
+and any other name on an array is a property beside the elements; shape sets
+of up to 64 layouts. A class
 initializer (`C⟨init⟩`) called on one layout is walked for that layout under
 bindings of its own (initializer contexts): a derived class's `super(…)` no
 longer joins its arguments into the base's parameters, so each layout's
@@ -1025,9 +1053,15 @@ reaches the summary. A raise folds in a value the join's own effects moved
 calls a member directly when every layout of the receiver resolves it to one
 function, and reads a field every member layout holds in one slot as that
 slot (`commonSlot`), so a method inherited by a class family runs on prefix
-layouts without a guard; a receiver the summary types skips the accessor
-probe of a dynamically installed accessor unless a side property of that
-slot may be present (`accessorHolders`). `why: true` and any
+layouts without a guard. An accessor is a function of its class (a derived
+class's too: its instances carry their own schema), a slot of an object
+literal's schema, or a static pair on the class value (the
+`dynamicAccessorNames`); an unknown receiver dispatches on its schema id and
+probes for the slot only where a literal's schema or a static pair may carry
+it (`slotAccessorRead`, `accessorStore`), so a dispatcher's fallback reads
+plainly in a program without them, and a receiver the summary types skips
+the probe unless a side property of that slot may be present
+(`accessorHolders`). `why: true` and any
 `warnings` sink report `shape-lost` with the first cause a layout was lost by;
 the census is the first thing to read when a library compiles dynamic.
 
@@ -1122,8 +1156,14 @@ that lets no allocation escape and itself builds a value (a literal, a `new`,
 a concatenation, a fresh-value method) restores the heap pointer at its start
 (`optimize/loop-rewind.js`, placed after the lane vectorizer so loop shapes
 stay matchable; the link pass validates the marker locals `$lrw<N>` against
-the body's callees and strips the rest), so a loop building a temporary per
-row runs in constant memory. Truly shared memory (`sharedMemory`) rewinds
+the loop's own tape and callees, not the function's, so a dispatch through a
+table before the loop leaves it, and strips the rest, reporting `loop: …`
+with the tape's reason through `whyNotRewind`), so a loop building a
+temporary per row runs in constant memory. The property caches a rewind
+leaves valid are no veto: the inline caches key on the schema id in a
+pointer's high word, and the dynamic-get cache is kept coherent by every
+writer of the table it mirrors, which no rewound frame reaches; the for-in
+key cache holds an array a rewind may free and stays vetoed. Truly shared memory (`sharedMemory`) rewinds
 nothing: one thread's restore would discard every other thread's allocations.
 
 Record parameters become lanes (`src/compile/plan/lanes.js`, a plan sweep
@@ -1487,9 +1527,12 @@ Incompatible replacements throw `TypeError`. Nullable fields admit their value
 family and nullish values. Modules sharing memory must agree on existing schema
 contracts and bind their schemas at the same ids: a pointer carries the id its
 module compiled with, so a module whose schema would bind at another id in the
-memory is rejected at instantiation, before the memory's tables change (one
-compilation, or the same module again, shares; the host references of a memory
-are one table for every module in it). A class layout carries its brand
+memory is rejected before it is instantiated: its tables are read from its
+custom sections and merged on copies, committed whole once every id, brand
+and field contract agrees, and the module's start function and data never
+reach a memory that rejects it (one compilation, or the same module again,
+shares; the host references of a memory are one table for every module in
+it). A class layout carries its brand
 (`jz:brand`, `Name#id`), so two classes with one field list are two schemas,
 and a host object matching such a layout by keys alone is ambiguous rather
 than silently bound. Booleans preserve their identity; exposed BigInt fields are tagged,

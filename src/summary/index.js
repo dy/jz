@@ -1644,7 +1644,19 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (name === 'includes') return BOOL
       if (name === 'findIndex') { escapeArgs(base, n); return NUMBER }
       if (name === 'pop' || name === 'shift' || name === 'at' || name === 'find') { escapeArgs(base, n); return orAbsent(elemOf(recv)) }
-      if (name === 'slice' || name === 'reverse' || name === 'sort') { escapeArgs(base, n); return recv }
+      if (name === 'reverse' || name === 'sort') { escapeArgs(base, n); return recv }
+      if (name === 'slice') {
+        // A fresh copy of the elements from the start: its own cell, whose
+        // elements are the row's positions from a literal start (the receiver's
+        // row would place the copy's first element at the receiver's).
+        escapeArgs(base, n)
+        if (node == null) return recv
+        const a = args(node[2]), start = !a.length ? 0 : Array.isArray(a[0]) && a[0][0] == null && Number.isInteger(a[0][1]) && a[0][1] >= 0 ? a[0][1] : null
+        const row = paramOf(recv) === UNKNOWN ? null : tuples.get(cell(paramOf(recv)))
+        let k = K.NONE
+        if (row && start !== null) { for (let i = start; i < row.length; i++) k = merge(k, row[i]) } else k = elemOf(recv)
+        return arrayOf(node, k)
+      }
       if (name === 'fill') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return recv }
       if (name === 'reduce' || name === 'reduceRight') return reduceResult(recv, base, n)
       // A copy of the receiver's elements and the arguments' (an array argument spreads its elements).
@@ -2728,7 +2740,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)

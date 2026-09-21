@@ -104,6 +104,33 @@ Architecture
 - Gated invariant checks stay: frame effects, kernel parity, output-size and
   loop-count ratchets and the speed pins in `test/bench.js` protect compiler
   development and are not the source of complexity.
+- A per-iteration rewind is registered under its function's name by the
+  loop's label: labels count from zero in every function, and a module-wide
+  registry handed the first function's loop of that label another function's
+  proof.
+- A module joining a shared memory is validated before it is instantiated:
+  its tables are read from the custom sections and merged on copies, so a
+  rejected module's start function, data segments and tables never touch the
+  memory, and a merge commits whole or not at all.
+- An array pattern over a value the summary proves an array reads by index
+  (a plan sweep): the protocol's cursor record and its pool are module state
+  no rewound frame may touch, and the protocol cost a call per element.
+- The frame census names the class functions a member reaches on the
+  receiver's listed layouts, a receiver that may be nullish or of several
+  classes included, and reads through the function's own summary view; a
+  loop's callee allocations belong to the iteration. Before this, every
+  accessor-named read anywhere made its frame unsafe, and the census ran on
+  the module's view, where a parameter had no kind.
+- A loop marker is validated against the loop's own tape at link, not the
+  whole function's; the schema-keyed inline caches and the coherent
+  dynamic-get cache are no veto. webaudio's per-sample loops rewind: one
+  render allocates 87 MB and keeps 9.
+- A derived class's accessor is a class function of its own schema, not a
+  dynamic install: the dispatcher's fallback probes for an accessor slot only
+  where an object literal's schema or a static pair may carry it.
+- `slice` yields an array with a cell of its own: the receiver's positional
+  row carried over unshifted, so `['func', [..]].slice(1)[0]` read as a
+  string.
 
 Dependencies
 
@@ -174,21 +201,18 @@ Dependencies
    i32 under integer-tolerant consumers, with the generic loop left for an
    out-of-range hop.
 
-3. **Memory.** webaudio, jessie and watr peak at 151, 170 and 157 MB of
-   resident memory against V8's 71, 98 and 77 (paired, node against node,
-   this tree). The per-iteration rewind was
-   defeated twice (the boundary-typed store, the copied loop node) and holds
-   a render loop flat now, but the audio graph keeps each node's last block
-   in `_cachedBlock` until the next tick replaces it: those blocks escape by
-   design, wasm memory never shrinks, and an offline render is one call, so
-   the high-water mark is a render's worth of replaced blocks. The mechanism
-   that fits the model is reclaim on replacement, not a collector: a store
-   that replaces the value of a field which the summary proves the sole
-   holder of its allocation site's values (every store of that site is into
-   this field, nothing else retains it) frees the replaced block to a
-   size-class list the allocator reuses. It is static, per site, and a
-   bounded addition to the escape census; measure the three cases with it
-   before quoting memory.
+3. **Memory.** webaudio holds 70.3 MB of resident memory against V8's 70.6
+   (paired, node against node, this tree; 151 before): the automation loops
+   rewind per sample once the census named the class functions their
+   receivers reach, the tuple destructuring read by index, and the link pass
+   judged the loop's own tape. jessie and watr still peak at 170 and 157
+   against V8's 98 and 77: one jessie parse keeps 25 MB of `loc` sidecars
+   (a 240-byte hash per AST node for one number) and 67 MB attributed to
+   whitespace skipping; one watr assembly keeps 39 MB of 64 KB code buffers.
+   Those are retained by design, not temporaries: the lever is a compact
+   named-property slot for arrays (a record beside the elements instead of a
+   hash) and a size-classed reuse of replaced buffers, then measure the two
+   cases before quoting memory.
 
 4. **Reproducible speed, size and memory evidence.** `bench/results.json` is
    stale: timed above the 4096 MB swap-validity cap, 43 comparable
@@ -215,6 +239,23 @@ Dependencies
 
 ## Gate evidence — September 21
 
+- Loop rewinds and shared-memory preflight (this commit): core suite
+  4545/4546 with one skip, self-compile 68/68, import lint clean, the
+  perf ratchet re-baselined for the per-iteration heap restores (nest 16691,
+  slice 69760, ring 54040). `test/bench.js` on the final tree: speed geomeans
+  0.476× of V8, 0.701× of C, 0.482× of AssemblyScript, size 0.785× of
+  AssemblyScript, the examples corpus 1.41× with 19 of 21 winners. webaudio,
+  paired alone: 1.87× of V8 (2.15× before) and 70.3 MB resident against
+  V8's 70.6 (151 before); one render allocates 87 MB and keeps 9. Ten red
+  rows, every one a standing above or noise: sdf's win pin at 1.015×, watr's
+  trail at 1.39× (five paired alternations against the pre-session tree
+  read 1.14–1.29× there and 1.14–1.59× here, rounds from 1.04× to 1.78× on
+  both; the loop-body op count of its compiled module differs by 62 in
+  `normalize` of 83514, the tier-up above is the ratio), glyfparse, sdf,
+  sort, noise and radixsort against the fastest wasm, TinyGo's builds,
+  alpha's w2c row, and percolation at 0.71× under the examples' 0.75× floor
+  with output identical to the pre-session tree (0.67–0.71× alone on this
+  machine today: the floor's evidence needs the reference machine).
 - Core suite 4531/4532 with one skip (`test/index.js`), self-compile 68/68,
   import lint and public types clean; `bench:size` geomean 0.785× of
   AssemblyScript with 0.1% `wasm-opt` slack; the size pins carry the

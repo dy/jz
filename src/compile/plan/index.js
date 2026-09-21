@@ -51,6 +51,7 @@ import {
   materializeAutoBoxSchemas, resolveClosureWidth, canSkipWholeProgramNarrowing,
 } from './scope.js'
 import { declareWrittenKeys } from './declare-written-keys.js'
+import { indexArrayPatterns } from './index-array-patterns.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
@@ -114,6 +115,8 @@ export default function plan(ast, profiler, summarize) {
   t('devirtGlobalCalls', () => devirtGlobalCalls(ast))
   // A method call on a receiver the summary names calls the class's function directly.
   sweep('devirtClassCalls', devirtClassCalls)
+  // An array pattern over a proven array reads it by index, no cursor.
+  sweep('indexArrayPatterns', indexArrayPatterns)
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)

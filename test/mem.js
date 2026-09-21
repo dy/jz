@@ -1198,6 +1198,10 @@ test('host memory: boolean tags survive structured construction and writes', () 
 // store into a typed-array parameter the export boundary types read as a store
 // that could grow it (fixed storage cannot grow), and the loop was found by a
 // node the peephole walk had copied away (its label survives).
+// A loop's per-iteration rewind in the final text: a restore of the heap
+// pointer at the top of the loop (the marker local's name is the link's).
+const loopRestores = (wat) => (wat.match(/\(loop \$[^\s()]+\n\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)\)/g) || []).length
+
 test('arena: a per-iteration rewind holds a render loop flat', () => {
   const src = `export function render(out, blocks) {
     let acc = 0
@@ -1212,7 +1216,8 @@ test('arena: a per-iteration rewind holds a render loop flat', () => {
   const warnings = { entries: [] }
   const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings })
   is(warnings.entries.filter(e => e.code === 'rewind-why-not').map(e => e.message), [], 'the loop and the function rewind')
-  ok(/lrw\d+/.test(typeof wat === 'string' ? wat : wat.wat), 'the per-iteration marker is emitted')
+  ok(loopRestores(wat) > 0, 'the loop restores the heap pointer per iteration')
+  ok(!/global\.set \$__heap \(local\.get \$[^\s()]+\)\)\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)/.test(wat), 'a loop met through its block restores once')
   const inst = jz(src, { optimize: 'speed' })
   const out = new Float64Array(128)
   const before = inst.memory.buffer.byteLength
@@ -1221,4 +1226,140 @@ test('arena: a per-iteration rewind holds a render loop flat', () => {
   let expect = 0
   for (let b = 0; b < 20000; b++) expect += Math.sin(7 * 0.01 + b)
   almost(acc, expect, 1e-6)
+})
+
+// Loop labels count from zero in every function, so a rewind is registered
+// under its function: a loop retaining its allocations never takes the rewind
+// proved for a loop of the same label in another function, in either
+// declaration order (the marker then went to the retaining loop, where the
+// link pass stripped it, and the proved loop grew).
+test('arena: a per-iteration rewind stays with the function whose loop proved it', () => {
+  const render = `export function render(out, blocks) {
+    let acc = 0
+    for (let b = 0; b < blocks; b++) {
+      const blk = new Float64Array(128)
+      for (let i = 0; i < 128; i++) blk[i] = Math.sin(i * 0.01 + b)
+      for (let i = 0; i < 128; i++) out[i] = blk[i]
+      acc += out[7]
+    }
+    return acc
+  }`
+  const keep = `const kept = []
+  export function keep(n) {
+    for (let b = 0; b < n; b++) {
+      const blk = new Float64Array(4)
+      blk[0] = b * 2
+      kept.push(blk)
+    }
+    let s = 0
+    for (let b = 0; b < kept.length; b++) s += kept[b][0]
+    return s
+  }`
+  for (const src of [render + '\n' + keep, keep + '\n' + render]) {
+    const wat = compile(src, { optimize: 'speed', wat: true })
+    const fn = name => { const at = wat.indexOf('(func $' + name), next = wat.slice(at + 1).search(/\n\s*\(func /); return wat.slice(at, next < 0 ? undefined : at + 1 + next) }
+    const label = body => body.match(/\(loop (\$\w+)/)[1]
+    is(label(fn('render')), label(fn('keep')), 'the two loops carry one label')
+    ok(loopRestores(fn('render')) > 0, 'the render loop rewinds')
+    is(loopRestores(fn('keep')), 0, 'the retaining loop does not')
+    const inst = jz(src, { optimize: 'speed' })
+    const out = new Float64Array(128), before = inst.memory.buffer.byteLength
+    inst.exports.render(out, 20000)
+    is(inst.memory.buffer.byteLength, before, 'twenty thousand blocks grow nothing')
+    is(inst.exports.keep(1000), 999000, 'the retained blocks keep their values')
+  }
+})
+
+// A loop whose iteration destructures a callee's fresh tuple rewinds: the
+// tuple is read by index (no cursor record from the protocol's pool), the
+// callee's allocation belongs to the iteration, and the census counts it.
+test('arena: a loop destructuring a callee\'s tuple runs in constant memory', () => {
+  const src = `let ends = (e, i) => e.ramp ? [e.end, e.value] : [e.start + i, e.value * 2]
+    export function sum(n) {
+      const e = { ramp: false, start: 1, end: 2, value: 3 }
+      let s = 0
+      for (let i = 0; i < n; i++) { const [t, v] = ends(e, i); s += t + v }
+      return s
+    }`
+  const warnings = { entries: [] }
+  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings })
+  ok(!/__it_open/.test(wat), 'the tuple is read by index')
+  ok(loopRestores(wat) > 0, 'the loop rewinds per iteration')
+  const inst = jz(src, { optimize: 'speed' })
+  const before = inst.memory.buffer.byteLength
+  const s = inst.exports.sum(200000)
+  is(inst.memory.buffer.byteLength, before, 'two hundred thousand tuples grow nothing')
+  let expect = 0
+  for (let i = 0; i < 200000; i++) expect += 1 + i + 6
+  is(s, expect)
+})
+
+// A loop's callee allocations belong to the iteration: a method of a class
+// receiver the summary knows but cannot prove non-nullish (the read throws
+// for null before any call), a class getter inside it, a typed block built
+// per call. The function around the loop calls a closure it cannot name (an
+// indirect call), which the loop's own tape does not reach.
+test('arena: a loop rewinds around a method of a class receiver that may be nullish, beside an indirect call', () => {
+  const src = `class Source {
+    #gain; constructor(gain) { this.#gain = gain }
+    get gain() { return this.#gain }
+    block(i) { const b = new Float64Array(128); for (let k = 0; k < 128; k++) b[k] = this.gain * (i + k); return b }
+  }
+  let make = (w) => w ? new Source(2) : null
+  export function sum(w, n, cb) {
+    const src = make(w)
+    let s = 0
+    if (cb) cb(n)
+    for (let i = 0; i < n; i++) { const blk = src.block(i); s += blk[3] }
+    return s
+  }`
+  const warnings = { entries: [] }
+  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings })
+  ok(loopRestores(wat) > 0, 'the loop rewinds per iteration')
+  ok(/call_indirect/.test(wat), 'the function itself calls through a table')
+  is(warnings.entries.filter(e => e.code === 'rewind-why-not' && /loop:/.test(e.message)).map(e => e.message), [], 'no loop marker was dropped')
+  const inst = jz(src, { optimize: 'speed' })
+  const before = inst.memory.buffer.byteLength
+  const s = inst.exports.sum(1, 20000, null)
+  is(inst.memory.buffer.byteLength, before, 'twenty thousand blocks grow nothing')
+  let expect = 0
+  for (let i = 0; i < 20000; i++) expect += 2 * (i + 3)
+  is(s, expect)
+  throws(() => inst.exports.sum(0, 3, null), TypeError, 'the nullish receiver throws')
+})
+
+// A dropped loop marker names its reason: the loop's own tape reaches a
+// write to a module global (the census passes a number into a module
+// binding; the tape pass keeps the heap's globals and the property caches
+// alone).
+test('arena: a loop marker dropped at link reports the loop\'s reason', () => {
+  const warnings = { entries: [] }
+  compile(`let count = 0
+    const tick = () => ++count
+    export function each(n) {
+      let s = 0
+      for (let i = 0; i < n; i++) { const b = new Float64Array(128); for (let k = 0; k < 128; k++) b[k] = i + k; s += b[1] + tick() }
+      return s
+    }`, { optimize: 'speed', why: true, warnings })
+  const loop = warnings.entries.filter(e => e.code === 'rewind-why-not' && /\$each: loop:/.test(e.message)).map(e => e.message)
+  ok(loop.length > 0 && loop.every(m => /loop: tape: .*global\.set/.test(m)), 'the loop\'s tape is the reason: ' + loop.join(' | '))
+})
+
+// A parameter is the function's storage, outside every iteration: a block
+// kept in one outlives the iteration that built it, so the loop keeps its
+// allocations. Rewound, the next iteration's block would take the kept
+// block's memory.
+test('arena: a loop keeping a block in a parameter does not rewind', () => {
+  const src = `export function last(prev, prev2, n) {
+    for (let i = 0; i < n; i++) {
+      const blk = new Float64Array(128)
+      for (let k = 0; k < 128; k++) blk[k] = i + k
+      prev2 = prev
+      prev = blk
+    }
+    return prev2 ? prev2[0] : -1
+  }`
+  const wat = compile(src, { optimize: 'speed', wat: true })
+  is(loopRestores(wat), 0, 'no per-iteration restore')
+  is(jz(src, { optimize: 'speed' }).exports.last(null, null, 5), 3, 'the block of the iteration before the last keeps its values')
 })

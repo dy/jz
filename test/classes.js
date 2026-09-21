@@ -12,7 +12,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi, OPT_LEVEL } from './_matrix.js'
-import jz from '../index.js'
+import jz, { compile as compileWat } from '../index.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
 const rejects = (src, re) => {
@@ -712,4 +712,27 @@ test('classes: a for-of over an iterable class of another module drives its iter
   const src = `import { List } from './list.js'
     export let f = () => { const l = new List(); l.add(1); l.add(2); let s = 0; for (const e of l) s += e; return s * 10 + [...l].length }`
   is(jz(src, { modules }).exports.f(), 32)
+})
+
+// Accessors reach their holders through the receiver the summary names or
+// the dispatcher's `instanceof` arms: a derived class's accessor is a
+// function of its own schema, an object literal's a slot of its schema, a
+// static pair a property of the class value. An unknown receiver probes for
+// the slot only where a literal or a static pair may carry it.
+test('classes: accessors of derived classes, literals and static pairs on receivers of every kind', () => {
+  const derived = `class Ctx { #n; constructor(n) { this.#n = n } }
+    class Off extends Ctx { get length() { return 7 } }
+    export let union = (w) => { const o = w ? new Off(1) : new Ctx(2); return o.length }
+    export let mixed = () => { const items = [new Off(1), 'ab', [1, 2, 3]]; let s = ''; for (const x of items) s += x.length + ','; return s }`
+  const d = jz(derived, { optimize: 'speed' })
+  is(d.exports.union(1), 7); is(d.exports.union(0), undefined); is(d.exports.mixed(), '7,2,3,')
+  ok(!/call_indirect/.test(compileWat(derived, { wat: true, optimize: 'speed' })), 'no literal carries the slot: the unknown receiver reads plainly, without a probe')
+  const literal = `export let get = () => { const items = [{ get x() { return 5 } }, { x: 2 }, { y: 1, get x() { return 9 } }]; let s = 0; for (const it of items) s = s * 10 + it.x; return s }
+    export let set = () => { const items = [{ v: 0, set x(a) { this.v = a * 2 } }, { v: 0, x: 0 }]; let s = 0; for (const it of items) { it.x = 3; s = s * 10 + it.v } return s }`
+  const l = jz(literal, { optimize: 'speed' })
+  is(l.exports.get(), 529); is(l.exports.set(), 60)
+  const stat = jz(`class K { static get tag() { return 42 } }\nexport let f = () => K.tag`, { optimize: 'speed' })
+  is(stat.exports.f(), 42)
+  const setter = jz(`class B { v = 0 }\nclass D extends B { set x(a) { this.v = a + 1 } }\nexport let f = (w) => { const o = w ? new D() : new B(); o.x = 5; return o.v }`, { optimize: 'speed' })
+  is(setter.exports.f(1), 6); is(setter.exports.f(0), 0)
 })

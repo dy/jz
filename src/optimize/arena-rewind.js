@@ -38,7 +38,18 @@ const DECLS = ['export', 'import', 'type', 'param', 'result', 'local']
 // that leaves the frame and read by the host only after a trap; and the
 // collection insertion stamp (module/collection/upsert.js), a counter that
 // only ever grows.
-const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__heap_start', '$__heap_reset', '$__jz_last_err_bits', '$__seq'])
+// The heap's own globals, and the property caches a rewind leaves valid: the
+// inline caches (module/collection.js, optimize/devirt.js) key on the schema
+// id in a pointer's high word, never on an address; the dynamic-get cache
+// (the last header-less receiver's address and its properties in the global
+// table) is kept coherent by every writer of that table, which no rewound
+// frame reaches (a store through a global is vetoed below), so an address a
+// rewind reuses reads what the table holds for it. The for-in key cache
+// (`__enumc_*`) holds a key array a rewind may free: it stays vetoed.
+const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__heap_start', '$__heap_reset', '$__jz_last_err_bits', '$__seq',
+  '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props'])
+const IC_SITE = /^\$__ic_(hi|slot)\d+$/
+const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name)
 const NO_NAMES = new Set()
 // The durable-heap log (module/core/durable-log.js) allocates its buffers and
 // records entries only when a durable (pre-init) array or slot is grown,
@@ -151,11 +162,11 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, rep
     if (T.op[f] !== FUNC) continue
     const name = text(T.a[f])
     if (name === null) continue
-    const rec = { unsafe: unsafe.has(name), why: unsafe.has(name) ? 'escape' : null, tapeUnsafe: false, calls: new Set(), allocs: false }
-    const veto = (why) => { rec.tapeUnsafe = true; if (!rec.unsafe) { rec.unsafe = true; rec.why = why } }
+    const rec = { unsafe: unsafe.has(name), why: unsafe.has(name) ? 'escape' : null, tapeUnsafe: false, tapeWhy: null, calls: new Set(), allocs: false }
+    const veto = (why) => { rec.tapeUnsafe = true; rec.tapeWhy ??= why; if (!rec.unsafe) { rec.unsafe = true; rec.why = why } }
     eachBody(f, (id) => {
       const op = T.op[id]
-      if (op === GLOBAL_SET) { if (!HEAP_GLOBALS.has(text(T.a[id]))) veto('global.set ' + text(T.a[id])) }
+      if (op === GLOBAL_SET) { if (!heapScratch(text(T.a[id]))) veto('global.set ' + text(T.a[id])) }
       else if (op === CALL_INDIRECT || op === CALL_REF) veto(opText(id))
       else if (op === CALL) {
         const callee = text(T.a[id])
@@ -182,7 +193,7 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, rep
       for (const c of rec.calls) {
         const g = info.get(c)
         if (g?.unsafe && !rec.unsafe) { rec.unsafe = true; rec.why = 'calls ' + c + ': ' + g.why; changed = true }
-        if (g?.tapeUnsafe && !rec.tapeUnsafe) { rec.tapeUnsafe = true; changed = true }
+        if (g?.tapeUnsafe && !rec.tapeUnsafe) { rec.tapeUnsafe = true; rec.tapeWhy = 'calls ' + c + ': ' + g.tapeWhy; changed = true }
       }
     }
   }
@@ -202,6 +213,27 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, rep
   // function's own body and callees are tape-safe and the loop allocates, dropped
   // otherwise; the census that placed them proved the iteration's escapes.
   const isMarker = (id) => { const n = text(T.a[id]); return n !== null && n.startsWith('$' + MARK + 'lrw') }
+  // A loop's own tape: what its body does and calls decides its rewind, where
+  // the function around it may be vetoed elsewhere (a dispatch through a
+  // table before the loop) without touching what the iterations free.
+  const tapeUnsafeIn = (id) => {
+    let why = null
+    walk(id, (n) => {
+      if (why !== null) return false
+      const op = T.op[n]
+      if (op === GLOBAL_SET) { if (!heapScratch(text(T.a[n]))) why = 'global.set ' + text(T.a[n]) }
+      else if (op === CALL_INDIRECT || op === CALL_REF) why = opText(n)
+      else if (op === CALL) {
+        const callee = text(T.a[n])
+        if (callee === null || callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n' || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
+        if (imports.has(callee)) { if (T.next[T.a[n]] !== NONE && !callee.startsWith('$__ext_')) why = 'import ' + callee; return }
+        const g = info.get(callee)
+        if (g === undefined) why = 'calls ' + callee + ' (undefined)'
+        else if (g.tapeUnsafe) why = 'calls ' + callee + ': ' + g.tapeWhy
+      }
+    })
+    return why
+  }
   const allocatesIn = (id) => { let hit = false; walk(id, (n) => { if (hit) return false; if (T.op[n] === CALL) { const c = text(T.a[n]); if (c === '$__alloc' || c === '$__alloc_hdr' || c === '$__alloc_hdr_n' || info.get(c)?.allocs) hit = true } }); return hit }
   for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
@@ -222,8 +254,10 @@ export function arenaRewind(root, { rewindable, heapAddr, unsafe = NO_NAMES, rep
     for (const r of restores) {
       let loopNode = parents.get(r)
       while (loopNode !== undefined && opText(loopNode) !== 'loop') loopNode = parents.get(loopNode)
-      const keep = rec != null && !rec.tapeUnsafe && loopNode !== undefined && allocatesIn(loopNode)
-      if (keep) keepLocals.add(text(T.a[T.next[T.a[r]]])); else drop(r)
+      const tape = rec == null || loopNode === undefined ? null : tapeUnsafeIn(loopNode)
+      const keep = rec != null && loopNode !== undefined && tape === null && allocatesIn(loopNode)
+      if (keep) keepLocals.add(text(T.a[T.next[T.a[r]]]))
+      else { drop(r); report?.(name, 'loop: ' + (rec == null ? 'no record' : loopNode === undefined ? 'no loop' : tape !== null ? 'tape: ' + tape : 'no allocation')) }
     }
     for (const s of saves) if (!keepLocals.has(text(T.a[s]))) drop(s)
   }

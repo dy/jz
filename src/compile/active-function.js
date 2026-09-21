@@ -28,6 +28,7 @@ export function createActiveFunction({
 } = {}) {
   return {
     current: sig,
+    loopRewinds: null,    // labels of this function's loops granted a per-iteration rewind (emit/control-flow.js), published under its WAT name once emitted (publishLoopRewinds)
     body,
     exported: !!exported,
     atModuleScope: !!moduleScope,
@@ -159,4 +160,12 @@ export function isInactiveFunction(ctx) {
     frame.probeHoist === null && frame.lenHoist === null && frame.hoistTempDefs === null &&
     frame._expect === null && frame._arrayLiteralNeverEscapes === false &&
     frame._schemaSpecSlow === false && frame._selfAccumConcat === null
+}
+
+/** Hand the frame's rewound loop labels to the module pass (optimize/loop-rewind.js)
+ *  under the function's WAT name, once the body is emitted: loop labels count
+ *  from zero in every function, so the name is the other half of a loop's identity. */
+export function publishLoopRewinds(ctx, name) {
+  const labels = ctx.func.loopRewinds
+  if (labels?.size) (ctx.plans.rewindLoopLabels ??= new Map()).set(`$${name}`, labels)
 }

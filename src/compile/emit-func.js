@@ -10,7 +10,7 @@ import {
   typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
   isUndef, dollar, tcoTailRewrite, applyBigintRepresentationAction,
 } from '../ir.js'
-import { restoreActiveFunction } from './active-function.js'
+import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { installFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
 import { emit, emitBlockBody, emitIdentitySafe, toBool } from './emit.js'
@@ -365,6 +365,7 @@ export function emitFunc(func, functionPlan, programFacts) {
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
+  publishLoopRewinds(ctx, name)
   return fn
   } finally {
     ctx.closure.emitting = prevEmitting

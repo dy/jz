@@ -2252,3 +2252,27 @@ test('array callbacks: an inlined callback reads the element through its layouts
   ok(!/\$__dyn_get/.test(fn), 'no dynamic read in the loop')
   is([jz(src).exports.f(0), jz(src).exports.f(2), jz(src).exports.f(5)], [2, 4, -1])
 })
+
+// A slice is a fresh copy whose first element is the receiver's at the start:
+// the summary's positional row of a literal must not carry over unshifted
+// (`['func', [..]].slice(1)[0]` read as a string, its length as 0).
+test('.slice: a copy from a literal start reads its own positions', () => {
+  const { f } = run(`export let f = () => {
+    const p = ['func', ['type', 0]]
+    const r = p.slice(1)
+    return r[0].length * 100 + r.length * 10 + (typeof r[0] === 'object' ? 1 : 0)
+  }`)
+  is(f(), 211)
+  const { g } = run(`export let g = (i) => {
+    const p = ['func', ['type', 0], 5]
+    const r = p.slice(i)
+    return r.length * 10 + (typeof r[0] === 'object' ? 1 : 0)
+  }`)
+  is(g(1), 21); is(g(2), 10)
+  const { h } = run(`export let h = () => {
+    const p = [1, 'ab', [2]]
+    const r = p.slice(0, 2)
+    return r.length * 10 + r[1].length
+  }`)
+  is(h(), 22, 'an end bound keeps the positions from the start')
+})

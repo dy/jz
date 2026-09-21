@@ -2106,6 +2106,10 @@ export default (ctx) => {
     if (Array.isArray(obj) && obj[0] === '{}') return null
     if (typeof obj === 'string' && (ctx.func.flatObjects?.has(obj)
         || (ctx.schema.idOf(obj) != null && !ctx.transform.dynamicAccessorNames?.has(prop)))) return null
+    // A receiver that is no instance of a class with the accessor (the class
+    // dispatch tested each) carries it only as a slot of an object literal's
+    // schema or as a static pair on a class value: with neither, the read is plain
+    if (!ctx.transform.dynamicAccessorNames?.has(prop) && !ctx.schema.list.some(s => s?.includes(getter))) return null
     // The summary's layouts say the same for any receiver it types (an
     // element read `const e = evs[i]`, a parameter every caller proves): when
     // no member layout holds the slot and no member is a class with the

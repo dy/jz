@@ -270,10 +270,10 @@ const recordAccessor = (key, dynamic) => {
   if (dynamic) (ctx.transform.dynamicAccessorNames ??= new Set()).add(key)
 }
 // [kind, key, params, body] → [slot, params, body] (a method entry)
-function accessorMethod(it, constStrings, dynamic) {
+function accessorMethod(it, constStrings) {
   const key = typeof it[1] === 'string' ? it[1] : constStringKey(it[1], constStrings)
   if (key == null) jzifyError(JC.computedMember)
-  recordAccessor(key, dynamic)
+  recordAccessor(key, false)
   return [accessorSlot(it[0], key), it[2] ?? null, it[3]]
 }
 
@@ -436,7 +436,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       statics.push([accessorSlot(acc[0], key), ['function', null, acc[2], acc[3]], true])
       continue
     }
-    if (it[0] === 'get' || it[0] === 'set') { methods.push(accessorMethod(it, constStrings, heritage != null)); continue }
+    if (it[0] === 'get' || it[0] === 'set') { methods.push(accessorMethod(it, constStrings)); continue }
     const bareFieldName = constStringKey(it, constStrings)
     if (bareFieldName != null) { fields.push([bareFieldName, null]); continue }
     // A method `m() {}`, `async m() {}`, `*g() {}`, `async *g() {}`: the value

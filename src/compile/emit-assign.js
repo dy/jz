@@ -724,6 +724,10 @@ function accessorStore(obj, prop, val) {
   // dynamically; a scalar-replaced literal never leaves its function
   if (sid != null && !known && !ctx.transform.dynamicAccessorNames?.has(prop)) return null
   if (typeof obj === 'string' && ctx.func.flatObjects?.has(obj)) return null
+  // a receiver that is no instance of a class with the accessor (the class
+  // dispatch tested each) carries it only as a slot of an object literal's
+  // schema or as a static pair on a class value: with neither, the store is plain
+  if (!known && !ctx.transform.dynamicAccessorNames?.has(prop) && !ctx.schema.list.some(s => s?.includes(setter))) return null
   const void_ = ctx.func._expect === 'void'
   // JS order: the receiver, then the value
   const pre = []

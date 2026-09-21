@@ -1027,16 +1027,19 @@ export const controlFlowOps = {
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
     // Per-iteration arena rewind (compile/analyze/frame-effects.js): an iteration
     // that lets no allocation escape and builds a value restores the heap pointer
-    // at its start, so its temporaries never accumulate. Recorded here by the
-    // loop's label (unique in the module, and kept by every rewrite where the
-    // node itself is copied), inserted after the vectorizer has matched loop
-    // shapes (optimize/loop-rewind.js), and validated against the body's
-    // callees at link (optimize/arena-rewind.js). The heap pointer's home (the
-    // `$__heap` global of an owned memory, the reserved word of a shared one)
-    // is declared with the allocator after emission; the pass checks for it at link.
+    // at its start, so its temporaries never accumulate. Recorded here on
+    // the frame by the loop's label (labels count from zero in every
+    // function, and a rewrite that copies the loop's node keeps its label),
+    // published under the function's WAT name once its body is emitted
+    // (active-function.js publishLoopRewinds), inserted after the vectorizer
+    // has matched loop shapes (optimize/loop-rewind.js), and validated
+    // against the body's callees at link (optimize/arena-rewind.js). The heap
+    // pointer's home (the `$__heap` global of an owned memory, the reserved
+    // word of a shared one) is declared with the allocator after emission;
+    // the pass checks for it at link.
     if (ctx.plans.rewindLoops?.has(bodyNode0) && !ctx.memory.atomic
         && (!ctx.transform.optimize || ctx.transform.optimize.arenaRewind !== false))
-      (ctx.plans.rewindLoopLabels ??= new Set()).add(loop)
+      (ctx.func.loopRewinds ??= new Set()).add(loop)
     // HIR provenance link (.work/evidence.md §BodyModel slice 4; pre-
     // emission move): stamp this WAT loop's originating HIR facts so the vectorizer's
     // dispatch can shadow-assert against them — see ir.js's loopPlanLink doc for the

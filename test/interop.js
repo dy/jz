@@ -13,6 +13,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import * as interop from 'jz/interop'
 import { onWasi, onKernel, levels } from './_matrix.js'
+import { HEAP } from '../layout.js'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
 
@@ -528,4 +529,26 @@ test('interop: modules sharing a memory bind their schemas at the same ids or ar
   // a module without schemas shares any memory
   const plain = jz('export let inc = (x) => x + 1', { memory: one.memory })
   is(plain.exports.inc(one.exports.rp(one.exports.mk())), 2)
+})
+
+// The rejection comes before the module links: instantiated first, its start
+// function would have copied its static data into the shared heap and run its
+// module scope, and its tables would have been half committed (the Error
+// classes first, then the schemas up to the one that binds elsewhere).
+test('interop: a rejected module leaves the memory it would share untouched', () => {
+  if (onKernel()) return
+  const memory = jz.memory()
+  const one = jz(`export let mk = () => ({ p: 1, q: 'a longer static string' }), rq = (o) => o.q`, { memory })
+  const o = one.exports.mk()
+  const tables = () => JSON.stringify([memory.schemas, [...memory._schemaKeyToId], [...memory.errorSidToClass], [...memory.brandOfSid], memory.fieldContracts])
+  const heap = () => new DataView(memory.buffer).getUint32(HEAP.PTR_ADDR, true)
+  const before = tables(), ptr = heap()
+  // static data, module-scope allocation, Error classes and another shape: its schema 0 would bind as schema 1
+  throws(() => jz(`let cache = ['static text of another module', 'more static text']
+    export let mk = () => ({ s: true, r: cache[0] }), fail = (w) => { if (w) throw new RangeError('out'); throw new TypeError('bad') }`, { memory }),
+    /schema 0 \{[^}]*\} of this module binds as schema 1/)
+  is(tables(), before, 'the tables did not change')
+  is(heap(), ptr, 'nothing was allocated')
+  is(one.exports.rq(o), 'a longer static string')
+  is(JSON.stringify(memory.read(o)), '{"p":1,"q":"a longer static string"}')
 })

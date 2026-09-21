@@ -32,17 +32,18 @@
  * The same census runs per loop, with the loop body as the scope: a binding
  * declared inside the body is the iteration's own, everything else (the
  * function's other locals, its parameters, module state) is outer. A loop
- * whose iteration lets no allocation escape and that itself builds a value (a
- * literal, a `new`, a concatenation, a fresh-value method; a callee's
- * allocations are its own frame's) restores the heap pointer at the top of
- * every iteration
- * (emit/control-flow.js), so a loop building a temporary per row runs in
- * constant memory.
+ * whose iteration lets no allocation escape and that builds a value (a
+ * literal, a `new`, a concatenation, a fresh-value method, itself or in a
+ * function it calls: a callee's allocations belong to the iteration that
+ * called it, and go with it) restores the heap pointer at the top of every
+ * iteration (emit/control-flow.js), so a loop building a temporary per row
+ * runs in constant memory.
  *
  *   callsUnknown — the body runs code the census cannot name: a call whose
  *                  target is no known function (a closure value, a computed
- *                  callee, a host import, an unlisted method, an accessor,
- *                  a callback the census cannot see).
+ *                  callee, a host import, an unlisted method, a member of
+ *                  a receiver the summary cannot type, a callback the
+ *                  census cannot see).
  *
  * Both function facts are transitive over direct calls to same-module
  * functions (`transitiveFrameEffects`, an iterative fixpoint over the call
@@ -57,7 +58,7 @@
  *
  * @module compile/analyze/frame-effects
  */
-import { ASSIGN_OPS, isFunctionNode } from '../../ast.js'
+import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, isFunctionNode } from '../../ast.js'
 import { K, tagOf, hasTag } from '../../summary/kind.js'
 import { ctx } from '../../ctx.js'
 
@@ -155,6 +156,36 @@ function scalarKind(view, e) {
     !hasTag(k, K.DATE) && !hasTag(k, K.REGEX) && !hasTag(k, K.BUFFER) && tagOf(k) !== K.ANY
 }
 
+/** The class functions a member reaches on the receiver's listed layouts: a
+ *  method by its name, an accessor's getter or setter by its slot name
+ *  (`x__get`, `x__set`). Named when the receiver's kind has an object part,
+ *  no own property may shadow the name, and every layout is a class with the
+ *  member (a layout without an accessor reads its slot; one without a method
+ *  runs code the census cannot name, as does one whose schema declares the
+ *  accessor slot, an object literal's own getter or setter closure, or one
+ *  that may carry a static pair beside its slots, jzify/classes.js; a lost
+ *  layout keeps its class and its slot names, so it resolves like any other).
+ *  A receiver that may be nullish throws before any call. Null where the
+ *  census cannot name them. */
+function memberFunctions(view, recv, prop, slot, method) {
+  if (!view) return null
+  let k
+  try { k = view.kindOfExpr(recv) } catch { return null }
+  if (k == null || !hasTag(k, K.OBJECT)) return null
+  if (ctx.summary?.memberMayBeOwn?.(prop)) return null
+  const sids = view.shapesOfExpr(recv)
+  if (!sids?.length) return null
+  const dynamic = !method && ctx.transform?.dynamicAccessorNames?.has(prop) === true
+  const fns = new Set()
+  for (const sid of sids) {
+    const fn = view.layoutMember(sid, slot)
+    if (fn) fns.add(fn)
+    else if (method || view.layoutSlot(sid, slot) || (dynamic && view.layoutSide(sid, slot))) return null
+  }
+  return fns
+}
+const NO_FUNCTIONS = Object.freeze(new Set())
+
 /** The receiver is a typed array or ArrayBuffer view: element stores are
  *  numbers into fixed storage. */
 const NO_NAMES = new Set()
@@ -171,6 +202,7 @@ const freshInit = (e) => {
   if (!isArr(e)) return false
   const op = e[0]
   if (isObjectLiteral(e) || op === '[') return true   // an object literal, an array literal (prepared spelling: `[` builds, `[]` indexes)
+  if (op === '?:') return freshInit(e[2]) && freshInit(e[3])   // a choice between fresh values
   if (op === 'new' && isArr(e[1]) && e[1][0] === '()') return isName(e[1][1]) && (FRESH_CTORS.test(e[1][1]) || knownFunc(e[1][1]))
   if (op === '()' && isName(e[1])) { const c = ctorOf(e[1]); return e[1] === 'Array' || (c !== null && (FRESH_CTORS.test(c) || knownFunc(c))) }
   return false
@@ -250,7 +282,22 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   const unsafe = (why) => { out.writesOuter = true; if (!out.arenaUnsafe) { out.arenaUnsafe = true; out.why = why } }
   const unknownCall = (why) => { out.callsUnknown = true; unsafe(why) }
   const allocates = () => { out.allocates = true }
-  const accessor = (prop) => isName(prop) && ctx.transform?.accessorNames?.has(prop)
+  // A read or store of a property named like an accessor: the class getters
+  // or setters it reaches on this receiver (none where the summary rules an
+  // accessor out: a kind that is no object, an array's or a string's own
+  // `length`; layouts without it), or null where the census cannot name them
+  // (a class value may carry a static pair, jzify/classes.js).
+  const accessorFunctions = (prop, recv, slot) => {
+    if (!isName(prop) || !ctx.transform?.accessorNames?.has(prop)) return NO_FUNCTIONS
+    if (!view) return null
+    let k
+    try { k = view.kindOfExpr(recv) } catch { return null }
+    if (k == null) return null
+    if (hasTag(k, K.CLOSURE) && ctx.transform?.dynamicAccessorNames?.has(prop)) return null
+    if (!hasTag(k, K.OBJECT)) return tagOf(k) === K.ANY || tagOf(k) === K.NONE ? null : NO_FUNCTIONS
+    return memberFunctions(view, recv, prop, slot, false)
+  }
+  const reaches = (fns) => { for (const fn of fns) out.callees.add(fn) }
 
   // A store into `recv`: fresh-local receivers are fresh memory; a nested
   // path below a fresh local (`o.a.b = v`) reaches storage the local's own
@@ -271,6 +318,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       if (knownFunc(callee)) { out.callees.add(callee); return }
       if (arrows.has(callee) && !writtenNested.has(callee) && !params.has(callee)) { scanArrow(arrows.get(callee)); return }
       if (PURE_CALLEES.test(callee)) { if (!SCALAR_CALLEES.test(callee)) allocates(); return }
+      if (FRESH_CTORS.test(callee)) { allocates(); return }   // a constructor called plainly (`throw TypeError(m)`): fresh storage, no user code
       return unknownCall('call ' + callee)
     }
     if (isArr(callee) && callee[0] === '.' && isName(callee[2])) {
@@ -280,7 +328,10 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       if (key && /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./.test(key) || method === 'call' || method === 'apply' || method === 'bind') return unknownCall('call ' + (key ?? method))
       const resolved = resolveMember(recv, method)
       if (resolved) { out.callees.add(resolved.name); return }
-      if (accessor(method)) return unknownCall('accessor ' + method)
+      // the class functions of a receiver the index does not resolve (one that may be nullish, or of several classes)
+      const fns = memberFunctions(view, recv, method, method, true)
+      if (fns) { reaches(fns); return }
+      if (accessorFunctions(method, recv, method + ACCESSOR_GET) !== NO_FUNCTIONS) return unknownCall('accessor ' + method)
       const hasClosureArg = argList(args).some(isFunctionNode)
       if (CALLBACK_METHODS.has(method)) {
         allocates()
@@ -328,15 +379,17 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
           if (heap) unsafe((outerName ? 'outer binding ' : 'shared cell ') + target)
         }
       } else if (isArr(target) && target[0] === '.') {
-        if (accessor(target[2])) unsafe('accessor ' + target[2])
-        else store(target[1], val, false)
+        const fns = accessorFunctions(target[2], target[1], target[2] + ACCESSOR_SET)
+        if (fns === null) unsafe('accessor ' + target[2])
+        else { reaches(fns); store(target[1], val, false) }
       } else if (isArr(target) && target[0] === '[]') {
         // Element store: a plain array may grow past its length; a typed
         // array and a fixed-shape object slot do not.
         const recv = target[1]
         const lit = isArr(target[2]) && target[2][0] == null && typeof target[2][1] === 'string'
-        if (lit && accessor(target[2][1])) unsafe('accessor ' + target[2][1])
-        else store(recv, val, !typedRecv(recv) && !(lit && view?.objectSidOfExpr?.(recv) != null))
+        const fns = lit ? accessorFunctions(target[2][1], recv, target[2][1] + ACCESSOR_SET) : NO_FUNCTIONS
+        if (fns === null) unsafe('accessor ' + target[2][1])
+        else { reaches(fns); store(recv, val, !typedRecv(recv) && !(lit && view?.objectSidOfExpr?.(recv) != null)) }
       } else if (isArr(target) && target[0] === '{}') {
         unsafe('destructuring assignment')   // targets may be member paths
       } else unsafe('assignment target')
@@ -360,7 +413,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       else unsafe('new <expr>')
       return
     }
-    if (op === '.' && accessor(n[2])) unsafe('accessor ' + n[2])
+    if (op === '.') { const fns = accessorFunctions(n[2], n[1], n[2] + ACCESSOR_GET); if (fns === null) unsafe('accessor ' + n[2]); else reaches(fns) }
     if (op === 'for' && isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) allocates()   // an iterator record, key strings
     for (let i = 1; i < n.length; i++) walkExpr(n[i])
   }
@@ -386,13 +439,16 @@ function loopsOf(body) {
 /** The function's own facts and, per loop, the iteration's. */
 function frameEffectsOf(func) {
   const body = func.body
-  const view = ctx.summary?.at(func)
+  // the function's own view (keyed by its signature, as the emitter's), not the module's
+  const view = ctx.summary?.at(func.sig ?? func.body)
   if (body == null) return { writesOuter: true, arenaUnsafe: true, allocates: true, callsUnknown: true, why: 'no body', callees: new Set(), loops: [] }
   const params = new Set(), typedParams = new Set()
   for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
   const out = census(view, [body], [body], params, typedParams)
-  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], params, typedParams) }))
+  // a loop's scope declares nothing of the function's: its parameters are
+  // outer storage there (a block kept in one outlives the iteration)
+  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams) }))
   return out
 }
 
@@ -411,14 +467,16 @@ function patternNames(p, out = []) {
  * Transitive facts over the direct call graph, for every function in
  * `funcs`. A callee outside the map is unknown. Returns Map<name, facts>,
  * each `{ writesOuter, arenaUnsafe, callsUnknown, callees, why, loops }`:
- * `callees` every known function a call reaches, `loops` the body nodes of
- * the loops whose iteration lets no allocation escape and that allocate.
+ * `callees` every known function a call reaches, `allocates` whether the
+ * function or a callee allocates, `loops` the body nodes of the loops whose
+ * iteration lets no allocation escape and that allocate, themselves or
+ * through a callee.
  */
 export function transitiveFrameEffects(funcs) {
   const own = new Map()
   for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f))
   const facts = new Map()
-  for (const [name, o] of own) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, callsUnknown: o.callsUnknown, why: o.why, callees: new Set(o.callees), loops: new Set() })
+  for (const [name, o] of own) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, callsUnknown: o.callsUnknown, allocates: o.allocates, why: o.why, callees: new Set(o.callees), loops: new Set() })
   for (let changed = true; changed;) {
     changed = false
     for (const [name, o] of own) {
@@ -429,6 +487,7 @@ export function transitiveFrameEffects(funcs) {
         if (w && !f.writesOuter) { f.writesOuter = true; changed = true }
         if (u && !f.arenaUnsafe) { f.arenaUnsafe = true; f.why = 'calls ' + c + (g ? ': ' + g.why : ' (unknown)'); changed = true }
         if (k && !f.callsUnknown) { f.callsUnknown = true; changed = true }
+        if (g?.allocates && !f.allocates) { f.allocates = true; changed = true }
         if (g) for (const cc of g.callees) if (!f.callees.has(cc)) { f.callees.add(cc); changed = true }
       }
     }
@@ -436,7 +495,7 @@ export function transitiveFrameEffects(funcs) {
   for (const [name, o] of own) {
     const f = facts.get(name)
     for (const { body, own: l } of o.loops)
-      if (!l.arenaUnsafe && l.allocates && [...l.callees].every(c => facts.get(c)?.arenaUnsafe === false)) f.loops.add(body)
+      if (!l.arenaUnsafe && (l.allocates || [...l.callees].some(c => facts.get(c)?.allocates)) && [...l.callees].every(c => facts.get(c)?.arenaUnsafe === false)) f.loops.add(body)
   }
   return facts
 }

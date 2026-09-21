@@ -16,7 +16,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -388,6 +388,8 @@ export function summaryQueries(facts, internal = false) {
       spreadSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
       // The member shapes of an object expression, a set's or the one shape, for a
       // guarded slot access; null when the shape is unknown or not an object.
+      /** A function or closure a walk reached: the program runs it; the rest keep no kind. */
+      reaches: id => reached?.has(id) === true,
       shapesOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? [...new Set(shapesOf(paramOf(k)).map(sid => layouts[sid]))] : null },
       // Payload queries preserve identity independently of nullish presence.
       objectSidOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && publicSid(k) !== UNKNOWN ? publicSid(k) : null },
@@ -423,6 +425,12 @@ export function summaryQueries(facts, internal = false) {
       paramKindOf: name => { const key = keyOf(name); return key === null ? K.NONE : pub(canon(incoming[key] ?? K.NONE)) },
       elemOfKind: k => pub(elemOf(k)),
       valOf: name => valOf(readKind(name)),
+      // A layout's class member by slot name (`x`, `x__get`, `x__set`); null when its class has none or it is no class's.
+      layoutMember: (sid, name) => methods.get(sid)?.get(name) ?? null,
+      // Whether the layout's schema declares the slot (an object literal's accessor closure lives in one).
+      layoutSlot: (sid, name) => schemas[sid]?.includes(name) === true,
+      // Whether a name may be stored beside the layout's slots at any of its construction sites (a dynamic property).
+      layoutSide: (sid, name) => (sitesByLayout.get(sid) ?? [sid]).some(site => tagOf(sideOf(site, name)) !== K.NONE),
       // One non-nullish class receiver, with no possible own-member shadow.
       classCallee: (recv, name) => { const r = kindOfExpr(recv); if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null; const fn = classMember(r, name); return fn && !memberMayBeOwn(name) ? fn : null },
       // valOf deliberately declines nullable kinds; payload queries do not.

@@ -240,6 +240,96 @@ const ELEM_BY_ID = Object.values(ELEMS)
 const _enhanced = new WeakSet()
 
 /**
+ * The tables a module declares for the memory it links to, read from its
+ * custom sections (the jz:schema writer in compile/index.js): the Error class
+ * and the user-class brand by schema id, the field contracts and the property
+ * lists by position (entry index === compile-time schema id). A schema entry
+ * is { type, payload }: type 0 a null (computed or missing key), type 1 a
+ * nested [null, name] (synthetic shape), type 3 a JSON-escaped property name
+ * without its quotes, type 2 legacy text.
+ */
+const NO_TABLES = { errorClasses: new Map(), brands: new Map(), fields: [], schemas: [] }
+const moduleTables = (mod) => {
+  const errorClasses = new Map(), brands = new Map(), fields = [], schemas = []
+  const errClsBytes = customSection(mod, 'jz:errcls')
+  if (errClsBytes) {
+    const r = sectionReader(errClsBytes), n = r.varint()
+    for (let j = 0; j < n; j++) { const sid = r.varint(); errorClasses.set(sid, r.str(r.varint())) }
+  }
+  const brandBytes = customSection(mod, 'jz:brand')
+  if (brandBytes) {
+    const r = sectionReader(brandBytes), n = r.varint()
+    for (let j = 0; j < n; j++) { const sid = r.varint(); brands.set(sid, r.str(r.varint())) }
+  }
+  const fieldBytes = customSection(mod, 'jz:fields')
+  if (fieldBytes) {
+    const r = sectionReader(fieldBytes), count = r.varint()
+    for (let sid = 0; sid < count; sid++) {
+      const row = [], n = r.varint()
+      for (let i = 0; i < n; i++) {
+        const header = r.varint()
+        row.push([header >>> 3, header & 1 ? r.varint() : -1, header & 2 ? r.varint() : 0, header & 4 ? Number(r.str(r.varint())) : null])
+      }
+      fields.push(row)
+    }
+  }
+  const schemaBytes = customSection(mod, 'jz:schema')
+  if (schemaBytes) {
+    const r = sectionReader(schemaBytes)
+    const dec = () => {
+      const t = r.u8()
+      if (t === 0) return null
+      if (t === 1) return [null, dec()]
+      const name = r.str(r.varint())
+      return t === 3 ? JSON.parse('"' + name + '"') : name
+    }
+    const n = r.varint()
+    for (let j = 0; j < n; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); schemas.push(props) }
+  }
+  return { errorClasses, brands, fields, schemas }
+}
+
+/**
+ * A module's tables merged into a memory's, on copies: the memory's own tables
+ * do not change, so a rejected module leaves no trace, and `instantiate` runs
+ * the merge before a module links to the memory it would share, where its
+ * start function and data would already have written. The enhancer commits
+ * the result. The first module's numbering is authoritative: a sid already
+ * known keeps its class and brand.
+ *
+ * A pointer carries the schema id its module compiled with, so every schema
+ * must bind at that id here: a module whose schema would bind at another id
+ * is rejected. Modules sharing a memory agree on their ids (one compilation,
+ * or the same module again) or take memories of their own. The dedup key
+ * mirrors ctx.schema.register's compile-time key (module/schema.js): the
+ * property list as JSON (a separator could not tell `a\u0001b, c` from
+ * `a, b\u0001c`) salted with the module's own class name for the schema (all
+ * seven built-in Error classes share the props ['message', 'name'] and are
+ * distinct only by their salt; two user classes of one field list likewise).
+ * `_schemaKeyToId` remembers the salted key per id across merges: `schemas`
+ * itself stays the plain list of property names that `read` indexes by sid,
+ * from which a salted key cannot be recovered.
+ */
+const mergeTables = (mem, t) => {
+  const errorSidToClass = new Map(mem.errorSidToClass), brandOfSid = new Map(mem.brandOfSid)
+  const schemas = [...(mem.schemas || [])], _schemaKeyToId = new Map(mem._schemaKeyToId), fieldContracts = [...(mem.fieldContracts || [])]
+  for (const [sid, name] of t.errorClasses) if (!errorSidToClass.has(sid)) errorSidToClass.set(sid, name)
+  const keys = t.schemas.map((s, j) => { const salt = t.errorClasses.get(j) ?? t.brands.get(j); return JSON.stringify(s) + (salt ? '\x02' + salt : '') })
+  keys.forEach((key, j) => {
+    let sid = _schemaKeyToId.get(key)
+    if (sid === undefined) { _schemaKeyToId.set(key, sid = schemas.length); schemas.push(t.schemas[j]) }
+    if (sid !== j) throw new TypeError(`jz: schema ${j} {${t.schemas[j].join(', ')}} of this module binds as schema ${sid} in the memory it shares; modules sharing a memory must bind their schemas at the same ids (compile them together, or give each its own memory)`)
+    if (t.brands.has(j)) brandOfSid.set(j, t.brands.get(j))
+    const row = t.fields[j]
+    if (!row?.length) return
+    if (fieldContracts[j] && JSON.stringify(fieldContracts[j]) !== JSON.stringify(row))
+      throw new TypeError('jz: incompatible field contracts for a schema already bound to this memory')
+    fieldContracts[j] = row
+  })
+  return { schemas, _schemaKeyToId, errorSidToClass, brandOfSid, fieldContracts }
+}
+
+/**
  * Enhance WebAssembly.Memory with jz read/write methods (monkey-patch).
  * - memory() → create new Memory, patch, return
  * - memory({ initial: N }) → create with options, patch, return
@@ -303,128 +393,12 @@ export const memory = (src) => {
     return raw + 16
   }
 
-  // Read the Error-class sid→name map FIRST (audit-#9 P0-2 brand redesign —
-  // class identity lives in the schema id, not a decodable slot, so
-  // decodeThrown below needs this table to recover which ECMAScript class a
-  // decoded Error object's sid came from). Same merge discipline as
-  // `schemas` below: a sid already known (from a prior enhance of this
-  // memory) wins — first module's numbering is authoritative. Read before
-  // jz:schema below because that merge now needs it (this module's own
-  // sid→className, keyed by the SAME positional index jz:schema uses).
-  const errorSidToClass = mem.errorSidToClass || new Map()
-  const errClsBytes = mod && customSection(mod, 'jz:errcls')
-  if (errClsBytes) {
-    const r = sectionReader(errClsBytes)
-    const n = r.varint()
-    for (let j = 0; j < n; j++) {
-      const sid = r.varint(), name = r.str(r.varint())
-      if (!errorSidToClass.has(sid)) errorSidToClass.set(sid, name)
-    }
-  }
-
-  // The user-class brand per schema (positional, like jz:errcls): the dedup
-  // key below salts with it, so two classes of one field list keep their own
-  // sids and contracts. `mem.brandOfSid` remembers the class by sid for the
-  // plain-object shape match in wrapVal. A pointer carries the id its module
-  // compiled with, so a module whose schema would bind at another id in this
-  // memory is rejected below: modules sharing a memory agree on their ids
-  // (one compilation, or the same module again) or take memories of their own.
-  const brandOfSid = mem.brandOfSid || new Map()
-  const moduleBrands = new Map()
-  const brandBytes = mod && customSection(mod, 'jz:brand')
-  if (brandBytes) {
-    const r = sectionReader(brandBytes)
-    const n = r.varint()
-    for (let j = 0; j < n; j++) { const sid = r.varint(); moduleBrands.set(sid, r.str(r.varint())) }
-  }
-
-  // Read schemas from module custom section, merge into memory.schemas. Schema
-  // entries are { type, payload } where type=0 means null (computed/missing
-  // key), type=1 means nested [null, name] (synthetic shape), type=3 is a
-  // UTF-8 JSON-escaped property name (without outer quotes); type=2 is legacy text. Section format is varint-prefixed list,
-  // POSITIONAL (entry index === compile-time schema id — compile/index.js's
-  // jz:schema writer comment).
-  //
-  // The dedup key MUST mirror ctx.schema.register's own compile-time key
-  // exactly (module/schema.js: `props.length + '\x01' + props.join('\x01')
-  // + (salt ? '\x02' + salt : '')`) — content alone is not a valid identity.
-  // All 7 built-in Error classes deliberately share props ['message','name']
-  // and are kept distinct at compile time only by their class-name salt; a
-  // content-only key (the previous form here) collapsed every Error class
-  // after the first into ONE merged index, shifting every later sid's
-  // position in `schemas` and corrupting that entry's decode — the LIVE
-  // sibling of the dead-schema collision compile/index.js's jz:schema writer
-  // already documents and fixes (its `[String(id)]` placeholder solves it
-  // only for DEAD entries, which carry no salt to lose). Minimal repro:
-  // `export let f = w => { if (w===0) throw new TypeError('a'); if (w===1)
-  // throw new RangeError('b'); throw Error('c') }` — TypeError decodes fine
-  // (first registered), RangeError/Error both lose their .message (decode to
-  // an EMPTY schema, `mem.schemas[sid] === []`, from the dedup collision).
-  //
-  // `mem._schemaKeyToId` persists the salted key → index mapping across
-  // enhances — `schemas[]` itself must stay a plain prop-name-array list
-  // (mem.read's OBJECT case indexes it directly by sid and reads prop names
-  // off it), so a key that was salt-qualified can't be recovered later by
-  // re-scanning `schemas` content alone; it has to be remembered separately.
-  const fieldContracts = mem.fieldContracts || []
-  const fieldBytes = mod && customSection(mod, 'jz:fields')
-  const incomingFields = []
-  if (fieldBytes) {
-    const r = sectionReader(fieldBytes), count = r.varint()
-    for (let sid = 0; sid < count; sid++) {
-      const row = [], n = r.varint()
-      for (let i = 0; i < n; i++) {
-        const header = r.varint()
-        row.push([header >>> 3, header & 1 ? r.varint() : -1, header & 2 ? r.varint() : 0, header & 4 ? Number(r.str(r.varint())) : null])
-      }
-      incomingFields.push(row)
-    }
-  }
-  let schemas = mem.schemas || []
-  const schemaKeyToId = mem._schemaKeyToId || new Map()
-  const schemaBytes = mod && customSection(mod, 'jz:schema')
-  if (schemaBytes) {
-    const r = sectionReader(schemaBytes)
-    const dec = () => {
-      const t = r.u8()
-      if (t === 0) return null
-      if (t === 1) return [null, dec()]
-      const name = r.str(r.varint())
-      return t === 3 ? JSON.parse('"' + name + '"') : name
-    }
-    const nS = r.varint(), newSchemas = []
-    for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
-    // the field list as JSON: a separator could not tell `a\u0001b, c` from `a, b\u0001c`
-    const keys = newSchemas.map((s, j) => { const salt = errorSidToClass.get(j) ?? moduleBrands.get(j); return JSON.stringify(s) + (salt ? '\x02' + salt : '') })
-    // every schema binds at the id its module compiled with, or the module is
-    // rejected before the memory's tables change
-    const fresh = new Map()
-    keys.forEach((key, j) => {
-      let sid = schemaKeyToId.get(key) ?? fresh.get(key)
-      if (sid === undefined) fresh.set(key, sid = schemas.length + fresh.size)
-      if (sid !== j) throw new TypeError(`jz: schema ${j} {${newSchemas[j].join(', ')}} of this module binds as schema ${sid} in the memory it shares; modules sharing a memory must bind their schemas at the same ids (compile them together, or give each its own memory)`)
-    })
-    newSchemas.forEach((s, j) => {
-      const key = keys[j]
-      if (!schemaKeyToId.has(key)) { schemaKeyToId.set(key, schemas.length); schemas.push(s) }
-      const sid = schemaKeyToId.get(key), row = incomingFields[j]
-      if (moduleBrands.has(j)) brandOfSid.set(sid, moduleBrands.get(j))
-      if (row?.length) {
-        if (fieldContracts[sid] && JSON.stringify(fieldContracts[sid]) !== JSON.stringify(row))
-          throw new TypeError('jz: incompatible field contracts for a schema already bound to this memory')
-        fieldContracts[sid] = row
-      }
-    })
-  }
-
-  mem.fieldContracts = fieldContracts
+  // The module's tables joined to the memory's (rejected before anything
+  // changes when the module compiled with other ids), committed as a whole
+  Object.assign(mem, mergeTables(mem, mod ? moduleTables(mod) : NO_TABLES))
 
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
-    mem.schemas = schemas
-    mem._schemaKeyToId = schemaKeyToId
-    mem.errorSidToClass = errorSidToClass
-    mem.brandOfSid = brandOfSid
     if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
     mem.reset = reset
     if (extMap) mem._extMap = extMap
@@ -432,10 +406,6 @@ export const memory = (src) => {
   }
 
   // Patch methods onto the Memory instance
-  mem.schemas = schemas
-  mem._schemaKeyToId = schemaKeyToId
-  mem.errorSidToClass = errorSidToClass
-  mem.brandOfSid = brandOfSid
   mem._extMap = extMap
 
   mem.Array = (data) => {
@@ -1621,6 +1591,9 @@ const buildImports = (mod, opts, state) => {
   if (opts.memory instanceof WebAssembly.Memory) {
     // Auto-wrap raw WebAssembly.Memory → enhanced jz.memory
     if (!_enhanced.has(opts.memory)) opts.memory = memory(opts.memory)
+    // A module whose schemas would bind at other ids is rejected here, before
+    // its start function and data segments write into the memory it shares
+    else mergeTables(opts.memory, moduleTables(mod))
     if (!imports.env) imports.env = {}
     imports.env.memory = opts.memory
   }
