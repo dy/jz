@@ -21,7 +21,7 @@ import { emit, storedValue } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
 import { plannedTypedStorageCtor } from '../../src/compile/typed-storage-plan.js'
-import { extractParams, refsName, REFS_IN_EXPR } from '../../src/ast.js'
+import { extractParams, refsName, REFS_IN_EXPR, T } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, PTR } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
@@ -91,7 +91,11 @@ function exprUses(node, name) {
 // args-array alloc. Captures resolve naturally to outer locals.
 // Slow path: fall back to ctx.closure.call (heap-allocated args array per iteration).
 // usedParams: boolean array (fast path only) — callers can skip computing args for unused params.
-export function makeCallback(fn, argReps) {
+// elem: `{ index, expr }`, the parameter position that receives the array's
+// element and the read it stands for (callbackElem): the inlined local reads
+// as that element to the summary, so the body's member reads resolve the
+// element's layouts as the loop's own read would.
+export function makeCallback(fn, argReps, elem = null) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
     const body = fn[2]
@@ -134,7 +138,10 @@ export function makeCallback(fn, argReps) {
             }
           }
           const subst = substExpr(body, mapping)
-          const result = produce(subst)
+          const view = elem && freshNames[elem.index] ? ctx.summary?.at(ctx.func.current) : null
+          if (view) view.alias(freshNames[elem.index], elem.expr, false)
+          let result
+          try { result = produce(subst) } finally { if (view) view.unalias(freshNames[elem.index]) }
           // Preserve i32 result type so callers (truthyIR, etc.) can skip f64↔i32 round-trips.
           const ty = result.type === 'i32' ? 'i32' : 'f64'
           const wrapped = typed(['block', ['result', ty], ...stmts, result], ty)
@@ -164,6 +171,10 @@ export function makeCallback(fn, argReps) {
   // result already crosses its ABI in the store's form.
   return captureCallback(fn)
 }
+
+/** The element a callback's parameter `index` receives: a read of `arr` at a
+ *  position the summary does not know, which is every element's kind. */
+export const callbackElem = (arr, index = 0) => ({ index, expr: ['[]', arr, T + 'i'] })
 
 // Derive callback argReps from a receiver AST. For .map/.filter/etc., callbacks
 // receive (item, idx, arr). idx is always a NUMBER. item depends on recv kind:

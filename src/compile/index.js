@@ -1,6 +1,6 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
 import { jsonShapeStrings } from '../kind/shape.js'
-import { OPTF } from '../ctx.js'
+import { warn, OPTF } from '../ctx.js'
 import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
 /**
  * Compile prepared AST to WASM module (S-expression arrays for watr).
@@ -131,6 +131,10 @@ export function assemble(ast, profiler) {
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
     hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
+    // a function's property prepare lifted to a function of its own (`f.prop = arrow` at top level), unless the property is reassigned
+    liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
+    // `why`: the first cause the summary loses an object shape by (its reads and stores are dynamic from then on)
+    onLose: ctx.warnings ? (sid, why, fn, site) => warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) }) : null,
     moduleGlobals: ctx.scope.globals,
     constStrings: jsonShapeStrings,
     constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
@@ -826,7 +830,7 @@ export function assemble(ast, profiler) {
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
     rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
     report: ctx.transform.whyNotRewind ?? null,
-    schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries,
+    schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false,
   } }

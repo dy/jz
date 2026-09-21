@@ -10,7 +10,7 @@
  */
 import { typed, temp, freshId, arrayLoop, truthyIR, UNDEF_NAN } from '../../src/ir.js'
 import { ctx } from '../../src/ctx.js'
-import { hoistArrayValue, makeCallback, callbackArgReps, idxArg, arrArg } from './callback.js'
+import { hoistArrayValue, makeCallback, callbackArgReps, callbackElem, idxArg, arrArg } from './callback.js'
 
 export const registerEarlyExit = () => {
   // Early-exit callback iterator: init value, exit test, value on match.
@@ -18,7 +18,7 @@ export const registerEarlyExit = () => {
     const recv = hoistArrayValue(arr)
     const r = temp(tag)
     const exit = `$exit${freshId(ctx)}`
-    const cb = makeCallback(fn, callbackArgReps(arr))
+    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', test(cb, i, item, recv),
         ['then', ['local.set', `$${r}`, onMatch(cb, i, item)], ['br', exit]]]

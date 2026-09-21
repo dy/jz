@@ -9,11 +9,11 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef, isNullish, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberNanIR, typed, asF64, asI64, asI32, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isNullish, toStrI64, fwdOffsetIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral, isArrayIndexKey } from '../src/ast.js'
+import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
@@ -33,7 +33,7 @@ import { restViewRead } from '../src/compile/rest-view.js'
 import { core, isNullable, K, NUMBER, tagOf, valOf } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
-import { hoistArrayValue, makeCallback, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
+import { hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
 
@@ -2008,7 +2008,7 @@ export default (ctx) => {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb')
       const upReps = callbackArgReps(up.source)
-      const filterCb = makeCallback(up.fn, upReps), mapCb = makeCallback(fn, upReps)
+      const filterCb = makeCallback(up.fn, upReps, callbackElem(up.source)), mapCb = makeCallback(fn, upReps, callbackElem(up.source))
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fm' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i), arrArg(filterCb, recv.value)])),
@@ -2028,7 +2028,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const len = tempI32('ml'), base = tempI32('mb')
-    const cb = makeCallback(fn, callbackArgReps(arr))
+    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr))
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'mo' })
     // Reuse the precomputed len local in arrayLoop (skip its internal load).
@@ -2053,7 +2053,7 @@ export default (ctx) => {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb'), mapped = temp('mv')
       const upReps = callbackArgReps(up.source)
-      const mapCb = makeCallback(up.fn, upReps), filterCb = makeCallback(fn)
+      const mapCb = makeCallback(up.fn, upReps, callbackElem(up.source)), filterCb = makeCallback(fn)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'mf' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['local.set', `$${mapped}`, asF64(mapCb.stored([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
@@ -2074,7 +2074,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb')
-    const cb = makeCallback(fn, callbackArgReps(arr))
+    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr))
     const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fo' })
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
@@ -2112,7 +2112,7 @@ export default (ctx) => {
       const recv = hoistArrayValue(up.source)
       const acc = temp('ra'), mapped = temp('mv')
       const upReps = callbackArgReps(up.source)
-      const mapCb = makeCallback(up.fn, upReps), redCb = makeCallback(fn, [{ tagged: true }])
+      const mapCb = makeCallback(up.fn, upReps, callbackElem(up.source)), redCb = makeCallback(fn, [{ tagged: true }])
       const mget = typed(['local.get', `$${mapped}`], 'f64')
       // map preserves indices → the reduce callback's index is the loop counter.
       const fold = i => ['local.set', `$${acc}`, asF64(redCb.stored([typed(['local.get', `$${acc}`], 'f64'), mget, idxArg(redCb, i, 2)]))]
@@ -2142,9 +2142,9 @@ export default (ctx) => {
       // statically (filter), so track a seeded flag rather than i==0.
       const seeded = init !== undefined ? null : tempI32('rs')
       const upReps = callbackArgReps(up.source)
-      const filterCb = makeCallback(up.fn, upReps)
+      const filterCb = makeCallback(up.fn, upReps, callbackElem(up.source))
       // reduce cb signature: (acc, item, idx). Item rep mirrors upstream's item rep.
-      const redCb = makeCallback(fn, [{ tagged: true }, upReps[0], { val: VAL.NUMBER }])
+      const redCb = makeCallback(fn, [{ tagged: true }, upReps[0], { val: VAL.NUMBER }], callbackElem(up.source, 1))
       // filter renumbers: the reduce index counts *passing* elements, not the
       // source position, so track a dedicated filtered-position counter (only when
       // the callback actually reads its index — else idxArg drops the arg anyway).

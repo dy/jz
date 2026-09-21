@@ -14,7 +14,7 @@ import {
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
-    schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas,
+    schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
@@ -151,16 +151,24 @@ export function summaryQueries(facts, internal = false) {
     // An emission temp standing for the present value of an expression (an
     // optional chain's guarded head): its kind is the expression's, without
     // the nullishness the guard excluded.
-    const aliases = new Map()
+    const aliases = new Map()   // an emission temp → { e, present }: the expression it holds, present or as it is
     // Names a guard proved present on the path being emitted (flow-types.js
     // withRefinements): their kind reads without its nullish part.
     const present = new Set()
-    const readKind = name => aliases.has(name) ? core(kindOfExpr(aliases.get(name))) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
+    const aliasKind = a => a.present ? core(kindOfExpr(a.e)) : kindOfExpr(a.e)
+    const readKind = name => aliases.has(name) ? aliasKind(aliases.get(name)) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
     const selectedExpr = (n, mask) => {
       const logical = Array.isArray(n) ? logicalMask(n[0]) : 0
       if (mask !== 7 && !logical) return selectKind(kindOfExpr(n), mask)
-      if (typeof n === 'string') { if (aliases.has(n)) return core(kindOfExpr(aliases.get(n))); const key = keyOfAnywhere(n); return key === null ? (funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY) : present.has(n) ? core(readKey(key)) : readKey(key) }
+      if (typeof n === 'string') {
+        if (aliases.has(n)) return aliasKind(aliases.get(n))
+        const key = keyOfAnywhere(n)
+        if (key === null) return funcNames.has(n) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : ANY
+        const k = present.has(n) ? core(readKey(key)) : readKey(key)
+        // a top-level `let f = (…) => …` is the function `f` (the walker's rule)
+        return funcNames.has(n) && (tagOf(k) === K.NONE || (tagOf(k) === K.CLOSURE && paramOf(k) === UNKNOWN)) ? kind(K.CLOSURE, closureSetIds.get(n) ?? UNKNOWN) : k
+      }
       if (typeof n === 'number') return NUMBER
       if (!Array.isArray(n)) return ANY
       const op = n[0]
@@ -359,10 +367,12 @@ export function summaryQueries(facts, internal = false) {
     }
     cached = {
       kindOf: name => pub(readKind(name)), kindOfExpr: e => pub(kindOfExpr(e)), calleeOf, keyOfName: keyOf,
-      // An emission temp holding the present value of `e` (see `aliases`), for
-      // the span of its continuation: temp names recur across the closure
-      // bodies this scope covers, so an alias never outlives its use.
-      alias: (name, e) => { aliases.set(name, e) },
+      // An emission temp holding the value of `e` (see `aliases`), present
+      // (an optional chain's head past its guard) or as `e` reads (a
+      // callback's element parameter), for the span of its continuation: temp
+      // names recur across the closure bodies this scope covers, so an alias
+      // never outlives its use.
+      alias: (name, e, present = true) => { aliases.set(name, { e, present }) },
       unalias: (name) => { aliases.delete(name) },
       /** The name is present on the path being emitted (a guard proved it): its reads drop the nullish part. */
       present: (name) => { present.add(name) },
@@ -380,6 +390,10 @@ export function summaryQueries(facts, internal = false) {
       // that only the summary sees (a flattened namespace's property, a bundled
       // initializer, an alias), or a nullable receiver. A static enumeration
       // from a per-name census stands down there — presence is a runtime fact.
+      // The names a layout's objects gain after their literal, every one a
+      // literal key of some store; null when a store under a computed or a
+      // number key reaches the layout (its keys are then runtime facts).
+      sideKeysOfSid: sid => indexedSchemas?.has(sid) || (sideWild.get(sid) ?? K.NONE) !== K.NONE ? null : [...(sideProps.get(sid)?.keys() ?? [])],
       openSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(core(k)) === K.OBJECT && sid !== UNKNOWN && (isNullable(k) || shapesOf(paramOf(k)).some(site => openSchemas.has(site))) ? sid : null },
       typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
       // The element cell's own kind: presence included, no absent member for a read past the end.

@@ -238,3 +238,39 @@ test('warnings: no int-global-truncation for a self-contained integer counter', 
   const ws = warningsFor('let n = 0; export let next = () => { n = n + 1; return n }')
   is(ws.filter(w => w.code === 'int-global-truncation').length, 0)
 })
+
+test('warnings: deopt-prop-read names a property read with no static slot', () => {
+  const ws = warningsFor('export let f = (o) => o.zz + 1').filter(e => e.code === 'deopt-prop-read')
+  is(ws.length, 1)
+  ok(/\.zz`/.test(ws[0].message) && ws[0].how === 'dynamic', 'the site and how it lowered')
+  is(warningsFor('let o = {a: 1, b: 2}; export let f = () => o.a + o.b').filter(e => e.code === 'deopt-prop-read').length, 0)
+})
+
+test('warnings: class-generic names a class kept as closures and why', () => {
+  const inner = warningsFor('const mk = () => { class Inner { m() { return 1 } } return new Inner().m() }; export let f = () => mk()').find(e => e.code === 'class-generic')
+  ok(inner && /Inner/.test(inner.message) && /inside a function/.test(inner.message), 'a class inside a function')
+  const base = warningsFor('class E extends Error { m() { return 1 } } export let f = () => new E().m()').find(e => e.code === 'class-generic')
+  ok(base && /`Error`/.test(base.message), 'a base the module cannot see')
+  is(warningsFor('class A { async m() { return 1 } *g() { yield 2 } } export let f = async () => (await new A().m()) + new A().g().next().value').filter(e => e.code === 'class-generic').length, 0, 'async and generator methods keep the schema lowering')
+})
+
+test('warnings: shape-lost names the first cause an object shape is lost by', () => {
+  // a join with a value of unknown kind (the exported parameter) loses the literal's shape
+  const ws = warningsFor('export let f = (x) => { const o = { a: 1 }; const p = x || o; return p.a }').filter(e => e.code === 'shape-lost')
+  is(ws.length, 1)
+  ok(/\{a\}/.test(ws[0].message) && /joined with an unknown value/.test(ws[0].why) && ws[0].fn === 'f', `${ws[0].message} in ${ws[0].fn}`)
+})
+
+test('warnings: the summary keeps shapes through the forms it models', () => {
+  const lost = (src) => warningsFor(src).filter(e => e.code === 'shape-lost').map(e => e.message)
+  // a static method's argument through the lifted function; Object.defineProperty as the store it lowers to
+  is(lost('class A { static check(o) { return o || { k: 3 } } m(o) { const q = A.check(o); return q.k } } export let f = () => new A().m(null) + new A().m({ k: 4 })'), [])
+  is(lost('const mk = () => { const e = { t: 1, z: 0 }; Object.defineProperty(e, "z", { value: 2 }); return e }; export let f = () => mk().z + mk().t'), [])
+  // `fn.call` and `fn.apply` call the closure: the event and the map of sets keep their shapes
+  is(lost('const evs = new Map(); const add = (t, fn) => { let s = evs.get(t); if (!s) evs.set(t, s = new Set()); s.add(fn) }; const fire = (t, e) => { const s = evs.get(t); if (s) for (const fn of s) fn.call(null, e) }; export let f = () => { add("x", (e) => e.v); fire("x", { v: 1 }); return 1 }'), [])
+  // an optional call on a nullish receiver answers undefined, so the default keeps its shape
+  is(lost('const pick = (ms) => ms?.tracks?.()[0] ?? null; export let f = () => { const t = pick(null) ?? { id: 1 }; return t.id }'), [])
+  // `apply` spreads its array; a call through a slot holding only null throws and hands its argument to no one
+  is(lost('const evs = [(e) => e.v]; const fire = (e) => { let s = 0; for (const fn of evs) s += fn.apply(null, [e]); return s }; export let f = () => fire({ v: 1 })'), [])
+  is(lost('const call = (o, e) => o.f(e); export let f = () => { const e = { k: 1 }; let r = 0; try { call({ f: null }, e) } catch { r = 1 } return e.k + r }'), [])
+})

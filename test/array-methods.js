@@ -2243,3 +2243,12 @@ test('Array constructor lengths, toSpliced, and a bare splice', () => {
     is([m.dyn(2), m.dyn(-2), m.dyn(2.5), m.dyn('a'), m.dyn(true), m.dyn(NaN)], [2, 'RangeError', 'RangeError', 1, 1, 'RangeError'], `O${optimize}: a host argument decides at run time`)
   }
 })
+
+test('array callbacks: an inlined callback reads the element through its layouts', () => {
+  // the callback's parameter is the array's element to the summary: a member read is a slot read, not a dynamic lookup
+  const src = 'const evs = [{ t: 1, v: 2 }, { t: 3, v: 4 }]; export let f = (x) => { const i = evs.findIndex((e) => e.t > x); return i < 0 ? -1 : evs[i].v }'
+  const wat = compile(src, { wat: true, optimize: 'speed' })
+  const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func $', wat.indexOf('(func $f') + 5))
+  ok(!/\$__dyn_get/.test(fn), 'no dynamic read in the loop')
+  is([jz(src).exports.f(0), jz(src).exports.f(2), jz(src).exports.f(5)], [2, 4, -1])
+})
