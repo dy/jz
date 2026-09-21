@@ -111,6 +111,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // context key raises its base key too: the base keys keep the join for
   // the readers of the settled facts (the emitter compiles the one
   // function) and for the closures the body creates.
+  // Reachability. A function or closure is walked once a walk reaches it: a
+  // call binds its parameters (`bind`), the host holds it (an export, an
+  // escaped or host-held callable) or a module initializer runs it. The rest
+  // keep no kind: an API surface the program never exercises cannot hand
+  // what it computes (a host import's result, say) to the allocations the
+  // exercised surface shares.
+  const reached = new Set()          // function names and closure ids a walk reaches
+  const reach = (scope) => { if (!reached.has(scope)) { reached.add(scope); changed = true } }
   const INIT_SUFFIX = CLASS_T + CLASS_T + 'init'
   const isInit = (name) => typeof name === 'string' && name.endsWith(INIT_SUFFIX)
   const initContexts = new Map()     // initializer → Map(layout → context { fn, layout, keys: Map(base key → context key) })
@@ -880,6 +888,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return arr
   }
   const restBind = (scope, restName, base, from, n) => {
+    reach(scope)
     const arr = restArrayOf(scope)
     const row = paramOf(arr) === UNKNOWN ? null : tuples.get(cell(paramOf(arr)))
     const count = n - from
@@ -897,6 +906,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (key != null) bindParam(key, arr)
   }
   const restUnknown = (scope, restName) => {
+    reach(scope)
     const arr = restArrayOf(scope)
     invalidateTuple(arr); raiseElem(arr, ANY)
     const key = keyIn(scope, restName)
@@ -909,6 +919,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
    *  a rest parameter collects escape; a surplus argument past the declared
    *  parameters is one the callee never observes. */
   const bind = (scope, names, base, n, defaults, ctx = null) => {
+    reach(scope)
     const s = spreadAt(base, n)
     let tail = NULLISH
     for (let i = s; i < n; i++) tail = merge(tail, ks[base + i])
@@ -1039,6 +1050,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   /** An object's iterator: its `@@iterator` member's result where the member is present, itself where absent. */
   const unwrapped = (one, base) => {
     const m = member('.', one, '@@iterator')
+    if (m === K.NONE) return K.NONE   // no kind yet: a round before the member's binder ran
     if (tagOf(core(m)) === K.NONE) return one
     const it = method(one, '@@iterator', base, 0, null)
     return isNullable(m) ? merge(it, one) : it
@@ -1079,6 +1091,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else if (t === K.OBJECT && paramOf(src) !== UNKNOWN) {
       for (const sid of shapesOf(paramOf(src))) {
         const w = unwrapped(kind(K.OBJECT, sid), base), nx = nextOf(w)
+        if (w === K.NONE || nx === K.NONE) continue   // nothing yet
         const through = copy ? arrayOf(node, ANY) : w   // no iterator: an array-like's copy, or the value itself
         r = merge(r, tagOf(core(nx)) === K.NONE ? through : isNullable(nx) ? merge(drainedOf(node, w, base), through) : drainedOf(node, w, base))
       }
@@ -1565,6 +1578,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // its prototype method. The packed summary does not retain per-instance
     // sidecar values, so decline to ANY rather than assert the builtin result.
     if (builtinReceiverMayHaveOwn(t, name)) {
+      // The own closure the summary holds runs (its body is reached, its
+      // parameters bound); the result stays unknown.
+      const own = t === K.ARRAY && paramOf(recv) !== UNKNOWN ? propOf(recv, name) : t === K.CLOSURE && closureOwn(recv) ? closurePropOf(recv, name) : K.NONE
+      if (knownClosure(own)) callClosure(paramOf(own), base, n, node)
       escapeArgs(base, n)
       return ANY
     }
@@ -2910,6 +2927,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const fixpoint = () => rounds(() => {
     changed = false
     for (const f of funcs) {
+      if (exported(f) || hostClosures.has(f.name) || escaped.has(f.name) || f.sig.dispatcher) reach(f.name)   // a dispatcher is called by emitted code
+      if (!reached.has(f.name)) continue
       if (f.rest) { if (escaped.has(f.name)) restUnknown(f.name, f.rest); else raise(kinds, keyIn(f.name, f.rest), restArrayOf(f.name)) }
       if (escaped.has(f.name)) for (const p of f.sig.params) if (!p.rest) bindParam(keyIn(f.name, p.name), ANY)
       const contexts = initContexts.get(f.name)
@@ -2918,6 +2937,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (exported(f) || hostClosures.has(f.name)) escapeToHost(results.get(f.name) ?? K.NONE)
     }
     for (let id = 0; id < closureBodies.length; id++) {
+      if (hostClosures.has(id) || escaped.has(id)) reach(id)
+      if (!reached.has(id)) continue
       if (escaped.has(id)) for (const p of closureParams[id]) if (p != null) bindParam(keyIn(id, p), ANY)
       if (closureParams[id].restName != null) { if (escaped.has(id)) restUnknown(id, closureParams[id].restName); else raise(kinds, keyIn(id, closureParams[id].restName), restArrayOf(id)) }
       walkFunction(id, closureBodies[id], closureParams[id], closureDefaults[id])

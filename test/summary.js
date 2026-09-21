@@ -716,7 +716,7 @@ test('summary: a destructuring reads through its source', () => {
     export const g = () => { let n = 0; for (const [m, k] of rows) n += m.size + k.length; const [first, , third = 7] = [1, 2]; return n + first + third }`
   summarize(src)
   is(tagOf(kindOf('mk', 'sig')), K.OBJECT, 'a defaulted object-pattern name keeps the argument member shape')
-  ok(isNullable(kindOf('mk', 'sig')), 'and the null default')
+  ok(!isNullable(kindOf('mk', 'sig')), 'and not the null default: the one caller passes the member')
   is(tagOf(kindOf('g', 'm')), K.MAP, 'a pattern over a row array reads the row position')
   is(tagOf(kindOf('g', 'k')), K.STRING, 'each position keeps its own kind')
   const js = oracle(src)

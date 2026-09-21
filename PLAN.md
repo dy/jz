@@ -65,7 +65,11 @@ Architecture
   initializer runs once per receiver layout in the summary (initializer
   contexts), so a derived class's `super(…)` no longer joins its arguments
   into every layout of the family; a lost shape escapes only the fields a
-  read through an unknown receiver cannot answer precisely.
+  read through an unknown receiver cannot answer precisely. The summary
+  walks what the program reaches (exports, escaped and host-held callables,
+  module initializers, and what their walks call): an API surface the
+  program never exercises cannot pollute the allocations the exercised one
+  shares.
 - Booleans ride either carrier, the raw 0/1 or the atom box. A test of a
   BOOL-typed f64 is the number test, then the atom compare.
 - Export boundary: a parameter an exported function never uses as a string is
@@ -134,18 +138,21 @@ Dependencies
    the shared base initializer of the ports joining `AudioParam` into every
    output's `node`. The remaining 2.2× is the generic typed-array element
    helpers in the DSP loops (40% of the render): `AudioBuffer`'s channel
-   count reads unknown because the summary walks every function whether the
-   program reaches it or not, and `utils.decodeAudioData`, which nothing
-   calls, hands its host-decoded data to `from(…)` and so `new
-   AudioBuffer(unknown, …)`; the constructor's `options` is unknown from
-   then on, `#channels` is `new Array(unknown)` and `getChannelData` answers
-   any. The lever is reachability in the solver: walk the functions and
-   closures the entry points reach (exports, module initializers, escaped
-   and host-held callables, dispatch candidates) and leave the rest at no
-   kind, so an unexercised API surface cannot pollute the allocations the
-   exercised one shares. After that, the automation `findIndex` callbacks
-   and the tuple destructuring `const [t, v] = …` that opens a cursor per
-   call (8%). colorpq (4.4×):
+   count read unknown because the summary walked every function whether the
+   program reached it or not, and `utils.decodeAudioData`, which nothing
+   calls, handed its host-decoded data to `new AudioBuffer(unknown, …)`;
+   reachability in the solver closed that (3 shapes lost, 9.1 ms). The
+   channel data now reads as a typed array of unknown element type, and
+   rightly so: `AudioBuffer` holds `Float32Array` views while the ports mix
+   into `Float64Array` blocks (`_useFloat64`), so one channel array carries
+   both, and the DSP loops read and store through the generic element
+   helpers (40% of the render). The lever is a loop version per element
+   type: the emitter clones a loop whose typed source is bimorphic once for
+   each width, guarded by the runtime element type, as the bimorphic
+   parameter split already does for callees. Then the automation `findIndex`
+   callbacks and
+   the tuple destructuring `const [t, v] = …` that opens a cursor per call
+   (8%). colorpq (4.4×):
    twelve runtime-exponent pow calls per pixel, jz's pow bit-exact with V8
    and about 3× its time per call; the lever is a two-wide pow that keeps
    the bits. watr: the tier-up above.

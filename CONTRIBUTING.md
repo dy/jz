@@ -982,6 +982,15 @@ instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
 emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
 
+The summary walks what the program reaches: a function or closure is walked
+once a call binds its parameters, the host holds it (an export, an escaped
+or host-held callable), emitted code calls it (a class dispatcher) or a
+module initializer runs it, and the rest keep no kind. An API surface the program never exercises cannot hand what it
+computes (a host import's result, say) to the allocations the exercised
+surface shares. A rule that reads a member of no kind yet (a round before
+its binder ran) contributes nothing rather than taking the absence as a
+fact; only the nullish kinds mean absent.
+
 The summary (`src/summary`) models, beyond the forms the tests pin: `fn.call`
 and `fn.apply` as calls of the closure (a closure cannot observe `this`); an
 optional call `?.()` as undefined on a nullish callee and nothing on one of no

@@ -159,6 +159,7 @@ test('summary queries: class methods and import kinds are retained by value', ()
     ['const', ['=', 'record', ['{}', [':', brand, lit(true)], [':', 'x', lit(1)]]]],
     ['const', ['=', 'other', ['{}', [':', brand, lit(true)], [':', 'x', lit(2)]]]],
     ['const', ['=', 'choice', ['?', 'flag', 'record', 'other']]],
+    ['()', ['.', 'record', 'value'], null],   // the method is reached
   ], {
     funcs: [{ name: 'method', sig: { params: [{ name: 'self' }] }, body: lit(7) }],
     schemas: [['x']], classes, imports, exported: () => false,
@@ -263,6 +264,9 @@ const contractProgram = () => {
     ['const', ['=', 'table', ['[', closure, numberClosure]]],
     ['()', 'cb', lit(1)], ['()', 'set', lit(1)], ['()', ['[]', 'table', 'index'], lit(1)],
     ['()', 'erased', lit('any')], ['()', 'through', lit('any')], ['()', 'unbounded', lit('any')],
+    // the summary walks what the program reaches: each pinned function is called
+    ['()', 'direct', null], ['()', 'value', null], ['()', 'number', null], ['()', 'narrowed', null],
+    ['()', 'boolOrNumber', lit(1)], ['()', 'bare', lit(1)], ['()', 'fallthrough', lit(1)], ['()', 'mixed', lit(1)],
   ]
   const summary = summarize(ast, { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: f => f.name === 'exported' || f.name === 'erased' || f.name === 'through' || f.name === 'unbounded' })
   return { summary, closureParams, numberParams, funcs }
@@ -337,7 +341,7 @@ test('summary contract: prepare\'s postfix recovery keeps the operand\'s kind; a
     { name: 'plain', sig: { params: [], results: ['f64'] }, body: ['{}', ['let', ['=', 'n', big]], ['return', ['-', 'n', one]]] },
     { name: 'box', sig: { params: [{ name: 'v' }], results: ['f64'] }, body: ['[]', ['[', 'v'], lit(0)] },
   ]
-  const summary = summarize(['()', 'box', big], { funcs, schemas: [['n']], brandOf: () => null, imports: new Map(), exported: () => false })
+  const summary = summarize([';', ['()', 'box', big], ['()', 'member', null], ['()', 'element', null], ['()', 'name', null], ['()', 'plain', null]], { funcs, schemas: [['n']], brandOf: () => null, imports: new Map(), exported: () => false })
   is(summary.resultContract('member').kind, kind(K.BIGINT), 'a member increment\'s old value is its own kind')
   is(summary.resultContract('element').kind, join(kind(K.BIGINT), kind(K.NUMBER)), 'an absent-capable element reads undefined too, whose ToNumeric is NaN')
   is(summary.resultContract('name').kind, kind(K.BIGINT), 'a name decrement\'s old value too')
@@ -375,7 +379,7 @@ test('summary contract: a typed array callback\'s parameter is unbounded, its re
     { name: 'mapped', sig: { params: [], results: ['f64'] }, body: ['[]', ['()', ['.', typedArr, 'map'], ['=>', params, ['+', 'x', lit(1n)]]], lit(1)] },
     { name: 'reduced', sig: { params: [], results: ['f64'] }, body: ['()', ['.', typedArr, 'reduce'], ['=>', accParams, ['+', 'a', 'b']]] },
   ]
-  const summary = summarize([';'], { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
+  const summary = summarize([';', ['()', 'mapped', null], ['()', 'reduced', null]], { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
   is(summary.at(params).kindOf('x'), kind(K.ANY), 'the map callback escapes: its parameter is every kind')
   is(summary.resultContract(params).carrier, CARRIER.BOXED, 'a BigInt among a bounded result crosses the closure ABI boxed')
   is(summary.at(accParams).kindOf('a'), kind(K.BIGINT), 'the reduce callback is bound: accumulator and element are the element kind')
@@ -548,8 +552,10 @@ test('summary spreads: pending sources retain known sibling shapes', () => {
     function make(){return {...defaults,carriers}}
     export function f(){return make().number.x+make().carriers.array.x}`
   for (const optimize of levels(0, 1, 2, 3)) {
-    const binary = _compileInProcess(src, { optimize })
+    // the summary read is of the program the plan rewrote: with the inliner on, `make` is spliced into `f` and reached no more
+    _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
     is(ctx.summary.resultVal('make'), VAL.OBJECT, 'spread settles to a record without escaping siblings')
+    const binary = _compileInProcess(src, { optimize })
     const f = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f
     is(f(), 5, `O${optimize}`)
     is(f(), 5, 'repeated call')
