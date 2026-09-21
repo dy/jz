@@ -16,16 +16,20 @@ if (!id) { console.error('usage: scripts/why-census.mjs <case> [limit]'); proces
 const BENCH = resolve(fileURLToPath(import.meta.url), '../../bench'), LIB = join(BENCH, '_lib')
 const c = { id, js: join(BENCH, id, `${id}.js`) }
 const benchlib = readFileSync(join(LIB, 'benchlib.js'), 'utf8')
+const watrSources = () => {
+  const watr = resolve(BENCH, '../node_modules/watr/src'), read = (f) => readFileSync(join(watr, f), 'utf8')
+  return { './watr-compile.js': `import compileWatr from '../../node_modules/watr/src/compile.js'\nexport const compile = (src) => compileWatr(src)\n`, '../../node_modules/watr/src/compile.js': read('compile.js'), './encode.js': read('encode.js'), './const.js': read('const.js'), './parse.js': read('parse.js'), './util.js': read('util.js') }
+}
 let code, modules, hostImports = {}
 if (GRAPH_CASES.has(id)) {
   ;({ code, modules, imports: hostImports } = graphSources(c, resolveModuleGraph))
   modules[resolve(LIB, 'benchlib.js')] = benchlib
 } else {
   code = readFileSync(c.js, 'utf8')
-  modules = { '../_lib/benchlib.js': benchlib }
+  modules = { '../_lib/benchlib.js': benchlib, ...(id === 'watr' ? watrSources() : {}) }
 }
 const warnings = { entries: [] }
-compile(code, { jzify: GRAPH_CASES.has(id), modules, imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } }, optimize: 'speed', alloc: false, warnings })
+compile(code, { jzify: GRAPH_CASES.has(id) || id === 'watr', modules, imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } }, optimize: 'speed', alloc: false, warnings })
 const by = (code) => warnings.entries.filter(e => e.code === code)
 const fn = (e) => (e.fn ?? '?').replace(//g, '.').replace(/^m\d+_/, '')
 const T = ''

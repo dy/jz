@@ -394,7 +394,8 @@ export const memory = (src) => {
     }
     const nS = r.varint(), newSchemas = []
     for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
-    const keys = newSchemas.map((s, j) => { const salt = errorSidToClass.get(j) ?? moduleBrands.get(j); return s.length + '\x01' + s.join('\x01') + (salt ? '\x02' + salt : '') })
+    // the field list as JSON: a separator could not tell `a\u0001b, c` from `a, b\u0001c`
+    const keys = newSchemas.map((s, j) => { const salt = errorSidToClass.get(j) ?? moduleBrands.get(j); return JSON.stringify(s) + (salt ? '\x02' + salt : '') })
     // every schema binds at the id its module compiled with, or the module is
     // rejected before the memory's tables change
     const fresh = new Map()
