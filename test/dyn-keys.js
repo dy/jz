@@ -2751,14 +2751,16 @@ test('declared keys: registration calls between the literal and its store keep t
   is(keys(), '//;/*;#!;'); is(has(), true)
 })
 test('declared keys stand down for a call that reaches the literal, an alias, a callback, a default', () => {
-  const probeMod = { './probe.js': `import { parse } from './parse.js'\nexport const seen = []\nexport const look = () => seen.push('#!' in parse.comment)\nexport const noop = () => 0\nexport const withDefault = (o = parse.comment) => seen.push('#!' in o)\nexport const each = (arr, fn) => arr.forEach(fn)` }
+  const probeMod = { './probe.js': `import { parse } from './parse.js'\nexport const seen = []\nexport const look = () => seen.push('#!' in parse.comment)\nexport const noop = () => 0\nexport const withDefault = (o = parse.comment) => seen.push('#!' in o)\nexport const each = (arr, fn) => arr.forEach(fn)\nexport const viaLook = () => look()\nexport const hooks = [look]\nexport const fire = () => hooks[0]()` }
   for (const [name, between] of [
     ['reaching call', `look()`],
+    ['call through a callee that reaches', `viaLook()`],
+    ['call of a callee the census cannot see', `fire()`],
     ['alias', `const cm = parse.comment; noop(); seen.push('#!' in cm)`],
     ['callback argument', `each([1], () => seen.push('#!' in parse.comment))`],
     ['parameter default', `withDefault()`],
   ]) {
-    const main = `import { parse } from './parse.js'\nimport { seen, look, noop, withDefault, each } from './probe.js'\n${between}\nparse.comment['#!'] = '\\n'\nexport let f = () => seen.join(',') + '|' + ('#!' in parse.comment)`
+    const main = `import { parse } from './parse.js'\nimport { seen, look, noop, withDefault, each, viaLook, fire } from './probe.js'\n${between}\nparse.comment['#!'] = '\\n'\nexport let f = () => seen.join(',') + '|' + ('#!' in parse.comment)`
     is(jz(main, { modules: modulesOf(main, probeMod) }).exports.f(), 'false|true', name)
   }
 })
@@ -2772,9 +2774,30 @@ export let first = () => { let out = ''; for (const k in cm) { if (k === 'c') br
 export let skip = () => { let out = ''; for (const k in cm) { if (k === 'b' || k === 'c') continue; out += k + ';' } return out }
 export let last = () => { let s; for (s in cm) {} return s }`
   const want = oracle(src), got = jz(src).exports
-  for (const step of [null, ['c', 3], ['d', 4]]) {
+  // an added array-index key enumerates ahead of the literal's strings: a
+  // computed store may add one, so this layout keeps the runtime order
+  for (const step of [null, ['c', 3], ['d', 4], ['0', 5], ['x', 6]]) {
     if (step) { want.add(...step); got.add(...step) }
     for (const fn of ['all', 'first', 'skip', 'last']) is(got[fn](), want[fn](), `${fn} after ${step?.[0] ?? 'nothing'}`)
+  }
+})
+test('for-in over a layout with literal-key stores unrolls, with an index key or a number key it keeps the runtime order', () => {
+  const lit = `let o = { a: 1, b: 2 }
+export let add = () => { o.z = 3 }
+export let keys = () => { let out = ''; for (const k in o) out += k; return out }`
+  const idx = `let o = { a: 1, b: 2 }
+export let add = () => { o['0'] = 3 }
+export let keys = () => { let out = ''; for (const k in o) out += k; return out }`
+  const num = `let o = { a: 1, b: 2 }
+export let add = (i) => { o[i] = 3 }
+export let keys = () => { let out = ''; for (const k in o) out += k; return out }`
+  // the ordered runtime loop reads the schema row; the unrolled copies and their tail never do
+  const keysFn = (src) => funcWat(compile(src, { wat: true, optimize: { watr: false } }), 'keys')
+  ok(!/__schema_tbl/.test(keysFn(lit)), 'literal string keys: the declared keys unroll, the tail lists the added')
+  ok(/__schema_tbl/.test(keysFn(idx)) && /__schema_tbl/.test(keysFn(num)), 'an index or number key keeps the ordered runtime loop')
+  for (const [src, arg] of [[lit, undefined], [idx, undefined], [num, 0], [num, 7]]) {
+    const want = oracle(src), got = jz(src).exports
+    is(got.keys(), want.keys()); want.add(arg); got.add(arg); is(got.keys(), want.keys(), `after add(${arg})`)
   }
 })
 test('for-in sites alternate without evicting each other and see a global insert', () => {

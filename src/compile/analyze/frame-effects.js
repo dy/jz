@@ -39,12 +39,21 @@
  * (emit/control-flow.js), so a loop building a temporary per row runs in
  * constant memory.
  *
+ *   callsUnknown — the body runs code the census cannot name: a call whose
+ *                  target is no known function (a closure value, a computed
+ *                  callee, a host import, an unlisted method, an accessor,
+ *                  a callback the census cannot see).
+ *
  * Both function facts are transitive over direct calls to same-module
  * functions (`transitiveFrameEffects`, an iterative fixpoint over the call
  * graph); a call whose target is not a known function is unknown and counts
- * as both. A loop is clean when its own census is and every callee it
- * reaches is arena-safe. Everything here is a conservative census: an
- * unrecognized shape counts as an effect, never as its absence.
+ * as both, and as `callsUnknown`. The transitive facts also carry `callees`,
+ * every known function a call reaches, so a consumer can ask what the reached
+ * code mentions (the declared-keys pass asks whether a call between a literal
+ * and its store can reach the literal's name). A loop is clean when its own
+ * census is and every callee it reaches is arena-safe. Everything here is a
+ * conservative census: an unrecognized shape counts as an effect, never as
+ * its absence.
  *
  * @module compile/analyze/frame-effects
  */
@@ -179,7 +188,7 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * run synchronously and for local arrows called from this scope.
  */
 function census(view, roots, declRoots, params) {
-  const out = { writesOuter: false, arenaUnsafe: false, allocates: false, why: null, callees: new Set() }
+  const out = { writesOuter: false, arenaUnsafe: false, allocates: false, callsUnknown: false, why: null, callees: new Set() }
 
   // 1. Fresh locals: declared here, every write a fresh initializer, no write
   //    from any nested function. Arrows bound to a const are scanned inline
@@ -234,6 +243,7 @@ function census(view, roots, declRoots, params) {
   // 2. Effects.
   const outer = () => { out.writesOuter = true }
   const unsafe = (why) => { out.writesOuter = true; if (!out.arenaUnsafe) { out.arenaUnsafe = true; out.why = why } }
+  const unknownCall = (why) => { out.callsUnknown = true; unsafe(why) }
   const allocates = () => { out.allocates = true }
   const accessor = (prop) => isName(prop) && ctx.transform?.accessorNames?.has(prop)
 
@@ -252,30 +262,30 @@ function census(view, roots, declRoots, params) {
   const call = (callee, args) => {
     if (isName(callee)) {
       const c = ctorOf(callee)
-      if (c !== null) { allocates(); if (knownFunc(c)) out.callees.add(c); else if (!FRESH_CTORS.test(c)) unsafe('call ' + callee); return }
+      if (c !== null) { allocates(); if (knownFunc(c)) out.callees.add(c); else if (!FRESH_CTORS.test(c)) unknownCall('call ' + callee); return }
       if (knownFunc(callee)) { out.callees.add(callee); return }
       if (arrows.has(callee) && !writtenNested.has(callee) && !params.has(callee)) { scanArrow(arrows.get(callee)); return }
       if (PURE_CALLEES.test(callee)) { if (!SCALAR_CALLEES.test(callee)) allocates(); return }
-      return unsafe('call ' + callee)
+      return unknownCall('call ' + callee)
     }
     if (isArr(callee) && callee[0] === '.' && isName(callee[2])) {
       const [, recv, method] = callee
       const key = isName(recv) ? `${recv}.${method}` : null
       if (key && PURE_CALLEES.test(key)) { if (!SCALAR_CALLEES.test(key)) allocates(); return }
-      if (key && /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./.test(key) || method === 'call' || method === 'apply' || method === 'bind') return unsafe('call ' + (key ?? method))
+      if (key && /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./.test(key) || method === 'call' || method === 'apply' || method === 'bind') return unknownCall('call ' + (key ?? method))
       const resolved = resolveMember(recv, method)
       if (resolved) { out.callees.add(resolved.name); return }
-      if (accessor(method)) return unsafe('accessor ' + method)
+      if (accessor(method)) return unknownCall('accessor ' + method)
       const hasClosureArg = argList(args).some(isFunctionNode)
       if (CALLBACK_METHODS.has(method)) {
         allocates()
         for (const a of argList(args)) if (isFunctionNode(a)) scanArrow(a)
         else if (isName(a) && arrows.has(a)) scanArrow(arrows.get(a))
-        else if (isArr(a) || isName(a)) { if (!scalarKind(view, a)) return unsafe('callback value for ' + method) }   // a closure value we cannot see
+        else if (isArr(a) || isName(a)) { if (!scalarKind(view, a)) return unknownCall('callback value for ' + method) }   // a closure value we cannot see
         if (method === 'sort') store(recv, null, false)
         return
       }
-      if (hasClosureArg) return unsafe('closure argument to ' + method)
+      if (hasClosureArg) return unknownCall('closure argument to ' + method)
       if (GROW_METHODS.has(method)) {
         // `set` on a typed array copies numbers in place; on a Map it stores a
         // value and may relocate the table.
@@ -286,9 +296,9 @@ function census(view, roots, declRoots, params) {
       }
       if (WRITE_METHODS.has(method)) return store(recv, method === 'fill' ? argList(args)[0] : null, false)
       if (READ_METHODS.has(method)) { if (!SCALAR_METHODS.has(method)) allocates(); return }
-      return unsafe('method ' + method)
+      return unknownCall('method ' + method)
     }
-    return unsafe('computed callee')
+    return unknownCall('computed callee')
   }
 
   const walkExpr = (n) => {
@@ -341,7 +351,7 @@ function census(view, roots, declRoots, params) {
         if (!(isName(inner[1]) && (FRESH_CTORS.test(inner[1]) || knownFunc(inner[1])))) unsafe('new ' + (isName(inner[1]) ? inner[1] : '<expr>'))
         else if (knownFunc(inner[1])) out.callees.add(inner[1])
         walkExpr(inner[2])
-      } else if (isName(inner)) { if (!(FRESH_CTORS.test(inner) || knownFunc(inner))) unsafe('new ' + inner); else if (knownFunc(inner)) out.callees.add(inner) }
+      } else if (isName(inner)) { if (!(FRESH_CTORS.test(inner) || knownFunc(inner))) unknownCall('new ' + inner); else if (knownFunc(inner)) out.callees.add(inner) }
       else unsafe('new <expr>')
       return
     }
@@ -372,7 +382,7 @@ function loopsOf(body) {
 function frameEffectsOf(func) {
   const body = func.body
   const view = ctx.summary?.at(func)
-  if (body == null) return { writesOuter: true, arenaUnsafe: true, allocates: true, why: 'no body', callees: new Set(), loops: [] }
+  if (body == null) return { writesOuter: true, arenaUnsafe: true, allocates: true, callsUnknown: true, why: 'no body', callees: new Set(), loops: [] }
   const params = new Set()
   for (const p of func.sig?.params ?? []) if (p?.name) params.add(p.name)
   if (func.rest) params.add(func.rest)
@@ -395,24 +405,26 @@ function patternNames(p, out = []) {
 /**
  * Transitive facts over the direct call graph, for every function in
  * `funcs`. A callee outside the map is unknown. Returns Map<name, facts>,
- * each `{ writesOuter, arenaUnsafe, why, loops }` where `loops` holds the
- * body nodes of the loops whose iteration lets no allocation escape and
- * that allocate.
+ * each `{ writesOuter, arenaUnsafe, callsUnknown, callees, why, loops }`:
+ * `callees` every known function a call reaches, `loops` the body nodes of
+ * the loops whose iteration lets no allocation escape and that allocate.
  */
 export function transitiveFrameEffects(funcs) {
   const own = new Map()
   for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f))
   const facts = new Map()
-  for (const [name, o] of own) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, why: o.why, loops: new Set() })
+  for (const [name, o] of own) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, callsUnknown: o.callsUnknown, why: o.why, callees: new Set(o.callees), loops: new Set() })
   for (let changed = true; changed;) {
     changed = false
     for (const [name, o] of own) {
       const f = facts.get(name)
       for (const c of o.callees) {
         const g = facts.get(c)
-        const w = g ? g.writesOuter : true, u = g ? g.arenaUnsafe : true
+        const w = g ? g.writesOuter : true, u = g ? g.arenaUnsafe : true, k = g ? g.callsUnknown : true
         if (w && !f.writesOuter) { f.writesOuter = true; changed = true }
         if (u && !f.arenaUnsafe) { f.arenaUnsafe = true; f.why = 'calls ' + c + (g ? ': ' + g.why : ' (unknown)'); changed = true }
+        if (k && !f.callsUnknown) { f.callsUnknown = true; changed = true }
+        if (g) for (const cc of g.callees) if (!f.callees.has(cc)) { f.callees.add(cc); changed = true }
       }
     }
   }

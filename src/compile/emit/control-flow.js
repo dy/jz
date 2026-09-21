@@ -144,6 +144,9 @@ function unrollSmallConstFor(init, cond, step, body) {
   }
   if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsDeclOf(body, name)) return null
   if (isReassigned(body, name)) return null
+  // Copies of a large body cost more than the loop they save: noise's four
+  // octaves of an inlined perlin (444 nodes each) ran 3.6% faster rolled.
+  if (tripCount * forInBodyCost(body) > MAX_SMALL_FOR_UNROLL_COST) return null
 
   const out = []
   const emitCopy = value => {
@@ -155,6 +158,8 @@ function unrollSmallConstFor(init, cond, step, body) {
   return out
 }
 
+// Total nodes a small-constant loop may copy out (trips × body).
+const MAX_SMALL_FOR_UNROLL_COST = 1000
 // Max distinct keys a for-in unrolls over (bounds code size; larger key sets keep
 // the pooled-keys loop, which is already allocation-free via __keys_ro).
 const FORIN_UNROLL_MAX = 16
@@ -195,15 +200,18 @@ const closedKeysOf = (src) => {
 // An open layout: the summary names the receiver's one layout, some site still
 // adds keys to it, and the receiver is never nullish. Its declared keys come
 // first – the object was made with them and nothing is deleted – and the keys
-// added at run time follow through `__keys_dyn`, in insertion order. An
-// array-index key sorts ahead of every string in JS, so a layout holding one
-// keeps the pooled loop.
+// added at run time follow through `__keys_dyn`, in insertion order. That is
+// JS order only when every key, declared or added, is a string: an array
+// index enumerates ahead of every string, so a layout holding one, or one a
+// computed or number-keyed store reaches (the summary's `sideKeysOfSid` names
+// the added keys only when every store is a literal string key), keeps the
+// pooled loop, which orders at run time.
 const openKeysOf = (src) => {
   const view = ctx.summary?.at(ctx.func.current)
   const sid = view?.openSidOfExpr(src)
   if (sid == null || view.mayBeNullishExpr(src) !== false) return null
-  const keys = ctx.schema.list[sid] ?? null
-  return keys && !keys.some(isArrayIndexKey) ? keys : null
+  const keys = ctx.schema.list[sid] ?? null, added = view.sideKeysOfSid(sid)
+  return keys && added && !keys.some(isArrayIndexKey) && !added.some(isArrayIndexKey) ? keys : null
 }
 // The per-name censuses' proof of a complete schema: a bare OBJECT var with no
 // computed-key write (same gate as __keys_ro pooling) and no literal-key write
