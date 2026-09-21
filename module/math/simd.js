@@ -7,14 +7,14 @@
  * reaches them by name (src/optimize/vectorize.js's PPC_CALL2 lifts), never
  * a JS symbol, so this file is a pure one-way leaf off math/trig-tables.js
  * (needs its own local helpers splat/horner2/reduce2/signClamp — used only
- * here — plus the shared SIN_C/COS_C/EXP2_C/PI/INV_PI coefficients math.js's
+ * here — plus the shared SIN_C/COS_C/EXP2_Q/EXP_Q/PI/INV_PI coefficients math.js's
  * scalar kernels also use).
  *
  * @module math/simd
  */
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
-import { PI, INV_PI, SIN_C, COS_C, EXP2_C, LOG_C, polyTree } from './trig-tables.js'
+import { PI, INV_PI, SIN_C, COS_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, polyTree } from './trig-tables.js'
 
 export const registerMathSimd = () => {
   const crPow = !!ctx.transform.optimize?.crPow
@@ -146,28 +146,59 @@ export const registerMathSimd = () => {
           (f64x2.splat (call $math.log (f64x2.extract_lane 0 (local.get $x))))
           (call $math.log (f64x2.extract_lane 1 (local.get $x)))))))`, ['math.log'])
 
-  // True f64x2 exp2 — hot path (round(y) ∈ (−1023,1024), the normal-result range) mirrors $math.exp2's
-  // single-IEEE-build branch op-for-op (Horner over f=y−round(y), 2^k via (k+1023)<<52); edges
-  // (overflow/underflow/denormal/NaN) route both lanes to the scalar fallback → bit-exact.
+  // True f64x2 exp2 and exp — the hot path (every lane's k = round(64y) in [−65408, 65535],
+  // i.e. a normal result) mirrors the scalar table kernels op for op: the two lanes' T and
+  // tail come from two scalar loads, the polynomial and T + T·(q + tail) run 2-wide, 2^e is
+  // the one exponent build. Any other lane (NaN, overflow, a denormal result) routes both
+  // lanes to the scalar kernel → bit-exact.
   wat('math.exp2_v', `(func $math.exp2_v (param $y v128) (result v128)
-    (local $k v128) (local $f v128)
-    (local.set $k (f64x2.nearest (local.get $y)))
+    (local $k v128) (local $ki v128) (local $f v128) (local $t v128) (local $a0 i32) (local $a1 i32)
+    (local.set $k (f64x2.nearest (f64x2.mul (local.get $y) (f64x2.splat (f64.const 64.0)))))
     (if (result v128)
       (i64x2.all_true (v128.and
-        (f64x2.gt (local.get $k) (f64x2.splat (f64.const -1023)))
-        (f64x2.lt (local.get $k) (f64x2.splat (f64.const 1024)))))
+        (f64x2.ge (local.get $k) (f64x2.splat (f64.const -65408)))
+        (f64x2.le (local.get $k) (f64x2.splat (f64.const 65535)))))
       (then
-        (local.set $f (f64x2.sub (local.get $y) (local.get $k)))
-        (f64x2.mul ${horner2(EXP2_C, '$f')}
+        (local.set $ki (i32x4.trunc_sat_f64x2_s_zero (local.get $k)))
+        (local.set $f (f64x2.sub (local.get $y) (f64x2.mul (f64x2.convert_low_i32x4_s (local.get $ki)) (f64x2.splat (f64.const 0.015625)))))
+        (local.set $a0 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 0 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+        (local.set $a1 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 1 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+        (local.set $t (f64x2.replace_lane 1 (f64x2.splat (f64.load (local.get $a0))) (f64.load (local.get $a1))))
+        (f64x2.mul
+          (f64x2.add (local.get $t) (f64x2.mul (local.get $t)
+            (f64x2.add (f64x2.mul (local.get $f) ${horner2(EXP2_Q, '$f')})
+              (f64x2.replace_lane 1 (f64x2.splat (f64.load offset=8 (local.get $a0))) (f64.load offset=8 (local.get $a1))))))
           (i64x2.shl (i64x2.add
-            (i64x2.extend_low_i32x4_s (i32x4.trunc_sat_f64x2_s_zero (local.get $k)))
+            (i64x2.extend_low_i32x4_s (i32x4.shr_s (local.get $ki) (i32.const 6)))
             (i64x2.splat (i64.const 1023))) (i32.const 52))))
       (else
         (f64x2.replace_lane 1
           (f64x2.splat (call $math.exp2 (f64x2.extract_lane 0 (local.get $y))))
           (call $math.exp2 (f64x2.extract_lane 1 (local.get $y)))))))`, ['math.exp2'])
 
-  // e^x = 2^(x·log2e) — defers to exp2_v exactly as scalar $math.exp defers to $math.exp2. Bit-exact.
   wat('math.exp_v', `(func $math.exp_v (param $x v128) (result v128)
-    (call $math.exp2_v (f64x2.mul (local.get $x) (f64x2.splat (f64.const ${Math.LOG2E})))))`, ['math.exp2_v'])
+    (local $k v128) (local $ki v128) (local $f v128) (local $t v128) (local $a0 i32) (local $a1 i32)
+    (local.set $k (f64x2.nearest (f64x2.mul (local.get $x) (f64x2.splat (f64.const ${64 / Math.LN2})))))
+    (if (result v128)
+      (i64x2.all_true (v128.and
+        (f64x2.ge (local.get $k) (f64x2.splat (f64.const -65408)))
+        (f64x2.le (local.get $k) (f64x2.splat (f64.const 65535)))))
+      (then
+        (local.set $ki (i32x4.trunc_sat_f64x2_s_zero (local.get $k)))
+        (local.set $t (f64x2.convert_low_i32x4_s (local.get $ki)))
+        (local.set $f (f64x2.sub (f64x2.sub (local.get $x) (f64x2.mul (local.get $t) (f64x2.splat (f64.const ${EXP_L1})))) (f64x2.mul (local.get $t) (f64x2.splat (f64.const ${EXP_L2})))))
+        (local.set $a0 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 0 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+        (local.set $a1 (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (i32x4.extract_lane 1 (local.get $ki)) (i32.const 63)) (i32.const 4))))
+        (local.set $t (f64x2.replace_lane 1 (f64x2.splat (f64.load (local.get $a0))) (f64.load (local.get $a1))))
+        (f64x2.mul
+          (f64x2.add (local.get $t) (f64x2.mul (local.get $t)
+            (f64x2.add (f64x2.mul (local.get $f) ${horner2(EXP_Q, '$f')})
+              (f64x2.replace_lane 1 (f64x2.splat (f64.load offset=8 (local.get $a0))) (f64.load offset=8 (local.get $a1))))))
+          (i64x2.shl (i64x2.add
+            (i64x2.extend_low_i32x4_s (i32x4.shr_s (local.get $ki) (i32.const 6)))
+            (i64x2.splat (i64.const 1023))) (i32.const 52))))
+      (else
+        (f64x2.replace_lane 1
+          (f64x2.splat (call $math.exp (f64x2.extract_lane 0 (local.get $x))))
+          (call $math.exp (f64x2.extract_lane 1 (local.get $x)))))))`, ['math.exp'])
 }

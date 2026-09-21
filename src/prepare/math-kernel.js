@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C, EXPM1_C, LOG_C, polyTree } from '../../module/math/trig-tables.js'
+import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, polyTree } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -98,21 +98,31 @@ function cosCore(x) {
 
 function tan(x) { return sinCore(x) / cosCore(x) }
 
+// 2^e for the table kernels: one exponent build for a normal e, two factors at the edges.
+function expScale(p, e) {
+  if (e > -1023 && e < 1024) return p * bitsF64(BigInt(e + 1023) << 52n)
+  const k2 = e >> 1
+  return p * bitsF64(BigInt(k2 + 1023) << 52n) * bitsF64(BigInt(e - k2 + 1023) << 52n)
+}
+// $math.exp2 / $math.exp op for op (module/math.js): the 2^(j/64) table with tails.
 function exp2(y) {
   if (Number.isNaN(y)) return y
   if (y > 1024) return Infinity
   if (y < -1075) return 0
-  const k = nearest(y)  // i32.trunc_f64_s(f64.nearest y) — nearest is already integral here
-  const f = y - k
-  const p = horner(EXP2_C, f)
-  if (k > -1023 && k < 1024) {
-    return p * bitsF64(BigInt(k + 1023) << 52n)
-  }
-  const k2 = k >> 1
-  return p * bitsF64(BigInt(k2 + 1023) << 52n) * bitsF64(BigInt(k - k2 + 1023) << 52n)
+  const k = Math.trunc(nearest(y * 64))  // i32.trunc_f64_s(f64.nearest(64y)) — integral already
+  const f = y - k * 0.015625
+  const t = EXP2_TAB[2 * (k & 63)], tail = EXP2_TAB[2 * (k & 63) + 1]
+  return expScale(t + t * (f * horner(EXP2_Q, f) + tail), k >> 6)
 }
-
-function exp(x) { return exp2(x * Math.LOG2E) }
+function exp(x) {
+  if (Number.isNaN(x)) return x
+  if (x > 709.782712893384) return Infinity
+  if (x < -745.1332191019412) return 0
+  const k = Math.trunc(nearest(x * (64 / Math.LN2)))
+  const r = (x - k * EXP_L1) - k * EXP_L2
+  const t = EXP2_TAB[2 * (k & 63)], tail = EXP2_TAB[2 * (k & 63) + 1]
+  return expScale(t + t * (r * horner(EXP_Q, r) + tail), k >> 6)
+}
 
 function expm1(x) {
   if (Math.abs(x) < 0.5) return x * horner(EXPM1_C, x)

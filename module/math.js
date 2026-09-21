@@ -18,7 +18,8 @@ import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C, EXPM1_C, LOG_C, polyTree } from './math/trig-tables.js'
+import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, polyTree } from './math/trig-tables.js'
+import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
 import { registerMathRandom } from './math/random.js'
@@ -34,7 +35,7 @@ export default (ctx) => {
     'math.sin_core': [],
     'math.cos_core': [],
     'math.tan': ['math.sin', 'math.cos'],
-    'math.exp': ['math.exp2'],
+    'math.exp': [],
     'math.expm1': ['math.exp'],
     'math.log2': ['math.log'],
     'math.log1p': ['math.log'],
@@ -630,35 +631,68 @@ export default (ctx) => {
 
   registerMathSimd()
 
-  // e^x = 2^(x·log2 e) — defer to the faster $math.exp2 (one multiply, no division, and
-  // exp2's NaN/overflow/underflow guards cover exp's). Accurate to exp2's ~6e-9, better
-  // than the old 7-term Taylor, and it shares one code path with `2**`.
-  wat('math.exp', `(func $math.exp (param $x f64) (result f64)
-    (call $math.exp2 (f64.mul (local.get $x) (f64.const ${Math.LOG2E}))))`)
-
-  // 2^y, the dedicated base-2 power. `2**y` lowers here instead of exp(y·ln2): no ×ln2
-  // (so no reciprocal cancellation against exp's ÷ln2), a poly over the tighter [-0.5,0.5],
-  // and the same O(1) IEEE-exponent build of 2^k. ~6e-9 rel. error — well inside tolerance.
+  // The table kernels (module/math/trig-tables.js EXP2_TAB): 2^y = 2^e · T[j] · 2^f
+  // with k = round(64y), j = k mod 64, e = ⌊k/64⌋ and |f| ≤ 1/128 — f = y − k/64 is
+  // exact, the two being within a factor of two. T[j] is the double nearest 2^(j/64)
+  // and tail[j] the relative remainder its rounding dropped, so T + T·(q + tail) with
+  // q = 2^f − 1 = f·(ln2 + f·ln2²/2 + … ) rounds once: 0.52 ulp against a 200-bit
+  // reference over the whole range, at half the flops of the 14-term series over
+  // |f| ≤ ½ this replaces (2 ulp). `Math.exp`, `Math.pow(2, x)`, sinh/cosh/tanh and
+  // the colour cases' decode ride on these. e^x reduces on its own: k = round(64x/ln2),
+  // r = (x − k·L1) − k·L2 (L1 the 36-bit head of ln2/64, so k·L1 is exact), then the
+  // same table with q = e^r − 1 = r·(1 + r/2 + …) — 2^(x·log2 e) lost |x| ulp to the
+  // rounding of the product (26 ulp at |x| = 40).
+  ctx.runtime.exp2Table = hexBytes(EXP2_TAB_HEX)
   wat('math.exp2', `(func $math.exp2 (param $y f64) (result f64)
-    (local $k i32) (local $f f64) (local $k2 i32) (local $p f64)
+    (local $k i32) (local $e i32) (local $k2 i32) (local $tb i32) (local $f f64) (local $t f64) (local $p f64)
     (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
     (if (result f64) (f64.gt (local.get $y) (f64.const 1024.0)) (then (f64.const inf)) (else
       (if (result f64) (f64.lt (local.get $y) (f64.const -1075.0)) (then (f64.const 0.0)) (else
-        (local.set $k (i32.trunc_f64_s (f64.nearest (local.get $y))))
-        (local.set $f (f64.sub (local.get $y) (f64.convert_i32_s (local.get $k))))
-        (local.set $p ${horner(EXP2_C, '$f')})
-        ;; 2^k via a single IEEE-exponent build for the normal range (the hot path); the
-        ;; two-factor split (2^k2 · 2^(k−k2)) is only needed at the denormal/overflow edges.
-        ;; For normal k both are bit-identical (powers of two multiply exactly) — free speedup.
+        (local.set $k (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $y) (f64.const 64.0)))))
+        (local.set $f (f64.sub (local.get $y) (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const 0.015625))))
+        (local.set $tb (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (local.get $k) (i32.const 63)) (i32.const 4))))
+        (local.set $t (f64.load (local.get $tb)))
+        (local.set $p (f64.add (local.get $t) (f64.mul (local.get $t)
+          (f64.add (f64.mul (local.get $f) ${horner(EXP2_Q, '$f')}) (f64.load offset=8 (local.get $tb))))))
+        (local.set $e (i32.shr_s (local.get $k) (i32.const 6)))
+        ;; 2^e: one IEEE-exponent build for a normal result (the hot path); the two-factor
+        ;; split (2^k2 · 2^(e−k2)) only at the denormal and overflow edges. Bit-identical
+        ;; for a normal e — powers of two multiply exactly.
         (if (result f64)
-          (i32.and (i32.gt_s (local.get $k) (i32.const -1023)) (i32.lt_s (local.get $k) (i32.const 1024)))
+          (i32.and (i32.gt_s (local.get $e) (i32.const -1023)) (i32.lt_s (local.get $e) (i32.const 1024)))
           (then (f64.mul (local.get $p)
-            (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k) (i32.const 1023))) (i64.const 52)))))
+            (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $e) (i32.const 1023))) (i64.const 52)))))
           (else
-            (local.set $k2 (i32.shr_s (local.get $k) (i32.const 1)))
+            (local.set $k2 (i32.shr_s (local.get $e) (i32.const 1)))
             (f64.mul (f64.mul (local.get $p)
               (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
-              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $k) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
+              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $e) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
+
+  wat('math.exp', `(func $math.exp (param $x f64) (result f64)
+    (local $k i32) (local $e i32) (local $k2 i32) (local $tb i32) (local $f f64) (local $t f64) (local $p f64)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
+    (if (result f64) (f64.gt (local.get $x) (f64.const 709.782712893384)) (then (f64.const inf)) (else
+      (if (result f64) (f64.lt (local.get $x) (f64.const -745.1332191019412)) (then (f64.const 0.0)) (else
+        (local.set $k (i32.trunc_f64_s (f64.nearest (f64.mul (local.get $x) (f64.const ${64 / Math.LN2})))))
+        (local.set $t (f64.convert_i32_s (local.get $k)))
+        (local.set $f (f64.sub (f64.sub (local.get $x) (f64.mul (local.get $t) (f64.const ${EXP_L1}))) (f64.mul (local.get $t) (f64.const ${EXP_L2}))))
+        (local.set $tb (i32.add (global.get $math.exp2_tbl) (i32.shl (i32.and (local.get $k) (i32.const 63)) (i32.const 4))))
+        (local.set $t (f64.load (local.get $tb)))
+        (local.set $p (f64.add (local.get $t) (f64.mul (local.get $t)
+          (f64.add (f64.mul (local.get $f) ${horner(EXP_Q, '$f')}) (f64.load offset=8 (local.get $tb))))))
+        (local.set $e (i32.shr_s (local.get $k) (i32.const 6)))
+        ;; 2^e: one IEEE-exponent build for a normal result (the hot path); the two-factor
+        ;; split (2^k2 · 2^(e−k2)) only at the denormal and overflow edges. Bit-identical
+        ;; for a normal e — powers of two multiply exactly.
+        (if (result f64)
+          (i32.and (i32.gt_s (local.get $e) (i32.const -1023)) (i32.lt_s (local.get $e) (i32.const 1024)))
+          (then (f64.mul (local.get $p)
+            (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $e) (i32.const 1023))) (i64.const 52)))))
+          (else
+            (local.set $k2 (i32.shr_s (local.get $e) (i32.const 1)))
+            (f64.mul (f64.mul (local.get $p)
+              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (local.get $k2) (i32.const 1023))) (i64.const 52))))
+              (f64.reinterpret_i64 (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $e) (local.get $k2)) (i32.const 1023))) (i64.const 52)))))))))))`)
 
   // The shared series and the shared evaluation tree — the JS constant folder
   // walks the same ones, so a folded `Math.expm1(0.3)` and the compiled kernel

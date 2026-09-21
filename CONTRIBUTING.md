@@ -267,7 +267,9 @@ Local typing and emission share the interval-product proof, including the
 negative-zero check; a product fitting i32's magnitude alone is insufficient.
 
 Typed constructor provenance describes storage, not presence. A field or index
-result needs a separate non-nullish proof before pointer unboxing. Computed
+result needs a separate non-nullish proof before pointer unboxing: the
+summary's, or for `arr[i]` over a hole-free array, the loop's in-bounds proof
+(`inBoundsArrIdx`), so a record visitor's element pointer stays raw. Computed
 typed-array reads keep the actual receiver tag unless presence is proven; catch
 elimination must also consult presence even when the payload kind is known.
 Nullable direct reads guard the receiver while retaining their schema/element
@@ -457,9 +459,25 @@ layout is bound for the per-name slot paths, which keeps a flattened object
 property out of the function namespace box. Definite means the store runs
 before anything can observe the object: a statement of the same list as the
 binding, with nothing between them that could run other code or ask about
-keys (a call, `in`, a spread, a deletion, a branch, a loop); module
-initializers and the entry module form one such list, in the order they run,
-so a bundled `parse.comment['#!'] = …` qualifies. A conditional store keeps
+keys (`in`, a spread, a deletion, a branch, a loop, an unresolved call);
+module initializers and the entry module form one such list, in the order
+they run, so a bundled `parse.comment['#!'] = …` qualifies. A call between
+them is resolved when it is a direct call to a module function whose body,
+parameter defaults and direct callees never mention the literal's name and
+never run what the pass cannot name (a closure, a computed callee, a
+constructor, an accessor read where the program declares accessors, an
+await); a builtin method call is harmless when no method of the program
+bears its name and no argument can be a function (a closure the callee
+defines is not run by being defined). The operator registrations between a
+parser's `parse.comment ??= {…}` and a later module's `parse.comment['#!'] =
+…` are such calls. Any other mention of the literal's name between the
+binding and the store (an alias, an argument, a computed-key store, a value
+of another literal) ends its run: an alias reaches code the pass cannot
+follow, and a key declared after a computed store would sit ahead of it in
+the layout. A namespace of plain values (`parse.comment ??= {…}` with no
+arrow property) flattens like one with arrows (`plan/scope.js`
+`flattenFuncNamespaces` witnesses it by a top-level property store on a
+function), so the pass sees the flattened global as a literal-bound name. A conditional store keeps
 its key out of the literal and in the sidecar, because a declared slot is an
 own property from the literal on and `in`, hasOwnProperty, for-in and
 Object.keys would all report it before the store. This is the one place a
@@ -475,7 +493,24 @@ constant): an aliased source (`for (s in cm = o)`) assigns once first, a loop
 variable declared outside keeps its last key, `break` and `continue` target
 the copies' blocks; a body over the size budget (384 nodes in total: the
 three-comment loop of subscript is 3 × 101) or one capturing the key in a
-closure keeps the pooled static key array.
+closure keeps the pooled static key array. Over an OPEN layout (the summary
+names the receiver's one layout, some site still adds keys, and the
+receiver is never nullish) the same unroll lists the layout's keys and a
+pooled loop over `__keys_dyn` follows inside the copies' break block: the
+keys added at run time, sidecar then global table, in insertion order and
+none of the layout's. That is JS order unless a key added later is an array
+index, which JS lists first; a layout holding such a key keeps the pooled
+loop. The keys a `__keys_ro`/`__keys_dyn` site lists are cached per site (an
+inline cache: `__enumc_off<id>`/`len`/`ep`/`arr`), keyed by the receiver's
+sidecar and its length, or by the receiver's own offset for one without a
+sidecar (a static-segment literal, a durable object written only after
+init); every cold key-set change (a global dyn-prop insert on an OBJECT
+receiver, a delete, a relocation, a heap reset) moves `__enumc_epoch`, and a
+hit needs the fill's epoch. Sites in alternation (a parser's comment table
+and its number-prefix table) keep their own entries, and an insert on an
+ARRAY or CLOSURE receiver (`node.loc = at` on every parsed node) moves
+nothing, since their properties never enumerate. The HASH arm's
+`__hash_keys_ro` keeps the shared entry, epoch-checked.
 `__prop_order` and Map/Set's `__coll_order` specialize one sorting template.
 Only property sorting allocates ranks; Map/Set read insertion sequence numbers
 from their existing slots, using a 4N-byte offset buffer instead of 12N bytes.
@@ -565,6 +600,9 @@ conversion hooks and is never duplicated just because its stored kind is known.
 Lookup dependencies name hashing/equality directly, not mutation helpers.
 
 Source inlining builds the exported expression subset once per pass. A
+local arrow bound by `let` and only ever called inlines like a `const` one
+(the mention check rejects any write to the name, so a surviving `let` is a
+const); `optimize: { sourceInline: false }` keeps every closure form. A
 declaration splices each of its declarators (`const r = f(a), g = f(b), b =
 f(c)`, each its own statement in order); more than one declarator splices only
 in an innermost loop, where the call it removes is what kept the lane
@@ -1083,7 +1121,12 @@ measures a worst case of ~40 ulp across its exponents against the exact
 rational power, which `test/pow.js` pins under a 96 ulp ceiling. The lane vectorizer lifts a constant-exponent pow per lane through the
 same kernel, bit-exact with the scalar loop. A second algorithm (exp∘log, or
 the three-step fifthroot) is never the default: a meaningful result keeps its
-f64 accuracy.
+f64 accuracy. `Math.exp` and `2 ** x` are one table kernel (`math/trig-tables.js`
+EXP2_TAB: 2^(j/64) as the nearest double and the tail its rounding dropped;
+`scripts/exp-table.mjs`): reduce to |f| ≤ 1/128 (exp on its own ln2/64 split,
+head and tail), T + T·(q + tail) with q the exact-coefficient remainder
+series, one exponent build; 0.52 ulp against a 200-bit reference for both,
+scalar, 2-wide and the constant folder bit-identical (`test/math.js`).
 
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 

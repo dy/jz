@@ -263,6 +263,9 @@ export function pullStdlib(sec) {
   // the SAME owning function since the shared kernel always needs both tables together.
   if (injectTable('math.pow_transcend', 'math.pow_log2_tbl', ctx.runtime.powLog2Table)) ctx.runtime.powLog2Table = null
   if (injectTable('math.pow_transcend', 'math.pow_exp2_tbl', ctx.runtime.powExp2Table)) ctx.runtime.powExp2Table = null
+  // The 2^(j/64) table both exponentials reduce to (module/math/trig-tables.js EXP2_TAB): whichever is in injects it once.
+  if (injectTable('math.exp2', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
+  if (injectTable('math.exp', 'math.exp2_tbl', ctx.runtime.exp2Table)) ctx.runtime.exp2Table = null
   if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {

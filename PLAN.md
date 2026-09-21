@@ -805,6 +805,63 @@ Those tests do not establish callback deadlines.
 - Where the corpus stands against V8, measured paired over all 62 cases: 58
   win, 4 do not. webaudio 9.5×, colorpq 4.4×, watr 1.6×, resample 1.00×.
   Every other case is at or under parity, the median well under it.
+- The full perf gate on this tree (`gate5.log`, 18 red of 271), triaged.
+  Two were this session's own: jessie 1.13× and, behind it, an enumeration
+  that had become right (the bundled `#!` comment key) and slow (the
+  three-stream merge per token); entity's 2249 B (budget 1900) and watr's
+  +40 KB were 63f4fe97's (the widened summary made every `ps[i]` element a
+  nullable box). Fixed at the roots: a for-in over an open layout unrolls the
+  layout's keys and walks only the keys added later; the key list is cached
+  per site with an epoch, because the one shared entry was evicted by every
+  parsed node's `node.loc = at`; then the layout closed altogether, since the
+  declared-keys pass now sees through the registration calls between
+  `parse.comment ??= {…}` and `parse.comment['#!'] = …` (a direct call whose
+  body cannot reach the literal observes nothing) and a value namespace with
+  no arrow property flattens too. jessie 1.95 to 1.97 ms against V8's 1.97,
+  with the right keys. entity's element pointer is raw again under the
+  loop's in-bounds proof (1797 B). A `let`-declared local arrow inlines like a
+  const one: Sierpinski's per-sample closure and its environment allocation
+  went away (1.45× to 1.22×), Sine Rider 220 to 150 µs.
+- watr, measured rather than argued. Under `--no-liftoff` the jz build runs
+  1112 µs against V8's first call of 1168; the bench's default run is 2199,
+  and `main()` four times in one process reads 2349, 1176, 1143, 1101 for the
+  599 KB speed build, 1498, 1289, 1188, 1199 for the 332 KB size build, while
+  V8's own four read 1119, 1027, 910, 877. So the gate's number is Liftoff
+  on a module TurboFan takes a whole run to replace, and the steady state is
+  1.26× of V8's warmed JS, not a win. A sweep of the speed tier's size
+  trades on watr (first call, two runs each): `speculateSchemaBranches`
+  off 598 → 567 KB and 2220 → 1370 µs, `inlinePtrOffsetFast` off 533 KB and
+  1715, `devirtFnArrays` off 1790, `watrProfile: null` 493 KB and 1550, the
+  size tier 331 KB and 1400; everything else within noise. The branch
+  speculation duplicates whole branch bodies into a guarded fast arm and a
+  dynamic one; a size-aware budget for it (and for the inline forwarding
+  hop) is the lever the trail limit needs, the steady state a different
+  project (the profile is flat: dictionary reads, small-array allocation,
+  string hashing, `__dyn_set`, each a few percent).
+- A member of a class elsewhere no longer changes the reads of other layouts:
+  a receiver the summary types as one non-class layout skips the class
+  dispatcher (`emit/class-dispatch.js`), so an element read `e.type` beside a
+  class with `get type()` stays a slot read (it went through the shared
+  dispatcher and a probe, three dynamic reads in a three-line loop).
+  webaudio does not move on it (9.4×): its 5655 dynamic sites are the same
+  before and after, the profile still 19% `__dyn_get_t_h`, 14%
+  `__schema_slot_h`, 11% `__str_eq` — the shapes the summary loses (key
+  order, missing keys, reads with no shape), the program of its own the entry
+  above describes.
+- Sierpinski's remainder after the closure and the table (1.09× → parity
+  band): three constant literals read per sample, `[2, 4, 2, 9][t_shift & 3]`,
+  each a forwarding test, a length load, a bounds test and the load, where a
+  static literal never relocates and `& 3` bounds the index (the named-const
+  fold `foldStaticConstArrayReads` does not reach an inline literal); and
+  `(-t >> 8) & 255` computed three times, an argument to three inlined calls,
+  with no expression CSE to share it (V8's GVN does).
+- percolation (0.67 to 0.71× at every tree, under its 0.75 floor): `find`
+  and `union` take f64 parameters because `idx = y * w + x` is f64 (`W` and
+  `H` are host numbers), so the path-halving chase converts on every hop
+  (trunc, bounds, load, convert, compare). What it needs is the index-chase
+  lowering the case's note names: an i32 loop whose checked reads stay i32
+  under integer-tolerant consumers (`|0`, a compare with an i32, an index),
+  leaving the generic loop for an out-of-range hop.
 - Three of those losses closed in one place. A declaration binds its channels
   at once — `const r = f(src[j]), g = f(src[j + 1]), b = f(src[j + 2])` — and
   the source inliner read only the FIRST declarator of a declaration, so a
@@ -880,12 +937,19 @@ Those tests do not establish callback deadlines.
   1.3e-10 to 6e-10 and atanh at 3.6e-12; the atan cluster is a DELIBERATE trade
   (a degree-5 minimax replaced the correctly-rounded fdlibm form at ~3x the ops,
   precisely to put those three under V8), so tightening it gives that back.
-  Buying the speed back without giving up the digits means table-assisted range
-  reduction — split the reduced argument once more, look up `2^(j/32)` in a
-  33-entry table, and eight coefficients suffice where fourteen do now. jz has
-  the machinery (stdlib bodies can be lazy thunks; `pushStaticSlots` returns a
-  data offset to bake into the WAT) but no math helper uses it yet, and the
-  table and its index order would have to be mirrored in all three evaluators.
+  The speed came back without giving up the digits: exp2 and exp are one
+  table kernel now (2^(j/64) with the tail its rounding dropped, so
+  T + T·(q + tail) rounds once; a degree-6 exact-coefficient remainder
+  series; exp on its own ln2/64 head-and-tail reduction instead of
+  2^(x·log2 e), which lost |x| ulp to the product's rounding). Against a
+  200-bit reference over their whole range: exp2 0.52 ulp (was 2), exp 0.51
+  (was 26 at |x| = 40). Per call against V8: `2 ** x` 0.76× (was 0.99), exp
+  1.47× (was 1.98). The table rides the lazy data injection the pow kernel's
+  tables use (`injectTable`, one owner injects it), and the three evaluators
+  share the table and the tree (`test/math.js` re-derives the table and
+  measures both kernels). sinh, cosh, tanh, expm1 and the colour decodes
+  inherit it; the Sierpinski floatbeat, four `Math.pow(2, n/12)` per sample,
+  went from 1.22× to 1.09× of V8 on it.
 - A review of this session's commits found four defects and fixed them at
   their roots. The vectorized constant flag landed on a float `ne`, which reads
   a NaN entry as changed and stored the constant with no mismatch at all, even

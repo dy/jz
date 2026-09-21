@@ -941,3 +941,45 @@ test('Math.hypot/min/max: spread and mixed scalar-spread arguments', () => {
   is(exports.mn([5, 9]), 2)
   is(exports.mx0(), 7)
 })
+
+// ── The exponential table kernels ───────────────────────────────────────────
+// $math.exp2 / $math.exp reduce to 2^(j/64) × a short remainder polynomial
+// (module/math/trig-tables.js EXP2_TAB, EXP2_Q, EXP_Q): the table is re-derived
+// here at 200 bits, and both kernels are held within 0.75 ulp of that reference
+// (measured 0.52) over a random sweep of their whole range.
+const P200 = 200n, ONE200 = 1n << P200
+const ln2Fix = (() => { let s = 0n, t = ONE200 / 3n, k = 1n; while (t) { s += t / k; t = t / 9n; k += 2n } return 2n * s })()
+const expFix = (x) => { let s = ONE200, t = ONE200; for (let n = 1n; t; n++) { t = t * x / ONE200 / n; s += t } return s }
+const fix = (x) => BigInt(Math.round(x * 2 ** 60)) * (ONE200 >> 60n)
+const ulpErr = (approx, k, v) => { const a = approx / 2 ** k; const d = fix(a) > v ? fix(a) - v : v - fix(a); return Number(d) / Number(ONE200) / 2 ** (Math.floor(Math.log2(Math.abs(a))) - 52) }
+test('exp table: 2^(j/64) and its tails re-derived at 200 bits, hex bytes agree', async () => {
+  const { EXP2_TAB, EXP2_TAB_HEX } = await import('../module/math/trig-tables.js')
+  const { hexBytes } = await import('../src/static-data.js')
+  const rootN = (n, target) => { let x = ONE200; for (let i = 0; i < 200; i++) { let p = ONE200; for (let j = 0; j < n; j++) p = p * x / ONE200; const nx = x - (p - target) * ONE200 / (BigInt(n) * (p * ONE200 / x)); if (nx === x) break; x = nx } return x }
+  const toD = (v) => { const q = v >> (P200 - 52n), r = v & ((1n << (P200 - 52n)) - 1n), half = 1n << (P200 - 53n); let m = q; if (r > half || (r === half && (q & 1n))) m += 1n; return Number(m) / 2 ** 52 }
+  const R = rootN(64, 2n * ONE200)
+  for (let j = 0, v = ONE200; j < 64; j++, v = v * R / ONE200) {
+    const t = toD(v)
+    is(EXP2_TAB[2 * j], t, `T[${j}]`)
+    is(EXP2_TAB[2 * j + 1], Number(v - fix(t)) / Number(fix(t)), `tail[${j}]`)
+  }
+  const bytes = hexBytes(EXP2_TAB_HEX), dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  is(bytes.length, 64 * 16)
+  for (let i = 0; i < 128; i++) is(dv.getFloat64(8 * i, true), EXP2_TAB[i], `hex[${i}]`)
+})
+test('exp2 and exp within 0.75 ulp of a 200-bit reference across their range', () => {
+  const { e2, e } = run('export let e2 = (x) => Math.pow(2, x); export let e = (x) => Math.exp(x)')
+  let s = 0x9e3779b9 | 0, worst2 = 0, worstE = 0
+  const rnd = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 4294967296 }
+  for (let i = 0; i < 3000; i++) {
+    const y = (rnd() * 2 - 1) * 1000, ky = Math.floor(y), fy = y - ky
+    worst2 = Math.max(worst2, ulpErr(e2(y), ky, expFix(fix(fy) * ln2Fix / ONE200)))
+    const x = (rnd() * 2 - 1) * 700, kx = Math.floor(x / Math.LN2)
+    worstE = Math.max(worstE, ulpErr(e(x), kx, expFix(fix(x) - BigInt(kx) * ln2Fix)))
+  }
+  ok(worst2 <= 0.75, `exp2 worst ${worst2} ulp`)
+  ok(worstE <= 0.75, `exp worst ${worstE} ulp`)
+  is(e2(NaN), NaN); is(e2(1025), Infinity); is(e2(-1080), 0); is(e2(0), 1); is(e2(10), 1024)
+  is(e(NaN), NaN); is(e(710), Infinity); is(e(-746), 0); is(e(0), 1)
+  ok(Number.isFinite(e(709.782712893384)) && e(709.782712893384) > 1.79e308, 'largest finite exp')
+})
