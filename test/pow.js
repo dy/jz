@@ -2,15 +2,16 @@
 // host's own Math.pow (V8 ports the same fdlibm algorithm — see module/math.js) and
 // against authoritative correctly-rounded vectors:
 //
-//   1. $math.pow_core — the fdlibm-ported non-integer tail the runtime-y $math.pow
-//      falls back to once the special-case ladder and the i32-range integer fast path
-//      rule themselves out. Before this port the fallback was `exp(y·log(x))`, whose
-//      composed error grows with |y·ln x| — fine for small exponents but many ulps off
-//      for the large ones real content uses (PQ/HDR transfer curves, gamma decodes).
-//      Bit-exact where fdlibm's ~1-ulp accuracy bound allows it (the common case),
-//      ≤1 ulp everywhere else — e_pow.c is documented "nearly rounded", not correctly
-//      rounded, so an occasional last-ulp difference from the host's own build of the
-//      same algorithm is expected, not a jz bug.
+//   1. $math.pow_core — Arm's optimized-routines pow (table-driven double-double log,
+//      exact split product, jz's exp table; module/math.js), the kernel the runtime-y
+//      $math.pow takes for every positive finite base and non-integer exponent, and for
+//      integer exponents past its square-and-multiply fast path (|y| ≤ 16). Documented
+//      worst case 0.54 ulp: bit-exact against the host on nearly every input, one ulp
+//      off on the rest — V8 ports fdlibm's e_pow.c, itself "nearly rounded", so an
+//      occasional last-ulp difference between two sub-ulp kernels is expected, not a
+//      jz bug. Before this the fallback was `exp(y·log(x))`, whose composed error grows
+//      with |y·ln x| — many ulps off for the exponents real content uses (PQ/HDR
+//      transfer curves, gamma decodes).
 //   2. $math.pow_fold — the CORRECTLY-ROUNDED CONST-EXPONENT fold under
 //      `optimize.crPow` (the authoritative comment is above emitPow in module/math.js):
 //      `x ** C` / Math.pow(x, C) with a compile-time-constant, non-integer, non-±0.5,
@@ -295,4 +296,15 @@ test('pow: correctly rounded on the authoritative vector set (runtime + fold pat
   is(total, 5152, 'vector count')
   is(rtMis, 0, `runtime $math.pow misrounds (first: ${firstRt})`)
   is(foldMis, 0, `const-exponent fold misrounds of ${foldTotal} (first: ${firstFold})`)
+})
+
+// The runtime ladder past the square-and-multiply fast path (|y| ≤ 16): a long
+// integer exponent takes the kernel and stays within an ulp of the host
+// (square-and-multiply drifted x^1000 by 49 ulp); a negative base with an
+// integer exponent beyond i32 keeps the sign rule; a signed zero base keeps its
+// sign for an odd exponent.
+test('Math.pow runtime — integer exponents past the fast path and signed zeros match the host', () => {
+  tally('long integers', [[0.7, 1000], [0.9999, -1000], [1.0000001, 1000], [1.5, 33], [10, 20], [2, 100], [0.5, -60], [-0.7, 1001], [-1.5, 34]], pow, TAIL_LIMIT)
+  for (const [x, y] of [[-2, 2147483648], [-2, 2147483649], [-0.5, 2147483649], [-2, 2 ** 53 + 2], [-0, 5], [-0, -5], [0, -5], [-0, 6], [-Infinity, 5], [-Infinity, -5], [-2, 2.5], [-8, 1 / 3]])
+    ok(Object.is(pow(x, y), Math.pow(x, y)), `pow(${x}, ${y}) = ${pow(x, y)}, host ${Math.pow(x, y)}`)
 })

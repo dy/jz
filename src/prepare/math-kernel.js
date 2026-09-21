@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, polyTree } from '../../module/math/trig-tables.js'
+import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -194,7 +194,77 @@ function log1p(x) {
 function pow(a, b) {
   if (Number.isInteger(b) && Math.abs(b) <= 16) return powInt(a, b)
   if (b === 0.5) return Math.sqrt(a)
-  return Math.pow(a, b)
+  return powRuntime(a, b)
+}
+
+// The runtime `$math.pow` (module/math.js), operation for operation, so a fold
+// and a run agree bit for bit on any host: the special-case ladder, the
+// small-integer fast path, then the kernel: x^y = exp(y·log(x)) with log(x)
+// as a double-double (Arm's optimized-routines pow, within 0.54 ulp) over the
+// 2^(j/64) table. Bit patterns through BigInt, as the kernel's i64 ops.
+const F64 = new Float64Array(1), U64 = new BigUint64Array(F64.buffer)
+const bitsOf = (d) => { F64[0] = d; return U64[0] }
+const ofBits = (b) => { U64[0] = BigInt.asUintN(64, b); return F64[0] }
+const nearestEven = (v) => { const r = Math.round(v); return Math.abs(v % 1) === 0.5 && r % 2 !== 0 ? r - 1 : r }
+const oddInteger = (y) => Number.isInteger(y) && Math.abs(y) < 2 ** 53 && Math.abs(y) % 2 === 1
+function powRuntime(x, y) {
+  if (y === 0) return 1
+  if (Number.isNaN(y)) return y
+  if (Number.isNaN(x)) return x
+  if (Math.abs(y) === Infinity) { const ax = Math.abs(x); return ax === 1 ? NaN : (ax > 1) === (y > 0) ? Infinity : 0 }
+  if (x === 1) return 1
+  if (y === 1) return x
+  if (Number.isInteger(y) && Math.abs(y) <= 16) {
+    let ax = Math.abs(x), n = Math.abs(y), res = 1
+    const neg = (x < 0 || Object.is(x, -0)) && (n & 1) === 1
+    while (n > 0) { if (n & 1) res = res * ax; ax = ax * ax; n >>= 1 }
+    if (y < 0) res = 1 / res
+    return neg ? -res : res
+  }
+  if (Math.abs(x) === Infinity) { const r = y > 0 ? Infinity : 0; return x < 0 && oddInteger(y) ? -r : r }
+  if (x === 0) { const r = y < 0 ? Infinity : 0; return 1 / x < 0 && oddInteger(y) ? -r : r }
+  if (x < 0) { if (!Number.isInteger(y)) return NaN; const r = powCore(-x, y); return oddInteger(y) ? -r : r }
+  return powCore(x, y)
+}
+const expQ = (f) => polyTree(EXP_Q, { konst: c => c, mul: (a, b) => a * b, add: (a, b) => a + b }, f)   // (e^f − 1)/f, the kernel's own tree
+function powCore(x, y) {
+  if (y === 0.5) return Math.sqrt(x)
+  const ay = Math.abs(y)
+  if (ay < 2 ** -65) return x > 1 ? 1 + y : 1 - y
+  if (ay >= 2 ** 63) return (x > 1) === (y > 0) ? Infinity : 0
+  let ix = bitsOf(x)
+  if (ix < 0x0010000000000000n) ix = BigInt.asUintN(64, bitsOf(x * 2 ** 52) - (52n << 52n))
+  const tmp = BigInt.asIntN(64, ix - 0x3fe6955500000000n)
+  const i = Number((tmp >> 45n) & 127n), kd = Number(tmp >> 52n)
+  const z = ofBits(ix - (tmp & 0xfff0000000000000n))
+  const invc = POW_LOG_TAB[3 * i], logc = POW_LOG_TAB[3 * i + 1], logctail = POW_LOG_TAB[3 * i + 2]
+  const zhi = ofBits((bitsOf(z) + 0x80000000n) & 0xffffffff00000000n), zlo = z - zhi
+  const rhi = zhi * invc - 1, rlo = zlo * invc, r = rhi + rlo
+  const t1 = kd * POW_LN2HI + logc, t2 = t1 + r
+  const lo1 = kd * POW_LN2LO + logctail, lo2 = t1 - t2 + r
+  const ar = POW_LOG_A[0] * r, ar2 = r * ar, ar3 = r * ar2
+  const arhi = POW_LOG_A[0] * rhi, arhi2 = rhi * arhi
+  const hi = t2 + arhi2, lo3 = rlo * (ar + arhi), lo4 = t2 - hi + arhi2
+  const p = ar3 * (POW_LOG_A[1] + (r * POW_LOG_A[2] + ar2 * (POW_LOG_A[3] + (r * POW_LOG_A[4] + ar2 * (POW_LOG_A[5] + r * POW_LOG_A[6])))))
+  const lo = lo1 + lo2 + lo3 + lo4 + p
+  const lg = hi + lo, tail = hi - lg + lo
+  const yhi = ofBits(bitsOf(y) & 0xfffffffff8000000n), ylo = y - yhi
+  const lhi = ofBits(bitsOf(lg) & 0xfffffffff8000000n), llo = lg - lhi + tail
+  const ehi = yhi * lhi, elo = ylo * lhi + y * llo
+  const ax = Math.abs(ehi)
+  if (ax < 2 ** -54) return 1 + ehi
+  if (ax >= 1024) return ehi < 0 ? 0 : Infinity
+  const k = nearestEven(ehi * (64 / Math.LN2))
+  const f = ehi - k * EXP_L1 - k * EXP_L2 + elo
+  const j = k & 63, t = EXP2_TAB[2 * j]
+  const q = EXP2_TAB[2 * j + 1] + f * expQ(f)
+  const sbits = BigInt.asIntN(64, bitsOf(t) + (BigInt(k >> 6) << 52n))
+  if (ax < 512) { const scale = ofBits(sbits); return scale + scale * q }
+  if (k >= 0) { const scale = ofBits(sbits - 0x3f10000000000000n); return (scale + scale * q) * 2 ** 1009 }
+  const scale = ofBits(sbits + 0x3fe0000000000000n)
+  let res = scale + scale * q
+  if (Math.abs(res) < 1) { const one = res < 0 ? -1 : 1; let lo = scale - res + scale * q; const hi = one + res; lo = one - hi + res + lo; res = hi + lo - one }
+  return res * 2 ** -1022
 }
 function powInt(a, n) {
   if (n === 0) return 1

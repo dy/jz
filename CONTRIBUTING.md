@@ -1261,8 +1261,14 @@ n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran
 35% slower than the branch.
 
 `x ** c` with a constant non-integer exponent is the `$math.pow` kernel, one
-implementation for constant and runtime exponents within an ulp of the host;
-the k/5 fifthroot fold runs four Newton steps (the last a correction) and
+implementation for constant and runtime exponents within an ulp of the host:
+Arm's optimized-routines pow, a double-double log from a 128-entry table
+(`scripts/pow-log-table.mjs` derives and checks it) and the shared exp
+table, 10 ns a call against V8's 6; the ladder in front of it takes the
+common case (a positive finite base, a non-integer exponent) straight to
+the kernel and walks the edge cases only for the rest. The constant fold
+in `src/prepare/math-kernel.js` is the kernel's twin, bit for bit.
+The k/5 fifthroot fold runs four Newton steps (the last a correction) and
 measures a worst case of ~40 ulp across its exponents against the exact
 rational power, which `test/pow.js` pins under a 96 ulp ceiling. The lane vectorizer lifts a constant-exponent pow per lane through the
 same kernel, bit-exact with the scalar loop. A second algorithm (exp∘log, or
