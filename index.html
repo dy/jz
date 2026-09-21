@@ -1372,7 +1372,7 @@
               </div>
             </div>
             <p class="compile-proof" id="compile-proof" data-state="loading" aria-live="polite">
-              <a class="proof-link lnk" id="compile-proof-link" href="repl/" title="Open the hero demo source in the REPL">Live demo</a>
+              <a class="proof-link lnk" id="compile-proof-link" href="repl/" title="Open the hero demo source in the REPL">Demo</a>
               <span class="proof-data" id="compile-proof-data">compiling in your browser…</span>
             </p>
           </div>
@@ -1552,9 +1552,9 @@
       <div class="author-wrap">
         <div class="author-text prose">
           <h2>Why JZ exists</h2>
-          <p>JavaScript gets called not a language, unfit for serious work. The spec only adds and never removes, so the legacy stays: <code>var</code>, <code>==</code>, <code>null</code> beside <code>undefined</code>, <code>[] + {}</code> a string. I wanted the modern core alone, compiled to a binary. JavaScript zero: none of it left at runtime, and back to the root.</p>
-          <p>I needed it for my own code, <a href="https://github.com/colorjs/color-space" target="_blank" rel="noopener">color-space</a>, <a href="https://github.com/audiojs/web-audio-api" target="_blank" rel="noopener">web-audio-api</a>, <a href="https://github.com/audiojs" target="_blank" rel="noopener">audiojs</a>, floatbeats, wherever a hot loop decides whether the thing is usable. Crockford’s distilled subset was too small even for those, so it went inside as a convention, and JZ takes the JavaScript people write, minus what cannot compile ahead of time.</p>
-          <p>I am not a compiler engineer. The first version was minimal and clean, and every pass since strips it back to that. It began as the floor under <a href="https://github.com/dy/piezo" target="_blank" rel="noopener">piezo</a>, a language prototype, and spun off on its own.</p>
+          <p>I like minimal, functional JavaScript – <a href="https://www.crockford.com/javascript/" target="_blank" rel="noopener">the Crockford’s good parts</a>, the spirit of C. But the spec evolves the language into something heavy – generators, async generators, private fields, decorators, pattern matching on the way – and never deprecates the legacy: <code>var</code> hoisting, <code>==</code> coercion, <code>null</code> beside <code>undefined</code>, boxed <code>String</code> and <code>Number</code>, <code>eval</code>, <code>with</code>, ASI, <a href="https://wtfjs.com" target="_blank" rel="noopener"><code>[] + {}</code></a>. And the whole runtime, JIT and GC, has to sit in memory to run it – runtime ≠ language. Due to that JS is mocked and not considered a real language.</p>
+          <p>That created an urge to stabilize JS – keep the good parts, no OOP, no classes. So the first attempt was designing the language syntax, <a href="https://github.com/dy/piezo" target="_blank" rel="noopener">piezo</a>. Then I wrote <a href="https://github.com/dy/subscript" target="_blank" rel="noopener">subscript</a>, a parser (<a href="https://github.com/dy/subscript#performance" target="_blank" rel="noopener">26 ms</a> on its benchmark vs jsep 46 ms and native oxc 86 ms), and <a href="https://github.com/dy/watr" target="_blank" rel="noopener">watr</a>, a WAT compiler (<a href="https://github.com/dy/watr#metrics" target="_blank" rel="noopener">44 KB, 3,123 op/s</a> vs wabt 282 KB, 859 op/s). piezo needed a lowering layer between the two, and that became JZ – javascript zero. I am not a compiler engineer, but I know how to write minimal atomic code. The first prototype compiled the basics; then AI suggested architectural improvements and has been working on them for months.</p>
+          <p>The ambition: JS compiled AOT, faster than V8 on every kernel, smaller than AssemblyScript, no runtime.</p>
         </div>
         <div class="sponsor">
           <p>Find it useful?</p>
@@ -1774,7 +1774,7 @@
           const wasm = jzCompile(src, { optimize: 3 })
           const compileMs = performance.now() - started
           jzEng = instantiateJz(wasm).exports
-          setCompileProof('success', `runs the same source as JS or as JZ, compiled to ${formatWasmBytes(wasm.byteLength)} WASM in ${formatCompileMs(compileMs)}`)
+          setCompileProof('success', `runs the same source as JS or JZ, compiled to ${formatWasmBytes(wasm.byteLength)} WASM`)
         } catch (e) {
           jzErr = e
           setCompileProof('error', 'compile unavailable in this browser')
