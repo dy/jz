@@ -2788,3 +2788,19 @@ export let sum = (n) => { let out = ''; for (let i = 0; i < n; i++) { for (const
   want.add(0, 'w', 4); got.add(0, 'w', 4)
   is(got.sum(3), want.sum(3))
 })
+test('for-in at init sees a key the receiver gains right after, sidecar and global table alike', () => {
+  const src = `const o = { a: 1 }
+let first = ''
+for (const k in o) first += k
+o['b'] = 2
+let second = ''
+for (const k in o) second += k
+export let add = (k) => { o[k] = 3 }
+export let keys = () => { let out = ''; for (const k in o) out += k; return out }
+export let init = () => first + '|' + second`
+  const want = oracle(src), got = jz(src).exports
+  is(got.init(), want.init())
+  is(got.keys(), want.keys())
+  want.add('c'); got.add('c')
+  is(got.keys(), want.keys())
+})

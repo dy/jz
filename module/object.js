@@ -1661,13 +1661,16 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   // global __dyn_props probe, so a hit skips the ihash lookup too — sound
   // because any global-side structural change since the fill moved the epoch.
   // Fill the site's cache with `arr` — by sidecar, else by base (roHit below).
-  // A receiver with no dyn source is cached too: the global table's miss is
-  // what the probe costs, and it holds until the epoch moves.
-  const fillSite = (arr) => [
+  // A receiver with no dyn source is cached only below the heap: a static
+  // literal's every write lands in the global table and moves the epoch,
+  // where a heap object's first write at init makes it a sidecar, which
+  // moves nothing (its length is the sidecar key) — cached with none, it
+  // would keep answering from before that write.
+  const fillSite = (arr) => [['if', ['i32.or', ['i32.or', ['local.get', `$${poffS}`], ['local.get', `$${poffG}`]], ['i32.lt_u', ['local.get', `$${base}`], ['i32.const', HEAP.START]]], ['then',
     ['global.set', `$${site.off}`, ['select', ['local.get', `$${poffS}`], ['local.get', `$${base}`], ['local.get', `$${poffS}`]]],
     ['global.set', `$${site.len}`, ['select', ['local.get', `$${dnS}`], ['i32.const', -1], ['local.get', `$${poffS}`]]],
     ['global.set', `$${site.ep}`, ['global.get', '$__enumc_epoch']],
-    ['global.set', `$${site.arr}`, arr]]
+    ['global.set', `$${site.arr}`, arr]]]]
   const roHit = site ? [['if', ['i32.and',
       ['i32.eq', ['global.get', `$${site.ep}`], ['global.get', '$__enumc_epoch']],
       ['if', ['result', 'i32'], ['local.get', `$${poffS}`],
@@ -1773,7 +1776,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
     ...(site ? [['if', ['i32.and',
         ['i32.and', ['i32.eqz', ['local.get', `$${dnG}`]], ['i32.eqz', ['local.get', `$${dnS}`]]],
         ['i32.and', ['i32.ne', ['local.get', `$${src}`], ['i32.const', 0]], ['i32.eqz', ['local.get', `$${mask}`]]]],
-      ['then', ...fillSite(mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${src}`])), ['br', `$oed${id}`, ['global.get', `$${site.arr}`]]]]] : []),
+      ['then', ...fillSite(mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${src}`])), ['br', `$oed${id}`, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${src}`])]]]] : []),
     // Over-allocate sn+dnG+dnS; patch length to actual `o` post-dedup so
     // removed shadow-mirror/cross-source-duplicate slots never expose
     // garbage tails.
