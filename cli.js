@@ -2,7 +2,7 @@
 
 /** jz CLI — compile a JavaScript file to WebAssembly. */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'

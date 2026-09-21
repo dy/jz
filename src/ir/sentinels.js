@@ -20,7 +20,6 @@ import { valTypeOf } from '../kind.js'
 import { atomNanHex, nanPrefixHex, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
 import { temp, tempI64 } from './locals.js'
-import { mkPtrIR } from './pointers.js'
 import { asF64, asI64 } from './numeric.js'
 import { bigintStrict, bigintEraseErr } from './bigint.js'
 
