@@ -889,6 +889,13 @@
         align-items: start;
       }
 
+      /* same column inset as the FAQ (.faq-wrap) on tablet+ */
+      @media (min-width: 721px) {
+        .author-wrap {
+          padding-inline: 40px;
+        }
+      }
+
       .author-text h2 {
         margin: 0 0 12px;
         font-size: 18px;
@@ -1545,9 +1552,9 @@
       <div class="author-wrap">
         <div class="author-text prose">
           <h2>Why JZ exists</h2>
-          <p>I started JZ to have Crockford’s good parts as a real, closed language: JavaScript small enough to pin down, out of reach of the spec’s drift, and fast because nothing dynamic was left in it. Under that was a sore point. JavaScript keeps getting called not a language, unfit for serious work, and I wanted to answer with a compiler rather than an argument.</p>
-          <p>The distilled subset turned out too small to compile even my own code. Nobody needs another JavaScript dialect, so the strict language went inside as a convention, and JZ takes the JavaScript people write, minus what cannot be compiled ahead of time.</p>
-          <p>I am not a compiler engineer. The first version was minimal and clean; what followed was many passes of stripping it back to that. It was also meant as a floor for higher languages such as <a href="https://github.com/dy/piezo" target="_blank" rel="noopener">piezo</a>, and that door is still open.</p>
+          <p>JavaScript gets called not a language, unfit for serious work. The spec only adds and never removes, so the legacy stays: <code>var</code>, <code>==</code>, <code>null</code> beside <code>undefined</code>, <code>[] + {}</code> a string. I wanted the modern core alone, compiled to a binary. JavaScript zero: none of it left at runtime, and back to the root.</p>
+          <p>I needed it for my own code, <a href="https://github.com/colorjs/color-space" target="_blank" rel="noopener">color-space</a>, <a href="https://github.com/audiojs/web-audio-api" target="_blank" rel="noopener">web-audio-api</a>, <a href="https://github.com/audiojs" target="_blank" rel="noopener">audiojs</a>, floatbeats, wherever a hot loop decides whether the thing is usable. Crockford’s distilled subset was too small even for those, so it went inside as a convention, and JZ takes the JavaScript people write, minus what cannot compile ahead of time.</p>
+          <p>I am not a compiler engineer. The first version was minimal and clean, and every pass since strips it back to that. It began as the floor under <a href="https://github.com/dy/piezo" target="_blank" rel="noopener">piezo</a>, a language prototype, and spun off on its own.</p>
         </div>
         <div class="sponsor">
           <p>Find it useful?</p>
