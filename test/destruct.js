@@ -777,3 +777,14 @@ test('destruct: a default that runs code between two steps keeps the protocol', 
   const p = jz(pure, { optimize: 'speed' })
   is(p.exports.f(1), 7); is(p.exports.f(0), 57)
 })
+
+// A rest copies the remainder without calling anything of the array's: an
+// own `slice` stored on an array keeps the protocol, which never calls it.
+test('destruct: a rest never calls an array\'s own slice', () => {
+  const own = `export let f = () => { const a = [1, 2]; a.slice = () => [9]; const [...r] = a; return r[0] * 10 + r.length }`
+  ok(/__it_(open|pull|step)/.test(compile(own, { wat: true, optimize: 'speed' })), 'the protocol stays where slice may be the array\'s own')
+  is(jz(own, { optimize: 'speed' }).exports.f(), 12)
+  const plain = `export let f = () => { const a = [1, 2, 3]; const [, ...r] = a; return r[0] * 10 + r.length }`
+  ok(!/__it_(open|pull|step)/.test(compile(plain, { wat: true, optimize: 'speed' })), 'a program without an own slice reads the rest by index')
+  is(jz(plain, { optimize: 'speed' }).exports.f(), 22)
+})

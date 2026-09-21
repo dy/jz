@@ -20,12 +20,16 @@
  * undefined). The reads by index replace the steps only where every pull is
  * a binding of a name with an expression that runs no code: names, literals,
  * `===`, `!==`, `!`, `typeof`, `??`, `||`, `&&`, `?:`, and the protocol's
- * own calls, a nested pattern's over a proven array.
+ * own calls, a nested pattern's over a proven array. A rest copies the
+ * remainder through `slice`, the array's own method: where the program
+ * stores a `slice` of its own on an array (jz's dispatch honours it), the
+ * rest keeps the protocol, which never calls it.
  *
  * @module compile/plan/index-array-patterns
  */
 import { ctx } from '../../ctx.js'
 import { K, tagOf, hasTag } from '../../summary/kind.js'
+import { VAL } from '../../reps.js'
 
 const OPEN = /\$__it_open$/, STEP = /\$__it_step$/, SKIP = /\$__it_skip$/, REST = /\$__it_rest$/, CLOSE = /\$__it_close$/
 const isArr = Array.isArray
@@ -70,6 +74,9 @@ const pureBinding = (n, view) => {
   return false
 }
 
+/** Whether some array of the program may carry a `slice` of its own, which the array's dispatch would call. */
+const sliceMayBeOwn = () => ctx.summary?.memberMayBeOwnOn?.('slice', VAL.ARRAY) === true || ctx.summary?.memberMayBeOwn?.('slice') === true
+
 /** Rewrite the pulls of a cursor (the statements of the protocol's `try`)
  *  in place: steps and rests to reads of `src` by position, skips away.
  *  Returns false when a pull is not one of the protocol's over this cursor,
@@ -87,7 +94,7 @@ const indexPulls = (stmts, it, src, view) => {
       const c = n[j]
       if (isArr(c) && c[0] === '()' && c[2] === it && typeof c[1] === 'string') {
         if (STEP.test(c[1])) n[j] = ['[]', src, [null, i++]]
-        else if (REST.test(c[1])) n[j] = ['()', ['.', src, 'slice'], [null, i]]
+        else if (REST.test(c[1])) { if (sliceMayBeOwn()) return false; n[j] = ['()', ['.', src, 'slice'], [null, i]] }
         else if (CLOSE.test(c[1]) || OPEN.test(c[1])) return false
       } else if (!pull(c)) return false
     }
