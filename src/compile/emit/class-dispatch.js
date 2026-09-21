@@ -18,7 +18,7 @@ import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { callContractOf } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
-import { K, tagOf, paramOf, isNullable, UNKNOWN, core } from '../../summary/index.js'
+import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
 import { emit } from '../../bridge.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 
@@ -41,10 +41,10 @@ const receiverClass = (obj) => {
   const inBounds = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
   return entry ? { entry, nullable: isNullable(k) && !inBounds } : null
 }
-/** Whether the summary names the receiver's one layout and no class owns it. */
+/** Whether the summary lists the receiver's member layouts and no class owns any of them. */
 const knownNonInstance = (obj) => {
-  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
-  return k != null && tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN && classOfSid(paramOf(k)) == null
+  const layouts = ctx.summary?.at(ctx.func.current).shapesOfExpr(obj)
+  return !!layouts?.length && layouts.every(sid => classOfSid(sid) == null)
 }
 /** Whether the summary rules the receiver out as a class instance: a kind other than an object. */
 const notAnObject = (obj) => { const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj); return k != null && tagOf(k) !== K.OBJECT && tagOf(k) !== K.ANY && tagOf(k) !== K.NONE }

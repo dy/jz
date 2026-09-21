@@ -2037,6 +2037,15 @@ export default (ctx) => {
     if (cls !== undefined) return cls
     return slotAccessorRead(obj, getter, prop)
   }
+  // How many of the receiver's member layouts carry the accessor (a literal's
+  // slot, or a class's method): 0 says none, null says the summary cannot list them.
+  const accessorHolders = (obj, getter) => {
+    const layouts = ctx.summary?.at(ctx.func.current).shapesOfExpr(obj)
+    if (!layouts?.length || ctx.transform.dynamicAccessorNames?.has(getter.replace(/__(get|set)$/, ''))) return null
+    const classes = ctx.transform.classes
+    return layouts.filter(sid => ctx.schema.list[sid]?.includes(getter)
+      || (brand => brand != null && classes?.get(brand)?.methods.has(getter))(ctx.schema.brandOf?.(sid))).length
+  }
   const slotAccessorRead = (obj, getter, prop) => {
     // a schema carrying the slot resolves statically
     if ((typeof obj === 'string' && ctx.schema.idOf(obj) != null && ctx.schema.slotOf(obj, getter) >= 0)
@@ -2048,13 +2057,12 @@ export default (ctx) => {
     if (Array.isArray(obj) && obj[0] === '{}') return null
     if (typeof obj === 'string' && (ctx.func.flatObjects?.has(obj)
         || (ctx.schema.idOf(obj) != null && !ctx.transform.dynamicAccessorNames?.has(prop)))) return null
-    // The summary's one layout says the same for any receiver it types (an
-    // element read `const e = evs[i]`, a parameter every caller proves): a
-    // layout with the slot calls the getter, one without reads plainly – a
-    // getter of that name on some class elsewhere is no reason to probe.
-    const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
-    if (sid != null && !ctx.transform.dynamicAccessorNames?.has(prop))
-      return ctx.schema.list[sid]?.includes(getter) ? emit(['()', ['.', obj, getter]]) : null
+    // The summary's layouts say the same for any receiver it types (an
+    // element read `const e = evs[i]`, a parameter every caller proves): when
+    // no member layout holds the slot and no member is a class with the
+    // accessor, the read is plain; a getter of that name on some class
+    // elsewhere is no reason to probe. A member that has it keeps the probe.
+    if (accessorHolders(obj, getter) === 0) return null
     let recv = obj
     const pre = []
     if (typeof obj !== 'string') { recv = temp('acc'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
@@ -2344,7 +2352,7 @@ export default (ctx) => {
     // (the runtime probe; the receiver is evaluated once either way)
     const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
     if (!raw && ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)
-        && (sid == null || ctx.transform.dynamicAccessorNames?.has(prop) || ctx.schema.list[sid]?.includes(prop + ACCESSOR_GET)))
+        && accessorHolders(obj, prop + ACCESSOR_GET) !== 0)
       return emit(['.', t, prop])
     let receiver = typed(['local.get', `$${t}`], 'f64')
     // The enclosing null check establishes presence. Retain the summary's
