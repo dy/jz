@@ -11,15 +11,16 @@ node bench/bench.mjs  # run benchmarks
 
 ### Shared watr optimizer
 
-Subscript is pinned to public source revision `0f65c86` for surrogate-pair
-escape decoding during self-hosting, on top of the 10.7.3 parser fixes.
-Replace the archive pin with an npm release once it includes this fix.
-
-`package.json` and the lockfile pin the public watr source archive at `d6d140d`.
-It contains the 5.10.2 safety fixes and retains plain instruction arrays and
-cloning. A clean install needs no sibling checkout. Switch to a published npm
-version once it contains these changes; until then the archive's full commit
-and integrity hash keep CI reproducible.
+`package.json` depends on the published subscript 10.8.0 (the surrogate-pair
+escape decoding and the async-member parse fixes) and watr 5.11.0. Two watr
+optimizer rules jz's speed rows rely on are in the watr checkout at
+`~/projects/watr` and not yet released: the mixed-sign truncation-of-convert
+fold under a non-negative operand (base64's decode loop; commit 40be15f) and
+`ifset` leaving a branchy condition alone (heapsort's child pick). A release
+of jz needs a watr release carrying both; until then a development tree links
+`node_modules/watr` to that checkout (an `npm install` replaces the link with
+the published package: relink after one), and a clean install runs 5.11.0
+without the two rules, sort keeping its select.
 
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
@@ -955,6 +956,34 @@ awaits tests at the top of `while (true)`. Class lowering (`jzify/classes.js`)
 takes `static async` methods on both of its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
 call binds the method as a value first (`src/compile/emit/class-dispatch.js`).
+The schema lowering (a class as a layout with a brand and functions of the
+receiver) takes a base class of another module: prepare brings a module's
+imports in ahead of its lowering (`prepareImports`, in the order ES evaluates
+them), so `class D extends B` resolves `B` through the import map to a class
+lowered before. Async and generator methods hoist as functions of their kind;
+a class stays closures only inside a function, under a base the module cannot
+see (`Error`, an expression) or as an expression with statics, and the
+`class-generic` advisory names which. `'m' in o` holds for a member of the
+instance's class as it would through a prototype (`classMemberIn`); a static
+call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
+emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
+
+The summary (`src/summary`) models, beyond the forms the tests pin: `fn.call`
+and `fn.apply` as calls of the closure (a closure cannot observe `this`); an
+optional call `?.()` as undefined on a nullish callee and nothing on one of no
+kind yet; a call through a nullish slot as a throw; a top-level arrow binding
+as its function until reassigned, and a function named as a property receiver
+by its identity; `Object.defineProperty(o, k, d)` as the store `o[k] = d.value`
+it lowers to; an inlined array callback's element parameter as the array's
+element (`callbackElem`: the parameter is aliased to a read of the array);
+a class member on an unknown receiver as called with the family of classes
+whose member of that name is that function (`familyOf`); shape sets of up to
+64 layouts. The emitter calls a member directly when every layout of the
+receiver resolves it to one function, and reads a field every member layout
+holds in one slot as that slot (`commonSlot`), so a method inherited by a
+class family runs on prefix layouts without a guard. `why: true` and any
+`warnings` sink report `shape-lost` with the first cause a layout was lost by;
+the census is the first thing to read when a library compiles dynamic.
 
 A method shorthand parses as a function: `m(p) { body }` is
 `[':', 'm', ['function', null, p, body]]`, `*g()` the same with `function*`,
@@ -1123,6 +1152,27 @@ the typed-array property semantics hold.
 `charCodeAt` on a concatenation dissolved into raw (buf, len) locals reads
 16-bit units at `i << 1`; the byte-indexed read it had after the UTF-16 move
 was the strbuild checksum regression.
+
+ToInt32 of a value whose range is proven finite and below 2^63 (`f64Range`:
+literals, counters, `Math.floor` of a bounded product, a checked byte read) is
+`i32.wrap_i64(i64.trunc_sat_f64_s)` with no ±∞ guard, and the i64 form is
+kept on purpose: V8's arm64 lowering of `i32.trunc_sat_f64_s` adds a float
+round-trip and range checks (bytebeat 1521 → 1370 µs; a 5e7-iteration micro
+294 ns against 446). An unproven value keeps the guarded select. The
+`__to_int32` helper stays a call where its argument is a checked read's
+Number|undefined: folding it to the inline truncation measured 17% slower on
+glyfparse (the representation of ToInt32-blind reads is the open lever there).
+Load CSE (`cse-load.js`) keeps a condition's typed loads available past an
+`if (C) break|continue|return|throw` with no else, since the statements after
+it run only when C ran and fell through, and one load serves an
+identity-observing use and a numeric one (the numeric use normalizes the
+temp): heapsort's sift compares and then swaps without reloading. A
+small-constant loop unrolls only within 1000 body nodes in total (trips ×
+body): noise's four octaves of an inlined perlin ran 3.6% faster rolled.
+watr's `ifset` (one-armed `if` → `select`, the speed profile) leaves a
+condition that branches itself alone: heapsort's child pick `if (child + 1 <
+n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran
+35% slower than the branch.
 
 `x ** c` with a constant non-integer exponent is the `$math.pow` kernel, one
 implementation for constant and runtime exponents within an ulp of the host;
@@ -1355,11 +1405,27 @@ onto the internal flags. Tests and scripts may pass those flags directly:
 | `importMetaUrl` | none | the CLI sets it from the entry file |
 | `profile`, `inspect`, `helperCounters`, `_eagerStdlib`, `_interp` | none | instrumentation and self-compile hooks |
 
+Advisories reach any `warnings` sink, one per site (the source offset when the
+node kept one, else the message): `heap-return`, `heap-loop`, `deopt-generic`,
+`deopt-dyn-read`, `deopt-dyn-write`, `deopt-method`, `deopt-prop-read` (how the
+read lowered and the receiver's candidate shapes), `class-generic` (a class
+kept as closures and why), `shape-lost` (the first cause the summary lost an
+object layout by, with the function and statement), `host-global`,
+`set-map-order`, `jsstring-declined`, `int-global-truncation`; `simd-why-not`
+and `rewind-why-not` need `why`. Warnings are delivered after compilation
+returns, and a compile started from a warning callback is rejected.
+`scripts/why-census.mjs <case>` prints a bench case's census: the layouts lost
+in order (the first is the root of a cascade), the dynamic reads by function,
+the classes kept as closures.
+
 ### Semantics contract
 
 Outside the dialect differences the README lists, accepted programs must
 preserve JavaScript values, exceptions, operand order and effects at every
-optimization level. Unsupported representations must reject. An unlisted silent
+optimization level. The list includes the export boundary's numeric
+parameters: an exported function's parameter the body never uses as a string
+is trusted numeric (`analyze-for-emit.js`, `paramNeverString`), so a string
+passed there is converted where JavaScript would concatenate. Unsupported representations must reject. An unlisted silent
 wrong value or an accepted invalid-parse case blocks release. Early-error
 validation runs before lowering in both the JS and Wasm compiler;
 `test/test262-neg-accepts.json` gates the accepted-invalid ledger. Error classes
@@ -1372,7 +1438,9 @@ Strings use UTF-16 code units; UTF-8 belongs at encoding and I/O boundaries.
 storage, nested schemas, integer refinements and discriminants used by lowering.
 Incompatible replacements throw `TypeError`. Nullable fields admit their value
 family and nullish values. Modules sharing memory must agree on existing schema
-contracts. Booleans preserve their identity; exposed BigInt fields are tagged,
+contracts; a class layout carries its brand (`jz:brand`, `Name#id`), so two
+classes with one field list are two schemas, and a host object matching such a
+layout by keys alone is ambiguous rather than silently bound. Booleans preserve their identity; exposed BigInt fields are tagged,
 including shapes shared by BigInts and numbers. Returned object literals have
 independent storage, so mutating one result cannot change a later result.
 
@@ -1392,7 +1460,8 @@ remains live. Direct writes and forged pointers bypass these checks.
 
 Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
 no independent version marker and is not frozen: NaN-box layouts, `_alloc`/`_clear`,
-the closure table, `jz:hostabi`, `jz:i64exp`, `jz:fields`, schema IDs,
+the closure table, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
+`jz:errcls`, `jz:brand`, schema IDs,
 `memory.fieldContracts` and the `_`-prefixed exports are all current-toolchain
 policy, regression-tested in `test/abi.js` but not cross-release-stable. Use
 `jz/interop`'s `instantiate()` or pin the exact compiler version when

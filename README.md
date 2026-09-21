@@ -64,7 +64,7 @@ memory.reset()                            // drop what the call allocated
 | `names` | Emit the wasm name section for profilers and debuggers. |
 | `wat` | Return WAT text instead of bytes. |
 | `warnings` | Sink `{ entries }` or callback for advisories: dynamic fallbacks, heap growth. |
-| `why` | Also report each loop the vectorizer and each arena the rewind declined. |
+| `why` | Also report each loop the vectorizer and each arena the rewind declined; a `warnings` sink alone reports each property read left dynamic, each class kept as closures and the first cause an object shape is lost by. |
 </details>
 
 ## CLI
@@ -114,6 +114,7 @@ Where behaviour differs from JS:
 - **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}`, `d` and `v` flags are unsupported.
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.
+- **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates.
 
 </details>
 
@@ -235,7 +236,9 @@ JavaScript's bounds checks.
   for `v128` to confirm vectorization and for `__dyn_get` or `__ext_call` to find
   dynamic fallbacks.
 - `--why` names the first operation that kept each loop scalar and each arena
-  unreclaimed; `warnings` collects the same advisories from the API.
+  unreclaimed; `warnings` collects the same advisories from the API, with each
+  property read left dynamic (`deopt-prop-read`), each class kept as closures
+  (`class-generic`) and the first cause an object shape is lost by (`shape-lost`).
 - Float loop counters, plain arrays and loop-carried dependencies are the common
   reasons a kernel stays scalar.
 
