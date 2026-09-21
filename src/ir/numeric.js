@@ -97,8 +97,10 @@ export const asI32 = n => {
   // local, not `wrap(trunc(f64(r) − 1))`).
   const nw = narrowI32(n, true)
   if (nw) return nw.node
-  const rng = f64Range(n, null, true)
-  if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return typed(['i32.trunc_sat_f64_s', n], 'i32')
+  // The i64 form throughout: exact for every value this boundary can carry,
+  // and the fast one — V8's arm64 lowering of `i32.trunc_sat_f64_s` adds a
+  // float round-trip and range checks (a 5e7-iteration micro: i64 wrap 294
+  // ns, the guarded i64 form 343, bare i32 trunc_sat 446).
   return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
 }
 
@@ -388,18 +390,15 @@ const i32Narrowed = n => {
   if (nw) return nw.node
   // Value-range narrowing: a NON-integer f64 tree (e.g. `10 + 200·(u8[i]/255)`) the ring
   // path rejects, but whose numeric values are bounded — so the +∞ guard is dead.
-  // When the value also provably fits i32, a single `i32.trunc_sat_f64_s` IS exact ToInt32
-  // (no saturation can fire in-range; NaN converts to zero) — dropping the i64 round-trip AND the
-  // guard. Pervasive in pixel/colour packing: `(base + scale·v)|0`.
+  // Finite and within (−2^63, 2^63): i64.trunc_sat does not saturate, so its wrap IS
+  // ToInt32 (mod 2^32; NaN converts to zero). The i64 form is also the fast one — V8's
+  // arm64 lowering of `i32.trunc_sat_f64_s` adds a float round-trip and range checks
+  // (a 5e7-iteration micro: i64 wrap 294 ns, guarded 343, bare i32 trunc_sat 446).
+  // Beyond ±2^63 we fall through to the guarded path (which already saturates there —
+  // the documented boundary). Pervasive in pixel/colour packing: `(base + scale·v)|0`.
   const rng = f64Range(n, null, true)
-  if (rng) {
-    if (rng.lo >= I32_MIN && rng.hi <= I32_MAX) return typed(['i32.trunc_sat_f64_s', n], 'i32')
-    // Finite and within (−2^63, 2^63): keep the mod-2^32 wrap, drop the (now-dead) +∞ guard.
-    // i64.trunc_sat does not saturate in this window, so wrap_i64 == ToInt32. Beyond ±2^63 we
-    // fall through to the guarded path (which already saturates there — the documented boundary).
-    if (rng.lo >= -9223372036854775808 && rng.hi < 9223372036854775808)
-      return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
-  }
+  if (rng && rng.lo >= -9223372036854775808 && rng.hi < 9223372036854775808)
+    return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
   return null
 }
 

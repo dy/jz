@@ -11,11 +11,12 @@
 import { simplifyCast } from 'watr/optimize'
 import { LAYOUT, FORWARDING_MASK } from '../ctx.js'
 import { nanboxF64 } from '../abi/index.js'
-import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MIN, I32_MAX, cloneIR, valueTruthyIR } from '../ir.js'
+import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MAX, cloneIR, valueTruthyIR } from '../ir.js'
 import { foldIntCompare, narrowI32, int32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 import { constNum, matchExitBrIf, matchInc1 } from './vectorize/addr-model.js'
+const TWO_63 = 2 ** 63
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = nanPrefixHex()
@@ -524,13 +525,17 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
       // conditional `?:` (toI32 distributes through `(if result f64)`, recursively).
       const i = conversion && narrowI32(inner, true)?.node
       if (i) return i
+      // A finite value below 2^63 truncates exactly through i64 and its low
+      // word is ToInt32 (mod 2^32); the guard serves only ±∞, NaN payloads
+      // and |x| ≥ 2^63. The i64 form is the fast one too: V8's arm64
+      // lowering of `i32.trunc_sat_f64_s` adds a float round-trip and range
+      // checks (a 5e7-iteration micro: i64 wrap 294 ns, guarded 343, bare
+      // i32 trunc_sat 446), so a proven range drops the guard and keeps i64.
       const rng = f64Range(inner, get, !!conversion)
-      if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', inner]
+      if (rng && rng.lo > -TWO_63 && rng.hi < TWO_63) return v
       // Loop invariants only remove the guard, preserving the captured value.
-      // Keep i64 here: V8 ARM64's optimizing i32 trunc_sat path adds a float
-      // round-trip and range checks; the i64 conversion lowers directly.
       const bound = conversion && get && f64Range(inner, name => get(name, true), true)
-      if (bound && bound.lo >= I32_MIN && bound.hi <= I32_MAX) return v
+      if (bound && bound.lo > -TWO_63 && bound.hi < TWO_63) return v
     }
   }
   // The exact element-store conversion (toInt32's `call $__to_int32 X`) folds the
@@ -540,7 +545,7 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
     const i = narrowI32(node[2], true)?.node
     if (i) return i
     const rng = f64Range(node[2], get, true)
-    if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return ['i32.trunc_sat_f64_s', node[2]]
+    if (rng && rng.lo > -TWO_63 && rng.hi < TWO_63) return ['i32.wrap_i64', ['i64.trunc_sat_f64_s', node[2]]]
   }
   // (i32.or X 0) / (i32.or 0 X) → X — drops the redundant source-level `|0` clamp left
   // after the fold above, so the accumulator update is a bare i32.add the recognizer matches.

@@ -26,6 +26,7 @@ import { narrowBoundedSquare } from './loop-square.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
+import { invalidateLocalsCache } from './analyze/body-facts.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
@@ -237,9 +238,13 @@ export function analyzeFuncForEmit(func, programFacts) {
   // `re[a]` load. Before analyze so the introduced temp is typed/narrowed like any local.
   // mapOrOverlaySize (not `.size` directly): ctx.func.typedElem is now a MapOverlay
   // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
-  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem))
-    cseLoads(body, n => ctx.func.typedElem.has(n), freshCseName, n => valTypeOf(n) === VAL.NUMBER,
-      n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false)
+  // The pass mutates the body in place; a shared load binds a new local, so a
+  // body-facts entry cached before it (a plan-time walk) no longer lists the
+  // body's locals: drop it (the seam doc above invalidateLocalsCache).
+  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem)
+      && cseLoads(body, n => ctx.func.typedElem.has(n), freshCseName, n => valTypeOf(n) === VAL.NUMBER,
+        n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false) > 0)
+    invalidateLocalsCache(body)
 
   if (block) {
     seedLocalIntConsts(body)

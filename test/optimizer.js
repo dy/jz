@@ -1875,18 +1875,21 @@ test('if→select: short-circuit || with a side-effecting cond is NOT folded (re
   is(jz(SRC).exports.main(), 7, '|| short-circuit stays correct (0||5=5, 7||9=7, false||3=3)')
 })
 
-test('Math.floor(bounded)|0 → single i32.trunc_sat (no i64 round-trip / +∞ guard)', () => {
-  // f64Range now maps through f64.floor: Math.floor(u8 * scale) is a finite, in-i32-range value,
-  // so toI32 emits one i32.trunc_sat_f64_s instead of i64.trunc_sat + i32.wrap + (select … f64.ne
-  // ∞). The image/audio index class (`Math.floor(pixel * scale)`). Bit-exact. (Inert when the
-  // floor's input is a bare param/local — f64Range can't bound those without range-of-locals.)
+test('Math.floor(bounded)|0 → one i64 truncation, no +∞ guard', () => {
+  // f64Range maps through f64.floor: Math.floor(u8 * scale) is a finite value, so toI32
+  // emits i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard — and keeps
+  // the i64 form, the fast one on V8 (bytebeat 1521 → 1370 µs against the bare
+  // i32.trunc_sat this used to pin). The image/audio index class (`Math.floor(pixel *
+  // scale)`). Bit-exact. (Inert when the floor's input is a bare param/local — f64Range
+  // can't bound those without range-of-locals.)
   const SRC = `
     const f = (buf, out, n) => { for (let i = 0; i < n; i++) out[i] = (Math.floor(buf[i] * 0.5) | 0) & 255 }
     export const main = () => { const buf = new Uint8Array(8), out = new Int32Array(8); for (let i = 0; i < 8; i++) buf[i] = i * 31; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 }
   `
   const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
-  is(/i64\.trunc_sat/.test(wat), false, 'no i64 trunc round-trip for the bounded floor')
-  ok(/i32\.trunc_sat_f64_s/.test(wat), 'single i32.trunc_sat for the bounded floor')
+  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(wat), 'the i64 truncation, wrapped')
+  is(/i32\.trunc_sat_f64_s/.test(wat), false, 'no bare i32 trunc_sat for the bounded floor')
+  is(/f64\.const inf/.test(wat), false, 'no +∞ guard for the bounded floor')
   const ref = (() => { const buf = [], out = []; for (let i = 0; i < 8; i++) buf[i] = (i * 31) & 255
     const f = (b, o, n) => { for (let i = 0; i < n; i++) o[i] = (Math.floor(b[i] * 0.5) | 0) & 255 }; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 })()
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'floor result bit-exact vs JS')
@@ -3931,9 +3934,8 @@ test('range-narrowing: ToInt32 of a bounded value through a reused local drops t
   // `xi` (= floor of a [0,255]-bounded Uint8Array read × const) is read twice, so it stays
   // a local; ToInt32(local.get $xi) emits the guarded select(wrap(i64.trunc_sat), 0,
   // f64.ne(x, Inf)). f64Range — resolving $xi's single textual def through the trunc_sat
-  // fold (src/optimize/index.js) — proves it ∈ [0, 7] ⊂ i32, so the +∞ guard is dead and
-  // trunc_sat is exact ToInt32: one i32.trunc_sat, no i64 round-trip, no guard. Runtime-
-  // independent (fewer loop-body ops on V8 / JSC / wasmtime alike).
+  // fold (src/optimize/index.js) — proves it ∈ [0, 7], so the +∞ guard is dead: the wrapped
+  // i64 truncation alone, no guard, no bare i32 trunc_sat (the slower form on V8).
   const src = `export let f = (n) => {
     const buf = new Uint8Array(256)
     for (let i = 0; i < 256; i++) buf[i] = (i * 37) & 255
@@ -3946,10 +3948,10 @@ test('range-narrowing: ToInt32 of a bounded value through a reused local drops t
     return s
   }`
   const t = parse(src, 'speed')
-  // INVARIANT: the bounded index path carries no i64 round-trip / +∞ guard — only i32.trunc_sat.
-  is(loopCount(t, n => n[0] === 'i64.trunc_sat_f64_s'), 0, 'no i64 round-trip in loop (guard retired)')
+  // INVARIANT: the bounded index path carries no +∞ guard and no bare i32 trunc_sat — the wrapped i64 truncation.
   is(loopCount(t, n => n[0] === 'f64.const' && n[1] === 'Infinity'), 0, 'no +∞ guard in loop')
-  ok(loopCount(t, n => n[0] === 'i32.trunc_sat_f64_s') >= 2, 'bounded index narrowed to i32.trunc_sat')
+  is(loopCount(t, n => n[0] === 'i32.trunc_sat_f64_s'), 0, 'no bare i32 trunc_sat in loop')
+  ok(loopCount(t, n => n[0] === 'i64.trunc_sat_f64_s') >= 2, 'bounded index truncated through i64')
   // Bit-exact vs JS over the full input range.
   const { f } = run(src)
   const ref = (n) => {

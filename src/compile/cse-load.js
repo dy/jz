@@ -17,6 +17,9 @@
  *   P is a loop bound: inside `for (j = C≥0; j < B; …)` the body runs only when `0 ≤ j < B`, so
  *   `B ≥ 1`, hence `a + B ≠ a`. A name index resolves through its single `let X = a + b` def.
  *
+ * An `if (C) break|continue|return|throw` with no else keeps C's loads available past it:
+ * the statements after it run only when C ran and fell through, and the arm stores nothing.
+ *
  * Runs post-analyze (purity known) and pre-emit, mutating the body. Purely conservative.
  */
 
@@ -122,10 +125,24 @@ export function cseLoads(body, isTypedArray, freshName, isNumeric, isReadonlyCal
   const F = buildFacts(body)
   let eliminated = 0
 
+  // A branch arm that leaves the sequence and stores nothing: the statements
+  // after an `if (C) break` run only when C ran and fell through.
+  const exitsOnly = (arm) => {
+    if (!isArr(arm)) return false
+    if (arm[0] === '{}') return arm.length === 2 && exitsOnly(arm[1])
+    if (arm[0] === ';') return arm.length === 2 && exitsOnly(arm[1])
+    if (arm[0] === 'break' || arm[0] === 'continue') return true
+    if (arm[0] !== 'return' && arm[0] !== 'throw') return false
+    let pure = true
+    walkAst(arm, { enter: n => { if (ASSIGN.has(n[0]) || n[0] === '()' || n[0] === 'call' || n[0] === 'new') pure = false } })
+    return pure
+  }
+
   // Process the statement list of a `[';', …]` node (children [1..]).
   const runSeq = (seq) => {
-    // key → { arr, idxNode, idxVars, temp, firstParent, firstIdx, firstStmt }
+    // key → { arr, idxNode, idxVars, firstStmt, occ: [{ parent, idx, numeric }] }
     const avail = new Map()
+    const shared = []   // entries a second read joined: one load, bound before the first
     const inserts = []   // { at: stmtIdx, binding }
 
     const flush = () => avail.clear()
@@ -162,27 +179,23 @@ export function cseLoads(body, isTypedArray, freshName, isNumeric, isReadonlyCal
         return
       }
       if (node[0] === '[]' && isName(node[1]) && isTypedArray(node[1]) && stableIdx(node[2])) {
-        const arr = node[1], rawKey = `${arr}|${idxKey(node[2])}`
-        if (rawKey === noCseKey) return
-        // A Number|undefined read consumed arithmetically can normalize its
-        // miss once. Keep identity-observing uses in a separate cache entry.
+        const arr = node[1], key = `${arr}|${idxKey(node[2])}`
+        if (key === noCseKey) return
+        // A Number|undefined read consumed arithmetically normalizes its miss
+        // (`u+`); an identity-observing use keeps the value. One load serves
+        // both: the temp holds the value, a numeric use normalizes it (a
+        // read every use of which is numeric normalizes once, at the binding).
         const numeric = isNumeric(node) && (NUMERIC_BINARY_OPS.includes(parent[0]) ||
           NUMERIC_UNARY_OPS.has(parent[0]) || parent[0] === '+' && isNumeric(parent))
-        const key = numeric ? `number:${rawKey}` : rawKey
         const e = avail.get(key)
         if (e) {
-          if (e.temp === null) {
-            e.temp = freshName()
-            const read = ['[]', arr, e.idxNode]
-            inserts.push({ at: e.firstStmt, binding: ['let', ['=', e.temp, numeric ? ['u+', read] : read]] })
-            e.firstParent[e.firstIdx] = e.temp           // rewrite the 1st occurrence to read the temp
-          }
-          parent[pi] = e.temp                            // rewrite this (2nd+) occurrence
+          if (e.occ.length === 1) shared.push(e)
+          e.occ.push({ parent, idx: pi, numeric })
           eliminated++
           return
         }
         const vars = new Set(); idxVars(node[2], vars)
-        avail.set(key, { arr, idxNode: node[2], idxVars: vars, temp: null, firstParent: parent, firstIdx: pi, firstStmt: si })
+        avail.set(key, { arr, idxNode: node[2], idxVars: vars, firstStmt: si, occ: [{ parent, idx: pi, numeric }] })
         return                                            // don't descend into a stable index
       }
       if (node[0] === '()' || node[0] === 'call') { if (!(isReadonlyCall && isReadonlyCall(node))) flush(); for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey); return }
@@ -208,9 +221,21 @@ export function cseLoads(body, isTypedArray, freshName, isNumeric, isReadonlyCal
     for (let si = 1; si < seq.length; si++) {
       const s = seq[si]
       if (!isArr(s)) continue
-      if (CONTROL.has(s[0])) { flush(); continue }   // nesting handled by the outer `descend`
+      if (CONTROL.has(s[0])) {
+        // `if (C) break`: C runs on every path to the next statement and the
+        // arm stores nothing, so C's loads stay available (the sift loop's
+        // `if (a[i] >= a[child]) break` then swaps without reloading either).
+        if (s[0] === 'if' && s.length === 3 && exitsOnly(s[2])) { reads(s[1], s, 1, si); continue }
+        flush(); continue   // nesting handled by the outer `descend`
+      }
       reads(s, seq, si, si)
       writes(s)
+    }
+    for (const e of shared) {
+      const temp = freshName(), allNumeric = e.occ.every(o => o.numeric)
+      const read = ['[]', e.arr, e.idxNode]
+      inserts.push({ at: e.firstStmt, binding: ['let', ['=', temp, allNumeric ? ['u+', read] : read]] })
+      for (const o of e.occ) o.parent[o.idx] = o.numeric && !allNumeric ? ['u+', temp] : temp
     }
     inserts.sort((a, b) => b.at - a.at)
     for (const ins of inserts) seq.splice(ins.at, 0, ins.binding)

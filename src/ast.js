@@ -664,11 +664,13 @@ export const returnExprs = (body) => {
 
 // === Clone / compare / module body / bare refs ===
 
-/** Deep-clone an AST node (arrays only; primitives pass through). */
+/** Deep-clone an AST node (arrays only; primitives pass through), its own
+ *  marks (`loc`, a pass's tags) with it. */
 export function cloneNode(node) {
-  if (node == null || typeof node !== 'object') return node
   if (!Array.isArray(node)) return node
-  return node.map(cloneNode)
+  const out = node.map(cloneNode)
+  for (const k in node) if (!(k in out)) out[k] = node[k]
+  return out
 }
 
 // Share exact literal keys with watr's LICM. The recursive key distinguishes

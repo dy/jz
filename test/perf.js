@@ -704,7 +704,8 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   // `(expr)|0` (ToInt32) normally lowers to `select(i32.wrap(i64.trunc_sat_f64_s X), 0, X≠∞)` —
   // the select exists ONLY to remap +∞→0 (trunc_sat+wrap gives −1 there). When value-range
   // analysis PROVES X finite & within i32 (here a u8 load /255 scaled into [10,210]), the guard
-  // is dead and the i64 round-trip unnecessary: a single `i32.trunc_sat_f64_s` IS exact ToInt32.
+  // is dead: the wrapped i64 truncation alone, which V8 runs faster than the bare
+  // `i32.trunc_sat_f64_s` (CONTRIBUTING, ToInt32).
   // Pervasive in colour-packing / coordinate truncation. (Range analysis is structural — it sees an
   // INLINED finite expression; a value CSE'd into an f64 local stays guarded, by design.) Pin both:
   // the guard is gone AND the result still equals JS ToInt32 across in-range, wrap-boundary, ±∞.
@@ -725,8 +726,8 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   const wat = compile(src, { optimize: 'speed', wat: true })
   const beforeLoad = (fn) => fn.slice(0, fn.indexOf('i32.load8_u'))   // s-exprs print outermost-first
   const pack = beforeLoad(wat.match(/\(func \$pack[\s\S]*?\n  \)/)[0])
-  ok(/i32\.trunc_sat_f64_s/.test(pack) && !/\bselect\b/.test(pack) && !/i64\.trunc_sat/.test(pack),
-    'in-range |0 is a bare i32.trunc_sat_f64_s — no +∞-guard select, no i64 round-trip')
+  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(pack) && !/\bselect\b/.test(pack) && !/\bi32\.trunc_sat_f64_s/.test(pack),
+    'in-range |0 is the wrapped i64 truncation — no +∞-guard select, no bare i32 trunc_sat')
   const wide = beforeLoad(wat.match(/\(func \$wide[\s\S]*?\n  \)/)[0])
   ok(!/\bselect\b/.test(wide), 'finite-but-large |0 drops the +∞ guard (keeps the mod-2^32 wrap)')
   const { exports } = jz(src, { optimize: 'speed' })

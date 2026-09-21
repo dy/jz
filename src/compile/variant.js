@@ -30,6 +30,7 @@
  * @module compile/variant
  */
 import { ctx } from '../ctx.js'
+import { cloneNode } from '../ast.js'
 import { cloneRep } from '../param-reps.js'
 import { createFunction } from '../function.js'
 
@@ -86,7 +87,11 @@ export function materializeVariant({
   let created = false
   if (!clone) {
     if (key == null) while (ctx.funcs.names.has(cloneName)) cloneName += '$'
-    clone = createFunction(cloneName, body !== undefined ? body : origin.body,
+    // The clone owns its statements: the per-function passes rewrite a body
+    // in place (analyze-for-emit's load CSE binds a temp before the first of
+    // two reads), and a temp bound for one function must not appear in the
+    // body of another whose locals were settled without it.
+    clone = createFunction(cloneName, body !== undefined ? body : cloneNode(origin.body),
       sig || { params: origin.sig.params.map(p => ({ ...p })), results: [...origin.sig.results] },
       false, origin.defaults, rest)
     clone.valResult = origin.valResult
