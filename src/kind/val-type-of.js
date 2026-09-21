@@ -547,7 +547,7 @@ VT['()'] = (args) => {
     return t === VAL.SET || t === VAL.MAP || t === VAL.STRING ? VAL.ARRAY : t
   }
   // for-in's read-only key list (src/prepare) — always an Array of key strings.
-  if (callee === '__keys_ro') return VAL.ARRAY
+  if (callee === '__keys_ro' || callee === '__keys_dyn') return VAL.ARRAY
   // Ternary is parsed as call to '?' operator: ['()', ['?', cond, a, b]]
   if (Array.isArray(callee) && callee[0] === '?') {
     const truthy = literalTruthiness(callee[1])

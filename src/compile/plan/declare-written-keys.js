@@ -29,7 +29,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { MUTATE_OPS, isBrand, isLiteralStr, isArrayIndexKey, walkAst, some, extractParams, collectParamNames } from '../../ast.js'
+import { MUTATE_OPS, isBrand, isLiteralStr, isArrayIndexKey, walkAst, some, extractParams, collectParamNames, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
 const STRUCTURAL = new Set(['length', '__proto__'])
@@ -119,6 +119,7 @@ export const declareWrittenKeys = (ast) => {
   // `some` stops at an arrow: a function is not run by being defined.
   const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'try', 'switch', 'for', 'for-of', 'for-in', 'for-await',
     'while', 'do', '&&', '||', '??', 'await', 'yield', 'return', 'throw', 'break', 'continue'])
+  // (a call is the one observer `blind` below can see through)
   const observes = (n) => Array.isArray(n) && OBSERVES.has(n[0])
   const storeOf = (st) => {
     if (!Array.isArray(st) || st[0] !== '=' || !Array.isArray(st[1])) return null
@@ -133,10 +134,104 @@ export const declareWrittenKeys = (ast) => {
     if ((st[0] === 'let' || st[0] === 'const' || st[0] === 'var') && st.length === 2 && Array.isArray(st[1]) && st[1][0] === '=' && typeof st[1][1] === 'string' && literalKeys(st[1][2])) return [st[1][1], st[1][2]]
     return null
   }
+  // A call reaches a pending literal only through its name. The names a module
+  // function's body (its parameter defaults included) mentions, with those of
+  // the functions it calls directly — and whether it runs anything this cannot
+  // name: a callee that is not a module function's name (a closure, a
+  // computed callee), a constructor, an accessor read where the program
+  // declares accessors, an await. A method call is a builtin's when no method
+  // of the program bears its name and no argument can be a function: it runs
+  // no code of the program. A closure the body defines is not run by being
+  // defined: only a call runs it, and a call of a closure is one this cannot
+  // name. Memoized; a cycle counts as unresolved.
+  const funcs = ctx.funcs?.map
+  const accessors = !!ctx.funcs?.list.some(f => /__(get|set)$/.test(f.name))
+  const methodNames = new Set()
+  const methodCensus = (root) => walkAst(root, { enter: n => {
+    if (n[0] === ':' && typeof n[1] === 'string' && Array.isArray(n[2]) && (n[2][0] === '=>' || n[2][0] === 'function')) methodNames.add(n[1])
+    else if (n[0] === 'class') for (let i = 1; i < n.length; i++) walkAst(n[i], { enter: m => { if (typeof m[1] === 'string' && (m[0] === 'method' || m[0] === ':')) methodNames.add(m[1]) } })
+  } })
+  methodCensus(ast)
+  for (const init of ctx.module.moduleInits ?? []) methodCensus(init)
+  for (const fn of ctx.funcs.list) if (fn.body && !fn.raw) methodCensus(fn.body)
+  // Builtin methods that call back into the program with an argument.
+  const CALLBACK_METHODS = new Set(['forEach', 'map', 'filter', 'reduce', 'reduceRight', 'some', 'every', 'find', 'findIndex', 'findLast',
+    'findLastIndex', 'flatMap', 'sort', 'toSorted', 'replace', 'replaceAll', 'then', 'catch', 'finally', 'call', 'apply', 'bind'])
+  const callable = (a) => Array.isArray(a) ? a[0] === '=>' || a[0] === 'function' || a[0] === '.' || a[0] === '?.' || a[0] === '[]' || a[0] === '()' || a[0] === '?:' || a[0] === '??' || a[0] === '||' || a[0] === '&&' || a[0] === ',' || a[0] === '...'
+    : typeof a === 'string' && !!funcs?.has(a)
+  const builtinMethod = (callee, args) => (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string'
+    && !methodNames.has(callee[2]) && !CALLBACK_METHODS.has(callee[2]) && !args.some(callable)
+  const funcRefs = new Map(), computing = new Set()
+  const UNRESOLVED = { names: new Set(), unresolved: true }
+  const refsOf = (fname) => {
+    const hit = funcRefs.get(fname)
+    if (hit) return hit
+    const f = funcs?.get(fname)
+    if (!f?.body || f.raw || computing.has(fname)) return UNRESOLVED
+    computing.add(fname)
+    const r = { names: new Set(), unresolved: false }
+    const visit = (n) => {
+      if (typeof n === 'string') { r.names.add(n); return }
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (op === 'str' || op === '=>') return
+      if (op === '()') {
+        if (typeof n[1] === 'string') { const c = refsOf(n[1]); if (c.unresolved) r.unresolved = true; for (const x of c.names) r.names.add(x) }
+        else if (Array.isArray(n[1]) && builtinMethod(n[1], n.slice(2))) { if (accessors) r.unresolved = true; visit(n[1][1]) }
+        else { r.unresolved = true; visit(n[1]) }
+        for (let i = 2; i < n.length; i++) visit(n[i])
+        return
+      }
+      if (op === 'new' || op === 'await' || op === 'yield' || op === 'for-await') r.unresolved = true
+      if (op === '.' || op === '?.') { if (accessors) r.unresolved = true; visit(n[1]); return }
+      if (op === ':') { visit(n[2]); return }
+      for (let i = 1; i < n.length; i++) visit(n[i])
+    }
+    visit(f.body)
+    if (f.defaults) for (const v of Object.values(f.defaults)) visit(v)
+    computing.delete(fname)
+    funcRefs.set(fname, r)
+    return r
+  }
+  const cannotReach = (fname, names) => {
+    const r = refsOf(fname)
+    if (r.unresolved) return false
+    for (const name of names) if (r.names.has(name)) return false
+    return true
+  }
+  // A statement whose only observers are direct calls to module functions
+  // that cannot reach the pending literals runs nothing that sees them: the
+  // operator registrations between a bundled parser's `parse.comment ??= {…}`
+  // and the `parse.comment['#!'] = …` of a later module. A closure defined in
+  // it is not run by being defined.
+  const blind = (st, names) => {
+    let ok = true
+    const visit = (n) => {
+      if (!ok || !Array.isArray(n)) return
+      const op = n[0]
+      if (op === '=>' || op === 'str') return
+      if (op === '()') {
+        if (typeof n[1] === 'string' ? !cannotReach(n[1], names) : !(Array.isArray(n[1]) && builtinMethod(n[1], n.slice(2)) && !accessors)) { ok = false; return }
+        if (typeof n[1] !== 'string') visit(n[1][1])
+        for (let i = 2; i < n.length; i++) visit(n[i])
+        return
+      }
+      if (OBSERVES.has(op)) { ok = false; return }
+      for (let i = 1; i < n.length; i++) visit(n[i])
+    }
+    visit(st)
+    return ok
+  }
   const stmtList = (list) => {
     const pending = new Map()   // name → literal node, bound in this list and unobserved since
     for (const st of list) {
-      const store = storeOf(st)
+      const store = storeOf(st), bound = store ? null : bindingOf(st)
+      // Any other mention of a pending name — an alias, an argument, a computed
+      // store, a value of another literal — carries its literal where this
+      // cannot follow; a key declared after a computed store would also sit
+      // ahead of it in the layout (for-in enumerates a layout's keys before
+      // the keys added at run time, emit/control-flow.js).
+      for (const name of [...pending.keys()]) if (name !== store?.[0] && name !== bound?.[0] && refsName(st, name, REFS_IN_EXPR)) pending.delete(name)
       if (store && pending.has(store[0])) {
         // the value is evaluated before the store: if it observes, the store is not first
         if (some(st[2], observes)) { pending.clear(); continue }
@@ -144,9 +239,12 @@ export const declareWrittenKeys = (ast) => {
         if (!STRUCTURAL.has(key) && !isArrayIndexKey(key)) { const lit = pending.get(name); let set = definite.get(lit); if (!set) definite.set(lit, set = new Set()); set.add(key) }
         continue
       }
-      const bound = bindingOf(st)
       if (bound) { if (some(bound[1], observes)) pending.clear(); else pending.set(bound[0], bound[1]); continue }
-      if (!some(st, observes)) continue   // a definition, or an assignment of a value that runs nothing
+      // A definition, or an assignment of a value that runs nothing, keeps the
+      // literals pending; so does a statement whose only observers are calls
+      // that cannot reach them.
+      if (!some(st, observes)) continue
+      if (pending.size && blind(st, [...pending.keys()])) continue
       pending.clear()
       walkLists(st)
     }

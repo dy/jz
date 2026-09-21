@@ -7,7 +7,7 @@
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
   T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, mutatesArrayLength, some, walkAst,
-} from '../../ast.js'
+isArrayIndexKey } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc } from '../../ctx.js'
 import {
   asF64, asI32, freshId, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, toBoolFromEmitted, typed, undefExpr,
@@ -164,6 +164,8 @@ const FORIN_UNROLL_MAX = 16
 // allocation-free. Cap keys × nodeSize(body); past it, keep the loop. (Tuned above
 // every unroll the corpus actually wants — the 16-key cap test lands at 80.)
 const FORIN_UNROLL_BUDGET = 384
+// Nodes of branch body a schema speculation may duplicate per field read it saves.
+const SPEC_BUDGET_PER_READ = 16
 const forInBodyCost = (node) => {
   if (!Array.isArray(node)) return 1
   let n = 1
@@ -189,6 +191,19 @@ function keysRoSrc(node) {
 const closedKeysOf = (src) => {
   const sid = ctx.summary?.at(ctx.func.current).spreadSidOfExpr(src)
   return sid == null ? null : ctx.schema.list[sid] ?? null
+}
+// An open layout: the summary names the receiver's one layout, some site still
+// adds keys to it, and the receiver is never nullish. Its declared keys come
+// first — the object was made with them and nothing is deleted — and the keys
+// added at run time follow through `__keys_dyn`, in insertion order. An
+// array-index key sorts ahead of every string in JS, so a layout holding one
+// keeps the pooled loop.
+const openKeysOf = (src) => {
+  const view = ctx.summary?.at(ctx.func.current)
+  const sid = view?.openSidOfExpr(src)
+  if (sid == null || view.mayBeNullishExpr(src) !== false) return null
+  const keys = ctx.schema.list[sid] ?? null
+  return keys && !keys.some(isArrayIndexKey) ? keys : null
 }
 // The per-name censuses' proof of a complete schema: a bare OBJECT var with no
 // computed-key write (same gate as __keys_ro pooling) and no literal-key write
@@ -240,7 +255,8 @@ function unrollForIn(init, cond, step, body) {
   const outerTarget = decl === bind
 
   const closed = closedKeysOf(src)
-  const keys = closed ?? censusKeysOf(src)
+  const open = closed ? null : openKeysOf(src)
+  const keys = closed ?? open ?? censusKeysOf(src)
   if (!keys || !keys.length || keys.length > FORIN_UNROLL_MAX) return null
 
   const rest = body.slice(2)
@@ -258,7 +274,7 @@ function unrollForIn(init, cond, step, body) {
   const out = assigned ? emitVoid(assigned) : []
   // The summary proved the source never nullish, so the receiver's reads in
   // the body are reads of that layout's slots.
-  const refs = closed ? new Map([[recv, { notNullish: true }]]) : new Map()
+  const refs = closed || open ? new Map([[recv, { notNullish: true }]]) : new Map()
   const id = freshId(ctx), brk = `$fiu${id}`
   const copies = withControlFrame({ brk, loop: null, bodyNode: realBody }, frame => keys.map((key, i) => {
     // `continue` leaves this copy for the next; `break` leaves them all.
@@ -267,8 +283,13 @@ function unrollForIn(init, cond, step, body) {
     copy.push(...withRefinements(refs, realBody, () => emitVoid(cloneWithSubst(realBody, new Map([[target, ['str', key]]])))))
     return ['block', frame.loop, ...copy]
   }))
-  if (hasOwnBreakOrContinue(realBody)) out.push(['block', brk, ...copies])
-  else for (const copy of copies) out.push(...copy.slice(2))
+  // An open layout's tail: the pooled loop over the keys added at run time,
+  // inside the copies' break block so a `break` in a copy leaves it too.
+  const tail = open
+    ? emitVoid(['for', ['let', ['=', ksVar, ['()', '__keys_dyn', recv]], ...init.slice(2)], cond, step, body])
+    : []
+  if (hasOwnBreakOrContinue(realBody)) out.push(['block', brk, ...copies, ...tail])
+  else { for (const copy of copies) out.push(...copy.slice(2)); out.push(...tail) }
   return out.length ? out : ['nop']
 }
 
@@ -393,6 +414,13 @@ export const controlFlowOps = {
       // closure is the guard. Speculating here clones the body into two
       // identical packed arms behind a redundant runtime tag check.
       if (spec && ctx.schema.inlineUnionCursors?.get(ctx.func.current)?.has(spec.name)) spec = null
+      // The fast arm is a second copy of the body. A guard pays for itself over
+      // the reads of a small body; over a large one the copy is the cost: watr's
+      // fourteen sites (bodies of 24 to 378 nodes, two to four reads each) bought
+      // nothing at steady state and 31 KB, and its first call, the tier V8 runs
+      // before TurboFan replaces the module, took 60% longer. Speculate while the
+      // body stays within a few nodes per read.
+      if (spec && forInBodyCost(branch) > spec.accesses * SPEC_BUDGET_PER_READ) spec = null
       if (!spec) return withRefinements(refs, branch, () => emitVoid(branch))
       // A constant tag census predicts one schema, but cannot prove that host
       // or dynamically-constructed objects never carry the same tag. Narrow

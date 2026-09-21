@@ -421,6 +421,15 @@ export const flattenFuncNamespaces = (ast) => {
     for (let i = n.indexOf('$'); i > 0; i = n.indexOf('$', i + 1))
       if (names.has(n.slice(0, i))) { hasNs = true; break outer }
   }
+  // A namespace of plain values only (`parse.comment ??= {…}`, no arrow
+  // property) lifts no name: its witness is a top-level property store on a
+  // function, in a module initializer or the entry (the declared-keys pass
+  // then sees the flattened global as a literal-bound name).
+  if (!hasNs) {
+    const topStore = (st) => Array.isArray(st) && ASSIGN_OPS.has(st[0]) && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && names.has(st[1][1])
+    const stmts = (root) => Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
+    hasNs = [...(ctx.module.moduleInits ?? []), ast].some(root => stmts(root).some(topStore))
+  }
   if (!hasNs) return false
   const ns = analyzeFuncNamespaces(ast)
   if (!ns.size) return false

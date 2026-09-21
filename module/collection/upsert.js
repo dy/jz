@@ -384,7 +384,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
   // a delete there must still invalidate. HASH deletes are cold; SET/MAP
   // tables never feed enumeration, so only the HASH instance pays.
   const enumcInval = expectedType === PTR.HASH
-    ? `(global.set $__enumc_off (i32.const 0))
+    ? `(global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
     `
     : ''
   return `(func $${name} (param $coll i64) (param $key i64) (result i32)

@@ -927,8 +927,9 @@ export default (ctx) => {
     (if (i32.lt_u (local.get $off) (i32.const ${HEAP.START}))
       (then (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (call $__alloc_hdr (i32.const 0) (i32.const 0))))))
     (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (if (i32.and (i32.eq (local.get $off) (global.get $__enumc_off))
-                 (i32.eq (local.get $n) (global.get $__enumc_len)))
+    (if (i32.and (i32.and (i32.eq (local.get $off) (global.get $__enumc_off))
+                          (i32.eq (local.get $n) (global.get $__enumc_len)))
+                 (i32.eq (global.get $__enumc_ep) (global.get $__enumc_epoch)))
       (then (return (global.get $__enumc_arr))))
     (local.set $ord (call $__prop_order (local.get $off)
       (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const 24)))
@@ -942,6 +943,7 @@ export default (ctx) => {
       (br $l)))
     (global.set $__enumc_off (local.get $off))
     (global.set $__enumc_len (local.get $n))
+    (global.set $__enumc_ep (global.get $__enumc_epoch))
     (global.set $__enumc_arr (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $out)))
     (global.get $__enumc_arr))`
 
@@ -2046,6 +2048,13 @@ export default (ctx) => {
     if (Array.isArray(obj) && obj[0] === '{}') return null
     if (typeof obj === 'string' && (ctx.func.flatObjects?.has(obj)
         || (ctx.schema.idOf(obj) != null && !ctx.transform.dynamicAccessorNames?.has(prop)))) return null
+    // The summary's one layout says the same for any receiver it types (an
+    // element read `const e = evs[i]`, a parameter every caller proves): a
+    // layout with the slot calls the getter, one without reads plainly — a
+    // getter of that name on some class elsewhere is no reason to probe.
+    const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+    if (sid != null && !ctx.transform.dynamicAccessorNames?.has(prop))
+      return ctx.schema.list[sid]?.includes(getter) ? emit(['()', ['.', obj, getter]]) : null
     let recv = obj
     const pre = []
     if (typeof obj !== 'string') { recv = temp('acc'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
@@ -2333,8 +2342,10 @@ export default (ctx) => {
     if (g && ctx.core.getters.has(gKey)) return g(t)
     // an accessor name reads through the hoisted temp's own `.` dispatch
     // (the runtime probe; the receiver is evaluated once either way)
-    if (!raw && ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)) return emit(['.', t, prop])
     const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+    if (!raw && ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)
+        && (sid == null || ctx.transform.dynamicAccessorNames?.has(prop) || ctx.schema.list[sid]?.includes(prop + ACCESSOR_GET)))
+      return emit(['.', t, prop])
     let receiver = typed(['local.get', `$${t}`], 'f64')
     // The enclosing null check establishes presence. Retain the summary's
     // exact layout on this captured receiver, including raw BigInt fields.

@@ -110,7 +110,7 @@ export function summaryQueries(facts, internal = false) {
       if (name === 'new.RegExp') return kind(K.REGEX)
       if (name === 'new.ArrayBuffer' || name === 'new.SharedArrayBuffer') return kind(K.BUFFER)
     }
-    if (name === 'Array' || name === '__keys_ro') return kind(K.ARRAY)
+    if (name === 'Array' || name === '__keys_ro' || name === '__keys_dyn') return kind(K.ARRAY)
     if (name === '__iter_arr') return K.NONE
     const v = builtinCalleeVal(name)
     if (v != null && (v !== VAL.TYPED || name === 'new.DataView')) return kindOfVal(v)

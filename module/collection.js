@@ -318,13 +318,15 @@ export default (ctx) => {
 
   // for-in enum cache (core.js __hash_keys_ro): cached boxed key array keyed by
   // (table off, live len). Declared here unconditionally — genDelete's HASH
-  // invalidation hook references $__enumc_off in its static WAT text, so the
+  // invalidation hook bumps $__enumc_epoch in its static WAT text, so the
   // global must exist in any build that reaches __hash_del_local, for-in or not
   // (same pattern as __seq/__dyn_props above; watr treeshakes them when unused).
   if (!ctx.scope.globals.has('__enumc_off')) {
     declGlobal('__enumc_off', 'i32')
     declGlobal('__enumc_len', 'i32')
+    declGlobal('__enumc_ep', 'i32')
     declGlobal('__enumc_arr', 'f64')
+    declGlobal('__enumc_epoch', 'i32')
   }
 
   if (!ctx.scope.globals.has('__dyn_props'))
@@ -1244,7 +1246,7 @@ export default (ctx) => {
                 (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
         (if (i32.ge_u (local.get $cap) (local.get $want))
           (then
-            (global.set $__enumc_off (i32.const 0))
+            (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
             (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))
             (memory.fill (local.get $off) (i32.const 0) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY + lane})))
             (return (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $off)))))))
@@ -1450,7 +1452,7 @@ export default (ctx) => {
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
             ${markDeletedSlotWat('$off', '$idx', false)}
             ${ctx.types.anyDelete ? `(if (i32.eqz (local.get $reinsert)) (then (return (local.get $val))))
-            (global.set $__enumc_off (i32.const 0))` : '(return (local.get $val))'}))))` : ''
+            (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))` : '(return (local.get $val))'}))))` : ''
 
   // Canonical array-index parse of a string key: '0' | [1-9][0-9]{0,9} within
   // i32 range → the index, else -1. JS property semantics: a canonical numeric
@@ -2051,11 +2053,14 @@ export default (ctx) => {
         (then (i64.reinterpret_f64 (call $__hash_new_small)))
         (else (local.get $oldProps))))
     (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
-    ;; for-in enum cache: a global-side prop insert changes a durable receiver's
-    ;; enumeration without touching the (sidecar-keyed) cache key — clear it.
-    ;; Unconditional: an insert into an EXISTING per-object hash skips the
-    ;; props≠oldProps rekey below, so this can't ride that guard. Cold path.
-    (global.set $__enumc_off (i32.const 0))
+    ;; for-in enum cache: a global-side prop insert changes an OBJECT
+    ;; receiver's enumeration without touching its site cache's key — move the
+    ;; epoch. Not gated on the props≠oldProps rekey below: an insert into an
+    ;; EXISTING per-object hash skips it. An ARRAY or CLOSURE receiver's props
+    ;; never enumerate (for-in lists an array's indices), so those inserts —
+    ;; subscript's node.loc = at on every parsed node — leave the caches.
+    (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+      (then (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))))
     (if (i64.ne (local.get $props) (local.get $oldProps))
       (then
         (local.set $root (call $__ihash_set_local (local.get $root) (local.get $objKey) (local.get $props)))
@@ -2104,7 +2109,7 @@ export default (ctx) => {
           (then
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
             ${markDeletedSlotWat('$off', '$idx', true)}
-            (global.set $__enumc_off (i32.const 0))
+            (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
             (local.set $hit (i32.const 1))))))` : ''
 
   ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)
@@ -2240,8 +2245,8 @@ export default (ctx) => {
     (global.set $__dyn_props (f64.reinterpret_i64 (local.get $root)))
     ${dynPropsFilterSetIR('(local.get $newOff)')}
     ;; for-in enum cache: props re-keyed to a relocated receiver — global-side
-    ;; enumeration state changed without touching the sidecar-keyed cache. Clear.
-    (global.set $__enumc_off (i32.const 0))
+    ;; enumeration state changed without touching a site cache's key. Move the epoch.
+    (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
     (i32.const 1))`
 
   // Generated HASH probe functions

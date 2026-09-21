@@ -2731,3 +2731,60 @@ test('written literal keys: a literal-key write outside a literal-bound layout d
   const len = funcWat(compile(loop.replace("if (cm[s] === '\\n') n++", 'n += cm[s].length'), { wat: true }), 'main')
   ok(len.includes('$__str_length') && !len.includes('$__length') && !len.includes('$__dyn_get'), 'a definitely stored key reads as a string')
 })
+
+// ── Declared keys across calls that cannot reach the literal ───────────────
+// A literal-key store after registration calls (a bundled parser's
+// `parse.comment ??= {…}` … `binary('+', 10)` … `parse.comment['#!'] = …`) is
+// still definite when every call between is a direct call to a module
+// function whose body, defaults and direct callees never mention the literal's
+// name and never run what the pass cannot name; builtin methods count as
+// harmless when no method of the program bears the name and no argument can
+// be a function. Everything else keeps the key out of the literal — and the
+// observable fact is `in` before the store.
+const modulesOf = (main, extra = {}) => ({ './parse.js': `export const lookup = [], prec = {}\nexport const parse = (s) => s\nconst register = (d, c = d.op.charCodeAt(0), fn = lookup[c]) => lookup[c] = fn?.ops ? dispatch([d, ...fn.ops], fn.tail) : dispatch([d], fn)\nconst dispatch = (ops, tail, fn = (a, p) => { for (let i = 0; i < ops.length; i++) { const r = ops[i].map(a); if (r) return r } return tail?.(a, p) }) => (fn.ops = ops, fn.tail = tail, fn)\nexport const token = (op, p = 32, map) => register({ op, l: op.length, p: prec[op] = p, map, word: op.toUpperCase() !== op })\nexport const binary = (op, p) => token(op, p, (a, b) => a && [op, a, b])\nparse.comment ??= { '//': '\\n', '/*': '*/' }`, ...extra })
+test('declared keys: registration calls between the literal and its store keep the layout closed', () => {
+  const mods = { './ops.js': `import { binary } from './parse.js'\nbinary('+', 10)\nbinary('*', 11)`, './shebang.js': `import { parse } from './parse.js'\nparse.comment['#!'] = '\\n'` }
+  const main = `import { parse } from './parse.js'\nimport './ops.js'\nimport './shebang.js'\nexport let keys = () => { let out = ''; for (const k in parse.comment) out += k + ';'; return out }\nexport let has = () => '#!' in parse.comment`
+  const w = compile(main, { modules: modulesOf(main, mods), wat: true })
+  ok(!/oednG|owloop/.test(w), 'no runtime enumeration: the layout closed')
+  const { keys, has } = jz(main, { modules: modulesOf(main, mods) }).exports
+  is(keys(), '//;/*;#!;'); is(has(), true)
+})
+test('declared keys stand down for a call that reaches the literal, an alias, a callback, a default', () => {
+  const probeMod = { './probe.js': `import { parse } from './parse.js'\nexport const seen = []\nexport const look = () => seen.push('#!' in parse.comment)\nexport const noop = () => 0\nexport const withDefault = (o = parse.comment) => seen.push('#!' in o)\nexport const each = (arr, fn) => arr.forEach(fn)` }
+  for (const [name, between] of [
+    ['reaching call', `look()`],
+    ['alias', `const cm = parse.comment; noop(); seen.push('#!' in cm)`],
+    ['callback argument', `each([1], () => seen.push('#!' in parse.comment))`],
+    ['parameter default', `withDefault()`],
+  ]) {
+    const main = `import { parse } from './parse.js'\nimport { seen, look, noop, withDefault, each } from './probe.js'\n${between}\nparse.comment['#!'] = '\\n'\nexport let f = () => seen.join(',') + '|' + ('#!' in parse.comment)`
+    is(jz(main, { modules: modulesOf(main, probeMod) }).exports.f(), 'false|true', name)
+  }
+})
+
+// ── for-in over an open layout: the declared keys unrolled, the added keys after ──
+test('for-in over an open layout lists the literal keys then the keys added later, break and continue included', () => {
+  const src = `let cm = { a: 1, b: 2 }
+export let add = (k, v) => { cm[k] = v }
+export let all = () => { let out = ''; for (const k in cm) out += k + '=' + cm[k] + ';'; return out }
+export let first = () => { let out = ''; for (const k in cm) { if (k === 'c') break; out += k + ';' } return out }
+export let skip = () => { let out = ''; for (const k in cm) { if (k === 'b' || k === 'c') continue; out += k + ';' } return out }
+export let last = () => { let s; for (s in cm) {} return s }`
+  const want = oracle(src), got = jz(src).exports
+  for (const step of [null, ['c', 3], ['d', 4]]) {
+    if (step) { want.add(...step); got.add(...step) }
+    for (const fn of ['all', 'first', 'skip', 'last']) is(got[fn](), want[fn](), `${fn} after ${step?.[0] ?? 'nothing'}`)
+  }
+})
+test('for-in sites alternate without evicting each other and see a global insert', () => {
+  const src = `let a = { x: 1 }, b = { y: 2 }
+export let add = (which, k, v) => { (which ? a : b)[k] = v }
+export let sum = (n) => { let out = ''; for (let i = 0; i < n; i++) { for (const k in a) out += k; out += '|'; for (const k in b) out += k; out += ';' } return out }`
+  const want = oracle(src), got = jz(src).exports
+  is(got.sum(2), want.sum(2))
+  want.add(1, 'z', 3); got.add(1, 'z', 3)
+  is(got.sum(2), want.sum(2))
+  want.add(0, 'w', 4); got.add(0, 'w', 4)
+  is(got.sum(3), want.sum(3))
+})

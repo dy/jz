@@ -163,8 +163,8 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (global.set $__dyn_props (local.get $root))
             ${dynPropsFilterSetIR('(local.get $newOff)')}
             ;; for-in enum cache: sidecar props moved into the global table —
-            ;; enumeration state changed off the cache's key. Clear (see collection.js).
-            (global.set $__enumc_off (i32.const 0))
+            ;; enumeration state changed off the site caches' keys. Move the epoch (see collection.js).
+            (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
             (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL}))))) ` : ''
 
 // An own-name-current array binding (scanObjectArrayFacts): grown only

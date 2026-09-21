@@ -943,7 +943,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         return t === K.MAP || t === K.SET || t === K.STRING ? kind(K.ARRAY) : ANY
       }
       if (node && ITER_STEP.test(callee)) { const r = cursorStep(callee, node); if (r !== null) return r }
-      if (callee === '__keys_ro') return kind(K.ARRAY)
+      if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
         if (!escaped.has(callee)) bind(callee, paramNamesOf(f), base, n, f.defaults)

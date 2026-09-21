@@ -302,8 +302,7 @@ export function pullStdlib(sec) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__dyn_props', '__dyn_props_filter',
           '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
-          '__durable_arr_buf', '__durable_arr_n', '__gsnap_base',
-          '__enumc_off', '__enumc_len', '__enumc_arr'])
+          '__durable_arr_buf', '__durable_arr_n', '__gsnap_base'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))
@@ -331,7 +330,9 @@ export function pullStdlib(sec) {
         for (const name of runtimeWritten) {
           const g = ctx.scope.globals.get(name)
           if (!g || !g.mut || !SNAP_TYPES[g.type]) continue
-          if (SNAP_PROTOCOL.has(name) || name.startsWith('__tof_') || name.startsWith('__hc_')) continue
+          // `__enumc_*`: the for-in enum caches (module/object.js) — state the
+          // reset below invalidates through the epoch, never restores.
+          if (SNAP_PROTOCOL.has(name) || name.startsWith('__tof_') || name.startsWith('__hc_') || name.startsWith('__enumc_')) continue
           if (startFn) { snapSlots.push([name, g.type, slabBytes]); slabBytes += SNAP_TYPES[g.type] }
           // no __start ⇒ post-init value = declared init: restore the constant, no slot
           else globalRestores.push(`(global.set $${name} (${g.type}.const ${g.init ?? 0}))`)
@@ -431,7 +432,7 @@ export function pullStdlib(sec) {
       // __dyn_get_cache_off above). Gated on enumcConsumed, not reachability:
       // the OBJECT-arm fill sites are inline IR (no named helper to count).
       if (ctx.runtime.enumcConsumed)
-        resets.push(`(global.set $__enumc_off (i32.const 0))`)
+        resets.push(`(global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))`)
       // Durable relocation heal (collection.js's durableFwdLogIR / core.js's
       // __durable_fwd_log/__durable_fwd_heal): only reachable when some growable
       // ARRAY/HASH/SET/MAP relocation site actually logged a durable→ephemeral
