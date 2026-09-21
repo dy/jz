@@ -2627,6 +2627,27 @@ function detectResults(body) {
 export function prepareImports(ast) {
   for (const { spec } of ctx.transform.jzify?.imports?.(ast) ?? []) if (isBundledModule(spec)) prepareModule(spec, bundledSource(spec))
 }
+/** The parsed graph under `ast`: it and every bundled module its imports
+ *  reach (the compiler's own `jz:` modules aside), each parsed once and kept
+ *  for prepareModule. A witness that spans the program (jzify.witness) reads
+ *  the graph before any module is lowered. */
+export function programModuleAsts(ast) {
+  const out = [ast], seen = new Set()
+  for (let i = 0; i < out.length; i++) {
+    for (const { spec } of ctx.transform.jzify?.imports?.(out[i]) ?? []) {
+      if (seen.has(spec) || spec.startsWith('jz:') || !isBundledModule(spec)) continue
+      seen.add(spec)
+      let m = moduleAstFor(spec)
+      if (m === undefined) {
+        if (!ctx.transform.parse) continue
+        m = ctx.transform.parse(bundledSource(spec))
+        ;(ctx.module.importAsts ??= []).push([spec, m])
+      }
+      out.push(m)
+    }
+  }
+  return out
+}
 /** The mangled name an import of `name` from an already prepared `spec` binds;
  *  null for a host import, a built-in module, a missing export or a module not
  *  prepared yet (the lowering then declines). */
@@ -2698,7 +2719,7 @@ function prepareModule(specifier, source) {
     if (!ctx.transform.parse) err('compile-time module bundling requires ctx.transform.parse (injected by the jz pipeline)')
     ast = ctx.transform.parse(source)
   }
-  if (ctx.transform.jzify) { prepareImports(ast); ast = ctx.transform.jzify(ast, { importedBinding }) }
+  if (ctx.transform.jzify) { prepareImports(ast); ast = ctx.transform.jzify(ast, { importedBinding, std: ctx.module.inStd }) }
   ast = hoistIndexedConstLiterals(ast)
   const savedDepth = prepState.depth; prepState.depth = 0
   const savedReassigned = prepState.reassignedTopLevel

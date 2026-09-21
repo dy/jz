@@ -50,6 +50,7 @@
  */
 import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
+import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
@@ -100,6 +101,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const sites = new Map(), objectKinds = new Map(), sitesByLayout = new Map()
   const tops = [...inits, ast]
   const kinds = []                   // binding id (keyOf) → kind
+  // Initializer contexts. A class initializer (`C⟨init⟩(self, …)`,
+  // jzify/classes.js) is one function for a family: a derived class's
+  // `super(…)` calls it on the derived instance, so its parameters join the
+  // arguments of every subclass and a store `self.f = v` raises the slot of
+  // every layout with the join. Called on one layout, the initializer is
+  // walked for that layout under bindings of its own (the context's keys),
+  // and each layout's slots hold what that class's construction stores. A
+  // context key raises its base key too: the base keys keep the join for
+  // the readers of the settled facts (the emitter compiles the one
+  // function) and for the closures the body creates.
+  const INIT_SUFFIX = CLASS_T + CLASS_T + 'init'
+  const isInit = (name) => typeof name === 'string' && name.endsWith(INIT_SUFFIX)
+  const initContexts = new Map()     // initializer → Map(layout → context { fn, layout, keys: Map(base key → context key) })
+  const plainInits = new Set()       // initializers also called on a receiver of several layouts, or of none: walked under the join too
+  const ctxBase = []                 // context key → its base key
+  let activeCtx = null               // the context whose walk is in progress
   const opaqueSchemas = new Set() // schemas whose identity is lost at a value join
   const fields = []                  // dense construction sid → kind[]
   const results = new Map()          // function name or closure id → kind
@@ -257,16 +274,25 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // of every kind), kept for the result contract's certain-return walk.
   const certainKeys = new Set()
   const raise = (values, key, k, quiet = false) => {
-    const old = values[key] ?? K.NONE; const nk = merge(old, k, quiet)
-    if (nk !== old) { values[key] = nk; changed = true }
+    const old = values[key] ?? K.NONE; let nk = merge(old, k, quiet)
+    if ((values[key] ?? K.NONE) !== old) nk = merge(values[key], nk, true)   // the join raised the binding itself (an escaped closure's parameter)
+    if (nk !== (values[key] ?? K.NONE)) { values[key] = nk; changed = true }
     if (values === kinds && hasTag(k, K.BIGINT) && !unbounded(k)) certainKeys.add(key)
+    // The base key joins the contexts quietly while no walk reads it (the
+    // emitter of the one function does); an initializer walked under the
+    // join as well raises it as the walk does, so the two agree on one form.
+    if (ctxBase[key] !== undefined) raise(values, ctxBase[key], k, plainInits.has(bindingScope[ctxBase[key]]) ? quiet : true)
   }
   const raiseResult = (key, k) => {
+    // The iterator helpers answer at their call nodes (iterFrom, iterDrain):
+    // their bodies run over sources without identity, and a return of one
+    // whose kind is unknown would lose the record layout every mint shares.
+    if (typeof key === 'string' && (ITER_FROM.test(key) || ITER_MK.test(key) || ITER_DRAIN.test(key) || ITER_ARR.test(key))) return
     if (escaped.has(key)) escape(k)
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if (opaqueSchemas.has(sid) || hostSchemas.has(sid)) losingAs('stored into an object whose shape is lost', () => escape(k)); const a = slots(sid); const nk = merge(a[i], k); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', () => escape(k)); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -284,6 +310,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (indexedSchemas.has(site)) indexSchema(l)
       if (opaqueSchemas.has(site)) loseShape(l)
       if (hostSchemas.has(site)) escapeToHost(kind(K.OBJECT, l))
+      const fi = iterSites.get(site)
+      if (fi) { const fl = iterSites.get(l); iterSites.set(l, fl ? { src: merge(fl.src, fi.src), elem: merge(fl.elem, fi.elem) } : { src: fi.src, elem: fi.elem }) }
     }
   }
   const NO_SLOTS = []
@@ -500,7 +528,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (hostArrays.has(id) && retainedArrays.has(id)) { retain(k); escapeToHost(k); k = ANY; literal = false }
     if (!literal) invalidateTuple(arr)
     const held = setCells.has(id) && !enumerated.has(id)
-    const nk = merge(elems[id], k, !!tuples.get(id) || held)
+    const old = elems[id]
+    let nk = merge(old, k, !!tuples.get(id) || held)
+    // The join may raise the cell itself (an element it loses escapes the
+    // array): the value it left is folded in, never written over.
+    if (elems[id] !== old) nk = merge(elems[id], nk, true)
     if (held && paramOf(nk) === UNKNOWN) { holdKey(id, elems[id]); holdKey(id, k) }
     if (nk !== elems[id]) { elems[id] = nk; changed = true }
     // A keyed dictionary's entry stored under a name the summary does not see.
@@ -607,7 +639,23 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   /** A value the summary no longer follows: a closure's callers become unknown, an array's elements too. */
   // A lost shape's fields are read through receivers the summary cannot
   // name: their values are lost with it (`raiseSlot` loses later stores).
-  const loseShape = (sid) => { if (!opaqueSchemas.has(sid)) { if (onLose) onLose(sid, losing ?? 'escaped', current, site); opaqueSchemas.add(sid); changed = true; poisonLost(sid); for (const s of slots(sid)) escape(s); escape(anySideOf(sid)); forFolded(sid, loseShape) } }
+  // A field read through a receiver of lost shape answers with every shape's
+  // value of the name (`lostObjectRead`), so a store through that value
+  // reaches the summary; a name that read cannot answer precisely (a foreign
+  // object may hold it, a class member or a dynamic store bears it) hides the
+  // stores, and its value escapes with the shape.
+  const lostReadPrecise = (prop) => !(foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop) || membersByName.has(prop) || membersByName.has(getterOf(prop)))
+  const loseShape = (sid) => {
+    if (opaqueSchemas.has(sid)) return
+    if (onLose) onLose(sid, losing ?? 'escaped', current, site)
+    opaqueSchemas.add(sid); changed = true
+    poisonLost(sid)
+    schemas[sid].forEach((p, i) => { if (!lostReadPrecise(p)) escape(slots(sid)[i]) })
+    for (const [p, k] of sideProps.get(sid) ?? []) if (!lostReadPrecise(p)) escape(k)
+    escape(sideWild.get(sid) ?? K.NONE)
+    if (iterFacts(sid)) escape(iterElem(sid))
+    forFolded(sid, loseShape)
+  }
   // A typed array's named properties come from stores the walk sees, or from
   // a builtin that writes its argument (escapeObject): the host holds a view
   // of the elements alone, so an escape opens no cell.
@@ -668,6 +716,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       seen.add(sid); hostSchemas.add(sid); changed = true
       forFolded(sid, s => escapeToHost(kind(K.OBJECT, s), seen))
       poisonLost(sid)
+      if (iterFacts(sid)) escapeToHost(iterElem(sid), seen)
       const row = slots(sid)
       for (let i = 0; i < row.length; i++) { retain(row[i]); escapeToHost(row[i], seen) }
       const side = anySideOf(sid); retain(side); escapeToHost(side, seen)
@@ -859,17 +908,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
    *  later argument or nothing (a default replaces the nothing). The arguments
    *  a rest parameter collects escape; a surplus argument past the declared
    *  parameters is one the callee never observes. */
-  const bind = (scope, names, base, n, defaults) => {
+  const bind = (scope, names, base, n, defaults, ctx = null) => {
     const s = spreadAt(base, n)
     let tail = NULLISH
     for (let i = s; i < n; i++) tail = merge(tail, ks[base + i])
     const passive = passiveParamsOf(scope, names, defaults)
     for (let i = 0; i < names.length; i++) {
       if (names[i] == null) continue
-      const quiet = passive.has(names[i])
-      if (i < s) bindParam(keyIn(scope, names[i]), ks[base + i], quiet)
-      else if (s < n) bindParam(keyIn(scope, names[i]), defaults?.[names[i]] ? core(tail) : tail, quiet)
-      else if (!defaults?.[names[i]]) bindParam(keyIn(scope, names[i]), NULLISH, quiet)
+      const quiet = passive.has(names[i]), key = ctx === null ? keyIn(scope, names[i]) : ctxKey(ctx, keyIn(scope, names[i]))
+      if (i < s) bindParam(key, ks[base + i], quiet)
+      else if (s < n) bindParam(key, defaults?.[names[i]] ? core(tail) : tail, quiet)
+      else if (!defaults?.[names[i]]) bindParam(key, NULLISH, quiet)
     }
     if (names.rest != null) {
       if (names.restName != null) restBind(scope, names.restName, base, names.rest, n)
@@ -923,6 +972,122 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (row) for (let j = i; j < row.length; j++) k = merge(k, row[j]); else k = iterElemOf(c[0])
     return arrayOf(node, k)
   }
+  // `E[Symbol.iterator]()` is `__it_from(E)` (jzify): the iterator over E.
+  // Over an indexed value, or a collection's snapshot view, the runtime mints
+  // a decorated record (std/iter-helpers `__it_mk`) whose `next` reads the
+  // source by position. The summary names each mint's record by its call
+  // node, a site of the record's layout, and keeps the source beside it:
+  // `it.next().value` is that source's element, where the record's own slots
+  // would join every mint in the program. A provider's `@@iterator` answers
+  // for its instances; a machine is its own iterator; any other value throws.
+  // A generator object is the same record, minted by `__it_mk(next, return,
+  // throw)` (jzify/generators.js) with the machine's own closures: a site per
+  // mint keeps each generator's results its own.
+  const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/
+  const ITER_LAYOUT = sidByKey.get(schemaKey(ITER_RECORD_KEYS, null))
+  const RESULT_LAYOUT = sidByKey.get(schemaKey(['value', 'done'], null))
+  const iterSites = new Map()   // record site → { src, elem, next, ret, thr }: the source read by position, elements of no source, a machine's closures
+  // The runtime's own record literal (`__it_mk`, walked over kinds without
+  // identity) is an iterator of unknown elements: its results keep the
+  // `{ value, done }` layout instead of joining an unknown value.
+  const ITER_ANY = Object.freeze({ src: K.NONE, elem: ANY, next: K.NONE, ret: K.NONE, thr: K.NONE })
+  const iterFacts = (sid) => iterSites.get(canonSid(sid)) ?? (layouts[sid] === ITER_LAYOUT ? ITER_ANY : undefined)
+  const iterSite = (node, src, elem = K.NONE, next = K.NONE, ret = K.NONE, thr = K.NONE) => {
+    const sid = ITER_LAYOUT === undefined || node === null ? -1 : objectSite(node, ITER_LAYOUT)
+    if (sid < 0) { escape(src); escape(elem); escape(next); escape(ret); escape(thr); return ANY }
+    let f = iterSites.get(canonSid(sid))
+    if (!f) { iterSites.set(canonSid(sid), f = { src: K.NONE, elem: K.NONE, next: K.NONE, ret: K.NONE, thr: K.NONE }); changed = true }
+    const ns = merge(f.src, src), ne = merge(f.elem, elem), nn = merge(f.next, next), nr = merge(f.ret, ret), nt = merge(f.thr, thr)
+    if (ns !== f.src || ne !== f.elem || nn !== f.next || nr !== f.ret || nt !== f.thr) { f.src = ns; f.elem = ne; f.next = nn; f.ret = nr; f.thr = nt; changed = true }
+    return kind(K.OBJECT, sid)
+  }
+  const knownClosure = (k) => tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN
+  const iterElem = (sid) => {
+    const f = iterFacts(sid)
+    if (f === undefined) return ANY
+    let e = merge(f.elem, tagOf(f.src) === K.NONE ? K.NONE : iterElemOf(f.src))
+    if (knownClosure(f.next)) e = merge(e, core(member('.', closureResult(paramOf(f.next)), 'value')))
+    else if (tagOf(f.next) !== K.NONE) e = ANY
+    return e
+  }
+  /** `it.next()`: the `{ value, done }` record of the call node, its value the element or undefined. */
+  const iterResult = (node, sid) => {
+    const t = RESULT_LAYOUT === undefined || node === null ? -1 : objectSite(node, RESULT_LAYOUT)
+    if (t < 0) return ANY
+    raiseSlot(t, schemas[t].indexOf('value'), merge(iterElem(sid), NULLISH))
+    raiseSlot(t, schemas[t].indexOf('done'), BOOL)
+    return kind(K.OBJECT, t)
+  }
+  const iterMethod = (node, sid, name, base, n) => {
+    const cb = n ? ks[base] : K.NONE, known = tagOf(cb) === K.CLOSURE && paramOf(cb) !== UNKNOWN
+    const f = iterFacts(sid), own = name === 'next' ? f.next : name === 'return' ? f.ret : name === 'throw' ? f.thr : K.NONE
+    let r
+    if (name === 'next' || name === 'return' || name === 'throw') r = knownClosure(own) ? callClosure(paramOf(own), base, n, node) : tagOf(own) === K.NONE ? iterResult(node, sid) : (escapeArgs(base, n), ANY)
+    else if (name === '@@iterator') r = kind(K.OBJECT, sid)
+    else if (name === 'map') { const elem = iterElem(sid); r = iterSite(node, K.NONE, known ? call2(paramOf(cb), elem, NUMBER) : (escapeArgs(base, n), ANY)) }
+    else if (name === 'filter' || name === 'take' || name === 'drop') { const elem = iterElem(sid); if (name === 'filter') { if (known) call2(paramOf(cb), elem, NUMBER); else escapeArgs(base, n) } r = iterSite(node, K.NONE, elem) }
+    else if (name === 'toArray') { r = node ? arrayOf(node, K.NONE) : kind(K.ARRAY); raiseElem(r, iterElem(sid)) }
+    else if (name === 'forEach' || name === 'some' || name === 'every' || name === 'find') {
+      const elem = iterElem(sid)
+      if (known) call2(paramOf(cb), elem, NUMBER); else escapeArgs(base, n)
+      r = name === 'forEach' ? NULLISH : name === 'find' ? merge(elem, NULLISH) : BOOL
+    }
+    else { escapeArgs(base, n); r = ANY }   // reduce, flatMap
+    if (node) siteResults.set(node, r)
+    return r
+  }
+  /** An object's iterator: its `@@iterator` member's result where the member is present, itself where absent. */
+  const unwrapped = (one, base) => {
+    const m = member('.', one, '@@iterator')
+    if (tagOf(core(m)) === K.NONE) return one
+    const it = method(one, '@@iterator', base, 0, null)
+    return isNullable(m) ? merge(it, one) : it
+  }
+  /** The `next` member of an iterator candidate: NONE where absent, nullable where uncertain. */
+  const nextOf = (w) => tagOf(w) === K.NONE ? K.NONE : member('.', w, 'next')
+  const iterMk = (node, base, n) => {
+    const r = iterSite(node, K.NONE, K.NONE, n > 0 ? ks[base] : K.NONE, n > 1 ? ks[base + 1] : K.NONE, n > 2 ? ks[base + 2] : K.NONE)
+    if (node) siteResults.set(node, r)
+    return r
+  }
+  const iterFrom = (node, base, n) => {
+    const src = n ? ks[base] : K.NONE, t = tagOf(src)
+    let r = K.NONE
+    if (t === K.NONE || tagOf(core(src)) === K.NONE) r = K.NONE
+    else if (t === K.ARRAY || t === K.TYPED || t === K.STRING) r = iterSite(node, src)
+    else if (t === K.SET || t === K.MAP) r = iterSite(node, node ? iterArray(node, src) : kind(K.ARRAY))
+    else if (t === K.OBJECT) { const w = unwrapped(src, base); r = tagOf(core(nextOf(w))) === K.NONE ? K.NONE : w }
+    else if (t === K.ANY) { method(src, '@@iterator', base, 0, null); r = ANY }
+    if (node) siteResults.set(node, r)
+    return r
+  }
+  // `[...E]` (`__it_drain`) and `Array.from(E)` (`__it_arr`) in a program that
+  // mints iterators: a provider's iterator, or a machine, drains into a fresh
+  // array of its elements. `__it_drain` passes any other value through to the
+  // spread; `__it_arr` copies an indexed value or a collection's snapshot
+  // view, and an array-like by its length.
+  const ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
+  const drainedOf = (node, w, base) => {
+    const out = arrayOf(node, K.NONE)
+    raiseElem(out, iterFacts(sidOf(w)) ? iterElem(sidOf(w)) : member('.', method(w, 'next', base, 0, null), 'value'))
+    return out
+  }
+  const iterDrain = (node, base, n, copy) => {
+    const src = n ? ks[base] : K.NONE, t = tagOf(src)
+    let r = K.NONE
+    if (t === K.NONE || node === null) r = t === K.NONE ? K.NONE : ANY
+    else if (t === K.OBJECT && paramOf(src) !== UNKNOWN) {
+      for (const sid of shapesOf(paramOf(src))) {
+        const w = unwrapped(kind(K.OBJECT, sid), base), nx = nextOf(w)
+        const through = copy ? arrayOf(node, ANY) : w   // no iterator: an array-like's copy, or the value itself
+        r = merge(r, tagOf(core(nx)) === K.NONE ? through : isNullable(nx) ? merge(drainedOf(node, w, base), through) : drainedOf(node, w, base))
+      }
+    }
+    else if (t === K.OBJECT || t === K.ANY || t === K.HASH) { method(src, '@@iterator', base, 0, null); method(src, 'next', base, 0, null); r = ANY }
+    else r = copy ? arrayFrom(node, base, 1) : src
+    siteResults.set(node, r)
+    return r
+  }
   const call = (callee, base, n, node = null) => {
     if (typeof callee === 'string') {
       if (callee.startsWith('new.')) {
@@ -947,17 +1112,29 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // `__keys_ro` is `for…in`'s key list.
       if (callee === '__iter_arr') {
         const src = n ? ks[base] : K.NONE, t = tagOf(src)
-        if (t === K.NONE) return K.NONE
+        // A source of no kind yet, or one iteration throws on (nullish, a
+        // number, a boolean, a closure, a dictionary), yields nothing: the
+        // kinds are monotone, so answering ANY here would stand forever.
+        if (t === K.NONE || !iterable(src) || t === K.OBJECT) return K.NONE
         const arr = node ? iterArray(node, src) : null
         if (arr !== null) return arr
         if (t === K.MAP) { escape(keysOf(src)); escape(elemOf(src)) }
         return t === K.MAP || t === K.SET || t === K.STRING ? kind(K.ARRAY) : ANY
       }
       if (node && ITER_STEP.test(callee)) { const r = cursorStep(callee, node); if (r !== null) return r }
+      // The iterator helpers' results are the summary's own (above); their
+      // bodies still run over the arguments' kinds without their identities,
+      // as the pattern protocol's do: the reads they make are the program's.
+      if (ITER_FROM.test(callee) || ITER_MK.test(callee) || ITER_DRAIN.test(callee) || ITER_ARR.test(callee)) {
+        const r = ITER_FROM.test(callee) ? iterFrom(node, base, n) : ITER_MK.test(callee) ? iterMk(node, base, n) : iterDrain(node, base, n, ITER_ARR.test(callee))
+        const f = funcByName.get(callee)
+        if (f && !escaped.has(callee)) { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
+        return r
+      }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
-        if (!escaped.has(callee)) bind(callee, paramNamesOf(f), base, n, f.defaults)
+        if (!escaped.has(callee)) bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n ? null : initContextFor(callee, ks[base]))
         return resultAt(callee, base, n, node)
       }
       const key = keyOf(callee), k = key === null ? undefined : kinds[key]
@@ -1000,7 +1177,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       // `Object.assign` onto an object of known shape: each source slot is a
       // member store; a source of unknown shape may store anything.
-      if (callee === 'Object.assign' && n > 0 && knownShapes(ks[base])) {
+      if (callee === 'Object.assign' && n > 0 && tagOf(ks[base]) === K.OBJECT && paramOf(ks[base]) !== UNKNOWN) {
         const target = ks[base]
         for (let i = 1; i < n; i++) {
           const s = ks[base + i]
@@ -1195,9 +1372,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (!sids.length || sids.length > SET_MAX) return recv
     return kind(K.OBJECT, sids.length === 1 ? sids[0] : closureSet(sids))
   }
+  /** The class members a receiver the summary cannot name may reach, each called with its family: the join of their results. */
   const callCandidates = (recv, name, base, n) => {
-    if (!unknownReceiver(recv)) return
-    for (const fn of membersByName.get(name) ?? NO_MEMBERS) callWith(fn, familyOf(fn, name, recv), base, n)
+    let r = K.NONE
+    if (!unknownReceiver(recv)) return r
+    for (const fn of membersByName.get(name) ?? NO_MEMBERS) r = merge(r, callWith(fn, familyOf(fn, name, recv), base, n))
+    return r
   }
   const typedElemKind = (recv) => paramOf(recv) === UNKNOWN
     ? join(NUMBER, BIGINT)
@@ -1288,7 +1468,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const arrayFrom = (node, base, n) => {
     const arr = arrayOf(node, K.NONE)
     const src = n > 0 ? ks[base] : K.NONE, t = tagOf(src)
-    const elem = t === K.NONE ? K.NONE : t === K.ARRAY ? elemOf(src) : t === K.TYPED ? typedElemKind(src) : t === K.STRING ? STRING : ANY
+    const elem = t === K.NONE || !iterable(src) ? K.NONE : t === K.ARRAY ? elemOf(src) : t === K.TYPED ? typedElemKind(src) : t === K.STRING ? STRING : ANY
     if (n < 2) { raiseElem(arr, elem); return arr }
     const cb = ks[base + 1]
     if (tagOf(cb) === K.NONE) return arr
@@ -1380,7 +1560,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // function's receiver is the class alone.
     const classFn = classMember(recv, name)
     if (classFn) { const r = callWith(classFn, core(recv), base, n); if (memberMayBeOwn(name)) escapeArgs(base, n); return memberResult(recv, name, r) }
-    callCandidates(recv, name, base, n)
+    const candidates = callCandidates(recv, name, base, n)
     // A proven builtin receiver still permits an own data property to shadow
     // its prototype method. The packed summary does not retain per-instance
     // sidecar values, so decline to ANY rather than assert the builtin result.
@@ -1388,8 +1568,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       escapeArgs(base, n)
       return ANY
     }
+    // A builtin carries no `@@iterator` or `next` member: `E[Symbol.iterator]()`
+    // is `__it_from(E)` (jzify), and a call of the absent member throws (the
+    // protocol desugars probe the member before calling it).
+    if ((name === '@@iterator' || name === 'next') && t !== K.OBJECT && t !== K.HASH && t !== K.ANY && t !== K.CLOSURE) return K.NONE
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
       const sid = paramOf(recv), i = schemas[sid].indexOf(name)
+      if (iterFacts(sid)) return iterMethod(node, sid, name, base, n)
       if (i >= 0) {
         const fk = slots(sid)[i]
         if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node)
@@ -1404,18 +1589,22 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (memberMayBeOwn(name) || schemas[sid].includes(getterOf(name))) { escapeArgs(base, n); return ANY }
       return OBJECT_PROTO_METHODS.has(name) ? ANY : K.NONE
     }
-    // A member of an object of a shape the summary lost is what the shapes
-    // naming it hold (`member`): a closure set is called; a name no shape
-    // holds is a call of undefined, which throws.
+    // A member of an object of a shape the summary lost is one of the
+    // program's own: a class member of the name (the candidates above) or a
+    // closure some shape holds under it (`lostObjectRead`), and the call is
+    // the join of theirs; a name no shape holds is a call of undefined, which
+    // throws. A name stored on receivers the summary cannot see keeps the
+    // escape below.
     if (t === K.OBJECT) {
-      const fk = member('.', recv, name)
-      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node)
-      if (tagOf(core(fk)) === K.NONE) return K.NONE
+      const fk = lostObjectRead(name, false)
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node))
+      if (tagOf(core(fk)) === K.NONE) return candidates
     }
     if (t === K.TYPED) {
       if (TYPED_SAME.has(name)) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return name === 'set' ? NULLISH : kind(K.TYPED, typedSame(name, paramOf(recv))) }
       if (name === 'at') return orAbsent(typedElemKind(recv))
       if (name === 'indexOf' || name === 'lastIndexOf') return NUMBER
+      if (name === 'includes') return BOOL
       if (name === 'reduce') return reduceResult(recv, base, n)
     }
     if (t === K.STRING) {
@@ -1433,7 +1622,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (name === 'pop' || name === 'shift' || name === 'sort' || name === 'reverse' || name === 'splice' || name === 'copyWithin') invalidateTuple(recv)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
       if (name === 'push' || name === 'unshift') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return NUMBER }
-      if (name === 'indexOf' || name === 'lastIndexOf' || name === 'findIndex') { escapeArgs(base, n); return NUMBER }
+      // The searches compare by strict equality or SameValueZero and keep nothing of their argument.
+      if (name === 'indexOf' || name === 'lastIndexOf') return NUMBER
+      if (name === 'includes') return BOOL
+      if (name === 'findIndex') { escapeArgs(base, n); return NUMBER }
       if (name === 'pop' || name === 'shift' || name === 'at' || name === 'find') { escapeArgs(base, n); return orAbsent(elemOf(recv)) }
       if (name === 'slice' || name === 'reverse' || name === 'sort') { escapeArgs(base, n); return recv }
       if (name === 'fill') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return recv }
@@ -1465,7 +1657,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       if (name === 'copyWithin') return recv
       if (name === 'join') return STRING
-      if (name === 'includes' || name === 'some' || name === 'every') { escapeArgs(base, n); return BOOL }
+      if (name === 'some' || name === 'every') { escapeArgs(base, n); return BOOL }
+      // Any other name is a property beside the elements (a closure stored
+      // there is called), an Object.prototype method, or undefined, whose
+      // call throws: none reaches the elements.
+      if (paramOf(recv) !== UNKNOWN && !ARRAY_METHODS.has(name) && !hostArrays.has(cell(paramOf(recv)))) {
+        const fk = propOf(recv, name)
+        if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node)
+        if (tagOf(core(fk)) === K.NONE) return OBJECT_PROTO_METHODS.has(name) ? builtinMethodResult(recv, name) : K.NONE
+        escapeArgs(base, n)
+        return ANY
+      }
     }
     if (t === K.MAP) {
       if (name === 'set') { raiseKey(recv, argumentAt(base, n, 0)); raiseElem(recv, argumentAt(base, n, 1)); return recv }
@@ -1662,8 +1864,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // lacks it, and whatever a store through a receiver of unknown shape put
   // under the name. A class member or accessor of the name, or a shape the
   // registry never named, keeps the read unknown.
-  const lostObjectRead = (prop) => {
-    if (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop) || membersByName.has(prop) || membersByName.has(getterOf(prop))) return ANY
+  const lostObjectRead = (prop, members = true) => {
+    if (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop) || (members && (membersByName.has(prop) || membersByName.has(getterOf(prop))))) return ANY
     let k = merge(ABSENT, merge(wildProps.get(prop) ?? K.NONE, sideByProp.get(prop) ?? K.NONE))
     if (pendingAll) k = merge(k, wildValues)
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) k = merge(k, slots(sid)[i])
@@ -1679,6 +1881,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return optionalResult(op, recv, r)
     }
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
+      if (iterFacts(paramOf(recv))) return optionalResult(op, recv, ITER_RECORD_KEYS.includes(prop) ? kind(K.CLOSURE) : NULLISH)
       const i = schemas[paramOf(recv)].indexOf(prop)
       if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
       // a class's getter, or a method read as a value: bound by its binder
@@ -1739,6 +1942,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         let keys = captures.get(current)
         if (!keys) captures.set(current, keys = new Set())
         if (!keys.has(key)) { keys.add(key); changed = true }
+        // A closure reads an initializer's binding through the base key, whose
+        // quiet join names no lost shape: that initializer runs under the join.
+        if (isInit(bindingScope[key])) joinContexts(bindingScope[key])
       }
       // A binding this walk models is bottom until the fixpoint reaches its assignments.
       const k = (post.get(key) ?? (pre.has(key) ? incoming[key] : kinds[key])) ?? K.NONE
@@ -1825,7 +2031,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const source = count ? ks[base] : ANY, t = tagOf(source)
         let value = callee === 'Object.keys' ? STRING : ANY
         if (callee === 'Object.values') {
-          if (t === K.NONE) value = K.NONE
+          if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) value = K.NONE
           else if (sidOf(source) !== UNKNOWN && !openSchemas.has(sidOf(source))) {
             value = K.NONE
             for (const slot of slots(sidOf(source))) value = merge(value, slot)
@@ -2094,7 +2300,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // when that is undefined), an array pattern's names read its elements, a
   // rest element copies the remaining elements into a fresh array. A computed
   // key or an object rest enumerates the source, which is read as a whole.
-  const iterElemOf = (it) => tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY
+  /** Whether iterating a value of this kind can yield anything: arrays, typed arrays, buffers, strings,
+   *  maps, sets, objects (an iterator of their own) and unknown values; nullish and the other primitives throw. */
+  const iterable = (k) => { const t = tagOf(k); return t === K.ANY || t === K.ARRAY || t === K.TYPED || t === K.BUFFER || t === K.STRING || t === K.MAP || t === K.SET || t === K.OBJECT }
+  const iterElemOf = (it) => !iterable(it) ? K.NONE : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY
   const rowOf = (src) => tagOf(src) === K.ARRAY && paramOf(src) !== UNKNOWN ? tuples.get(cell(paramOf(src))) : null
   const elemAt = (src, i) => { const row = rowOf(src); return row ? row[i] ?? ABSENT : orAbsent(iterElemOf(src)) }
   const entriesOf = (p) => p == null ? [] : Array.isArray(p) && p[0] === ',' ? p.slice(1) : [p]
@@ -2203,9 +2412,34 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const keyOf = (name, scope = current ?? MODULE) => {
     for (let s = scope; ; s = parent.get(s) ?? MODULE) {
       const key = keyIn(s, name)
-      if (key !== undefined) return key
+      if (key !== undefined) return activeCtx !== null && s === activeCtx.fn ? ctxKey(activeCtx, key) : key
       if (s === MODULE) return null
     }
+  }
+  const ctxKey = (ctx, key) => {
+    let k = ctx.keys.get(key)
+    if (k === undefined) { k = nextBinding++; ctxBase[k] = key; bindingScope[k] = bindingScope[key]; ctx.keys.set(key, k) }
+    return k
+  }
+  const paramKey = (scope, name) => { const key = keyIn(scope, name); return activeCtx !== null && scope === activeCtx.fn ? ctxKey(activeCtx, key) : key }
+  /** An initializer walked under the join from now on: its contexts' bindings join the base keys as a walk would, losing what the join loses. */
+  const joinContexts = (fn) => {
+    if (plainInits.has(fn)) return
+    plainInits.add(fn); changed = true
+    for (const c of initContexts.get(fn)?.values() ?? []) for (const [base, key] of c.keys) { raise(kinds, base, kinds[key] ?? K.NONE); raise(incoming, base, incoming[key] ?? K.NONE) }
+  }
+  /** The context an initializer runs in for its `self` argument: one layout's, or null for a receiver of several or none. */
+  const initContextFor = (fn, self) => {
+    if (!isInit(fn)) return null
+    // A receiver of no kind yet is no receiver: a round before the factory's call.
+    if (tagOf(self) === K.NONE) return null
+    const sid = sidOf(self)
+    if (sid === UNKNOWN || isNullable(self)) { joinContexts(fn); return null }
+    let m = initContexts.get(fn)
+    if (!m) initContexts.set(fn, m = new Map())
+    let c = m.get(sid)
+    if (!c) { m.set(sid, c = { fn, layout: sid, keys: new Map() }); changed = true }
+    return c
   }
 
   let current = null  // the scope (and result key) of the function being walked; null at module scope
@@ -2433,8 +2667,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     current = key
     reset()
     scanForwards(key, body, params)
-    if (defaults) for (const p of defaultNamesOf(defaults)) bindParam(keyIn(key, p), expr(defaults[p]))
-    if (params) for (const p of reassignedIn(body, params)) { const id = keyIn(key, p); if (id !== null) pre.add(id) }
+    if (defaults) for (const p of defaultNamesOf(defaults)) bindParam(paramKey(key, p), expr(defaults[p]))
+    if (params) for (const p of reassignedIn(body, params)) { const id = paramKey(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
       stmt(body)
       // A body that can fall through returns undefined.
@@ -2477,7 +2711,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites,
     contracts: null,   // the result contracts, built at the freeze below
   }
   const queries = summaryQueries(queryFacts, true)
@@ -2678,7 +2912,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const f of funcs) {
       if (f.rest) { if (escaped.has(f.name)) restUnknown(f.name, f.rest); else raise(kinds, keyIn(f.name, f.rest), restArrayOf(f.name)) }
       if (escaped.has(f.name)) for (const p of f.sig.params) if (!p.rest) bindParam(keyIn(f.name, p.name), ANY)
-      walkFunction(f.name, f.body, paramNamesOf(f), f.defaults)
+      const contexts = initContexts.get(f.name)
+      if (contexts === undefined || plainInits.has(f.name) || escaped.has(f.name)) walkFunction(f.name, f.body, paramNamesOf(f), f.defaults)
+      if (contexts !== undefined) for (const c of contexts.values()) { activeCtx = c; walkFunction(f.name, f.body, paramNamesOf(f), f.defaults); activeCtx = null }
       if (exported(f) || hostClosures.has(f.name)) escapeToHost(results.get(f.name) ?? K.NONE)
     }
     for (let id = 0; id < closureBodies.length; id++) {

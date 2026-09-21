@@ -636,6 +636,24 @@ is the slot access `o.k` compiles to. The array-pattern protocol
 summary: `__it_open` binds a cursor, each step takes the next element; the
 protocol's functions still run over the source's kind without its identity.
 
+`E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
+indexed value's own iterator, a collection's snapshot view, a provider's
+`@@iterator` result, a machine itself; a jz builtin carries no `@@iterator`
+or `next` member of its own. The summary names each mint's record by its
+call node, a site of the runtime record's layout (std/iter-helpers
+`ITER_RECORD_KEYS`), and keeps the source beside it: `it.next().value` is the
+source's element where the record's own slots would join every mint in the
+program, and a generator object (`__it_mk` with the machine's closures)
+answers `next` with its own closure. `[...E]` (`__it_drain`) and
+`Array.from(E)` (`__it_arr`) drain a provider's iterator into a fresh array
+of its elements and pass an indexed value through. The helpers' bodies still
+run over the arguments' kinds without their identities; their own results
+stay out of the result table. The protocol lowerings (a for-of that probes
+for a provider, decorated iterators) are gated by the program's iterator
+producers: `jzify.witness` reads every bundled module's parsed AST ahead of
+any lowering (`programModuleAsts`), so a module iterates what another one
+mints, and the compiler's own `jz:` modules keep their member calls.
+
 A Map's keys and a Set's members are handed out only by enumeration: a key
 whose identity the join drops is held beside the kind and escapes when the
 container enumerates, escapes or reaches the host, never when it is stored.
@@ -973,11 +991,28 @@ by its identity; `Object.defineProperty(o, k, d)` as the store `o[k] = d.value`
 it lowers to; an inlined array callback's element parameter as the array's
 element (`callbackElem`: the parameter is aliased to a read of the array);
 a class member on an unknown receiver as called with the family of classes
-whose member of that name is that function (`familyOf`); shape sets of up to
-64 layouts. The emitter calls a member directly when every layout of the
-receiver resolves it to one function, and reads a field every member layout
-holds in one slot as that slot (`commonSlot`), so a method inherited by a
-class family runs on prefix layouts without a guard. `why: true` and any
+whose member of that name is that function (`familyOf`), and a member call
+on a jz object of lost shape as the join of those members' results and of
+the closures the shapes hold under the name; `includes`, `indexOf` and
+`lastIndexOf` keep nothing of their argument, and any other name on an array
+is a property beside the elements; shape sets of up to 64 layouts. A class
+initializer (`C⟨init⟩`) called on one layout is walked for that layout under
+bindings of its own (initializer contexts): a derived class's `super(…)` no
+longer joins its arguments into the base's parameters, so each layout's
+slots hold what its own construction stores; the base keys keep the quiet
+join for the emitter of the one function, and a closure capturing an
+initializer's binding returns that initializer to the join. A lost shape
+escapes only the fields a read through an unknown receiver cannot answer
+precisely (a foreign object, a class member or a dynamic store bears the
+name); the others keep their values, since a store through such a read
+reaches the summary. A raise folds in a value the join's own effects moved
+(a lost element escaping its array) rather than writing over it. The emitter
+calls a member directly when every layout of the receiver resolves it to one
+function, and reads a field every member layout holds in one slot as that
+slot (`commonSlot`), so a method inherited by a class family runs on prefix
+layouts without a guard; a receiver the summary types skips the accessor
+probe of a dynamically installed accessor unless a side property of that
+slot may be present (`accessorHolders`). `why: true` and any
 `warnings` sink report `shape-lost` with the first cause a layout was lost by;
 the census is the first thing to read when a library compiles dynamic.
 

@@ -376,16 +376,15 @@ export function createTransform(opts) {
           if (fused) return transform(fused)
         }
       }
-      // `[…literal][Symbol.iterator]()` / `'s'[Symbol.iterator]()` — mint a
-      // decorated indexed iterator (array/string values as iterators). Literal
-      // receivers only: name/expression receivers keep the plain dot-call
-      // (machines answer it themselves; the protocol desugar's own probe-call
-      // must not re-enter here).
-      if (_gen && Array.isArray(callee) && callee[0] === '.' && callee[2] === '@@iterator' &&
-          rest.every(a => a == null) && Array.isArray(callee[1]) &&
-          ((callee[1][0] === '[]' && callee[1].length === 2) || (callee[1][0] == null && typeof callee[1][1] === 'string'))) {
+      // `E[Symbol.iterator]()` is the iterator over E (`__it_from`): an
+      // indexed value's own (an array, a string, a typed array, a collection's
+      // snapshot view), a provider's `@@iterator` result, a machine itself.
+      // The protocol desugars' own probe calls stay member calls (`probe`:
+      // the member was found), and so do the runtime's (`jz:` modules), where
+      // __it_from is defined.
+      if (_gen && !_gen.iterProto?.std && Array.isArray(callee) && callee[0] === '.' && callee[2] === '@@iterator' &&
+          !callee.probe && rest.every(a => a == null))
         return ['()', '__it_from', transform(callee[1])]
-      }
       // Array.from over iterator values (iterator-minting programs only):
       // protocol values materialize via __it_arr; arrays copy; array-likes
       // build by length. `Array.from(x, fn)` maps the materialized array.

@@ -701,3 +701,15 @@ test('classes: a class extending a class of another module keeps the schema lowe
   ok(!/\$__dyn_get/.test(wat), 'the inherited method reads its fields as slots')
   is(jz(src, { modules }).exports.f(4), 6 * 10 * 0.5 + 6 * 1)
 })
+
+// A module iterates what another one mints: the program's iterator producers
+// gate the protocol lowering for every module (jzify.witness), so a consumer
+// without producers of its own drives a provider's iterator instead of
+// indexing the instance.
+test('classes: a for-of over an iterable class of another module drives its iterator', () => {
+  const modules = { './list.js': `export class List { constructor() { this._ev = [] }
+  [Symbol.iterator]() { return this._ev[Symbol.iterator]() } add(e) { this._ev.push(e) } }` }
+  const src = `import { List } from './list.js'
+    export let f = () => { const l = new List(); l.add(1); l.add(2); let s = 0; for (const e of l) s += e; return s * 10 + [...l].length }`
+  is(jz(src, { modules }).exports.f(), 32)
+})

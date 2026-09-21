@@ -56,6 +56,16 @@ Architecture
 - Warnings are delivered after the pipeline returns, so a warning callback
   may compile again; a compile attempted while the pipeline is active is
   rejected. The compiler context is a singleton by design.
+- `E[Symbol.iterator]()` is the iterator over E for every receiver
+  (`__it_from`); the protocol lowerings are gated by the program's iterator
+  producers, witnessed over every module before any is lowered, so a module
+  iterates what another one mints. The summary names each minted record by
+  its call node and keeps the source (or a generator's own closures) beside
+  it: `it.next().value` is the element, not the join of every mint. A class
+  initializer runs once per receiver layout in the summary (initializer
+  contexts), so a derived class's `super(…)` no longer joins its arguments
+  into every layout of the family; a lost shape escapes only the fields a
+  read through an unknown receiver cannot answer precisely.
 - Booleans ride either carrier, the raw 0/1 or the atom box. A test of a
   BOOL-typed f64 is the number test, then the atom compare.
 - Export boundary: a parameter an exported function never uses as a string is
@@ -116,27 +126,29 @@ Dependencies
    needs a new measurement first.
 
    Against V8, the corpus wins everywhere but webaudio, colorpq and watr.
-   webaudio (9.8× → 7.6×, web-audio-api 1.5.6): the library's classes were
-   closures, since every base class lives in another module; they are
-   schemas now, and the remaining time is the dynamic dispatch of a few
-   receivers the summary still loses. The `shape-lost` census names the
-   roots in order: the node classes lose their layouts through a cycle
-   (`this._outputs` read on the 22-class family joins an unknown value in
-   `_wake`; a port stores its node into a lost layout; a lost layout escapes
-   the arrays and maps its slots hold, which every instance shares, since a
-   class initializer allocates once for the whole family); the emitter
-   listener maps of `EventTarget` are one cell for every instance, so one
-   lost instance loses every listener; an `.add(fn)` on an unknown Set
-   receiver calls `AutomationEventList.add` with a closure, and the
-   automation events read dynamic from then on. The levers, in order: the
-   family read that joins unknown (find the member whose slot is unknown),
-   allocation cells keyed by the receiver's class for class initializers, and
-   candidate calls that do not merge arguments a candidate's parameter cannot
-   hold. Then the accessor dispatchers (`type`, `value`: an own-property probe
-   and an `instanceof` chain per read) and the generic typed-array element
-   helpers in the DSP loops. colorpq (4.4×): twelve runtime-exponent pow
-   calls per pixel, jz's pow bit-exact with V8 and about 3× its time per call;
-   the lever is a two-wide pow that keeps the bits. watr: the tier-up above.
+   webaudio (7.6× → 2.2×, web-audio-api 1.5.6): the roots were the
+   iterator protocol (the automation list's `[Symbol.iterator]()` escaped its
+   array, and a consumer module without producers of its own indexed the
+   list instead of iterating it), the accessor probe on every `event.type`
+   read (a dynamic lookup because some class installs a `type` getter), and
+   the shared base initializer of the ports joining `AudioParam` into every
+   output's `node`. The remaining 2.2× is the generic typed-array element
+   helpers in the DSP loops (40% of the render): `AudioBuffer`'s channel
+   count reads unknown because the summary walks every function whether the
+   program reaches it or not, and `utils.decodeAudioData`, which nothing
+   calls, hands its host-decoded data to `from(…)` and so `new
+   AudioBuffer(unknown, …)`; the constructor's `options` is unknown from
+   then on, `#channels` is `new Array(unknown)` and `getChannelData` answers
+   any. The lever is reachability in the solver: walk the functions and
+   closures the entry points reach (exports, module initializers, escaped
+   and host-held callables, dispatch candidates) and leave the rest at no
+   kind, so an unexercised API surface cannot pollute the allocations the
+   exercised one shares. After that, the automation `findIndex` callbacks
+   and the tuple destructuring `const [t, v] = …` that opens a cursor per
+   call (8%). colorpq (4.4×):
+   twelve runtime-exponent pow calls per pixel, jz's pow bit-exact with V8
+   and about 3× its time per call; the lever is a two-wide pow that keeps
+   the bits. watr: the tier-up above.
 
    Against the fastest rival Wasm (`WASM_TODO` in `test/bench.js`): sdf's
    bounds checks are 72% of its gap and its scratch cursor's bounds come from

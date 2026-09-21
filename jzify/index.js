@@ -192,7 +192,11 @@ const generatorNames = new Set()
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
 // programs without iterator producers compile byte-identically.
-const iterProto = { on: false }
+// Iterator producers gate the protocol lowerings (a for-of that probes for a
+// provider, decorated iterators). `program` spans the compile's whole graph
+// (`witness`): a module iterates what another one mints. `std` marks the
+// compiler's own `jz:` modules, whose member calls the iterator rewrite leaves.
+const iterProto = { on: false, helpers: false, program: false, programHelpers: false, std: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
 const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
@@ -355,7 +359,7 @@ function implicitStdImports(ast) {
  *   (the source-level lowering) keeps every class as per-instance closures.
  * @returns {Array} Transformed AST
  */
-export default function jzify(ast, { structs = true, importedBinding = null } = {}) {
+export default function jzify(ast, { structs = true, importedBinding = null, std = false } = {}) {
   names.reset()
   activeBuiltinScope = null
   builtinScopes = buildBuiltinScopes(ast)
@@ -363,8 +367,9 @@ export default function jzify(ast, { structs = true, importedBinding = null } = 
   // member names `[K]() {}` (const guarantees the binding never changes).
   constStrings.clear()
   generatorNames.clear()
-  iterProto.on = false
-  iterProto.helpers = false
+  iterProto.on = iterProto.program
+  iterProto.helpers = iterProto.programHelpers
+  iterProto.std = std
   ast = canonSymbols(ast)
   ast = hoistModuleDynamicImports(ast)
   ast = implicitStdImports(ast)
@@ -401,3 +406,19 @@ export default function jzify(ast, { structs = true, importedBinding = null } = 
  *  module's own lowering, so a class extending an imported class finds its
  *  base lowered without the lowering re-entering itself. */
 jzify.imports = (ast) => importsOf(implicitStdImports(ast))
+/** The program's iterator producers, read off every module's parsed AST
+ *  before any is lowered: each module then lowers for-of and spreads under
+ *  the graph's producers, not its own. Resets the witness per compile. */
+jzify.witness = (asts) => {
+  iterProto.program = false
+  iterProto.programHelpers = false
+  for (const ast of asts) {
+    activeBuiltinScope = null
+    builtinScopes = buildBuiltinScopes(ast)
+    iterProto.on = false
+    iterProto.helpers = false
+    canonSymbols(ast)
+    iterProto.program ||= iterProto.on
+    iterProto.programHelpers ||= iterProto.helpers
+  }
+}

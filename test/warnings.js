@@ -273,4 +273,15 @@ test('warnings: the summary keeps shapes through the forms it models', () => {
   // `apply` spreads its array; a call through a slot holding only null throws and hands its argument to no one
   is(lost('const evs = [(e) => e.v]; const fire = (e) => { let s = 0; for (const fn of evs) s += fn.apply(null, [e]); return s }; export let f = () => fire({ v: 1 })'), [])
   is(lost('const call = (o, e) => o.f(e); export let f = () => { const e = { k: 1 }; let r = 0; try { call({ f: null }, e) } catch { r = 1 } return e.k + r }'), [])
+  // `includes`, `indexOf` and `lastIndexOf` compare by identity and keep nothing of their argument
+  is(lost('const conns = []; const has = (p) => conns.includes(p) || conns.indexOf(p) >= 0; export let f = () => { const p = { id: 1 }; conns.push(p); return has(p) ? p.id : 0 }'), [])
+  // the iterator over an array (`__it_from`) reads it by position: the elements keep their shape through the delegating for-of
+  const wrapper = `class L { constructor() { this.a = [] }
+    [Symbol.iterator]() { return this.a[Symbol.iterator]() } add(e) { this.a.push(e) } }
+    export let f = () => { const l = new L(); l.add({ v: 1 }); l.add({ v: 2 }); let s = 0; for (const e of l) s += e.v; for (const e of [...l]) s += e.v; return s }`
+  is(lost(wrapper), [])
+  // the loop's probes of the provider are runtime lookups once per loop; the element reads are not
+  is(warningsFor(wrapper).filter(e => e.code === 'deopt-prop-read' && /\.v\b/.test(e.message) && /\(dynamic/.test(e.message)).map(e => e.message), [])
+  // a base initializer runs once per derived layout (initializer contexts): each class's field holds what its own construction stores
+  is(lost('class P { constructor(n) { this.node = n } } class I extends P { constructor(n) { super(n) } } class O extends P { constructor(n) { super(n) } } class Src { tick() { return new Float32Array(4) } } export let f = () => { const o = new O(new Src()); const i = new I([1, 2]); return o.node.tick().length + i.node.length }'), [])
 })

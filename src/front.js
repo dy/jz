@@ -23,7 +23,7 @@ import { parse } from './parse.js'
 import { err } from './ctx.js'
 import { T } from './ast.js'
 import { liftIIFEs } from './prepare/lift-iife.js'
-import { prepareImports, importedBinding } from './prepare/handlers.js'
+import { prepareImports, programModuleAsts, importedBinding } from './prepare/handlers.js'
 import prepare from './prepare/index.js'
 import { preEval } from './prepare/pre-eval.js'
 import { includeAllMods } from './autoload.js'
@@ -58,7 +58,7 @@ export function frontHalf(code, { strict, sourceType = 'jz', jzify, time = (n, f
   // (named/recursive function expressions, method shorthand), which keep the closure
   // path. A no-op when there are none.
   parsed = time('liftIIFE', () => liftIIFEs(parsed))
-  if (!strict && jzify) { time('prepare', () => prepareImports(parsed)); parsed = time('jzify', () => jzify(parsed, { importedBinding })) }
+  if (!strict && jzify) { time('prepare', () => { jzify.witness?.(programModuleAsts(parsed)); prepareImports(parsed) }); parsed = time('jzify', () => jzify(parsed, { importedBinding })) }
   const ast = time('prepare', () => prepare(parsed))
   if (afterPrepare) afterPrepare()
   // preEval: fold every statically-evaluable construct (numeric/string/bool chains,

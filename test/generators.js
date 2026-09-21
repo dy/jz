@@ -318,3 +318,30 @@ test('generators: finally runs once on normal, injected and caught exceptions', 
     is(j(source), expected)
   }
 })
+
+// `E[Symbol.iterator]()` is the iterator over E for any E: an indexed value's
+// own (`__it_from` mints it), a provider's `@@iterator` result, a machine
+// itself; Map and Set iterate their snapshot views. The delegating idiom
+// (`[Symbol.iterator]() { return this.items[Symbol.iterator]() }`) is the
+// common collection wrapper; a for-of over it drives the protocol.
+test('iterator values: [Symbol.iterator]() on any receiver', () => {
+  is(j(`export let f = () => { const a = [7, 8]; return a[Symbol.iterator]().next().value }`), 7)
+  is(j(`export let f = (x) => { const a = x ? [7, 8] : 'ab'; const it = a[Symbol.iterator](); return it.next().value + it.next().value }`), 'ab')
+  is(j(`export let f = () => { let s = 0; for (const [k, v] of new Map([['a', 1], ['b', 2]])[Symbol.iterator]()) s += v; for (const v of new Set([3, 4])[Symbol.iterator]()) s += v; return s }`), 10)
+  is(j(`class List {
+          constructor() { this._ev = [] }
+          [Symbol.iterator]() { return this._ev[Symbol.iterator]() }
+          add(e) { this._ev.push(e) }
+        }
+        class P {
+          #l = new List()
+          set value(v) { for (const e of this.#l) { if (e.type === 'x') throw new Error('x') } this.#l.add({ type: 'set', value: v }) }
+          count() { let n = 0, s = 0; for (const e of this.#l) { n++; s += e.value } return n * 100 + s }
+        }
+        export let f = () => { const p = new P(); p.value = 1; p.value = 2; return p.count() + [...new List()].length }`), 203)
+  is(j(`class L { constructor() { this.a = [{ v: 1 }, { v: 2 }] }
+  [Symbol.iterator]() { return this.a[Symbol.iterator]() } }
+        export let f = () => { const l = new L(); let s = 0; for (const e of l) s += e.v; return s + [...l].length + Array.from(l).length }`), 7)
+  is(j(`function* g() { yield 1; yield 2 }
+        export let f = () => { const it = g()[Symbol.iterator](); let s = 0; for (const v of it) s += v; return s }`), 3)
+})

@@ -22,7 +22,7 @@
  * @module jzify/async
  */
 
-import { FN_BOUNDARY_OPS } from './generators.js'
+import { FN_BOUNDARY_OPS, probe } from './generators.js'
 import { some, ASSIGN_OPS } from '../src/ast.js'
 
 export function createAsyncLowering({ genTemp, err }) {
@@ -57,7 +57,7 @@ export function createAsyncLowering({ genTemp, err }) {
       ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@asyncIterator'], NULL]],
         ['=', it, ['()', ['.', src, '@@asyncIterator'], null]],
         ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@iterator'], NULL]],
-          ['=', it, ['()', ['.', src, '@@iterator'], null]]]],
+          ['=', it, ['()', probe(src, '@@iterator'), null]]]],
       ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
         ['{}', [';',
           ['let', ['=', r, ['await', ['()', ['.', it, 'next'], null]]]],
@@ -236,7 +236,7 @@ export function createAsyncLowering({ genTemp, err }) {
       ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@asyncIterator'], NULL]],
         ['=', it, ['()', ['.', src, '@@asyncIterator'], null]],
         ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@iterator'], NULL]],
-          ['=', it, ['()', ['.', src, '@@iterator'], null]]]],
+          ['=', it, ['()', probe(src, '@@iterator'), null]]]],
       ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
         ['{}', [';',
           ['let', ['=', r, ['await', ['()', ['.', it, 'next'], null]]]],

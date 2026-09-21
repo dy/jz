@@ -24,6 +24,10 @@
 import { walkAst, some, isBlockBody } from '../src/ast.js'
 
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*')
+/** A desugar's own call of a well-known member it has probed (`v['@@iterator']()`
+ *  after `v['@@iterator'] != null`): a member call the iterator rewrite
+ *  (transform.js) leaves alone, where a program's call is `__it_from(v)`. */
+export const probe = (v, prop) => Object.assign(['.', v, prop], { probe: true })
 // THE one canonical function boundary for every control-effects walker in
 // this layer (hasYield/hasReturn/hasFreeJump/collectLocals here, async.js's
 // await mapper via import): a nested function form OWNS its yields, returns,
@@ -315,7 +319,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         ['=', src, expr],
         ['=', it, src],
         ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@iterator'], NULL]],
-          ['=', it, ['()', ['.', src, '@@iterator'], null]]],
+          ['=', it, ['()', probe(src, '@@iterator'), null]]],
         ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
           ['{}', [';',
             ['=', r, ['()', ['.', it, 'next'], null]],
@@ -781,7 +785,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       ['let', ['=', v, iterExpr]],
       ['let', ['=', w, v]],
       ['if', ['&&', ['!=', v, NULL], ['!=', ['.', v, '@@iterator'], NULL]],
-        ['=', w, ['()', ['.', v, '@@iterator'], null]]],
+        ['=', w, ['()', probe(v, '@@iterator'), null]]],
       ['if', ['&&', ['!=', w, NULL], ['!=', ['.', w, 'next'], NULL]],
         ['{}', [';',
           ['let', ['=', r, [null, undefined]]],

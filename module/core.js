@@ -34,7 +34,7 @@ import { registerDurableLog } from './core/durable-log.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { bitOf, isNullable, K, tagOf as summaryTagOf } from '../src/summary/kind.js'
+import { bitOf, isNullable, K, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -2080,9 +2080,17 @@ export default (ctx) => {
   }
   // How many of the receiver's member layouts carry the accessor (a literal's
   // slot, or a class's method): 0 says none, null says the summary cannot list them.
+  // A derived class installs its accessor on the base instance beside the
+  // fields (jzify/classes.js recordAccessor), a store the summary keeps as a
+  // side property of the receiver's sites: a receiver it types answers
+  // whether such a slot may be present, and a receiver it lost keeps the probe.
   const accessorHolders = (obj, getter) => {
-    const layouts = ctx.summary?.at(ctx.func.current).shapesOfExpr(obj)
-    if (!layouts?.length || ctx.transform.dynamicAccessorNames?.has(getter.replace(/__(get|set)$/, ''))) return null
+    const view = ctx.summary?.at(ctx.func.current), layouts = view?.shapesOfExpr(obj)
+    if (!layouts?.length) return null
+    if (ctx.transform.dynamicAccessorNames?.has(getter.replace(/__(get|set)$/, ''))) {
+      const k = view.kindOfExpr(['.', obj, getter])
+      if (k == null || summaryTagOf(summaryCore(k)) !== K.NONE) return null
+    }
     const classes = ctx.transform.classes
     return layouts.filter(sid => ctx.schema.list[sid]?.includes(getter)
       || (brand => brand != null && classes?.get(brand)?.methods.has(getter))(ctx.schema.brandOf?.(sid))).length

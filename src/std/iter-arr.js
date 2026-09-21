@@ -9,6 +9,9 @@
 export default `
 export let __it_arr = (v) => {
   if (v == null) throw 'TypeError: value is not iterable'
+  // Native collection methods expose snapshot views (README.md), as __it_open.
+  if (v instanceof Map) v = v.entries()
+  else if (v instanceof Set) v = v.values()
   let w = v
   if (typeof w === 'object' && w[Symbol.iterator] != null) w = w[Symbol.iterator]()
   if (typeof w === 'object' && w.next != null) {

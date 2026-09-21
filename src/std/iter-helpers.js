@@ -8,6 +8,10 @@
  * @module std/iter-helpers
  */
 
+/** The decorated iterator's fields, in layout order: the summary names an
+ *  iterator it mints by this record (src/summary/index.js iterSite). */
+export const ITER_RECORD_KEYS = ['next', 'return', 'throw', '@@iterator', 'map', 'filter', 'take', 'drop', 'flatMap', 'toArray', 'reduce', 'forEach', 'some', 'every', 'find']
+
 export default `
 export let __it_fn = (f, name) => { if (f == null || typeof f !== 'function') throw 'TypeError: ' + name + ' callback must be callable' }
 export let __it_cl = (it) => { if (typeof it.return === 'function') it.return(undefined) }
@@ -99,6 +103,9 @@ export let __it_mk = (nx, rt, th) => {
 }
 export let __it_from = (v) => {
   if (v == null) throw 'TypeError: value is not iterable'
+  // Native collection methods expose snapshot views (README.md), as __it_open.
+  if (v instanceof Map) v = v.entries()
+  else if (v instanceof Set) v = v.values()
   let w = v
   if (typeof w === 'object' && w[Symbol.iterator] != null) {
     if (typeof w[Symbol.iterator] !== 'function') throw 'TypeError: [Symbol.iterator] is not callable'

@@ -5,6 +5,7 @@ import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-trai
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
 import { NONE_CONTRACT, readContract } from './contract.js'
+import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
@@ -15,7 +16,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -45,6 +46,8 @@ export function summaryQueries(facts, internal = false) {
     return layout
   }
   const pub = k => internal ? k : tagOf(k) === K.OBJECT ? (k & ~UNKNOWN) | layoutOf(k) : k
+  // An iterator record the solver minted (index.js iterSite): its site, or its layout once folded.
+  const iterRecord = sid => iterSites?.has(sid) || iterSites?.has(layouts[sid])
   const publicSid = k => internal ? sidOf(k) : layoutOf(k)
   // Two closures (or two shapes) joined are the set the solver interned for
   // the pair (index.js unionClosures/unionShapes): a query joins the same pair
@@ -286,6 +289,7 @@ export function summaryQueries(facts, internal = false) {
       if (t === K.NONE) return K.NONE
       if (t === K.OBJECT && paramOf(r) !== UNKNOWN) {
         if (paramOf(r) >= SET_BASE) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) k = merge(k, memberOf(kind(K.OBJECT, sid), prop)); return k }
+        if (iterRecord(paramOf(r))) return ITER_RECORD_KEYS.includes(prop) ? kind(K.CLOSURE) : NULLISH
         const i = schemas[paramOf(r)].indexOf(prop)
         if (i >= 0) return slotKind(paramOf(r), i)
         const getter = classMember(r, getterOf(prop)), fn = getter ?? (classMember(r, prop) ? binderOf(classMember(r, prop)) : null)
@@ -319,6 +323,7 @@ export function summaryQueries(facts, internal = false) {
       const t = tagOf(r)
       if (t === K.NONE) return K.NONE
       if (t === K.OBJECT && paramOf(r) !== UNKNOWN && paramOf(r) >= SET_BASE) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) k = merge(k, methodResult(kind(K.OBJECT, sid), name, n)); return k }
+      if (t === K.OBJECT && paramOf(r) !== UNKNOWN && iterRecord(paramOf(r))) return siteResults.get(n) ?? ANY
       const fn = classMember(r, name)
       let result
       {
