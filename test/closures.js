@@ -38,9 +38,9 @@ const fnBody = (w, name) => {
   return m ? w.slice(m.index, m.index + 4000) : null
 }
 
-const throws = (code, match, msg) => {
+const throws = (code, match, msg, opts) => {
   let error
-  try { compile(code) } catch (e) { error = e }
+  try { compile(code, opts) } catch (e) { error = e }
   ok(error && error.message.includes(match), `${msg}: expected "${match}", got "${error?.message}"`)
 }
 
@@ -260,7 +260,8 @@ test('closure: integer const capture folds into closure body', () => {
     }
   `
   is(runHost(src).f(511), 255)
-  const body = wat(src).match(/\(func \$[^\s)]*closure[\s\S]*?^  \)/m)?.[0]
+  // `let g = …` inlines like a const now; the closure form is what this reads.
+  const body = wat(src, { optimize: { sourceInline: false } }).match(/\(func \$[^\s)]*closure[\s\S]*?^  \)/m)?.[0]
   ok(body, 'closure body present')
   ok(!/\$__env|f64\.load|local\.get \$MASK/.test(body), 'const capture should not allocate/load an env slot')
   ok(/\(i32\.const 255\)/.test(body), 'const capture should become an immediate')
@@ -444,13 +445,15 @@ test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel
 })
 
 test('arity err: closure with 9 fixed params', () => {
+  // a called-only `let g = …` inlines (no closure to limit): the limit is the closure form's
   throws(
     `export let f = () => {
       let g = (a,b,c,d,e,f,g,h,i) => a
       return g(1,2,3,4,5,6,7,8,9)
     }`,
     'MAX_CLOSURE_ARITY',
-    'nested closure with 9 fixed params should error'
+    'nested closure with 9 fixed params should error',
+    { optimize: { sourceInline: false } }
   )
 })
 
@@ -886,7 +889,7 @@ test('closure-unbox: codegen — local declared as i32', () => {
       return g(1) + g(2)
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false } })
+  const w = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, sourceInline: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   // multi-use closure so the slot survives propagateLocals (the single-use def would be forwarded)

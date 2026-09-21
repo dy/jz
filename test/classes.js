@@ -667,3 +667,17 @@ test('class static accessors, one line or many', () => {
   `)
   is(one(), 7); is(many(), 8); is(both(), 7); is(viaThis(), 8)
 })
+
+// A getter named `type` on some class is no reason to dispatch `e.type` on a
+// receiver the summary types as a literal's layout: the read stays a slot read.
+test('a class accessor name does not make reads on other layouts dynamic', () => {
+  const src = `class Node { constructor() { this.kind = 1 } get type() { return 'node' } }
+export let other = () => new Node().type.length
+const mk = (v) => ({ type: 'a', value: v })
+export let main = (n) => { const evs = [mk(1), mk(2), mk(3)]; let s = 0; for (let i = 0; i < evs.length; i++) { const e = evs[i]; if (e.type === 'a') s += e.value } return s }`
+  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const main = w.slice(w.indexOf('(func $main'), w.indexOf('\n  (func $', w.indexOf('(func $main') + 5))
+  ok(!/__dyn_get|dispatch|type__get/.test(main), 'literal-shaped reads stay slot reads')
+  is(jz(src).exports.main(3), 6)
+  is(jz(src).exports.other(), 4)
+})

@@ -897,10 +897,12 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   const stmts = bodyStmtList(body)
   if (stmts.length < 2) return false
 
-  // Collect `const f = ARROW` (single-decl), all-plain params, inlinable body.
+  // Collect `const f = ARROW` / `let f = ARROW` (single-decl), all-plain params,
+  // inlinable body. A `let` is admitted on the same terms: the mention check
+  // below rejects any write to the name, so a surviving `let` is a const.
   const decls = new Map()
   for (const stmt of stmts) {
-    if (!Array.isArray(stmt) || stmt[0] !== 'const' || stmt.length !== 2) continue
+    if (!Array.isArray(stmt) || (stmt[0] !== 'const' && stmt[0] !== 'let') || stmt.length !== 2) continue
     const d = stmt[1]
     if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
     const arrow = d[2]
@@ -968,6 +970,9 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
 }
 
 export const inlineLocalLambdas = () => {
+  // `optimize: { sourceInline: false }` asks for no source-level inlining at
+  // all: the closure form stays (the tests of closure lowering read it).
+  if (ctx.transform.optimize?.sourceInline === false) return false
   let changed = false
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue

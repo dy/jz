@@ -15,7 +15,8 @@ import { ctx } from '../../ctx.js'
 import { VAL, repOfGlobal, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
 import { typedStorageCtorFromContext } from '../../typed-context.js'
-import { valOf as summaryVal } from '../../summary/index.js'
+import { valOf as summaryVal, K, hasTag } from '../../summary/index.js'
+import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { scanBindingUses, USE, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_NULL_CMP } from '../analyze-scans.js'
 
 // A directly-uint32 expression: `x >>> 0` (zero-fill shift) or a call to a function
@@ -66,6 +67,15 @@ export function unboxablePtrs(body, locals, boxed) {
   //   SET/MAP/BUFFER/TYPED ← `new X(...)`
   // Validating the exact ctor→VAL match keeps the analysis tied to valTypeOf, so when
   // that helper grows (e.g. `Array.from` → ARRAY), we don't drift out of sync.
+  // `arr[i]` reads a present element when the summary rules out a nullish or
+  // absent value, or when the only absence is an index past the end (no holes)
+  // and the index is proven in bounds (canonical-bounds' loop proofs).
+  const presentElementRead = (expr, r) => {
+    const k = summary?.kindOfExpr(expr)
+    if (k == null || hasTag(k, K.NULLISH)) return false
+    if (!hasTag(k, K.ABSENT)) return true
+    return !r.arrayHoles && typeof expr[2] === 'string' && inBoundsArrIdx(ctx).has(expr[1] + '\x00' + expr[2])
+  }
   const isFreshInit = (expr, kind, unionCursor = false) => {
     if (!Array.isArray(expr)) return false
     if (kind === VAL.OBJECT) {
@@ -87,7 +97,7 @@ export function unboxablePtrs(body, locals, boxed) {
       // (since ptrOffsetIR sees ptrKind=OBJECT and skips the per-access wrap).
       if (expr[0] === '[]' && typeof expr[1] === 'string') {
         const r = ctx.func.localReps?.get(expr[1])
-        if (r?.arrayElemSchema != null) return summary?.mayBeNullishExpr(expr) === false
+        if (r?.arrayElemSchema != null) return presentElementRead(expr, r)
         // Closed-union element: the member schema lives in the box's aux
         // bits and a raw offset cannot carry it back (a rebox would stamp
         // schema 0, and a dynamic read then misses every other member's

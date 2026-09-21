@@ -18,7 +18,7 @@ import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { callContractOf } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
-import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, paramOf, isNullable, UNKNOWN, core } from '../../summary/index.js'
 import { emit } from '../../bridge.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 
@@ -41,6 +41,11 @@ const receiverClass = (obj) => {
   const inBounds = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
   return entry ? { entry, nullable: isNullable(k) && !inBounds } : null
 }
+/** Whether the summary names the receiver's one layout and no class owns it. */
+const knownNonInstance = (obj) => {
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+  return k != null && tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN && classOfSid(paramOf(k)) == null
+}
 /** Whether the summary rules the receiver out as a class instance: a kind other than an object. */
 const notAnObject = (obj) => { const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj); return k != null && tagOf(k) !== K.OBJECT && tagOf(k) !== K.ANY && tagOf(k) !== K.NONE }
 
@@ -59,7 +64,10 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held) {
   // a scalar-replaced literal (SRoA, no heap presence) is never an instance
   if (typeof obj === 'string' && ctx.func.flatObjects?.has(obj)) return undefined
   const known = receiverClass(obj)
-  if (!known) return notAnObject(obj) || !ctx.funcs.names.has(dispatcher) ? undefined : dispatcher
+  // A receiver of one named layout that is no class's is no instance either
+  // (an element read `const e = evs[i]` of a literal's shape): a class
+  // elsewhere with a member of this name is no reason to dispatch its reads.
+  if (!known) return notAnObject(obj) || knownNonInstance(obj) || !ctx.funcs.names.has(dispatcher) ? undefined : dispatcher
   const fn = fnOf(known.entry)
   if (fn == null) return rest(held ?? obj)
   // An own property stored under the member's name shadows it: probe it

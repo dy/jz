@@ -18,7 +18,8 @@ const summarize = (src) => { compile(src, OPTS); return ctx.summary }
 const binding = (fn, bare) => {
   const f = ctx.funcs.list.find(f => f.name === fn)
   const names = new Set(f.sig.params.map(p => p.name))
-  const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
+  // a nested arrow is its own function: its bindings are keyed under it, not here
+  const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n) && n[0] !== '=>') n.forEach(walk) }
   walk(f.body)
   const found = [...names].filter(n => n === bare || n.startsWith(bare + MARK))
   if (!found.length) throw new Error(`no binding ${bare} in ${fn}`)

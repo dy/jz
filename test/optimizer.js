@@ -5388,3 +5388,25 @@ export let main = () => {
     ok(/i64\.(lt|le|gt|ge)_s/.test(text), `${name}: the inner guard still lifts`)
   }
 })
+
+// A `let`-declared arrow that is only ever called is a const to the local-lambda
+// inliner: the floatbeat idiom `let s = (n, x) => …` compiles to the spliced
+// body, not a closure with a per-call environment.
+test('let-declared local arrows inline like const ones', () => {
+  const src = `export let beat = (t) => { let A = 440; let s = (n, x) => (((t / 375 * A * (n + 1)) | 0) & (x | 0)) / 256; return s(2, (-t >> 8) & 255) + s(5, 127) }`
+  const w = compile(src, { optimize: 'speed', wat: true })
+  ok(!/closure|__alloc/.test(funcWat(w, 'beat')), 'no closure, no environment allocation')
+  is(run(src).beat(1234.5), oracle(src).beat(1234.5))
+})
+
+// `const p = ps[i]` under `i < ps.length` over a hole-free array reads a present
+// element: the pointer stays raw and its field reads need no nullish guard.
+test('an in-bounds element of a hole-free array is present: no nullish guards on its fields', () => {
+  const src = `const mk = (n) => { const ps = []; for (let i = 0; i < n; i++) ps.push({ x: 0, vx: 1 }); return ps }
+const step = (ps) => { for (let i = 0; i < ps.length; i++) { const p = ps[i]; p.x = p.x + p.vx } }
+const run2 = (ps) => { for (let f = 0; f < 4; f++) step(ps) }
+export let main = () => { const ps = mk(100); run2(ps); return ps[0].x }`
+  const w = compile(src, { optimize: { level: 'size' }, wat: true })
+  ok(!/__throw_property_nullish/.test(funcWat(w, 'main')), 'no nullish guard on the element reads')
+  is(run(src).main(), 4)
+})
