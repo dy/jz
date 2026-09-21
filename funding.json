@@ -14,7 +14,7 @@
   },
   "projects": [
     {
-      "guid": "jz",
+      "guid": "jz-wasm",
       "name": "JZ",
       "description": "JZ compiles JavaScript to WebAssembly for audio processing, graphics, simulations, and numerical computing. It infers types and applies SIMD optimizations without requiring type annotations or a rewrite in another language. The compiler is written in JavaScript and runs in Node.js and in the browser, with a CLI, an interactive playground, and runnable examples. JZ is experimental; ongoing work focuses on correctness, predictable memory use, and reliable compilation of real applications.",
       "webpageUrl": {
