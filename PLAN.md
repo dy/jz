@@ -27,12 +27,18 @@ Architecture
   `whyNotRewind` names each declined candidate.
 - Only a DEFINITE store declares a key in a literal's layout. Static
   enumeration stands down whenever the layout is open; the open-layout for-in
-  unrolls the closed keys only when neither the layout nor the keys added
-  later contain an array index, since JS enumerates integer keys first.
+  unrolls the closed keys only when neither the layout nor the keys added at
+  the receiver's construction sites contain an array index, since JS
+  enumerates integer keys first (a layout's added-key facts are per site: two
+  literals of one layout keep their own).
 - Class identity survives serialization: `jz:brand` names each class layout
   (`Name#id`) beside `jz:schema`, `jz:fields` and `jz:errcls`, so two classes
-  with one field list stay two schemas when modules share a memory, and a
-  host object that matches only such layouts by keys is ambiguous.
+  with one field list stay two schemas, and a host object that matches only
+  such layouts by keys is ambiguous. A pointer carries the schema id its
+  module compiled with, so a module whose schema would bind at another id in
+  the memory it joins is rejected at instantiation, before the memory's tables
+  change: modules sharing a memory are one compilation or the same module
+  again, and their host references live in one table.
 - A class is a schema across modules: prepare brings a module's imports in
   ahead of its lowering, so a base class of another module resolves; async
   and generator methods hoist with their kind; `'m' in o` sees members. A
@@ -47,8 +53,9 @@ Architecture
   one function directly. `why` and any `warnings` sink report `shape-lost`,
   `class-generic` and `deopt-prop-read`: the census a dynamic library is read
   by (`scripts/why-census.mjs <case>`).
-- Warnings are delivered after compilation returns; a compile started from a
-  warning callback is rejected. The compiler context is a singleton by design.
+- Warnings are delivered after the pipeline returns, so a warning callback
+  may compile again; a compile attempted while the pipeline is active is
+  rejected. The compiler context is a singleton by design.
 - Booleans ride either carrier, the raw 0/1 or the atom box. A test of a
   BOOL-typed f64 is the number test, then the atom compare.
 - Export boundary: a parameter an exported function never uses as a string is
@@ -82,11 +89,10 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 and watr ^5.11.0 from npm. Two unreleased watr optimizer
-  rules live in `~/projects/watr` and reach a development tree through the
-  `node_modules/watr` link: the mixed-sign truncation-of-convert fold
-  (base64) and `ifset` declining a branchy condition (sort). A jz release
-  needs a watr release carrying both (CONTRIBUTING, "Shared watr optimizer").
+- subscript ^10.8.0 and watr ^5.11.1 from npm; 5.11.1 carries the two
+  optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
+  fold for base64, `ifset` declining a branchy condition for sort), so a clean
+  install reproduces the standings.
 - CI runs one self-compile workflow (build, round-trip, the suite through
   `dist/jz.wasm`, the recursive check). The self-compile perf gate is
   `npm run test:self:perf`, a local release step.
@@ -184,10 +190,8 @@ Dependencies
   1.05× and bezfit at 1.055× (the band's edge; sort is 1.04× of Zig paired),
   percolation 0.71× under the examples' 0.9× floor (item 2), alpha's stale
   w2c row and the TinyGo builds (item 3).
-- The watr link: `npm install` (the web-audio-api bump) replaced
-  `node_modules/watr` with the published 5.11.0, and sort read 1.32× of Zig
-  until the link was restored; the two unreleased rules are what the
-  standings above assume (CONTRIBUTING, "Shared watr optimizer").
+- watr 5.11.1, published, replaces the checkout link: sort reads 1.09× of Zig
+  and base64 0.81× of AssemblyScript paired with the installed package.
 - Correctness closed on this tree: open-object enumeration order with
   integer keys, class identity across modules sharing memory (`jz:brand`),
   nested compilation from a warning callback, the declared-keys pass through

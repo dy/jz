@@ -12,15 +12,11 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr 5.11.0. Two watr
-optimizer rules jz's speed rows rely on are in the watr checkout at
-`~/projects/watr` and not yet released: the mixed-sign truncation-of-convert
-fold under a non-negative operand (base64's decode loop; commit 40be15f) and
-`ifset` leaving a branchy condition alone (heapsort's child pick). A release
-of jz needs a watr release carrying both; until then a development tree links
-`node_modules/watr` to that checkout (an `npm install` replaces the link with
-the published package: relink after one), and a clean install runs 5.11.0
-without the two rules, sort keeping its select.
+escape decoding and the async-member parse fixes) and watr 5.11.1, which
+carries the two optimizer rules jz's speed rows rely on: the mixed-sign
+truncation-of-convert fold under a non-negative operand (base64's decode
+loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).
+A clean install reproduces the standings.
 
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
@@ -1412,8 +1408,9 @@ read lowered and the receiver's candidate shapes), `class-generic` (a class
 kept as closures and why), `shape-lost` (the first cause the summary lost an
 object layout by, with the function and statement), `host-global`,
 `set-map-order`, `jsstring-declined`, `int-global-truncation`; `simd-why-not`
-and `rewind-why-not` need `why`. Warnings are delivered after compilation
-returns, and a compile started from a warning callback is rejected.
+and `rewind-why-not` need `why`. Warnings are delivered after the pipeline
+returns, so a warning callback may compile again; a compile attempted while
+the pipeline is active is rejected.
 `scripts/why-census.mjs <case>` prints a bench case's census: the layouts lost
 in order (the first is the root of a cascade), the dynamic reads by function,
 the classes kept as closures.
@@ -1438,9 +1435,14 @@ Strings use UTF-16 code units; UTF-8 belongs at encoding and I/O boundaries.
 storage, nested schemas, integer refinements and discriminants used by lowering.
 Incompatible replacements throw `TypeError`. Nullable fields admit their value
 family and nullish values. Modules sharing memory must agree on existing schema
-contracts; a class layout carries its brand (`jz:brand`, `Name#id`), so two
-classes with one field list are two schemas, and a host object matching such a
-layout by keys alone is ambiguous rather than silently bound. Booleans preserve their identity; exposed BigInt fields are tagged,
+contracts and bind their schemas at the same ids: a pointer carries the id its
+module compiled with, so a module whose schema would bind at another id in the
+memory is rejected at instantiation, before the memory's tables change (one
+compilation, or the same module again, shares; the host references of a memory
+are one table for every module in it). A class layout carries its brand
+(`jz:brand`, `Name#id`), so two classes with one field list are two schemas,
+and a host object matching such a layout by keys alone is ambiguous rather
+than silently bound. Booleans preserve their identity; exposed BigInt fields are tagged,
 including shapes shared by BigInts and numbers. Returned object literals have
 independent storage, so mutating one result cannot change a later result.
 
