@@ -12,7 +12,7 @@ import { emit } from '../src/bridge.js'
 import { K, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { inc } from '../src/ctx.js'
-import { isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey } from '../src/ast.js'
+import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -48,6 +48,10 @@ export function initSchema(ctx) {
   }
   /** The class brand a schema was registered under, or null for a plain shape. */
   ctx.schema.brandOf = (id) => brandBySid.get(id) ?? null
+  /** Every (sid, class) pair as `Name#id`, unique within the compilation: the
+   *  `jz:brand` section carries them, so interop keeps two classes of one
+   *  field list apart (the id is the brand's; the name is for the host). */
+  ctx.schema.brandEntries = () => [...brandBySid].map(([sid, brand]) => [sid, `${ctx.transform.classes?.get(brand)?.name ?? 'class'}#${brand.slice(BRAND.length)}`])
   /** The schema id of a class brand, or null while no instance literal has registered it. */
   ctx.schema.sidOfBrand = (brand) => sidByBrand.get(brand) ?? null
 

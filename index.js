@@ -47,7 +47,7 @@ import { parse } from './src/parse.js'
 import watrCompile from "watr/compile";
 import { snapshotInit } from "./src/snapshot.js";
 import watrPrint from "watr/print";
-import { ctx, err, warn, setLinkDemand } from './src/ctx.js'
+import { ctx, err, warn, setLinkDemand, flushWarnings } from './src/ctx.js'
 import { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
 import { beginSession } from './src/session.js'
@@ -524,7 +524,17 @@ const setupCtx = (code, opts) => {
 // (ONE final-optimizer tail shared verbatim with the self-compile kernel — the two
 // pipelines previously drifted); re-exported above for scripts/audit-fixpoint.mjs.
 
+// One compilation at a time: the pipeline runs on the shared context, which a
+// nested compile() would reset under it. Advisories reach their callback once
+// the compilation is over (flushWarnings), so a callback may compile again.
+let compiling = false
 const jzCompileInner = (code, opts = {}) => {
+  if (compiling) throw new Error('jz: compile() called while another compilation is running; warning callbacks are delivered after compilation, so compile from there')
+  compiling = true
+  try { return compilePipeline(code, opts) }
+  finally { compiling = false; flushWarnings() }
+}
+const compilePipeline = (code, opts = {}) => {
   if (opts.define) code = defineBindings(opts.define) + code
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()

@@ -417,7 +417,8 @@ test('summary codegen: a method called through an array of instances, an exporte
   // A control build omitting only those checks restores 3060; keep the same slack.
   // Known-array reads and lengths take their forwarding hop inline in the
   // speed tiers (src/ir/pointers.js fwdOffsetIR): 3132 → 3184 B, two hops.
-  if (OPT_LEVEL === 2) ok(compile(src).length < 3224, `the typed tier's size class (${compile(src).length} B)`)
+  // The `jz:brand` custom section names the class for interop: 3184 → 3235 B.
+  if (OPT_LEVEL === 2) ok(compile(src).length < 3275, `the typed tier's size class (${compile(src).length} B)`)
   // An exported class: its constructor parameter is read only through a slot
   // every read of which multiplies, so the f64 boundary is the coercion.
   const cls = `export class Gain { constructor(n, gain) { this.buf = new Float32Array(n); this.gain = gain }
@@ -427,7 +428,8 @@ test('summary codegen: a method called through an array of instances, an exporte
   is(jz(cls).exports.run(8, 0.5), 0.5)
   is(jz(cls).exports.run(8, '0.5'), 0.5, 'the host string converts at the boundary')
   // The same required receiver check adds 72 B to the exported-class case.
-  if (OPT_LEVEL === 2) ok(compile(cls).length < 2072, `bytes: ${compile(cls).length}`)
+  // The `jz:brand` custom section names the exported class for interop: 2072 → 2084 B.
+  if (OPT_LEVEL === 2) ok(compile(cls).length < 2124, `bytes: ${compile(cls).length}`)
 })
 
 test('summary: a module global is the join of every store; the declaration\'s claim yields', () => {

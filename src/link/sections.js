@@ -2,8 +2,9 @@
  * The custom sections the interop layer reads back, built after treeshake so
  * they describe only what survived: `jz:schema` (the property lists of the
  * schemas some surviving node or named use still references; a dead schema
- * keeps its slot, shrunk to its id, so ids stay stable) and `jz:errcls` (the
- * error class name per surviving error schema).
+ * keeps its slot, shrunk to its id, so ids stay stable), `jz:errcls` (the
+ * error class name per surviving error schema) and `jz:brand` (the class brand
+ * per surviving user-class schema).
  *
  * @module link/sections
  */
@@ -21,7 +22,7 @@ const encProp = (out, p) => {
   else { out.push(3); encStr(out, JSON.stringify(p).slice(1, -1)) }
 }
 
-export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids }) {
+export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids }) {
   const FUNC = intern('func')
   const used = new Set()
   walk(root, (id) => { if (T.sid[id] !== NONE) used.add(T.sid[id]) })
@@ -64,5 +65,15 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
     varint(out, entries.length)
     for (const [sid, name] of entries) { varint(out, sid); encStr(out, name) }
     custom('jz:errcls', out)
+  }
+  // A user class's schema is its field list salted with the class's brand
+  // (module/schema.js): the brand travels with it, so interop keeps two
+  // classes of one field list apart.
+  const brands = (brandSids ?? []).filter(([sid]) => used.has(sid))
+  if (brands.length) {
+    const out = []
+    varint(out, brands.length)
+    for (const [sid, brand] of brands) { varint(out, sid); encStr(out, brand) }
+    custom('jz:brand', out)
   }
 }

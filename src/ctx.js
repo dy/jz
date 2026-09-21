@@ -971,7 +971,18 @@ export function initWarnings(sink) {
     return
   }
   sink.entries ||= []
-  ctx.warnings = { sink, seen: new Set() }
+  ctx.warnings = { sink, seen: new Set(), pending: [] }
+}
+
+/** Deliver the advisories recorded since the sink was wired to its callback,
+ *  after the compilation that recorded them: a callback that compiles would
+ *  otherwise reset the compilation still running. */
+export function flushWarnings() {
+  const w = ctx.warnings
+  if (!w?.pending.length) return
+  const entries = w.pending
+  w.pending = []
+  if (typeof w.sink.onWarning === 'function') for (const entry of entries) w.sink.onWarning(entry)
 }
 
 /** Record one advisory; `loc` is a source byte offset used only to derive
@@ -979,7 +990,9 @@ export function initWarnings(sink) {
  *  `initWarnings` wired a sink. */
 export function warn(code, message, meta = {}, loc = null) {
   if (!ctx.warnings) return
-  const key = `${code}:${meta.fn || ''}:${meta.line || ''}`
+  // One advisory per site: the source offset when the node kept one, else
+  // the message (a prepared node's rewrite drops `loc`).
+  const key = `${code}:${meta.fn || ''}:${loc ?? meta.line ?? message}`
   if (ctx.warnings.seen.has(key)) return
   ctx.warnings.seen.add(key)
   const entry = { code, message, ...meta }
@@ -989,7 +1002,7 @@ export function warn(code, message, meta = {}, loc = null) {
     entry.column = loc - before.lastIndexOf('\n')
   }
   ctx.warnings.sink.entries.push(entry)
-  if (typeof ctx.warnings.sink.onWarning === 'function') ctx.warnings.sink.onWarning(entry)
+  ctx.warnings.pending.push(entry)
 }
 
 /** Advise that an emit site fell back to generic runtime dispatch (the slow,
@@ -997,8 +1010,11 @@ export function warn(code, message, meta = {}, loc = null) {
  *  inference/optimization truly couldn't fold it — never a false positive on a
  *  case that vectorized/unrolled/slot-folded. `ctx.error.loc` is the current AST
  *  node's byte offset (kept up to date by the emit walk), giving line/column. */
-export function warnDeopt(code, message) {
-  warn(code, message, { fn: ctx.func.current?.name }, ctx.error.loc)
+export function warnDeopt(code, message, meta = {}) {
+  if (!ctx.warnings) return
+  // the active frame names the function by its signature record
+  const cur = ctx.func.current, fn = typeof cur === 'string' ? cur : cur?.name ?? ctx.funcs.list.find(f => f.sig === cur)?.name
+  warn(code, message, { fn, ...meta }, ctx.error.loc)
 }
 
 /** Throw with source location context. */

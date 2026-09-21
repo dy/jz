@@ -322,6 +322,24 @@ export const memory = (src) => {
     }
   }
 
+  // The user-class brand per schema (positional, like jz:errcls): the dedup
+  // key below salts with it and with this module's own ordinal, so two
+  // classes of one field list keep their own sids and contracts, within a
+  // module and across the modules sharing this memory (a class is its
+  // module's; only plain shapes merge). `mem.brandOfSid` remembers the
+  // class by merged sid for the plain-object shape match in wrapVal.
+  const brandOfSid = mem.brandOfSid || new Map()
+  const moduleSeqs = mem._moduleSeqs || new WeakMap()
+  let moduleSeq = mod ? moduleSeqs.get(mod) : 0
+  if (mod && moduleSeq == null) moduleSeqs.set(mod, moduleSeq = (mem._moduleSeq ?? 0) + 1)
+  const moduleBrands = new Map()
+  const brandBytes = mod && customSection(mod, 'jz:brand')
+  if (brandBytes) {
+    const r = sectionReader(brandBytes)
+    const n = r.varint()
+    for (let j = 0; j < n; j++) { const sid = r.varint(); moduleBrands.set(sid, r.str(r.varint())) }
+  }
+
   // Read schemas from module custom section, merge into memory.schemas. Schema
   // entries are { type, payload } where type=0 means null (computed/missing
   // key), type=1 means nested [null, name] (synthetic shape), type=3 is a
@@ -379,10 +397,11 @@ export const memory = (src) => {
     const nS = r.varint(), newSchemas = []
     for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
     newSchemas.forEach((s, j) => {
-      const salt = errorSidToClass.get(j)
+      const salt = errorSidToClass.get(j) ?? (moduleBrands.has(j) ? moduleBrands.get(j) + '\x03' + moduleSeq : undefined)
       const key = s.length + '\x01' + s.join('\x01') + (salt ? '\x02' + salt : '')
       if (!schemaKeyToId.has(key)) { schemaKeyToId.set(key, schemas.length); schemas.push(s) }
       const sid = schemaKeyToId.get(key), row = incomingFields[j]
+      if (moduleBrands.has(j)) brandOfSid.set(sid, moduleBrands.get(j))
       if (row?.length) {
         if (fieldContracts[sid] && JSON.stringify(fieldContracts[sid]) !== JSON.stringify(row))
           throw new TypeError('jz: incompatible field contracts for a schema already bound to this memory')
@@ -398,6 +417,8 @@ export const memory = (src) => {
     mem.schemas = schemas
     mem._schemaKeyToId = schemaKeyToId
     mem.errorSidToClass = errorSidToClass
+    mem.brandOfSid = brandOfSid
+    mem._moduleSeqs = moduleSeqs; mem._moduleSeq = Math.max(mem._moduleSeq ?? 0, moduleSeq)
     if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
     mem.reset = reset
     if (extMap) mem._extMap = extMap
@@ -408,6 +429,8 @@ export const memory = (src) => {
   mem.schemas = schemas
   mem._schemaKeyToId = schemaKeyToId
   mem.errorSidToClass = errorSidToClass
+  mem.brandOfSid = brandOfSid
+  mem._moduleSeqs = moduleSeqs; mem._moduleSeq = Math.max(mem._moduleSeq ?? 0, moduleSeq)
   mem._extMap = extMap
 
   mem.Array = (data) => {
@@ -594,14 +617,21 @@ export const memory = (src) => {
     const objKeys = Object.keys(obj)
     const key = objKeys.join(',')
     const schemas = mem.schemas
-    let sid = schemas.findIndex(s => s.join(',') === key)
-    if (sid === -1) {
-      const matches = schemas.reduce((a, s, i) =>
-        (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
-      if (matches.length === 1) sid = matches[0]
-      else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — ${matches.length} compiled shapes match this key set; pass keys in one of these orders: ${matches.map(i => schemas[i].join(',')).join(' | ')}`)
-      else return mem.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
+    // The shapes with these keys in this order, else in any order; among
+    // several, a plain object is the plain shape's, not a class's (two
+    // classes of one field list are told apart by brand, which a plain
+    // object does not carry).
+    const pick = (matches) => {
+      if (matches.length <= 1) return matches[0] ?? -1
+      const plain = matches.filter(i => !mem.brandOfSid.has(i))
+      return plain.length === 1 ? plain[0] : -2
     }
+    let matches = schemas.reduce((a, s, i) => (s.join(',') === key ? a.concat(i) : a), [])
+    if (!matches.length) matches = schemas.reduce((a, s, i) =>
+      (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
+    const sid = pick(matches)
+    if (sid === -2) throw Error(`Ambiguous schema for {${key}} — ${matches.length} compiled shapes match this key set; pass keys in one of these orders: ${matches.map(i => schemas[i].join(',')).join(' | ')}`)
+    if (sid === -1) return mem.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
     const schema = schemas[sid], n = schema.length, raw = alloc(n * 8)
     // Stage as i64 bits so V8 can't canonicalize NaN-payload pointers across
     // recursive allocations. See mem.Array for the same pattern — and route

@@ -10,7 +10,7 @@
 
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 import * as interop from 'jz/interop'
 import { onWasi, onKernel, levels } from './_matrix.js'
 
@@ -496,4 +496,21 @@ test('interop: typed views, typed methods and accumulators keep an array-like pa
   is(exports.copy(dst, [4, 5, 6]), 10)
   is(dst.join(), '4,5,6')
   is(exports.chars('banana'), 6)
+})
+
+// Two classes of one field list are two schemas: the compiler brands each
+// (module/schema.js), and the `jz:brand` section carries the brand, so
+// interop keeps their sids and field contracts apart within a module and
+// across the modules sharing one memory. A plain object matches a plain shape
+// first; among classes alone it is ambiguous.
+test('interop: classes of one field list keep their identity through the sections', () => {
+  if (onKernel()) return
+  const one = jz(`class A { constructor(x) { this.x = x } }\nclass B { constructor(x) { this.x = x } }
+export let a = () => new A(1), b = () => new B('s'), ra = (o) => o.x, rb = (o) => o.x, plain = () => ({ x: 2 })`)
+  is(one.exports.ra(one.exports.a()), 1); is(one.exports.rb(one.exports.b()), 's')
+  is(one.memory.schemas.filter(s => s.join() === 'x').length, 3, 'two branded shapes and the plain one')
+  is(one.exports.ra(one.exports.plain()), 2)
+  const two = jz(`class C { constructor(x) { this.x = x } }\nexport let c = () => new C(true), rc = (o) => o.x`, { memory: one.memory })
+  is(two.exports.rc(two.exports.c()), true, 'a third class of the same field list in the same memory')
+  is(two.memory.schemas.filter(s => s.join() === 'x').length, 4)
 })

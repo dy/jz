@@ -79,3 +79,18 @@ test('options: the caller\'s option object is left untouched', () => {
   compile(HEAP, opts)
   is(JSON.stringify(opts), '{"memory":{"initial":2},"optimize":{"simd":false}}')
 })
+
+// A warnings callback runs after the compilation that recorded the entries,
+// so it may compile; a callback that runs during compilation (whyNotRewind)
+// may not, and says so.
+test('options: warning callbacks run after compilation; a nested compile during one is rejected', () => {
+  const src = `export let f = (o) => { let s = 0; for (const k in o) s += o[k]; return s }`
+  const seen = []
+  const wasm = compile(src, { warnings: (w) => { seen.push(w.code); compile('export let g = () => 1') } })
+  ok(wasm.length > 0 && seen.length > 0, 'the callback compiled again once its own compilation was over')
+  const again = compile(src, { warnings: { entries: [] } })
+  is(again.length, wasm.length, 'the nested compile left the outer output intact')
+  let error
+  try { compile('export let f = () => [1, 2].map(x => x + 1)', { optimize: 'speed', whyNotRewind: () => { compile('export let g = () => 1') } }) } catch (e) { error = e }
+  ok(error && /another compilation is running/.test(error.message), `nested compile rejected: ${error?.message}`)
+})
