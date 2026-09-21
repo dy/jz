@@ -14,7 +14,7 @@ import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned, positionArgs } from '../src/bridge.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral, isArrayIndexKey } from '../src/ast.js'
-import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
+import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
@@ -989,7 +989,12 @@ export default (ctx) => {
               ['else', undefExpr()]]],
           ['else', slow(['local.get', `$${ix}`])]]]
     }
-    const arrayLoad = arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], ix])
+    // The size tier keeps the helper's own dispatch (`leanRuntime`, the tier
+    // that links the runtime lean): the inline arm is ~50 ops per site, 14 KB of
+    // watr's size build for a walker's reads the speed build alone is timed on.
+    const arrayLoad = ctx.transform.optimize?.leanRuntime
+      ? ['block', ['result', 'f64'], ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]]
+      : arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], ix])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       // ToPropertyKey of an atom key is the string module's `__to_str`: own
@@ -1168,7 +1173,14 @@ export default (ctx) => {
       // element-kind-independent. Skipping the bounds check on an arbitrary numeric
       // index is unsound: `a[1]` on a length-1 array would read the raw cell instead
       // of undefined; those fall through to the inline bounds-checked load below.
-      const idxProvenInBounds = keyIsNum && typeof arr === 'string' && (
+      // A static const array's literal length bounds an index whose integer hull
+      // stays under it (`[2, 4, 2, 9][t >> 17 & 3]`, a literal prepare hoisted to a
+      // const): never resized nor aliased, its length is the literal's for good.
+      const stLen = keyIsNum && typeof arr === 'string' ? ctx.scope.staticArrs?.get(arr)?.len ?? ctx.scope.staticLitLens?.get(arr) : null
+      const staticProven = stLen != null && !!ctx.types.arrResized && !!ctx.types.nameEscapes
+        && !ctx.types.arrResized.has(arr) && !ctx.types.nameEscapes.has(arr)
+        && (range => range != null && range[0] >= 0 && range[1] < stLen)(intExprRange(idx))
+      const idxProvenInBounds = keyIsNum && typeof arr === 'string' && (staticProven ||
         (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
         (ctx.func.localReps?.get(arr)?.arrayLen != null && typedIdxProven(arr, idx)))
       // Tag reads whose receiver folded to a compile-time constant box: when the

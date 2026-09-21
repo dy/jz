@@ -848,13 +848,31 @@ Those tests do not establish callback deadlines.
   `__schema_slot_h`, 11% `__str_eq` — the shapes the summary loses (key
   order, missing keys, reads with no shape), the program of its own the entry
   above describes.
-- Sierpinski's remainder after the closure and the table (1.09× → parity
-  band): three constant literals read per sample, `[2, 4, 2, 9][t_shift & 3]`,
-  each a forwarding test, a length load, a bounds test and the load, where a
-  static literal never relocates and `& 3` bounds the index (the named-const
-  fold `foldStaticConstArrayReads` does not reach an inline literal); and
-  `(-t >> 8) & 255` computed three times, an argument to three inlined calls,
-  with no expression CSE to share it (V8's GVN does).
+- Sierpinski's three constant literals per sample, `[2, 4, 2, 9][t_shift &
+  3]`, were each a forwarding test, a length load, a bounds test and the
+  load. Prepare hoists such a literal to a static const, and the named-const
+  fold (`foldStaticConstArrayReads`) had stopped matching since the speed
+  tier's inline forwarding hop replaced the `__ptr_offset` call it looked
+  for; it reads the hop now, and the hoisted literal's length, recorded at
+  prepare, bounds an index whose integer hull stays under it (`& 3`): the
+  read is the load. The beat has no branch left; 0.85× of V8 in the gate
+  (was 1.16). What remains there is `(-t >> 8) & 255` computed three times,
+  an argument to three inlined calls, with no expression CSE to share it
+  (V8's GVN does).
+- The gate after this work (`gate6.log`, 17 red of 271, the machine busy
+  with this session's builds): watr 1.15× (trail limit 1.25, was 1.73),
+  jessie 1.03× (tie), Sierpinski 0.85×, entity 1.8 KB in budget, the size
+  geomean 0.785×. colorlog's LAB pin moved with exp2's bits (297103274,
+  within 1 ulp of V8 over 200k values, mean 0.003). Still red: percolation
+  0.69× under its 0.75 floor (below); alpha's native lowering at 3.52×;
+  watr's size build, 63f4fe97's +40 KB, of which the unknown-receiver
+  array arm was 14 KB (the size tier keeps it in the helper again, 318 KB;
+  the budget is re-calibrated to 320 KB with the attribution); the
+  fastest-wasm rows sdf, sort, noise, shapes, glyfparse (the known gaps)
+  and, at 1.05 to 1.08, bezfit, trace, crc32, base64, radixsort — and
+  tokenizer at 1.83× of AS, which is the busy machine: its build is byte
+  for byte the pre-session one and runs 48 µs against 49 in isolation. A
+  quiet rerun is the next measurement.
 - percolation (0.67 to 0.71× at every tree, under its 0.75 floor): `find`
   and `union` take f64 parameters because `idx = y * w + x` is f64 (`W` and
   `H` are host numbers), so the path-halving chase converts on every hop

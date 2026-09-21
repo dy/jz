@@ -150,6 +150,9 @@ export function hoistIndexedConstLiterals(root) {
       name = `__salit${lits.size}`
       lits.set(key, name)
       decls.push(['const', ['=', name, lit]])
+      // the literal's length, for the reads emitted before the const is (module
+      // init follows the functions): an index within it needs no bounds test
+      ;(ctx.scope.staticLitLens ||= new Map()).set(name, vals.length)
     }
     node[1] = name
   } })

@@ -269,7 +269,17 @@ negative-zero check; a product fitting i32's magnitude alone is insufficient.
 Typed constructor provenance describes storage, not presence. A field or index
 result needs a separate non-nullish proof before pointer unboxing: the
 summary's, or for `arr[i]` over a hole-free array, the loop's in-bounds proof
-(`inBoundsArrIdx`), so a record visitor's element pointer stays raw. Computed
+(`inBoundsArrIdx`), so a record visitor's element pointer stays raw. A static
+const array's reads fold their base and length to the literal's
+(`optimize/devirt.js` `foldStaticConstArrayReads`, which recognizes the speed
+tier's inline forwarding hop as well as the `__ptr_offset` call it replaced:
+a never-resized static array never forwards), and a constant literal indexed
+in place (`[2, 4, 2, 9][t >> 17 & 3]`, hoisted to a synthetic const by
+prepare, its length recorded there for the reads emitted before it) needs no
+bounds test when the index's integer hull (`intExprRange`) stays under that
+length: the read is the load. The size tier keeps an unknown receiver's
+element read in its helper (`leanRuntime`); the speed tier reads the array
+arm inline. Computed
 typed-array reads keep the actual receiver tag unless presence is proven; catch
 elimination must also consult presence even when the payload kind is known.
 Nullable direct reads guard the receiver while retaining their schema/element

@@ -164,11 +164,13 @@ const SPEED = {
 //                       (module/math.js, the k/5 constant-exponent path): 4 ulp,
 //                       4.9e-16 relative. Their three `Math.cbrt` calls are
 //                       bit-exact with V8 (0 ulp) — jz runs the same fdlibm.
-//   colorlog            `Math.pow(2, x)` takes jz's exp2, within 2 ulp of V8's
-//                       (module/math/trig-tables.js EXP2_C); the bench checksum
-//                       is bitwise, so two ulp is still a different sum.
+//   colorlog            `Math.pow(2, x)` takes jz's exp2, within 1 ulp of V8's
+//                       (the 2^(j/64) table kernel, module/math/trig-tables.js
+//                       EXP2_TAB: 0.52 ulp against a 200-bit reference, V8's
+//                       fdlibm about 1); the bench checksum is bitwise, so one
+//                       ulp is still a different sum.
 const LAB_SPEED = {
-  colorlog:  { v8: 'win', jz: 1153077348, why: 'Math.pow(2, x) through jz exp2 — 2 ulp' },
+  colorlog:  { v8: 'win', jz: 297103274, why: 'Math.pow(2, x) through jz exp2 — 1 ulp' },
   colorlch:  { v8: 'win', jz: 615123418,  why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
   colorconv: { v8: 'tie', jz: 3731035495, why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
 }
@@ -356,7 +358,13 @@ const SIZE_BUDGET = {
   // watr 298000 → 300000: fix/string-method-guess retired the unsound
   // method-usage guess; sound inference costs +1383 B here (299383 B
   // measured) for a real soundness fix — see .work/archive/string-method-guess-notes.md.
-  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 300000,
+  // watr 300000 → 320000: 63f4fe97 (the widened summary and the kernel's
+  // inline hot reads, the self-compile gate's price) took the size build from
+  // 291 to 332 KB; the size tier now keeps the unknown-receiver array read in
+  // its helper again (module/array.js, -14 KB: 318 KB measured), the rest is
+  // the inlined nullish tests, strict compares and boolean selects the kernel
+  // rules keep at every tier. Ratchet down as those find a size-tier form.
+  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 320000,
   // wav 2050 → 2250, base64 2300 → 2400: Root F checked reads/versioning in
   // the runtime-length codec loops (+100/+55 measured). Ratchet down with the
   // binding-narrowing round.

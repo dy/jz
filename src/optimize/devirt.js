@@ -412,12 +412,31 @@ export function foldStaticConstArrayReads(fn) {
     const isBaseIR = (n) => Array.isArray(n) && n[0] === 'i32.wrap_i64' &&
       Array.isArray(n[1]) && n[1][0] === 'i64.reinterpret_f64' &&
       Array.isArray(n[1][1]) && n[1][1][0] === 'global.get' && n[1][1][1] === `$${node.saArr}`
-    // 1) base tee → global-derived base: (local.tee $b (call $__ptr_offset …)) → baseIR
+    // 1) base tee → global-derived base: (local.tee $b (call $__ptr_offset …)) → baseIR,
+    //    or the speed tier's inline forwarding hop (ir/pointers.js fwdOffsetIR): a
+    //    block that sets the base local from the box, tests the forwarding mark and
+    //    re-reads it through $__ptr_offset_fwd, then yields the local — a never-resized
+    //    static array never forwards, so the whole hop is the base.
     let baseLocal = null
+    const hopLocal = (blk) => {
+      let local = null, fwd = false
+      walkAst(blk, { enter: m => {
+        if ((m[0] === 'local.tee' || m[0] === 'local.set') && isBaseIR(m[2])) local = m[1]
+        if (m[0] === 'call' && m[1] === '$__ptr_offset_fwd') fwd = true
+      } })
+      return local && fwd ? local : null
+    }
     const subBase = (n, parent, idx) => {
       if (!parent) return
       if (n[0] === 'local.tee' && Array.isArray(n[2]) && n[2][0] === 'call' && n[2][1] === '$__ptr_offset') {
         baseLocal = n[1]
+        parent[idx] = baseIR()
+        return false
+      }
+      const blk = n[0] === 'block' ? n : n[0] === 'local.tee' && Array.isArray(n[2]) && n[2][0] === 'block' ? n[2] : null
+      const local = blk ? hopLocal(blk) : null
+      if (local) {
+        baseLocal = n[0] === 'local.tee' ? n[1] : local
         parent[idx] = baseIR()
         return false
       }

@@ -5410,3 +5410,34 @@ export let main = () => { const ps = mk(100); run2(ps); return ps[0].x }`
   ok(!/__throw_property_nullish/.test(funcWat(w, 'main')), 'no nullish guard on the element reads')
   is(run(src).main(), 4)
 })
+
+// A constant array literal indexed in place (prepare hoists it to a static const)
+// reads without the forwarding hop, the length load or the bounds test when the
+// index's integer hull stays under the literal's length; a named static const
+// keeps the test but drops the hop and the length load.
+test('static const array reads fold: inline literal under a mask is one load, a named const drops the hop', () => {
+  const src = `const T = [2, 4, 2, 9]
+export let f = (k) => T[k & 3]
+export let g = (k) => [2, 4, 2, 9][k & 3]
+export let h = (k) => [1, 2, 3][k & 3]`
+  const w = compile(src, { optimize: 'speed', wat: true })
+  const gw = funcWat(w, 'g'), fw = funcWat(w, 'f'), hw = funcWat(w, 'h')
+  ok(!/__ptr_offset_fwd|i32\.lt_u|\(if/.test(gw) && (gw.match(/f64\.load/g) ?? []).length === 1, 'inline literal: the load alone')
+  ok(!/__ptr_offset_fwd/.test(fw) && /i32\.lt_u/.test(fw), 'named const: no hop, the bounds test stays')
+  ok(/i32\.lt_u/.test(hw), 'a hull past the length keeps the test')
+  const { f, g, h } = run(src), ref = oracle(src)
+  for (const k of [0, 1, 2, 3, 5, -1, 4294967295]) { is(f(k), ref.f(k)); is(g(k), ref.g(k)); is(h(k), ref.h(k)) }
+})
+
+// An element read on a receiver the summary cannot type reads the array arm
+// inline at the speed tier (tag, one forwarding hop, bounds, load) and calls
+// the helper at the size tier, whose bytes the size gate reads.
+test('unknown-receiver element reads: inline array arm at speed, the helper at size', () => {
+  const src = `export let at = (node, i) => node[i | 0]`
+  const speed = funcWat(compile(src, { optimize: 'speed', wat: true }), 'at')
+  const size = funcWat(compile(src, { optimize: 'size', wat: true }), 'at')
+  ok(/__ptr_offset_fwd/.test(speed) && /f64\.load/.test(speed) && /i32\.lt_u/.test(speed), 'speed: the array arm inline')
+  ok(!/f64\.load/.test(size) && !/i32\.lt_u/.test(size) && /call \$__typed_idx/.test(size), 'size: the helper alone')
+  is(run(src).at([5, 6, 7], 1), 6)
+  is(run(src, { optimize: 'size' }).at([5, 6, 7], 2), 7)
+})
