@@ -225,12 +225,16 @@ Dependencies
   (`tie`). Every corpus case beats V8 except webaudio (2.2× paired at 10.4
   ms, 9.1 ms in-process after reachability; the perf gate does not time
   it), colorpq and watr.
-- Ten red rows, every one a standing this round did not touch or a noise
-  band: the fastest-wasm rows glyfparse 1.26×, sdf 1.36× and crc32 1.06×
-  (item 2 above; the noise and shapes rows are green this run), the
-  1.05× band's edge (sort, delayline, levenshtein, bezfit), percolation
-  0.69× under the examples' 0.9× floor (item 2; ulam's 0.79× was V8 noise,
-  1.01× on the rerun), alpha's stale w2c row and the TinyGo builds (item 4).
+- Eleven red rows on the final tree, every one a standing this round did
+  not touch or a noise band: the fastest-wasm rows glyfparse 1.23× and sdf
+  1.48× (item 2 above; the noise and shapes rows are green), sort's 1.18×
+  of Zig (Zig's own run moved from 5.09 to 4.71 ms between gates; paired
+  alone the row reads 1.04× and 1.06×, and the build carries no change from
+  this round), the 1.05× band's edge (crc32, delayline, levenshtein,
+  bezfit), percolation 0.69× under the examples' 0.9× floor (item 2),
+  ulam's 0.77× (V8's own frame moved between 578 and 736 µs across runs;
+  the pre-session commit and this tree read 1.01× and 1.00× side by side),
+  alpha's stale w2c row and the TinyGo builds (item 4).
 - watr 5.11.1, published, replaces the checkout link: sort reads 1.09× of Zig
   and base64 0.81× of AssemblyScript paired with the installed package.
 - Correctness closed on this tree: open-object enumeration order with
