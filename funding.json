@@ -1,0 +1,53 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.0.0",
+  "entity": {
+    "type": "individual",
+    "role": "maintainer",
+    "name": "Dmitry Iv",
+    "email": "df.creative@gmail.com",
+    "description": "I develop and maintain JZ, a JavaScript-to-WebAssembly compiler, and its underlying parser and WebAssembly tools, subscript and watr.",
+    "webpageUrl": {
+      "url": "https://github.com/dy",
+      "wellKnown": "https://github.com/dy/jz/blob/main/.well-known/funding-manifest-urls"
+    }
+  },
+  "projects": [
+    {
+      "guid": "jz",
+      "name": "JZ",
+      "description": "JZ compiles JavaScript to WebAssembly for audio processing, graphics, simulations, and numerical computing. It infers types and applies SIMD optimizations without requiring type annotations or a rewrite in another language. The compiler is written in JavaScript and runs in Node.js and in the browser, with a CLI, an interactive playground, and runnable examples. JZ is experimental; ongoing work focuses on correctness, predictable memory use, and reliable compilation of real applications.",
+      "webpageUrl": {
+        "url": "https://jz.js.org/",
+        "wellKnown": "https://jz.js.org/.well-known/funding-manifest-urls"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/dy/jz",
+        "wellKnown": "https://github.com/dy/jz/blob/main/.well-known/funding-manifest-urls"
+      },
+      "licenses": ["spdx:MIT"],
+      "tags": ["compiler", "javascript", "webassembly", "developer-tools", "audio", "graphics", "scientific-computing"]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "github-sponsors",
+        "type": "payment-provider",
+        "address": "https://github.com/sponsors/dy"
+      }
+    ],
+    "plans": [
+      {
+        "guid": "sponsorship",
+        "status": "active",
+        "name": "JZ maintenance and development",
+        "description": "Contribute any amount to support compiler correctness, JavaScript conformance tests, performance and memory improvements, documentation, and reproducible releases. Priorities include reliable compilation of stateful audio DSP and practical examples for audio, graphics, and numerical computing.",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "monthly",
+        "channels": ["github-sponsors"]
+      }
+    ]
+  }
+}
