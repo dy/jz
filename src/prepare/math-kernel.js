@@ -109,7 +109,7 @@ function exp2(y) {
   if (Number.isNaN(y)) return y
   if (y > 1024) return Infinity
   if (y < -1075) return 0
-  const k = Math.trunc(nearest(y * 64))  // i32.trunc_f64_s(f64.nearest(64y)) — integral already
+  const k = Math.trunc(nearest(y * 64))  // i32.trunc_f64_s(f64.nearest(64y)) – integral already
   const f = y - k * 0.015625
   const t = EXP2_TAB[2 * (k & 63)], tail = EXP2_TAB[2 * (k & 63) + 1]
   return expScale(t + t * (f * horner(EXP2_Q, f) + tail), k >> 6)

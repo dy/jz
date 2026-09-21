@@ -632,7 +632,7 @@ export default (ctx) => {
   registerMathSimd()
 
   // The table kernels (module/math/trig-tables.js EXP2_TAB): 2^y = 2^e · T[j] · 2^f
-  // with k = round(64y), j = k mod 64, e = ⌊k/64⌋ and |f| ≤ 1/128 — f = y − k/64 is
+  // with k = round(64y), j = k mod 64, e = ⌊k/64⌋ and |f| ≤ 1/128 – f = y − k/64 is
   // exact, the two being within a factor of two. T[j] is the double nearest 2^(j/64)
   // and tail[j] the relative remainder its rounding dropped, so T + T·(q + tail) with
   // q = 2^f − 1 = f·(ln2 + f·ln2²/2 + … ) rounds once: 0.52 ulp against a 200-bit
@@ -640,7 +640,7 @@ export default (ctx) => {
   // |f| ≤ ½ this replaces (2 ulp). `Math.exp`, `Math.pow(2, x)`, sinh/cosh/tanh and
   // the colour cases' decode ride on these. e^x reduces on its own: k = round(64x/ln2),
   // r = (x − k·L1) − k·L2 (L1 the 36-bit head of ln2/64, so k·L1 is exact), then the
-  // same table with q = e^r − 1 = r·(1 + r/2 + …) — 2^(x·log2 e) lost |x| ulp to the
+  // same table with q = e^r − 1 = r·(1 + r/2 + …) – 2^(x·log2 e) lost |x| ulp to the
   // rounding of the product (26 ulp at |x| = 40).
   ctx.runtime.exp2Table = hexBytes(EXP2_TAB_HEX)
   wat('math.exp2', `(func $math.exp2 (param $y f64) (result f64)
@@ -657,7 +657,7 @@ export default (ctx) => {
         (local.set $e (i32.shr_s (local.get $k) (i32.const 6)))
         ;; 2^e: one IEEE-exponent build for a normal result (the hot path); the two-factor
         ;; split (2^k2 · 2^(e−k2)) only at the denormal and overflow edges. Bit-identical
-        ;; for a normal e — powers of two multiply exactly.
+        ;; for a normal e – powers of two multiply exactly.
         (if (result f64)
           (i32.and (i32.gt_s (local.get $e) (i32.const -1023)) (i32.lt_s (local.get $e) (i32.const 1024)))
           (then (f64.mul (local.get $p)
@@ -683,7 +683,7 @@ export default (ctx) => {
         (local.set $e (i32.shr_s (local.get $k) (i32.const 6)))
         ;; 2^e: one IEEE-exponent build for a normal result (the hot path); the two-factor
         ;; split (2^k2 · 2^(e−k2)) only at the denormal and overflow edges. Bit-identical
-        ;; for a normal e — powers of two multiply exactly.
+        ;; for a normal e – powers of two multiply exactly.
         (if (result f64)
           (i32.and (i32.gt_s (local.get $e) (i32.const -1023)) (i32.lt_s (local.get $e) (i32.const 1024)))
           (then (f64.mul (local.get $p)

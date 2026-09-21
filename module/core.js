@@ -2050,7 +2050,7 @@ export default (ctx) => {
         || (ctx.schema.idOf(obj) != null && !ctx.transform.dynamicAccessorNames?.has(prop)))) return null
     // The summary's one layout says the same for any receiver it types (an
     // element read `const e = evs[i]`, a parameter every caller proves): a
-    // layout with the slot calls the getter, one without reads plainly — a
+    // layout with the slot calls the getter, one without reads plainly – a
     // getter of that name on some class elsewhere is no reason to probe.
     const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
     if (sid != null && !ctx.transform.dynamicAccessorNames?.has(prop))

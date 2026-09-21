@@ -136,7 +136,7 @@ export const declareWrittenKeys = (ast) => {
   }
   // A call reaches a pending literal only through its name. The names a module
   // function's body (its parameter defaults included) mentions, with those of
-  // the functions it calls directly — and whether it runs anything this cannot
+  // the functions it calls directly – and whether it runs anything this cannot
   // name: a callee that is not a module function's name (a closure, a
   // computed callee), a constructor, an accessor read where the program
   // declares accessors, an await. A method call is a builtin's when no method
@@ -226,8 +226,8 @@ export const declareWrittenKeys = (ast) => {
     const pending = new Map()   // name → literal node, bound in this list and unobserved since
     for (const st of list) {
       const store = storeOf(st), bound = store ? null : bindingOf(st)
-      // Any other mention of a pending name — an alias, an argument, a computed
-      // store, a value of another literal — carries its literal where this
+      // Any other mention of a pending name – an alias, an argument, a computed
+      // store, a value of another literal – carries its literal where this
       // cannot follow; a key declared after a computed store would also sit
       // ahead of it in the layout (for-in enumerates a layout's keys before
       // the keys added at run time, emit/control-flow.js).

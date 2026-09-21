@@ -170,7 +170,7 @@ const SPEED = {
 //                       fdlibm about 1); the bench checksum is bitwise, so one
 //                       ulp is still a different sum.
 const LAB_SPEED = {
-  colorlog:  { v8: 'win', jz: 297103274, why: 'Math.pow(2, x) through jz exp2 — 1 ulp' },
+  colorlog:  { v8: 'win', jz: 297103274, why: 'Math.pow(2, x) through jz exp2 – 1 ulp' },
   colorlch:  { v8: 'win', jz: 615123418,  why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
   colorconv: { v8: 'tie', jz: 3731035495, why: '** 2.4 through jz fifthroot fold — 4 ulp, 4.9e-16 relative; cbrt bit-exact' },
 }

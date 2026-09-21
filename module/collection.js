@@ -2054,11 +2054,11 @@ export default (ctx) => {
         (else (local.get $oldProps))))
     (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
     ;; for-in enum cache: a global-side prop insert changes an OBJECT
-    ;; receiver's enumeration without touching its site cache's key — move the
+    ;; receiver's enumeration without touching its site cache's key – move the
     ;; epoch. Not gated on the props≠oldProps rekey below: an insert into an
     ;; EXISTING per-object hash skips it. An ARRAY or CLOSURE receiver's props
-    ;; never enumerate (for-in lists an array's indices), so those inserts —
-    ;; subscript's node.loc = at on every parsed node — leave the caches.
+    ;; never enumerate (for-in lists an array's indices), so those inserts –
+    ;; subscript's node.loc = at on every parsed node – leave the caches.
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))))
     (if (i64.ne (local.get $props) (local.get $oldProps))

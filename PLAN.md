@@ -845,7 +845,7 @@ Those tests do not establish callback deadlines.
   dispatcher and a probe, three dynamic reads in a three-line loop).
   webaudio does not move on it (9.4×): its 5655 dynamic sites are the same
   before and after, the profile still 19% `__dyn_get_t_h`, 14%
-  `__schema_slot_h`, 11% `__str_eq` — the shapes the summary loses (key
+  `__schema_slot_h`, 11% `__str_eq` – the shapes the summary loses (key
   order, missing keys, reads with no shape), the program of its own the entry
   above describes.
 - Sierpinski's three constant literals per sample, `[2, 4, 2, 9][t_shift &
@@ -869,7 +869,7 @@ Those tests do not establish callback deadlines.
   array arm was 14 KB (the size tier keeps it in the helper again, 318 KB;
   the budget is re-calibrated to 320 KB with the attribution); the
   fastest-wasm rows sdf, sort, noise, shapes, glyfparse (the known gaps)
-  and, at 1.05 to 1.08, bezfit, trace, crc32, base64, radixsort — and
+  and, at 1.05 to 1.08, bezfit, trace, crc32, base64, radixsort – and
   tokenizer at 1.83× of AS, which is the busy machine: its build is byte
   for byte the pre-session one and runs 48 µs against 49 in isolation. A
   quiet rerun is the next measurement.

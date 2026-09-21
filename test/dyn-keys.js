@@ -2739,7 +2739,7 @@ test('written literal keys: a literal-key write outside a literal-bound layout d
 // function whose body, defaults and direct callees never mention the literal's
 // name and never run what the pass cannot name; builtin methods count as
 // harmless when no method of the program bears the name and no argument can
-// be a function. Everything else keeps the key out of the literal — and the
+// be a function. Everything else keeps the key out of the literal – and the
 // observable fact is `in` before the store.
 const modulesOf = (main, extra = {}) => ({ './parse.js': `export const lookup = [], prec = {}\nexport const parse = (s) => s\nconst register = (d, c = d.op.charCodeAt(0), fn = lookup[c]) => lookup[c] = fn?.ops ? dispatch([d, ...fn.ops], fn.tail) : dispatch([d], fn)\nconst dispatch = (ops, tail, fn = (a, p) => { for (let i = 0; i < ops.length; i++) { const r = ops[i].map(a); if (r) return r } return tail?.(a, p) }) => (fn.ops = ops, fn.tail = tail, fn)\nexport const token = (op, p = 32, map) => register({ op, l: op.length, p: prec[op] = p, map, word: op.toUpperCase() !== op })\nexport const binary = (op, p) => token(op, p, (a, b) => a && [op, a, b])\nparse.comment ??= { '//': '\\n', '/*': '*/' }`, ...extra })
 test('declared keys: registration calls between the literal and its store keep the layout closed', () => {

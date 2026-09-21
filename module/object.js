@@ -376,7 +376,7 @@ export default (ctx) => {
     return emitRuntimeKeys(obj, ro)
   }
   ctx.core.emit['Object.keys'] = (obj) => emitKeysGeneric(obj, false)
-  // The keys a layout gained after its literal — for-in's tail behind the
+  // The keys a layout gained after its literal – for-in's tail behind the
   // unrolled declared keys (control-flow.js unrollForIn): the sidecar's and
   // the global table's, in insertion order, none of the schema's. The receiver
   // is the unroll's: an object the summary proved never nullish.
@@ -1596,7 +1596,7 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
 }
 
 // `dynOnly`: the keys added after the literal alone (for-in's tail behind the
-// unrolled declared keys, control-flow.js unrollForIn) — the schema row is
+// unrolled declared keys, control-flow.js unrollForIn) – the schema row is
 // not read; the site's own cache holds that list and no other.
 function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = false) {
   inc('__alloc_hdr', '__ptr_offset', '__prop_order', '__str_index_key', '__str_eq')
@@ -1652,19 +1652,19 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   // arm's shared one). A receiver with a sidecar is keyed by (sidecar off,
   // sidecar len): the sidecar identifies the object (one per object, offs
   // unique), sid/schema are immutable per object, and every other key-set
-  // change moves the epoch — sidecar inserts change dnS (natural miss). A
+  // change moves the epoch – sidecar inserts change dnS (natural miss). A
   // receiver without one (a static-segment literal, a durable object written
   // only after init) is keyed by (base, -1): its keys live in the global
   // table alone, whose every insert and delete moves the epoch, and a base
   // is as unique as a sidecar off (both are allocation offsets; the heap
   // reset that could reuse one moves the epoch too). Checked BEFORE the
-  // global __dyn_props probe, so a hit skips the ihash lookup too — sound
+  // global __dyn_props probe, so a hit skips the ihash lookup too – sound
   // because any global-side structural change since the fill moved the epoch.
-  // Fill the site's cache with `arr` — by sidecar, else by base (roHit below).
+  // Fill the site's cache with `arr` – by sidecar, else by base (roHit below).
   // A receiver with no dyn source is cached only below the heap: a static
   // literal's every write lands in the global table and moves the epoch,
   // where a heap object's first write at init makes it a sidecar, which
-  // moves nothing (its length is the sidecar key) — cached with none, it
+  // moves nothing (its length is the sidecar key) – cached with none, it
   // would keep answering from before that write.
   const fillSite = (arr) => [['if', ['i32.or', ['i32.or', ['local.get', `$${poffS}`], ['local.get', `$${poffG}`]], ['i32.lt_u', ['local.get', `$${base}`], ['i32.const', HEAP.START]]], ['then',
     ['global.set', `$${site.off}`, ['select', ['local.get', `$${poffS}`], ['local.get', `$${base}`], ['local.get', `$${poffS}`]]],
@@ -1685,7 +1685,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   return ['block', `$oed${id}`, ['result', 'f64'],
     // A static-segment receiver (below the heap: no header, so never a
     // sidecar, and never forwarded) is the site's cached one when its pointer
-    // and the epoch match — nothing else to read (roHit below is the heap
+    // and the epoch match – nothing else to read (roHit below is the heap
     // receivers' check, after their header).
     ...(site ? [['if', ['i32.and',
         ['i32.and', ['i32.lt_u', raw, ['i32.const', HEAP.START]], ['i32.eq', raw, ['global.get', `$${site.off}`]]],

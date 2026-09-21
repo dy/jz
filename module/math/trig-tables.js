@@ -67,7 +67,7 @@ export const EXPM1_C = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.008
 // double nearest the exact power and the relative tail its rounding dropped
 // ((exact − T)/T), interleaved. scripts/exp-table.mjs derives both from
 // 2^(1/64) at 200 bits; test/math.js re-derives them. With the tail, the
-// kernels' T + T·(q + tail) — q the small remainder 2^f − 1 or e^r − 1 —
+// kernels' T + T·(q + tail) – q the small remainder 2^f − 1 or e^r − 1 –
 // rounds once: 0.52 ulp over the whole range for both functions against the
 // 200-bit reference (the 14-term series over |f| ≤ ½ this replaces reached
 // 2 ulp at twice the flops, and exp through 2^(x·log2 e) lost |x| ulp on top).
@@ -141,7 +141,7 @@ export const EXP2_TAB = [
 // hands them to the assembler; test/math.js checks the two agree).
 export const EXP2_TAB_HEX = '000000000000f03f00000000000000006180773e9a2cf03f5cdcd89c136071bc748515d3b059f03f13f6673552d28c3cc89b75184587f03f61c8e6614ef7603c0f89f96c58b5f03f6d7b835da69a973ca2d1d332ece3f03fd29c2f703dbe3e3c515b12d00113f13f0ebd2f2a525695bce02da9ae9a42f13f15f4d5b923c991bc7b517d3cb872f13f4893a5ea151b80bc75cb6feb5ba3f13fbf53133f8c898b3caab9683187d4f13f602f3a3ef7ec9a3cd68c62883b06f23f8dc3a644416f8a3c3862756e7a38f23f94a8a8e3fd8e963cdd7ce265456bf23ff2e71f982b47803ce1de1ff59d9ef23f31ab096de1f7823c0b03e4a685d2f23fb40a0c7282378b3c15b7310afe06f33fb6abb04d754d833cff1664b2083cf33f4bf8d35d39dd8f3ccba93a37a771f33f69504bcced4a92bcf79fe534dba7f33fd236943ee8d171bc2234124ca6def33f6d4c2aa7489f853c2a2ef7210a16f43f5b8917488fa758bc2d896160084ef43f12acc260ed63433cd03cc1b5a286f43f7803a1dae1cc6e3c272a36d5dabff43fb0af7abbce90763ca72c9d76b2f9f43f8ea3710034948fbc824f9d562b34f53f60380fbdc6de78bcda27b536476ff53f8ed7fd180535933c295448dd07abf53f09541ce2e163903c4821ad156fe7f53f36c0642be632943c85553ab07e24f63fa84def3bc5338cbc252255823862f63f58585678ddce93bccd3b7f669ea0f63f29225ebfefb393bc2f1a653cb2dff63feea96db8ef6763bc745fece8751ff73fce3e5a7e641f78bcc9674256eb5ff73f8ae6551e321986bc8701eb7314a1f73f1da54db9dc327bbc624ecf36f3e2f73f556cd6abe1eb653c13ce4c998925f83f34373bf1b66993bced92449bd968f83f6e5772d850d494bcdba02a42e5acf83fb5eaf0c12fb78d3c36771599aef1f83f445ff35983f67b3ce5c5cdb03737f93f291e6c8bb8a95dbc504ede9f827df93faaf9f422434392bc90f0a38291c4f93f27ce912bfcaf713c65e55d7b660cfa3f6322622204c587bc5d253eb20355fa3f15bbbcd3d1bb91bcbffd79556b9efa3fb35a736e8469843cadd35a999fe8fa3f8633cb92771a8c3cfb154fb8a233fb3fbaaedc56d9c355bc475efbf2767ffb3f3493ad38f4d668bcd2c14b901eccfb3fcddd5f0ad7ff743c9c5285dd9b19fc3fb30caf30ae6e733c4bd1572ef167fc3fac5909d18fe0843c6990efdc20b7fc3f6719926c2c6b673c7c89074a2d07fd3f6efaff3f5dad8fbc87a4fbdc1858fd3fa8073da685a3743c8532db03e6a9fd3fac92c1d5505a8e3c5f9b7b3397fcfd3f203eb40721d582bcf63f8be72e50fe3fd3883a6004b6743cda90a4a2afa4fe3ff091d38f12f78fbc275a61ee1bfafe3f0820aa41bcc38e3c40456e5b7650ff3fee85d131a9648a3cd8909e81c1a7ff3f9dcd914d3b89773c'
 // (2^f − 1)/f on |f| ≤ 1/128 as ln2^n/n!, n = 1..6, and (e^r − 1)/r on
-// |r| ≤ ln2/128 as 1/n!, n = 1..6 — the degree at which the table kernels
+// |r| ≤ ln2/128 as 1/n!, n = 1..6 – the degree at which the table kernels
 // land within 0.52 ulp (0.76 at degree 5, 348 at 4).
 export const EXP2_Q = [0.6931471805599453, 0.2402265069591007, 0.055504108664821576, 0.009618129107628477, 0.0013333558146428441, 0.00015403530393381606]
 export const EXP_Q = [1, 0.5, 0.16666666666666666, 0.041666666666666664, 0.008333333333333333, 0.001388888888888889]

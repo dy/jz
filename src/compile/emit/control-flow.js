@@ -194,7 +194,7 @@ const closedKeysOf = (src) => {
 }
 // An open layout: the summary names the receiver's one layout, some site still
 // adds keys to it, and the receiver is never nullish. Its declared keys come
-// first — the object was made with them and nothing is deleted — and the keys
+// first – the object was made with them and nothing is deleted – and the keys
 // added at run time follow through `__keys_dyn`, in insertion order. An
 // array-index key sorts ahead of every string in JS, so a layout holding one
 // keeps the pooled loop.

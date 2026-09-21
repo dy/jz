@@ -415,7 +415,7 @@ export function foldStaticConstArrayReads(fn) {
     // 1) base tee → global-derived base: (local.tee $b (call $__ptr_offset …)) → baseIR,
     //    or the speed tier's inline forwarding hop (ir/pointers.js fwdOffsetIR): a
     //    block that sets the base local from the box, tests the forwarding mark and
-    //    re-reads it through $__ptr_offset_fwd, then yields the local — a never-resized
+    //    re-reads it through $__ptr_offset_fwd, then yields the local – a never-resized
     //    static array never forwards, so the whole hop is the base.
     let baseLocal = null
     const hopLocal = (blk) => {

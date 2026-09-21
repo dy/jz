@@ -333,7 +333,7 @@ export function pullStdlib(sec) {
         for (const name of runtimeWritten) {
           const g = ctx.scope.globals.get(name)
           if (!g || !g.mut || !SNAP_TYPES[g.type]) continue
-          // `__enumc_*`: the for-in enum caches (module/object.js) — state the
+          // `__enumc_*`: the for-in enum caches (module/object.js) – state the
           // reset below invalidates through the epoch, never restores.
           if (SNAP_PROTOCOL.has(name) || name.startsWith('__tof_') || name.startsWith('__hc_') || name.startsWith('__enumc_')) continue
           if (startFn) { snapSlots.push([name, g.type, slabBytes]); slabBytes += SNAP_TYPES[g.type] }

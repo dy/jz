@@ -7,7 +7,7 @@
  * reaches them by name (src/optimize/vectorize.js's PPC_CALL2 lifts), never
  * a JS symbol, so this file is a pure one-way leaf off math/trig-tables.js
  * (needs its own local helpers splat/horner2/reduce2/signClamp — used only
- * here — plus the shared SIN_C/COS_C/EXP2_Q/EXP_Q/PI/INV_PI coefficients math.js's
+ * here – plus the shared SIN_C/COS_C/EXP2_Q/EXP_Q/PI/INV_PI coefficients math.js's
  * scalar kernels also use).
  *
  * @module math/simd
@@ -146,7 +146,7 @@ export const registerMathSimd = () => {
           (f64x2.splat (call $math.log (f64x2.extract_lane 0 (local.get $x))))
           (call $math.log (f64x2.extract_lane 1 (local.get $x)))))))`, ['math.log'])
 
-  // True f64x2 exp2 and exp — the hot path (every lane's k = round(64y) in [−65408, 65535],
+  // True f64x2 exp2 and exp – the hot path (every lane's k = round(64y) in [−65408, 65535],
   // i.e. a normal result) mirrors the scalar table kernels op for op: the two lanes' T and
   // tail come from two scalar loads, the polynomial and T + T·(q + tail) run 2-wide, 2^e is
   // the one exponent build. Any other lane (NaN, overflow, a denormal result) routes both
