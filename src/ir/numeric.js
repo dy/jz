@@ -380,6 +380,14 @@ const i32Narrowed = n => {
     const inner = n[1]
     return Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
+  // A checked read of an integer element (module/typedarray.js, tagged
+  // checkedNumRead): its hit arm converts an integer load, its miss arm is
+  // undefined, which ToInt32 takes to 0. The read stays in the i32 ring: the
+  // load itself on a hit, zero on a miss (`u8[i] << 8 | u8[i + 1]`, `parent[p] | 0`).
+  if (n.checkedNumRead && Array.isArray(n)) {
+    const checked = i32CheckedRead(n)
+    if (checked) return checked
+  }
   if (Array.isArray(n) && n[0] === 'f64.const' && typeof n[1] === 'number') {
     const v = n[1]
     return typed(['i32.const', int32(v)], 'i32')
@@ -399,6 +407,31 @@ const i32Narrowed = n => {
   const rng = f64Range(n, null, true)
   if (rng && rng.lo >= -9223372036854775808 && rng.hi < 9223372036854775808)
     return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
+  return null
+}
+
+/** A checked integer-element read in the i32 ring: `(if (result f64) in (then convert(load)) (else undefined))`,
+ *  the same under a block of index sets, or the branchless `(select convert(load) undefined in)`,
+ *  each with the convert peeled and the miss arm zero. Null for any other shape (a float element). */
+const i32CheckedRead = n => {
+  const zero = ['i32.const', 0]
+  const arm = v => Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') && Array.isArray(v[1]) ? typed(v[1], 'i32') : null
+  const narrowIf = v => {
+    if (!Array.isArray(v) || v[0] !== 'if' || v.length !== 5 || !Array.isArray(v[3]) || v[3][0] !== 'then' || !Array.isArray(v[4]) || v[4][0] !== 'else') return null
+    const hit = arm(v[3][1])
+    return hit ? typed(['if', ['result', 'i32'], v[2], ['then', hit], ['else', zero]], 'i32') : null
+  }
+  const narrowTail = v => {
+    const asIf = narrowIf(v)
+    if (asIf) return asIf
+    if (Array.isArray(v) && v[0] === 'select' && v.length === 4) { const hit = arm(v[1]); return hit ? typed(['select', hit, zero, v[3]], 'i32') : null }
+    return null
+  }
+  if (n[0] === 'if') return narrowIf(n)
+  if (n[0] === 'block' && Array.isArray(n[1]) && n[1][0] === 'result') {
+    const tail = narrowTail(n[n.length - 1])
+    return tail ? typed(['block', ['result', 'i32'], ...n.slice(2, -1), tail], 'i32') : null
+  }
   return null
 }
 
