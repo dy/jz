@@ -1349,8 +1349,8 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans prose">
-            <p>JZ compiles a distilled JavaScript subset, Crockford’s “good parts” – into native-grade WASM.</p>
-            <p><b>Valid JZ is valid JS</b>. Same source runs as plain JS or compiles without rewrite to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
+            <p>JZ compiles a JavaScript subset into native-grade WASM.</p>
+            <p><em>Valid JZ is valid JS</em>: same source runs as plain JS or compiles to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
             <table>
               <thead>
                 <tr>
@@ -1361,23 +1361,23 @@
               <tbody>
                 <tr>
                   <td>DSP, audio, synthesis</td>
-                  <td>UI, DOM, frontend state</td>
+                  <td>UI, DOM, frontend</td>
                 </tr>
                 <tr>
                   <td>Images, video, pixels</td>
-                  <td>Network, hot I/O, serving HTTP</td>
+                  <td>Network, hot I/O, serving</td>
                 </tr>
                 <tr>
                   <td>Simulation, physics, games</td>
-                  <td>Dynamic object models and monkey-patching</td>
+                  <td>Dynamic objects, monkey-patching</td>
                 </tr>
                 <tr>
                   <td>Parsers, codecs, compression</td>
-                  <td>Allocation-heavy, long-lived object graphs</td>
+                  <td>Allocation-heavy, long-lived states</td>
                 </tr>
                 <tr>
                   <td>Scientific, numeric, edge ML</td>
-                  <td>Security-sensitive cryptography and arbitrary-precision integers</td>
+                  <td>Security, cryptography, arbitrary-precision integers</td>
                 </tr>
                 <tr>
                   <td>Hashing, checksums, RNG</td>
@@ -1393,14 +1393,14 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans prose">
-            <p>Modern JavaScript compiles: classes, generators, async/await, destructuring, BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers. What JZ refuses, at compile time:</p>
             <div class="subset">
               <div class="ring out">
                 <span class="rl">Not supported</span>
                 <span class="t">eval Function with</span><span class="t">Proxy Reflect</span><span class="t">descriptors</span><span class="t">prototype chains</span><span class="t">top-level await</span><span class="t">import()</span><span class="t">DOM</span><span class="t">Node Intl Temporal</span>
               </div>
             </div>
-            <p>And what differs: no GC (call <code>memory.reset()</code>), 64-bit BigInt, compile-time regexes, ASCII case and UTC dates. <a href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">Details →</a></p>
+            <p>What's supported: classes, generators, async/await, destructuring, BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers.</p>
+            <p>What differs: no GC (call <code>memory.reset()</code>), 64-bit BigInt, compile-time regexes, ASCII case and UTC dates. <a href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">Details →</a></p>
           </div>
         </details>
 
@@ -1408,7 +1408,7 @@
           <summary><h2 class="fq">Why no types?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
-          <div class="ans prose">Ordinary code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower, always-correct dynamic path.</div>
+          <div class="ans prose">JS code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower, always-correct dynamic path.</div>
         </details>
 
 
@@ -1417,7 +1417,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans prose">
-            <p>Porffor aims to cover the full JS spec but emits no WASM (its 2026 rewrite compiles through C to native) and runs slower than V8 on the <a href="bench/">cases</a> it completes; scriptc makes native CLI binaries from TypeScript, no WASM target; AssemblyScript compiles a typed TypeScript dialect to WASM.</p>
+            <p>Porffor aims to cover the full JS spec but emits no WASM and runs slower than V8 on the <a href="bench/">cases</a> it completes; scriptc makes native CLI binaries from TypeScript, no WASM target; AssemblyScript compiles a typed TypeScript dialect to WASM.</p>
             <p>JZ compiles plain JS that still runs and tests as JS, and the release gate keeps its WASM fastest per case; the price is the overdynamic constructs it refuses.</p>
           </div>
         </details>
@@ -1427,7 +1427,8 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans prose">
-            <p>Rust, Go, and C are excellent when a rewrite and second toolchain make sense. JZ is for the hot path you want to keep in JavaScript: one source, one test suite, a JS fallback, and comparable WASM or <a href="#native">native</a> performance.</p>
+            <p>If it is already Rust, keep it in Rust. If it is JavaScript, a rewrite buys a second language, toolchain and test suite, a marshalling boundary on every call, and slower wasm: on the <a href="bench/">corpus</a>, rustc, clang and zig output runs about 2× behind JZ by geomean, and Go's over 4×.</p>
+            <p>Their native binaries do not change the picture: Rust, Zig and Go still trail JZ's wasm by geomean, and C is level.</p>
           </div>
         </details>
 
