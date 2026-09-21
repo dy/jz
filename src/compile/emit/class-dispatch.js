@@ -18,7 +18,7 @@ import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { callContractOf } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
-import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, isNullable } from '../../summary/index.js'
 import { emit } from '../../bridge.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 
@@ -32,14 +32,17 @@ export const classOfSid = (sid) => { const brand = ctx.schema.brandOf?.(sid); re
 export const classesWith = (name) => classes() ? [...classes().values()].filter(e => e.methods.has(name)) : []
 const sidOf = (entry) => ctx.schema.sidOfBrand(entry.brand)
 
-/** The receiver's class when the summary names its schema: `{ entry, nullable }`, else null.
- *  An element read the interval prover puts in bounds is exactly the element's kind. */
+/** The receiver's classes when the summary names its layouts and every one is
+ *  a class's (a method inherited by several classes sees each): `{ entries,
+ *  nullable }`, else null. An element read the interval prover puts in bounds
+ *  is exactly the element's kind. */
 const receiverClass = (obj) => {
-  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
-  if (k == null || tagOf(k) !== K.OBJECT || paramOf(k) === UNKNOWN) return null
-  const entry = classOfSid(paramOf(k))
+  const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
+  if (k == null || tagOf(k) !== K.OBJECT) return null
+  const entries = view.shapesOfExpr(obj)?.map(classOfSid)
+  if (!entries?.length || !entries.every(e => e)) return null
   const inBounds = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
-  return entry ? { entry, nullable: isNullable(k) && !inBounds } : null
+  return { entries, nullable: isNullable(k) && !inBounds }
 }
 /** Whether the summary lists the receiver's member layouts and no class owns any of them. */
 const knownNonInstance = (obj) => {
@@ -68,8 +71,10 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held) {
   // (an element read `const e = evs[i]` of a literal's shape): a class
   // elsewhere with a member of this name is no reason to dispatch its reads.
   if (!known) return notAnObject(obj) || knownNonInstance(obj) || !ctx.funcs.names.has(dispatcher) ? undefined : dispatcher
-  const fn = fnOf(known.entry)
-  if (fn == null) return rest(held ?? obj)
+  const fns = known.entries.map(fnOf), fn = fns[0]
+  if (fns.every(f => f == null)) return rest(held ?? obj)
+  // the classes resolve the member to different functions (an override among them): the dispatcher tests each
+  if (fns.some(f => f !== fn)) return ctx.funcs.names.has(dispatcher) ? dispatcher : undefined
   // An own property stored under the member's name shadows it: probe it
   // first and take the ordinary path on a hit (the class contract).
   const member = (t) => {
@@ -131,6 +136,28 @@ export function classAccessor(obj, slot, args, rest, held) {
   return typeof r === 'string' ? emit(['()', r, withReceiver(held ?? obj, args)]) : r
 }
 
+/** `'name' in o` for a class member `name` (a method or an accessor): true of
+ *  every instance of a class with the member, as of a prototype's in JS. The
+ *  test over the classes with it, folded where the summary names the
+ *  receiver's classes; undefined when no class has the member. */
+const memberHolders = (name) => classesWith(name).concat(classesWith(name + ACCESSOR_GET), classesWith(name + ACCESSOR_SET))
+/** Whether some class has a member `name` (a method or an accessor). */
+export const classHasMember = (name) => memberHolders(name).length > 0
+export function classMemberIn(obj, name) {
+  const holders = memberHolders(name)
+  if (!holders.length) return undefined
+  const known = receiverClass(obj)
+  if (known && !known.nullable) {
+    const has = known.entries.map(e => holders.includes(e))
+    if (has.every(h => h === has[0])) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(obj))], ['i32.const', has[0] ? 1 : 0]], 'i32')
+  }
+  const sids = [...new Set(holders.map(sidOf).filter(sid => sid != null))]
+  if (!sids.length || notAnObject(obj)) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(obj))], ['i32.const', 0]], 'i32')
+  const t = temp('inm')
+  const test = sids.map(sid => typed(tagEq(t, sid), 'i32')).reduce((x, y) => typed(['i32.or', x, y], 'i32'))
+  return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(obj))], test], 'i32')
+}
+
 /** `a instanceof C`: the pointer carries the schema id of C or of a class deriving from C. */
 export function classInstanceof(a, brand) {
   const entry = classes()?.get(brand)
@@ -138,7 +165,8 @@ export function classInstanceof(a, brand) {
   const sids = entry ? [...classes().values()].filter(derives).map(sidOf).filter(sid => sid != null) : []
   const t = temp('inst')
   const known = receiverClass(a)
-  if (known && !known.nullable) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(a))], ['i32.const', derives(known.entry) ? 1 : 0]], 'i32')
+  if (known && !known.nullable && known.entries.every(e => derives(e) === derives(known.entries[0])))
+    return typed(['block', ['result', 'i32'], ['drop', asF64(emit(a))], ['i32.const', derives(known.entries[0]) ? 1 : 0]], 'i32')
   if (!sids.length || notAnObject(a)) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(a))], ['i32.const', 0]], 'i32')
   const test = sids.map(sid => typed(tagEq(t, sid), 'i32')).reduce((x, y) => typed(['i32.or', x, y], 'i32'))
   return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(a))], test], 'i32')

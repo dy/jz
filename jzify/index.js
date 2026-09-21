@@ -273,6 +273,30 @@ function hoistModuleDynamicImports(ast) {
   return [';', ...hoisted, ...stmts]
 }
 
+// The module's imports in source order, each specifier with the local names
+// it binds (`import D from`, `import { a, b as c } from`; a namespace or bare
+// import binds none): the class lowering resolves a base class or an
+// `instanceof` operand imported from another module through them.
+function importsOf(ast) {
+  const stmts = Array.isArray(ast) && ast[0] === ';' ? ast.slice(1) : [ast]
+  const list = []
+  const add = (spec, src, names = new Map()) => {
+    if (!Array.isArray(src) || src[0] != null || typeof src[1] !== 'string') return
+    if (typeof spec === 'string') names.set(spec, 'default')
+    else if (Array.isArray(spec) && spec[0] === '{}')
+      for (const it of (Array.isArray(spec[1]) && spec[1][0] === ',' ? spec[1].slice(1) : [spec[1]]))
+        if (typeof it === 'string') names.set(it, it); else if (Array.isArray(it) && it[0] === 'as') names.set(it[2], it[1])
+    list.push({ spec: src[1], names })
+  }
+  for (const st of stmts) {
+    if (!Array.isArray(st)) continue
+    if (st[0] === 'import') { if (Array.isArray(st[1]) && st[1][0] === 'from') add(st[1][1], st[1][2]); else add(null, st[1]) }
+    else if (st[0] === ',' && st.length === 3 && Array.isArray(st[1]) && st[1][0] === 'import' && typeof st[1][1] === 'string' && Array.isArray(st[2]) && st[2][0] === 'from')
+      add(st[2][1], st[2][2], new Map([[st[1][1], 'default']]))
+  }
+  return list
+}
+
 // A module referencing a standard-module global (`Event`, `EventTarget`) it
 // does not declare at top level gets the import implicitly:
 // `import { Event, EventTarget } from 'jz:events'` (src/std). The bundler
@@ -331,9 +355,8 @@ function implicitStdImports(ast) {
  *   (the source-level lowering) keeps every class as per-instance closures.
  * @returns {Array} Transformed AST
  */
-export default function jzify(ast, { structs = true } = {}) {
+export default function jzify(ast, { structs = true, importedBinding = null } = {}) {
   names.reset()
-  resetClasses(structs)
   activeBuiltinScope = null
   builtinScopes = buildBuiltinScopes(ast)
   // Module-scope `const K = 'str'` bindings — lets class lowering fold computed
@@ -345,6 +368,7 @@ export default function jzify(ast, { structs = true } = {}) {
   ast = canonSymbols(ast)
   ast = hoistModuleDynamicImports(ast)
   ast = implicitStdImports(ast)
+  resetClasses(structs, importedBinding ? { list: importsOf(ast), importedBinding } : null)
   if (Array.isArray(ast)) {
     const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
     for (const st of stmts) {
@@ -372,3 +396,8 @@ export default function jzify(ast, { structs = true } = {}) {
   out = implicitStdImports(out)
   return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(out)))
 }
+/** The module's imports before it is transformed (the implicit standard ones
+ *  included): prepare brings each bundled one in, in this order, ahead of the
+ *  module's own lowering, so a class extending an imported class finds its
+ *  base lowered without the lowering re-entering itself. */
+jzify.imports = (ast) => importsOf(implicitStdImports(ast))

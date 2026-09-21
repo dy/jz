@@ -4,7 +4,7 @@
  */
 
 import { extractParams as paramList, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T } from '../src/ast.js'
-import { ctx, err } from '../src/ctx.js'
+import { ctx, err, warn } from '../src/ctx.js'
 
 export function createClassLowering({ transform, names, JC, constStrings, atModuleScope }) {
 // === class lowering ===
@@ -317,6 +317,24 @@ const methodValue = (mparams, mbody, kind, to) => kind === 'gen'
 // member, `'len' in o` is false, and a method read as a value is bound to
 // its receiver.
 const structClasses = new Map()   // this module's classes by local name
+let moduleImports = null          // the module's imports and the binding resolver (index.js), or null
+/** The class a name of this module denotes: one lowered here, or one imported
+ *  from a module lowered before it (the imports prepared in source order, as
+ *  ES evaluates them, up to the one that binds the name); null otherwise. */
+const resolveClass = (name) => {
+  const own = structClasses.get(name)
+  if (own || !moduleImports) return own ?? null
+  let mangled = null
+  for (const { spec, names } of moduleImports.list) {
+    const exported = names.get(name)
+    const bound = moduleImports.importedBinding(spec, exported ?? null)
+    if (exported !== undefined) { mangled = bound; break }
+  }
+  if (typeof mangled !== 'string') return null   // no such export, or a namespace re-export
+  const at = mangled.indexOf('$'), module = mangled.slice(0, at), local = mangled.slice(at + 1)
+  for (const e of ctx.transform.classes?.values() ?? []) if (e.module === module && e.name === local) return e
+  return null
+}
 const methodFn = (cls, m) => `${cls}${CLASS_T}${m}`
 const INIT = CLASS_T + 'init', BIND = CLASS_T + 'bind'
 function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers }) {
@@ -340,10 +358,15 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   const superVars = new Map([...superMethods].map(m => [m, base?.methods.get(m)]))
   for (const [m, fn] of superVars) if (!fn) jzifyError(`super.${m} is not available on the base class`)
   const rewrite = (node) => renameThis(rewriteSuperMethodCalls(node, superVars, self), self)
-  const withSelf = (params) => { const list = paramList(arrowParams(params ?? null)); return ['()', list.length ? [',', self, ...list] : self] }
+  const selfList = (params) => { const list = paramList(arrowParams(params ?? null)); return list.length ? [',', self, ...list] : self }
+  const withSelf = (params) => ['()', selfList(params)]
+  // A method's function of the receiver, of the method's kind (an async or generator method as such).
+  const fnOf = (kind, mparams, body) => transform(kind === 'gen' ? ['function*', null, selfList(mparams), body]
+    : kind === 'asyncgen' ? ['async', ['function*', null, selfList(mparams), body]]
+    : kind === 'async' ? ['async', ['=>', withSelf(mparams), body]] : ['=>', withSelf(mparams), body])
   // The methods, each a function of the receiver, and a binder for a method read as a value.
-  for (const [mname, mparams, mbody] of methods) {
-    hoists.push(['let', ['=', methodFn(cls, mname), transform(['=>', withSelf(mparams), block(rewrite(mbody))])]])
+  for (const [mname, mparams, mbody, kind] of methods) {
+    hoists.push(['let', ['=', methodFn(cls, mname), fnOf(kind, mparams, block(rewrite(mbody)))]])
     const plist = paramList(arrowParams(mparams ?? null))
     const simple = plist.every(p => typeof p === 'string')
     const args = simple ? plist.map((_, i) => names.classSuperArg(i)) : [['...', names.classSuperArg(0)]]
@@ -483,9 +506,13 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     )
       jzifyError(JC.superProp)
   }
-  const base = typeof heritage === 'string' ? structClasses.get(heritage) : null
-  if (structsOn && hoists && atModuleScope() && (heritage == null || base) && !methods.some(m => m[3]) && (statics.length === 0 || trailers))
+  const base = typeof heritage === 'string' ? resolveClass(heritage) : null
+  if (structsOn && hoists && atModuleScope() && (heritage == null || base) && (statics.length === 0 || trailers))
     return lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
+  // The advisory names what kept the class from its schema lowering (`why`):
+  // a class of closures reads and calls its members through the runtime.
+  if (structsOn) warn('class-generic', `class ${name ?? '(anonymous)'} is lowered to closures, not a schema: ${
+    !atModuleScope() ? 'it is declared inside a function' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members need a declaration, not an expression'}`, { fn: name ?? undefined })
   const self = names.classSelf()
   const UNDEF = []                                  // jessie's node for `undefined`
   // Object literal: every declared field (its initializer inline when it doesn't
@@ -572,13 +599,14 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]
 }
 
-  /** The brand of a class of this module lowered to a schema, by local name; null otherwise. */
-  const classBrand = (name) => structClasses.get(name)?.brand ?? null
-  /** Whether a class of this module has the static accessor slot (`x__get` / `x__set`). */
-  const classStaticAccessor = (name, slot) => structClasses.get(name)?.staticAccessors.has(slot) ?? false
-  /** The module's classes are its own: cleared at every jzify entry; `structs` false keeps every class a closure. */
+  /** The brand of a class lowered to a schema, by the name this module knows it by; null otherwise. */
+  const classBrand = (name) => resolveClass(name)?.brand ?? null
+  /** Whether the class the name denotes has the static accessor slot (`x__get` / `x__set`). */
+  const classStaticAccessor = (name, slot) => resolveClass(name)?.staticAccessors.has(slot) ?? false
+  /** The module's classes are its own: cleared at every jzify entry, with the
+   *  module's imports for the classes of others; `structs` false keeps every class a closure. */
   let structsOn = true
-  const resetClasses = (structs = true) => { structClasses.clear(); structsOn = structs }
+  const resetClasses = (structs = true, imports = null) => { structClasses.clear(); structsOn = structs; moduleImports = imports }
   return { lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses }
 }
 

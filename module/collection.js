@@ -179,6 +179,7 @@ const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (loc
 const bitEq = '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
 
 import { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
+import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
 // Re-exported from their new home (module/collection/upsert.js — the
 // hash-table probe/upsert/lookup/delete pipeline, pure-moved out of this
 // file) so module/core.js's `collectionLaneBytes` import and
@@ -2266,6 +2267,18 @@ export default (ctx) => {
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.core.emit['in'] = (key, obj) => {
     const objType = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+    // A class member (jzify/classes.js): an instance of a class with it has it,
+    // as through a prototype; a store under the name on any receiver is an own
+    // property the ordinary probe finds.
+    if (Array.isArray(key) && key[0] === 'str' && !key.memberProbe && !key.accessorProbe && !key[1].endsWith(ACCESSOR_GET) && !key[1].endsWith(ACCESSOR_SET)
+        && (objType == null || objType === VAL.OBJECT) && classHasMember(key[1])) {
+      const raw = Object.assign(['str', key[1]], { memberProbe: true })
+      let recv = obj
+      const pre = []
+      if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
+      const probe = typed(['i32.or', asI32(classMemberIn(recv, key[1])), asI32(emit(['in', raw, recv]))], 'i32')
+      return pre.length ? typed(['block', ['result', 'i32'], ...pre, probe], 'i32') : probe
+    }
     if (objType == null || objType === VAL.TYPED) {
       ctx.module.include('typedarray')
       setLinkDemand('typedProperties')

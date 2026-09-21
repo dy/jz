@@ -4,7 +4,6 @@
  * @module compile/emit/method-dispatch
  */
 
-import { callWithArgs } from '../../ir.js'
 import { positionArgs } from '../../bridge.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
@@ -21,8 +20,8 @@ import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
-import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable, materializeMulti } from './call-args.js'
-import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
+import { buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable, materializeMulti } from './call-args.js'
+import { emit, emitIdentitySafe } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { stringOps } from './shared.js'
@@ -235,11 +234,16 @@ function tryFnPropCall(callee, obj, method, parsed) {
     const fname = `${obj}$${method}`
     if (ctx.funcs.names.has(fname)) {
       const func = ctx.funcs.map.get(fname)
-      // A tuple-returning lift (`fn.coefs = (fs) => [a, b]`) materializes like
-      // a plain direct call: the caller holds one pointer, not N lanes.
-      if (func.sig.results.length > 1) return materializeMulti(['()', fname, parsed.normal.length > 1 ? [',', ...parsed.normal] : parsed.normal[0]])
-      const emittedArgs = emitCallArgs(parsed.normal, func.sig.params, func)
-      return attachSigMeta(typed(callWithArgs(fname, emittedArgs, func.sig), func.sig.results[0]), func.sig)
+      // The direct call of the lifted function, with its spreads in place: the
+      // call path packs a rest parameter and materializes a tuple result
+      // (`fn.coefs = (fs) => [a, b]`: the caller holds one pointer, not N lanes).
+      const args = []
+      for (let pos = 0; pos <= parsed.normal.length; pos++) {
+        for (const sp of parsed.spreads) if (sp.pos === pos) args.push(['...', sp.expr])
+        if (pos < parsed.normal.length) args.push(parsed.normal[pos])
+      }
+      const call = ['()', fname, args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]]
+      return func.sig.results.length > 1 ? materializeMulti(call) : emit(call)
     }
   }
 }

@@ -452,10 +452,10 @@ test('inferArrElemSchema: inline array-literal arguments retain boxed record lay
 
 test('inferArrElemSchema: heterogeneous literal elements stay generic', () => {
   if (belowOpt(1)) return
-  // Negative: build's two call sites pass DIFFERENT shapes ({x,y} vs {z,y}) →
-  // d's own schemaId poisons → the array-literal branch can't resolve a
-  // common element schema → dispatch keeps the generic dyn-get path. Proves
-  // the positive case above isn't a vacuous always-fires fold.
+  // Negative: build's two call sites pass DIFFERENT shapes ({x,y} vs {y,z}),
+  // `y` in a different slot of each → no common slot, so the read tests the
+  // shape (a guard per layout) with the generic dyn-get behind the misses.
+  // Proves the positive case above isn't a vacuous always-fires fold.
   const wat = jz.compile(`
     const dispatch = (ops) => {
       let s = 0
@@ -463,7 +463,7 @@ test('inferArrElemSchema: heterogeneous literal elements stay generic', () => {
       return s
     }
     const build = (d) => dispatch([d])
-    export const main = () => (build({x: 1, y: 2}) + build({z: 3, y: 4})) | 0
+    export const main = () => (build({x: 1, y: 2}) + build({y: 4, z: 3})) | 0
   `, { wat: true })
   ok(count(wat, /\$__dyn_get_/g) > 0, 'heterogeneous element shapes must stay generic')
 })

@@ -681,3 +681,23 @@ export let main = (n) => { const evs = [mk(1), mk(2), mk(3)]; let s = 0; for (le
   is(jz(src).exports.main(3), 6)
   is(jz(src).exports.other(), 4)
 })
+
+test("classes: `in` finds a class member on an instance, as through a prototype", () => {
+  const src = `class A { constructor(){ this.x = 1 } get sampleRate(){ return 44100 } m(){ return 1 } } class B { constructor(){ this.y = 2 } }
+    const objs = [new A(), new B(), { sampleRate: 1 }]
+    export let f = (i) => { const o = objs[i]; return ('sampleRate' in o ? 1 : 0) + ('m' in o ? 2 : 0) + ('x' in o ? 4 : 0) + ('zz' in o ? 8 : 0) }`
+  const { f } = jz(src).exports
+  is([f(0), f(1), f(2)], [7, 0, 1])
+})
+
+test('classes: a class extending a class of another module keeps the schema lowering', () => {
+  const modules = { './a.js': `export class A { constructor(sr){ this.sr = sr; this.buf = new Float32Array(4); for (let i = 0; i < 4; i++) this.buf[i] = i } get sampleRate(){ return this.sr } process(n){ let s = 0; for (let i = 0; i < n; i++) s += this.buf[i & 3] * this.sampleRate; return s } }` }
+  const src = `import { A } from './a.js'
+    class B extends A { constructor(){ super(10); this.gain = 0.5 } process(n){ return super.process(n) * this.gain } }
+    export let f = (n) => new B().process(n) + new A(1).process(n)`
+  const warnings = { entries: [] }
+  const wat = jz.compile(src, { modules, warnings, wat: true })
+  is(warnings.entries.filter(e => e.code === 'class-generic').length, 0, 'both classes are schemas')
+  ok(!/\$__dyn_get/.test(wat), 'the inherited method reads its fields as slots')
+  is(jz(src, { modules }).exports.f(4), 6 * 10 * 0.5 + 6 * 1)
+})

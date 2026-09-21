@@ -2619,6 +2619,22 @@ function detectResults(body) {
 }
 
 /** Compile-time bundling: parse + prepare an imported module, collect exports. */
+/** Prepare the bundled modules `ast` imports, in source order (the order ES
+ *  evaluates them), before the module's own lowering: a class extending an
+ *  imported class then finds its base lowered (jzify/classes.js), and each
+ *  import statement later only binds. Without jzify the statements bring
+ *  their modules in as they come. */
+export function prepareImports(ast) {
+  for (const { spec } of ctx.transform.jzify?.imports?.(ast) ?? []) if (isBundledModule(spec)) prepareModule(spec, bundledSource(spec))
+}
+/** The mangled name an import of `name` from an already prepared `spec` binds;
+ *  null for a host import, a built-in module, a missing export or a module not
+ *  prepared yet (the lowering then declines). */
+export function importedBinding(spec, name) {
+  if (name == null || ctx.module.hostImports?.[spec]?.[name]) return null
+  return ctx.module.resolvedModules.get(spec)?.exports.get(name) ?? null
+}
+
 function prepareModule(specifier, source) {
   includeModule('core')
   // Cycle detection
@@ -2682,7 +2698,7 @@ function prepareModule(specifier, source) {
     if (!ctx.transform.parse) err('compile-time module bundling requires ctx.transform.parse (injected by the jz pipeline)')
     ast = ctx.transform.parse(source)
   }
-  if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
+  if (ctx.transform.jzify) { prepareImports(ast); ast = ctx.transform.jzify(ast, { importedBinding }) }
   ast = hoistIndexedConstLiterals(ast)
   const savedDepth = prepState.depth; prepState.depth = 0
   const savedReassigned = prepState.reassignedTopLevel

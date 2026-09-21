@@ -1988,3 +1988,8 @@ test('call and apply on a closure value invoke it with the remaining arguments',
     export let go = () => { const e = new E(); e.on((x) => x + 1); e.on((x) => x * 10); const f = new F(); f.on((x, y) => x + y); f.on((x, y) => x * y); return e.emit(2) * 100 + f.sum(2, 3) }`
   for (const optimize of levels(0, 2, 3)) is(runHost(src, { optimize }).go(), 2311, `O${optimize}`)
 })
+
+test('closures: a rest-parameter arrow stored as a function property packs its arguments when called', () => {
+  const src = 'let C = () => 1; C.s = (...a) => a.length + 4; export let f = () => C.s() * 100 + C.s(1, 2)'
+  is(jz(src).exports.f(), 406)
+})

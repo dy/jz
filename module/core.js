@@ -21,7 +21,7 @@ import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
@@ -1742,6 +1742,25 @@ export default (ctx) => {
   const nestedMayBeExternal = node => ctx.transform.targetProfile.envImports && valTypeOf(opaquePropertyRoot(node)) == null
 
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
+  // The slot every member layout of a proven-object receiver holds `prop` in,
+  // with the representation they agree on, or null: a layout without the
+  // field, a different slot or a different carrier declines.
+  const commonSlot = (obj, prop) => {
+    const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
+    if (k == null || summaryTagOf(k) !== K.OBJECT || (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) !== VAL.OBJECT) return null
+    const layouts = view.shapesOfExpr(obj)
+    if (!layouts || layouts.length < 2) return null
+    let slot = -1, i32Certain = false, bigintProven = false
+    for (const sid of layouts) {
+      const i = ctx.schema.list[sid]?.indexOf(prop) ?? -1
+      if (i < 0 || (slot >= 0 && i !== slot)) return null
+      const fk = ctx.summary.fieldKind?.(sid, prop), numberOnly = fk != null && summaryTagOf(fk) === K.NUMBER && !isNullable(fk)
+      const c = numberOnly && !!ctx.schema.slotI32CertainBySid?.(sid, prop), b = !!ctx.schema.slotBigintProvenBySid?.(sid, prop)
+      if (slot >= 0 && (c !== i32Certain || b !== bigintProven)) return null
+      slot = i; i32Certain = c; bigintProven = b
+    }
+    return { slot, i32Certain, bigintProven }
+  }
   function emitPropAccess(va, obj, prop) {
     // Anonymous-literal fast path: when `obj` resolves at compile time to an
     // object literal `{...}` (either directly, or through a `.prop` chain
@@ -1786,6 +1805,35 @@ export default (ctx) => {
     // source autoload; own that emitter dependency here.
     ctx.module.include('string')
     const key = asI64(emit(['str', prop]))
+    // A read that leaves the slot path advises `deopt-prop-read` with how it
+    // was lowered (one shape guard, a guard chain, the dynamic dispatcher, a
+    // sidecar or hash probe) and how many shapes the summary names for the
+    // receiver, so `why` lists every such site with its cause.
+    const advise = (how, vt) => {
+      if (!ctx.warnings) return
+      const shapes = ctx.summary?.at(ctx.func.current)?.shapesOfExpr(obj)?.length ?? 0
+      warnDeopt('deopt-prop-read', `property read \`${typeof obj === 'string' ? obj : '<expr>'}.${prop}\` has no static slot (${how}${shapes ? `, ${shapes} candidate shapes` : ''}): it goes through a runtime lookup`, { prop, how, vt: vt ?? null, shapes })
+    }
+    // Monomorphic devirtualization first (emitSchemaSlotGuarded's doc), then
+    // the summary's shape set (emitSchemaSlotGuardedMulti), else `slow`.
+    const guarded = (vt, slow) => {
+      const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
+      if (guard) { advise('guard', vt); return emitSchemaSlotGuarded(va, guard, slow, prop) }
+      const guards = shapeGuards(va, obj, prop)
+      advise(guards ? `guards:${guards.length}` : 'dynamic', vt)
+      return guards ? emitSchemaSlotGuardedMulti(va, guards, slow, prop) : slow()
+    }
+    // A receiver of a few named layouts that all hold `prop` in one slot with one
+    // representation (a method inherited by classes whose fields extend the
+    // base's, jzify/classes.js): the slot read, no guard, as for one layout.
+    if (schemaIdx < 0 && va?.type === 'f64' && va.ptrKind == null && !va.cellI32) {
+      const common = commonSlot(obj, prop)
+      if (common) {
+        const base = typed(['i32.wrap_i64', ['i64.reinterpret_f64', va]], 'i32')
+        base.ptrKind = VAL.OBJECT
+        return emitSchemaSlotRead(base, common.slot, common.i32Certain, common.bigintProven)
+      }
+    }
     if (schemaIdx >= 0) {
       // A precise schema id proves this is a fixed-size OBJECT allocation, not
       // an ARRAY value that may have relocated. Extract the payload offset from
@@ -1816,9 +1864,11 @@ export default (ctx) => {
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
       if (usesDynProps(vt)) {
+        advise('sidecar', vt)
         return emitDynGetExprTyped(va, key, vt, prop)
       }
       if (vt === VAL.HASH) {
+        advise('hash', vt)
         return emitHashGetLocalConst(va, key, prop)
       }
       // OBJECT off-schema prop: __dyn_get_expr_t reads the per-OBJECT propsPtr
@@ -1859,11 +1909,7 @@ export default (ctx) => {
         // sound but dead weight) or it's a packed union-cell cursor
         // (schemaGuardOk's cellI32 case — actively unsound to guard, see its
         // doc). Kept as a bail, not adapted.
-        const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
-        const slow = () => emitDynGetExprTyped(va, key, vt, prop)
-        if (guard) return emitSchemaSlotGuarded(va, guard, slow, prop)
-        const guards = shapeGuards(va, obj, prop)
-        return guards ? emitSchemaSlotGuardedMulti(va, guards, slow, prop) : slow()
+        return guarded(vt, () => emitDynGetExprTyped(va, key, vt, prop))
       }
       if (vt == null) {
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
@@ -1897,22 +1943,20 @@ export default (ctx) => {
         // analyses that can diverge — e.g. a receiver proven pointer-narrowed
         // without also being classified OBJECT), so this arm needs the same
         // check as its sibling, not a weaker one.
-        const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
-        if (guard) return emitSchemaSlotGuarded(va, guard, slow, prop)
-        const guards = shapeGuards(va, obj, prop)
-        return guards ? emitSchemaSlotGuardedMulti(va, guards, slow, prop) : slow()
+        return guarded(vt, slow)
       }
       // Primitive receiver (number/boolean/bigint): no dynamic props — `(5).foo` is
       // undefined. Without this the value falls to the __hash_get fallback, which
       // reinterprets the primitive's bits as a HASH pointer and reads heap → OOB.
       if (vt === VAL.NUMBER || vt === VAL.BOOL || vt === VAL.BIGINT) return undefExpr()
+      advise('hashget', vt)
       inc('__hash_get', '__str_hash', '__str_eq')
       return typed(['f64.reinterpret_i64', ['call', '$__hash_get', asI64(va), key]], 'f64')
     }
     // Route through HASH fast path when valTypeOf can resolve the chain to a
     // known HASH (e.g. `o.meta.bias` where `o.meta` is a HASH per the parsed
     // JSON shape).
-    if (valTypeOf(obj) === VAL.HASH) return emitHashGetLocalConst(va, key, prop)
+    if (valTypeOf(obj) === VAL.HASH) { advise('hash', VAL.HASH); return emitHashGetLocalConst(va, key, prop) }
     // An earlier read in an opaque chain may have returned a host object even
     // when structural property inference labels that result OBJECT. Preserve
     // runtime tag dispatch. Keep this fallback out of schema devirtualization:
@@ -1926,10 +1970,7 @@ export default (ctx) => {
     if (external && hasExternalIngress()) setLinkDemand('external')
     const chainVT = valTypeOf(obj)
     const slow = () => external ? emitDynGetAnyTyped(va, key, null, prop, false) : emitDynGetExprTyped(va, key, chainVT === VAL.OBJECT ? chainVT : null, prop)
-    const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
-    if (guard) return emitSchemaSlotGuarded(va, guard, slow, prop)
-    const guards = shapeGuards(va, obj, prop)
-    return guards ? emitSchemaSlotGuardedMulti(va, guards, slow, prop) : slow()
+    return guarded(external ? 'external' : chainVT, slow)
   }
 
   // Runtime .length dispatch — factory elides branches for types that can't exist in
