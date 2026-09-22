@@ -202,6 +202,12 @@ Dependencies
    not establish parity. A further entry-range guard removed repeated
    bounds checks from 19 loops but measured 7.367 ms versus 7.326 ms in five
    alternating pairs and added 1160 bytes; that experiment was discarded.
+   Specializing two receivers together after removing redundant null-check
+   captures improved the audio diagnostic by 6%, but made mixed Float32/
+   Float64 copies 2.6–4× slower by losing the single-receiver fallback. That
+   experiment was also discarded. Future multi-receiver versions must retain
+   the existing mixed-width path; moving or folding receiver copies should
+   use dominance evidence, not a function-wide alias guess.
    colorpq's scalar Arm pow, value numbering, statement scheduling and
    true two-wide pow kernel are implemented. On the final tree, three paired
    runs take 49.4 ms with the new passes versus 86.8 ms with both disabled;
