@@ -28,6 +28,42 @@ const sidOf = (props) => ctx.schema.list.findIndex(s => s.join() === props.join(
 // and so is the record-parameter lane pass (it replaces a field-reading callee).
 const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false } }); return ctx.summary }
 
+test('summary: callbacks passed to escaped callees contribute their calls', () => {
+  for (const declaration of ['function invoke(cb) { return cb() }', 'const invoke = cb => cb()']) {
+    const src = `${declaration}
+      function kind(x) { return typeof x }
+      export function expose() { return invoke }
+      export function f() { kind(1); return invoke(() => kind(true)) }`
+    for (const optimize of levels(0, 2, 3)) {
+      const { f, expose } = jz(src, { optimize }).exports
+      is(f(), 'boolean', declaration)
+      expose()
+      is(f(), 'boolean', 'repeated call keeps the boolean identity')
+    }
+  }
+})
+
+test('summary: equality between missing numeric values preserves undefined', () => {
+  const src = `function same(a, b) {
+    if (a === b) return a !== 0 || 1 / a === 1 / b
+    return a !== a && b !== b
+  }
+  export function f(index) {
+    const a = [2]
+    let x = a[index], y = a[index]
+    const initial = same(x, y)
+    const missing = same(x, undefined)
+    x = 2; y = 3
+    return [initial, missing, same(x, y), same(NaN, NaN), same(0, -0)]
+  }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(src, { optimize }).exports
+    is(f(2), [true, true, false, true, false])
+    is(f(0), [true, false, false, true, false])
+    is(f(-1), [true, true, false, true, false])
+  }
+})
+
 test('summary: testing data fields does not lose the argument shape at an open join', () => {
   for (const condition of ['!!x?.enabled', "x?.name === 'f'", "typeof x?.nested === 'object'", 'x?.nested?.enabled === true']) {
     const src = `function predicate(x) { return ${condition} }

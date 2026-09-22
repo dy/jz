@@ -920,6 +920,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
    *  parameters is one the callee never observes. */
   const bind = (scope, names, base, n, defaults, ctx = null) => {
     reach(scope)
+    // Unknown callers make the parameters ANY. Arguments from known callers
+    // still flow through those parameters, including callbacks and their effects.
+    if (escaped.has(scope)) { escapeArgs(base, n); return }
     const s = spreadAt(base, n)
     let tail = NULLISH
     for (let i = s; i < n; i++) tail = merge(tail, ks[base + i])
@@ -1141,13 +1144,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (ITER_FROM.test(callee) || ITER_MK.test(callee) || ITER_DRAIN.test(callee) || ITER_ARR.test(callee)) {
         const r = ITER_FROM.test(callee) ? iterFrom(node, base, n) : ITER_MK.test(callee) ? iterMk(node, base, n) : iterDrain(node, base, n, ITER_ARR.test(callee))
         const f = funcByName.get(callee)
-        if (f && !escaped.has(callee)) { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
+        if (f && escaped.has(callee)) escapeArgs(base, n)
+        else if (f) { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
         return r
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
       const f = funcByName.get(callee)
       if (f) {
-        if (!escaped.has(callee)) bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n ? null : initContextFor(callee, ks[base]))
+        bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]))
         return resultAt(callee, base, n, node)
       }
       const key = keyOf(callee), k = key === null ? undefined : kinds[key]
@@ -1306,12 +1310,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (node) siteResults.set(node, full)
     return r
   }
-  const bindClosure = (param, base, n) => { for (const id of membersOf(param)) if (!escaped.has(id)) bind(id, callableParams(id), base, n, callableDefaults(id)) }
+  const bindClosure = (param, base, n) => { for (const id of membersOf(param)) bind(id, callableParams(id), base, n, callableDefaults(id)) }
   /** Call a closure or each member of a closure set; the result is the join of theirs. */
   const callClosure = (param, base, n, node = null) => {
     let r = K.NONE
     for (const id of membersOf(param)) {
-      if (!escaped.has(id)) bind(id, callableParams(id), base, n, callableDefaults(id))
+      bind(id, callableParams(id), base, n, callableDefaults(id))
       r = merge(r, resultAt(id, base, n, node))
     }
     return r
@@ -2867,7 +2871,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // compatible (non-coercing) contract: null/boolean identity must survive.
     if (op === '==' || op === '!=' || op === '===' || op === '!==') {
       const eqCx = (value, other) => {
-        if (!isNumberExpr(other)) return OTHER
+        if (kindOfExpr(other) !== NUMBER) return OTHER
         const k = kindOfExpr(value)
         return tagOf(core(k)) === K.NUMBER && !hasTag(k, K.NULLISH) ? NUM : COMPAT
       }

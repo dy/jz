@@ -18,7 +18,7 @@ import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering } from './generators.js'
-import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS } from '../src/ast.js'
+import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS } from '../src/ast.js'
 
 const names = createNames()
 const SHADOW_SENSITIVE = new Set([
@@ -60,13 +60,29 @@ const declaredAtModuleScope = (name) => {
 // per node (the self-compile makes a closure record for each).
 const enterBuiltinScope = (node) => { const prior = activeBuiltinScope; activeBuiltinScope = builtinScopes.get(node) || prior; return prior }
 const leaveBuiltinScope = (prior) => { activeBuiltinScope = prior }
+// Named function expressions own an immutable self binding. Declarations and
+// parameters in nearer scopes shadow it, including inside nested closures.
+const functionNameWrite = name => {
+  for (let s = activeBuiltinScope; s; s = s.parent)
+    if (s.names.has(name)) return s.self === name ? !!activeBuiltinScope.strict : undefined
+}
 
 // Build the lexical scope chain before rewriting. A program-wide name census
 // made a parameter in one function suppress unrelated builtin lowering in
 // every other function.
 const buildBuiltinScopes = root => {
   const map = new WeakMap()
-  const childScope = parent => ({ parent, names: new Set() })
+  const childScope = parent => ({ parent, names: new Set(), strict: parent?.strict ?? false, self: null })
+  const functionDecls = new WeakSet()
+  const strictBody = body => {
+    if (Array.isArray(body) && body[0] === '{}') body = body[1]
+    const list = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+    for (const n of list) {
+      if (!Array.isArray(n) || n[0] != null || typeof n[1] !== 'string') break
+      if (n[1] === 'use strict') return true
+    }
+    return false
+  }
   const declarations = (node, scope) => {
     const list = Array.isArray(node) && node[0] === ';' ? node.slice(1) : [node]
     for (let stmt of list) {
@@ -81,9 +97,11 @@ const buildBuiltinScopes = root => {
         }
       } else if ((op === 'function' || op === 'function*' || op === 'class') && typeof stmt[1] === 'string') {
         addBuiltinName(scope, stmt[1])
+        functionDecls.add(stmt)
       } else if (op === 'async' && Array.isArray(stmt[1]) &&
           (stmt[1][0] === 'function' || stmt[1][0] === 'function*')) {
         addBuiltinName(scope, stmt[1][1])
+        functionDecls.add(stmt[1])
       } else if (op === 'import' || op === 'from') addImportBindings(scope, stmt)
     }
   }
@@ -104,18 +122,25 @@ const buildBuiltinScopes = root => {
     let here = scope
     const op = node[0]
     if (op === 'function' || op === 'function*' || op === '=>') {
-      const fn = childScope(scope)
       const name = op === '=>' ? null : node[1]
       const params = op === '=>' ? node[1] : node[2]
       const body = op === '=>' ? node[2] : node[3]
-      addBuiltinName(fn, name)
+      let outer = scope
+      if (name && !functionDecls.has(node)) {
+        outer = childScope(scope)
+        outer.self = name
+        addBuiltinName(outer, name)
+      }
+      const fn = childScope(outer)
+      fn.strict ||= strictBody(body)
       for (const param of extractParams(params)) addPatternNames(fn, param)
-      declarations(body, fn)
-      vars(body, fn)
+      const local = childScope(fn)
+      declarations(body, local)
+      vars(body, local)
       if (Array.isArray(params)) map.set(params, fn)
-      if (Array.isArray(body)) map.set(body, fn)
+      if (Array.isArray(body)) map.set(body, local)
       visit(params, fn, true)
-      visit(body, fn, true)
+      visit(body, local, true)
       return
     }
     if (op === ';') {
@@ -126,11 +151,15 @@ const buildBuiltinScopes = root => {
       return
     }
     if (op === '{}' && (isBlockBody(node) || JZ_BLOCK_OPS.has(node[1]?.[0]))) {
-      here = childScope(scope)
+      if (!reuseSequence) here = childScope(scope)
       declarations(node[1], here)
       map.set(node, here)
       for (let i = 1; i < node.length; i++) visit(node[i], here, true)
       return
+    }
+    if (op === 'class') {
+      here = childScope(scope)
+      here.strict = true
     }
     if (op === 'catch') {
       here = childScope(scope)
@@ -159,6 +188,7 @@ const buildBuiltinScopes = root => {
     for (let i = 1; i < node.length; i++) visit(node[i], here)
   }
   const program = childScope(null)
+  program.strict = strictBody(root)
   declarations(root, program)
   vars(root, program)
   if (Array.isArray(root)) map.set(root, program)
@@ -218,7 +248,7 @@ const ITER_HELPER_NAMES = new Set(['map', 'filter', 'take', 'drop', 'flatMap',
 //    access position (`x[Symbol.iterator]`).
 // 2. Detect iterator producers for the protocol-fork gate, and helper-method
 //    use / `instanceof Iterator` for the decorated-iterator gate.
-function canonSymbols(node) {
+function canonSymbols(node, bindings = false) {
   if (!Array.isArray(node)) return node
   const prior = enterBuiltinScope(node)
   try {
@@ -244,7 +274,27 @@ function canonSymbols(node) {
       for (const [k, prop] of Object.entries(WELL_KNOWN))
         if (isSymbolWellKnown(node[2], k)) { node[0] = '.'; node[2] = prop; if (prop === '@@iterator') iterProto.on = true }
     }
-    for (let i = 1; i < node.length; i++) canonSymbols(node[i])
+    for (let i = 1; i < node.length; i++) canonSymbols(node[i], bindings)
+    // Do this before lowerings copy function bodies: the source scope census
+    // owns immutable self bindings, including those in async/generator bodies.
+    if (bindings && MUTATE_OPS.has(op) && typeof node[1] === 'string') {
+      const strict = functionNameWrite(node[1])
+      if (strict !== undefined) {
+        const temp = names.genTemp('self'), value = node.slice()
+        value[1] = temp
+        const reject = ['throw', ['new', ['()', 'TypeError', [null, 'Assignment to an immutable function name']]]]
+        let result = ['return', value]
+        if (strict) {
+          const logical = op === '&&=' || op === '||=' || op === '??='
+          result = logical
+            ? ['return', [op.slice(0, -1), temp, ['()', ['=>', null, ['{}', [';', value, reject]]], null]]]
+            : [';', value, reject]
+        }
+        node.splice(0, node.length, '()', ['=>', null, ['{}', [';',
+          ['let', ['=', temp, node[1]]], result,
+        ]]], null)
+      }
+    }
     return node
   } finally { leaveBuiltinScope(prior) }
 }
@@ -370,7 +420,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   iterProto.on = iterProto.program
   iterProto.helpers = iterProto.programHelpers
   iterProto.std = std
-  ast = canonSymbols(ast)
+  ast = canonSymbols(ast, true)
   ast = hoistModuleDynamicImports(ast)
   ast = implicitStdImports(ast)
   resetClasses(structs, importedBinding ? { list: importsOf(ast), importedBinding } : null)

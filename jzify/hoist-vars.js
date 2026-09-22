@@ -24,11 +24,11 @@ export const isDestructurePat = p =>
 export function hoistVars(node, names) {
   if (node == null || !Array.isArray(node)) return node
   const op = node[0]
-  if (op === 'function') {
+  if (op === 'function' || op === 'function*') {
     const inner = new Set()
     let body = hoistVars(node[3], inner)
     if (inner.size) body = prependDecls(body, inner)
-    return ['function', node[1], node[2], body]
+    return [op, node[1], node[2], body]
   }
   if (op === '=>') {
     const inner = new Set()

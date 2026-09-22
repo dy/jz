@@ -20,7 +20,7 @@ import { K, core, tagOf, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
-import { attachSigMeta, buildArrayWithSpreads, emitNonCallable, materializeMulti, parseCallArgs } from './call-args.js'
+import { attachSigMeta, buildArrayWithSpreads, emitNonCallable, materializeMulti, materializeMultiIR, parseCallArgs } from './call-args.js'
 import { TYPED_HI_MASK, argIR, coerceArg, emit, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
@@ -111,7 +111,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
           ['else', undefExpr()]], 'f64')
         fixedLoads.push(coerceArg(load, func.sig.params[k]))
       }
-      const callIR = typed(['block', ['result', func.sig.results[0]],
+      const callIR = typed(['block', ['result', ...func.sig.results],
         ['local.set', `$${aVal}`, asF64(buildArrayWithSpreads(combined))],
         ['local.set', `$${aOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${aVal}`]]]],
         ['local.set', `$${aLen}`, ['i32.load', ['i32.sub', ['local.get', `$${aOff}`], ['i32.const', 8]]]],
@@ -124,7 +124,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
           ['i32.add', ['local.get', `$${aOff}`], ['i32.const', fixedParamCount * 8]],
           ['i32.shl', ['local.get', `$${rLen}`], ['i32.const', 3]]],
         ['call', `$${callee}`, ...fixedLoads, rest.ptr]], func.sig.results[0])
-      return attachSigMeta(callIR, func.sig)
+      return func.sig.results.length > 1 ? materializeMultiIR(callIR, func.sig.results.length) : attachSigMeta(callIR, func.sig)
     }
     // Pad missing fixed args with `undefined` so default-param init triggers per spec.
     const fixedParams = func.sig.params.slice(0, fixedParamCount)
@@ -136,7 +136,8 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
 
     // Build array: emit code for normal args + code to expand spreads
     const arrayIR = buildArrayWithSpreads(restArgsFinal)
-    return attachSigMeta(typed(['call', `$${callee}`, ...emittedFixed, arrayIR], func.sig.results[0]), func.sig)
+    const callIR = typed(['call', `$${callee}`, ...emittedFixed, arrayIR], func.sig.results[0])
+    return func.sig.results.length > 1 ? materializeMultiIR(callIR, func.sig.results.length) : attachSigMeta(callIR, func.sig)
   }
 
   // Regular function call with a spread (`mat3(M, ...xyz)`): build the full
@@ -155,18 +156,8 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
       ['local.set', `$${aVal}`, asF64(buildArrayWithSpreads(combined))],
       ['local.set', `$${aOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${aVal}`]]]],
       ['local.set', `$${aLen}`, ['i32.load', ['i32.sub', ['local.get', `$${aOff}`], ['i32.const', 8]]]]]
-    if (func.sig.results.length > 1) {
-      // Multi-value result: materialize like materializeMulti, from the split args.
-      const n = func.sig.results.length
-      const temps = Array.from({ length: n }, () => temp())
-      const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'marr' })
-      const ir = [...setup, out.init, callIR]
-      for (let k = n - 1; k >= 0; k--) ir.push(['local.set', `$${temps[k]}`])
-      for (let k = 0; k < n; k++)
-        ir.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])
-      ir.push(out.ptr)
-      return typed(['block', ['result', 'f64'], ...ir], 'f64')
-    }
+    if (func.sig.results.length > 1)
+      return typed(['block', ['result', 'f64'], ...setup, materializeMultiIR(callIR, func.sig.results.length)], 'f64')
     return attachSigMeta(typed(['block', ['result', resultType], ...setup, callIR], resultType), func.sig)
   }
   if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee} — pass arguments individually, or give ${callee} a rest parameter (...args)`)

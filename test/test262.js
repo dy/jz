@@ -906,6 +906,9 @@ function runTest(src, options = {}) {
     if (!msg) msg = (typeof e === 'string' ? e : (e?.toString?.() || JSON.stringify(e) || 'unknown'))
     // Compile-time errors for features jz intentionally doesn't support
     if (msg.includes('Unknown op') || msg.includes('not supported') ||
+        // Property descriptors are outside the published v1 contract. The
+        // dynamic descriptor path reports this at runtime rather than prepare.
+        msg === 'Accessor descriptors are declared on classes; Object.defineProperty defines data properties' ||
         msg.includes('outside jz scope') || msg.includes('requires source with known schema') ||
         msg.includes('prohibited') || msg.includes('strict mode') ||
         msg.includes('Unknown tag') || msg.includes('Unknown func') ||
@@ -985,13 +988,13 @@ function collectWork() {
     const cleanSubdir = flatOnly ? subdir.slice(0, -2) : subdir
     const dir = join(testDir, cleanSubdir)
     if (!existsSync(dir)) { console.log(`  skipping ${subdir}/ (not found)`); continue }
-    if (FILTER && !subdir.includes(FILTER)) continue
 
     let count = 0
     for (const file of filesUnder(dir, { flatOnly })) {
       if (count >= MAX_PER_DIR) break
-      count++
       const rel = relative(TEST262, file)
+      if (FILTER && !rel.includes(FILTER)) continue
+      count++
       // Whole-feature directories jz does not implement — skipped without reading.
       if (rel.includes('dynamic-import') || rel.includes('import.meta') ||
         rel.includes('export-expname') || rel.includes('import-attributes') ||
@@ -1041,17 +1044,6 @@ const EXPECTED_FAIL_PREFIXES = [
 //     back null, but the arm actually taken at runtime (`true`) is still raw
 //     BOOL. Now boxed via mayCarryRawBool + emitIdentitySafeArms. 1 file
 //     below (A4_T4) now passes.
-//  4. STILL XFAILS, but now REJECTS instead of computing silently — the
-//     genuine BOOL∪NUMBER ambiguous-merge case (`x = false ?? 1`, a raw 0/1
-//     carrier bit-compared against the TRUE/FALSE atom with NO way to
-//     recover which one produced a given 0/1 bit pattern short of the full
-//     tagged-Boolean-carrier plan README.md's "Known limitations" section
-//     names) previously skipped the identity-escape REJECT entirely on the
-//     plain-reassignment path (`let x; x = …` — a DIFFERENT emitter than
-//     decl-with-init's emitDecl, which already had this REJECT). Both paths
-//     now share rejectAmbiguousBoolIdentity (src/compile/emit.js). Zero
-//     accepted-wrong remains for this shape; README.md's documented v1
-//     limitation is the flip condition for turning REJECT into an exact fix.
 //  5. STILL XFAILS, REJECTS (not the ambiguous-merge shape at all — a THIRD,
 //     narrower gap surfaced by 2 of the audit's logical-or/-and files):
 //     `true || x` / `false && x` with `x` a genuinely undeclared identifier
@@ -1068,7 +1060,6 @@ const EXPECTED_FAIL_PREFIXES = [
 // [WRONG-VALUE] tag below = release-blocking per README.md's semantics
 // contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
 // matches README "What differs from JS?").
-const BOOL_CARRIER = '[REJECT, pinned — flip condition: README.md tagged-Boolean-carrier plan] BOOL∪NUMBER ambiguous merge correctly REJECTS (was silently wrong pre-audit-#12; retagged from a stale [WRONG-VALUE] label in fix/wrong-values-2 — confirmed live, all 5 files reject cleanly at compile time, no behavior change) — raw 0/1 carrier vs TRUE/FALSE atom at a mixed ??/||/&&/?: join, no way to recover identity post-collapse without the carrier plan'
 // Audit-#12 classification pass (this commit) — every entry below is tagged
 // by OUTCOME, not just symptom, so a category-(iii) accepted-wrong value can
 // never hide behind a plausible-sounding xfail reason again:
@@ -1081,7 +1072,7 @@ const BOOL_CARRIER = '[REJECT, pinned — flip condition: README.md tagged-Boole
 //                silently differs from JS with NO README coverage. Release-
 //                blocking per README.md's semantics contract; NOT fixed by
 //                this commit (out of the two assigned families — Family A
-//                rest-destructure isArray, Family B BOOL_CARRIER — surfaced
+//                rest-destructure isArray — surfaced
 //                here as a byproduct of walking the full xfail list). Pinned
 //                so it stays visible rather than reading as "just an xfail".
 //   [VERIFY]   — outcome not conclusively determined (deep engine-internal
@@ -1154,30 +1145,14 @@ const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed th
 //    — resolves through the SAME real-arguments-object materialization, and
 //    the dead reassignment after the early return stays exactly as
 //    unreached as spec requires. This file now PASSES outright — removed.
-//  - coalesce/* (BOOL_CARRIER, below): already correctly REJECTS (confirmed
-//    live, all 5 files, via the tagged-Boolean-carrier README.md pin) —
-//    the [WRONG-VALUE] tag itself was stale (the doc comment even says "now
-//    correctly REJECTS" in its own text). Retagged [REJECT] below, no
-//    behavior change.
 const EXPECTED_FAIL_FILES = new Map([
   // for-await grammar edges (2026-07-13, wired with async generators):
-  ['test/language/statements/for-await-of/head-lhs-async.js',
-    '[REJECT] `async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge); compile-time reject'],
   // Job ordering is per drain cycle (the documented host-boundary model).
   // Iterator binding and generator abrupt-completion cases now pass.
   ['test/language/statements/async-generator/return-undefined-implicit-and-explicit.js',
     '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
   ['test/language/expressions/await/for-await-of-interleaved.js',
     '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
-  // Ambiguous BOOL∪NUMBER merge assigned to a binding — REJECTS (was silently
-  // wrong). See BOOL_CARRIER's own doc comment, point 4.
-  ...[
-    'test/language/expressions/coalesce/chainable-with-bitwise-and.js',
-    'test/language/expressions/coalesce/chainable-with-bitwise-or.js',
-    'test/language/expressions/coalesce/chainable-with-bitwise-xor.js',
-    'test/language/expressions/coalesce/short-circuit-number-false.js',
-    'test/language/expressions/coalesce/short-circuit-number-true.js',
-  ].map(f => [f, BOOL_CARRIER]),
   // Short-circuit dead-arm identity box reaching an undeclared other arm —
   // see point 5 in the comment above for the mechanism.
   // `logical-or/S11.11.2_A2.1_T4.js` and `logical-and/S11.11.1_A2.1_T4.js`
@@ -1403,7 +1378,7 @@ if (!isMainThread) {
     console.error(`\nFAIL: ${xpasses.length} test(s) in EXPECTED_FAIL now pass — prune them (listed above).`)
     process.exit(1)
   }
-  if (!QUICK) {
+  if (!QUICK && !FILTER) {
     const lock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-baseline.json'), 'utf8'))
     // The lock's corpus SHA must match what this run just measured against —
     // a stale lock (PINNED_COMMIT bumped here without refreshing

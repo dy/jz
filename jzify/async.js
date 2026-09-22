@@ -23,7 +23,7 @@
  */
 
 import { FN_BOUNDARY_OPS, probe } from './generators.js'
-import { some, ASSIGN_OPS } from '../src/ast.js'
+import { some, ASSIGN_OPS, paramList } from '../src/ast.js'
 
 export function createAsyncLowering({ genTemp, err }) {
 
@@ -265,8 +265,13 @@ export function createAsyncLowering({ genTemp, err }) {
     // The function* expression rides the standard generator lowering; the body
     // runs synchronously to the first await (spec), then parks on the promise.
     const aa = genTemp('aa')
-    return ['=>', ['()', ['...', aa]],
-      ['()', '__async_run', ['()', ['function*', null, params, mapAwait(hoistAwaits(body))], ['...', aa]]]]
+    const run = ['()', '__async_run', ['()', ['function*', null, params, mapAwait(hoistAwaits(body))], ['...', aa]]]
+    if (paramList(params).every(p => typeof p === 'string')) return ['=>', ['()', ['...', aa]], run]
+    // Defaults and destructuring run in the factory, before the driver can
+    // catch body exceptions. An async call rejects for either kind of failure.
+    const error = genTemp('ae')
+    return ['=>', ['()', ['...', aa]], ['{}', [';',
+      ['try', ['{}', ['return', run]], ['catch', error, ['{}', ['return', ['()', '__p_reject', error]]]]]]]]
   }
 
   // async function* (params) { body } → (...aa) => __ag_run(TAGGED_MACHINE(...aa))

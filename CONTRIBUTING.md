@@ -65,6 +65,11 @@ Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy
 length can omit constants that the linked helpers read.
 
+Nonempty array literals reserve their stated length. Empty builders retain the
+speed tier's growth reserve, and proven builder bounds still preallocate enough
+capacity. `arrayLiteralMinCap` remains an explicit override for kernel builds;
+smaller initial storage uses the existing alias and named-property forwarding.
+
 Array joining captures length before separator conversion and reads elements
 through the checked, tagged reader. Each conversion runs once, in order; a
 second pass copies those strings into one result. Input strings remain immutable.
@@ -400,6 +405,25 @@ the longest chain of work still depending on each, so independent kernel
 calls start together and overlap: colorpq's three inner pows run first, then
 its three outer ones, 97 to 75 ms. Both are differential against the same
 program with the pass off in `test/value-number.js` and `test/schedule.js`.
+The occurrence census is an upper bound: a capture that receives no dominating
+reuse is restored to its original expression, without retaining a local.
+
+Argument lowering and result packing are independent: ordinary, rest and spread
+calls share multi-value materialization. Tail calls require the complete result
+arity to match. Receiver temporaries preserve the source's type, typed-element
+and regex-literal facts through the shared receiver-fact copier.
+
+The summary still visits arguments passed to escaped callees. Such a callee
+cannot publish a precise result, but callbacks passed to it contribute their
+calls and parameter kinds. Equality only demands numeric storage for a definitely
+present number; a number-or-undefined operand must retain its identity.
+
+Jzify's lexical census distinguishes parameter, body and named-function scopes.
+Immutable self-binding writes are lowered before async/generator bodies are
+copied. Non-strict writes preserve evaluation and their expression value; strict
+writes throw only when assignment occurs. Parameter initialization errors in an
+async function reject its promise. Promise reactions share one FIFO queue for
+both pending and already-settled promises.
 
 Internal exceptions carry a private tagged code until a source catch materializes
 an ordinary branded Error. User-thrown numbers remain numbers. Property dispatch

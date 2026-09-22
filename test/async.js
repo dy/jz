@@ -29,6 +29,77 @@ const valAll = (arrows) => batch(arrows).map(f => () => {
   return r
 })
 
+test('async: named expressions preserve immutable self bindings', async () => {
+  for (const generator of [false, true]) {
+    const { f } = jz(`export async function f() {
+      let name = 'outside', read, write, effects = 0
+      const fn = async function${generator ? '*' : ''} name() {
+        await 0
+        read = () => name
+        write = () => name = (effects++, 7)
+      }
+      ${generator ? 'await fn().next()' : 'await fn()'}
+      const value = write()
+      return [read() === fn, name, value, effects]
+    }`).exports
+    is(await f(), [true, 'outside', 7, 1])
+    is(await f(), [true, 'outside', 7, 1])
+  }
+})
+
+test('async: escaped promise handlers keep callback argument identity', async () => {
+  const source = `const same = (a, b) => {
+    if (a === b) return a !== 0 || 1 / a === 1 / b
+    return a !== a && b !== b
+  }
+  var check = x => x
+  check.same = (a, b) => { if (!same(a, b)) throw 'identity lost' }
+  export function f() {
+    check.same(1, 1)
+    return Promise.resolve(true).then(value => {
+      check.same(value, true)
+      check.same(undefined, undefined)
+      return typeof value
+    })
+  }`
+  const { f } = jz(source).exports
+  is(await f(), 'boolean')
+  is(await f(), 'boolean', 'another drain preserves the same callback contract')
+})
+
+test('async: parameter initialization rejects instead of throwing synchronously', async () => {
+  const { f } = jz(`const fail = () => { throw 'default' }
+    async function work(x = fail()) { return x }
+    export function f(provided) {
+      let p
+      try { p = provided ? work(7) : work() } catch (e) { return 'sync:' + e }
+      return p.then(v => 'ok:' + v, e => 'rejected:' + e)
+    }`).exports
+  for (const [input, expected] of [[0, 'rejected:default'], [0, 'rejected:default'], [1, 'ok:7'], [0, 'rejected:default']])
+    is(await f(input), expected)
+  is(await val(`export async function f() { async function work({x}) { return x }; try { await work(null) } catch (e) { return 'caught' } }`), 'caught')
+})
+
+test('async: settled and pending reactions share FIFO ordering', async () => {
+  const { f } = jz(`export async function f() {
+    const actual = []
+    let calls = 0
+    const thenable = { then: resolve => resolve(++calls) }
+    async function trigger() {
+      actual.push('await:' + await thenable)
+      actual.push('await:' + await thenable)
+    }
+    const done = trigger()
+    new Promise(resolve => { actual.push('promise:1'); resolve() })
+      .then(() => { actual.push('promise:2') })
+      .then(() => { actual.push('promise:3') })
+      .then(() => { actual.push('promise:4') })
+    await done
+    return actual.join(',')
+  }`).exports
+  for (let i = 0; i < 2; i++) is(await f(), 'promise:1,promise:2,await:1,promise:3,promise:4,await:2')
+})
+
 test('async: completes synchronously to a settled host Promise', async () => {
   if (onWasi() || onKernel()) return
   is(await val(`async function g(x) { return x * 2 } export let f = () => g(21)`), 42)

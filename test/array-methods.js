@@ -14,6 +14,27 @@ function run(code) {
 // jz()-based helper for regression tests that need full host wiring.
 const runHost = (code, opts) => jz(code, opts).exports
 
+test('array literals: compact storage preserves growth, aliases and named properties', () => {
+  const src = `let box, alias
+    export function make(x) { const a = [x]; alias = a; box = {a}; return box }
+    export function note() { alias.note = 9 }
+    export function push(x) { box.a.push(x); return [alias[0], alias.at(-1), alias.length, alias.note] }
+    export function shift() { const x = alias.shift(); return [x, box.a[0], box.a.length, box.a.note] }`
+  for (const optimize of levels(0, 2, 3)) {
+    const { exports: e, instance } = jz(src, { optimize })
+    const before = instance.exports._alloc(0)
+    is(e.make(3), {a: [3]})
+    const allocated = instance.exports._alloc(0) - before
+    ok(allocated <= 96, `one-element literal and wrapper use compact storage (${allocated} bytes)`)
+    e.note()
+    for (let i = 0; i < 20; i++) is(e.push(i), [3, i, i + 2, 9])
+    is(e.shift(), [3, 0, 20, 9])
+    is(e.make(7), {a: [7]}, 'a new instance starts with fresh storage')
+    e.note()
+    is(e.push(8), [7, 8, 2, 9])
+  }
+})
+
 test('.pop: empty, drained and refilled arrays preserve length and values', () => {
   const src = `export function f(n) {
     const a = [], out = [];

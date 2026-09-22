@@ -1489,6 +1489,43 @@ test('known array spread skips string/typed item dispatch', () => {
   is(main(), 2)
 })
 
+test('sourceInline: early void returns preserve guards and argument effects', () => {
+  const src = `let calls = 0, output = 0
+    const arg = x => { calls++; return x }
+    function update(a, b) { if (a === b) return; output += a + b }
+    export function main() {
+      update(arg(2), arg(2)); update(arg(2), arg(3))
+      return [output, calls]
+    }`
+  const { main } = run(src, { optimize: 3 })
+  is(main(), [5, 4])
+  is(main(), [10, 8])
+  if (!belowOpt(2)) ok(!/\(call \$update\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+})
+
+test('sourceInline: small loop helpers inline across several speed-tier sites', () => {
+  const src = `function count(n) { let sum = 0; while (n > 0) { sum += n; n-- }; return sum }
+    export function main(n) { return count(n) + count(n + 1) + count(n + 2) }
+    export function empty() { return count(0) + count(-1) }`
+  const { main, empty } = run(src, { optimize: 3 })
+  is(empty(), 0)
+  is(main(2), 19)
+  is(main(3), 31)
+  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+})
+
+test('sourceInline: small helpers join existing exported loops', () => {
+  const src = `function count(n) { let sum = 0; while (n > 0) { sum += n; n-- }; return sum }
+    export function main(n) { let sum = 0; for (let i = 0; i < n; i++) {
+      const a = count(i), b = count(i + 1), c = count(i + 2); sum += a + b + c
+    }; return sum }`
+  const { main } = run(src, { optimize: 3 })
+  is(main(0), 0)
+  is(main(4), 64)
+  is(main(-1), 0)
+  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+})
+
 test('sourceInline: inlines returnless hot internal helper calls', () => {
   const src = `
     const hot = (a, n) => {

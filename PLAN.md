@@ -144,17 +144,14 @@ Dependencies
 
 ## Remaining release work
 
-1. **Conformance.** The language gate has 49 in-scope failures: its exact
-   failing-file set is unchanged with value numbering and scheduling disabled.
-   They include parameter/default/body binding scope, async-generator abrupt
-   completion, thenable job ordering and unsupported accessor/using forms.
-   The built-ins gate has six RegExp.exec compile failures across lastIndex
-   conversion/reset and Unicode matching: emission fails to resolve literal
-   regex receivers before the new passes run. Diagnose these against the
-   public contract; do not expand xfails to make the gate green.
-   Nine new value-numbering regressions discovered by the language gate are
-   fixed and pinned: signed-zero keys and eight comparison operators whose
-   right operand assigns a local read by the left operand.
+1. **Conformance.** The September 22 language gate has 3200 passes and one
+   failure: a detached generator method keeps its receiver because methods
+   currently lower to bound closures. The bound-method compatibility decision
+   remains open. Built-ins pass: 878 tests, zero failures. The callback,
+   parameter/default/body scope, named-function binding, thenable FIFO and
+   using-initializer failures are fixed and pinned. Eight accessor-descriptor
+   cases now use the existing out-of-scope rejection from README, and six
+   passing xfails were removed. No new xfail was added.
 
 2. **Runtime and self-host speed.** The self-compile gate passes (warm
    0.939× against the 1.03× cap, fresh 0.788× against 0.99×). The compiler's
@@ -203,18 +200,21 @@ Dependencies
    representation for the ToInt32-blind checked byte reads; noise stands at
    1.13× of Rust with an instruction census at parity; shapes at 1.12× is
    untouched; sort is near parity with Zig. The checked-read i32 lowering
-   has landed, but glyfparse still trails in the current gate. percolation
-   reads 0.68× V8/JZ against its 0.75 floor. The handoff's next experiment
-   targets call overhead: fold a bare early return into a guard for inlining
-   and permit a small one-loop callee at several speed-tier sites. That patch
-   is unverified and not applied; prove it on general kernels before using it.
+   has landed, but glyfparse still trails in the current gate. percolation's
+   small-helper calls now inline into existing export loops at speed, and a
+   single bare early return folds to a guard. The local diagnostic fell from
+   4.78 to 3.28 ms against V8's 3.00 ms, clearing its 0.75 V8/JZ floor but
+   still trailing V8. General guard/evaluation-order, repeated-call and
+   exported-loop regressions pass; the full candidate gates are in progress.
    wordcount's current 1.238× of C-wasm is not caused by the two new passes:
    its Wasm is byte-identical with them disabled.
 
-   The watr size backstop also fails: 321331 bytes against 320000. In an
-   isolated size-tier A/B it is 321374 bytes with the passes and 320932
-   without; scheduling changes neither size. Recover the bytes through
-   shared code generation, preserving the new effect and trap proofs.
+   The watr size backstop remains open at 321022 bytes against 320000.
+   Exact literal capacity recovered 36 bytes, and removing value-number
+   captures with no dominating reuse recovered another 316. That cleanup
+   reduced three cases and increased none in the 60-case size sweep. The
+   remaining bytes must come from shared code generation; effect and trap
+   proofs remain intact.
 
 3. **Memory.** webaudio holds 70.3 MB of resident memory against V8's 70.6
    (paired, node against node, this tree; 151 before): the automation loops
@@ -224,7 +224,12 @@ Dependencies
    against V8's 98 and 77: one jessie parse keeps 25 MB of `loc` sidecars
    (a 240-byte hash per AST node for one number) and 67 MB attributed to
    whitespace skipping; one watr assembly keeps 39 MB of 64 KB code buffers.
-   Those are retained by design, not temporaries: the lever is a compact
+   Removing the growth reserve from nonempty literals now saves 14.4 MB of
+   jessie's peak RSS in three paired local runs (177.4 → 163.0 MB), with the
+   same checksum and unchanged median runtime (1.395 → 1.399 ms). Watr's
+   paired median RSS moved 170.8 → 166.6 MB; its timings were noisy. These
+   diagnostics reduce the gap but do not establish memory parity with V8.
+   The remaining sidecars and buffers are retained, not temporaries: the lever is a compact
    named-property slot for arrays (a record beside the elements instead of a
    hash) and a size-classed reuse of replaced buffers, then measure the two
    cases before quoting memory.
@@ -239,8 +244,9 @@ Dependencies
    release evidence.
 
 5. **Public VST scope and identity.** The builder is JZ/macOS/mono-or-stereo.
-   Porffor needs a public state-object adapter and build verification. Choose
-   the permanent vendor root before publishing derived class IDs.
+   Porffor needs a public state-object adapter and build verification. Use
+   `org.audiojs` for the permanent vendor root, matching the audio compiler
+   contract and the user's audiojs choice; do not publish IDs under a temporary root.
    Restart-flagged edits take effect on next setup; active restart needs the
    component-handler interface. Events and wider layouts remain refused.
 

@@ -20,11 +20,10 @@ import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
-import { buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable, materializeMulti } from './call-args.js'
+import { buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable } from './call-args.js'
 import { emit, emitIdentitySafe } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
-import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
-import { stringOps } from './shared.js'
+import { copyReceiverFacts, stringOps } from './shared.js'
 
 
 // Map/Set methods whose generic (`.${method}`) emitter assumes a collection
@@ -233,7 +232,6 @@ function tryFnPropCall(callee, obj, method, parsed) {
   if (typeof obj === 'string' && ctx.funcs.names.has(obj) && !ctx.funcs.multiProp.has(`${obj}.${method}`)) {
     const fname = `${obj}$${method}`
     if (ctx.funcs.names.has(fname)) {
-      const func = ctx.funcs.map.get(fname)
       // The direct call of the lifted function, with its spreads in place: the
       // call path packs a rest parameter and materializes a tuple result
       // (`fn.coefs = (fs) => [a, b]`: the caller holds one pointer, not N lanes).
@@ -243,7 +241,7 @@ function tryFnPropCall(callee, obj, method, parsed) {
         if (pos < parsed.normal.length) args.push(parsed.normal[pos])
       }
       const call = ['()', fname, args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]]
-      return func.sig.results.length > 1 ? materializeMulti(call) : emit(call)
+      return emit(call)
     }
   }
 }
@@ -994,11 +992,7 @@ export function emitMethodCall(callee, parsed, callArgs) {
           typeof objArg === 'string' && repOf(objArg)?.ptrKind != null)
         return emitMethodCallSpread(objArg, methodEmitter, parsed, method)
       const recv = temp('methodRecv'), value = storedValue(objArg)
-      const kind = valTypeOf(objArg), ctor = plannedTypedStorageCtor(ctx, objArg)
-      if (kind) ctx.func.localValTypesOverlay.set(recv, kind)
-      ctx.func.taggedLocals ??= new Set()
-      ctx.func.taggedLocals.add(recv)
-      if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(recv, ctor)
+      copyReceiverFacts(objArg, recv)
       const setup = [
         ['local.set', `$${recv}`, value],
         ['if', isNullish(typed(['local.get', `$${recv}`], 'f64')), ['then', ['drop', throwTypeErrorIR('read')]]],

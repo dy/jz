@@ -12,6 +12,75 @@ import { T } from '../src/ast.js'
 // jz() wires host imports needed by dynamic-property and full-runtime paths.
 const runHost = (code, opts) => jz(code, opts).exports
 
+test('fixed rest: mutations keep independent array storage', () => {
+  const src = `function change(...xs) {
+    const before = xs[0]
+    xs[0] = 7
+    xs.length = 2
+    let index = xs.length - 1
+    delete xs[index]
+    return typeof before + ':' + xs[0] + ':' + xs.length + ':' + typeof xs[1]
+  }
+  export function f() { return change() + '|' + change(3, 4) }`
+  for (const optimize of levels(0, 2, 3))
+    is(runHost(src, { optimize }).f(), 'undefined:7:2:undefined|number:7:2:undefined')
+})
+
+test('rest calls: tuple returns materialize after ordinary and spread arguments', () => {
+  const source = `function defaults(x, _ = 0) { const before = x; arguments[0] = 1; return [before, x, arguments[0]] }
+    function rest(x, ...xs) { xs[0] = 7; return [x, xs[0], xs.length] }
+    function fixed(x, y) { return [x, y, x + y] }
+    export function f() {
+      const a = [3, 4, 5]
+      return [defaults(), rest(2, 3), rest(...a), fixed(...a)]
+    }`
+  for (const optimize of levels(0, 2, 3))
+    is(runHost(source, { optimize }).f(), [[undefined, undefined, 1], [2, 7, 1], [3, 7, 2], [3, 4, 7]])
+})
+
+test('function properties: rest calls share tuple result packing', () => {
+  const src = `function box() {}
+    box.values = (...a) => { a[0] = 7; return [a[0], a.length] }
+    export function f() { const xs = [2, 3]; return [box.values(), box.values(1, 2, 3), box.values(...xs)] }`
+  for (const optimize of levels(0, 2, 3))
+    is(runHost(src, { optimize }).f(), [[7, 1], [7, 3], [7, 2]])
+})
+
+test('named function expressions: self bindings are immutable and lexically scoped', () => {
+  for (const generator of [false, true]) {
+    const src = `export function f() {
+      let name = 'outside', fromParams, setParams, fromBody, setBody, effects = 0
+      const fn = function${generator ? '*' : ''} name(_ = (
+        fromParams = () => name, setParams = () => name = (effects++, 7)
+      )) {
+        fromBody = () => name
+        setBody = () => name = (effects++, 9)
+      }
+      ${generator ? 'fn().next()' : 'fn()'}
+      const a = setParams(), b = setBody()
+      return [fromParams() === fn, fromBody() === fn, name, a, b, effects]
+    }`
+    is(runHost(src).f(), [true, true, 'outside', 7, 9, 2])
+  }
+  is(runHost(`export function f() {
+    const a = function self(self) { self = 7; return self }
+    const b = function self() { let self = 'local'; self += '!'; return self }
+    return [a(3), b()]
+  }`).f(), [7, 'local!'], 'parameters and body declarations shadow the self binding')
+  is(runHost(`export function f() {
+    let effects = 0
+    const fn = function self() { 'use strict'; self ||= (effects++, 7); self ??= (effects++, 9); return self }
+    return [fn() === fn, effects]
+  }`).f(), [true, 0], 'short-circuit writes neither assign nor throw')
+  is(runHost(`export function f() {
+    let effects = 0
+    const fn = function self() { 'use strict'; const set = () => self = (effects++, 7); set() }
+    let rejected = false
+    try { fn() } catch (e) { rejected = e instanceof TypeError }
+    return [effects, rejected]
+  }`).f(), [1, true], 'strict writes evaluate the RHS and throw through nested closures')
+})
+
 test('closed closure calls retain proven parameter representations', () => {
   const source = `const make = k => (a, p) => a[0] * p.gain + k
     let fn = make(1)
@@ -612,6 +681,25 @@ test('defaults closure: default captured from outer', () => {
     return g()
   }`)
   is(f(), 99)
+})
+
+test('defaults closure: writes in defaults capture the enclosing binding by cell', () => {
+  const src = `export function run(provided) {
+    var x = 'outside', params, body
+    const invoke = (_ = params = function() { return x }) => {
+      var x = 'inside'
+      body = function() { return x }
+    }
+    if (provided) invoke(1)
+    else invoke()
+    return [typeof params, params ? params() : 'skipped', body()]
+  }`
+  for (const optimize of levels(0, 2, 3)) {
+    const inst = jz(src, { jzify: true, optimize })
+    for (const arg of [0, 0, 1, 0])
+      is(inst.memory.read(inst.exports.run(arg)), arg
+        ? ['undefined', 'skipped', 'inside'] : ['function', 'outside', 'inside'])
+  }
 })
 
 // === Mixed fixed + rest + defaults ===

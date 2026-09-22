@@ -10,7 +10,19 @@ import { ctx, getFactStore } from '../../ctx.js'
 import { dataDependentFlag, hasExpensiveOp, isPureIR, resolveValType } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
+import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 
+/** Captured receivers retain the facts their builtin emitter consumes. */
+export function copyReceiverFacts(source, target) {
+  const kind = valTypeOf(source), ctor = plannedTypedStorageCtor(ctx, source)
+  if (kind) ctx.func.localValTypesOverlay.set(target, kind)
+  ctx.func.taggedLocals ??= new Set()
+  ctx.func.taggedLocals.add(target)
+  if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(target, ctor)
+  const regex = typeof source === 'string' ? ctx.runtime.regex?.vars.get(source)
+    : Array.isArray(source) && source[0] === '//' ? source : null
+  if (regex) ctx.runtime.regex.vars.set(target, regex)
+}
 
 export const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null

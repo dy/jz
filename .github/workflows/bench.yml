@@ -77,16 +77,12 @@ jobs:
         with:
           version: 0.16.0
       # TinyGo (the lean go→wasm rival — a separate row from go-wasm's stock
-      # toolchain). Non-fatal: the target self-gates on availability.
-      # TinyGo must MATCH the runner's Go: 0.35 caps at go1.23 and the runner
-      # ships go1.24, which produced 43 silent FAIL rows on the first hard-gate
-      # run. Pin a release that accepts the installed Go, and smoke-build
-      # wasip1 so a version skew fails THIS step loudly instead of degrading
-      # into an absent rival (the required-rivals gate in test/bench.js reds
-      # when a mandatory producer is missing).
+      # toolchain). Match PLAN's pinned release and smoke-build wasip1 so a
+      # Go-version mismatch fails here instead of removing a required rival.
       - name: install tinygo
         run: |
-          curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.41.1/tinygo_0.41.1_amd64.deb
+          curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.42.0/tinygo_0.42.0_amd64.deb
+          echo '2082c4762fea6d5cc4cd1f4a243eaacf07b12f576717d4c6b74828bd163cb563  /tmp/tinygo.deb' | sha256sum -c -
           sudo dpkg -i /tmp/tinygo.deb
           tinygo version
           printf 'package main\nfunc main() {}\n' > /tmp/tg.go

@@ -30,6 +30,23 @@ const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name
 const SPOW = `const spow = (a, e) => { const s = a < 0 ? -1 : 1, av = a < 0 ? -a : a; return s * av ** e }
 export let f = (src, n, e) => { const dst = new Float64Array(n); for (let i = 0; i < n; i++) { const L = src[i] / 100; dst[i] = (1 + 2 * spow(L / 3, e)) / (1 + 3 * spow(L / 3, e)) } let s = 0; for (let i = 0; i < n; i++) s += dst[i] * (i + 1); return s }`
 
+test('value numbering: branch-only repeats need no capture locals', () => {
+  const ast = parseWat(`(module
+    (func $f (export "f") (param $c i32) (param $x f64) (result f64)
+      (if (result f64) (local.get $c)
+        (then (f64.sqrt (local.get $x)))
+        (else (f64.sqrt (local.get $x))))))`)
+  const fn = ast[1]
+  valueNumber(fn)
+  is(fn.filter(n => Array.isArray(n) && n[0] === 'local').length, 0, 'neither branch can reuse the other capture')
+  const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+  for (const c of [0, 1]) {
+    is(f(c, 9), 3)
+    ok(Object.is(f(c, -0), -0))
+    ok(Number.isNaN(f(c, -1)))
+  }
+})
+
 test('value numbering: a helper inlined twice with one argument runs once', () => {
   const on = funcWat(wat(SPOW, ON), 'f'), off = funcWat(wat(SPOW, OFF), 'f')
   is(calls(off, 'math.pow2'), 2, 'without the pass: two lane calls')

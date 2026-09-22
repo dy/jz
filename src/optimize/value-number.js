@@ -257,7 +257,7 @@ export function valueNumber(fn, pureFns = null) {
   }
   const holders = new Map()
   let held = new Map(), minted = nextLocalId(fn, 'vn')
-  const decls = [], mintedNames = []
+  const captures = new Map(), mintedNames = []
   /** Forget a region's assignments: the tree's own, and the holders minted inside it. */
   const forgetRegion = (names, mark) => { forget(names); for (let i = mark; i < mintedNames.length; i++) held.set(mintedNames[i], token()) }
   // The statement being rewritten: its sequence and position, the conditional
@@ -312,7 +312,12 @@ export function valueNumber(fn, pureFns = null) {
     const shared = v != null && (sites.get(v) || 0) >= 2 && worth(n)
     if (shared) {
       const h = holderOf(v)
-      if (h != null && !readOutside(n)) { parent[idx] = ['local.get', h]; return }
+      if (h != null && !readOutside(n)) {
+        const capture = captures.get(h)
+        if (capture) capture.used = true
+        parent[idx] = ['local.get', h]
+        return
+      }
     }
     const mark = mintedNames.length
     if (op === 'loop') { forget(assignedOf(n)); rewriteArm(n, seqStart(n)); forgetRegion(assignedOf(n), mark) }
@@ -334,11 +339,22 @@ export function valueNumber(fn, pureFns = null) {
     const type = selfType(n, types) ?? consumerType(parent, idx, types)
     if (!type) return
     const name = `$__vn${minted++}`
-    decls.push(['local', name, type]); types.set(name, type); mintedNames.push(name)
-    if (hoistable(n)) { stmt.hoisted.push(['local.set', name, n]); parent[idx] = ['local.get', name] }
+    types.set(name, type); mintedNames.push(name)
+    let set = null
+    if (hoistable(n)) { set = ['local.set', name, n]; stmt.hoisted.push(set); parent[idx] = ['local.get', name] }
     else parent[idx] = ['local.tee', name, n]
+    captures.set(name, { replacement: parent[idx], value: n, set, used: false })
     hold(v, name)
   }
   rewriteSeq(fn, bodyStart)
+  // The census counts occurrences, not dominating reuse. Restore captures
+  // whose later occurrences were behind a branch or invalidation boundary.
+  const decls = []
+  for (const [name, capture] of captures) {
+    if (capture.used) { decls.push(['local', name, types.get(name)]); continue }
+    capture.replacement.length = 0
+    Object.assign(capture.replacement, capture.value)
+    if (capture.set) capture.set.splice(0, capture.set.length, 'nop')
+  }
   if (decls.length) fn.splice(bodyStart, 0, ...decls)
 }

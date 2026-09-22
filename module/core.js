@@ -17,6 +17,7 @@ import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, isBrand } from '../src/ast.js'
 import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
+import { copyReceiverFacts } from '../src/compile/emit/shared.js'
 import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
@@ -2383,6 +2384,7 @@ export default (ctx) => {
       ? boxBigInt(asI64(value)) : value
   })
   const readHoistedProp = (obj, prop, t, raw = false) => {
+    if (obj !== t) copyReceiverFacts(obj, t)
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
     if (prop === 'length')

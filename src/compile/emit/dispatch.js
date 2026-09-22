@@ -702,7 +702,7 @@ export function emitDecl(...inits) {
       && ctx.funcs.names?.has(init[1])) {
       const func = ctx.funcs.map.get(init[1])
       const n = func?.sig.results.length
-      if (n > 1) {
+      if (n > 1 && !func.rest) {
         const targets = []
         let match = true
         for (let k = 0; k < n && match; k++) {

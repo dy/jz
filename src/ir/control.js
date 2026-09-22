@@ -222,7 +222,7 @@ export const tcoTailRewrite = (ir, resultType) => {
     // tail of the function/if/block has by construction the same result type
     // as the caller.
     if (callee) {
-      if (callee.raw) return ir
+      if (callee.raw || callee.sig.results.length !== 1) return ir
       const calleeRT = callee.sig?.results?.[0] ?? 'f64'
       if (calleeRT !== resultType) return ir
     }

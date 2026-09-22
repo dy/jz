@@ -165,6 +165,10 @@ export function createTransform(opts) {
     return false
   }
 
+  const namedFunction = (name, value) => ['()', ['()', ['=>', null, ['{}', [';',
+    ['let', name], ['=', name, value], ['return', name]
+  ]]]], null]
+
   function hoistFnDecl(name, params, body) {
     const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
     const decl = ['const', ['=', name, ['=>', transformParams(p2), wrapArrowBody(b2)]]]
@@ -315,8 +319,12 @@ export function createTransform(opts) {
     // async function/arrow → (...aa) => __async_run((function* …)(...aa))
     'async'(inner) {
       if (!_gen?.lowerAsync || !Array.isArray(inner)) return
-      if (inner[0] === 'function*') return transform(_gen.lowerAsyncGen(inner[2], inner[3]))
-      if (inner[0] === 'function') return transform(_gen.lowerAsync(inner[2], inner[3]))
+      if (inner[0] === 'function*' || inner[0] === 'function') {
+        const [, name, params, body] = inner
+        const value = transform(inner[0] === 'function*'
+          ? _gen.lowerAsyncGen(params, body) : _gen.lowerAsync(params, body))
+        return name && (mentions(body, name) || mentions(params, name)) ? namedFunction(name, value) : value
+      }
       if (inner[0] === '=>') {
         const params = Array.isArray(inner[1]) && inner[1][0] === '()' ? inner[1][1] : inner[1]
         // A CONCISE arrow body (`async () => expr`, no braces) is an implicit
@@ -430,11 +438,7 @@ export function createTransform(opts) {
       // for stack traces) is the plain arrow, which keeps the property lift.
       if (name && !mentions(body, name) && !mentions(params, name)) return arrow
       if (name) {
-        return ['()', ['()', ['=>', null, ['{}', [';',
-          ['let', name],
-          ['=', name, arrow],
-          ['return', name]
-        ]]]], null]
+        return namedFunction(name, arrow)
       }
       return arrow
     },
@@ -461,7 +465,10 @@ export function createTransform(opts) {
       // Expression form (`let g = function* () {…}`). Named statement forms are
       // hoisted in transformScope like plain function declarations.
       if (!_gen) return
-      return _gen.lowerGenerator(params, body)
+      const prior = enterBuiltinScope(body)
+      let value
+      try { value = _gen.lowerGenerator(params, body) } finally { leaveBuiltinScope(prior) }
+      return name && (mentions(body, name) || mentions(params, name)) ? namedFunction(name, value) : value
     },
 
     '[]'(payload, idx) {
@@ -631,6 +638,8 @@ export function createTransform(opts) {
       // protocol fork (probe once, drive next() lazily, else indexed path).
       if (_gen && _gen.iterProto?.on && Array.isArray(head) && head[0] === 'of')
         return transform(_gen.desugarForOfProtocol(head[1], head[2], body, names.genTemp))
+      if (Array.isArray(head) && head[0] === ';' && Array.isArray(head[1]) && head[1][0] === 'using')
+        return lowerUsing(head[1].slice(1), [['for', [';', null, head[2], head[3]], body]])
       if (Array.isArray(head) && head[0] === ';')
         return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transform(body)]
       // for-in with a DESTRUCTURING decl head (`for (let [x, y = d] in o)` —

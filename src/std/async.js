@@ -19,19 +19,8 @@
 
 export default `
 export let __mt = []
-export let __sq = []
 export let __drain = () => {
-  while (__mt.length > 0 || __sq.length > 0) {
-    while (__mt.length > 0) { let cb = __mt.shift(); cb() }
-    if (__sq.length > 0) {
-      let p = __sq.shift()
-      let cbs = p.cbs
-      p.cbs = []
-      let st = p.st
-      let v = p.val
-      for (let i = 0; i < cbs.length; i++) { let cb = cbs[i]; cb(st, v) }
-    }
-  }
+  while (__mt.length > 0) { let cb = __mt.shift(); cb() }
 }
 export let __state = (p) => p != null && typeof p === 'object' && p.__p === 1 ? p.st : -1
 export let __value = (p) => p.val
@@ -58,7 +47,9 @@ export let __p_fin = (p, st, v) => {
   if (p.st > 0) return
   p.st = st
   p.val = v
-  if (p.cbs.length > 0) __sq.push(p)
+  let cbs = p.cbs
+  p.cbs = []
+  for (let i = 0; i < cbs.length; i++) { let cb = cbs[i]; __mt.push(() => cb(st, v)) }
 }
 export let __p_settle = (p, st, v) => {
   if (p.st > 0 || p.rs === 1) return

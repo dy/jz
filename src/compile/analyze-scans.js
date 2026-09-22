@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -42,7 +42,10 @@ export function findFreeVars(node, bound, free, scope) {
   if (!Array.isArray(node)) return
   const op = node[0]
   if (op === '=>') {
-    const innerBound = collectParamNames(extractParams(node[1]), new Set(bound))
+    const params = extractParams(node[1])
+    const innerBound = collectParamNames(params, new Set(bound))
+    // Defaults execute in the parameter scope, before body declarations bind.
+    for (const param of params) findFreeVars(classifyParam(param)[PARAM_DEFAULT], innerBound, free, scope)
     findFreeVars(node[2], innerBound, free, scope)
     return
   }
@@ -128,13 +131,8 @@ export function boxedCaptures(body, params = NO_NAMES, captures = NO_NAMES) {
   const declare = { add: (name) => { if (!seen.has(name)) { seen.add(name); undo.push(name) } } }
 
   const markArrowCaptures = (node, assignTarget) => {
-    const pnode = node[1]
-    let p = pnode
-    if (Array.isArray(p) && p[0] === '()') p = p[1]
-    const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
-    const paramSet = new Set(raw.map(r => Array.isArray(r) && r[0] === '...' ? r[1] : r))
     const captures = []
-    findFreeVars(node[2], paramSet, captures, outerScope)
+    findFreeVars(node, new Set(), captures, outerScope)
     // Record EVERY captured name (mutated or not) — src/compile/emit.js's
     // emitDecl consults this to decide whether a captured, ambiguous
     // BOOL∪NUMBER-merge init (kind.js hasAmbiguousBoolMerge) needs an

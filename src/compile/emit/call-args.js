@@ -18,7 +18,7 @@ import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/
 import { representationProgramHasBigint } from '../representation-plan.js'
 import { persistBindingPtr } from '../emit-assign.js'
 import { withExpectedValue } from '../flow-state.js'
-import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
+import { copyReceiverFacts } from './shared.js'
 import { emit, emitCallArgs } from './dispatch.js'
 
 
@@ -53,9 +53,14 @@ export function materializeMulti(callNode) {
   const n = func.sig.results.length
   const argList = commaList(callNode[2])
   const emittedArgs = emitCallArgs(argList, func.sig.params, func)
+  return materializeMultiIR(callWithArgs(name, emittedArgs, func.sig), n)
+}
+
+/** Pack an already-emitted multi-value call, independent of argument lowering. */
+export function materializeMultiIR(callIR, n) {
   const temps = Array.from({ length: n }, () => temp())
   const out = allocPtr({ type: 1, len: n, tag: 'marr' })
-  const ir = [out.init, callWithArgs(name, emittedArgs, func.sig)]
+  const ir = [out.init, callIR]
   for (let k = n - 1; k >= 0; k--) ir.push(['local.set', `$${temps[k]}`])
   for (let k = 0; k < n; k++)
     ir.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])
@@ -456,15 +461,8 @@ function emitFixedSpreadMethodCall(objArg, methodEmitter, parsed, method) {
   const slots = Array.from({ length: arity }, () => temp('spreadArg'))
   const setup = [['local.set', `$${recv}`, storedValue(objArg)]]
   if (dynamic) setup.push(['local.set', `$${count}`, ['i32.const', 0]])
-  const kind = valTypeOf(objArg), ctor = plannedTypedStorageCtor(ctx, objArg)
-  if (kind) ctx.func.localValTypesOverlay.set(recv, kind)
-  ctx.func.taggedLocals ??= new Set()
-  ctx.func.taggedLocals.add(recv)
+  copyReceiverFacts(objArg, recv)
   for (const slot of slots) ctx.func.taggedLocals.add(slot)
-  if (ctor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(recv, ctor)
-  const regex = typeof objArg === 'string' ? ctx.runtime.regex?.vars.get(objArg)
-    : Array.isArray(objArg) && objArg[0] === '//' ? objArg : null
-  if (regex) ctx.runtime.regex.vars.set(recv, regex)
   let position = 0
   const capture = node => {
     if (!arity || !dynamic && position >= arity) return [['drop', asF64(emit(node))]]

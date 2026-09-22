@@ -15,6 +15,23 @@ const j = (code) => jz(code).exports.f()
 // Several standalone arrows as one compile, each called once.
 const jMany = (arrows) => batch(arrows).map(f => f())
 
+test('generators: defaults and body vars have separate environments', () => {
+  const { f } = jz(`export function f() {
+    var x = 'outside', params, body
+    function* g(_ = params = function() { return x }) {
+      var x = 'inside'
+      body = function() { return x }
+      yield x
+    }
+    const it = g()
+    const before = params()
+    const first = it.next()
+    const last = it.next()
+    return [before, params(), body(), first.value, last.done, x]
+  }`).exports
+  for (let i = 0; i < 2; i++) is(f(), ['outside', 'outside', 'inside', 'inside', true, 'outside'])
+})
+
 test('generators: manual next() protocol + return value', () => {
   is(j(`function* g(n) { let i = 0; while (i < n) { yield i; i++ } return -1 }
         export let f = () => { let it = g(3); let r = ''; let s = it.next(); while (!s.done) { r += s.value; s = it.next() } return r + '|' + s.value }`),
@@ -215,6 +232,27 @@ test('using: scope-exit disposal', () => {
         let g = () => { using a = open(); log += 'b'; return 9 }
         export let f = () => '' + g() + log`), '9bd')
   is(threw, 'threw')
+})
+
+test('using: classic for initializer is disposed on every exit', () => {
+  const { f } = jz(`export function f(mode) {
+    let log = '', i = 0
+    const open = n => {
+      log += 'o' + n
+      if (mode === 4 && n === 2) throw 'init'
+      return { [Symbol.dispose]: () => { log += 'd' + n } }
+    }
+    try {
+      for (using a = open(1), b = open(2); i < (mode === 0 ? 0 : 2); i++) {
+        log += 'b'
+        if (mode === 2) break
+        if (mode === 3) throw 'body'
+      }
+    } catch (e) { log += 'c' + e }
+    return log
+  }`).exports
+  for (const [mode, expected] of [[0, 'o1o2d2d1'], [1, 'o1o2bbd2d1'], [2, 'o1o2bd2d1'],
+    [3, 'o1o2bd2d1cbody'], [4, 'o1o2d1cinit'], [0, 'o1o2d2d1']]) is(f(mode), expected)
 })
 
 // Spread of iterator VALUES: __drain normalizes at the site (pass-through for

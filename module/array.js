@@ -694,12 +694,11 @@ export default (ctx) => {
           return ptr
         }
       }
-      // Literal arrays know their final length and do not need the speed
-      // profile's dynamic-growth floor. Compiler kernels can lower this
-      // separate floor without changing arrays emitted for user programs.
+      // Nonempty literals start at their stated size. Empty builders keep
+      // the growth reserve; proven builder capacity below still takes priority.
       const configuredLiteralCap = ctx.transform.optimize?.arrayLiteralMinCap
       const minCap = configuredLiteralCap == null
-        ? Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4)
+        ? (len ? 0 : Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4))
         : Math.max(configuredLiteralCap | 0, 0)
       const a = allocArray(len, Math.max(len, minCap, capacity))
       const body = [...a.setup]

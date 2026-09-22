@@ -266,9 +266,11 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     // a named v1 reject in flattenStmt below.
     for (let i = 0; i < body.length; i++) {
       const st = body[i]
-      if (Array.isArray(st) && st[0] === 'function' && st[1]) {
+      const decl = Array.isArray(st) && st[0] === 'async' ? st[1] : st
+      if (Array.isArray(decl) && (decl[0] === 'function' || decl[0] === 'function*') && decl[1]) {
+        const value = [decl[0], '', decl[2], decl[3]]
         body.splice(i, 1)
-        body.unshift(['const', ['=', st[1], ['function', '', st[2], st[3]]]])
+        body.unshift(['const', ['=', decl[1], st[0] === 'async' ? ['async', value] : value]])
       }
     }
 

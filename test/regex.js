@@ -246,6 +246,24 @@ test('regex: module-level variable test()', () => {
   is(r.exports.f(m.String('xyz')), false)
 })
 
+test('regex: hoisted module vars retain literal identity and lastIndex', () => {
+  for (const optimize of levels(0, 2, 3)) {
+    const r = jz(`
+      var re = /a/g, unicode = /./ug
+      export function run() {
+        re.lastIndex = 0
+        const first = re.exec('aXa').index
+        const second = re.exec('aXa').index
+        const end = re.exec('aXa') === null
+        unicode.lastIndex = 0
+        unicode.exec('𝌆')
+        return [first, second, end, re.lastIndex, unicode.lastIndex]
+      }
+    `, { jzify: true, optimize })
+    for (let i = 0; i < 2; i++) is(r.memory.read(r.exports.run()), [0, 2, true, 0, 2])
+  }
+})
+
 test('regex: RegExp constructor accepts const string expressions', () => {
   const r = jz(`
     const prefix = "ab"

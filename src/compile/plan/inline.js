@@ -137,6 +137,22 @@ const inlinedBody = (func, args) => {
   return { prefix: argPrefix.length ? [...argPrefix, ...prefix] : prefix, value }
 }
 
+// Fold a single bare early return into a guard around the remaining void body.
+const foldEarlyReturn = (func) => {
+  const body = func.body
+  if (!Array.isArray(body) || body[0] !== '{}' || !Array.isArray(body[1]) || body[1][0] !== ';') return false
+  const seq = body[1]
+  for (let i = 1; i < seq.length; i++) {
+    const s = seq[i]
+    if (!Array.isArray(s) || s[0] !== 'if' || s.length !== 3 || !Array.isArray(s[2]) || s[2][0] !== 'return' || s[2].length !== 1) continue
+    const rest = seq.slice(i + 1)
+    if (!rest.length || rest.some(r => some(r, n => n[0] === 'return'))) return false
+    seq.splice(i, seq.length - i, ['if', ['!', s[1]], ['{}', [';', ...rest]]])
+    return true
+  }
+  return false
+}
+
 const stmtDeclName = (stmt) => {
   if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) return null
   const decl = stmt[1]
@@ -544,6 +560,7 @@ const hoistNestedCalls = (body, bodies) => {
 }
 
 export const inlineHotInternalCalls = (programFacts, ast) => {
+  let changed = false
   const cfg = ctx.transform.optimize
   if (cfg && cfg.sourceInline === false) return false
   // Transitive candidacy + expression-position hoisting are a size↔speed trade (they
@@ -639,17 +656,20 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // The 2-site non-tiny-leaf cap would otherwise outline a hot helper like noise's `grad`
     // (~30 nodes, called 4× from perlin) and freeze the call overhead per pixel.
     const isSmallLeaf = !hasLoop && size <= 48
+    // Small loop bodies share the leaf duplication budget at speed. The depth
+    // check below still keeps nested loops separate.
+    const isSmallKernel = hasLoop && size <= 48 && speedTier
     // Leaf site cap scales with body size — the cost of inlining N sites is
     // N·size nodes, not N: a 30-node pure leaf hammered from 9 sites (colorpq's
     // spow) is 270 spliced nodes, cheaper than 9 call frames per pixel, while a
     // 48-node body keeps the old 8-site bound (360/48 → 8). Full inlining also
     // restores shape identity for downstream CSE — a PARTIAL split (some sites
     // inlined, some calls) makes duplicate pure subtrees structurally unequal.
-    const leafSiteCap = (isTinyLeaf || isSmallLeaf) ? Math.max(8, Math.floor(360 / Math.max(1, size))) : 8
-    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
+    const leafSiteCap = (isTinyLeaf || isSmallLeaf || isSmallKernel) ? Math.max(8, Math.floor(360 / Math.max(1, size))) : 8
+    if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !isSmallKernel && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
     // Size tier: a looped kernel is spliced only where that duplicates nothing.
     if (hasLoop && sites.length > 1 && cfg && cfg.sourceInlineDup === false) continue
-    const stmts = blockStmts(func.body)
+    let stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     if (some(func.body, n => n[0] === '=>')) continue
@@ -658,6 +678,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (some(func.body, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) continue
     let returnCount = 0
     some(func.body, n => { if (n[0] === 'return') returnCount++; return false })
+    if (returnCount === 1 && stmts && foldEarlyReturn(func)) { changed = true; returnCount = 0; stmts = blockStmts(func.body) }
     if (returnCount > 1) continue
     if (returnCount === 1 && stmts) {
       const last = stmts[stmts.length - 1]
@@ -732,7 +753,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     recollect = true  // a function this one blocked (a caller of it) may qualify now
   }
   }
-  if (!candidates.size) return false
+  if (!candidates.size) return changed
 
   // Trivial expr-bodied candidates can be substituted at any expression position
   // (if-condition, ternary, etc.). Stmt-bodied ones go through inlineInStmt's
@@ -753,7 +774,6 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (!Array.isArray(func.body) || func.body[0] !== '{}' || flattenableBody(func)) exprOnlyCandidates.set(name, func)
   }
 
-  let changed = false
   const exportedCandidates = new Map(), exportedExprCandidates = new Map()
   for (const func of candidates.values()) {
     const name = func.name
@@ -763,7 +783,12 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // Forwarders cross into an exported caller too: the tier-up rationale that
     // keeps candidates out of exports concerns relocated loop kernels, not
     // these tiny leaves — and inlining one devirtualizes a closure dispatch.
-    if (fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) {
+    // A small helper already called inside export loops joins an existing hot
+    // loop; this does not relocate a standalone kernel into a cold entry point.
+    const hotKernelExport = speedTier && nodeSize(func.body) <= 48 &&
+      sites.some(site => isExported(site.callerFunc)) &&
+      sites.every(site => !isExported(site.callerFunc) || containsNode(site.callerFunc.body, site.node))
+    if (hotKernelExport || fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) {
       exportedCandidates.set(name, func)
       if (exprOnlyCandidates.has(name)) exportedExprCandidates.set(name, func)
     }
@@ -1007,6 +1032,11 @@ const rewriteRestBody = (body, restName, restParams) => {
     if (typeof node === 'string') return names.has(node) ? { ok: false } : { ok: true, node }
     if (!Array.isArray(node)) return { ok: true, node }
     if (node[0] === 'str') return { ok: true, node: node.slice() }
+
+    // Replacing a rest element with an argument slot is a read-only view.
+    // Writes need the array's independent storage, including missing indices.
+    if ((MUTATE_OPS.has(node[0]) || node[0] === 'delete') && Array.isArray(node[1]) &&
+        (node[1][0] === '[]' || node[1][0] === '.') && names.has(node[1][1])) return { ok: false }
 
     if ((node[0] === '.' || node[0] === '?.') && names.has(node[1])) {
       return node[2] === 'length' ? { ok: true, node: [, restParams.length] } : { ok: false }
