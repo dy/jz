@@ -1272,9 +1272,10 @@ const validateClass = (node, cx, walk, source) => {
   for (const m of parsed) if (typeof m.key === 'string' && m.key.startsWith('#')) {
     if (m.key === '#constructor') fail("private name '#constructor' is forbidden")
     const prev = privateNames.get(m.key)
-    const pair = (prev === 'get' && m.kind === 'set') || (prev === 'set' && m.kind === 'get')
+    const suffix = m.isStatic ? ' static' : ''
+    const pair = (prev === 'get' + suffix && m.kind === 'set') || (prev === 'set' + suffix && m.kind === 'get')
     if (prev && !pair) fail(`duplicate private name '${m.key}'`)
-    privateNames.set(m.key, pair ? 'pair' : m.kind)
+    privateNames.set(m.key, pair ? 'pair' : m.kind + suffix)
   }
   const privateSet = new Set(cx.privateNames || [])
   for (const key of privateNames.keys()) privateSet.add(key)
@@ -1551,6 +1552,18 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
         (methodSourceInfo(source, node.loc) & M_ASYNC_NL))
       fail("line terminator is not allowed between 'async' and an object method name")
 
+    // Methods have no function-keyword location. A data property's function
+    // does, and only ordinary sloppy functions permit duplicate formals.
+    if (op === ':' && !statementPosition) {
+      const fn = node[2]?.[0] === 'async' ? node[2][1] : node[2]
+      if (isNode(fn) && fn.loc == null && (fn[0] === 'function' || fn[0] === 'function*')) {
+        const names = []
+        for (const p of paramsOf(fn[2])) boundNames(p, names)
+        const dup = duplicateName(names)
+        if (dup) fail(`duplicate method parameter '${dup}'`)
+      }
+    }
+
     if (ASSIGN_OPS.has(op)) {
       const specialIdentifier = isNode(node[1]) && (
         (node[1][0] === 'yield' && !cx.strict && !cx.generator) ||
@@ -1663,9 +1676,8 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
           fail("line terminator is not allowed between 'async' and arrow parameters")
       }
       if (!isAsync && isNode(arrow[1]) && arrow[1][0] === '()' && arrow[1].length > 2 &&
-          typeof arrow[1][1] === 'string' && arrow[1][1].includes('\\u') &&
-          decodeIdentifier(arrow[1][1]) === 'async')
-        fail("escaped contextual keyword 'async' cannot introduce arrow parameters")
+          typeof arrow[1][1] === 'string')
+        fail("call expression cannot introduce arrow parameters (including async across a line terminator)")
       const params = paramsOf(arrow[1]), body = arrow[2]
       // A leading `{` after `=>` is always the function body, never an object
       // literal concise body. Jessie can absorb a following operator into that
@@ -1768,6 +1780,9 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
     // the parser collapses to its statement.
     if (op === 'class') {
       needsLexical = true
+      const base = node[2]
+      if (isNode(base) && (base[0] === '=>' || base[0] === 'async' && base[1]?.[0] === '=>'))
+        fail('arrow function in class heritage requires parentheses')
       validateClass(node, cx, walk, source)
       if (node[2]) walk(node[2], cx)
       return
@@ -1880,6 +1895,8 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
       const next = { ...cx, loop: cx.loop + 1 }
       if (isNode(head) && (head[0] === 'in' || head[0] === 'of')) {
         const lhs = head[1]
+        if (op === 'for' && head[0] === 'of' && lhs === 'async')
+          fail("for-of assignment target cannot be the bare identifier 'async'")
         // NOTE: a checkIdentifierRef(lhs, cx) call belongs here too (closing
         // test262's identifier-let-allowed-as-lefthandside-expression-
         // strict.js — strict-mode `for (let in o)`) and is sound natively

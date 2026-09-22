@@ -120,6 +120,39 @@ test('early errors: accessor strictness and async binding syntax survive unused 
     ]) ok(Array.isArray(parse(src)), `valid counterpart: ${src}`)
 })
 
+test('early errors: method formals, private pairs and restricted async grammar', () => {
+    for (const prefix of ['', 'async ', '*', 'async *'])
+        rejects(`void { ${prefix}m(a, a) {} }`, 'duplicate method parameter')
+    for (const key of ["'m'", '[1]', '["m"]'])
+        rejects(`void { ${key}(a, a) {} }`, 'duplicate method parameter')
+    for (const first of ['get #x() {}', 'set #x(v) {}']) {
+        const second = first.startsWith('get') ? 'set #x(v) {}' : 'get #x() {}'
+        rejects(`class C { ${first} static ${second} }`, 'duplicate private name')
+        rejects(`class C { static ${first} ${second} }`, 'duplicate private name')
+        for (const prefix of ['', 'static '])
+            ok(Array.isArray(parse(`class C { ${prefix}${first} ${prefix}${second} }`)), 'matching private accessor pair')
+    }
+    for (const gap of ['\n', '\r', '\r\n', '/*\n*/', '\u2028', '\u2029'])
+        rejects(`async${gap}(foo) => {}`, 'arrow parameters')
+    rejects('f(x) => {}', 'arrow parameters')
+    for (const prefix of ['', 'async ']) {
+        rejects(`class C extends ${prefix}() => {} {}`)
+        rejects(`let C = class extends ${prefix}() => {} {}`)
+        ok(Array.isArray(parse(`class C extends (${prefix}() => {}) {}`)), 'parenthesized heritage is syntactically valid')
+    }
+    rejects('var async; for (async of [1]) {}', 'bare identifier')
+    for (const src of [
+        'void { m: function(a, a) {} }',
+        'void { m: async function(a, a) {} }',
+        'void { m(a) { function f(b, b) {} } }',
+        'var async; for (async in {}) {}',
+        'for (let async of [1]) {}',
+        'var async; for ((async) of [1]) {}',
+        'async function f() { var async; for await (async of []) {} }',
+        'async /* same line */ (x) => x',
+    ]) ok(Array.isArray(parse(src)), `valid counterpart: ${src}`)
+})
+
 test('early errors: nested spread commas do not masquerade as a trailing rest parameter', () => {
     is(jz('export let f = (x = [...[]]) => x.length').exports.f(), 0,
       'empty spread without a trailing comma stays valid')

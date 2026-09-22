@@ -131,6 +131,14 @@ Architecture
 - `slice` yields an array with a cell of its own: the receiver's positional
   row carried over unshifted, so `['func', [..]].slice(1)[0]` read as a
   string.
+- Object methods receive `this` at invocation through the closure ABI,
+  including optional calls, accessors and callbacks with `thisArg`. Generators
+  capture it before suspension. This removes the per-object receiver capture;
+  programs without receiver reads omit the ABI slot. Class methods retain
+  the documented bound-method contract.
+- Prepared statement lists share the block emitter's flow facts and
+  invalidation. A throwing typeof guard retains its callable proof, so an
+  unshadowed closure `call` uses the invocation ABI without a property probe.
 
 Dependencies
 
@@ -144,17 +152,8 @@ Dependencies
 
 ## Remaining release work
 
-1. **Conformance.** The September 22 language gate has 3200 passes and one
-   failure: a detached generator method keeps its receiver because methods
-   currently lower to bound closures. The bound-method compatibility decision
-   remains open. Built-ins pass: 878 tests, zero failures. The callback,
-   parameter/default/body scope, named-function binding, thenable FIFO and
-   using-initializer failures are fixed and pinned. Eight accessor-descriptor
-   cases now use the existing out-of-scope rejection from README, and six
-   passing xfails were removed. No new xfail was added.
-
-2. **Runtime and self-host speed.** The self-compile gate passes (warm
-   0.900× against the 1.03× cap, fresh 0.720× against 0.99× with the
+1. **Runtime and self-host speed.** The self-compile gate passes (warm
+   0.953× against the 1.03× cap, fresh 0.782× against 0.99× with the
    published watr dependency). The compiler's
    own profile is flat (Map/Set probes and hashing 15%, pointer decoding 3%,
    the AST visitor 4.5%); call-site wrapper isolation, blanket forwarding
@@ -232,7 +231,7 @@ Dependencies
    implemented; the latter now preserves the original expression node
    through a removable block, restoring self-hosted byte parity.
 
-3. **Memory.** webaudio holds 70.3 MB of resident memory against V8's 70.6
+2. **Memory.** webaudio holds 70.3 MB of resident memory against V8's 70.6
    (paired, node against node, the earlier measured tree; 151 before): the automation loops
    rewind per sample once the census named the class functions their
    receivers reach, the tuple destructuring read by index, and the link pass
@@ -255,8 +254,16 @@ Dependencies
    A next allocation optimization must prove that a copied slice is consumed
    only by a subsequent spread and that intervening effects cannot change
    its contents. The parser's source remains a fixed specimen.
+   Removing object methods' receiver captures saves 480000 bytes in a retained
+   20000-object workload (1644352 → 1164352, 29%). Five alternating runs give
+   median 0.404 → 0.367 ms; its binary shrinks 2266 → 2171 bytes and the
+   checksum is unchanged. This is a focused allocation result, not closure
+   of the Jessie/watr RSS gaps. Final speed binaries grow by 927 bytes for
+   watr and shrink by 84 bytes for webaudio; Jessie's validation adds 283
+   bytes. Watr's benchmark size build is 319898 bytes,
+   still below its 320000-byte backstop.
 
-4. **Reproducible speed, size and memory evidence.** `bench/results.json` is
+3. **Reproducible speed, size and memory evidence.** `bench/results.json` is
    stale: timed above the 4096 MB swap-validity cap, 43 comparable
    Porffor/TinyGo rows against 44 required, and alpha's w2c row no longer
    describes the tree. Regenerate through the benchmark runner on quiet
@@ -273,56 +280,60 @@ Dependencies
    sdf/C-Wasm 1.420×, noise/Rust-Wasm 1.148× and wordcount/C-Wasm 1.011×;
    watr/V8 is 1.546× and jessie/V8 0.988×. All checksums match.
 
-5. **Public VST scope and identity.** The builder is JZ/macOS/mono-or-stereo.
+4. **Public VST scope and identity.** The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Use
    `org.audiojs` for the permanent vendor root, matching the audio compiler
    contract and the user's audiojs choice; do not publish IDs under a temporary root.
    Restart-flagged edits take effect on next setup; active restart needs the
    component-handler interface. Events and wider layouts remain refused.
 
-6. **Proof and independent review.** Reachable dynamic calls can still make
+5. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation and work proofs unknown. Empirical block checks
    establish neither allocation freedom for all inputs nor callback
    deadlines; reuse entry-range facts for useful bounds, since a full-i32
    domain proves no deadline. Present the pinned candidate and complete gate
    evidence for independent review; implementation alone is not expert
    approval. The watr optimizer rules, including the block-prefix size
-   correction in item 2, are published and required by the dependency.
+   correction in item 1, are published and required by the dependency.
 
 ## Gate evidence, September 22
 
-- Final core: 4609 passed, one skip (111670 assertions). Opt0: 4417
-  passed (92090 assertions); opt3: 4417 passed (92517 assertions);
-  WASI: 4470 passed (102832 assertions), each with one skip. All four ran
+- Final core: 4633 passed, one skip (112414 assertions). Opt0: 4441
+  passed (92234 assertions); opt3: 4441 passed (92661 assertions);
+  WASI: 4494 passed (102975 assertions), each with one skip. All four ran
   on the same compiler tree with published watr 5.11.2. No compiler source
   changed during these gates.
 - Self-compile: 68 passed (2365 assertions). Perf ratchet: 10 passed.
-  Self-compile speed passes: warm 0.900× V8 (cap 1.03×), fresh 0.720×
+  Self-compile speed passes: warm 0.953× V8 (cap 1.03×), fresh 0.782×
   (cap 0.99×). Public types and import lint pass.
-- Language conformance: 3200 pass, one fail, two xfails. Built-ins:
-  878 pass, zero failures, 44 xfails. The remaining failure is item 1.
-- Benchmark: 256/271 pass. Speed geomeans are 0.490× V8, 0.698× native C
-  and 0.459× AssemblyScript; size is 0.782× AssemblyScript. Perf-fuzz passes
-  (integer 0.95×, float 0.73×, mixed 0.88× V8), as does floatbeat (0.380×).
-  TinyGo coverage passes. Watr's published-dependency size passes at 319488
-  bytes against 320000, and its 1.225× V8 runtime clears the existing 1.25×
+- Language conformance: 3201 pass, zero failures, two xfails; all 4045
+  negative syntax cases reject. The receiver suite passes 23 tests in both
+  hosts, including captured iterator operations, spread callback receivers
+  and strict closure calls with effectful receiver arguments.
+  Built-ins pass 878 cases, zero failures and 44 xfails.
+  Ten invalid programs accepted by 070f9adb now reject: duplicate method
+  parameters, restricted async grammar and mixed static/instance private
+  accessor pairs. They reject through the Wasm-hosted compiler too. No xfail,
+  negative ledger or coverage floor changed.
+- Benchmark: 262/271 pass. Speed geomeans are 0.470× V8, 0.705× native C
+  and 0.488× AssemblyScript; size is 0.782× AssemblyScript. Perf-fuzz passes
+  (integer 0.93×, float 0.74×, mixed 0.85× V8), as does floatbeat (0.400×).
+  TinyGo coverage passes. Watr's published-dependency size passes at 319898
+  bytes against 320000, and its 1.168× V8 runtime clears the existing 1.25×
   trail gate, though it remains slower than V8.
-- Fifteen red rows remain: fastest-Wasm delayline 1.238×, fft 1.188×,
-  glyfparse 1.348×, lorenz 1.184×, sdf 1.458×, slices 1.052×, wav 1.077×,
-  noise 1.247×, levenshtein 1.182× and wordcount 1.169×; slices and delayline
-  against AssemblyScript, sdf against V8; alpha's stale committed w2c row;
-  and strict example wins (below). Slices, sdf, delayline, lorenz, wav and
-  levenshtein compile to byte-identical speed binaries before and after the
-  paired-buffer change, ruling out changed codegen as the cause of their
-  newly red readings. Timing bands and all caps remain unchanged.
+- Nine red rows remain: fastest-Wasm fft 1.078×, glyfparse 1.429×,
+  sdf 1.420×, trace 1.071×, crc32 1.058×, noise 1.164× and wordcount 1.108×;
+  alpha's stale committed w2c row; and Ulam (below). Twelve checked kernels,
+  including sdf, glyfparse, crc32 and noise, remain byte-identical to 070f9adb.
+  The red-row count moved between runs on this loaded machine; that is not
+  evidence of a speed improvement. Timing bands and all caps remain unchanged.
 - The example driver had stale arguments for Ulam, waves, attractors and
   raymarcher. Their calls now match the current kernels, and an untimed
   arity check validates all 21 drivers. Lenia's effective zero seed is
   explicit. Kernel sources and timing caps are unchanged. Ulam's zero-size,
   repeated-view and changed-view outputs match JS pixel for pixel at O0,
-  O3 and WASI. The current example run has a 1.57× V8/JZ geomean and 20/21
-  strict wins; Ulam at 0.96× still trails V8. Percolation measured 1.06×,
-  but its earlier 0.91× result still warrants a quiet-hardware check.
+  O3 and WASI. The current example run has a 1.54× V8/JZ geomean and 19/21
+  strict wins; Ulam at 0.90× and percolation at 0.93× still trail V8.
 - The focused typed-loop suite passes 19 tests and 3671 assertions, including
   primitive signed-zero comparisons that the array deep-equality helper omits.
 - The machine exceeds the reference-evidence swap cap. These are diagnostics,
