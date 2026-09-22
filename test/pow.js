@@ -308,3 +308,30 @@ test('Math.pow runtime — integer exponents past the fast path and signed zeros
   for (const [x, y] of [[-2, 2147483648], [-2, 2147483649], [-0.5, 2147483649], [-2, 2 ** 53 + 2], [-0, 5], [-0, -5], [0, -5], [-0, 6], [-Infinity, 5], [-Infinity, -5], [-2, 2.5], [-8, 1 / 3]])
     ok(Object.is(pow(x, y), Math.pow(x, y)), `pow(${x}, ${y}) = ${pow(x, y)}, host ${Math.pow(x, y)}`)
 })
+
+// The two-wide kernel ($math.pow2, module/math/simd.js) runs both lanes through
+// one pass of the scalar kernel's operations, so a lane-lifted loop must agree
+// with the scalar function bit for bit: over the common case, and over every
+// edge lane (a zero, a negative or subnormal base, an integer, a half, a tiny
+// or huge exponent, a NaN, an infinity, a product that over- or underflows)
+// that routes the pair back to the scalar ladder.
+test('Math.pow lanes — the two-wide kernel is bit-exact with the scalar path', () => {
+  const src = `export let lanes = (xs, ys, n) => { const out = new Float64Array(n); for (let i = 0; i < n; i++) out[i] = Math.pow(xs[i], ys[i]); return out }
+export let scalar = (x, y) => Math.pow(x, y)`
+  ok(/call \$math\.pow2\b/.test(funcWat(wat(src, { optimize: 'speed' }), 'lanes')), 'the loop lifts through $math.pow2')
+  const bases = [0, -0, 1, -1, 2, 0.5, 1e-310, -1e-310, 2.2250738585072014e-308, 1.7976931348623157e308, Infinity, -Infinity, NaN, 0.9999999, 1.0000001, 3.7, -3.7, 1e-300, 1e300, 123.456, 0.001]
+  const exps = [0, -0, 0.5, -0.5, 1, -1, 2, 3, -3, 16, 17, 1000, -1000, 0.16, 2.4, 134.034375, 0.1593017578125, -0.1593017578125, 1e-20, -1e-20, 1e-66, 1e20, 2 ** 31, 2 ** 53, 1.5, -2.5, 300.5, -300.5, NaN, Infinity, -Infinity]
+  const rng = mkRng(0x9e3779b9)
+  const xs = [], ys = []
+  for (const x of bases) for (const y of exps) { xs.push(x); ys.push(y) }
+  for (let i = 0; i < 1500; i++) { xs.push(Math.exp((rng() - 0.5) * 1400)); ys.push((rng() - 0.5) * 300) }
+  for (let i = 0; i < 500; i++) { xs.push(1 + (rng() - 0.5) * 1e-6); ys.push((rng() - 0.5) * 1e6) }
+  const { lanes, scalar } = run(src, { optimize: 'speed' })
+  const got = lanes(new Float64Array(xs), new Float64Array(ys), xs.length)
+  let bad = 0
+  for (let i = 0; i < xs.length; i++) {
+    const s = scalar(xs[i], ys[i])
+    if (!Object.is(got[i], s) && ++bad < 6) ok(false, `pow(${xs[i]}, ${ys[i]}): lanes ${got[i]} scalar ${s} host ${Math.pow(xs[i], ys[i])}`)
+  }
+  is(bad, 0, `${bad} of ${xs.length} lanes differ from the scalar path`)
+})
