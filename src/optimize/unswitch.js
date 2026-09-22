@@ -10,7 +10,7 @@
  */
 import { findBodyStart, nextLocalId, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
-import { PTR, ATOM, atomNanHex, encodePtrHi, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
+import { PTR, ATOM, atomNanHex, encodePtrHi, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_CLAMPED_FLAG, TYPED_ELEM_F16_FLAG } from '../../layout.js'
 import { matchExitBrIf, isLocalGet } from './vectorize/addr-model.js'
 
 // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering unswitchTypedParamLoop.
@@ -42,9 +42,9 @@ const numericStoreValue = value => ['select', cloneIR(value), ['f64.const', 'nan
  * read for f64 elements (bit-exact, incl. NaN). All helpers are nested function decls
  * (no ctx param) per the self-compile discipline.
  */
-export function unswitchTypedParamLoop(fn) {
+export function unswitchTypedParamLoop(fn, f16 = false) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
-  unswitchTypedAccessLoop(fn)
+  unswitchTypedAccessLoop(fn, f16)
   // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering this pass (DBG_DSR-style).
   if (DBG_UNSWITCH && String(fn[1]).includes(DBG_UNSWITCH)) console.error(JSON.stringify(fn))
   const bodyStart = findBodyStart(fn)
@@ -339,8 +339,9 @@ export function unswitchTypedParamLoop(fn) {
 /** Version a small leaf loop's stable typed receiver by Float32/Float64 width.
  * Unlike the polymorphic array-store matcher above, typed stores never relocate
  * the receiver. Keep their bounds and Number proof, including assignment values
- * and f32 rounding. One receiver per loop bounds code growth to two clones. */
-function unswitchTypedAccessLoop(fn) {
+ * and f32 rounding. A second numeric read receiver shares one storage-dispatched clone
+ * per output width, preserving the single-receiver fallback for other kinds. */
+function unswitchTypedAccessLoop(fn, f16) {
   const start = findBodyStart(fn), locals = []
   if (start < 0) return
   let id = nextLocalId(fn, 'utw')
@@ -381,19 +382,32 @@ function unswitchTypedAccessLoop(fn) {
       if (uses > best) { selected = r; best = uses }
     }
     if (!selected) return
-    const bits = () => selected.boxed ? ['i64.reinterpret_f64', get(selected.name)] : get(selected.name)
-    const high = () => ['i32.wrap_i64', ['i64.shr_u', bits(), ['i64.const', 32]]]
-    const base = fresh('i32'), len = fresh('i32')
-    const version = shift => {
+    const version = (selected, shift, source) => {
+      const bits = () => selected.boxed ? ['i64.reinterpret_f64', get(selected.name)] : get(selected.name)
+      const high = () => ['i32.wrap_i64', ['i64.shr_u', bits(), ['i64.const', 32]]]
+      const base = fresh('i32'), len = fresh('i32')
+      const elem = shift == null ? fresh('i32') : null
+      const step = elem ? fresh('i32') : null
+      const half = elem && f16 ? fresh('i32') : null
       const is32 = shift === 2, width = is32 ? TYPED_ELEM_CODE.Float32Array : TYPED_ELEM_CODE.Float64Array
-      const gate = ['i32.eq', ['i32.and', high(), ['i32.const', ~TYPED_ELEM_VIEW_FLAG]], ['i32.const', encodePtrHi(PTR.TYPED, width)]]
+      const stride = () => step ? get(step) : ['i32.const', shift]
+      // One numeric input clone covers signed/unsigned integers and floats.
+      // BigInt and DataView retain the original reader and its semantics.
+      const flags = elem ? 7 | TYPED_ELEM_CLAMPED_FLAG | (f16 ? TYPED_ELEM_F16_FLAG : 0) : 0
+      const gate = ['i32.eq', ['i32.and', high(), ['i32.const', ~(TYPED_ELEM_VIEW_FLAG | flags)]],
+        ['i32.const', encodePtrHi(PTR.TYPED, elem ? 0 : width)]]
       const view = () => ['i32.and', high(), ['i32.const', TYPED_ELEM_VIEW_FLAG]]
       const setup = [
+        ...(elem ? [
+          ['local.set', elem, ['i32.and', high(), ['i32.const', 7]]],
+          ['local.set', step, ['i32.sub', ['i32.shr_u', get(elem), ['i32.const', 1]], ['i32.eq', get(elem), ['i32.const', 6]]]],
+          ...(half ? [['local.set', half, ['i32.and', high(), ['i32.const', TYPED_ELEM_F16_FLAG]]]] : []),
+        ] : []),
         ['local.set', base, ['i32.wrap_i64', bits()]],
-        ['local.set', len, ['i32.shr_u', ['i32.load', ['select', get(base), ['i32.sub', get(base), ['i32.const', 8]], view()]], ['i32.const', shift]]],
+        ['local.set', len, ['i32.shr_u', ['i32.load', ['select', get(base), ['i32.sub', get(base), ['i32.const', 8]], view()]], stride()]],
         ['if', view(), ['then', ['local.set', base, ['i32.load', ['i32.add', get(base), ['i32.const', 4]]]]]],
       ]
-      const address = ix => ['i32.add', get(base), ['i32.shl', ix, ['i32.const', shift]]]
+      const address = ix => ['i32.add', get(base), ['i32.shl', ix, stride()]]
       const within = ix => ['i32.lt_u', ix, get(len)]
       const rewrite = n => {
         if (!Array.isArray(n)) return n
@@ -402,20 +416,52 @@ function unswitchTypedAccessLoop(fn) {
         const r = receiver(n)
         if (r?.name !== selected.name || r.boxed !== selected.boxed) return n
         if (read(n)) {
-          const load = is32 ? ['f64.promote_f32', ['f32.load', address(cloneIR(n[3]))]] : ['f64.load', address(cloneIR(n[3]))]
+          const f32 = () => ['f64.promote_f32', ['f32.load', address(cloneIR(n[3]))]]
+          const f64 = () => ['f64.load', address(cloneIR(n[3]))]
+          let load = is32 ? f32() : f64()
+          if (elem) {
+            const choose = (cond, yes, no) => ['if', ['result', 'f64'], cond, ['then', yes], ['else', no]]
+            const integer = (bits, unsigned) => [`f64.convert_i32_${unsigned ? 'u' : 's'}`,
+              [bits === 32 ? 'i32.load' : `i32.load${bits}_${unsigned ? 'u' : 's'}`, address(cloneIR(n[3]))]]
+            const signed = bits => choose(['i32.and', get(elem), ['i32.const', 1]], integer(bits, true), integer(bits, false))
+            const word = half ? choose(get(half), ['call', '$__f16_to_f64', ['i32.load16_u', address(cloneIR(n[3]))]], signed(16)) : signed(16)
+            load = choose(['i32.ge_u', get(elem), ['i32.const', 6]],
+              choose(['i32.eq', get(elem), ['i32.const', 7]], f64(), f32()),
+              choose(['i32.ge_u', get(elem), ['i32.const', 4]], signed(32),
+                choose(['i32.ge_u', get(elem), ['i32.const', 2]], word, signed(8))))
+          }
           return n[1] === '$__typed_get_idx' ? load : ['if', ['result', 'f64'], within(cloneIR(n[3])),
             ['then', load], ['else', ['f64.const', `nan:${atomNanHex(ATOM.UNDEF)}`]]]
         }
-        if (!store(n)) return n
+        if (!store(n) || elem) return n
         const ix = fresh('i32'), value = fresh('f64')
         const numeric = numericStoreValue(get(value))
         return ['block', ['result', 'f64'], ['local.set', ix, n[3]], ['local.set', value, n[4]],
           ['if', within(get(ix)), ['then', [is32 ? 'f32.store' : 'f64.store', address(get(ix)),
             is32 ? ['f32.demote_f64', numeric] : numeric]]], get(value)]
       }
-      return { gate, body: [...setup, rewrite(cloneIR(loop))] }
+      return { gate, setup, loop: rewrite(cloneIR(source)) }
     }
-    const f64 = version(3), f32 = version(2)
+    // Cache one further numeric receiver's storage. Keep the original
+    // single-receiver clone for nullish, BigInt and other receivers.
+    let other = null
+    const reads = new Map()
+    for (const c of calls) if (read(c) && simple(c[3])) {
+      const r = receiver(c)
+      if (r && r.name !== selected.name) {
+        const uses = (reads.get(r.name) ?? 0) + 1
+        reads.set(r.name, uses)
+        if (!other || uses > reads.get(other.name)) other = r
+      }
+    }
+    const arm = shift => {
+      const one = version(selected, shift, loop)
+      if (!other) return { gate: one.gate, body: [...one.setup, one.loop] }
+      const two = version(other, null, one.loop)
+      return { gate: one.gate, body: [...one.setup,
+        ['if', two.gate, ['then', ...two.setup, two.loop], ['else', one.loop]]] }
+    }
+    const f64 = arm(3), f32 = arm(2)
     parent[index] = ['if', f64.gate, ['then', ...f64.body],
       ['else', ['if', f32.gate, ['then', ...f32.body], ['else', loop]]]]
     return false

@@ -154,7 +154,7 @@ Dependencies
    passing xfails were removed. No new xfail was added.
 
 2. **Runtime and self-host speed.** The self-compile gate passes (warm
-   0.968× against the 1.03× cap, fresh 0.778× against 0.99× with the
+   0.900× against the 1.03× cap, fresh 0.720× against 0.99× with the
    published watr dependency). The compiler's
    own profile is flat (Map/Set probes and hashing 15%, pointer decoding 3%,
    the AST visitor 4.5%); call-site wrapper isolation, blanket forwarding
@@ -164,50 +164,29 @@ Dependencies
 
    Remaining speed gaps include webaudio, watr and percolation; the aggregate
    speed win does not establish a win on every case.
-   webaudio (7.6× → 2.2×, web-audio-api 1.5.6): the roots were the
-   iterator protocol (the automation list's `[Symbol.iterator]()` escaped its
-   array, and a consumer module without producers of its own indexed the
-   list instead of iterating it), the accessor probe on every `event.type`
-   read (a dynamic lookup because some class installs a `type` getter), and
-   the shared base initializer of the ports joining `AudioParam` into every
-   output's `node`. The remaining 2.2× is the generic typed-array element
-   helpers in the DSP loops (40% of the render): `AudioBuffer`'s channel
-   count read unknown because the summary walked every function whether the
-   program reached it or not, and `utils.decodeAudioData`, which nothing
-   calls, handed its host-decoded data to `new AudioBuffer(unknown, …)`;
-   reachability in the solver closed that (3 shapes lost, 9.1 ms). The
-   channel data now reads as a typed array of unknown element type, and
-   rightly so: `AudioBuffer` holds `Float32Array` views while the ports mix
-   into `Float64Array` blocks (`_useFloat64`), so one channel array carries
-   both, and the DSP loops read and store through the generic element
-   helpers (40% of the render). The lever is a loop version per element
-   type: the emitter clones a loop whose typed source is bimorphic once for
-   each width, guarded by the runtime element type, as the bimorphic
-   parameter split already does for callees. Then the automation `findIndex`
-   callbacks and
-   the tuple destructuring `const [t, v] = …` that opens a cursor per call
-   (8%). The current update fixes a solver-order loss at
-   `Object.assign(factory(), source)`: a pending target no longer escapes the
-   source before its factory's result arrives. Small leaf loops now version
-   one stable typed receiver for Float32/Float64 stores and reads, preserving
-   bounds and conversion semantics. The local audio diagnostic moved from
-   9.25 ms to 7.72–7.92 ms with the factory fix, then 7.21–7.46 ms with
-   width versions and numeric element-domain joins (V8 4.88 ms, matching
-   checksum 2866527759). Joining numeric widths no longer introduces a
-   possible BigInt element, and the solver and query share those transfers.
-   The combined speed build is 598817 bytes versus 598511 after the factory
-   fix alone; size mode does not run width versioning. Width specialization
-   now also pins empty/OOB loops, views, coercion, NaN and signed zero. The
-   remaining stable receiver reads and callbacks still need work; this does
-   not establish parity. A further entry-range guard removed repeated
-   bounds checks from 19 loops but measured 7.367 ms versus 7.326 ms in five
-   alternating pairs and added 1160 bytes; that experiment was discarded.
-   Specializing two receivers together after removing redundant null-check
-   captures improved the audio diagnostic by 6%, but made mixed Float32/
-   Float64 copies 2.6–4× slower by losing the single-receiver fallback. That
-   experiment was also discarded. Future multi-receiver versions must retain
-   the existing mixed-width path; moving or folding receiver copies should
-   use dominance evidence, not a function-wide alias guess.
+   webaudio now preserves channel-array types through iteration, accessors,
+   base initializers and solver reachability. Pending `Object.assign` targets
+   wait for their factories before joining source shapes. Small leaf loops
+   version a stable output receiver for Float32/Float64 storage; a second
+   numeric input caches its base, length and element width. Numeric-width
+   joins keep their Number domain instead of introducing possible BigInt.
+   Null checks refine eligible direct locals through existing flow facts;
+   effectful/coercing keys retain their captures and evaluation order.
+
+   Five alternating audio pairs give median 7.447 → 6.471 ms (about 13%),
+   checksum 2866527759 unchanged. The earlier V8 diagnostic was 4.88 ms,
+   so parity remains open. Speed-mode size grows 598817 → 616071 bytes
+   (2.9%); size mode does not run width versioning. Across 16 input/output
+   combinations, floating outputs improve 1.46–2.50× and integer outputs
+   remain within about 4% of baseline. Tests pin every numeric storage kind,
+   views, aliasing, OOB, null receivers, key order, NaN and signed zero.
+   These loaded-machine measurements remain diagnostic.
+
+   Float-only companion versions regressed integer inputs feeding Float32
+   output; the retained version handles all numeric input kinds and keeps
+   the original fallback. An entry-range guard that removed repeated bounds
+   checks measured no gain and was discarded. Reprofile the remaining
+   receiver reads and automation callbacks before the next optimization.
    colorpq's scalar Arm pow, value numbering, statement scheduling and
    true two-wide pow kernel are implemented. On the final tree, three paired
    runs take 49.4 ms with the new passes versus 86.8 ms with both disabled;
@@ -312,34 +291,40 @@ Dependencies
 
 ## Gate evidence, September 22
 
-- Final core: 4605 passed, one skip (109000 assertions). Opt0: 4413
-  passed (88820 assertions); opt3: 4413 passed (89247 assertions);
-  WASI: 4466 passed (99562 assertions), each with one skip. All four ran
+- Final core: 4609 passed, one skip (111670 assertions). Opt0: 4417
+  passed (92090 assertions); opt3: 4417 passed (92517 assertions);
+  WASI: 4470 passed (102832 assertions), each with one skip. All four ran
   on the same compiler tree with published watr 5.11.2. No compiler source
   changed during these gates.
 - Self-compile: 68 passed (2365 assertions). Perf ratchet: 10 passed.
-  Self-compile speed passes: warm 0.968× V8 (cap 1.03×), fresh 0.778×
+  Self-compile speed passes: warm 0.900× V8 (cap 1.03×), fresh 0.720×
   (cap 0.99×). Public types and import lint pass.
 - Language conformance: 3200 pass, one fail, two xfails. Built-ins:
   878 pass, zero failures, 44 xfails. The remaining failure is item 1.
-- Benchmark: 260/271 pass. Speed geomeans are 0.467× V8, 0.710× native C
-  and 0.484× AssemblyScript; size is 0.782× AssemblyScript. Perf-fuzz passes
-  (integer 0.93×, float 0.75×, mixed 0.88× V8), as does floatbeat (0.393×).
+- Benchmark: 256/271 pass. Speed geomeans are 0.490× V8, 0.698× native C
+  and 0.459× AssemblyScript; size is 0.782× AssemblyScript. Perf-fuzz passes
+  (integer 0.95×, float 0.73×, mixed 0.88× V8), as does floatbeat (0.380×).
   TinyGo coverage passes. Watr's published-dependency size passes at 319488
-  bytes against 320000, and its 1.114× V8 runtime clears the existing 1.25×
+  bytes against 320000, and its 1.225× V8 runtime clears the existing 1.25×
   trail gate, though it remains slower than V8.
-- Eleven red rows remain: fastest-Wasm fft 1.074×, glyfparse 1.230×,
-  sdf 1.379×, trace 1.069×, sort 1.121×, crc32 1.059×, noise 1.097×,
-  radixsort 1.123× and wordcount 1.157×; alpha's stale committed w2c row;
-  and strict example wins (below). These loaded-machine readings do not
-  establish regressions for the rows near their timing bands.
+- Fifteen red rows remain: fastest-Wasm delayline 1.238×, fft 1.188×,
+  glyfparse 1.348×, lorenz 1.184×, sdf 1.458×, slices 1.052×, wav 1.077×,
+  noise 1.247×, levenshtein 1.182× and wordcount 1.169×; slices and delayline
+  against AssemblyScript, sdf against V8; alpha's stale committed w2c row;
+  and strict example wins (below). Slices, sdf, delayline, lorenz, wav and
+  levenshtein compile to byte-identical speed binaries before and after the
+  paired-buffer change, ruling out changed codegen as the cause of their
+  newly red readings. Timing bands and all caps remain unchanged.
 - The example driver had stale arguments for Ulam, waves, attractors and
   raymarcher. Their calls now match the current kernels, and an untimed
   arity check validates all 21 drivers. Lenia's effective zero seed is
   explicit. Kernel sources and timing caps are unchanged. Ulam's zero-size,
   repeated-view and changed-view outputs match JS pixel for pixel at O0,
-  O3 and WASI. The valid example run has a 1.54× V8/JZ geomean and 19/21
-  strict wins; Ulam 0.90× and percolation 0.91× still trail V8.
+  O3 and WASI. The current example run has a 1.57× V8/JZ geomean and 20/21
+  strict wins; Ulam at 0.96× still trails V8. Percolation measured 1.06×,
+  but its earlier 0.91× result still warrants a quiet-hardware check.
+- The focused typed-loop suite passes 19 tests and 3671 assertions, including
+  primitive signed-zero comparisons that the array deep-equality helper omits.
 - The machine exceeds the reference-evidence swap cap. These are diagnostics,
   not refreshed release evidence. No timing, size or memory cap was changed.
 - The original four review fixes have regressions in `test/destruct.js`,

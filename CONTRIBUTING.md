@@ -54,7 +54,13 @@ Typed-width loop versions accept stable local receivers as well as parameters.
 They validate the complete Float32/Float64 carrier, snapshot fixed storage and
 retain bounds checks, f32 rounding and the original assignment value. Numeric
 store proofs permit direct writes; coercing values and other element types keep
-their existing helpers. One receiver per small leaf loop limits code growth. The older polymorphic
+their existing helpers. A second stable numeric read receiver can cache its
+base, length and element width, sharing one load dispatcher per output version.
+This covers integer, floating and clamped storage; nullish and BigInt receivers
+retain the original single-receiver loop. Float16 reuses the already-demanded
+conversion helper. A null-checked numeric read refines a direct
+local when computing its key cannot change that local; coercing or effectful
+keys retain the original capture and evaluation order. The older polymorphic
 parameter version additionally proves the entire IV range fits the receiver;
 views resolve their descriptor to the data address only after reading its length.
 Unmapped numeric/flat callee locals retain their call frame.

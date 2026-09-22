@@ -108,7 +108,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // folds a private CLONE for the one context where the substituted argument is
     // independently proven numeric (a per-lane typed-array read) — that's the only
     // place this fold is sound.
-    if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn)
+    if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn, ctx.linkDemand.f16)
     if (vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
       relaxedFma: cfg.relaxedSimd === true,

@@ -26,6 +26,7 @@ import { DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
 
 const NAN_BITS = nanPrefixHex()
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
+import { withRefinements } from '../src/compile/flow-types.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
 import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY } from '../src/compile/analyze-scans.js'
@@ -756,16 +757,21 @@ export default (ctx) => {
       // generic keyed read.
       const view = nullable ? ctx.summary?.at(ctx.func.current) : null
       const vtArr = valTypeOf(arr) ?? (view ? valOf(core(view.kindOfExpr(arr))) : null)
-      const h = temp('ai')
-      // Transient seed on the fresh hoist-temp `h` (slice 3c-a): overlay, not
-      // durable reps — the temp lives one expression.
-      if (vtArr) ctx.func.localValTypesOverlay.set(h, vtArr)
-      // The temp inherits the receiver's presence: a slot the summary proves
-      // holds a typed array is never nullish.
-      if (vtArr === VAL.TYPED && !nullable) (ctx.func.presentTemps ??= new Set()).add(h)
-      const typedCtor = vtArr === VAL.TYPED ? plannedTypedStorageCtor(ctx, arr) ?? view?.typedPayloadCtorOfExpr(arr) ?? null : null
-      if (typedCtor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, typedCtor)
-      const setup = [['local.set', `$${h}`, asF64(emit(arr))]]
+      const source = asF64(emit(arr))
+      // A numeric name/literal key cannot change a direct local receiver.
+      // Keep its identity visible to loop proofs instead of capturing it.
+      const direct = nullable && typeof arr === 'string' && source[0] === 'local.get' &&
+        vtArr === VAL.TYPED && valOf(core(view.kindOfExpr(['[]', arr, idx]))) === VAL.NUMBER &&
+        (typeof idx === 'string' || Array.isArray(idx) && idx[0] == null) && isPresentNumber(ctx, idx)
+      const h = direct ? arr : temp('ai')
+      if (!direct) {
+        // Fresh captures carry only this expression's payload facts.
+        if (vtArr) ctx.func.localValTypesOverlay.set(h, vtArr)
+        if (vtArr === VAL.TYPED && !nullable) (ctx.func.presentTemps ??= new Set()).add(h)
+        const typedCtor = vtArr === VAL.TYPED ? plannedTypedStorageCtor(ctx, arr) ?? view?.typedPayloadCtorOfExpr(arr) ?? null : null
+        if (typedCtor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, typedCtor)
+      }
+      const setup = direct ? [] : [['local.set', `$${h}`, source]]
       let key = idx
       if (nullable) {
         // GetV evaluates the key before rejecting the receiver, but converts
@@ -782,7 +788,9 @@ export default (ctx) => {
         }
         setup.push(['if', isNullish(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
       }
-      const result = ctx.core.emit['[]'](h, key)
+      const result = direct
+        ? withRefinements(new Map([[arr, { val: VAL.TYPED, notNullish: true }]]), key, () => ctx.core.emit['[]'](arr, key))
+        : ctx.core.emit['[]'](h, key)
       const wrapped = typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
       if (result?.checkedNumRead) wrapped.checkedNumRead = true
       if (result?.indexValid) wrapped.indexValid = result.indexValid

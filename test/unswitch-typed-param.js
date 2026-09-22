@@ -144,6 +144,98 @@ test('unswitch: typed store value effects run once before the bounds check', () 
     is(f(which, n), js(which, n), 'index is captured before the RHS changes it, including OOB writes')
 })
 
+test('unswitch: paired local widths preserve mixed storage, views and nullable reads', () => {
+  const src = `export function f(input, output, n, view, same) {
+    const rows = [new Float32Array(8), new Float64Array(8), new Int32Array(8), new Uint8Array(8)]
+    let a = rows[input], b = same ? a : rows[output]
+    const values = [-0, NaN, Infinity, -Infinity, 0.1, 1.1, -7, 9]
+    for (let i = 0; i < 8; i++) { a[i] = values[i]; b[i] = i * 0.2 }
+    if (view) { a = a.subarray(1, 5); b = b.subarray(2, 7) }
+    for (let i = -1; i < n; i++) b[i] = a[i] * 0.5
+    return [a[0], a[3], a[4], b[0], b[3], b[4], b[7], b[8], rows[output][0], rows[output][7]]
+  }`
+  const js = oracle(src).f
+  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const input of [0, 1, 2, 3]) for (const output of [0, 1, 2, 3])
+      for (const view of [false, true]) for (const same of [false, true]) for (const n of [-1, 0, 1, 4, 9]) {
+        const expected = js(input, output, n, view, same)
+        is(f(input, output, n, view, same), expected, `${input}/${output}/${n}/${view}/${same}: same and mixed widths`)
+        is(f(input, output, n, view, same), expected, 'repeat with the same instance')
+      }
+  }
+})
+
+test('unswitch: nullable typed reads retain key evaluation order and receiver identity', () => {
+  const src = `export function f(which, n, op) {
+    const rows = [new Float32Array(2), new Float64Array(2)]
+    let a = rows[which], calls = 0, sum = 0
+    rows[0][0] = 3; rows[1][0] = 7
+    const key = { valueOf() { calls++; a = rows[1]; return 0 } }
+    try {
+      for (let i = 0; i < n; i++) {
+        if (op === 0) sum += a[i]
+        else if (op === 1) sum += a[(calls++, a = rows[1], 0)]
+        else sum += a[key]
+      }
+    } catch (e) { return [e.name, calls, sum] }
+    return ['ok', calls, sum]
+  }`
+  const js = oracle(src).f
+  for (const optimize of [speed, 0]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const which of [0, 1, 2]) for (const n of [0, 1, 3]) for (const op of [0, 1, 2])
+      is(f(which, n, op), js(which, n, op), `${which}/${n}/${op}: capture receiver, compute key, reject null, convert key`)
+  }
+})
+
+test('unswitch: companion guards reject missing, BigInt and changing receivers', () => {
+  const src = `export function f(input, output, n, swap) {
+    const rows = [new Float32Array(4), new Float64Array(4), new BigInt64Array(4)]
+    let a = rows[input]
+    const b = rows[output]
+    rows[0][0] = 3; rows[1][0] = 7; rows[2][0] = 11n
+    try {
+      for (let i = 0; i < n; i++) {
+        b[i] = a[i] * 0.5 + 1
+        if (swap) a = rows[1]
+      }
+    } catch (e) { return [e.name, b[0], b[1]] }
+    return ['ok', b[0], b[1]]
+  }`
+  const js = oracle(src).f
+  for (const optimize of [speed, 0]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const input of [0, 1, 2, 3]) for (const output of [0, 1])
+      for (const n of [0, 1, 5]) for (const swap of [false, true])
+        is(f(input, output, n, swap), js(input, output, n, swap), 'no speculative load, BigInt reinterpretation or stale base')
+  }
+})
+
+test('unswitch: cached numeric input storage covers every element width and signedness', () => {
+  const src = `export function f(input, wide, n, view) {
+    const rows = [new Int8Array(8), new Uint8Array(8), new Int16Array(8), new Uint16Array(8),
+      new Int32Array(8), new Uint32Array(8), new Float32Array(8), new Float64Array(8),
+      new Uint8ClampedArray(8), new Float16Array(8)]
+    const storage = rows[input], a = view ? storage.subarray(1, 7) : storage
+    const b = wide ? new Float64Array(8) : new Float32Array(8)
+    const values = [-0, -129, -32769, 4294967295, 65535, NaN, Infinity, 0.1]
+    for (let i = 0; i < 8; i++) storage[i] = values[i]
+    for (let i = -1; i < n; i++) b[i] = a[i]
+    return [b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]]
+  }`
+  const js = oracle(src).f
+  for (const optimize of [speed, { level: 'speed', noSimd: true }, 0]) {
+    const { f } = jz(src, { optimize }).exports
+    for (let input = 0; input < 10; input++) for (const wide of [false, true])
+      for (const n of [-1, 0, 1, 8, 9]) for (const view of [false, true]) {
+        const actual = f(input, wide, n, view), expected = js(input, wide, n, view)
+        is(actual, expected, `${input}/${wide}/${n}/${view}: exact numeric conversion`)
+        is(actual[0], expected[0], 'primitive comparison also preserves the sign of zero')
+      }
+  }
+})
+
 test('unswitch: coercing values and changing receivers retain their fallback', () => {
   const src = `export function f(which) {
     let a = which ? new Float32Array(2) : new Float64Array(2)
