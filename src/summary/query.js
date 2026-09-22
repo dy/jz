@@ -1,6 +1,6 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
 import { ACCESSOR_GET, CLASS_T, isBrand, schemaKey, isArrayIndexKey } from '../ast.js'
-import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
+import { encodeTypedElemAux, ctorFromElemAux } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
@@ -9,7 +9,7 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, kindOfVal, core, UNKNOWN,
-  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, isPostfixRecovery, logicalMask, selectKind,
+  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS } from './kind.js'
 
 export function summaryQueries(facts, internal = false) {
@@ -45,7 +45,7 @@ export function summaryQueries(facts, internal = false) {
     }
     return layout
   }
-  const pub = k => internal ? k : tagOf(k) === K.OBJECT ? (k & ~UNKNOWN) | layoutOf(k) : k
+  const pub = k => internal ? k : tagOf(k) === K.OBJECT ? (k & ~UNKNOWN) | layoutOf(k) : tagOf(k) === K.TYPED ? (k & ~UNKNOWN) | typedAux(k) : k
   // An iterator record the solver minted (index.js iterSite): its site, or its layout once folded.
   const iterRecord = sid => iterSites?.has(sid) || iterSites?.has(layouts[sid])
   const publicSid = k => internal ? sidOf(k) : layoutOf(k)
@@ -83,13 +83,12 @@ export function summaryQueries(facts, internal = false) {
   const sideOf = (sid, prop) => merge(sideProps.get(sid)?.get(prop) ?? K.NONE, sideWild.get(sid) ?? K.NONE)
   const anySideOf = sid => { let k = sideWild.get(sid) ?? K.NONE; for (const pk of sideProps.get(sid)?.values() ?? []) k = merge(k, pk); return k }
   const builtinReceiverMayHaveOwn = (t, prop) => (t === K.ARRAY || t === K.TYPED || t === K.MAP || t === K.SET || t === K.REGEX || t === K.CLOSURE) && ((builtinOwnProps.get(prop) ?? 0) & (kind(t) & ~UNKNOWN)) !== 0
-  const typedElemKind = recv => paramOf(recv) === UNKNOWN ? join(NUMBER, BIGINT) : paramOf(recv) & TYPED_ELEM_BIGINT_FLAG ? BIGINT : NUMBER
   // The named properties a typed receiver may carry: its element type's cell
   // and the cell of receivers of unknown type; an unknown type joins every cell.
   const typedPropsOf = recv => {
     let out = elems[typedProps]
-    if (paramOf(recv) === UNKNOWN) { for (const c of typedPropsByAux.values()) out = join(out, elems[c]) }
-    else { const c = typedPropsByAux.get(paramOf(recv)); if (c !== undefined) out = join(out, elems[c]) }
+    if (typedAux(recv) === UNKNOWN) { for (const c of typedPropsByAux.values()) out = join(out, elems[c]) }
+    else { const c = typedPropsByAux.get(typedAux(recv)); if (c !== undefined) out = join(out, elems[c]) }
     return out
   }
   const builtinMethodResult = (recv, name) => {
@@ -334,6 +333,7 @@ export function summaryQueries(facts, internal = false) {
           result = tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN ? closureResult(paramOf(fk)) : tagOf(fk) === K.NONE ? K.NONE : ANY
         }
         else if (t === K.MAP && name === 'get') result = orAbsent(elemOf(r))
+        else if (t === K.TYPED && typedMethodKind(name, r) !== null) result = typedMethodKind(name, r)
         else if (t === K.TYPED && name === 'at') result = orAbsent(typedElemKind(r))
         else if ((t === K.TYPED || t === K.ARRAY) && (name === 'reduce' || name === 'reduceRight')) {
           // The fixpoint has already solved callback recurrence. A query may
@@ -413,7 +413,7 @@ export function summaryQueries(facts, internal = false) {
         return [...keys]
       },
       openSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(core(k)) === K.OBJECT && sid !== UNKNOWN && (isNullable(k) || shapesOf(paramOf(k)).some(site => openSchemas.has(site))) ? sid : null },
-      typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
+      typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && publicSid(e) !== UNKNOWN ? publicSid(e) : null },
@@ -436,8 +436,8 @@ export function summaryQueries(facts, internal = false) {
       // valOf deliberately declines nullable kinds; payload queries do not.
       valOfExpr: e => valOf(kindOfExpr(e)),
       mayBeNullishExpr: e => { const k = kindOfExpr(e); return hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) },
-      typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
-      typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && paramOf(k) !== UNKNOWN ? ctorFromElemAux(paramOf(k)) : null },
+      typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
+      typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && typedAux(k) !== UNKNOWN ? ctorFromElemAux(typedAux(k)) : null },
     }
     views.set(scope, cached)
     return cached
@@ -448,7 +448,7 @@ export function summaryQueries(facts, internal = false) {
   const identityOf = x => typeof x === 'string' || typeof x === 'number' ? x
     : x == null ? null : scopeOfParams.get(x) ?? scopeOfSig.get(x) ?? (x.scope != null ? scopeOfParams.get(x.scope) : undefined) ?? null
   // The frozen result contract of a callable (contract.js); an unknown one never completes.
-  const resultContract = x => { const f = facts.contracts?.get(identityOf(x)); return f ? readContract(f) : NONE_CONTRACT }
+  const resultContract = x => { const f = facts.contracts?.get(identityOf(x)); if (!f) return NONE_CONTRACT; const c = readContract(f); if (!internal && tagOf(c.kind) === K.TYPED) c.kind = pub(c.kind); return c }
   // Storage is shared by layout. Project once at publication, not at every
   // emitter lookup; analysis reads continue to use each construction's slots.
   const storage = internal ? fields : []
@@ -457,7 +457,7 @@ export function summaryQueries(facts, internal = false) {
     if (!values) continue
     const layout = layouts[sid]
     const row = storage[layout] ??= new Array(values.length).fill(K.NONE)
-    for (let i = 0; i < values.length; i++) row[i] = join(row[i], pub(values[i]))
+    for (let i = 0; i < values.length; i++) row[i] = pub(join(row[i], pub(values[i])))
   }
   const fieldKind = (sid, prop) => storage[sid]?.[schemas[sid]?.indexOf(prop)] ?? K.NONE
   let deletableLayouts = null
@@ -492,7 +492,7 @@ export function summaryQueries(facts, internal = false) {
     // once a delete went through a receiver of unknown shape.
     deletableSchema: sid => { deletableLayouts ??= new Set([...facts.deletable ?? []].map(s => layouts[s])); return deletableLayouts.has(sid) || (facts.deleteReach?.unknown === true && (opaqueLayouts.has(sid) || hostLayouts.has(sid))) },
     fieldVal: (sid, prop) => valOf(fieldKind(sid, prop)),
-    fieldTypedCtor: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(paramOf(k)) : null },
+    fieldTypedCtor: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
     fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },
     resultOf: name => pub(resultOfId(name)),
     resultVal: name => valOf(resultOfId(name)),
@@ -500,7 +500,7 @@ export function summaryQueries(facts, internal = false) {
     memberMayBeOwnOn: (prop, valueKind) => builtinReceiverMayHaveOwn(tagOf(kindOfVal(valueKind)), prop),
     builtinMemberMayBeOwn: prop => builtinOwnProps.has(prop),
     typedPropertiesAbsent: () => elems[typedProps] === K.NONE && [...typedPropsByAux.values()].every(c => elems[c] === K.NONE),
-    hasTypedFields: fields.some(a => a?.some(k => tagOf(k) === K.TYPED && paramOf(k) !== UNKNOWN && !isNullable(k))),
+    hasTypedFields: fields.some(a => a?.some(k => tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k))),
     escaped: facts.escaped,
   }
 }

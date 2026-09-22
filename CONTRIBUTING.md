@@ -12,11 +12,12 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr 5.11.1, which
+escape decoding and the async-member parse fixes) and watr 5.11.2, which
 carries the two optimizer rules jz's speed rows rely on: the mixed-sign
 truncation-of-convert fold under a non-negative operand (base64's decode
 loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).
-A clean install reproduces the standings.
+It also lifts a first operand's block prefix without crossing an earlier
+evaluation, closing the watr size backstop. A clean install includes these rules.
 
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
@@ -49,6 +50,13 @@ Source inlining gives mutated parameters private local storage and captures
 their arguments in call order; substitution must never write a caller's binding.
 Small loop helpers enter exported loops only after their callees have expanded,
 so the size budget includes the work being moved out of a tierable function.
+Typed-width loop versions accept stable local receivers as well as parameters.
+They validate the complete Float32/Float64 carrier, snapshot fixed storage and
+retain bounds checks, f32 rounding and the original assignment value. Numeric
+store proofs permit direct writes; coercing values and other element types keep
+their existing helpers. One receiver per small leaf loop limits code growth. The older polymorphic
+parameter version additionally proves the entire IV range fits the receiver;
+views resolve their descriptor to the data address only after reading its length.
 Unmapped numeric/flat callee locals retain their call frame.
 Unwritten parameters with a shared tiny constant substitute directly at every
 read, including loop reads, without creating a local or a cleanup sweep.
@@ -64,6 +72,14 @@ stores discard irrelevant casts and masks. Integer constant pooling uses
 canonical bits rather than source spellings and skips literals too cheap to pool.
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
+
+The summary must distinguish a pending factory result from an unknown value.
+Object mutation models wait for bottom-valued targets and descriptors rather
+than escaping their arguments before the solver has visited the factory.
+Joining numeric typed-array constructors retains their Number element domain,
+not a guessed storage width. The private proof never crosses the summary query
+boundary as a concrete aux; BigInt, DataView and unknown inputs widen normally.
+Solver and query views share typed-element and typed-method transfer rules.
 
 Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy

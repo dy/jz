@@ -134,7 +134,7 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 and watr ^5.11.1 from npm; 5.11.1 carries the two
+- subscript ^10.8.0 and watr ^5.11.2 from npm; 5.11.2 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -154,8 +154,8 @@ Dependencies
    passing xfails were removed. No new xfail was added.
 
 2. **Runtime and self-host speed.** The self-compile gate passes (warm
-   0.963× against the 1.03× cap, fresh 0.804× against 0.99×, measured
-   after the inline-cost correction). The compiler's
+   0.968× against the 1.03× cap, fresh 0.778× against 0.99× with the
+   published watr dependency). The compiler's
    own profile is flat (Map/Set probes and hashing 15%, pointer decoding 3%,
    the AST visitor 4.5%); call-site wrapper isolation, blanket forwarding
    inlining, a leaf-skipping visitor, closure-property precision and extended
@@ -186,7 +186,23 @@ Dependencies
    parameter split already does for callees. Then the automation `findIndex`
    callbacks and
    the tuple destructuring `const [t, v] = …` that opens a cursor per call
-   (8%). colorpq's scalar Arm pow, value numbering, statement scheduling and
+   (8%). The current update fixes a solver-order loss at
+   `Object.assign(factory(), source)`: a pending target no longer escapes the
+   source before its factory's result arrives. Small leaf loops now version
+   one stable typed receiver for Float32/Float64 stores and reads, preserving
+   bounds and conversion semantics. The local audio diagnostic moved from
+   9.25 ms to 7.72–7.92 ms with the factory fix, then 7.21–7.46 ms with
+   width versions and numeric element-domain joins (V8 4.88 ms, matching
+   checksum 2866527759). Joining numeric widths no longer introduces a
+   possible BigInt element, and the solver and query share those transfers.
+   The combined speed build is 598817 bytes versus 598511 after the factory
+   fix alone; size mode does not run width versioning. Width specialization
+   now also pins empty/OOB loops, views, coercion, NaN and signed zero. The
+   remaining stable receiver reads and callbacks still need work; this does
+   not establish parity. A further entry-range guard removed repeated
+   bounds checks from 19 loops but measured 7.367 ms versus 7.326 ms in five
+   alternating pairs and added 1160 bytes; that experiment was discarded.
+   colorpq's scalar Arm pow, value numbering, statement scheduling and
    true two-wide pow kernel are implemented. On the final tree, three paired
    runs take 49.4 ms with the new passes versus 86.8 ms with both disabled;
    bytes fall from 16197 to 15014 and checksums match. The SIMD kernel is
@@ -217,7 +233,7 @@ Dependencies
    wordcount's current 1.238× of C-wasm is not caused by the two new passes:
    its Wasm is byte-identical with them disabled.
 
-   The public dependency still misses watr's 320000-byte size backstop.
+   The published watr 5.11.2 dependency closes the 320000-byte size backstop.
    Watr commit 434213d generalizes its existing block merging: a first
    operand's statement prefix moves out without crossing an earlier
    evaluation. The measured candidate is 319499 bytes versus 321224;
@@ -225,8 +241,8 @@ Dependencies
    bytes under the conservative flat-branch guard. Watr's full test command and
    five direct order/trap/control-flow regressions pass. Commit eda41d4 reuses
    its scratch array across statements. All-tier native/kernel integration
-   passes 38 tests and 914 assertions. Publishing these commits and pinning
-   the dependency remain pending authorization. Exact
+   passes 38 tests and 914 assertions. JZ now requires published 5.11.2;
+   its measured size is 319499 bytes, matching the candidate. Exact
    literal capacity and unused value-number capture removal are already
    implemented; the latter now preserves the original expression node
    through a removable block, restoring self-hosted byte parity.
@@ -285,36 +301,39 @@ Dependencies
    deadlines; reuse entry-range facts for useful bounds, since a full-i32
    domain proves no deadline. Present the pinned candidate and complete gate
    evidence for independent review; implementation alone is not expert
-   approval. The original two watr rules are published in 5.11.1; the
-   block-prefix size correction in item 2 still needs publication.
+   approval. The watr optimizer rules, including the block-prefix size
+   correction in item 2, are published and required by the dependency.
 
 ## Gate evidence, September 22
 
-- Final core: 4594 passed, one skip (88056 assertions). Final opt3: 4402
-  passed, one skip (68303 assertions). Opt0 and WASI passed on the prior
-  compiler tree (4400 and 4453 tests); the final compiler edit only changes
-  the speed-tier inline policy. Its new regressions also pass individually
-  at opt0 and WASI. No compiler source changed during the successful gates.
+- Final core: 4605 passed, one skip (109000 assertions). Opt0: 4413
+  passed (88820 assertions); opt3: 4413 passed (89247 assertions);
+  WASI: 4466 passed (99562 assertions), each with one skip. All four ran
+  on the same compiler tree with published watr 5.11.2. No compiler source
+  changed during these gates.
 - Self-compile: 68 passed (2365 assertions). Perf ratchet: 10 passed.
-  Self-compile speed passes: warm 0.963× V8 (cap 1.03×), fresh 0.804×
+  Self-compile speed passes: warm 0.968× V8 (cap 1.03×), fresh 0.778×
   (cap 0.99×). Public types and import lint pass.
 - Language conformance: 3200 pass, one fail, two xfails. Built-ins:
   878 pass, zero failures, 44 xfails. The remaining failure is item 1.
-- Benchmark: 261/271 pass, up from 245 before the inline-cost correction.
-  Speed geomeans are 0.478× V8, 0.707× native C and 0.484× AssemblyScript;
-  size is 0.785× AssemblyScript. Perf-fuzz passes (integer 0.90×, float
-  0.72×, mixed 0.87× V8), as does floatbeat (0.398×). TinyGo coverage passes.
-- Ten red rows remain: watr/V8 1.273×; fastest-Wasm fft 1.067×,
-  glyfparse 1.149×, sdf 1.462×, crc32 1.053×, noise 1.149× and
-  levenshtein 1.147×; alpha's stale committed w2c row; watr's public-dependency
-  size, 321229 bytes against 320000; and strict example wins (below).
+- Benchmark: 260/271 pass. Speed geomeans are 0.467× V8, 0.710× native C
+  and 0.484× AssemblyScript; size is 0.782× AssemblyScript. Perf-fuzz passes
+  (integer 0.93×, float 0.75×, mixed 0.88× V8), as does floatbeat (0.393×).
+  TinyGo coverage passes. Watr's published-dependency size passes at 319488
+  bytes against 320000, and its 1.114× V8 runtime clears the existing 1.25×
+  trail gate, though it remains slower than V8.
+- Eleven red rows remain: fastest-Wasm fft 1.074×, glyfparse 1.230×,
+  sdf 1.379×, trace 1.069×, sort 1.121×, crc32 1.059×, noise 1.097×,
+  radixsort 1.123× and wordcount 1.157×; alpha's stale committed w2c row;
+  and strict example wins (below). These loaded-machine readings do not
+  establish regressions for the rows near their timing bands.
 - The example driver had stale arguments for Ulam, waves, attractors and
   raymarcher. Their calls now match the current kernels, and an untimed
   arity check validates all 21 drivers. Lenia's effective zero seed is
   explicit. Kernel sources and timing caps are unchanged. Ulam's zero-size,
   repeated-view and changed-view outputs match JS pixel for pixel at O0,
-  O3 and WASI. The valid example run has a 1.55× V8/JZ geomean and 19/21
-  strict wins; Ulam 0.92× and percolation 0.93× still trail V8.
+  O3 and WASI. The valid example run has a 1.54× V8/JZ geomean and 19/21
+  strict wins; Ulam 0.90× and percolation 0.91× still trail V8.
 - The machine exceeds the reference-evidence swap cap. These are diagnostics,
   not refreshed release evidence. No timing, size or memory cap was changed.
 - The original four review fixes have regressions in `test/destruct.js`,

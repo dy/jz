@@ -1,5 +1,6 @@
 /** The summary's kind lattice and pure scalar transfer rules. No solver state. */
 import { VAL } from '../reps.js'
+import { TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
 
 export const K = {
   NONE: 0, NUMBER: 1, STRING: 2, BOOL: 3, BIGINT: 4, NULLISH: 5, TYPED: 6, ARRAY: 7,
@@ -9,6 +10,10 @@ export const K = {
 // unless the set names one tag besides the nullish pair.
 const PARAM_BITS = 16
 export const UNKNOWN = (1 << PARAM_BITS) - 1
+// Private summary aux: several numeric constructors, never a storage width.
+const TYPED_NUMBER = UNKNOWN - 1
+export const typedAux = k => paramOf(k) === TYPED_NUMBER ? UNKNOWN : paramOf(k)
+const numberAux = aux => aux === TYPED_NUMBER || aux !== UNKNOWN && !(aux & (TYPED_ELEM_BIGINT_FLAG | DATA_VIEW_FLAG))
 export const bitOf = tag => 1 << (PARAM_BITS + tag - 1)
 export const TAGS = ~UNKNOWN, NULL_BITS = bitOf(K.NULLISH) | bitOf(K.ABSENT)
 const TAGS_NOT_NULL = TAGS & ~NULL_BITS
@@ -26,14 +31,28 @@ const withTag = (k, tag) => (k & TAGS_NOT_NULL) === 0 ? (k & TAGS) | bitOf(tag) 
 export const orNull = k => withTag(k, K.NULLISH)
 export const orAbsent = k => withTag(k, K.ABSENT)
 
-/** Union of tag sets. A parameter survives when both sides agree on it. */
+/** Union of tag sets. Typed widths may disagree while their Number domain survives. */
 export function join(a, b) {
   if (a === b) return a
   const m = (a | b) & TAGS, mn = m & ~NULL_BITS
   if (mn === 0) return m === 0 ? 0 : m | UNKNOWN
   if ((mn & (mn - 1)) !== 0) return m | UNKNOWN
   const pa = a & mn ? paramOf(a) : undefined, pb = b & mn ? paramOf(b) : undefined
-  return m | (pa === undefined ? pb : pb === undefined || pa === pb ? pa : UNKNOWN)
+  return m | (pa === undefined ? pb : pb === undefined || pa === pb ? pa
+    : mn === bitOf(K.TYPED) && numberAux(pa) && numberAux(pb) ? TYPED_NUMBER : UNKNOWN)
+}
+
+export const typedElemKind = k => paramOf(k) === UNKNOWN ? join(NUMBER, BIGINT)
+  : numberAux(paramOf(k)) ? NUMBER : paramOf(k) & TYPED_ELEM_BIGINT_FLAG ? BIGINT : NUMBER
+const TYPED_SAME = new Set(['subarray', 'slice', 'map', 'filter', 'fill', 'reverse', 'sort', 'copyWithin', 'set'])
+const TYPED_FRESH = new Set(['slice', 'map', 'filter'])
+/** A copy keeps the element domain; only a concrete constructor carries a view bit. */
+export const typedMethodKind = (name, recv) => {
+  if (!TYPED_SAME.has(name)) return null
+  if (name === 'set') return NULLISH
+  const aux = paramOf(recv)
+  return kind(K.TYPED, aux === UNKNOWN || aux === TYPED_NUMBER ? aux
+    : name === 'subarray' ? aux | TYPED_ELEM_VIEW_FLAG : TYPED_FRESH.has(name) ? aux & ~TYPED_ELEM_VIEW_FLAG : aux)
 }
 
 const VAL_OF = [null, VAL.NUMBER, VAL.STRING, VAL.BOOL, VAL.BIGINT, null, VAL.TYPED, VAL.ARRAY, VAL.OBJECT, VAL.CLOSURE, VAL.MAP, VAL.SET, VAL.DATE, VAL.REGEX, VAL.HASH, VAL.BUFFER, null, null]

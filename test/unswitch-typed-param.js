@@ -11,6 +11,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onWasi } from './_matrix.js'
+import { oracle } from './util.js'
 
 const speed = { level: 'speed' }
 const fProcess = (src, opt = speed) => {
@@ -105,4 +106,126 @@ test('unswitch: param reassigned in the loop → guard bails, stays bit-exact', 
   // `buf = o` inside the loop makes the hoisted base stale; the reassign guard must bail.
   consistent('reassign buf', `export function process(buf,n){ let o = new Float64Array(4); for (let i = 0; i < n; i++) { buf[i] = buf[i]*2.0; buf = o } return buf[0] }
     export let run = () => { let a = new Float64Array(4); for (let i = 0; i < 4; i++) a[i] = i + 1; process(a, 1); return a[0]*1000 + a[1]*100 }`, 2200)
+})
+
+test('unswitch: local typed widths preserve bounds, rounding and assignment values', () => {
+  const src = `export function f(which, n, view) {
+    const storage = which === 0 ? new Float32Array(8) : which === 1 ? new Float64Array(8) : new Uint8Array(8)
+    storage[0] = 17; storage[7] = 19
+    const a = view ? storage.subarray(2, 6) : storage
+    let sum = 0
+    for (let i = -1; i < n; i++) sum += (a[i] = i * 0.1)
+    return [sum, a[0], a[3], a[7], a[8], storage[0], storage[7]]
+  }`
+  const wat = jz.compile(src, { wat: true, optimize: speed })
+  ok(wat.includes('$__utw'), 'stable local receiver gets width versions')
+  ok(wat.includes('f32.store') && wat.includes('f64.store'), 'both floating widths have direct stores')
+  const js = oracle(src).f
+  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const which of [0, 1, 2]) for (const view of [false, true]) for (const n of [-1, 0, 4, 8, 9]) {
+      const expected = js(which, n, view)
+      is(f(which, n, view), expected, `${which}/${view}/${n}: bounds and f32 rounding`)
+      is(f(which, n, view), expected, 'same instance, repeated call')
+    }
+  }
+})
+
+test('unswitch: typed store value effects run once before the bounds check', () => {
+  const src = `export function f(which, n) {
+    const a = which ? new Float32Array(2) : new Float64Array(2)
+    let calls = 0, j = 0, sum = 0
+    for (let i = 0; i < n; i++) sum += (a[j] = (++calls, j++, 0.1))
+    return [sum, calls, j, a[0], a[1]]
+  }`
+  const js = oracle(src).f
+  const { f } = jz(src, { optimize: speed }).exports
+  for (const which of [true, false]) for (const n of [0, 1, 2, 5])
+    is(f(which, n), js(which, n), 'index is captured before the RHS changes it, including OOB writes')
+})
+
+test('unswitch: coercing values and changing receivers retain their fallback', () => {
+  const src = `export function f(which) {
+    let a = which ? new Float32Array(2) : new Float64Array(2)
+    const b = new Float64Array(2)
+    for (let i = 0; i < 2; i++) { a[i] = 0.1; a = b }
+    return [a[0], a[1]]
+  }`
+  ok(!jz.compile(src, { wat: true, optimize: speed }).includes('$__utw'), 'reassigned local has no width version')
+  const { f } = jz(src, { optimize: speed }).exports
+  for (const which of [true, false]) is(f(which), oracle(src).f(which))
+  consistent('coercion hooks', `export function run() {
+    let calls = 0
+    const a = new Float32Array(2), b = new Float64Array(2)
+    const rows = [a, b]
+    for (let c = 0; c < 2; c++) { const row = rows[c]
+      for (let i = 0; i < 3; i++) row[i] = { valueOf() { calls++; return 7 } }
+    }
+    return calls * 100 + a[0] + b[0]
+  }`, 614)
+})
+
+test('unswitch: empty storage, special numbers and BigInt fallbacks', () => {
+  const src = `export function f(which, n, empty) {
+    const a = which === 0 ? new Float32Array(empty ? 0 : 4)
+      : which === 1 ? new Float64Array(empty ? 0 : 4) : new BigInt64Array(4)
+    try {
+      for (let i = 0; i < n; i++) a[i] = i === 0 ? -0 : i === 1 ? NaN : i === 2 ? Infinity : -Infinity
+    } catch (e) { return e.name }
+    return [a[0], a[1], a[2], a[3]]
+  }`
+  const js = oracle(src).f, { f } = jz(src, { optimize: speed }).exports
+  for (const which of [0, 1, 2]) for (const n of [0, 1, 4, 5]) for (const empty of [false, true])
+    is(f(which, n, empty), js(which, n, empty), 'zero work, signed zero, NaN, infinities and mismatched BigInt store')
+})
+
+test('unswitch: absent numeric reads store NaN but retain the assignment result', () => {
+  const src = `export function f(which, n) {
+    const a = which ? new Float32Array(4) : new Float64Array(4)
+    const b = [1]
+    let result = 0
+    for (let i = 0; i < n; i++) result = (a[i] = b[i])
+    return [result, a[0], a[1], Number.isNaN(a[1]), a[1] === undefined]
+  }`
+  const js = oracle(src).f
+  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const which of [false, true]) for (const n of [0, 1, 4, 5])
+      is(f(which, n), js(which, n), 'missing source stays undefined as a value, becomes NaN in floating storage')
+  }
+})
+
+test('unswitch: polymorphic parameter stores require a numeric value proof', () => {
+  for (const value of ['"3"', 'null', 'true', 'undefined']) {
+    const src = `export function process(buf,n) { for(let i=0;i<n;i++) buf[i]=${value}; return buf }
+      export const runX = x => process(x,4)`
+    const js = oracle(src).runX
+    for (const unswitchTypedParamLoop of [true, false]) {
+      const { runX } = jz(src, { optimize: { level: 'speed', unswitchTypedParamLoop } }).exports
+      is(Array.from(runX(new Float64Array(4))), Array.from(js(new Float64Array(4))), value + ': storage uses ToNumber')
+    }
+  }
+})
+
+test('unswitch: polymorphic view loops resolve data and require the whole trip range in bounds', () => {
+  const src = `export function process(buf,start,n) {
+    for (let i=start;i<n;i++) buf[i]=buf[i]*2+1
+  }
+  export const runX = x => process(x,0,4)
+  export function f(start,n,view) {
+    const b = new Float64Array(8)
+    for(let i=0;i<8;i++) b[i]=i+1
+    process(view ? b.subarray(2,4) : b,start,n)
+    return b
+  }`
+  const js = oracle(src).f
+  for (const unswitchTypedParamLoop of [true, false]) {
+    const optimize = { level: 'speed', unswitchTypedParamLoop }
+    const { f } = jz(src, { optimize }).exports
+    for (const view of [false,true]) for (const start of [-1,0,1]) for (const n of [0,2,4,8,10]) {
+      const expected = Array.from(js(start,n,view))
+      is(Array.from(f(start,n,view)), expected, `${view}/${start}/${n}: writes stay within the receiver`)
+      is(Array.from(f(start,n,view)), expected, 'repeated call preserves adjacent parent elements')
+    }
+  }
 })

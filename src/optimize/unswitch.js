@@ -8,13 +8,17 @@
  *
  * @module optimize/unswitch
  */
-import { LAYOUT } from '../ctx.js'
 import { findBodyStart, nextLocalId, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
-import { PTR, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
+import { PTR, ATOM, atomNanHex, encodePtrHi, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
+import { matchExitBrIf, isLocalGet } from './vectorize/addr-model.js'
 
 // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering unswitchTypedParamLoop.
 const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSWITCH || null)
+
+// Numeric slots can still read undefined. Normalize only the stored bits;
+// a typed assignment's result remains the original value.
+const numericStoreValue = value => ['select', cloneIR(value), ['f64.const', 'nan'], ['f64.eq', cloneIR(value), cloneIR(value)]]
 
 /**
  * Loop-unswitch a polymorphic typed-array PARAM loop on the pointer type so the
@@ -40,6 +44,7 @@ const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSW
  */
 export function unswitchTypedParamLoop(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
+  unswitchTypedAccessLoop(fn)
   // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering this pass (DBG_DSR-style).
   if (DBG_UNSWITCH && String(fn[1]).includes(DBG_UNSWITCH)) console.error(JSON.stringify(fn))
   const bodyStart = findBodyStart(fn)
@@ -51,7 +56,7 @@ export function unswitchTypedParamLoop(fn) {
   }
   if (!f64Params.size) return
 
-  const F64 = TYPED_ELEM_CODE.Float64Array, F64V = F64 | TYPED_ELEM_VIEW_FLAG
+  const F64 = TYPED_ELEM_CODE.Float64Array
   const newLocals = []
   let baseId = nextLocalId(fn, 'utb')
 
@@ -92,7 +97,7 @@ export function unswitchTypedParamLoop(fn) {
   // fuzz gate). Fix: never delete a matched condition — hoist it, evaluated
   // for its `local.tee` side effect only, to a SINGLE dropped statement once
   // before the loop (paramName is proven not reassigned in this fast body,
-  // so the condition is loop-invariant — same footing as `baseSnap`/`gate`
+  // so the condition is loop-invariant — same footing as the storage gate
   // below, and keeping it out of the per-iteration body is also what lets
   // the fast read collapse to a bare f64.load the SIMD lane vectorizer still
   // recognizes; a `block`-wrapped drop+load inline broke that pattern match
@@ -131,19 +136,19 @@ export function unswitchTypedParamLoop(fn) {
   // `hoisted` (Map keyed by structural JSON, shared across the whole body scan)
   // collects any receiver-guard conditions found — see receiverGuardedRead's
   // doc comment — for the caller to hoist above the loop, deduplicated.
-  function cloneRead(n, p, base, hoisted) {
+  function cloneRead(n, p, base, hoisted, ind) {
     if (!Array.isArray(n)) return n
     if (n[0] === 'call' && n[1] === '$__to_num' && n.length === 3
-        && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64' && typedIdx(n[2][1], p))
+        && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64' && typedIdx(n[2][1], p) && isLocalGet(n[2][1][3], ind))
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(n[2][1][3]), ['i32.const', 3]]]]
-    if (typedIdx(n, p))
+    if (typedIdx(n, p) && isLocalGet(n[3], ind))
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(n[3]), ['i32.const', 3]]]]
     const guarded = n[0] === 'if' ? receiverGuardedRead(n, p) : null
-    if (guarded) {
+    if (guarded && isLocalGet(guarded.index, ind)) {
       for (const d of guarded.drops) { const key = JSON.stringify(d); if (!hoisted.has(key)) hoisted.set(key, cloneIR(d)) }
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(guarded.index), ['i32.const', 3]]]]
     }
-    return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base, hoisted))
+    return n.map((c, i) => i === 0 ? c : cloneRead(c, p, base, hoisted, ind))
   }
 
   function processBlock(blockNode, parent, idx) {
@@ -166,6 +171,9 @@ export function unswitchTypedParamLoop(fn) {
     if (!Array.isArray(incNode) || incNode[0] !== 'local.set' || !Array.isArray(incNode[2]) || incNode[2][0] !== 'i32.add') return
     const incVar = incNode[1], inc = incNode[2]
     if (!(Array.isArray(inc[1]) && inc[1][0] === 'local.get' && inc[1][1] === incVar && Array.isArray(inc[2]) && inc[2][0] === 'i32.const' && inc[2][1] === 1)) return
+    const exit = matchExitBrIf(loopNode[2], blockLabel)
+    if (!exit || exit.ind !== incVar || !(isLocalGet(exit.bound) || exit.bound[0] === 'i32.const')) return
+    if (preamble.some(s => writes(s, incVar) || (isLocalGet(exit.bound) && writes(s, exit.bound[1])))) return
     // Pre-watr, jz wraps every multi-statement expression-group in `(block (result T) …)`
     // — as a dropped expression-statement (drop follows) or as an if-arm's tail value.
     // watr's own vacuum/mergeBlocks used to flatten this post-hoc (when this pass ran
@@ -186,6 +194,7 @@ export function unswitchTypedParamLoop(fn) {
     }
     const body = flattenStmts(loopNode, 3).slice(0, -2)  // drop the trailing incNode/br (already validated above)
     if (body.length < 4) return
+    if (body.some(s => writes(s, incVar) || (isLocalGet(exit.bound) && writes(s, exit.bound[1])))) return
 
     // Find the polymorphic-store `if` by scanning (it's followed by a `drop` of its
     // f64 result; in the IR the two are separate statements, not (drop (if …))).
@@ -197,7 +206,8 @@ export function unswitchTypedParamLoop(fn) {
       // pointer in a temp, then persists it to the receiver binding.
       if (Array.isArray(c) && c[0] === 'local.set' &&
           Array.isArray(c[2]) && c[2][0] === 'call' &&
-          (c[2][1] === '$__arr_typed_set_idx' || c[2][1] === '$__arr_typed_obj_set_idx')) {
+          (c[2][1] === '$__arr_typed_set_idx' || c[2][1] === '$__arr_typed_obj_set_idx') &&
+          c[2][5]?.[0] === 'i32.const' && c[2][5][1] === 2) {
         const next = body[i + 1], ptrTmp = c[1], call = c[2]
         const p = Array.isArray(next) && next[0] === 'local.set' && f64Params.has(next[1]) &&
           Array.isArray(next[2]) && next[2][0] === 'local.get' && next[2][1] === ptrTmp ? next[1] : null
@@ -257,6 +267,8 @@ export function unswitchTypedParamLoop(fn) {
     if (Array.isArray(shiftIdx) && shiftIdx[0] === 'local.get') storeIdxName = shiftIdx[1]
     if (storeIdxName !== incVar &&
         !body.some((st) => Array.isArray(st) && st[0] === 'local.set' && st[1] === storeIdxName && Array.isArray(st[2]) && st[2][0] === 'local.get' && st[2][1] === incVar)) return
+    if (storeIdxName !== incVar && body.some(st => has(st, x =>
+      (x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === storeIdxName && !isLocalGet(x[2], incVar)))) return
     // The store-if pushes f64; a following `drop` (bare string in stack-style IR, or a
     // `['drop', …]` node) pops it. The fast store pushes nothing, so the drop must go too.
     const isDrop = (s) => s === 'drop' || (Array.isArray(s) && s[0] === 'drop')
@@ -272,34 +284,47 @@ export function unswitchTypedParamLoop(fn) {
     for (const s of preamble) { if (writes(s, paramName)) return }
 
     const base = `$__utb${baseId++}`
-    newLocals.push(['local', base, 'i32'])
+    const len = `$__utb${baseId++}`
+    newLocals.push(['local', base, 'i32'], ['local', len, 'i32'])
     const reint = () => ['i64.reinterpret_f64', ['local.get', paramName]]
-    const tag = ['i32.and', ['i32.wrap_i64', ['i64.shr_u', reint(), ['i64.const', LAYOUT.TAG_SHIFT]]], ['i32.const', LAYOUT.TAG_MASK]]
-    const auxOf = () => ['i32.and', ['i32.wrap_i64', ['i64.shr_u', reint(), ['i64.const', LAYOUT.AUX_SHIFT]]], ['i32.const', LAYOUT.AUX_MASK]]
-    const gate = ['i32.and', ['i32.eq', tag, ['i32.const', PTR.TYPED]],
-      ['i32.or', ['i32.eq', auxOf(), ['i32.const', F64]], ['i32.eq', auxOf(), ['i32.const', F64V]]]]
-    const baseSnap = ['local.set', base, ['call', '$__ptr_offset', reint()]]
-    const fastStore = ['f64.store',
-      ['i32.add', ['local.get', base], ['i32.shl', ['local.get', incVar], ['i32.const', 3]]],
-      cloneRead(storedValue, paramName, base, new Map())]
+    const high = () => ['i32.wrap_i64', ['i64.shr_u', reint(), ['i64.const', 32]]]
+    const view = () => ['i32.and', high(), ['i32.const', TYPED_ELEM_VIEW_FLAG]]
+    // The entire fast loop, including its unchecked IV reads, must fit the
+    // receiver's length. Read view length before resolving its data address.
+    const gate = ['if', ['result', 'i32'],
+      ['i32.eq', ['i32.and', high(), ['i32.const', ~TYPED_ELEM_VIEW_FLAG]], ['i32.const', encodePtrHi(PTR.TYPED, F64)]],
+      ['then', ['local.set', base, ['i32.wrap_i64', reint()]],
+        ['local.set', len, ['i32.shr_u', ['i32.load', ['select', ['local.get', base],
+          ['i32.sub', ['local.get', base], ['i32.const', 8]], view()]], ['i32.const', 3]]],
+        ['if', view(), ['then', ['local.set', base, ['i32.load', ['i32.add', ['local.get', base], ['i32.const', 4]]]]]],
+        ['i32.and', ['i32.ge_s', ['local.get', incVar], ['i32.const', 0]],
+          ['i32.le_u', cloneIR(exit.bound), ['local.get', len]]]],
+      ['else', ['i32.const', 0]]]
+    const value = `$__utb${baseId++}`
+    newLocals.push(['local', value, 'f64'])
+    const fastStore = [
+      ['local.set', value, cloneRead(storedValue, paramName, base, new Map(), incVar)],
+      ['f64.store', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', incVar], ['i32.const', 3]]],
+        numericStoreValue(['local.get', value])],
+    ]
     // Fast body: keep every statement except the store-if (→ fastStore) and its trailing
     // drop (the fast store pushes nothing), with the typed-array read collapsed to f64.load.
     const hoistedGuards = new Map()
     const fastStmts = []
     for (let i = 0; i < body.length; i++) {
-      if (i === storeIdx) { fastStmts.push(fastStore); continue }
+      if (i === storeIdx) { fastStmts.push(...fastStore); continue }
       if (i > storeIdx && i <= storeEndIdx) continue
       if (hasDrop && i === storeEndIdx + 1) continue
-      fastStmts.push(cloneRead(body[i], paramName, base, hoistedGuards))
+      fastStmts.push(cloneRead(body[i], paramName, base, hoistedGuards, incVar))
     }
     // Any receiver-guard conditions cloneRead found (see its doc comment) are
     // loop-invariant here — paramName is proven not reassigned in this fast
     // body — so they run ONCE, before the loop, deduplicated, alongside
-    // baseSnap; the loop body then keeps the bare f64.load shape intact.
+    // the storage gate; the loop body keeps the bare f64.load shape intact.
     const hoistedDrops = [...hoistedGuards.values()].map((d) => ['drop', d])
     const fastLoop = ['block', blockLabel, ...preamble.map(cloneIR),
       ['loop', loopLabel, cloneIR(loopNode[2]), ...fastStmts, cloneIR(incNode), cloneIR(loopNode[endIdx])]]
-    parent[idx] = ['if', gate, ['then', baseSnap, ...hoistedDrops, fastLoop], ['else', blockNode]]
+    parent[idx] = ['if', gate, ['then', ...hoistedDrops, fastLoop], ['else', blockNode]]
   }
 
   walkAst(fn, { enter: (node, parent, idx) => {
@@ -309,6 +334,93 @@ export function unswitchTypedParamLoop(fn) {
     if (parent[idx] !== before) return false
   } })
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/** Version a small leaf loop's stable typed receiver by Float32/Float64 width.
+ * Unlike the polymorphic array-store matcher above, typed stores never relocate
+ * the receiver. Keep their bounds and Number proof, including assignment values
+ * and f32 rounding. One receiver per loop bounds code growth to two clones. */
+function unswitchTypedAccessLoop(fn) {
+  const start = findBodyStart(fn), locals = []
+  if (start < 0) return
+  let id = nextLocalId(fn, 'utw')
+  const fresh = type => { const name = `$__utw${id++}`; locals.push(['local', name, type]); return name }
+  const get = name => ['local.get', name]
+  const simple = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'i32.const')
+  walkAst(fn, { enter: (loop, parent, index) => {
+    if (loop[0] !== 'loop' || !parent || loop.some(n => Array.isArray(n) && (n[0] === 'result' || n[0] === 'param'))) return
+    const writes = new Set(), calls = []
+    let count = 0, bad = false
+    walkAst(loop, { enter: n => {
+      count++
+      if ((n !== loop && n[0] === 'loop') ||
+          n[0] === 'br_table' || ((n[0] === 'br' || n[0] === 'br_if') && typeof n[1] !== 'string')) bad = true
+      if (n[0] === 'local.set' || n[0] === 'local.tee') writes.add(n[1])
+      if (n[0] === 'call') calls.push(n)
+    } })
+    if (bad || count > 160) return
+    const receiver = n => {
+      const p = n[2], v = p?.[0] === 'i64.reinterpret_f64' ? p[1] : p
+      if (v?.[0] !== 'local.get' || writes.has(v[1])) return null
+      return { name: v[1], boxed: p[0] === 'i64.reinterpret_f64' }
+    }
+    const store = n => n[1] === '$__typed_set_idx_tagged' && n[5]?.[0] === 'i32.const' && n[5][1] === 2
+    const read = n => n[1] === '$__typed_idx' || n[1] === '$__typed_idx_tagged' || n[1] === '$__typed_get_idx'
+    const candidates = new Map()
+    for (const c of calls) if (store(c) && simple(c[3])) {
+      const r = receiver(c)
+      if (r) candidates.set(r.name, r)
+    }
+    let selected = null, best = 0
+    for (const r of candidates.values()) {
+      let uses = 0
+      for (const c of calls) if ((store(c) || read(c)) && simple(c[3])) {
+        const p = receiver(c)
+        if (p?.name === r.name && p.boxed === r.boxed) uses++
+      }
+      if (uses > best) { selected = r; best = uses }
+    }
+    if (!selected) return
+    const bits = () => selected.boxed ? ['i64.reinterpret_f64', get(selected.name)] : get(selected.name)
+    const high = () => ['i32.wrap_i64', ['i64.shr_u', bits(), ['i64.const', 32]]]
+    const base = fresh('i32'), len = fresh('i32')
+    const version = shift => {
+      const is32 = shift === 2, width = is32 ? TYPED_ELEM_CODE.Float32Array : TYPED_ELEM_CODE.Float64Array
+      const gate = ['i32.eq', ['i32.and', high(), ['i32.const', ~TYPED_ELEM_VIEW_FLAG]], ['i32.const', encodePtrHi(PTR.TYPED, width)]]
+      const view = () => ['i32.and', high(), ['i32.const', TYPED_ELEM_VIEW_FLAG]]
+      const setup = [
+        ['local.set', base, ['i32.wrap_i64', bits()]],
+        ['local.set', len, ['i32.shr_u', ['i32.load', ['select', get(base), ['i32.sub', get(base), ['i32.const', 8]], view()]], ['i32.const', shift]]],
+        ['if', view(), ['then', ['local.set', base, ['i32.load', ['i32.add', get(base), ['i32.const', 4]]]]]],
+      ]
+      const address = ix => ['i32.add', get(base), ['i32.shl', ix, ['i32.const', shift]]]
+      const within = ix => ['i32.lt_u', ix, get(len)]
+      const rewrite = n => {
+        if (!Array.isArray(n)) return n
+        for (let i = 1; i < n.length; i++) n[i] = rewrite(n[i])
+        if (n[0] !== 'call' || !simple(n[3])) return n
+        const r = receiver(n)
+        if (r?.name !== selected.name || r.boxed !== selected.boxed) return n
+        if (read(n)) {
+          const load = is32 ? ['f64.promote_f32', ['f32.load', address(cloneIR(n[3]))]] : ['f64.load', address(cloneIR(n[3]))]
+          return n[1] === '$__typed_get_idx' ? load : ['if', ['result', 'f64'], within(cloneIR(n[3])),
+            ['then', load], ['else', ['f64.const', `nan:${atomNanHex(ATOM.UNDEF)}`]]]
+        }
+        if (!store(n)) return n
+        const ix = fresh('i32'), value = fresh('f64')
+        const numeric = numericStoreValue(get(value))
+        return ['block', ['result', 'f64'], ['local.set', ix, n[3]], ['local.set', value, n[4]],
+          ['if', within(get(ix)), ['then', [is32 ? 'f32.store' : 'f64.store', address(get(ix)),
+            is32 ? ['f32.demote_f64', numeric] : numeric]]], get(value)]
+      }
+      return { gate, body: [...setup, rewrite(cloneIR(loop))] }
+    }
+    const f64 = version(3), f32 = version(2)
+    parent[index] = ['if', f64.gate, ['then', ...f64.body],
+      ['else', ['if', f32.gate, ['then', ...f32.body], ['else', loop]]]]
+    return false
+  } })
+  if (locals.length) fn.splice(start, 0, ...locals)
 }
 
 /** Hoist the SSO/heap choice out of a leaf byte-scan loop.

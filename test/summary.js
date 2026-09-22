@@ -237,7 +237,7 @@ test('summary: result kinds keep payload, presence, typed elements, and resolved
 test('summary: join is a lattice join, so the fixpoint terminates', () => {
   // Every element and its nullable form; ANY absorbs the bit (the flagship
   // oscillated between ANY and nullable ANY for 64 rounds and stopped short).
-  const base = [K.NONE, kind(K.NUMBER), kind(K.STRING), kind(K.NULLISH), kind(K.OBJECT, 1), kind(K.OBJECT, 2), kind(K.OBJECT, UNKNOWN), kind(K.ARRAY, 0), kind(K.CLOSURE, 3), kind(K.ANY)]
+  const base = [K.NONE, kind(K.NUMBER), kind(K.STRING), kind(K.NULLISH), kind(K.OBJECT, 1), kind(K.OBJECT, 2), kind(K.OBJECT, UNKNOWN), kind(K.ARRAY, 0), kind(K.CLOSURE, 3), kind(K.ANY), ...[6, 7, 14, 23, UNKNOWN].map(aux => kind(K.TYPED, aux))]
   const all = [...base, ...base.map(orNull)]
   for (const a of all) for (const b of all) {
     const j = join(a, b)
@@ -812,4 +812,80 @@ test('summary: Object.assign onto a shape stores each source slot; a shape besid
   ok(!ctx.summary.opaqueSchema(sidOf(['a', 'b'])), 'the target keeps its shape')
   is(tagOf(kindOf('f', 'n')), K.NUMBER, 'a record joined with a boolean is read through the join')
   for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(true), oracle(src).f(true), `O${level}`)
+})
+
+test('summary: object stores wait for factory targets and descriptors', () => {
+  for (const update of [
+    'Object.assign(make(), { silent: true })',
+    'Object.assign(make(), extra())',
+    "Object.defineProperty(make(), 'x', descriptor())",
+  ]) {
+    const src = `function make() { return { x: 1, buf: new Float32Array(4) } }
+      function extra() { return { silent: true } }
+      function descriptor() { return { value: 2 } }
+      export function f() { const o = ${update}; return o.x + o.buf.length }`
+    summarize(src)
+    const sid = sidOf(['x', 'buf'])
+    ok(!ctx.summary.opaqueSchema(sid), update + ': factory target keeps its shape')
+    is(tagOf(ctx.summary.fieldKind(sid, 'x')), K.NUMBER, 'updated field stays numeric')
+    is(ctx.summary.fieldTypedCtor(sid, 'buf'), 'new.Float32Array', 'unwritten buffer stays typed')
+    for (const optimize of levels(0, 2, 3)) {
+      const { f } = jz(src, { optimize }).exports, expected = oracle(src).f()
+      is(f(), expected, `O${optimize}: first call`)
+      is(f(), expected, `O${optimize}: repeated call`)
+    }
+  }
+})
+
+test('summary: numeric typed widths keep their element domain without inventing a constructor', () => {
+  for (const second of ['Float64Array', 'Int32Array', 'Uint8ClampedArray']) {
+    const src = `function make(flag) { return flag ? new Float32Array([1.5, 2.5]) : new ${second}([3, 4]) }
+      export function f(flag, i) {
+        const a = make(flag), b = a.subarray(0), c = a.slice(0)
+        const x = a[i | 0], y = b[i | 0], z = c[i | 0]
+        return [x, y, z, a.length, x + y + z]
+      }`
+    summarize(src)
+    for (const name of ['x', 'y', 'z']) {
+      const k = kindOf('f', name)
+      ok(hasTag(k, K.NUMBER) && hasTag(k, K.ABSENT), name + ': numeric read may be absent')
+      ok(!hasTag(k, K.BIGINT), name + ': differing numeric widths do not introduce BigInt')
+    }
+    is(paramOf(ctx.summary.resultOf('make')), UNKNOWN, 'private numeric proof is not a storage aux')
+    is(paramOf(ctx.summary.resultContract('make').kind), UNKNOWN, 'result contract also hides the private aux')
+    is(ctx.summary.at('f').typedCtorOf(binding('f', 'a')), null, 'no concrete constructor')
+    for (const optimize of levels(0, 2, 3)) {
+      const f = jz(src, { optimize }).exports.f, expected = oracle(src).f
+      for (const [flag, i] of [[0, 0], [1, 0], [1, 0], [0, -1], [1, 2]])
+        is(f(flag, i), expected(flag, i), `${second}: O${optimize}, ${flag}/${i}`)
+    }
+  }
+})
+
+test('summary: numeric typed joins keep BigInt and unknown receivers conservative', () => {
+  for (const other of ['new BigInt64Array([3n])', 'new DataView(new ArrayBuffer(8))', 'external']) {
+    const src = `export function f(flag, external, i) {
+      const a = flag ? new Float32Array([2]) : ${other}
+      const x = a[i]
+      return x
+    }`
+    summarize(src)
+    const x = kindOf('f', 'x')
+    ok(hasTag(x, K.BIGINT), other + ': numeric element domain is not assumed')
+    const f = jz(src).exports.f, expected = oracle(src).f
+    for (const flag of [0, 1, 0]) is(f(flag, new Float64Array([5]), 0), expected(flag, new Float64Array([5]), 0))
+  }
+})
+
+test('summary: named typed properties survive a numeric width join', () => {
+  const src = `function set(a) { a.note = 'kept' }
+    export function f(flag) {
+      const a = new Float32Array(0), b = new Float64Array(0)
+      set(flag ? a : b)
+      return [a.note, b.note]
+    }`
+  for (const optimize of levels(0, 2, 3)) {
+    const f = jz(src, { optimize }).exports.f, expected = oracle(src).f
+    for (const flag of [0, 0, 1, 0]) is(f(flag), expected(flag))
+  }
 })

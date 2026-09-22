@@ -49,7 +49,7 @@
  * @module summary
  */
 import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
+import { encodeTypedElemAux } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
@@ -62,7 +62,7 @@ import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag, isNullable,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
-  plus, arith, typedStore, isPostfixRecovery, logicalMask, selectKind,
+  plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, kindOfVal, valsOf, core } from './kind.js'
 
@@ -74,13 +74,6 @@ const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnProp
 const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|Array\.isArray|Boolean|Symbol(\.\w+)?)$/
 
 const BIND = CLASS_T + 'bind'
-const TYPED_SAME = new Set(['subarray', 'slice', 'map', 'filter', 'fill', 'reverse', 'sort', 'copyWithin', 'set'])
-// A method's typed result keeps the receiver's element kind; `subarray` views
-// its buffer, a copy (`slice`, `map`, `filter`) owns a fresh one, a mutator
-// returns the receiver (typed-provenance.js's own three families).
-const TYPED_FRESH = new Set(['slice', 'map', 'filter'])
-const typedSame = (name, aux) => aux === UNKNOWN ? aux
-  : name === 'subarray' ? aux | TYPED_ELEM_VIEW_FLAG : TYPED_FRESH.has(name) ? aux & ~TYPED_ELEM_VIEW_FLAG : aux
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
@@ -447,7 +440,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   elems.push(K.NONE); cellUp.push(typedProps)
   const typedPropsByAux = new Map()
   const typedPropsCell = (aux) => { let c = typedPropsByAux.get(aux); if (c === undefined) { c = elems.length; elems.push(K.NONE); cellUp.push(c); typedPropsByAux.set(aux, c) } return c }
-  const typedAuxOf = (k) => tagOf(k) === K.TYPED ? paramOf(k) : UNKNOWN
+  const typedAuxOf = (k) => tagOf(k) === K.TYPED ? typedAux(k) : UNKNOWN
   const typedPropsCellOf = (k) => typedAuxOf(k) === UNKNOWN ? typedProps : typedPropsCell(typedAuxOf(k))
   const typedPropsOf = (k) => {
     let out = elems[typedProps]
@@ -1174,6 +1167,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       // A host import returns the kind it declares; a builtin the kind its trait says (kind-traits.js).
       if (imports.has(callee)) { for (let i = 0; i < n; i++) { retain(ks[base + i]); escapeToHost(ks[base + i]); escape(ks[base + i]) } return kindOfValue(imports.get(callee)) }
+      // A factory result may be bottom until the next solver round. Waiting
+      // is essential: treating it as an opaque target escapes the sources,
+      // which then poison the target when its shape finally arrives.
+      if ((callee === 'Object.assign' || callee === 'Object.defineProperty' ||
+          callee === 'Object.defineProperties' || callee === 'Object.setPrototypeOf') &&
+          n > 0 && tagOf(core(ks[base])) === K.NONE) return K.NONE
       // `Object.assign` onto an array: a source of known shape stores its slots
       // as the array's properties (an index-named one as an element); any
       // other source may store anything.
@@ -1216,6 +1215,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // cannot read may hold anything.
       if (callee === 'Object.defineProperty' && n === 3 && node) {
         const target = ks[base], key = ks[base + 1], d = ks[base + 2]
+        if (tagOf(d) === K.NONE) return target
         const v = tagOf(d) === K.OBJECT && paramOf(d) !== UNKNOWN ? core(member('.', d, 'value')) : ANY
         const kn = args(node[2])[1], k = Array.isArray(kn) && (kn[0] === 'str' || kn[0] == null) && typeof kn[1] === 'string' ? kn[1] : null
         if (k != null && knownShapes(target)) for (const sid of shapesOf(paramOf(target))) storeMember(sid, k, v)
@@ -1396,9 +1396,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (const fn of membersByName.get(name) ?? NO_MEMBERS) r = merge(r, callWith(fn, familyOf(fn, name, recv), base, n))
     return r
   }
-  const typedElemKind = (recv) => paramOf(recv) === UNKNOWN
-    ? join(NUMBER, BIGINT)
-    : (paramOf(recv) & TYPED_ELEM_BIGINT_FLAG) !== 0 ? BIGINT : NUMBER
   // methodValType's name-only traits are useful once the receiver is a known
   // builtin family. They are not facts about an unknown/dictionary receiver:
   // `o['includes'] = () => 7` is still an ordinary own method.
@@ -1622,7 +1619,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (tagOf(core(fk)) === K.NONE) return candidates
     }
     if (t === K.TYPED) {
-      if (TYPED_SAME.has(name)) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return name === 'set' ? NULLISH : kind(K.TYPED, typedSame(name, paramOf(recv))) }
+      const same = typedMethodKind(name, recv)
+      if (same !== null) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return same }
       if (name === 'at') return orAbsent(typedElemKind(recv))
       if (name === 'indexOf' || name === 'lastIndexOf') return NUMBER
       if (name === 'includes') return BOOL
@@ -2848,7 +2846,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const t = n[1]
       if (typeof t === 'string') { useOf(n[2], FLOW, keyOf(t)); return }
       if (Array.isArray(t) && t[0] === '.' && typeof t[2] === 'string') { demand(t[1]); const keys = slotKeysOf(t[1], t[2]); if (keys.length) useOf(n[2], FLOW, keys); else demand(n[2]); return }
-      if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); demand(t[2]); demand(n[2], tagOf(r) === K.TYPED && !(paramOf(r) & 16) && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER); return }
+      if (Array.isArray(t) && t[0] === '[]') { const r = kindOfExpr(t[1]); demand(t[1]); demand(t[2]); demand(n[2], tagOf(r) === K.TYPED && typedElemKind(r) === NUMBER && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? NUM : OTHER); return }
       demand(t); demand(n[2]); return
     }
     // `+` and `+=` convert a number, a boolean or a nullish operand and concatenate a string; against a string operand the other is a string.
