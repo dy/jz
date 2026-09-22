@@ -788,3 +788,17 @@ test('destruct: a rest never calls an array\'s own slice', () => {
   ok(!/__it_(open|pull|step)/.test(compile(plain, { wat: true, optimize: 'speed' })), 'a program without an own slice reads the rest by index')
   is(jz(plain, { optimize: 'speed' }).exports.f(), 22)
 })
+
+test('destruct: rejecting an indexed rest preserves every preceding pull', () => {
+  for (const [pattern, input, expected] of [
+    ['[x, ...r]', '[1, 2, 3]', [1, 2, 3]],
+    ['[, x, ...r]', '[1, 2, 3]', [2, 3]],
+    ['[x, ...r]', '[]', [undefined]],
+    ['[x, ...r]', '[1]', [1]],
+    ['[[x], ...r]', '[[1], 2, 3]', [1, 2, 3]],
+  ]) {
+    const src = `export let f = () => { const a = ${input}; a.slice = () => [9]; const ${pattern} = a; return [x, ...r] }`
+    const inst = jz(src, { optimize: 'speed' })
+    for (let i = 0; i < 2; i++) is(inst.memory.read(inst.exports.f()), expected, `${pattern} = ${input}, call ${i}`)
+  }
+})

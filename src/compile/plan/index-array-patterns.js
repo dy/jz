@@ -83,6 +83,7 @@ const sliceMayBeOwn = () => ctx.summary?.memberMayBeOwnOn?.('slice', VAL.ARRAY) 
  *  or runs code between two steps (the statements then stay as they are). */
 const indexPulls = (stmts, it, src, view) => {
   if (!stmts.slice(1).every(n => pureBinding(n, view))) return false
+  const edits = [], skips = []
   let i = 0
   const pull = (n) => {
     if (!isArr(n)) return true
@@ -93,8 +94,8 @@ const indexPulls = (stmts, it, src, view) => {
     for (let j = 1; j < n.length; j++) {
       const c = n[j]
       if (isArr(c) && c[0] === '()' && c[2] === it && typeof c[1] === 'string') {
-        if (STEP.test(c[1])) n[j] = ['[]', src, [null, i++]]
-        else if (REST.test(c[1])) { if (sliceMayBeOwn()) return false; n[j] = ['()', ['.', src, 'slice'], [null, i]] }
+        if (STEP.test(c[1])) edits.push([n, j, ['[]', src, [null, i++]]])
+        else if (REST.test(c[1])) { if (sliceMayBeOwn()) return false; edits.push([n, j, ['()', ['.', src, 'slice'], [null, i]]]) }
         else if (CLOSE.test(c[1]) || OPEN.test(c[1])) return false
       } else if (!pull(c)) return false
     }
@@ -102,9 +103,12 @@ const indexPulls = (stmts, it, src, view) => {
   }
   for (let s = 1; s < stmts.length; s++) {
     const n = stmts[s], callee = calleeOf(n)
-    if (callee !== null && SKIP.test(callee) && n[2] === it) { i++; stmts.splice(s--, 1); continue }
+    if (callee !== null && SKIP.test(callee) && n[2] === it) { i++; skips.push(s); continue }
     if (!pull(n)) return false
   }
+  // Commit only after every pull qualifies: the caller's copy shares its children.
+  for (const [node, at, value] of edits) node[at] = value
+  for (let s = skips.length - 1; s >= 0; s--) stmts.splice(skips[s], 1)
   return true
 }
 
