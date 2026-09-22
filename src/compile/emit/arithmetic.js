@@ -194,6 +194,21 @@ const objectMayPrimitiveMethod = (node) => {
 const stringishOperand = (vt, n) => vt != null && (STRINGISH_KINDS.has(vt) || (vt === VAL.OBJECT && !objectMayPrimitiveMethod(n)))
 const dynamicObjectOperand = (vt, n) => vt === VAL.OBJECT && objectMayPrimitiveMethod(n)
 
+// Unknown addition shares one coercion path. The numeric guard keeps ordinary
+// numbers inline; the helper owns ToPrimitive, string precedence and BigInts.
+const genericAdd = (a, b, slowOnly = false) => {
+  ctx.module.include('string')
+  inc('__add_slow')
+  const va = storedValue(a), vb = storedValue(b)
+  const slow = (x, y) => ['call', '$__add_slow', ['i64.reinterpret_f64', x], ['i64.reinterpret_f64', y]]
+  if (slowOnly) return typed(slow(va, vb), 'f64')
+  const x = temp('add'), y = temp('add')
+  const readX = () => ['local.get', `$${x}`], readY = () => ['local.get', `$${y}`]
+  return block64(['local.set', `$${x}`, va], ['local.set', `$${y}`, vb],
+    ['if', ['result', 'f64'], ['i32.and', ['f64.eq', readX(), readX()], ['f64.eq', readY(), readY()]],
+      ['then', ['f64.add', readX(), readY()]], ['else', slow(readX(), readY())]])
+}
+
 export const arithmeticOps = {
   // === Arithmetic (type-preserving) ===
 
@@ -277,16 +292,7 @@ export const arithmeticOps = {
     // uses the default hint, so an unknown object must not reach ToString first.
     const dynamicObject = dynamicObjectOperand(vtA, a) || dynamicObjectOperand(vtB, b)
     if (dynamicObject || ctx.funcs.runtimeRoots.has('__jz_tp_num') && (vtA == null || vtB == null)) {
-      ctx.module.include('string')
-      inc('__add_slow')
-      const va = storedValue(a), vb = storedValue(b)
-      const slow = (x, y) => ['call', '$__add_slow', ['i64.reinterpret_f64', x], ['i64.reinterpret_f64', y]]
-      if (dynamicObject || vtA === VAL.STRING || vtB === VAL.STRING) return typed(slow(va, vb), 'f64')
-      const x = temp('add'), y = temp('add')
-      const readX = () => ['local.get', `$${x}`], readY = () => ['local.get', `$${y}`]
-      return block64(['local.set', `$${x}`, va], ['local.set', `$${y}`, vb],
-        ['if', ['result', 'f64'], ['i32.and', ['f64.eq', readX(), readX()], ['f64.eq', readY(), readY()]],
-          ['then', ['f64.add', readX(), readY()]], ['else', slow(readX(), readY())]])
+      return genericAdd(a, b, dynamicObject || vtA === VAL.STRING || vtB === VAL.STRING)
     }
     if (vtA === VAL.STRING || vtB === VAL.STRING || stringishOperand(vtA, a) || stringishOperand(vtB, b)) {
       if (vtA !== VAL.STRING && vtB !== VAL.STRING) ctx.module.include('string')
@@ -325,9 +331,7 @@ export const arithmeticOps = {
       bigintMixReject('+', a, b)
       return bigIntJointDispatch(a, b,
         (ia, ib) => ['i64.add', ia, ib],
-        (fa, fb) => typed(['f64.add', fa, fb], 'f64'), computedBoxOf(self),
-        // An unresolved partner's Number arm: this handler over the temps, its string dispatch included.
-        (na, nb) => emit(['+', na, nb]))
+        (fa, fb) => typed(['f64.add', fa, fb], 'f64'), computedBoxOf(self), genericAdd)
     }
     if (hasBigintDomain(a) || hasBigintDomain(b)) {
       bigintMixReject('+', a, b)

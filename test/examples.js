@@ -8,6 +8,26 @@ import { onWasi } from './_matrix.js';
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
 
+test('example: ulam renders the requested view across repeated calls', async () => {
+    const src = fs.readFileSync(new URL('../examples/ulam/ulam.js', import.meta.url), 'utf8');
+    const js = await import('../examples/ulam/ulam.js');
+    const { exports } = jz(src, OPT);
+    const empty = exports.resize(0, 0);
+    exports.frame(0, 0, 0, 1);
+    is(Array.from(empty), []);
+    const actual = exports.resize(64, 48), expected = js.resize(64, 48);
+    let first;
+    for (const args of [[0, 0, 0, 1], [1, 0, 0, 1], [2, 18, -18, 6]]) {
+        exports.frame(...args); js.frame(...args);
+        const pixels = Array.from(actual);
+        is(pixels, Array.from(expected), 'every pixel matches JS');
+        ok(new Set(pixels).size > 2, 'the view contains colored primes');
+        if (!first) first = pixels;
+        else if (args[0] === 1) is(pixels, first, 'repeating a view preserves its pixels');
+        else ok(pixels.some((v, i) => v !== first[i]), 'pan and zoom change the image');
+    }
+});
+
 // Regression: examples/build.mjs once compiled with the DEFAULT options (no optimize), so the
 // auto-SIMD vectorizers never ran and every demo shipped a scalar .wasm that lost to plain JS.
 // The examples are perf demos, so the build MUST stay speed-optimized — assert a known-vectorizable

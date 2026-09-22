@@ -154,7 +154,8 @@ Dependencies
    passing xfails were removed. No new xfail was added.
 
 2. **Runtime and self-host speed.** The self-compile gate passes (warm
-   0.939× against the 1.03× cap, fresh 0.788× against 0.99×). The compiler's
+   0.963× against the 1.03× cap, fresh 0.804× against 0.99×, measured
+   after the inline-cost correction). The compiler's
    own profile is flat (Map/Set probes and hashing 15%, pointer decoding 3%,
    the AST visitor 4.5%); call-site wrapper isolation, blanket forwarding
    inlining, a leaf-skipping visitor, closure-property precision and extended
@@ -205,34 +206,54 @@ Dependencies
    single bare early return folds to a guard. The local diagnostic fell from
    4.78 to 3.28 ms against V8's 3.00 ms, clearing its 0.75 V8/JZ floor but
    still trailing V8. General guard/evaluation-order, repeated-call and
-   exported-loop regressions pass; the full candidate gates are in progress.
+   exported-loop regressions pass. The benchmark exposed a regression in
+   4274bd7f: a small wrapper was priced before expanding its callees, moving
+   bulk work into a cold export. The export budget now waits for call-free
+   bodies. Paired diagnostics improve resample 3.13 → 1.30 ms, delayline
+   1.67 → 0.63 ms, bytebeat 3.21 → 1.38 ms and entity 39.7 → 11.3 ms,
+   with matching checksums and smaller binaries. The new minimal structural
+   regression fails under the old rule; all 14 source-inlining tests pass
+   at levels 0–3. The final core, O3, self-compile and ratchet gates pass.
    wordcount's current 1.238× of C-wasm is not caused by the two new passes:
    its Wasm is byte-identical with them disabled.
 
-   The watr size backstop remains open at 321022 bytes against 320000.
-   Exact literal capacity recovered 36 bytes, and removing value-number
-   captures with no dominating reuse recovered another 316. That cleanup
-   reduced three cases and increased none in the 60-case size sweep. The
-   remaining bytes must come from shared code generation; effect and trap
-   proofs remain intact.
+   The public dependency still misses watr's 320000-byte size backstop.
+   Watr commit 434213d generalizes its existing block merging: a first
+   operand's statement prefix moves out without crossing an earlier
+   evaluation. The measured candidate is 319499 bytes versus 321224;
+   54 of 60 size cases shrink, five are unchanged, and one grows by two
+   bytes under the conservative flat-branch guard. Watr's full test command and
+   five direct order/trap/control-flow regressions pass. Commit eda41d4 reuses
+   its scratch array across statements. All-tier native/kernel integration
+   passes 38 tests and 914 assertions. Publishing these commits and pinning
+   the dependency remain pending authorization. Exact
+   literal capacity and unused value-number capture removal are already
+   implemented; the latter now preserves the original expression node
+   through a removable block, restoring self-hosted byte parity.
 
 3. **Memory.** webaudio holds 70.3 MB of resident memory against V8's 70.6
-   (paired, node against node, this tree; 151 before): the automation loops
+   (paired, node against node, the earlier measured tree; 151 before): the automation loops
    rewind per sample once the census named the class functions their
    receivers reach, the tuple destructuring read by index, and the link pass
    judged the loop's own tape. jessie and watr still peak at 170 and 157
-   against V8's 98 and 77: one jessie parse keeps 25 MB of `loc` sidecars
-   (a 240-byte hash per AST node for one number) and 67 MB attributed to
-   whitespace skipping; one watr assembly keeps 39 MB of 64 KB code buffers.
+   against V8's 98 and 77 in that profile. Watr retains 64 KB code buffers
+   between assemblies. Jessie's September 22 allocation trace corrects the
+   earlier whitespace attribution: about 66.5 MB comes from `parse.asi`,
+   split between its suffix slice and the new statement-list array. The
+   measured program allocates 81.3 MB in total with the smaller sidecars;
+   this is allocation volume across the benchmark, not per-parse live memory.
    Removing the growth reserve from nonempty literals now saves 14.4 MB of
    jessie's peak RSS in three paired local runs (177.4 → 163.0 MB), with the
    same checksum and unchanged median runtime (1.395 → 1.399 ms). Watr's
    paired median RSS moved 170.8 → 166.6 MB; its timings were noisy. These
    diagnostics reduce the gap but do not establish memory parity with V8.
-   The remaining sidecars and buffers are retained, not temporaries: the lever is a compact
-   named-property slot for arrays (a record beside the elements instead of a
-   hash) and a size-classed reuse of replaced buffers, then measure the two
-   cases before quoting memory.
+   The speed tier now shares the two-slot named-property reserve with the
+   other tiers, saving another approximately 18 MB of jessie's diagnostic
+   RSS without a repeatable runtime loss. No new storage representation was
+   added; aliasing and property growth use the existing table machinery.
+   A next allocation optimization must prove that a copied slice is consumed
+   only by a subsequent spread and that intervening effects cannot change
+   its contents. The parser's source remains a fixed specimen.
 
 4. **Reproducible speed, size and memory evidence.** `bench/results.json` is
    stale: timed above the 4096 MB swap-validity cap, 43 comparable
@@ -242,6 +263,14 @@ Dependencies
    provenance; keep TinyGo 0.42.0 and the same-machine Porffor comparison.
    Local paired timings and standalone size sweeps are diagnostics, not
    release evidence.
+   TinyGo 0.42 now builds all 44 cases locally. Forty-three match committed
+   checksum references; entity has no committed reference yet, but its
+   checksum 1275530752 matches V8 in the separate reference run. This closes
+   the toolchain build defect, not the committed-evidence gap.
+   The September 22 focused paired run still has 25.5 GB of swap in use.
+   Its diagnostic JZ/rival medians are glyfparse/C-Wasm 1.418×,
+   sdf/C-Wasm 1.420×, noise/Rust-Wasm 1.148× and wordcount/C-Wasm 1.011×;
+   watr/V8 is 1.546× and jessie/V8 0.988×. All checksums match.
 
 5. **Public VST scope and identity.** The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Use
@@ -256,38 +285,39 @@ Dependencies
    deadlines; reuse entry-range facts for useful bounds, since a full-i32
    domain proves no deadline. Present the pinned candidate and complete gate
    evidence for independent review; implementation alone is not expert
-   approval. The required watr rules are already published in 5.11.1.
+   approval. The original two watr rules are published in 5.11.1; the
+   block-prefix size correction in item 2 still needs publication.
 
-## Gate evidence, September 21
+## Gate evidence, September 22
 
-- Final core suite: 4571 passed, one skip (87887 assertions). Self-compile:
-  68 passed. Perf ratchet: 10 passed. Public types and import lint pass.
-  The full opt0/opt3/WASI matrix passed before the final signed-zero and
-  comparison-order fixes; after those fixes, all three affected matrix
-  runs passed (461 tests each), alongside the full core and self-compile.
-- Self-compile performance: warm 0.939× V8 (cap 1.03×), fresh 0.788×
-  (cap 0.99×). No timing, size or memory cap was changed.
-- Language conformance: 3149 pass, 49 fail, two xfails, with the failing
-  file set identical when both new passes are disabled. Built-ins:
-  872 pass, six fail, 44 xfails. These gates are not green (item 1).
-- Benchmark gate: 260/271 pass. Speed geomeans are 0.469× of V8, 0.702×
-  of native C and 0.481× of AssemblyScript; size is 0.785× of
-  AssemblyScript. Perf-fuzz passes all category gates (integer 0.94×,
-  float 0.74×, mixed 0.88× of V8). Floatbeat geomean is 0.396× of V8.
-- The eleven red benchmark rows are the fastest-Wasm comparisons for fft
-  (1.068×), glyfparse (1.134×), sdf (1.379×), trace (1.055×), sort
-  (1.051×), noise (1.119×), wordcount (1.238×); TinyGo build coverage;
-  alpha's committed w2c row; watr's size backstop; and the examples gate
-  (percolation 0.68× V8/JZ). The examples geomean is 1.45× V8/JZ,
-  with 19 of 21 faster. Watr's runtime passes its current trail band at
-  1.201× V8; that is not a leadership result.
-- These timings are diagnostic. The first corpus pass ran while an inherited
-  sort experiment was consuming one core; that stale process was stopped
-  before the benchmark finished. Reference-hardware evidence and
-  `bench/results.json` still need regeneration (item 4).
-- The four review fixes have direct regressions: atomic indexed-destructuring
-  rewrites (`test/destruct.js`), read-only-call invalidation on global
-  writes, narrow/SIMD/atomic store classification and coercion effects
-  (`test/value-number.js`), and trap ordering for direct and callee loads
-  (`test/schedule.js`). The signed-zero and local-read-before-write cases
-  are also pinned in `test/value-number.js`.
+- Final core: 4594 passed, one skip (88056 assertions). Final opt3: 4402
+  passed, one skip (68303 assertions). Opt0 and WASI passed on the prior
+  compiler tree (4400 and 4453 tests); the final compiler edit only changes
+  the speed-tier inline policy. Its new regressions also pass individually
+  at opt0 and WASI. No compiler source changed during the successful gates.
+- Self-compile: 68 passed (2365 assertions). Perf ratchet: 10 passed.
+  Self-compile speed passes: warm 0.963× V8 (cap 1.03×), fresh 0.804×
+  (cap 0.99×). Public types and import lint pass.
+- Language conformance: 3200 pass, one fail, two xfails. Built-ins:
+  878 pass, zero failures, 44 xfails. The remaining failure is item 1.
+- Benchmark: 261/271 pass, up from 245 before the inline-cost correction.
+  Speed geomeans are 0.478× V8, 0.707× native C and 0.484× AssemblyScript;
+  size is 0.785× AssemblyScript. Perf-fuzz passes (integer 0.90×, float
+  0.72×, mixed 0.87× V8), as does floatbeat (0.398×). TinyGo coverage passes.
+- Ten red rows remain: watr/V8 1.273×; fastest-Wasm fft 1.067×,
+  glyfparse 1.149×, sdf 1.462×, crc32 1.053×, noise 1.149× and
+  levenshtein 1.147×; alpha's stale committed w2c row; watr's public-dependency
+  size, 321229 bytes against 320000; and strict example wins (below).
+- The example driver had stale arguments for Ulam, waves, attractors and
+  raymarcher. Their calls now match the current kernels, and an untimed
+  arity check validates all 21 drivers. Lenia's effective zero seed is
+  explicit. Kernel sources and timing caps are unchanged. Ulam's zero-size,
+  repeated-view and changed-view outputs match JS pixel for pixel at O0,
+  O3 and WASI. The valid example run has a 1.55× V8/JZ geomean and 19/21
+  strict wins; Ulam 0.92× and percolation 0.93× still trail V8.
+- The machine exceeds the reference-evidence swap cap. These are diagnostics,
+  not refreshed release evidence. No timing, size or memory cap was changed.
+- The original four review fixes have regressions in `test/destruct.js`,
+  `test/value-number.js` and `test/schedule.js`. Addition carriers and
+  private inlined parameters are pinned in `test/bigint-tag.js` and
+  `test/optimizer.js`; self-hosted dictionary output remains byte-identical.

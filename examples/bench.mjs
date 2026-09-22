@@ -32,12 +32,9 @@ const EXAMPLES = [
   { name: 'interference', frame: 'frame ×1',
     make: (e) => { e.resize(320, 240); let tick = 0; return () => e.frame(tick += 0.012, 3, 160) } },
 
-  // Pure-integer serial walk (no SIMD, no transcendentals): a spiral whose every step is i32
-  // index + sieve-lookup + scatter. V8 runs the spiral arithmetic as f64 JS; jz keeps it native
-  // i32 — that codegen edge alone wins ~1.6×. Pins the global-typed-array i32-narrowing fix
-  // (`ax = ax + DX[dir]`): before it, jz round-tripped that add through f64 and ran ~2× SLOWER.
-  { name: 'ulam', frame: 'frame (spiral 216k)',
-    make: (e) => { e.resize(540, 400); return () => e.frame(216000, 1) } },
+  // Pixel-to-cell mapping, primality lookup and diagonal-family coloring.
+  { name: 'ulam', frame: 'frame (216k pixels)',
+    make: (e) => { e.resize(540, 400); return () => e.frame(0, 0, 0, 1) } },
 
   // `opt: true` marks a serial-recurrence / reduction kernel that ties or trails V8
   // (latency-bound, no cross-pixel ILP for jz to exploit). Reported, kept as a
@@ -66,7 +63,7 @@ const EXAMPLES = [
   // (every a[i] forked __str_idx/__typed_idx, every `+` forked __str_concat);
   // inferModuleLetTypes' alias-graph fixpoint now resolves it.
   { name: 'waves', frame: 'frame (stencil+render)', opt: true,
-    make: (e) => { e.resize(640, 400); e.clear(); for (let k = 0; k < 8; k++) e.drop(100 + k * 60, 200, 4, 1.2); return () => e.frame(0) } },
+    make: (e) => { e.resize(640, 400); e.clear(); for (let k = 0; k < 8; k++) e.drop(100 + k * 60, 200, 4, 1.2); return () => e.frame(0, 0, 0, 0, 440) } },
 
   // Serial recurrence (x,y chain), no cross-iteration ILP — the four transcendentals per step
   // dominate. jz runs the scalar source (same as the demo, since aa5c594 dropped the orphaned
@@ -77,7 +74,7 @@ const EXAMPLES = [
   // like the floatbeat corpus + native-C parity (informational on CI for the same reason).
   // Reported + kept in the geomean, not held to the winners' floor.
   { name: 'attractors', frame: 'frame 1.2M iters', opt: true,
-    make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000) } },
+    make: (e) => { e.resize(600, 600); return () => e.frame(1.9, -2.5, 1.7, -0.3, 1200000, 0, 0, 1) } },
 
   // Buddhabrot: 45k escape orbits (z=z²+c chain) + a Math.random() draw per sample, then
   // three per-pixel tonemap passes. The orbit is a loop-CARRIED f64 recurrence — no
@@ -94,7 +91,7 @@ const EXAMPLES = [
   // Ring-kernel convolution — was 0.87× until the in-loop kdx/kdy/kw global
   // resolves hoisted (one site × 14M taps/frame); now ~1.8×. Gated.
   { name: 'lenia', frame: 'frame ×1',
-    make: (e) => { e.resize(160, 120); e.seed(); return () => e.frame(0.1) } },
+    make: (e) => { e.resize(160, 120); e.seed(0); return () => e.frame() } },
 
   // jz compiles the 4-wide SIMD kernel; V8 runs the scalar baseline. Same image, ~3×.
   // SIMD-4 throughput is the most load-sensitive ratio in the corpus — wide vector lanes
@@ -103,7 +100,7 @@ const EXAMPLES = [
   // vs >1× clean). A relaxed per-kernel floor keeps the regression guard (a broken
   // vectorizer would crater it well past this) without flaking on runner jitter.
   { name: 'raymarcher', frame: 'frame(t) (SIMD-4)', jzSrc: 'raymarcher.simd.js', floor: 0.8,
-    make: (e) => { e.resize(320, 200); let t = 0; return () => e.frame(t += 0.02) } },
+    make: (e) => { e.resize(320, 200); let t = 0; return () => e.frame(t += 0.02, 0, 0, 0) } },
 
   { name: 'rfft', frame: 'rfft N=2048',
     make: (e, mem) => { fillSignal(mem ? mem.read(e.init(2048)) : e.init(2048)); return () => e.rfft() } },
@@ -198,6 +195,15 @@ for (const { name, frame, make, opt, jzSrc, floor: kFloor } of EXAMPLES) {
   // version (same image, V8 has no auto-SIMD for these divergent per-pixel loops).
   const src = readFileSync(dir + `${name}/${jzSrc || `${name}.js`}`, 'utf8')
   const jsmod = await import(new URL(`${name}/${name}.js`, import.meta.url).href)
+  // Validate the driver before timing. Missing view/camera parameters can
+  // otherwise benchmark a blank frame after an example's API changes.
+  const checked = Object.fromEntries(Object.entries(jsmod).map(([key, value]) => [key,
+    typeof value !== 'function' ? value : (...args) => {
+      if (args.length < value.length) throw Error(`${name}.${key}: expected ${value.length} arguments, received ${args.length}`)
+      return value(...args)
+    },
+  ]))
+  make(checked, null)()
   // Compile the showcase at jz's best tier ('speed' = level 3): full nested unroll,
   // N-accumulator reductions, relaxed-SIMD madd, and the SIMD-helper inliner — the
   // last lifts a hand-vectorized kernel's per-step helper (raymarcher's SDF) out of

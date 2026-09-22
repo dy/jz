@@ -1505,10 +1505,10 @@ test('sourceInline: early void returns preserve guards and argument effects', ()
 
 test('sourceInline: small loop helpers inline across several speed-tier sites', () => {
   const src = `function count(n) { let sum = 0; while (n > 0) { sum += n; n-- }; return sum }
-    export function main(n) { return count(n) + count(n + 1) + count(n + 2) }
-    export function empty() { return count(0) + count(-1) }`
-  const { main, empty } = run(src, { optimize: 3 })
-  is(empty(), 0)
+    function total(n) { const a = count(n); const b = count(n + 1); const c = count(n + 2); return a + b + c }
+    export function main(n) { return total(n) }`
+  const { main } = run(src, { optimize: 3 })
+  is(main(-3), 0)
   is(main(2), 19)
   is(main(3), 31)
   if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
@@ -1524,6 +1524,46 @@ test('sourceInline: small helpers join existing exported loops', () => {
   is(main(4), 64)
   is(main(-1), 0)
   if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+})
+
+test('sourceInline: mutable parameters retain private storage and argument order', () => {
+  const src = `let calls = 0
+    function arg(x) { calls = calls * 10 + x; return x }
+    function count(n, step) { let sum = 0; while (n > 0) { sum += n; n -= step }; return sum }
+    function collect() {
+      let n = 3, step = 1
+      const a = count(n, step); const b = count(arg(2), arg(1)); const c = count(0, step)
+      return [a, b, c, n, step, calls]
+    }
+    export function main() { return collect() }`
+  const { main } = run(src, { optimize: 3 })
+  is(main(), [6, 3, 0, 3, 1, 21])
+  is(main(), [6, 3, 0, 3, 1, 2121])
+  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+})
+
+test('sourceInline: exported loop budget includes expanded callees', () => {
+  const src = `function mix(x) {
+      const a = x + 1, b = x + 2, c = x + 3, d = x + 4
+      return a * b + c * d + (a - c) * (b - d) + a * c + b * d
+    }
+    function fill(a, n) { for (let i = 0; i < n; i++) a[i] = mix(i) }
+    function repeat(a, n) { for (let j = 0; j < 3; j++) fill(a, n) }
+    export function f(n) {
+      const a = new Float64Array(1024)
+      for (let warm = 0; warm < 2; warm++) repeat(a, n)
+      for (let pass = 0; pass < 2; pass++) repeat(a, n)
+      return [a[0], a[31], a[1000]]
+    }`
+  const { f } = run(src, { optimize: 3 })
+  is(f(0), [0, 0, 0])
+  is(f(1024), [29, 4493, 4020029])
+  is(f(1), [29, 0, 0])
+  is(f(1024), [29, 4493, 4020029])
+  if (!belowOpt(3)) {
+    const wat = jz.compile(src, { wat: true, optimize: { level: 3, watr: false } })
+    ok(/\(call \$(?:fill|repeat)\b/.test(funcWat(wat, 'f')), 'bulk loop remains callable for tier-up')
+  }
 })
 
 test('sourceInline: inlines returnless hot internal helper calls', () => {

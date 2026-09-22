@@ -9,6 +9,8 @@ import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 export const CORPUS = {
   sum: `export let sum = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }`,
   math: `export let f = (x) => Math.sqrt(x * x + 1) + Math.abs(x)`,
+  // Also exercises restoration of unused value-number captures: copying a
+  // WAT array with Object.assign lost its operands in the self-hosted compiler.
   dict: `export let count = (s) => { let d = {}; for (let i = 0; i < s.length; i++) { let c = s[i]; d[c] = (d[c] || 0) + 1 } return d['a'] || 0 }`,
   arr: `export let rev = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i = a.length - 1; i >= 0; i--) s += a[i]; return s }`,
   // preEval coverage (audit P0 2026-07-25): the kernel entries used to skip the

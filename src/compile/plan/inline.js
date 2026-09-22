@@ -85,7 +85,7 @@ const inlinedBody = (func, args) => {
   // A spread supplies a runtime number of values, not one positional argument.
   if (args.length !== params.length || args.some(a => Array.isArray(a) && a[0] === '...')) return null
   const paramNames = new Set(params.map(p => p.name))
-  if (mutatesAny(func.body, paramNames)) return null
+  const writesParams = mutatesAny(func.body, paramNames)
 
   // A simple arg (ident / literal / arithmetic) is cheap to substitute directly, even when its
   // param is used several times. A NON-simple arg (a call, `?:`, indexed load) is bound to a fresh
@@ -111,9 +111,10 @@ const inlinedBody = (func, args) => {
   for (let i = 0; i < params.length; i++) {
     const arg = args[i]
     const atom = typeof arg === 'string' || typeof arg === 'number' || (Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
-    if (isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
+    if (!writesParams && isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
-    argPrefix.push(['const', ['=', tmp, arg]])
+    // Parameter writes belong to the call's storage, never its caller's binding.
+    argPrefix.push([writesParams ? 'let' : 'const', ['=', tmp, arg]])
     subst.set(params[i].name, tmp)
   }
 
@@ -785,7 +786,9 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // these tiny leaves — and inlining one devirtualizes a closure dispatch.
     // A small helper already called inside export loops joins an existing hot
     // loop; this does not relocate a standalone kernel into a cold entry point.
-    const hotKernelExport = speedTier && nodeSize(func.body) <= 48 &&
+    // Calls can hide a large kernel. Wait for their expansion before pricing
+    // this body; otherwise a tiny wrapper pulls bulk work into a cold export.
+    const hotKernelExport = speedTier && !bodyHasCall(func.body) && nodeSize(func.body) <= 48 &&
       sites.some(site => isExported(site.callerFunc)) &&
       sites.every(site => !isExported(site.callerFunc) || containsNode(site.callerFunc.body, site.node))
     if (hotKernelExport || fixedSiteExported || forwarders.has(name) || leaves.has(name) || sites?.length === 1) {

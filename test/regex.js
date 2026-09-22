@@ -250,7 +250,7 @@ test('regex: hoisted module vars retain literal identity and lastIndex', () => {
   for (const optimize of levels(0, 2, 3)) {
     const r = jz(`
       var re = /a/g, unicode = /./ug
-      export function run() {
+      export function f() {
         re.lastIndex = 0
         const first = re.exec('aXa').index
         const second = re.exec('aXa').index
@@ -260,7 +260,7 @@ test('regex: hoisted module vars retain literal identity and lastIndex', () => {
         return [first, second, end, re.lastIndex, unicode.lastIndex]
       }
     `, { jzify: true, optimize })
-    for (let i = 0; i < 2; i++) is(r.memory.read(r.exports.run()), [0, 2, true, 0, 2])
+    for (let i = 0; i < 2; i++) is(r.memory.read(r.exports.f()), [0, 2, true, 0, 2])
   }
 })
 

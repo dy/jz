@@ -1200,8 +1200,6 @@ export default (ctx) => {
   // Small initial capacity for propsPtr-style hashes (per-object dyn props).
   // Most receivers in real code carry 0-2 dyn props; paying 8-slot up-front
   // is wasted memory + probe-loop cache pressure. Grows to 4/8/... on demand.
-  // L3/'speed' opts into a larger initial cap (default 8) to skip 2→4→8 growth
-  // when AST-style nodes carry 3-5 props (watr.compile's profile).
   const smallCap = Math.max(ctx.transform.optimize?.hashSmallInitCap | 0, 2)
   ctx.core.stdlib['__hash_new_small'] = `(func $__hash_new_small (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)

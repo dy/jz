@@ -84,13 +84,11 @@ const LEVEL_PRESETS = Object.freeze({
   // (dead code changed retained code's bytes — the default must name ONE
   // stable pipeline). For REPL/bundler feedback loops, not shipping builds.
   fast: Object.freeze({ ...L2_PRESET, watr: false, splitCharScan: false }),
-  // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
+  // L3/'speed' trades a bit of heap headroom for fewer __arr_grow
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
-  // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
-  // factor as the global __hash_new on first set, avoiding the 2→4→8 grow chain.
-  // Net cost: ~128 B per empty array, ~144 B per per-object hash. Net win on the
-  // watr.compile profile: __arr_grow ~6.7% → ~3%, and lower __ihash_get_local
-  // probe depth from a denser-load global hash.
+  // (0→2→4→8→16). Named-property sidecars keep the common two-slot policy:
+  // reserving eight slots for a single property retained 18 MB in jessie
+  // without a repeatable runtime gain. Ordinary collection capacity is separate.
   // L3/'speed' also turns hoistConstantPool OFF: pooling repeated `f64.const`
   // into `(mut f64)` globals is a pure size win (~7 B/reuse) but a speed loss —
   // a mutable global can't be constant-folded by V8 (any call may mutate it), so
@@ -99,7 +97,7 @@ const LEVEL_PRESETS = Object.freeze({
   // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
   // constants for free. Measured −3% on jessie parse for +14% binary — exactly
   // the size↔speed trade 'speed' exists to make.
-  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true }),
+  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true }),
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).
   size: Object.freeze({
@@ -141,7 +139,7 @@ const LEVEL_PRESETS = Object.freeze({
   // (The stencil + outer-strip vectorizers are NOT level-gated here: they're bit-exact pure wins
   // like the base lane vectorizer, so they run whenever it does — default-on at level 2+ via
   // `cfg.stencil !== false` at the call site, not a speed-only size/precision trade.)
-  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true }),
+  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true }),
 })
 
 /**

@@ -352,8 +352,10 @@ export function valueNumber(fn, pureFns = null) {
   const decls = []
   for (const [name, capture] of captures) {
     if (capture.used) { decls.push(['local', name, types.get(name)]); continue }
-    capture.replacement.length = 0
-    Object.assign(capture.replacement, capture.value)
+    // Keep the original node and its marks. The shared block cleanup removes
+    // this wrapper; Object.assign does not copy array elements in the kernel.
+    capture.replacement.splice(0, capture.replacement.length,
+      'block', ['result', types.get(name)], capture.value)
     if (capture.set) capture.set.splice(0, capture.set.length, 'nop')
   }
   if (decls.length) fn.splice(bodyStart, 0, ...decls)

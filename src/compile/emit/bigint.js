@@ -13,7 +13,7 @@ import {
 } from '../../ir.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
-import { K, core, hasTag, tagOf } from '../../summary/index.js'
+import { K, core, hasTag, tagOf, tagsOf, bitOf, NULL_BITS } from '../../summary/kind.js'
 import {
   REP_EDGE_BOX, representationComputedExprAction, representationProgramHasBigint,
 } from '../representation-plan.js'
@@ -236,6 +236,15 @@ const isBigIntCarrierBits = (get) => ['i32.and',
 const isFlagged = dom => dom === 'census' || dom === 'tagged'
 // No evidence about the operand at all (bigIntDomain's `null` and 'skip').
 const isUnresolved = dom => dom == null || dom === 'skip'
+const NUMERIC_TAGS = bitOf(K.NUMBER) | bitOf(K.BIGINT) | bitOf(K.BOOL) | NULL_BITS
+const mayConcatenate = node => {
+  // Flow guards and staged references can be more precise than the summary.
+  // In particular, a known BigInt result must keep its raw-payload contract.
+  const val = valTypeOf(node)
+  if (val === VAL.NUMBER || val === VAL.BIGINT || val === VAL.BOOL) return false
+  const tags = tagsOf(ctx.summary?.at(ctx.func.current)?.kindOfExpr(node) ?? 0)
+  return !tags || (tags & ~NUMERIC_TAGS) !== 0
+}
 // The flag of a flagged operand decides both arms when its partner is
 // unresolved: JS throws when the two runtime domains differ, so a partner in
 // the other domain never reaches a result, and the partner reads as a box or
@@ -282,14 +291,13 @@ export const bigintResult = (raw, self) => computedBoxOf(self) ? boxBigInt(raw) 
 // `box` is true when RepresentationPlan proved the OUTER node needs a tagged
 // mixed result. Box only the runtime BigInt arm; the Number arm must remain a
 // genuine f64 (not a BigInt box containing the Number's bit pattern).
-// `numGeneric(nameA, nameB)`, when given, builds the Number arm of an
-// unresolved partner (mirrorsPartner) through the operator's generic
-// lowering over the two temps as bare names: `+` may concatenate a partner
-// that is a string at runtime, which `numCompute`'s f64 form cannot.
-export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, numGeneric) {
+// An operator-specific fallback owns unresolved operands before the numeric
+// fork: addition may concatenate even when its other operand is a BigInt.
+export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, generic) {
   const domA = bigIntDomain(a), domB = bigIntDomain(b)
   // An unresolved partner carries no flag of its own: it takes the flagged side's.
   const partnerA = isFlagged(domB) && isUnresolved(domA), partnerB = isFlagged(domA) && isUnresolved(domB)
+  if (generic && (partnerA || partnerB || mayConcatenate(a) || mayConcatenate(b))) return generic(a, b)
   const ta = temp('bigJ'), tb = temp('bigJ')
   const getA = ['local.get', `$${ta}`], getB = ['local.get', `$${tb}`]
   const flagIR = (dom, get) => dom === 'bigint' ? ['i32.const', 1]
@@ -335,15 +343,7 @@ export function bigIntJointDispatch(a, b, i64Compute, numCompute, box, numGeneri
   // A partner in the Number arm is any value: ToNumber, as the generic path applies.
   const numOperand = (dom, node, get, partner) => partner ? toNumF64(node, typed(get, 'f64'))
     : dom === 'census' ? censusNum(get) : dom === 'tagged' ? toNumF64(node, coerceNullishToNum(typed(get, 'f64'))) : typed(get, 'f64')
-  // The generic arm: the flagged side's temp holds its Number (a census
-  // undefined turned NaN in place), the partner's temp its raw value.
-  const numGenericArm = () => {
-    const fix = (dom, t, get) => dom === 'census' ? [['local.set', `$${t}`, censusNum(get)]] : []
-    ctx.func.localValTypesOverlay.set(partnerA ? tb : ta, VAL.NUMBER)
-    return typed(['block', ['result', 'f64'], ...fix(domA, ta, getA), ...fix(domB, tb, getB), asF64(numGeneric(ta, tb))], 'f64')
-  }
-  const numResult = numGeneric && (partnerA || partnerB) ? numGenericArm()
-    : numCompute(numOperand(domA, a, getA, partnerA), numOperand(domB, b, getB, partnerB))
+  const numResult = numCompute(numOperand(domA, a, getA, partnerA), numOperand(domB, b, getB, partnerB))
   // A DEFINITE side (no runtime flag) needn't be re-checked once flagA===flagB
   // holds — the equal flag already tells us which domain BOTH sides share.
   const definite = domA === 'bigint' || domA === 'number' ? domA : domB === 'bigint' || domB === 'number' ? domB : null

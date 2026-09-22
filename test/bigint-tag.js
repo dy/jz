@@ -114,6 +114,25 @@ test('bigint tag: a tagged carrier beside an unresolved operand dispatches on th
   }
 })
 
+test('bigint tag: unresolved addition keeps every non-BigInt kind and string precedence', () => {
+  const source = `export function add(i, j) {
+    const a = [2, 's', null, {}, 7n][i]
+    const b = [1n, true, false, null, 3, undefined, 'q'][j]
+    return a + b
+  }`
+  const host = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const { add } = jz(source, { optimize }).exports
+    // Reuse each instance through numbers, strings, atoms, objects and BigInts.
+    for (let i = 0; i < 5; i++) for (let j = 0; j < 7; j++) {
+      let expected, error
+      try { expected = host.add(i, j) } catch (e) { error = e }
+      if (error) throws(() => add(i, j), TypeError, `${i},${j} O${optimize}`)
+      else is(add(i, j), expected, `${i},${j} O${optimize}`)
+    }
+  }
+})
+
 test('bigint tag: an array element is a tagged slot, whatever wrote it and whoever reads it', () => {
   // A literal, an index write, push/unshift, a compound update and a mapped
   // result all store one carrier; a bare read, an update's own value, an

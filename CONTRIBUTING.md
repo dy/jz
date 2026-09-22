@@ -45,6 +45,10 @@ bounds prove that the original address addition cannot wrap.
 Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
+Source inlining gives mutated parameters private local storage and captures
+their arguments in call order; substitution must never write a caller's binding.
+Small loop helpers enter exported loops only after their callees have expanded,
+so the size budget includes the work being moved out of a tierable function.
 Unmapped numeric/flat callee locals retain their call frame.
 Unwritten parameters with a shared tiny constant substitute directly at every
 read, including loop reads, without creating a local or a cleanup sweep.
@@ -69,6 +73,8 @@ Nonempty array literals reserve their stated length. Empty builders retain the
 speed tier's growth reserve, and proven builder bounds still preallocate enough
 capacity. `arrayLiteralMinCap` remains an explicit override for kernel builds;
 smaller initial storage uses the existing alias and named-property forwarding.
+Named-property sidecars start with two slots at every tier and grow on demand;
+the speed tier's array reserve does not apply to those sparse property tables.
 
 Array joining captures length before separator conversion and reads elements
 through the checked, tagged reader. Each conversion runs once, in order; a
@@ -89,7 +95,9 @@ size is checked before shifting the code-unit count to bytes.
 
 Implicit ToNumber rejects BigInt. Explicit `Number()` accepts its payload and
 delegates all other parsing to the same helper. Unary plus and string positions
-use ToNumber; an unboxed object pointer is never a numeric proof. Present typed
+use ToNumber; an unboxed object pointer is never a numeric proof. Excluding a
+BigInt tag does not prove a Number: unresolved addition uses the shared
+ToPrimitive/string/BigInt helper, with plain numbers kept inline. Present typed
 BigInt reads retain their raw-payload fact, while checked reads box only the
 successful branch. Atomic value operations share the existing operation catalogue
 with the summary: their result is an element or an exception, never undefined.
