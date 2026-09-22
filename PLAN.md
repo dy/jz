@@ -19,7 +19,7 @@ Architecture
   properties, bounded shape sets, collection cells, positional rest facts and
   closure properties. Plan passes consume its views (`openSidOfExpr`,
   `spreadSidOfExpr`, `sideKeysOfSid`) and the frame-effects census
-  (`writesOuter`, `arenaUnsafe`, `callsUnknown`, transitive callees). No pass
+  (`writesOuter`, `arenaUnsafe`, `callsUnknown`, transitive callees). No source-plan pass
   keeps a private call or effect analyzer; where the shared evidence is
   silent, the optimization declines.
 - Frame effects gate the arena rewind: every escape vetoes it, a loop whose
@@ -144,23 +144,28 @@ Dependencies
 
 ## Remaining release work
 
-1. **Typed-array property semantics.** Closed. Named keys route through
-   property storage and canonical numeric keys through element conversion;
-   assignment values, aliases, views, missing keys and reference evaluation
-   order have differential regressions, and the typed/static output checks
-   pass at their unchanged caps. Preserve these semantics unless the public
-   contract changes; never narrow an exported parameter to satisfy a size
-   check.
+1. **Conformance.** The language gate has 49 in-scope failures: its exact
+   failing-file set is unchanged with value numbering and scheduling disabled.
+   They include parameter/default/body binding scope, async-generator abrupt
+   completion, thenable job ordering and unsupported accessor/using forms.
+   The built-ins gate has six RegExp.exec compile failures across lastIndex
+   conversion/reset and Unicode matching: emission fails to resolve literal
+   regex receivers before the new passes run. Diagnose these against the
+   public contract; do not expand xfails to make the gate green.
+   Nine new value-numbering regressions discovered by the language gate are
+   fixed and pinned: signed-zero keys and eight comparison operators whose
+   right operand assigns a local read by the left operand.
 
 2. **Runtime and self-host speed.** The self-compile gate passes (warm
-   0.954× against the 1.03× cap, fresh 0.763× against 0.99×). The compiler's
+   0.939× against the 1.03× cap, fresh 0.788× against 0.99×). The compiler's
    own profile is flat (Map/Set probes and hashing 15%, pointer decoding 3%,
    the AST visitor 4.5%); call-site wrapper isolation, blanket forwarding
    inlining, a leaf-skipping visitor, closure-property precision and extended
    duplicate-read reuse each measured nothing and were removed, so a retry
    needs a new measurement first.
 
-   Against V8, the corpus wins everywhere but webaudio, colorpq and watr.
+   Remaining speed gaps include webaudio, watr and percolation; the aggregate
+   speed win does not establish a win on every case.
    webaudio (7.6× → 2.2×, web-audio-api 1.5.6): the roots were the
    iterator protocol (the automation list's `[Symbol.iterator]()` escaped its
    array, and a consumer module without producers of its own indexed the
@@ -183,10 +188,13 @@ Dependencies
    parameter split already does for callees. Then the automation `findIndex`
    callbacks and
    the tuple destructuring `const [t, v] = …` that opens a cursor per call
-   (8%). colorpq (4.4×):
-   twelve runtime-exponent pow calls per pixel, jz's pow bit-exact with V8
-   and about 3× its time per call; the lever is a two-wide pow that keeps
-   the bits. watr: the tier-up above.
+   (8%). colorpq's scalar Arm pow, value numbering, statement scheduling and
+   true two-wide pow kernel are implemented. On the final tree, three paired
+   runs take 49.4 ms with the new passes versus 86.8 ms with both disabled;
+   bytes fall from 16197 to 15014 and checksums match. The SIMD kernel is
+   bit-identical to the scalar path on 2651 test lanes. These are local
+   diagnostics; renew the V8 comparison with the release evidence. watr:
+   the tier-up above.
 
    Against the fastest rival Wasm (`WASM_TODO` in `test/bench.js`): sdf's
    bounds checks are 72% of its gap and its scratch cursor's bounds come from
@@ -194,12 +202,19 @@ Dependencies
    proof it needs; glyfparse's checks cost nothing and its lever is an i32
    representation for the ToInt32-blind checked byte reads; noise stands at
    1.13× of Rust with an instruction census at parity; shapes at 1.12× is
-   untouched; sort is at parity with Zig. percolation (0.69× against its
-   0.75 floor): `find` and `union` take f64 parameters because `y * w + x`
-   is f64 from host numbers, so the path-halving chase converts on every hop.
-   It needs the index-chase lowering: an i32 loop whose checked reads stay
-   i32 under integer-tolerant consumers, with the generic loop left for an
-   out-of-range hop.
+   untouched; sort is near parity with Zig. The checked-read i32 lowering
+   has landed, but glyfparse still trails in the current gate. percolation
+   reads 0.68× V8/JZ against its 0.75 floor. The handoff's next experiment
+   targets call overhead: fold a bare early return into a guard for inlining
+   and permit a small one-loop callee at several speed-tier sites. That patch
+   is unverified and not applied; prove it on general kernels before using it.
+   wordcount's current 1.238× of C-wasm is not caused by the two new passes:
+   its Wasm is byte-identical with them disabled.
+
+   The watr size backstop also fails: 321331 bytes against 320000. In an
+   isolated size-tier A/B it is 321374 bytes with the passes and 320932
+   without; scheduling changes neither size. Recover the bytes through
+   shared code generation, preserving the new effect and trap proofs.
 
 3. **Memory.** webaudio holds 70.3 MB of resident memory against V8's 70.6
    (paired, node against node, this tree; 151 before): the automation loops
@@ -235,54 +250,38 @@ Dependencies
    deadlines; reuse entry-range facts for useful bounds, since a full-i32
    domain proves no deadline. Present the pinned candidate and complete gate
    evidence for independent review; implementation alone is not expert
-   approval. Bump watr once its release carries the two rules above.
+   approval. The required watr rules are already published in 5.11.1.
 
-## Gate evidence — September 21
+## Gate evidence, September 21
 
-- Loop rewinds and shared-memory preflight (this commit): core suite
-  4545/4546 with one skip, self-compile 68/68, import lint clean, the
-  perf ratchet re-baselined for the per-iteration heap restores (nest 16691,
-  slice 69760, ring 54040). `test/bench.js` on the final tree: speed geomeans
-  0.476× of V8, 0.701× of C, 0.482× of AssemblyScript, size 0.785× of
-  AssemblyScript, the examples corpus 1.41× with 19 of 21 winners. webaudio,
-  paired alone: 1.87× of V8 (2.15× before) and 70.3 MB resident against
-  V8's 70.6 (151 before); one render allocates 87 MB and keeps 9. Ten red
-  rows, every one a standing above or noise: sdf's win pin at 1.015×, watr's
-  trail at 1.39× (five paired alternations against the pre-session tree
-  read 1.14–1.29× there and 1.14–1.59× here, rounds from 1.04× to 1.78× on
-  both; the loop-body op count of its compiled module differs by 62 in
-  `normalize` of 83514, the tier-up above is the ratio), glyfparse, sdf,
-  sort, noise and radixsort against the fastest wasm, TinyGo's builds,
-  alpha's w2c row, and percolation at 0.71× under the examples' 0.75× floor
-  with output identical to the pre-session tree (0.67–0.71× alone on this
-  machine today: the floor's evidence needs the reference machine).
-- Core suite 4531/4532 with one skip (`test/index.js`), self-compile 68/68,
-  import lint and public types clean; `bench:size` geomean 0.785× of
-  AssemblyScript with 0.1% `wasm-opt` slack; the size pins carry the
-  `jz:brand` bytes.
-- Speed geomeans, paired in a fresh process: 0.476× of V8, 0.705× of C
-  (Clang), 0.487× of AssemblyScript; the examples corpus 1.44× of V8 with
-  19 of 21 winners. watr 1.14× (`trail`, the tier-up above), jessie 0.99×
-  (`tie`). Every corpus case beats V8 except webaudio (2.2× paired at 10.4
-  ms, 9.1 ms in-process after reachability; the perf gate does not time
-  it), colorpq and watr.
-- Eleven red rows on the final tree, every one a standing this round did
-  not touch or a noise band: the fastest-wasm rows glyfparse 1.23× and sdf
-  1.48× (item 2 above; the noise and shapes rows are green), sort's 1.18×
-  of Zig (Zig's own run moved from 5.09 to 4.71 ms between gates; paired
-  alone the row reads 1.04× and 1.06×, and the build carries no change from
-  this round), the 1.05× band's edge (crc32, delayline, levenshtein,
-  bezfit), percolation 0.69× under the examples' 0.9× floor (item 2),
-  ulam's 0.77× (V8's own frame moved between 578 and 736 µs across runs;
-  the pre-session commit and this tree read 1.01× and 1.00× side by side),
-  alpha's stale w2c row and the TinyGo builds (item 4).
-- watr 5.11.1, published, replaces the checkout link: sort reads 1.09× of Zig
-  and base64 0.81× of AssemblyScript paired with the installed package.
-- Correctness closed on this tree: open-object enumeration order with
-  integer keys, class identity across modules sharing memory (`jz:brand`),
-  nested compilation from a warning callback, the declared-keys pass through
-  registration calls (jessie's comment loop) and its stand-downs (a reaching
-  call, a callee that reaches, a callee the census cannot see, an alias, a
-  callback argument, a parameter default), a specialization clone sharing
-  its origin's body, a rest-parameter function property called positionally,
-  `'m' in o` for class members.
+- Final core suite: 4571 passed, one skip (87887 assertions). Self-compile:
+  68 passed. Perf ratchet: 10 passed. Public types and import lint pass.
+  The full opt0/opt3/WASI matrix passed before the final signed-zero and
+  comparison-order fixes; after those fixes, all three affected matrix
+  runs passed (461 tests each), alongside the full core and self-compile.
+- Self-compile performance: warm 0.939× V8 (cap 1.03×), fresh 0.788×
+  (cap 0.99×). No timing, size or memory cap was changed.
+- Language conformance: 3149 pass, 49 fail, two xfails, with the failing
+  file set identical when both new passes are disabled. Built-ins:
+  872 pass, six fail, 44 xfails. These gates are not green (item 1).
+- Benchmark gate: 260/271 pass. Speed geomeans are 0.469× of V8, 0.702×
+  of native C and 0.481× of AssemblyScript; size is 0.785× of
+  AssemblyScript. Perf-fuzz passes all category gates (integer 0.94×,
+  float 0.74×, mixed 0.88× of V8). Floatbeat geomean is 0.396× of V8.
+- The eleven red benchmark rows are the fastest-Wasm comparisons for fft
+  (1.068×), glyfparse (1.134×), sdf (1.379×), trace (1.055×), sort
+  (1.051×), noise (1.119×), wordcount (1.238×); TinyGo build coverage;
+  alpha's committed w2c row; watr's size backstop; and the examples gate
+  (percolation 0.68× V8/JZ). The examples geomean is 1.45× V8/JZ,
+  with 19 of 21 faster. Watr's runtime passes its current trail band at
+  1.201× V8; that is not a leadership result.
+- These timings are diagnostic. The first corpus pass ran while an inherited
+  sort experiment was consuming one core; that stale process was stopped
+  before the benchmark finished. Reference-hardware evidence and
+  `bench/results.json` still need regeneration (item 4).
+- The four review fixes have direct regressions: atomic indexed-destructuring
+  rewrites (`test/destruct.js`), read-only-call invalidation on global
+  writes, narrow/SIMD/atomic store classification and coercion effects
+  (`test/value-number.js`), and trap ordering for direct and callee loads
+  (`test/schedule.js`). The signed-zero and local-read-before-write cases
+  are also pinned in `test/value-number.js`.

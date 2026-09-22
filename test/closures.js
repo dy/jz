@@ -889,7 +889,9 @@ test('closure-unbox: codegen — local declared as i32', () => {
       return g(1) + g(2)
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, sourceInline: false } })
+  // Value numbering off: it computes the boxed closure once for both calls, which leaves
+  // `$g` one use and lets propagation dissolve the slot this pin reads.
+  const w = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, sourceInline: false, valueNumber: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   // multi-use closure so the slot survives propagateLocals (the single-use def would be forwarded)

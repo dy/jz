@@ -375,6 +375,32 @@ unknown. Allocating
 helpers cannot be speculated before zero-trip loops or crossed by allocator-global
 reads.
 
+Two passes close the per-function pipeline on the shapes the inliners and the
+vectorizer leave. Value numbering (`optimize/value-number.js`) names values,
+not locals: a local's number is its definition's, an expression's its operator
+over its operands' numbers (including the sign of a floating zero), a load's adds a state clock that every store,
+global write, effectful call and region boundary advances. A helper inlined twice with one
+argument (colorpq's `spow(L / 10000, nv)` in a numerator and its denominator)
+leaves two chains of locals holding the same values under different names;
+watr's CSE matches subtrees and so kept both, and the kernel ran twice. A
+computation whose number a local still holds becomes a read of it; the first
+site of a number read again later becomes a statement of its own before the
+statement it sat in, or a tee in place when local read/write dependencies,
+a possible trap or a condition prevent moving it. Loop bodies, `if`
+arms and targeted blocks are regions: every local assigned inside is unknown
+on entry and on exit. Read-only user functions (`pureCallees`, the greatest
+fixpoint over no-store, no-global-write bodies calling only the math runtime
+or each other) are values too, under the clock. Numeric coercion can invoke
+user code and is not pure; lane inlining has its own numeric-argument proof.
+The passes share watr's memory-write classifier, including narrow and SIMD
+stores. Read-only calls can still trap or diverge, so they and direct loads
+retain their order with observable effects. The scheduler
+(`optimize/schedule.js`) then orders each straight-line run of statements by
+the longest chain of work still depending on each, so independent kernel
+calls start together and overlap: colorpq's three inner pows run first, then
+its three outer ones, 97 to 75 ms. Both are differential against the same
+program with the pass off in `test/value-number.js` and `test/schedule.js`.
+
 Internal exceptions carry a private tagged code until a source catch materializes
 an ordinary branded Error. User-thrown numbers remain numbers. Property dispatch
 has no error-code lookup: caught errors use the same fields and class checks as

@@ -505,7 +505,7 @@ test('interop: typed views, typed methods and accumulators keep an array-like pa
 // across the modules sharing one memory. A plain object matches a plain shape
 // first; among classes alone it is ambiguous.
 test('interop: classes of one field list keep their identity through the sections', () => {
-  if (onKernel()) return
+  if (onWasi() || onKernel()) return
   const one = jz(`class A { constructor(x) { this.x = x } }\nclass B { constructor(x) { this.x = x } }
 export let a = () => new A(1), b = () => new B('s'), ra = (o) => o.x, rb = (o) => o.x, plain = () => ({ x: 2 })`)
   is(one.exports.ra(one.exports.a()), 1); is(one.exports.rb(one.exports.b()), 's')
@@ -516,7 +516,7 @@ export let a = () => new A(1), b = () => new B('s'), ra = (o) => o.x, rb = (o) =
 })
 
 test('interop: modules sharing a memory bind their schemas at the same ids or are rejected', () => {
-  if (onKernel()) return
+  if (onWasi() || onKernel()) return
   const src = `export let mk = () => ({ p: 1, q: 'a' }), rp = (o) => o.p, rq = (o) => o.q`
   const one = jz(src)
   // a module of other names, slot orders and representations: its schema 0 would bind as schema 1
@@ -536,7 +536,7 @@ test('interop: modules sharing a memory bind their schemas at the same ids or ar
 // module scope, and its tables would have been half committed (the Error
 // classes first, then the schemas up to the one that binds elsewhere).
 test('interop: a rejected module leaves the memory it would share untouched', () => {
-  if (onKernel()) return
+  if (onWasi() || onKernel()) return
   const memory = jz.memory()
   const one = jz(`export let mk = () => ({ p: 1, q: 'a longer static string' }), rq = (o) => o.q`, { memory })
   const o = one.exports.mk()

@@ -1,33 +1,61 @@
 /**
- * Pure-function detection for the SIMD lane vectorizer's per-lane inliner
- * (buildPureFuncMap), and the dead string-dispatch fold it relies on to see a
- * clean scalar body (foldStrDispatchF64). `buildPureFuncMap` calls
- * `foldStrDispatchF64` directly on a private clone — the two are one unit.
+ * Read-only callee proofs for value numbering and scheduling, plus the SIMD
+ * lane inliner's stronger numeric-argument context. Read-only calls may trap;
+ * numeric lane clones may remove coercions that ordinary calls still need.
  *
  * @module optimize/pure-funcs
  */
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
+import { isMemWrite } from 'watr/optimize'
+import { mayTrapOp } from '../ir/classify.js'
 
-// Build the "pure for SIMD lane-inline" map consumed by tryPerPixelColor's Phase-2
-// user-function inline (cfg._pureFuncMap). A user function qualifies when its body has
-// no side effects: no global.set, no memory store, and no call except $math.* / $__to_num
-// (a pure numeric coercion the lane lift strips). foldStrDispatchF64 runs first
-// (idempotent) so the purity check sees the folded body — dead __is_str_key dispatch on a
-// proven-f64 param would otherwise read as impure. Built in the emit phase (optimizeModule),
-// BEFORE the per-function lane vectorizer runs, so callee bodies are still clean scalar.
-//
-// SOUNDNESS: folds a CLONE, never `fn` itself. `fn` is the real,
-// shared function object also emitted verbatim for its own ordinary (non-inlined) call
-// sites — under jz's NaN-boxing ABI EVERY dynamically-typed value (string, undefined,
-// null, a boolean atom, a boxed object) is carried in an `f64`-typed local exactly like
-// a genuine number; a bare `(param $x f64)` proves nothing about $x's runtime domain.
-// foldStrDispatchF64's "proven rawF64" claim is sound only for the SUBSTITUTED argument
-// at a `pureFuncMap`-driven inline site (gated to a proven-numeric f64 SIMD lane
-// context elsewhere in the vectorizer) — never for the callee's own declaration. Folding
-// `fn` in place used to strip the runtime string/atom dispatch from `fn`'s real,
-// standalone body too, so an ordinary call passing e.g. a Map's absent-key `undefined`
-// sentinel silently got treated as a plain float (`param-hop "+" miscompile`, dyn-keys.js).
+/** The math runtime depends only on its operands, except for its random source. */
+export const pureKernel = name => typeof name === 'string' && name.startsWith('$math.') && !name.startsWith('$math.random')
+
+/**
+ * The user functions whose result depends on their arguments and the state
+ * they read alone: no global write, no store, no
+ * table write, no explicit throw or trapping arithmetic, and every call (a tail call included)
+ * to the math runtime (less its random source) or to
+ * another such function (the greatest fixpoint, so mutual and self
+ * recursion qualify). Value numbering (optimize/value-number.js) treats
+ * their calls as values under the memory/global clock. Read-only does not
+ * prove safe to speculate: loads can trap and recursion need not terminate,
+ * so motion retains their order with effects. `$__to_num` may call user code.
+ * @param funcs the module's `(func …)` nodes
+ * @returns {Set<string>} their names
+ */
+export function pureCallees(funcs) {
+  const pure = new Set(), callees = new Map()
+  for (const fn of funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string' || fn[1].startsWith('$__')) continue
+    let clean = true
+    const calls = new Set()
+    walkAst(fn, { enter: n => {
+      if (!clean) return false
+      const op = n[0]
+      if (typeof op !== 'string') return
+      if (op === 'global.set' || op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect' || op === 'return_call_ref' ||
+          op === 'throw' || op === 'throw_ref' || op === 'rethrow' || (mayTrapOp(op) && !op.includes('.load')) ||
+          isMemWrite(op) || op.startsWith('memory.') || op.startsWith('table.') || op.includes('atomic')) clean = false
+      else if ((op === 'call' || op === 'return_call') && typeof n[1] === 'string') {
+        if (n[1].startsWith('$math.random')) clean = false
+        else if (!pureKernel(n[1])) calls.add(n[1])
+      }
+    } })
+    if (clean) { pure.add(fn[1]); callees.set(fn[1], calls) }
+  }
+  for (let changed = true; changed;) {
+    changed = false
+    for (const name of pure) for (const c of callees.get(name)) if (!pure.has(c)) { pure.delete(name); changed = true; break }
+  }
+  return pure
+}
+
+/** Build private candidates for call sites whose substituted SIMD arguments are
+ *  proven numeric. A bare f64 parameter can carry a NaN box, so ordinary calls
+ *  retain their coercion and string dispatch (`param-hop` in dyn-keys.js). */
 export function buildPureFuncMap(funcs) {
   const pureFuncMap = new Map()
   const hasSideEffect = (node) => {
@@ -36,9 +64,9 @@ export function buildPureFuncMap(funcs) {
       if (found) return false
       const op = n[0]
       if (op === 'global.set' ||
-          (typeof op === 'string' && (op.endsWith('.store') || op.startsWith('memory.'))) ||
-          (op === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.') && n[1] !== '$__to_num') ||
-          op === 'call_indirect' || op === 'call_ref') { found = true; return false }
+          (typeof op === 'string' && (isMemWrite(op) || op.startsWith('memory.') || op.startsWith('table.') || op.includes('atomic'))) ||
+          ((op === 'call' || op === 'return_call') && typeof n[1] === 'string' && !pureKernel(n[1]) && n[1] !== '$__to_num') ||
+          op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect' || op === 'return_call_ref') { found = true; return false }
     } })
     return found
   }
@@ -74,33 +102,19 @@ export function buildPureFuncMap(funcs) {
  *       (then (call $__str_concat …))
  *       (else (f64.add (local.get $B) (local.get $C)))))
  *
- * When $P is a proven-f64 local (an f64 param, or an f64-typed local provably set
- * only from f64 arithmetic) it can never hold a string-key NaN-box, so the
+ * In the numeric lane context, $P cannot hold a string-key NaN-box, so the
  * `$__is_str_key` test is provably false and the `then` branch is dead.
  * Replace the whole block with `(f64.add EXPR_A (local.get $P))`.
  *
- * SOUND: f64 params can never hold a string-key NaN-box by construction (jz
- * only allows strings in f64 slots via explicit mkptr boxing, never a bare
- * param). This fold is additive/gated (only runs when vectorizeLaneLocal is on)
- * and only removes provably-dead string-dispatch overhead.
- *
- * Called in the 'post' phase of optimizeFunc, before vectorizeLaneLocal, so the
- * cleaned IR is what the vectorizer pattern-matches.
+ * buildPureFuncMap records these edits, clones a qualifying candidate, then
+ * restores the source before the ordinary per-function pipeline runs.
  */
-// cloneIR (imported from ir.js) deep-clones an IR node (nested arrays of
-// strings/numbers) — used above to give foldStrDispatchF64 a private copy to
-// mutate, so its guard-stripping never leaks into the real, standalone-
-// callable function it was copied from (see foldStrDispatchF64's own
-// soundness note: the fold is sound ONLY for a call site whose argument is
-// independently proven numeric by its OWN context — e.g. a per-lane value
-// read straight off a typed array inside a proven f64 SIMD context — never
-// for the callee's bare declared param type).
 export function foldStrDispatchF64(fn, changes) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  // Collect all f64 params — provably never hold a string-key NaN-box.
+  // The candidate's f64 params will be substituted by proven numeric lanes.
   const rawF64 = new Set()
   for (let i = 2; i < bodyStart; i++) {
     const d = fn[i]

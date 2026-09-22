@@ -25,7 +25,10 @@ test('lanes: a literal held in a binding is read only through the lanes and diss
   const src = `function len(v) { return Math.sqrt(v.x * v.x + v.y * v.y) }
     export function f(ax, ay) { const v = { x: ax, y: ay }; return len(v) + len(v) }`
   const w = wat(src)
-  ok(/\(func \$len\$lanes/.test(w), 'the lane sibling exists')
+  // Value numbering computes `len(v)` once for `len(v) + len(v)`, which leaves the lane
+  // sibling one caller, and watr then inlines it; either way the record form is gone.
+  ok(/\(func \$len\$lanes/.test(w) || !/call \$len\b/.test(bodyOf(w, 'f')), 'the lane sibling exists, or inlined into its one call')
+  ok(!/\(func \$len\b(?!\$lanes)/.test(w), 'the record form is gone')
   ok(!/alloc/.test(bodyOf(w, 'f')), 'the binding scalarizes')
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(3, 4), 10, `O${optimize}`)
 })

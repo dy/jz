@@ -13,6 +13,7 @@ import { VAL } from '../reps.js'
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { hasIROp } from './ir-scan.js'
+import { isMemWrite } from 'watr/optimize'
 
 /**
  * Module-wide scan for "volatile" globals — those mutated (`global.set`) in any
@@ -428,15 +429,15 @@ export function collectReachableMemoryWrites(funcs) {
     walkAst(fn, { enter: n => {
       if (!Array.isArray(n)) return
       const op = n[0]
-      if (typeof op === 'string' && (op.endsWith('.store') || op.includes('.store8') || op.includes('.store16') || op.includes('.store32'))) {
+      if (typeof op === 'string' && op.includes('.store')) {
         const { global } = memGlobal(n, aliases)
         writes.add(global || '*')
-      } else if (op === 'memory.copy' || op === 'memory.fill' || op === 'memory.init') writes.add('*')
+      } else if (typeof op === 'string' && isMemWrite(op)) writes.add('*')
       else if ((op === 'call' || op === 'return_call') && typeof n[1] === 'string') {
         // A missing target is a host import. It can observe an exported memory
         // through its JS closure and mutate arbitrary bytes: fail closed.
         if (names.has(n[1])) callees.add(n[1]); else writes.add('*')
-      } else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect') writes.add('*')
+      } else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect' || op === 'return_call_ref') writes.add('*')
     } })
     direct.set(fn[1], writes); calls.set(fn[1], callees)
   }

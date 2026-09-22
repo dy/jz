@@ -33,6 +33,12 @@ export const MAX_CLOSURE_ARITY = 8
 // report no-memory. Broad-but-precise: only `memory.` and `<type>.load|store` match.
 export const MEM_OPS = /\b(memory\.\w+|(?:i32|i64|f32|f64|v128)\.(?:load|store)\w*)\b/
 
+/** Trapping reads/arithmetic retain their order with observable effects. Calls
+ *  need a separate callee proof; stores are already ordered as writes. */
+export const mayTrapOp = op => typeof op === 'string' && (op.includes('.load') ||
+  /^(i32|i64)\.(div_s|div_u|rem_s|rem_u)$|\.trunc_f(32|64)_[su]$/.test(op) ||
+  op === 'unreachable' || op === 'ref.as_non_null' || op === 'table.get')
+
 export const WASM_OPS = new Set(['block','loop','if','then','else','br','br_if','call','call_indirect','return','return_call','throw','try_table','catch','nop','drop','unreachable','select','result','mut','param','func','module','memory','table','elem','data','type','import','export','local','global','ref'])
 
 export const BOXED_MUTATORS = new Set(['push', 'pop', 'shift', 'unshift', 'splice', 'reverse', 'sort'])

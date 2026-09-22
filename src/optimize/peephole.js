@@ -50,11 +50,12 @@ const BOOL_RESULT_OPS = new Set([
  */
 export function boolConvertToSelect(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
-  // Pass 1 — a local whose SOLE definition is a comparison carries a value ∈ {0,1};
-  // `err = old - on` (on reused by putBW) reaches us as `convert(local.get $on)`.
-  // A param is EXCLUDED even if reassigned once by a comparison: its incoming arg is
-  // unconstrained, so a read before the reassignment isn't 0/1. (A plain local read
-  // before its def is safe — wasm zero-inits it to 0 = false, which select preserves.)
+  // Pass 1 — a local whose EVERY definition is a comparison carries a value ∈ {0,1};
+  // `err = old - on` (on reused by putBW) reaches us as `convert(local.get $on)`, and a
+  // versioned loop defines the same `$on` once per copy. A param is EXCLUDED even if
+  // reassigned by comparisons only: its incoming arg is unconstrained, so a read before
+  // the reassignment isn't 0/1. (A plain local read before its def is safe — wasm
+  // zero-inits it to 0 = false, which select preserves.)
   const params = new Set()
   for (let i = 2; i < fn.length; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'param') params.add(fn[i][1])
   const defCount = new Map(), defIsCmp = new Map()
@@ -67,7 +68,7 @@ export function boolConvertToSelect(fn) {
     }
   } })
   const boolLocals = new Set()
-  for (const [name, c] of defCount) if (c === 1 && defIsCmp.get(name) && !params.has(name)) boolLocals.add(name)
+  for (const name of defCount.keys()) if (defIsCmp.get(name) && !params.has(name)) boolLocals.add(name)
 
   const isBool01 = (n) => Array.isArray(n) &&
     (BOOL_RESULT_OPS.has(n[0]) || (n[0] === 'local.get' && boolLocals.has(n[1])))

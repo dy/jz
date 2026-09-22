@@ -696,7 +696,9 @@ test('classes: a class extending a class of another module keeps the schema lowe
     class B extends A { constructor(){ super(10); this.gain = 0.5 } process(n){ return super.process(n) * this.gain } }
     export let f = (n) => new B().process(n) + new A(1).process(n)`
   const warnings = { entries: [] }
-  const wat = jz.compile(src, { modules, warnings, wat: true })
+  // The whole-module pin needs DCE: opt0 retains unused generic dispatch helpers.
+  // Runtime correctness below still follows the active matrix level.
+  const wat = jz.compile(src, { modules, warnings, wat: true, optimize: 2 })
   is(warnings.entries.filter(e => e.code === 'class-generic').length, 0, 'both classes are schemas')
   ok(!/\$__dyn_get/.test(wat), 'the inherited method reads its fields as slots')
   is(jz(src, { modules }).exports.f(4), 6 * 10 * 0.5 + 6 * 1)

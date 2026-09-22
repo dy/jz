@@ -1734,10 +1734,12 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
     export const main = () => {
       const a = new Uint8Array(16), b = new Uint8Array(16)
       for (let i = 0; i < 16; i++) { a[i] = (i * 7) & 7; b[i] = (i * 5) & 7 }
-      return eqcount(a, b, 16) + eqcount(a, b, 16)
+      return eqcount(a, b, 16) + eqcount(b, a, 16)
     }
   `
-  const wat = jz.compile(SRC, { wat: true })   // eqcount is called twice → stays its own function
+  // eqcount is called twice with distinct arguments → stays its own function (value numbering
+  // computes one call for two identical ones, and watr inlines a function with one caller).
+  const wat = jz.compile(SRC, { wat: true })
   const start = wat.indexOf('(func $eqcount')
   let body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
   // Root F versions the param-bound loops: the cold checked twin (else arm)
@@ -1762,11 +1764,11 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
       for (let i = 1; i < n; i++) { const v = xs[i]; if (v < m) m = v; if (v > 1000) m = m + 1 }
       return m
     }
-    export const main = () => {           // call twice so reduce stays its own function to inspect
+    export const main = () => {           // two distinct calls so reduce stays its own function to inspect
       const xs = new Int32Array(64)
       let s = 12345 | 0
       for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; xs[i] = (s >>> 8) & 0x3ff }
-      return (reduce(xs, 64) + reduce(xs, 64)) | 0
+      return (reduce(xs, 64) + reduce(xs, 63)) | 0
     }
   `
   const grab = (wat) => wat.slice(wat.indexOf('(func $reduce'), wat.indexOf('\n  (func ', wat.indexOf('(func $reduce') + 10) + 1 || undefined)
@@ -1782,7 +1784,7 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
   ok(/\(if\b/.test(fnD), 'default tier keeps the branch (select is a speed-tier trade)')
   // Bit-exact regardless of tier.
   const ref = (() => { const xs = []; let s = 12345 | 0; for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; xs[i] = (s >>> 8) & 0x3ff }
-    let m = xs[0]; for (let i = 1; i < 64; i++) { const v = xs[i]; if (v < m) m = v; if (v > 1000) m = m + 1 } return (m + m) | 0 })()
+    const r = (n) => { let m = xs[0]; for (let i = 1; i < n; i++) { const v = xs[i]; if (v < m) m = v; if (v > 1000) m = m + 1 } return m }; return (r(64) + r(63)) | 0 })()
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'speed-tier result bit-exact')
   is(jz(SRC).exports.main(), ref, 'default-tier result bit-exact')
 })
@@ -1799,11 +1801,11 @@ test('if→select: load-bearing condition + postfix x++ → branchless select (h
       for (let i = 0; i < n - 1; i++) { let c = i; if (a[c] < a[c + 1]) c++; hits = hits + c }
       return hits
     }
-    export const main = () => {           // call twice so pick stays its own function to inspect
+    export const main = () => {           // two distinct calls so pick stays its own function to inspect
       const a = new Float64Array(64)
       let s = 1 | 0
       for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; a[i] = (s >>> 8) & 0xff }
-      return (pick(a, 64) + pick(a, 64)) | 0
+      return (pick(a, 64) + pick(a, 63)) | 0
     }
   `
   const grab = (wat) => wat.slice(wat.indexOf('(func $pick'), wat.indexOf('\n  (func ', wat.indexOf('(func $pick') + 10) + 1 || undefined)
@@ -1812,7 +1814,7 @@ test('if→select: load-bearing condition + postfix x++ → branchless select (h
   const fnD = grab(jz.compile(SRC, { wat: true, optimize: 2 }))
   ok(/\(if\b/.test(fnD), 'default tier keeps the branch (select is a speed-tier trade)')
   const ref = (() => { const a = []; let s = 1 | 0; for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; a[i] = (s >>> 8) & 0xff }
-    const pick = (n) => { let hits = 0; for (let i = 0; i < n - 1; i++) { let c = i; if (a[c] < a[c + 1]) c++; hits = hits + c } return hits }; return (pick(64) + pick(64)) | 0 })()
+    const pick = (n) => { let hits = 0; for (let i = 0; i < n - 1; i++) { let c = i; if (a[c] < a[c + 1]) c++; hits = hits + c } return hits }; return (pick(64) + pick(63)) | 0 })()
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'speed-tier bit-exact')
   is(jz(SRC).exports.main(), ref, 'default-tier bit-exact')
 })
@@ -5436,8 +5438,9 @@ export let h = (k) => [1, 2, 3][k & 3]`
 // the helper at the size tier, whose bytes the size gate reads.
 test('unknown-receiver element reads: inline array arm at speed, the helper at size', () => {
   const src = `export let at = (node, i) => node[i | 0]`
-  const speed = funcWat(compile(src, { optimize: 'speed', wat: true }), 'at')
-  const size = funcWat(compile(src, { optimize: 'size', wat: true }), 'at')
+  // Pin JZ's array-arm choice before watr can inline unrelated dictionary arms.
+  const speed = funcWat(compile(src, { optimize: preWatr('speed'), wat: true }), 'at')
+  const size = funcWat(compile(src, { optimize: preWatr('size'), wat: true }), 'at')
   ok(/__ptr_offset_fwd/.test(speed) && /f64\.load/.test(speed) && /i32\.lt_u/.test(speed), 'speed: the array arm inline')
   ok(!/f64\.load/.test(size) && !/i32\.lt_u/.test(size) && /call \$__typed_idx/.test(size), 'size: the helper alone')
   is(run(src).at([5, 6, 7], 1), 6)

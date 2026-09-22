@@ -35,6 +35,8 @@ const TESTS = [
   'mem',
   'allocation',
   'frame-effects',
+  'value-number',
+  'schedule',
   'lanes',
   'buffer',
   'workers',

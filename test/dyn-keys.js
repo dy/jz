@@ -704,7 +704,8 @@ test('load reuse separates numeric conversion from raw typed-element identity', 
       for (const i of [2, 2, 0, 1, -1, 2, 0]) is(f(i), expected(i), `${ctor}, O${optimize}: i=${i}`)
     }
     if (ctor === 'Float64Array') {
-      const loads = loadCSE => (compile(src, { optimize: { level: 3, loadCSE }, wat: true }).match(/f64\.load/g) || []).length
+      // valueNumber off: the WAT-level pass reuses these loads too, and the pin is the compile-level pass's own.
+      const loads = loadCSE => (compile(src, { optimize: { level: 3, loadCSE, valueNumber: false }, wat: true }).match(/f64\.load/g) || []).length
       ok(loads(true) < loads(false), 'the regression exercises load reuse')
     }
   }

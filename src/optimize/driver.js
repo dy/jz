@@ -23,6 +23,8 @@ import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
+import { valueNumber } from './value-number.js'
+import { scheduleStatements } from './schedule.js'
 
 /**
  * Run all per-function IR optimizations on a single function node.
@@ -53,6 +55,8 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
       cfg.cseScalarLoad === false &&
+      cfg.valueNumber === false &&
+      cfg.scheduleStatements === false &&
       cfg.unswitchStringRepLoop === false &&
       cfg.propagateLocals === false &&
       cfg.promoteGlobals === false &&
@@ -149,6 +153,10 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // the original call_indirect as the always-sound default arm.
   if (!cfg || cfg.devirtFnArrays !== false) devirtConstFnArrayCalls(fn, cfg)
   if (!cfg || cfg.devirtSchemaReads !== false) devirtSchemaReads(fn)
+  // Last, on the final shapes: one computation per value (optimize/value-number.js),
+  // then the statements in order of the work that depends on them (optimize/schedule.js).
+  if (!cfg || cfg.valueNumber !== false) valueNumber(fn, cfg?._pureCallees ?? null)
+  if (!cfg || cfg.scheduleStatements !== false) scheduleStatements(fn, cfg?._pureCallees ?? null)
   // The fold, loop rotation, the condition chains and the boolean
   // canonicalization follow on the tape (src/link).
   // An optimizer pass that emits a malformed local — the class that otherwise dies

@@ -16,7 +16,7 @@ import { walkAst } from '../../ast.js'
 import {
   optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
-  specializeMkptr, buildPureFuncMap, inlinePureFnsInFn,
+  specializeMkptr, buildPureFuncMap, inlinePureFnsInFn, pureCallees,
 } from '../../optimize/index.js'
 import { dataLen } from '../../static-data.js'
 import { appendLateStdlib } from './stdlib-pull.js'
@@ -98,6 +98,8 @@ export function optimizeModule(sec, profiler) {
   }
   t('optimizeFuncs', () => {
     const writes = cfg?.promoteGlobals !== false ? globalWrites() : null
+    // The pure user functions, for value numbering and scheduling (their calls are values).
+    if (cfg && (cfg.valueNumber !== false || cfg.scheduleStatements !== false)) cfg._pureCallees = pureCallees(allFuncs)
     for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, null, writes)
   })
   // Per-iteration arena rewinds go in once the vectorizer has matched its loop
