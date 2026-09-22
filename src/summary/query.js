@@ -13,7 +13,7 @@ import {
   TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS } from './kind.js'
 
 export function summaryQueries(facts, internal = false) {
-  const { kinds, incoming, fields, results, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
+  const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey, funcNames, imports, numeric, dynamicProps, builtinOwnProps, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached } = facts
@@ -176,6 +176,7 @@ export function summaryQueries(facts, internal = false) {
       const op = n[0]
       if (op == null) return literalKind(n[1])
       if (op === 'str' || op === 'strcat' || op === '`') return STRING
+      if (op === 'this') return escaped.has(scope) ? ANY : receivers.get(scope) ?? K.NONE
       if (op === 'bool') return BOOL
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
@@ -291,6 +292,11 @@ export function summaryQueries(facts, internal = false) {
         if (iterRecord(paramOf(r))) return ITER_RECORD_KEYS.includes(prop) ? kind(K.CLOSURE) : NULLISH
         const i = schemas[paramOf(r)].indexOf(prop)
         if (i >= 0) return slotKind(paramOf(r), i)
+        const gi = schemas[paramOf(r)].indexOf(getterOf(prop))
+        if (gi >= 0) {
+          const g = slotKind(paramOf(r), gi)
+          return tagOf(g) === K.CLOSURE && paramOf(g) !== UNKNOWN ? closureResult(paramOf(g)) : tagOf(g) === K.NONE ? K.NONE : ANY
+        }
         const getter = classMember(r, getterOf(prop)), fn = getter ?? (classMember(r, prop) ? binderOf(classMember(r, prop)) : null)
         if (fn) return memberMayBeOwn(prop) ? ANY : results.has(fn) ? resultOfId(fn) : ANY
         if (!lostSchema(paramOf(r))) return merge(NULLISH, sideOf(paramOf(r), prop))

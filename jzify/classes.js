@@ -68,7 +68,7 @@ const classBodyItems = (body) =>
 function renameThis(node, to) {
   if (node === 'this') return to
   if (!Array.isArray(node)) return node
-  if (node[0] === 'function' || node[0] === 'class') return node
+  if (node[0] === 'function' || node[0] === 'function*' || node[0] === 'class') return node
   if (node[0] === '.' || node[0] === '?.') return [node[0], renameThis(node[1], to), node[2]]
   if (node[0] === ':') return [node[0], node[1], renameThis(node[2], to)]
   return node.map(n => renameThis(n, to))
@@ -119,7 +119,7 @@ function normalizeClassIdioms(node, base) {
 function usesThis(node) {
   if (node === 'this') return true
   if (!Array.isArray(node)) return false
-  if (node[0] === 'function' || node[0] === 'class') return false
+  if (node[0] === 'function' || node[0] === 'function*' || node[0] === 'class') return false
   if (node[0] === '.' || node[0] === '?.') return usesThis(node[1])
   if (node[0] === ':') return usesThis(node[2])
   return node.some(usesThis)
@@ -211,8 +211,7 @@ function splitCtorSuper(body) {
   return { args: null, body }
 }
 
-// An object literal's methods (`m() {}`, `m: function () {}`) take the object
-// as `this`; an arrow-valued property keeps its lexical `this`, unsupported.
+// Object methods read `this` at invocation; arrows keep their lexical receiver.
 function objectMethodUsesThis(prop) {
   if (!Array.isArray(prop) || prop[0] !== ':' || typeof prop[1] !== 'string') return false
   const fn = memberFn(prop[2])
@@ -237,20 +236,15 @@ function lowerObjectLiteralThis(args) {
   if (props.length === 0 || !props.some(objectMethodUsesThis)) return null
   if (!props.every(p => Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string')) return null
 
-  const self = names.objThis()
   const litProps = props.map(p => {
     const value = p[2]
     if (objectMethodUsesThis(p)) {
       const fn = memberFn(value)
-      return [':', p[1], methodValue(fn[2], fn[3], memberKind(value, fn), self)]
+      return [':', p[1], methodValue(fn[2], fn[3], memberKind(value, fn))]
     }
     return [':', p[1], transform(value)]
   })
-  const lit = ['{}', litProps.length === 1 ? litProps[0] : [',', ...litProps]]
-  return ['()', ['()', ['=>', null, ['{}', [';',
-    ['let', ['=', self, lit]],
-    ['return', self]
-  ]]]], null]
+  return ['{}', litProps.length === 1 ? litProps[0] : [',', ...litProps]]
 }
 
 // Route through the shared compiler error channel (uniform Error shape + stack
@@ -277,15 +271,26 @@ function accessorMethod(it, constStrings) {
   return [accessorSlot(it[0], key), it[2] ?? null, it[3]]
 }
 
-// A method's value: an arrow over the receiver `to` (a generator keeps its
-// function form), `this` renamed throughout the body.
-const methodValue = (mparams, mbody, kind, to) => kind === 'gen'
+// Object methods receive `this` through the closure ABI. Class lowering passes
+// its bound receiver explicitly, retaining the existing class-method contract.
+const methodValue = (mparams, mbody, kind, receiver) => {
+  const to = receiver ?? names.objThis()
+  const fn = kind === 'gen'
   ? transform(['function*', null, mparams, renameThis(mbody, to)])
   : kind === 'asyncgen'
     ? transform(['async', ['function*', null, mparams, renameThis(mbody, to)]])
   : kind === 'async'
     ? transform(['async', ['=>', arrowParams(mparams ?? null), block(renameThis(mbody, to))]])
     : transform(['=>', arrowParams(mparams ?? null), block(renameThis(mbody, to))])
+  // Read at invocation, outside the suspended generator/async body. Nested
+  // arrows and iterator continuations capture this local lexically.
+  if (receiver == null) {
+    const body = fn[2]
+    fn[2] = ['{}', [';', ['let', ['=', to, ['this']]],
+      body[0] === '{}' ? body[1] : ['return', body]]]
+  }
+  return fn
+}
 
 // === struct lowering ===
 //

@@ -17,7 +17,7 @@ export let __it_open = (v) => {
   let method = indexed ? undefined : w['@@iterator']
   if (method != null) {
     if (typeof method !== 'function') throw new TypeError('iterator method is not callable')
-    w = method()
+    w = method.call(w)
     if (w == null || typeof w !== 'object') throw new TypeError('iterator is not an object')
   } else if (!indexed && typeof w.next !== 'function') throw new TypeError('value is not iterable')
   // Read next before borrowing: a throwing getter must not lose a record.
@@ -56,7 +56,7 @@ export let __it_pull = (r, value) => {
   }
   let next = r.next
   if (typeof next !== 'function') throw new TypeError('iterator next is not callable')
-  let step = next()
+  let step = next.call(r.iterator)
   if (step == null || typeof step !== 'object') throw new TypeError('iterator result is not an object')
   if (step.done) return undefined
   let v = value ? step.value : undefined
@@ -77,7 +77,7 @@ export let __it_close = (r, abrupt) => {
     let close = r.iterator.return
     if (close != null) {
       if (typeof close !== 'function') throw new TypeError('iterator return is not callable')
-      let result = close()
+      let result = close.call(r.iterator)
       if (!abrupt && (result == null || typeof result !== 'object')) throw new TypeError('iterator return is not an object')
     }
   } catch (e) { recycle(r); if (!abrupt) throw e; return }

@@ -2206,7 +2206,7 @@ export default (ctx) => {
   }
 
   // .map() on TypedArrays — SIMD auto-vectorization when pattern detected
-  ctx.core.emit['.typed:map'] = (arr, fn) => {
+  ctx.core.emit['.typed:map'] = (arr, fn, thisArg) => {
     // Resolve element type + view-ness. `resolveElem` handles bare bindings AND
     // chained method receivers (`xs.filter(…).map(…)`) by walking back to the
     // root typedElem-tracked binding.
@@ -2220,7 +2220,7 @@ export default (ctx) => {
     // BigInt lanes aren't a SIMD numeric kind at all. BigInt falls through
     // past the scalar branch below too — see its own comment — down to the
     // runtime aux-dispatch loop, which is species-correct for it.)
-    if (elemType != null && !r.isF16 && !r.isClamped && !r.isBigInt && Array.isArray(fn) && fn[0] === '=>') {
+    if (thisArg === undefined && elemType != null && !r.isF16 && !r.isClamped && !r.isBigInt && Array.isArray(fn) && fn[0] === '=>') {
       const [, rawParam, body] = fn
       const param = Array.isArray(rawParam) && rawParam[0] === '()' ? rawParam[1] : rawParam
       const pattern = analyzeSimd(body, param)
@@ -2259,8 +2259,8 @@ export default (ctx) => {
     // wrong species, even though the 8-byte payload itself survived unharmed).
     if (elemType != null && !r.isBigInt) {
       const av = temp('tma'), cb = temp('tmc'), tmr = temp('tmr')
-      const callback = captureCallback(fn, cb)
-      const va = typed(['local.get', `$${av}`], 'f64'), vf = typed(['local.get', `$${cb}`], 'f64'), vr = typed(['local.get', `$${tmr}`], 'f64')
+      const callback = captureCallback(fn, cb, thisArg)
+      const va = typed(['local.get', `$${av}`], 'f64'), vr = typed(['local.get', `$${tmr}`], 'f64')
       const len = tempI32('tml'), ptr = tempI32('tmp'), i = tempI32('tmi')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
       const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(elemName),
@@ -2290,7 +2290,7 @@ export default (ctx) => {
           // typed iteration emitters. Reduce alone uses the wider four-slot ABI.
           // The result crosses the closure ABI as any value; the typed store
           // coerces it (ToNumber: a boolean stores 1 or 0, not its atom).
-          ['local.set', `$${tmr}`, asF64(ctx.closure.call(vf,
+          ['local.set', `$${tmr}`, asF64(callback.call(
             [loadElem(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), va]))],
           storeElem(asF64(ctx.core.stdlib['__to_num'] ? toNumF64(null, vr) : coerceAtomsToNum(vr))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
@@ -2356,15 +2356,14 @@ export default (ctx) => {
     // need no extra scope.
     inc('__len', '__typed_get_idx', '__typed_elem_arg', '__typed_set_idx', '__typed_set_idx_tagged', '__ptr_aux', '__typed_shift', '__alloc_hdr_n', '__mkptr')
     const cbLoc = temp('tmrc'), arrLoc = temp('tmra'), dstLoc = temp('tmrd')
-    const callback = captureCallback(fn, cbLoc)
+    const callback = captureCallback(fn, cbLoc, thisArg)
     const len = tempI32('tmrl'), i = tempI32('tmri')
     const aux = tempI32('tmrx'), shift = tempI32('tmrsh'), byteLen = tempI32('tmrb')
     const id = freshId(ctx)
     const srcPtr64 = ['i64.reinterpret_f64', ['local.get', `$${arrLoc}`]]
     const dstPtr64 = ['i64.reinterpret_f64', ['local.get', `$${dstLoc}`]]
     // The element enters the callback's slot as a closure argument (a BigInt boxed).
-    const mapped = asF64(ctx.closure.call(
-      typed(['local.get', `$${cbLoc}`], 'f64'),
+    const mapped = asF64(callback.call(
       [typedElemArg(srcPtr64, typed(['call', '$__typed_get_idx', srcPtr64, ['local.get', `$${i}`]], 'f64')),
        typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), typed(['f64.reinterpret_i64', srcPtr64], 'f64')]))
     return typed(['block', ['result', 'f64'],
@@ -2503,12 +2502,11 @@ export default (ctx) => {
   // result as f64 and NaN-boxed undef reads as NaN).
   // Pre-allocate locals BEFORE typedLoop — bodyFn captures `cbLoc` by closure;
   // TDZ would fire if we declared it after.
-  ctx.core.emit['.typed:forEach'] = (arr, fn) => {
+  ctx.core.emit['.typed:forEach'] = (arr, fn, thisArg) => {
     const cbLoc = temp('tfc')
-    const callback = captureCallback(fn, cbLoc)
+    const callback = captureCallback(fn, cbLoc, thisArg)
     const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, receiver, argOf) => [
-      ['drop', asF64(ctx.closure.call(
-        typed(['local.get', `$${cbLoc}`], 'f64'),
+      ['drop', asF64(callback.call(
         [argOf(load()), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver]))]
     ])
     if (!loop) return null
@@ -2640,15 +2638,14 @@ export default (ctx) => {
 
   // .find / .findIndex: linear scan, first truthy callback wins. Miss returns
   // undefined / -1 respectively.
-  const findCommon = (arr, fn, returnIndex, reverse = false) => {
+  const findCommon = (arr, fn, returnIndex, reverse, thisArg) => {
     const cbLoc = temp('tfc'), result = temp('tfr'), foundIdx = tempI32('tfi')
-    const callback = captureCallback(fn, cbLoc)
+    const callback = captureCallback(fn, cbLoc, thisArg)
     const loop = typedLoop(arr, (load, i, _len, _ptr, exit, receiver, argOf) => {
       const itemLoc = temp('tfit')
       return [
         ['local.set', `$${itemLoc}`, load()],
-        ['if', truthyIR(ctx.closure.call(
-          typed(['local.get', `$${cbLoc}`], 'f64'),
+        ['if', truthyIR(callback.call(
           [argOf(typed(['local.get', `$${itemLoc}`], 'f64')),
            typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver])),
           ['then',
@@ -2669,19 +2666,18 @@ export default (ctx) => {
         ? typed(['f64.convert_i32_s', ['local.get', `$${foundIdx}`]], 'f64')
         : typed(['local.get', `$${result}`], 'f64')], 'f64')
   }
-  ctx.core.emit['.typed:find'] = (arr, fn) => findCommon(arr, fn, false)
-  ctx.core.emit['.typed:findIndex'] = (arr, fn) => findCommon(arr, fn, true)
+  ctx.core.emit['.typed:find'] = (arr, fn, thisArg) => findCommon(arr, fn, false, false, thisArg)
+  ctx.core.emit['.typed:findIndex'] = (arr, fn, thisArg) => findCommon(arr, fn, true, false, thisArg)
 
-  ctx.core.emit['.typed:findLast'] = (arr, fn) => findCommon(arr, fn, false, true)
-  ctx.core.emit['.typed:findLastIndex'] = (arr, fn) => findCommon(arr, fn, true, true)
+  ctx.core.emit['.typed:findLast'] = (arr, fn, thisArg) => findCommon(arr, fn, false, true, thisArg)
+  ctx.core.emit['.typed:findLastIndex'] = (arr, fn, thisArg) => findCommon(arr, fn, true, true, thisArg)
 
   // .some / .every: short-circuit boolean reduction. some=∃, every=∀.
-  const anyAllCommon = (arr, fn, isEvery) => {
+  const anyAllCommon = (arr, fn, isEvery, thisArg) => {
     const cbLoc = temp('tac'), result = tempI32('tar')
-    const callback = captureCallback(fn, cbLoc)
+    const callback = captureCallback(fn, cbLoc, thisArg)
     const loop = typedLoop(arr, (load, i, _len, _ptr, exit, receiver, argOf) => {
-      const test = truthyIR(ctx.closure.call(
-        typed(['local.get', `$${cbLoc}`], 'f64'),
+      const test = truthyIR(callback.call(
         [argOf(load()), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver]))
       // every: exit on falsy with result=0. some: exit on truthy with result=1.
       return [
@@ -2696,14 +2692,14 @@ export default (ctx) => {
       ...loop.setup.slice(1),
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
-  ctx.core.emit['.typed:some'] = (arr, fn) => anyAllCommon(arr, fn, false)
-  ctx.core.emit['.typed:every'] = (arr, fn) => anyAllCommon(arr, fn, true)
+  ctx.core.emit['.typed:some'] = (arr, fn, thisArg) => anyAllCommon(arr, fn, false, thisArg)
+  ctx.core.emit['.typed:every'] = (arr, fn, thisArg) => anyAllCommon(arr, fn, true, thisArg)
 
   // .filter: produces a TYPED array of the same element type. Allocates worst-
   // case (len slots) then patches the byte-count header at the end with the
   // actual passed count. Mirrors .filter in array.js but with typed-aware
   // load/store.
-  ctx.core.emit['.typed:filter'] = (arr, fn) => {
+  ctx.core.emit['.typed:filter'] = (arr, fn, thisArg) => {
     const r = resolveElem(arr)
     if (!r || r.isBigInt) {
       // Elem type unresolved, OR resolved-but-BigInt: unlike .typed:slice (a raw
@@ -2722,7 +2718,7 @@ export default (ctx) => {
       // the .set fork) instead of treating falsy as "try the next strategy".
       inc('__len', '__typed_get_idx', '__typed_elem_arg', '__typed_set_idx', '__ptr_aux', '__typed_shift', '__alloc_hdr_n', '__mkptr')
       const cbLoc = temp('tfrc'), arrLoc = temp('tfra'), dstLoc = temp('tfrd')
-      const callback = captureCallback(fn, cbLoc)
+      const callback = captureCallback(fn, cbLoc, thisArg)
       const srcLen = tempI32('tfrl'), srci = tempI32('tfri'), count = tempI32('tfrn')
       const aux = tempI32('tfrx'), shift = tempI32('tfrsh'), dstOff = tempI32('tfro')
       const id = freshId(ctx)
@@ -2730,8 +2726,7 @@ export default (ctx) => {
       const dstPtr64 = ['i64.reinterpret_f64', ['local.get', `$${dstLoc}`]]
       const loadAt = () => typed(['call', '$__typed_get_idx', srcPtr64, ['local.get', `$${srci}`]], 'f64')
       // The element enters the callback's slot as a closure argument (a BigInt boxed).
-      const passes = truthyIR(ctx.closure.call(
-        typed(['local.get', `$${cbLoc}`], 'f64'),
+      const passes = truthyIR(callback.call(
         [typedElemArg(srcPtr64, loadAt()), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64'), typed(['f64.reinterpret_i64', srcPtr64], 'f64')]))
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${arrLoc}`, asF64(emit(arr))],
@@ -2765,7 +2760,7 @@ export default (ctx) => {
     }
     const { et, isView } = r
     const cbLoc = temp('tfc'), arrLoc = temp('tfa')
-    const callback = captureCallback(fn, cbLoc)
+    const callback = captureCallback(fn, cbLoc, thisArg)
     const count = tempI32('tfn'), maxLen = tempI32('tfm')
     const srcPtr = tempI32('tfsp'), srcLen = tempI32('tfsl'), srci = tempI32('tfi')
     inc('__len')
@@ -2781,8 +2776,7 @@ export default (ctx) => {
       len: ['i32.shl', ['local.get', `$${maxLen}`], ['i32.const', SHIFT[et]]],
       stride: 1, tag: 'tfd' })
     const id = freshId(ctx)
-    const passes = truthyIR(ctx.closure.call(
-      typed(['local.get', `$${cbLoc}`], 'f64'),
+    const passes = truthyIR(callback.call(
       [loadAt(srcPtr, srci), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64'), typed(['local.get', `$${arrLoc}`], 'f64')]))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrLoc}`, asF64(emit(arr))],

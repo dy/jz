@@ -305,10 +305,12 @@ export default (ctx) => {
     const action = representationClosureArgAction(ctx, a)
     return action === REP_EDGE_REJECT ? storedValue(a) : storedValuePlanned(a, action)
   }
-  ctx.closure.call = (closureExpr, args, prebuiltArray, check = false) => {
+  ctx.closure.call = (closureExpr, args, prebuiltArray, check = false, thisArg = null) => {
     const t = temp('clos'), recv = typed(['local.get', `$${t}`], 'f64')
     // Every caller captures the callee before evaluating inline or spread args.
     const setup = [['local.set', `$${t}`, asF64(closureExpr)]]
+    const receiver = thisArg ? temp('recv') : null
+    if (receiver) setup.push(['local.set', `$${receiver}`, asF64(thisArg)])
     const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
     const slots = []
     let argc
@@ -343,6 +345,7 @@ export default (ctx) => {
       for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
     }
     const call = ['call_indirect', ['type', '$ftN'], recv, argc, ...slots,
+      ...(ctx.closure.receiver ? [receiver ? ['local.get', `$${receiver}`] : UNDEF_LIT()] : []),
       ['i32.wrap_i64', ['i64.and',
         ['i64.shr_u', ['i64.reinterpret_f64', recv], ['i64.const', LAYOUT.AUX_SHIFT]],
         ['i64.const', LAYOUT.AUX_MASK]]]]

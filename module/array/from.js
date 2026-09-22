@@ -83,8 +83,16 @@ const toLengthIR = (raw, num, len) => [
     ['f64.gt', ['local.get', `$${num}`], ['f64.const', 0]]]],
 ]
 
-export const arrayFromEmit = (src, mapFn) => {
+export const arrayFromEmit = (src, mapFn, thisArg) => {
   if (isUndefinedNode(mapFn)) mapFn = undefined
+  if (!mapFn && thisArg !== undefined) {
+    const s = temp('afsrc'), value = asF64(emit(src)), ignored = asF64(emit(thisArg))
+    const view = ctx.summary.at(ctx.func.current)
+    view.alias(s, src, false)
+    try { return typed(['block', ['result', 'f64'], ['local.set', `$${s}`, value],
+      ['drop', ignored], arrayFromEmit(s)], 'f64') }
+    finally { view.unalias(s) }
+  }
 
   // Call arguments evaluate left-to-right before Array.from performs its
   // IsCallable check or reads items.length. Even an obviously invalid mapfn
@@ -95,6 +103,7 @@ export const arrayFromEmit = (src, mapFn) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, srcIR],
       ['local.set', `$${m}`, mapIR],
+      ...(thisArg === undefined ? [] : [['drop', asF64(emit(thisArg))]]),
       ...arrayFromThrow(ERR.ARRAY_FROM_MAPFN)], 'f64')
   }
 
@@ -116,7 +125,7 @@ export const arrayFromEmit = (src, mapFn) => {
     inc('__codepoint_at', '__codepoint_string', '__str_len')
     const s = temp('sfs'), len = tempI32('sfl'), i = tempI32('sfi'), pos = tempI32('sfp'), cp = tempI32('sfcp')
     const srcIR = asF64(emit(src))
-    const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+    const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'sfr' })
     const ch = typed(['call', '$__codepoint_string', ['local.get', `$${cp}`]], 'f64')
@@ -153,7 +162,7 @@ export const arrayFromEmit = (src, mapFn) => {
     inc('__len', read)
     const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
     const srcIR = asF64(emit(src))
-    const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+    const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
     const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
@@ -188,7 +197,7 @@ export const arrayFromEmit = (src, mapFn) => {
   const s = temp('afsrc'), t = tempI32('aft'), rawLen = temp('afrawlen')
   const num = temp('afnum'), len = tempI32('aflen'), i = tempI32('afi')
   const srcIR = asF64(emit(src))
-  const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+  const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
   const lenIR = ['local.get', `$${len}`]
   const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'afobj' })
   const idxF64 = typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')

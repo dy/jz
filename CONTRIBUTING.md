@@ -1201,8 +1201,18 @@ of a known kind; an argument of unknown kind dispatches at run time without
 the array-like arm, whose dynamic reads would cost a numeric kernel its size.
 The dynamic method dispatch (`src/compile/emit/method-dispatch.js`) gives
 `f.call(thisArg, …)` and `f.apply(thisArg, args)` on a closure value a closure
-leg: a closure takes no receiver, so the call is its own with the remaining
-arguments. The module resolver (`src/resolve.js`) takes `sources`, module text
+leg. Object methods use an explicit trailing receiver slot in the uniform
+closure ABI; programs without receiver reads omit it, while explicit receiver
+arguments still evaluate for their effects. Detached calls pass
+undefined. The receiver is captured before arguments, and generator/async
+methods capture it before suspension. Iterator records call cached protocol
+methods with their original receiver. The summary joins receivers at calls,
+including accessors; source inlining must preserve that call frame. Class
+lowering retains its existing bound-method contract. Prepared statement lists
+share the block emitter's flow refinements and invalidation; a callable proof
+survives a throwing guard in either form. An unshadowed `call` on a proven
+closure goes through the closure ABI directly. The module resolver
+(`src/resolve.js`) takes `sources`, module text
 by path suffix standing in for a file: the Web Audio bench replaces the
 worklet host, which loads processor code through `new Function`, with a stub
 of the same shape (`bench/_lib/graph.js`).

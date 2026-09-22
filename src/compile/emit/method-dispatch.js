@@ -88,9 +88,9 @@ function tryFlatObjectMethod(callee, obj, method, parsed) {
 }
 
 /** Call the closure held in `propRead` as the method: a spread call passes its arguments as one array. */
-const ownMethodCall = (propRead, parsed, check = false) => parsed.hasSpread
-  ? ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true, check)
-  : ctx.closure.call(propRead, parsed.normal, false, check)
+const ownMethodCall = (propRead, parsed, check = false, receiver = null) => parsed.hasSpread
+  ? ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true, check, receiver)
+  : ctx.closure.call(propRead, parsed.normal, false, check, receiver)
 
 // 2. String-buffer SRoA: `line.charCodeAt(j)` where `line` was dissolved into
 // raw (buf, len) locals by tryConcatBufferDecl (emit.js, above) — a bare byte
@@ -386,7 +386,7 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
       // as tryRuntimePtrTypeFork below.
       const onFallback = (o) => asF64(vt ? callMethod(o, builtin) : dateAuxFallback(o, method, callMethod, callMethod(o, builtin)))
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
-        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), []),  // CALL the override
+        (p, o) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), [], false, false, typed(['local.get', `$${o}`], 'f64')),  // CALL the override
         onFallback)                                                          // else the builtin method
     }
   }
@@ -403,10 +403,8 @@ function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
   if (!mayShadow) return callMethod(obj, emitter)
 
   includeModule('collection')
-  const callOverride = prop => parsed.hasSpread
-    ? ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'),
-        [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true)
-    : ctx.closure.call(typed(['local.get', `$${prop}`], 'f64'), parsed.normal)
+  const callOverride = (prop, receiver) => ownMethodCall(typed(['local.get', `$${prop}`], 'f64'),
+    parsed, false, typed(['local.get', `$${receiver}`], 'f64'))
   const callBuiltin = receiver => {
     const value = materializeDeferredBigint(callMethod(receiver, emitter))
     return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
@@ -533,7 +531,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     const genericCall = genEmitter
       ? (canShadowProbe
           ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
-              (p) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed),
+              (p, o) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed, false, typed(['local.get', `$${o}`], 'f64')),
               () => materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
           : materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
       : (tryDynamicPropCall({ obj: t, method, parsed, vt: null })
@@ -597,7 +595,7 @@ function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
       // pointer without an override still reads `undefined` (own-property-not-found is
       // out of this fix's scope — the pre-existing, unchanged behavior).
       ['else', sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
-        (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
+        (p, o) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal, false, false, typed(['local.get', `$${o}`], 'f64')),
         (o) => mayBeUndef ? typed(['if', ['result', 'f64'],
           isNullish(typed(['local.get', `$${o}`], 'f64')),
           ['then', throwTypeErrorIR()],
@@ -620,7 +618,7 @@ function trySchemaClosureCall({ obj, method, parsed }) {
       // closure ABI in the boxed carrier: a closure's return edge boxes, a
       // named function's trampoline boxes a raw result (emit/dispatch.js).
       const kind = ctx.summary.kindOfExpr(['.', obj, method])
-      return ctx.closure.call(propRead, callArgs, prebuilt, tagOf(kind) !== K.CLOSURE || isNullable(kind))
+      return ctx.closure.call(propRead, callArgs, prebuilt, tagOf(kind) !== K.CLOSURE || isNullable(kind), asF64(emit(obj)))
     }
   }
 }
@@ -719,7 +717,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
           ctx.func.probeHoist.set(key, ph)
         }
         return typed(['if', ['result', 'f64'], ['local.get', `$${ph.is}`],
-          ['then', ownMethodCall(typed(['local.get', `$${ph.ovr}`], 'f64'), parsed)],
+          ['then', ownMethodCall(typed(['local.get', `$${ph.ovr}`], 'f64'), parsed, false, asF64(emit(obj)))],
           ['else', asF64(callFlat(obj))]], 'f64')
       }
       // Fallback arm: a bare-name receiver re-references the ORIGINAL binding
@@ -728,7 +726,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
       // the charCodeAt shape-1b entry decomposition can fire (the layered-
       // parser `cur.charCodeAt(idx)` hot shape; a local temp would hide it).
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
-        (p) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed),
+        (p, o) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed, false, typed(['local.get', `$${o}`], 'f64')),
         (o) => {
           const value = materializeDeferredBigint(callFlat(typeof obj === 'string' ? obj : o))
           return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
@@ -753,8 +751,14 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
 // ctx.module.demanded doc). `ctx.closure.call` itself stays the join's second
 // half: eager preload means it's callable even when demanded is empty, so the
 // IR-building code below is unaffected once this gate lets a real case through.
-function tryDynamicPropCall({ obj, method, parsed, vt }) {
+function tryDynamicPropCall({ obj, method, parsed, vt, callMethod }) {
   if (ctx.closure.call && ctx.module.demanded.has('fn')) {
+    // A proven closure's unshadowed call is an invocation, not a property
+    // dispatch. This includes protocol methods narrowed by typeof guards.
+    if (vt === VAL.CLOSURE && method === 'call' && !parsed.hasSpread &&
+        !ctx.summary.memberMayBeOwnOn('call', VAL.CLOSURE))
+      return callMethod(obj, (fn, receiver, ...args) => ctx.closure.call(
+        asF64(emit(fn)), args, false, false, receiver == null ? null : asF64(storedValue(receiver))))
     includeForRuntimeKeyIteration()
     if (ctx.transform.strict)
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
@@ -772,7 +776,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
     const slotLoad = () => ctx.abi.object.ops.load(['i32.wrap_i64', ['i64.and', bits, ['i64.const', LAYOUT.OFFSET_MASK]]], slot)
     // An element read the interval prover puts in bounds is exactly the shape.
     const exact = slot >= 0 && (!isNullable(rk) || (Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])))
-    const propRead = exact ? typed(slotLoad(), 'f64')
+    let propRead = exact ? typed(slotLoad(), 'f64')
       : slot >= 0
       ? typed(['if', ['result', 'f64'],
           ['i64.eq', ['i64.and', bits, ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
@@ -787,6 +791,12 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
               ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
           ['then', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', bits, asI64(emit(['str', method]))]]],
           ['else', undefExpr()]], 'f64')
+    if (ctx.transform.accessorNames?.has(method) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)) {
+      const view = ctx.summary.at(ctx.func.current)
+      view.alias(objTmp, obj, false)
+      try { propRead = emit(['.', objTmp, method]) }
+      finally { view.unalias(objTmp) }
+    }
     const closureOnly = slot >= 0 || usesDynProps(vt) || !ctx.transform.targetProfile.envImports
     if (slot >= 0) inc('__ptr_type'); else inc('__dyn_get_expr', '__ptr_type')
     if (!closureOnly) { inc('__ext_call'); setLinkDemand('external') }
@@ -822,17 +832,14 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
             ['i64.reinterpret_f64', extArrayIR]]]],
           ['else', missing]]
     let dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
-      ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread)],
+      ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread, false, typed(['local.get', `$${objTmp}`], 'f64'))],
       ['else', fallback]]
-    // `f.call(thisArg, …args)` and `f.apply(thisArg, args)` on a closure value: a
-    // closure takes no receiver (arrows bind `this` lexically; a function using
-    // `this` is rejected at prepare), so the call is the closure's own with the
-    // arguments after the first, which is evaluated and dropped.
-    const borrow = !parsed.hasSpread && closureArgs.length >= 1 && (method === 'call' || (method === 'apply' && closureArgs.length === 2))
+    // Method closures observe the explicit receiver; lexical arrows ignore it.
+    const borrow = !parsed.hasSpread && (method === 'call' || (method === 'apply' && closureArgs.length <= 2))
     if (borrow) {
-      const own = method === 'call'
-        ? ctx.closure.call(typed(['local.get', `$${objTmp}`], 'f64'), closureArgs.slice(1), false)
-        : ctx.closure.call(typed(['local.get', `$${objTmp}`], 'f64'), [closureArgs[1]], true)
+      const apply = method === 'apply' && closureArgs.length === 2
+      const own = ctx.closure.call(typed(['local.get', `$${objTmp}`], 'f64'),
+        apply ? [closureArgs[1]] : closureArgs.slice(1), apply, false, closureArgs[0])
       dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.CLOSURE),
         ['then', own],
         ['else', dispatch]]

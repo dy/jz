@@ -36,6 +36,7 @@ const closureSig = cb => {
   const params = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
   const width = ctx.closure.width ?? MAX_CLOSURE_ARITY
   for (let i = 0; i < width; i++) params.push({ name: `__a${i}`, type: 'f64' })
+  if (ctx.closure.receiver) params.push({ name: '__this', type: 'f64' })
   return { params, results: ['f64'], scope: cb.scope }   // scope: the summary's key for the closure (src/summary at)
 }
 
@@ -251,6 +252,7 @@ export function emitClosureBody(cb, functionPlan) {
   fn.push(['param', '$__env', 'f64'])
   fn.push(['param', '$__argc', 'i32'])
   for (let i = 0; i < W; i++) fn.push(['param', `$__a${i}`, 'f64'])
+  if (ctx.closure.receiver) fn.push(['param', '$__this', 'f64'])
   fn.push(['result', 'f64'])
 
   // The classification is plan-time; this emission-only half materializes the

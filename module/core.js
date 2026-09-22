@@ -2476,7 +2476,7 @@ export default (ctx) => {
       }
     }
     if (!ctx.closure.call) err('`fn?.()` optional call on a closure value needs jz\'s closure-call runtime, which this program never linked in — call a closure unconditionally at least once elsewhere in the file')
-    return evalOnce(callee, (t) => {
+    const invoke = (ref, receiver = null) => evalOnce(ref, (t) => {
       // Spread args: mirror the regular `()` emitter — reconstruct the args array
       // and route through `closure.call(_, [arrayIR], prebuiltArray=true)`. Without
       // this, the raw `['...', expr]` node falls through to the bare spread emitter
@@ -2491,12 +2491,21 @@ export default (ctx) => {
         }
         const combined = reconstructArgsWithSpreads(normal, spreads)
         const arrayIR = spread(combined)
-        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), [arrayIR], true)
+        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), [arrayIR], true, false, receiver)
       } else {
-        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
+        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args, false, false, receiver)
       }
       return asF64(callResult)
     })
+    if (ctx.closure.receiver && Array.isArray(callee) && ['.', '?.', '[]', '?.[]'].includes(callee[0])) {
+      const t = temp('orecv'), view = ctx.summary.at(ctx.func.current)
+      const source = asF64(emit(callee[1]))
+      view.alias(t, callee[1], false)
+      try { return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, source],
+        invoke([callee[0], t, callee[2]], typed(['local.get', `$${t}`], 'f64'))], 'f64') }
+      finally { view.unalias(t) }
+    }
+    return invoke(callee)
   }
 
   // Statically boolean-typed operands: `Boolean(x)`, logical-not, and the

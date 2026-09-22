@@ -54,6 +54,7 @@ const callHandler = (handler, node) => {
 }
 
 export function prep(node) {
+  if (Array.isArray(node) && node[0] === 'this') { ctx.closure.receiver = true; return node }
   if (Array.isArray(node)) includeForOp(node[0])
   // Whole-program "does a BigInt value ever get constructed" flag — the ONLY two
   // ways a bigint value is synthesized are a bigint literal (parse.js tags it
@@ -2354,7 +2355,7 @@ function dispatchConstructorCall(callee, args) {
 }
 
 // `f.call/apply/bind` on a PROVEN function binding lowers statically: jz
-// functions cannot observe `this` (rejected outside the class lowering), so
+// named functions and lexical arrows cannot observe their call receiver, so
 // the thisArg is dead weight — kept only for its side effects via a comma
 // sequence. Anything not provably a function keeps the runtime path (a user
 // object may legitimately carry its own `call` property). Previously these

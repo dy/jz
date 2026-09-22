@@ -391,6 +391,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return names
   }
   const defaultsOf = (params) => { let d = null; for (const p of extractParams(params)) if (Array.isArray(p) && p[0] === '=' && typeof p[1] === 'string') (d ??= {})[p[1]] = p[2]; return d }
+  const receiverScopes = new Set(), receivers = new Map()
   const closureDefaults = []         // closure id → { name: default expression } or null
   // A closure is keyed by its `=>` node, and by its body: emission may hand
   // the query a rebuilt `=>` wrapper around the same body (a call rebuilt by
@@ -1029,7 +1030,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const cb = n ? ks[base] : K.NONE, known = tagOf(cb) === K.CLOSURE && paramOf(cb) !== UNKNOWN
     const f = iterFacts(sid), own = name === 'next' ? f.next : name === 'return' ? f.ret : name === 'throw' ? f.thr : K.NONE
     let r
-    if (name === 'next' || name === 'return' || name === 'throw') r = knownClosure(own) ? callClosure(paramOf(own), base, n, node) : tagOf(own) === K.NONE ? iterResult(node, sid) : (escapeArgs(base, n), ANY)
+    if (name === 'next' || name === 'return' || name === 'throw') r = knownClosure(own) ? callClosure(paramOf(own), base, n, node, kind(K.OBJECT, sid)) : tagOf(own) === K.NONE ? iterResult(node, sid) : (escapeArgs(base, n), ANY)
     else if (name === '@@iterator') r = kind(K.OBJECT, sid)
     else if (name === 'map') { const elem = iterElem(sid); r = iterSite(node, K.NONE, known ? call2(paramOf(cb), elem, NUMBER) : (escapeArgs(base, n), ANY)) }
     else if (name === 'filter' || name === 'take' || name === 'drop') { const elem = iterElem(sid); if (name === 'filter') { if (known) call2(paramOf(cb), elem, NUMBER); else escapeArgs(base, n) } r = iterSite(node, K.NONE, elem) }
@@ -1312,9 +1313,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const bindClosure = (param, base, n) => { for (const id of membersOf(param)) bind(id, callableParams(id), base, n, callableDefaults(id)) }
   /** Call a closure or each member of a closure set; the result is the join of theirs. */
-  const callClosure = (param, base, n, node = null) => {
+  const callClosure = (param, base, n, node = null, recv = NULLISH) => {
     let r = K.NONE
     for (const id of membersOf(param)) {
+      if (receiverScopes.has(id)) {
+        const prev = receivers.get(id) ?? K.NONE, next = merge(prev, recv)
+        if (prev !== next) { receivers.set(id, next); changed = true }
+      }
       bind(id, callableParams(id), base, n, callableDefaults(id))
       r = merge(r, resultAt(id, base, n, node))
     }
@@ -1441,11 +1446,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const arrayCallback = (node, recv, name, base, n) => {
     const cb = argumentAt(base, n, 0)
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); return ANY }
-    for (let i = 1; i < n; i++) escape(ks[base + i])
+    for (let i = 2; i < n; i++) escape(ks[base + i])
     const elem = elemOf(recv)
     const b = sp
     pushK(elem); pushK(NUMBER); pushK(recv)
-    const r = callClosure(paramOf(cb), b, 3)
+    const r = callClosure(paramOf(cb), b, 3, null, n > 1 ? ks[base + 1] : NULLISH)
     sp = b
     if (name === 'map') { const out = arrayOf(node, r); raiseElem(out, r); return out }
     if (name === 'flatMap') { const out = arrayOf(node, K.NONE); raiseElem(out, tagOf(r) === K.ARRAY ? elemOf(r) : r); return out }
@@ -1456,10 +1461,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return BOOL
   }
   /** `callee(k0, k1)` in a frame of its own. */
-  const call2 = (param, k0, k1) => {
+  const call2 = (param, k0, k1, recv = NULLISH) => {
     const b = sp
     pushK(k0); pushK(k1)
-    const r = callClosure(param, b, 2)
+    const r = callClosure(param, b, 2, null, recv)
     sp = b
     return r
   }
@@ -1487,8 +1492,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const cb = ks[base + 1]
     if (tagOf(cb) === K.NONE) return arr
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); raiseElem(arr, ANY); return arr }
-    for (let i = 2; i < n; i++) escape(ks[base + i])
-    raiseElem(arr, call2(paramOf(cb), elem, NUMBER))
+    for (let i = 3; i < n; i++) escape(ks[base + i])
+    raiseElem(arr, call2(paramOf(cb), elem, NUMBER, n > 2 ? ks[base + 2] : NULLISH))
     return arr
   }
   // `JSON.parse` of a string the program holds (a literal, a module const):
@@ -1549,14 +1554,12 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       for (const sid of shapesOf(paramOf(recv))) r = merge(r, method(kind(K.OBJECT, sid), name, base, n, node))
       return r
     }
-    // `fn.call(thisArg, …args)` and `fn.apply(thisArg, args)` call the closure
-    // with the arguments after the first, `apply`'s array spread: a closure
-    // cannot observe its `this` (prepare rejects the form), so nothing escapes.
+    // Explicit receivers reach method closures; lexical arrows ignore them.
     if (t === K.CLOSURE && paramOf(recv) !== UNKNOWN && (name === 'call' || name === 'apply')) {
-      if (name === 'call') return callClosure(paramOf(recv), n ? base + 1 : base, n ? n - 1 : 0, node)
+      if (name === 'call') return callClosure(paramOf(recv), n ? base + 1 : base, n ? n - 1 : 0, node, n ? ks[base] : NULLISH)
       const b = sp
       if (n >= 2) { const a = ks[base + 1]; pushK(tagOf(a) === K.ARRAY ? elemOf(a) : tagOf(a) === K.NULLISH ? K.NONE : ANY, true) }
-      const r = callClosure(paramOf(recv), b, sp - b, node)
+      const r = callClosure(paramOf(recv), b, sp - b, node, n ? ks[base] : NULLISH)
       sp = b
       return r
     }
@@ -1565,7 +1568,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // another kind, or none, is a call of a non-function.
     if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(name)) {
       const fk = closurePropOf(recv, name)
-      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node)
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node, recv)
       if (tagOf(core(fk)) === K.NONE) return K.NONE
       escapeArgs(base, n)
       return ANY
@@ -1582,7 +1585,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // The own closure the summary holds runs (its body is reached, its
       // parameters bound); the result stays unknown.
       const own = t === K.ARRAY && paramOf(recv) !== UNKNOWN ? propOf(recv, name) : t === K.CLOSURE && closureOwn(recv) ? closurePropOf(recv, name) : K.NONE
-      if (knownClosure(own)) callClosure(paramOf(own), base, n, node)
+      if (knownClosure(own)) callClosure(paramOf(own), base, n, node, recv)
       escapeArgs(base, n)
       return ANY
     }
@@ -1593,9 +1596,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) {
       const sid = paramOf(recv), i = schemas[sid].indexOf(name)
       if (iterFacts(sid)) return iterMethod(node, sid, name, base, n)
-      if (i >= 0) {
-        const fk = slots(sid)[i]
-        if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node)
+      if (i >= 0 || schemas[sid].includes(getterOf(name))) {
+        const fk = i >= 0 ? slots(sid)[i] : member('.', recv, name)
+        if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return callClosure(paramOf(fk), base, n, node, recv)
         // a slot holding nothing yet, or only nullish, is a call that throws
         if (tagOf(core(fk)) === K.NONE) return K.NONE
         escapeArgs(base, n)
@@ -1604,7 +1607,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // No slot holds the name. A closure stored beside the fields or behind
       // an accessor sees the arguments; an Object.prototype method sees them
       // and retains none; any other name is a call of undefined, which throws.
-      if (memberMayBeOwn(name) || schemas[sid].includes(getterOf(name))) { escapeArgs(base, n); return ANY }
+      if (memberMayBeOwn(name)) { escapeArgs(base, n); return ANY }
       return OBJECT_PROTO_METHODS.has(name) ? ANY : K.NONE
     }
     // A member of an object of a shape the summary lost is one of the
@@ -1615,7 +1618,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     // escape below.
     if (t === K.OBJECT) {
       const fk = lostObjectRead(name, false)
-      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node))
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
       if (tagOf(core(fk)) === K.NONE) return candidates
     }
     if (t === K.TYPED) {
@@ -1718,7 +1721,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const cb = argumentAt(base, n, 0)
         if (tagOf(cb) === K.CLOSURE && paramOf(cb) !== UNKNOWN) {
           for (let i = 1; i < n; i++) escape(ks[base + i])
-          const b = sp; pushK(elemOf(recv)); pushK(keysOf(recv)); pushK(recv); callClosure(paramOf(cb), b, 3); sp = b
+          const b = sp; pushK(elemOf(recv)); pushK(keysOf(recv)); pushK(recv); callClosure(paramOf(cb), b, 3, null, n > 1 ? ks[base + 1] : NULLISH); sp = b
           return NULLISH
         }
         escapeArgs(base, n); escape(keysOf(recv)); escape(elemOf(recv)); return NULLISH
@@ -1740,7 +1743,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const cb = argumentAt(base, n, 0)
         if (tagOf(cb) === K.CLOSURE && paramOf(cb) !== UNKNOWN) {
           for (let i = 1; i < n; i++) escape(ks[base + i])
-          const b = sp; pushK(elemOf(recv)); pushK(elemOf(recv)); pushK(recv); callClosure(paramOf(cb), b, 3); sp = b
+          const b = sp; pushK(elemOf(recv)); pushK(elemOf(recv)); pushK(recv); callClosure(paramOf(cb), b, 3, null, n > 1 ? ks[base + 1] : NULLISH); sp = b
           return NULLISH
         }
         escapeArgs(base, n); escape(elemOf(recv)); return NULLISH
@@ -1915,6 +1918,11 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (iterFacts(paramOf(recv))) return optionalResult(op, recv, ITER_RECORD_KEYS.includes(prop) ? kind(K.CLOSURE) : NULLISH)
       const i = schemas[paramOf(recv)].indexOf(prop)
       if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
+      const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
+      if (gi >= 0) {
+        const g = slots(paramOf(recv))[gi]
+        return optionalResult(op, recv, knownClosure(g) ? callClosure(paramOf(g), sp, 0, null, recv) : tagOf(g) === K.NONE ? K.NONE : ANY)
+      }
       // a class's getter, or a method read as a value: bound by its binder
       const getter = classMember(recv, getterOf(prop))
       if (getter) return optionalResult(op, recv, memberResult(recv, prop, callWith(getter, core(recv))))
@@ -1989,6 +1997,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op == null) return literalKind(n[1])
     if (op === 'str') return STRING
     if (op === 'bool') return BOOL
+    if (op === 'this') return escaped.has(current) ? ANY : receivers.get(current) ?? K.NONE
     if (op === 'nan') return NUMBER
     if (op === 'bigint') return BIGINT
     if (op === '//') return kind(K.REGEX)
@@ -2043,7 +2052,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     if (op === '()' || op === '?.()') {
       if (n.length === 2 && op === '()') return expr(n[1])  // a grouping `(e)`: a call always carries its argument slot
-      const callee = n[1], base = pushArgs(n[2]), count = sp - base
+      const callee = n[1], base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
       let r
       // An optional call: a callee of no kind yet calls nothing, a nullish one answers undefined.
       let optional = null
@@ -2079,7 +2088,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       else {
         const ck = expr(callee)
         if (tagOf(ck) === K.NONE) r = K.NONE
-        else if (tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN) r = callClosure(paramOf(ck), base, count, n)
+        else if (tagOf(ck) === K.CLOSURE && paramOf(ck) !== UNKNOWN) r = callClosure(paramOf(ck), base, count, n, Array.isArray(callee) && callee[0] === '[]' ? receiver(callee[1]) : NULLISH)
         else { escapeArgs(base, count); r = ANY }
       }
       sp = base
@@ -2140,7 +2149,15 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
    *  their kinds). */
   const storeMember = (sid, prop, v) => {
     const i = schemas[sid].indexOf(prop), setter = i < 0 ? classOfSid(sid)?.methods.get(setterOf(prop)) ?? null : null
+    const si = schemas[sid].indexOf(setterOf(prop))
     if (i >= 0) raiseSlot(sid, i, v)
+    else if (si >= 0) {
+      const s = slots(sid)[si], b = sp
+      pushK(v)
+      if (knownClosure(s)) callClosure(paramOf(s), b, 1, null, kind(K.OBJECT, sid))
+      else if (tagOf(s) !== K.NONE) escape(v)
+      sp = b
+    }
     else if (setter) { const b = sp; pushK(kind(K.OBJECT, sid)); pushK(v); call(setter, b, 2); sp = b }
     else { openSchema(sid); dynamicProps.add(prop); raiseSide(sid, prop, v) }
   }
@@ -2400,6 +2417,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const collect = (n, scope, straight = false) => {
     if (!Array.isArray(n)) return
     const op = n[0]
+    if (op === 'this') receiverScopes.add(scope)
     if (straight && scope === MODULE && (op === '=' || op === '??=') && typeof n[1] === 'string') initWrites.add(n[1])
     if (op === 'let' || op === 'const' || op === 'var') {
       for (let i = 1; i < n.length; i++) {
@@ -2737,7 +2755,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (cls) methods.set(sid, new Map(cls.methods))
   }
   const queryFacts = {
-    kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults,
+    kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),

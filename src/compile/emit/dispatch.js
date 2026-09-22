@@ -1453,32 +1453,43 @@ function liftOptionalChain(node) {
   const boxedTypedReduce = opt[0] === '?.' && opt[2] === 'reduce' && optIdx >= 1 && path[optIdx - 1][0] === '()' &&
     summaryTagOf(summaryCore(ctx.summary?.at(ctx.func.current)?.kindOfExpr(path[optIdx - 1]) ?? 0)) === K.BIGINT &&
     ctx.summary.at(ctx.func.current).typedPayloadCtorOfExpr(opt[1]) != null
-  return withNullGuard(asF64(emit(opt[1])), t => {
-    // The temp holds the head's present value: the continuation resolves a
-    // Map's method or an object's slot through the head's own kind.
-    // Only a head of one concrete value kind seeds the temp (an object with
-    // its shape known): a union or an unknown shape keeps the generic reads.
-    // A BigInt keeps its representation plan: the temp holds a boxed carrier
-    // no plan describes, so it stays untyped there.
-    const view = ctx.summary?.at(ctx.func.current)
-    const headKind = view?.kindOfExpr(opt[1])
-    const headVt = view && headKind && !hasTag(headKind, K.BIGINT) ? valOf(summaryCore(headKind)) : null
-    const seed = headVt && (headVt !== VAL.OBJECT || view.objectSidOfExpr(opt[1]) != null)
-    if (seed) { view.alias(t, opt[1]); ctx.func.localValTypesOverlay.set(t, headVt) }
-    let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
-                : opt[0] === '?.[]' ? ['[]', t, opt[2]]
-                                    : ['()', t, ...opt.slice(2)]
-    for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
-    // The arm joins the undefined atom, so the continuation crosses tagged:
-    // a BOOL (a Set's `has`, a class method's result) as its atom, a raw
-    // BigInt payload (a class function's, a typed reduce's) boxed; its type
-    // resolves while the alias holds.
-    try {
-      const result = emit(rebuilt)
-      return boxedTypedReduce || result.bigintRaw === true ? asF64(boxBigInt(asI64(result)))
-        : carrierF64Narrow(rebuilt, materializeDeferredBigint(result))
-    } finally { if (seed) view.unalias(t) }
-  }, 'oc')
+  const view = ctx.summary?.at(ctx.func.current)
+  let head = opt[1], receiver = null, setup = null
+  if (ctx.closure.receiver && opt[0] === '?.()' && Array.isArray(head) && ['.', '?.', '[]', '?.[]'].includes(head[0])) {
+    receiver = temp('ocrecv')
+    setup = ['local.set', `$${receiver}`, asF64(emit(head[1]))]
+    view.alias(receiver, head[1], false)
+    head = [head[0], receiver, head[2]]
+  }
+  try {
+    const guarded = withNullGuard(asF64(emit(head)), t => {
+      // The temp holds the head's present value: the continuation resolves a
+      // Map's method or an object's slot through the head's own kind.
+      // Only a head of one concrete value kind seeds the temp (an object with
+      // its shape known): a union or an unknown shape keeps the generic reads.
+      // A BigInt keeps its representation plan: the temp holds a boxed carrier
+      // no plan describes, so it stays untyped there.
+      const view = ctx.summary?.at(ctx.func.current)
+      const headKind = view?.kindOfExpr(opt[1])
+      const headVt = view && headKind && !hasTag(headKind, K.BIGINT) ? valOf(summaryCore(headKind)) : null
+      const seed = headVt && (headVt !== VAL.OBJECT || view.objectSidOfExpr(opt[1]) != null)
+      if (seed) { view.alias(t, opt[1]); ctx.func.localValTypesOverlay.set(t, headVt) }
+      let rebuilt = opt[0] === '?.'   ? ['.',  t, opt[2]]
+                  : opt[0] === '?.[]' ? ['[]', t, opt[2]]
+                                      : ['()', t, opt.length < 3 ? null : opt.length === 3 ? opt[2] : [',', ...opt.slice(2)], receiver]
+      for (let i = optIdx - 1; i >= 0; i--) rebuilt = [path[i][0], rebuilt, ...path[i].slice(2)]
+      // The arm joins the undefined atom, so the continuation crosses tagged:
+      // a BOOL (a Set's `has`, a class method's result) as its atom, a raw
+      // BigInt payload (a class function's, a typed reduce's) boxed; its type
+      // resolves while the alias holds.
+      try {
+        const result = emit(rebuilt)
+        return boxedTypedReduce || result.bigintRaw === true ? asF64(boxBigInt(asI64(result)))
+          : carrierF64Narrow(rebuilt, materializeDeferredBigint(result))
+      } finally { if (seed) view.unalias(t) }
+    }, 'oc')
+    return setup ? block64(setup, guarded) : guarded
+  } finally { if (receiver) view.unalias(receiver) }
 }
 
 /**
@@ -1523,6 +1534,7 @@ export function emit(node, expect) {
         const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
         const paramDecls = ['(param $__env f64)', '(param $__argc i32)']
         for (let i = 0; i < W; i++) paramDecls.push(`(param $__a${i} f64)`)
+        if (ctx.closure.receiver) paramDecls.push('(param $__this f64)')
         // A rest param (always last) must be packed into a fresh array from the
         // overflow inline slots — the direct-call path does this via
         // buildArrayWithSpreads, and `=>` closures via emitClosureBody. Without

@@ -233,7 +233,7 @@ function tryDirectClosureCall(callee, parsed) {
   return typed(['call', `$${bodyName}`,
     asF64(emit(callee)),
     typed(['i32.const', n], 'i32'),
-    ...slots], 'f64')
+    ...slots, ...(ctx.closure.receiver ? [undefExpr()] : [])], 'f64')
 }
 
 /** Tag the generic call_indirect of `constFnArr[idx](args)` for the optimizer's
@@ -283,7 +283,7 @@ function recordClosureTableCallSite(arrName, argNodes) {
 
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
  *  Uniform convention: fn.call packs all args into an array and trampolines. */
-function emitGenericClosureCall(callee, parsed) {
+function emitGenericClosureCall(callee, parsed, thisArg = null) {
   const kind = ctx.summary.kindOfExpr(callee)
   const open = valTypeOf(callee) !== VAL.CLOSURE && tagOf(core(kind)) !== K.CLOSURE
   const nullable = censusMaybeUndefined(callee) ||
@@ -294,12 +294,21 @@ function emitGenericClosureCall(callee, parsed) {
   if (arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
-  let ir
+  let ir, calleeIR, receiver = thisArg == null ? null : asF64(emit(thisArg))
+  const prefix = []
+  if (ctx.closure.receiver && Array.isArray(callee) && callee[0] === '[]') {
+    const t = temp('recv'), view = ctx.summary.at(ctx.func.current)
+    prefix.push(['local.set', `$${t}`, asF64(emit(callee[1]))])
+    receiver = typed(['local.get', `$${t}`], 'f64')
+    view.alias(t, callee[1], false)
+    try { calleeIR = asF64(emit(['[]', t, callee[2]])) }
+    finally { view.unalias(t) }
+  } else calleeIR = asF64(emit(callee))
   if (!open || !ctx.transform.targetProfile.envImports) {
     const args = parsed.hasSpread
       ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
       : parsed.normal
-    ir = ctx.closure.call(asF64(emit(callee)), args, parsed.hasSpread, open || nullable)
+    ir = ctx.closure.call(calleeIR, args, parsed.hasSpread, open || nullable, receiver)
   } else {
     includeForArrayAccess()
     inc('__ext_call', '__ptr_type')
@@ -307,7 +316,7 @@ function emitGenericClosureCall(callee, parsed) {
     // The host ABI shares evaluation with the compiled-call branch; only a
     // host call materializes the inline arguments as a host-readable array.
     const ct = temp('callee'), recv = typed(['local.get', `$${ct}`], 'f64')
-    const setup = [['local.set', `$${ct}`, asF64(emit(callee))]]
+    const setup = [['local.set', `$${ct}`, calleeIR]]
     const values = parsed.hasSpread
       ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
       : parsed.normal
@@ -326,8 +335,9 @@ function emitGenericClosureCall(callee, parsed) {
       ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
         ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
           ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
-        ['else', ctx.closure.call(recv, args, parsed.hasSpread, true)]]], 'f64')
+        ['else', ctx.closure.call(recv, args, parsed.hasSpread, true, receiver)]]], 'f64')
   }
+  if (prefix.length) ir = typed(['block', ['result', 'f64'], ...prefix, ir], 'f64')
   return dvName ? tagFnArrayDispatch(ir, dvName) : ir
 }
 
@@ -354,6 +364,8 @@ function emitUnknownCalleeCall(callee, argList) {
   return typed(['call', `$${callee}`, ...emittedArgs], 'f64')
 }
 export const callOps = {
+  // Internal method-receiver read, introduced by class/object lowering.
+  this: () => typed(['local.get', '$__this'], 'f64'),
   // === Call ===
 
   // Arrow as value → closure
@@ -405,7 +417,7 @@ export const callOps = {
 
   // Linear callee-kind dispatcher. Each strategy below is its own named function
   // (extracted to module scope above); this body is just the routing table.
-  '()': (callee, callArgs) => {
+  '()': (callee, callArgs, thisArg = null) => {
     const argList = commaList(callArgs)
     const parsed = parseCallArgs(argList)
 
@@ -433,7 +445,7 @@ export const callOps = {
     if (calleeKind != null && calleeKind !== VAL.CLOSURE &&
         (typeof callee !== 'string' || isBoundName(callee))) return emitNonCallable(callee, parsed)
 
-    if (ctx.closure.call) return emitGenericClosureCall(callee, parsed)
+    if (ctx.closure.call) return emitGenericClosureCall(callee, parsed, thisArg)
 
     return emitUnknownCalleeCall(callee, argList)
   },

@@ -81,6 +81,7 @@ const eagerCallFreeBooleans = n => walkAst(n, { enter: n => {
 const bodyHasCall = body => some(body, n => n[0] === '()' || n[0] === 'new')
 
 const inlinedBody = (func, args) => {
+  if (some(func.body, n => n[0] === 'this')) return null
   const params = func.sig.params
   // A spread supplies a runtime number of values, not one positional argument.
   if (args.length !== params.length || args.some(a => Array.isArray(a) && a[0] === '...')) return null

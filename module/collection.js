@@ -27,6 +27,7 @@ import { requireReceiverWat } from './core/error-object.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { withControlFrame } from '../src/compile/flow-state.js'
+import { captureCallback } from './array/callback.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 // Inline only compact closed schemas. SSO bit compares are tiny; heap-string
@@ -736,16 +737,17 @@ export default (ctx) => {
   // dropped (as array/typedarray forEach drop the array arg) so we never exceed
   // the uniform closure width (forEach autoloads array → closure floor 2). Uses
   // the closure-call path like typedarray:forEach — forEach isn't a hot path.
-  const collForEach = (stride, valOff, keyOff) => (expr, fn) => {
+  const collForEach = (stride, valOff, keyOff) => (expr, fn, thisArg) => {
     inc('__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order')
     const t = temp('fe'), cb = temp('fecb')
+    const callback = captureCallback(fn, cb, thisArg)
     const off = tempI32('feo'), cap = tempI32('fec'), n = tempI32('fen')
     const i = tempI32('fei'), ord = tempI32('fer'), slot = tempI32('fes')
     const id = freshId(ctx)
     const at = (o) => typed(['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', o]]], 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(expr))],
-      ['local.set', `$${cb}`, asF64(emit(fn))],
+      callback.setup, callback.check,
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', stride]]],
@@ -757,8 +759,7 @@ export default (ctx) => {
         ['br_if', `$febrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
         ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
           ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
-        ['drop', asF64(ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'),
-          [at(valOff), at(keyOff)]))],
+        ['drop', asF64(callback.call([at(valOff), at(keyOff), typed(['local.get', `$${t}`], 'f64')]))],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$feloop${id}`]]],
       ['f64.const', 0]], 'f64')

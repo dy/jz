@@ -2008,10 +2008,10 @@ export default (ctx) => {
     return { source, method, fn: callArgs[0] }
   }
 
-  ctx.core.emit['.map'] = (arr, fn) => {
+  ctx.core.emit['.map'] = (arr, fn, thisArg) => {
     // .filter(f).map(g) → single loop: test f, apply g if passes
     const up = detectUpstream(arr)
-    if (up && up.method === 'filter' && isPureCallback(fn) && !callbackReadsArray(fn)) {
+    if (thisArg === undefined && up && up.method === 'filter' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb')
       const upReps = callbackArgReps(up.source)
@@ -2035,7 +2035,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const len = tempI32('ml'), base = tempI32('mb')
-    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr))
+    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr), thisArg)
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'mo' })
     // Reuse the precomputed len local in arrayLoop (skip its internal load).
@@ -2053,10 +2053,10 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
-  ctx.core.emit['.filter'] = (arr, fn) => {
+  ctx.core.emit['.filter'] = (arr, fn, thisArg) => {
     // .map(f).filter(g) → single loop: apply f, test g, store if passes
     const up = detectUpstream(arr)
-    if (up && up.method === 'map' && isPureCallback(fn) && !callbackReadsArray(fn)) {
+    if (thisArg === undefined && up && up.method === 'map' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb'), mapped = temp('mv')
       const upReps = callbackArgReps(up.source)
@@ -2081,7 +2081,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const count = tempI32('fc'), maxLen = tempI32('fm'), base = tempI32('fb')
-    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr))
+    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr), thisArg)
     const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fo' })
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', truthyIR(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)])),
@@ -2237,10 +2237,10 @@ export default (ctx) => {
       reductionResult(acc, init !== undefined ? null : inputLen)], 'f64')
   }
 
-  ctx.core.emit['.forEach'] = (arr, fn) => {
+  ctx.core.emit['.forEach'] = (arr, fn, thisArg) => {
     // .map(f).forEach(g) → single loop: apply f, call g — no intermediate array
     const up = detectUpstream(arr)
-    if (up && up.method === 'map' && isPureCallback(fn) && !callbackReadsArray(fn)) {
+    if (thisArg === undefined && up && up.method === 'map' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const mapped = temp('mv'), tmp = temp('ft')
       const upReps = callbackArgReps(up.source)
@@ -2251,7 +2251,7 @@ export default (ctx) => {
       ])
       return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, forCb.check, ...loop, ['f64.const', 0]], 'f64')
     }
-    if (up && up.method === 'filter' && !callbackReadsArray(fn)) {
+    if (thisArg === undefined && up && up.method === 'filter' && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
       const tmp = temp('ft')
       const upReps = callbackArgReps(up.source)
@@ -2264,7 +2264,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const tmp = temp('ft')
-    const cb = makeCallback(fn, callbackArgReps(arr))
+    const cb = makeCallback(fn, callbackArgReps(arr), null, thisArg)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)]))]
     ])
@@ -2805,8 +2805,8 @@ export default (ctx) => {
     typed(['call', '$__arr_flat', asI64(emit(arr))], 'f64'))
 
   // .flatMap(fn) → map then flatten
-  ctx.core.emit['.flatMap'] = (arr, fn) => {
-    const mapped = ctx.core.emit['.map'](arr, fn)
+  ctx.core.emit['.flatMap'] = (arr, fn, thisArg) => {
+    const mapped = ctx.core.emit['.map'](arr, fn, thisArg)
     inc('__arr_flat')
     return typed(['call', '$__arr_flat', asI64(mapped)], 'f64')
   }

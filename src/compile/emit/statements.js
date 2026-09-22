@@ -14,7 +14,7 @@ import { VAL } from '../../reps.js'
 import { isTerminator } from '../../type.js'
 import { withFinallyStack, withTryState } from '../flow-state.js'
 import { representationProgramHasBigint, representationReturnAction } from '../representation-plan.js'
-import { emit, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
+import { emit, emitBlockBody, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
 import { storedValue } from './method-dispatch.js'
 
 
@@ -88,28 +88,9 @@ export const spreadOp = {
 export const statementOps = {
   // === Statements ===
 
-  ';': (...args) => {
-    const out = []
-    for (const a of args) {
-      out.push(...emitVoid(a))
-      // Same dead-tail truncation as emitBlockBody's own statement loop (see
-      // that function's comment for the full rationale) — needed HERE too,
-      // separately: a `;`-list can arrive at emit already NESTED one level
-      // inside a `{}`-block's own list (e.g. jzify's `do…while` desugaring —
-      // transform.js `'do'` — wraps the loop body as `[';', flagReset,
-      // userBody]`, so a user body of `break; FOR1;` lands as ONE list item,
-      // `[';', ['break'], 'FOR1']`, from emitBlockBody's OUTER loop — that
-      // loop's own isTerminator check sees only the LAST inner statement
-      // (FOR1, not a terminator) and never looks inside). Without this, a
-      // bare `break`/`continue`/`return`/`throw` mid-list here left its
-      // FOLLOWING dead siblings walked anyway, wrongly hitting the bare-
-      // identifier-fallback reject (src/compile/emit.js) for code real JS
-      // never evaluates (confirmed live via test262 statements/break+continue/
-      // line-terminators.js's ASI-split shape, a do…while body).
-      if (isTerminator(a)) break
-    }
-    return out
-  },
+  // Prepared branch bodies are bare statement lists. Share the block driver's
+  // flow refinements, invalidation and dead-tail handling with function bodies.
+  ';': (...args) => emitBlockBody(['{}', [';', ...args]]),
   '{': (...args) => args.map(emit).filter(x => x != null),
   ',': (...args) => {
     const results = args.map(emit).filter(x => x != null)

@@ -412,7 +412,7 @@ export function scanBindingUses(body, trackNames) {
       else walk(e)
       return
     }
-    if (op === '()') {
+    if (op === '()' || op === '?.()') {
       const callee = node[1]
       if (typeof callee === 'string') use(callee, USE.CALL_CALLEE)
       else if (Array.isArray(callee) && typeof callee[1] === 'string' &&
@@ -422,7 +422,7 @@ export function scanBindingUses(body, trackNames) {
           callee[0] === '?.' || callee[0] === '?.[]', indexed, true))
         if (indexed) val(callee[2])
       } else walk(callee)
-      const argNode = node[2]
+      const argNode = op === '?.()' ? [',', ...node.slice(2)] : node[2]
       if (argNode != null) {
         const args = (Array.isArray(argNode) && argNode[0] === ',') ? argNode.slice(1) : [argNode]
         for (let ai = 0; ai < args.length; ai++) {
@@ -631,7 +631,8 @@ function flatObjectCandidate(name, s, body) {
   // `written` = the keys a MEMBER_W reassigns — a slot is write-once (its
   // value-type is exactly its literal initializer's) iff its key is absent here.
   const cls = props.brand ? ctx.transform.classes?.get(props.brand) : null
-  const member = (k) => cls != null && (cls.methods.has(k) || cls.methods.has(k + ACCESSOR_GET) || cls.methods.has(k + ACCESSOR_SET))
+  const member = (k) => props.names.includes(k + ACCESSOR_GET) || props.names.includes(k + ACCESSOR_SET) ||
+    cls != null && (cls.methods.has(k) || cls.methods.has(k + ACCESSOR_GET) || cls.methods.has(k + ACCESSOR_SET))
   const schema = new Set(props.names)
   const written = new Set()
   for (const u of s[BINDING_USE_USES])
@@ -650,7 +651,7 @@ function flatObjectCandidate(name, s, body) {
     (u[BINDING_USE_KIND] === USE.MEMBER_R && !u[BINDING_USE_OPTIONAL] &&
       !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY]) && !member(u[BINDING_USE_KEY])) ||
     (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] &&
-      !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY])))
+      !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY]) && !member(u[BINDING_USE_KEY])))
   if (!flat) return null
 
   // Materialize the parallel {names, values}: literal props first, then each

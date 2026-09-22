@@ -14,6 +14,7 @@ const TESTS = [
   'destruct',
   'closures',
   'classes',
+  'method-receivers',
   'array-methods',
   'features',
   'feature-gating',

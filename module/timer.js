@@ -37,11 +37,11 @@ const ENTRY_SIZE = 40
 // in upper 16 bits of the pointer payload; remaining $ftN slots get UNDEF_NAN.
 // Closure is also passed as $__env so captures resolve via env-load.
 // `exported` adds (export "__invoke_closure") so the JS host can call it.
-const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos i64) (result f64)
+const invokeClosureFn = (exported, receiver) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos i64) (result f64)
   (call_indirect (type \$ftN)
     (f64.reinterpret_i64 (local.get $clos))
     (i32.const 0)
-    ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
+    ${Array.from({length: MAX_CLOSURE_ARITY + (receiver ? 1 : 0)}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
     (i32.wrap_i64 (i64.and
       (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
       (i64.const ${LAYOUT.AUX_MASK})))))`
@@ -49,12 +49,12 @@ const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (ex
 // One-arg variant: first $ftN slot carries a real f64 (the rAF timestamp),
 // the rest pad UNDEF_NAN. Exported so the host frame loop can pass the
 // DOMHighResTimeStamp through to the callback.
-const invokeClosure1Fn = (exported) => `(func $__invoke_closure1${exported ? ' (export "__invoke_closure1")' : ''} (param $clos i64) (param $a0 f64) (result f64)
+const invokeClosure1Fn = (exported, receiver) => `(func $__invoke_closure1${exported ? ' (export "__invoke_closure1")' : ''} (param $clos i64) (param $a0 f64) (result f64)
   (call_indirect (type \$ftN)
     (f64.reinterpret_i64 (local.get $clos))
     (i32.const 0)
     (local.get $a0)
-    ${Array.from({length: MAX_CLOSURE_ARITY - 1}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
+    ${Array.from({length: MAX_CLOSURE_ARITY - 1 + (receiver ? 1 : 0)}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
     (i32.wrap_i64 (i64.and
       (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
       (i64.const ${LAYOUT.AUX_MASK})))))`
@@ -278,7 +278,7 @@ const setupWasi = (ctx) => {
       ;; Loop
       (br $poll))))`
 
-  ctx.core.stdlib['__invoke_closure'] = invokeClosureFn(false)
+  ctx.core.stdlib['__invoke_closure'] = () => invokeClosureFn(false, ctx.closure.receiver)
 
   // Emitter: setTimeout(closure, delay) → timer_id
   ctx.core.emit['setTimeout'] = (closureExpr, delayExpr) => {
@@ -337,7 +337,7 @@ const setupJsHost = (ctx) => {
   const needClearTimeout = () => hostImport('env', 'clearTimeout',
     ['func', '$__clear_timeout', ['param', 'f64'], ['result', 'f64']])
 
-  ctx.core.stdlib['__invoke_closure'] = invokeClosureFn(true)
+  ctx.core.stdlib['__invoke_closure'] = () => invokeClosureFn(true, ctx.closure.receiver)
 
   const emitSet = (closureExpr, delayExpr, repeat) => {
     needSetTimeout()
@@ -365,7 +365,7 @@ const setupJsHost = (ctx) => {
     ['func', '$__raf', ['param', 'i64'], ['result', 'f64']])
   const needCancelRaf = () => hostImport('env', 'cancelAnimationFrame',
     ['func', '$__craf', ['param', 'f64'], ['result', 'f64']])
-  ctx.core.stdlib['__invoke_closure1'] = invokeClosure1Fn(true)
+  ctx.core.stdlib['__invoke_closure1'] = () => invokeClosure1Fn(true, ctx.closure.receiver)
 
   ctx.core.emit['requestAnimationFrame'] = (cbExpr) => {
     needRaf()

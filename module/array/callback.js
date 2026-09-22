@@ -36,14 +36,18 @@ export function hoistArrayValue(arr) {
 
 // Capture first; check only after the caller has evaluated its other arguments.
 // Even an empty loop must reject a non-callable callback.
-export function captureCallback(fn, name = temp('af')) {
+export function captureCallback(fn, name = temp('af'), thisArg) {
   ctx.module.include('fn')
   const value = typed(['local.get', `$${name}`], 'f64')
   const known = valTypeOf(fn) === VAL.CLOSURE &&
     ctx.summary?.at(ctx.func.current).mayBeNullishExpr(fn) === false
-  const call = args => ctx.closure.call(value, args)
+  const receiver = thisArg === undefined ? null : temp('cbthis')
+  const call = args => ctx.closure.call(value, args, false, false,
+    receiver && typed(['local.get', `$${receiver}`], 'f64'))
+  let setup = ['local.set', `$${name}`, fn == null ? undefExpr() : storedValue(fn)]
+  if (receiver) setup = ['block', setup, ['local.set', `$${receiver}`, storedValue(thisArg)]]
   return {
-    setup: ['local.set', `$${name}`, fn == null ? undefExpr() : storedValue(fn)],
+    setup,
     check: known ? ['nop'] : ['if', ['i32.eqz', ['i32.and',
       ['f64.ne', value, value], ptrTypeEq(value, PTR.CLOSURE)]],
       ['then', ['drop', throwTypeErrorIR('call')]]],
@@ -95,7 +99,7 @@ function exprUses(node, name) {
 // element and the read it stands for (callbackElem): the inlined local reads
 // as that element to the summary, so the body's member reads resolve the
 // element's layouts as the loop's own read would.
-export function makeCallback(fn, argReps, elem = null) {
+export function makeCallback(fn, argReps, elem = null, thisArg) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
     const body = fn[2]
@@ -159,7 +163,7 @@ export function makeCallback(fn, argReps, elem = null) {
         return storedValue(node)
       }
       return {
-        setup: ['nop'],
+        setup: thisArg === undefined ? ['nop'] : ['drop', asF64(storedValue(thisArg))],
         check: ['nop'],
         usedParams,
         call: (argExprs) => inline(argExprs, emit),
@@ -169,7 +173,7 @@ export function makeCallback(fn, argReps, elem = null) {
   }
   // Fallback: closure call — all params are potentially used; a closure's
   // result already crosses its ABI in the store's form.
-  return captureCallback(fn)
+  return captureCallback(fn, undefined, thisArg)
 }
 
 /** The element a callback's parameter `index` receives: a read of `arr` at a

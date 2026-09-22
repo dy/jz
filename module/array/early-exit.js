@@ -14,11 +14,11 @@ import { hoistArrayValue, makeCallback, callbackArgReps, callbackElem, idxArg, a
 
 export const registerEarlyExit = () => {
   // Early-exit callback iterator: init value, exit test, value on match.
-  const earlyExitMethod = ({ tag, init, test, onMatch, reverse }) => (arr, fn) => {
+  const earlyExitMethod = ({ tag, init, test, onMatch, reverse }) => (arr, fn, thisArg) => {
     const recv = hoistArrayValue(arr)
     const r = temp(tag)
     const exit = `$exit${freshId(ctx)}`
-    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr))
+    const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr), thisArg)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', test(cb, i, item, recv),
         ['then', ['local.set', `$${r}`, onMatch(cb, i, item)], ['br', exit]]]

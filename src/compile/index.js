@@ -448,6 +448,7 @@ export function assemble(ast, profiler) {
   if (ctx.closure.types) {
     const params = [['param', 'f64'], ['param', 'i32']] // env + argc
     for (let i = 0; i < (ctx.closure.width ?? MAX_CLOSURE_ARITY); i++) params.push(['param', 'f64'])
+    if (ctx.closure.receiver) params.push(['param', 'f64'])
     sec.types.push(['type', `$ftN`, ['func', ...params, ['result', 'f64']]])
   }
 

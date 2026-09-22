@@ -53,8 +53,8 @@ export function synthesizeToPrimitive() {
   }
   ctx.core.emit.__tp_missing = (v) => typed(['i64.eq', asI64(emit(v)), ['i64.const', TOMB_NAN]], 'i32')
   ctx.core.emit.__tp_callable = (v) => ptrTypeEq(asF64(emit(v)), PTR.CLOSURE)
-  ctx.core.emit.__tp_call = (v) => ctx.closure.call
-    ? ctx.closure.call(typed(asF64(emit(v)), 'f64'), [])
+  ctx.core.emit.__tp_call = (v, r) => ctx.closure.call
+    ? ctx.closure.call(typed(asF64(emit(v)), 'f64'), [], false, false, asF64(emit(r)))
     : typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
   ctx.core.emit.__isprim = (v) => { inc('__is_object'); return typed(['i32.eqz', ['call', '$__is_object', asI64(asF64(emit(v)))]], 'i32') }
   ctx.core.emit.__tperr = () => {
@@ -75,7 +75,7 @@ export function synthesizeToPrimitive() {
       inherited = ['if', ['instanceof', R, e.brand], accept(call(e.methods.get(prop), R)), inherited]
     return block(['=', M, ['__tp_get', R, ['str', prop]]],
       ['if', ['__tp_missing', M], inherited,
-        ['if', ['__tp_callable', M], accept(['__tp_call', M])]])
+        ['if', ['__tp_callable', M], accept(['__tp_call', M, R])]])
   }
   for (const [name, order] of [[TO_PRIM_STR, ['toString', 'valueOf']], [TO_PRIM_NUM, ['valueOf', 'toString']]]) {
     ctx.funcs.list.push(createFunction(name,
