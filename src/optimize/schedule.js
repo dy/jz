@@ -108,10 +108,52 @@ const scheduleRun = (seq, start, end, pureFns) => {
   return true
 }
 
+// Integer min/max updates commute. When one input carries this reduction's
+// previous result, consume it last so independent comparisons can run first.
+// The dependency check chooses an order only; the matcher proves commuting.
+const minMaxUpdate = n => {
+  if (n?.[0] !== 'if' || n.length !== 3) return null
+  const c = n[1], b = n[2], s = b?.[1]
+  if (!/^i32\.(lt|le|gt|ge)_[su]$/.test(c?.[0]) ||
+      c[1]?.[0] !== 'local.get' || c[2]?.[0] !== 'local.get' ||
+      b?.[0] !== 'then' || b.length !== 2 || s?.[0] !== 'local.set' || s[2]?.[0] !== 'local.get') return null
+  const acc = s[1], input = s[2][1]
+  if (acc === input) return null
+  const left = c[1][1] === input && c[2][1] === acc
+  if (!left && !(c[1][1] === acc && c[2][1] === input)) return null
+  return { acc, input, kind: c[0].slice(-1) + ((c[0][4] === 'l') === left ? 'min' : 'max') }
+}
+
+const deferCarriedReduction = (seq, from, i) => {
+  const a = minMaxUpdate(seq[i]), b = a && minMaxUpdate(seq[i + 1])
+  if (!b || a.acc !== b.acc || a.kind !== b.kind) return
+  const carries = new Set([a.acc])
+  for (let j = i + 2; j < seq.length; j++) {
+    const s = seq[j]
+    if (CONTROL.has(s?.[0]) || s?.[0] === 'local.set' && s[1] === a.acc) break
+    if (s?.[0] === 'local.set' && s[2]?.[0] === 'local.get' && s[2][1] === a.acc) carries.add(s[1])
+  }
+  const carried = name => {
+    for (let j = i - 1; j >= from; j--) {
+      const s = seq[j]
+      if (CONTROL.has(s?.[0])) break
+      if (s?.[0] !== 'local.set' || s[1] !== name) continue
+      let found = false
+      walkAst(s[2], { enter: n => { if (n[0] === 'local.get' && carries.has(n[1])) found = true } })
+      return found
+    }
+    return carries.has(name)
+  }
+  if (carried(a.input) && !carried(b.input)) {
+    const first = seq[i]; seq[i] = seq[i + 1]; seq[i + 1] = first
+  }
+}
+
 /** Schedule every run of movable statements in the sequence seq[from..]. */
 const scheduleSeq = (seq, from, pureFns) => {
   let start = from
   for (let i = from; i <= seq.length; i++) {
+    if (seq[0] === 'loop') deferCarriedReduction(seq, from, i)
     if (i < seq.length && movable(seq[i])) continue
     scheduleRun(seq, start, i, pureFns)
     start = i + 1

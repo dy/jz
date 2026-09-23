@@ -35,6 +35,11 @@ until the original receiver check runs, preserving zero-trip and nullish behavio
 Fixed number-carrier peepholes call the carrier directly, without a session lookup.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
+The statement scheduler orders adjacent integer min/max updates so an input
+carried from the prior iteration is consumed last. Only commuting local-only
+updates of the same signedness qualify; floating comparisons, mixed extrema
+and observable intermediate updates retain their order. This uses the existing
+loop statement walk and adds no runtime guard or new representation.
 Condition chaining and boolean simplification also run in watr, including the
 fast tier; link no longer implements these generic body rewrites on the tape.
 Watr pools costly scalar literals after folding and inlining, before outlining
@@ -128,6 +133,20 @@ successful branch. Atomic value operations share the existing operation catalogu
 with the summary: their result is an element or an exception, never undefined.
 
 Computed typed-element reads delegate their bounds check to the element reader.
+Checked integer-read locals stay in word storage when the binding-use census
+proves every read is a bitwise operand or a discarded integer-element store.
+The bounds check remains; only its missing result becomes zero. Observed
+assignment results, captures, reassignments, named properties, floating and
+clamped destinations retain the original value. The census records destination
+syntax, while the existing typed-storage and numeric-key facts decide the demand.
+Dynamic typed-array stores normalize object keys once before choosing the
+element or named-property path; both paths use that same primitive key.
+The all-writers element hull survives copying between slots of the same
+integer typed array, including through an unmodified local. Missing reads
+add zero to that hull; named keys, captures, replacement values and other
+arrays cannot borrow it. The binding-use census proves the local's identity.
+Interval transfer preserves numeric conversion of a proven integer, including
+the unary plus that load-CSE inserts for its Number temporaries.
 Presence queries retain their own check because they do not load an element.
 The reader and length helper share the element-count expression over decoded
 offset/aux facts. Bounds use the view descriptor before resolving its data base;
