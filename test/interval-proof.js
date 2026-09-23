@@ -98,8 +98,8 @@ const assertCompileHistoryIndependent = (src, predecessors, opts, label) => {
     ok(sameOutput(cold, warm), `${label}: matches cold output after a sibling compile`)
   }
 }
-const hasTypedBoundsTemp = wat => /\$[^\s)]*tbi\d*/.test(wat)
-// A checked typed access is marked by the `tbiN` index temp jz emits for it, or,
+const hasTypedBoundsTemp = wat => /\$[^\s)]*tb[in]\d*/.test(wat)
+// A checked typed access is marked by the `tbiN` index or `tbnN` in-bounds temp jz emits for it, or,
 // when propagation merges that temp into the index local, by the guard itself:
 // an unsigned compare against the constant length around the store.
 const CHECKED_STORE = /\(i32\.lt_u[\s\S]{0,400}?\(i32\.const \d+\)\s*\)\s*\(then\s*\((?:f32|f64|i32|i64)\.store/

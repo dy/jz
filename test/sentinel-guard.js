@@ -71,8 +71,9 @@ test('sentinel guard: the pop, the scan and the read after the scan run unchecke
   if (onKernel()) return
   const guarded = kernelOf(compile(ENVELOPE, { optimize: 'speed', wat: true }))
   const plain = kernelOf(compile(ENVELOPE, { optimize: GUARDS_OFF, wat: true }))
-  // the pop guard `k >= 1`, the scan guard `k <= N - 1`, the suffix guard after it
-  ok(/\(i32\.ge_s \(local\.get \$[^\s)]*k[^\s)]*\) \(i32\.const 1\)\)/.test(guarded), 'the pop tests k >= 1')
+  // the pop guard `k >= 1` (an exit branches on its negation, `k < 1`), the scan
+  // guard `k <= N - 1`, the suffix guard after it
+  ok(/\(i32\.(ge|lt)_s \(local\.get \$[^\s)]*k[^\s)]*\) \(i32\.const 1\)\)/.test(guarded), 'the pop tests k >= 1')
   ok(new RegExp(`\\(i32\\.le_s \\(local\\.get \\$[^\\s)]*k[^\\s)]*\\) \\(i32\\.const ${N - 1}\\)\\)`).test(guarded), `the scan and its suffix test k <= ${N - 1}`)
   // every checked read of the unguarded build survives only in the slow copies
   is(missArms(guarded), missArms(plain), 'the slow copies keep every original check')
