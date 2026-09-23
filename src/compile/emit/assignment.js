@@ -17,7 +17,8 @@ import {
 } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
-import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier } from './dispatch.js'
+import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier, toBool } from './dispatch.js'
+import { emitArrayViewDef } from '../array-view.js'
 import { isSideEffectFree } from './shared.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
@@ -221,6 +222,11 @@ export const assignmentOps = {
     // helper, same contract: rejects only when SOME use of `name` actually
     // observes its identity — a truthiness-only reassignment still compiles.
     rejectAmbiguousBoolIdentity(name, val)
+    // An array slice view keeps its array and a range (compile/array-view.js).
+    if (ctx.func.arrayViews?.has(name)) {
+      const def = ctx.func._expect === 'void' ? emitArrayViewDef(name, val, { emit, toBool }) : (ctx.func.arrayViews.delete(name), null)
+      if (def) return typed(['block', ...def], 'void')
+    }
     const tagged = boolTaggedBinding(name)
     if (isNullishLit(val)) (ctx.func.maybeNullish ??= new Set()).add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'

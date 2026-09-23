@@ -187,6 +187,14 @@ from that moved range without a temporary allocation. Pointer write-back is
 conditional on the source binding still naming the captured receiver.
 Earlier spread sections snapshot their elements only before later potentially
 effectful expressions; the existing IR purity query supplies that decision.
+A slice read only as a spread source keeps its array and a range
+(`compile/array-view.js`): `items = c ? b.slice(1) : [b]` holds `b` with a start
+and a count, and the spread copies `b[1..]` straight into the list it builds.
+The definition checks the receiver at runtime; a string, a typed array or any
+other value takes its ordinary slice. Between the definition and each spread
+nothing may run code that can mutate an array: no call, store, spread of
+another source, or member read an accessor could answer. An array literal or a
+push copies the range; any other consumer reads a copy of it.
 Typed BigInt elements use the tagged reader and scalar items use stored-value
 lowering, as in ordinary array literals.
 The summary likewise treats positions after a spread as possible tail values

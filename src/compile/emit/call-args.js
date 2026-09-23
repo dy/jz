@@ -19,6 +19,7 @@ import { representationProgramHasBigint } from '../representation-plan.js'
 import { persistBindingPtr } from '../emit-assign.js'
 import { withExpectedValue } from '../flow-state.js'
 import { copyReceiverFacts } from './shared.js'
+import { arrayView, viewBase } from '../array-view.js'
 import { emit, emitCallArgs } from './dispatch.js'
 
 
@@ -140,8 +141,22 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT, arrayBa
  * (`__str_len`; `__len` reads 0 on a string), an array, a typed array or a
  * materialized multi-value its header, an unknown kind decides at runtime.
  * `val` is the staged value's kind, or undefined for a multi-value.
+ * A consumer that copies through emitSpreadCopy passes `ranges`: an array
+ * slice view then stages in place, its `start` the view's first element
+ * (compile/array-view.js), where any other consumer reads a copy.
  */
-function stageSpreadSource(expr) {
+function stageSpreadSource(expr, ranges = false) {
+  const view = ranges ? arrayView(expr) : null
+  if (view) {
+    // the view's array and count, or its ordinary value staged as any source
+    const raw = temp('avr'), plain = stageSpreadSource(raw)
+    return { local: plain.local, lenLocal: plain.lenLocal, val: undefined, start: view.start, ir: [
+      ['local.set', `$${raw}`, ['local.get', `$${expr}`]],
+      ['if', ['i32.ge_s', ['local.get', `$${view.count}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${plain.local}`, ['local.get', `$${raw}`]], ['local.set', `$${plain.lenLocal}`, ['local.get', `$${view.count}`]]],
+        ['else', ...plain.ir]],
+    ] }
+  }
   const local = `${T}sp${freshId(ctx)}`
   const lenLocal = `${T}spl${freshId(ctx)}`
   ctx.func.locals.set(local, 'f64')
@@ -189,6 +204,9 @@ function stageSpreadSource(expr) {
  * no-ops once 'array' is in ctx.module.modules for this compile), so the
  * already-covered callers pay one extra Set/Map lookup, nothing else.
  */
+// A staged view's first element; an ordinary source copies from its own start.
+const rangeBase = (sec) => sec.start ? (inc('__ptr_offset'), viewBase(sec.local, sec)) : null
+
 export function buildArrayWithSpreads(items) {
   includeForArrayLiteral()
   if (!items.some(item => Array.isArray(item) && item[0] === '__spread'))
@@ -239,11 +257,12 @@ export function buildArrayWithSpreads(items) {
     } else {
       // The length is read once per spread (the total-len sum and the copy);
       // its kind matches emitSpreadCopy's element decode.
-      const src = stageSpreadSource(sec.expr)
+      const src = stageSpreadSource(sec.expr, true)
       sec.local = src.local
       sec.lenLocal = src.lenLocal
       sec.val = src.val
       sec.setup = src.ir
+      sec.start = src.start
       if (!isPureIR(src.ir[0][2])) lastEffect = s
     }
   }
@@ -257,9 +276,10 @@ export function buildArrayWithSpreads(items) {
         const copy = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${sec.lenLocal}`], tag: 'spread' })
         const at = tempI32('spreadPos')
         ir.push(copy.init, ['local.set', `$${at}`, ['i32.const', 0]],
-          ...emitSpreadCopy(copy.local, at, sec.local, sec.lenLocal, sec.val),
+          ...emitSpreadCopy(copy.local, at, sec.local, sec.lenLocal, sec.val, rangeBase(sec)),
           ['local.set', `$${sec.local}`, copy.ptr])
         sec.val = VAL.ARRAY
+        sec.start = null
       }
     }
     if (sec.type === 'array') {
@@ -282,7 +302,7 @@ export function buildArrayWithSpreads(items) {
         )
       }
     } else {
-      ir.push(...emitSpreadCopy(result, pos, sec.local, sec.lenLocal, sec.val))
+      ir.push(...emitSpreadCopy(result, pos, sec.local, sec.lenLocal, sec.val, rangeBase(sec)))
     }
   }
 
@@ -338,7 +358,7 @@ function emitArraySpreadMutation(objArg, parsed, method) {
     ctx.func.localValTypesOverlay.set(source, VAL.ARRAY)
     ir.push(['local.set', `$${source}`, buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))])
   }
-  const { local: sa, lenLocal: sl, val: srcVT, ir: stage } = stageSpreadSource(source)
+  const { local: sa, lenLocal: sl, val: srcVT, ir: stage, start } = stageSpreadSource(source, method !== 'unshift')
   ir.push(...stage)
   const count = prefix.length ? ['i32.add', ['local.get', `$${sl}`], ['i32.const', prefix.length]] : ['local.get', `$${sl}`]
   const newLength = ['i32.add', ['local.get', `$${ol}`], count]
@@ -354,7 +374,7 @@ function emitArraySpreadMutation(objArg, parsed, method) {
     newLength]])
   // base captured AFTER grow (grow may relocate the array).
   ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
-  let arrayBase = null
+  let arrayBase = start ? viewBase(sa, { start }) : null
   if (method === 'unshift') {
     if (hasDurableReset()) inc('__durable_arr_snap')
     // The tail move preserves an aliased array's argument values. Read that

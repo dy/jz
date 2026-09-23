@@ -22,6 +22,7 @@ import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OP, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
 import { withArrayLiteralEscape } from '../flow-state.js'
+import { arrayView, emitArrayViewDef, materializeArrayView } from '../array-view.js'
 import { mixedBoolKind } from '../analyze/body-facts.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import {
@@ -660,6 +661,12 @@ export function emitDecl(...inits) {
     // A rest slot view's `for…of` alias (`let a = __iter_arr(rest)`) reads the
     // same argument slots: nothing materializes (compile/rest-view.js).
     if (ctx.func.restView?.has(name)) { setFlowVal(name, valTypeOf(init), init); continue }
+
+    // An array slice view keeps its array and a range (compile/array-view.js).
+    if (ctx.func.arrayViews?.has(name)) {
+      const def = emitArrayViewDef(name, init, { emit, toBool })
+      if (def) { result.push(...def); continue }
+    }
 
     // SRoA flat object: `let o = {a:1, b:2}` — dissolve fields into `o#i`
     // locals, no heap alloc. Each field local ← asF64(value). Reads/writes are
@@ -1521,6 +1528,8 @@ export function emit(node, expect) {
   }
   if (typeof node === 'number') return emitNum(node)
   if (typeof node === 'string') {
+    // An array slice view read outside a range consumer: its range as an array (compile/array-view.js).
+    if (arrayView(node)) return materializeArrayView(node)
     // Variable read: boxed / local / param / global (check before emitter table to avoid name collisions)
     if (ctx.func.boxed?.has(node) || isBoundName(node) || isGlobal(node) || repOf(node)?.intConst != null)
       return readVar(node)

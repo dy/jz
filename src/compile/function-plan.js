@@ -91,6 +91,7 @@ export function installFunctionPlan(ctx, plan) {
   ctx.func.cellTypes = data.cellTypes
   ctx.func.flatObjects = data.flatObjects
   ctx.func.sliceViews = data.sliceViews
+  ctx.func.arrayViews = data.arrayViews
   ctx.func.localReps = data.localReps
   ctx.func.leanHashLocals = data.leanHashLocals
   ctx.func.i32HashLocals = data.i32HashLocals

@@ -208,13 +208,19 @@ Dependencies
    - Carried elements (`compile/carry-elements.js`) keep an element a loop
      stores for its next pass in a local. In V8's code for SDF's first pass
      the `f[v[k]]` gather now issues from a register, as in clang's; the
-     binary grows 4 bytes and the checksum is unchanged. No timing yet: at
-     29 GB of swap every build measured 105–113 ms against about 6.5 ms.
+     binary grows 4 bytes and the checksum is unchanged. Paired runs at load
+     9 measure no difference (1.001 and 1.006 of the build without it):
+     the gather was not the bound. C-Wasm runs at 0.839 of JZ in the same
+     pairs.
    - watr's `conditions` pass now also chains a diamond with a constant arm,
      the boolean `a && b` / `a || b` (watr, unreleased): each
      guarded SDF exit becomes one fused compare-and-branch per conjunct, and
      V8's `edt1d` drops 565 → 556 instructions and 11 → 2 `cset`s with the
-     checksum unchanged. jz picks it up with the next watr release.
+     checksum unchanged. The shorter code is not faster: paired runs at load
+     9 measure SDF 2.8–3.7% slower, with `edt1d` differing only in the
+     `cset`s; glyph parsing measures 3% and sort 7% faster, LZ 2% slower,
+     trace level. Almost every benchmark binary shrinks, the self-compiled
+     compiler by 14.5 KB. jz picks it up with the next watr release.
    - The word-storage census admits a checked integer read whose uses
      answer undefined and zero alike, including a constant step the test's
      true arm guards: glyph parsing's `rep` becomes a word. Sixteen rounds at
@@ -286,15 +292,24 @@ Dependencies
    property sidecars saved approximately another 18 MB. Watr's paired peak
    moved 170.8 → 166.6 MB. These are diagnostic improvements, not parity.
 
-   Jessie's allocation trace attributes about 66.5 MB to `parse.asi`, split
-   between its suffix slice and the new statement-list array. The smaller
-   sidecars bring total benchmark allocation volume to 81.3 MB; this is not
-   per-parse live memory. The next optimization must prove a copied slice
-   is consumed only by a following spread, without intervening mutations or
-   custom method/iterator behavior. Immutable string views do not establish
-   that proof for arrays. Keep the parser source unchanged. Watr retains
-   64 KB code buffers between assemblies; use its lifetime evidence before
-   changing allocation policy.
+   Array slice views (`compile/array-view.js`) remove `parse.asi`'s suffix
+   slice: its `items = b.slice(1)` is spread straight from `b`. One Jessie run
+   allocates 81.3 → 48.2 MB and its linear memory stays at 64 MB instead of
+   128 MB; peak RSS measures 145.6 → 110.3 MB with checksum 2418067300
+   unchanged. The speed binary grows 234 bytes; the size tier keeps the copy.
+
+   Jessie's allocation trace attributed about 66.5 MB to `parse.asi`, split
+   between its suffix slice and the new statement-list array. The array
+   remains: each level of the recursion copies the list below it into a new
+   one, and only the outermost survives. Closing the gap to V8's peak needs
+   that copy reused in place or reclaimed. Keep the parser source unchanged.
+   Watr retains 64 KB code buffers between assemblies; use its lifetime
+   evidence before changing allocation policy. Its run ends at 153 MB RSS:
+   a 50.6 MB host baseline, a 59 MB heap peak in 64 MB of linear memory, and
+   about 39 MB of V8's own, the same without tier-up. The bench loop cannot
+   rewind: `assemble` calls `Uint8Array.from`, which the frame census does
+   not know as a fresh allocation, and past it stores its buffer into a
+   module binding, the retained buffer above.
 
 3. **Reproducible speed, size and memory evidence.** `bench/results.json` is
    stale: timed above the 4096 MB swap-validity cap, 43 comparable

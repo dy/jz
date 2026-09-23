@@ -24,6 +24,7 @@ import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
 import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummaryParam } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
 import { unbounded } from '../summary/index.js'
+import { arraySliceViews } from './array-view.js'
 
 const normalizeClosureBody = cb => {
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
@@ -152,6 +153,7 @@ export function analyzeClosureBodyForEmit(cb) {
         if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
       ctx.func.flatObjects = facts.flatObjects
       ctx.func.sliceViews = facts.sliceViews
+      ctx.func.arrayViews = ctx.transform.optimize?.arrayViews !== false ? arraySliceViews(cb.body) : null
       inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
       boxedCaptures(cb.body, cb.params, cb.captures)
       for (const name of ctx.func.boxed.keys())

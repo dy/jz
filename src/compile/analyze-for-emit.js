@@ -29,6 +29,7 @@ import { cseLoads } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
+import { arraySliceViews } from './array-view.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
@@ -294,6 +295,10 @@ export function analyzeFuncForEmit(func, programFacts) {
   // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
   // Consumed by emitDecl to lower the initializer to a SLICE_BIT view.
   ctx.func.sliceViews = bodyFacts ? bodyFacts.sliceViews : null
+  // Array slice views (compile/array-view.js): a slice read only as a spread
+  // source keeps its array and a range. Consumed by the definition, spread
+  // and read emitters.
+  ctx.func.arrayViews = block && _o && _o.arrayViews !== false ? arraySliceViews(body) : null
   // Resolve write constraints and physical local storage from the settled kinds.
   const candidates = sig.params
     .filter(p => !ctx.func.localReps?.get(p.name)?.val)
@@ -436,6 +441,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     cellTypes,
     flatObjects: ctx.func.flatObjects,
     sliceViews: ctx.func.sliceViews,
+    arrayViews: ctx.func.arrayViews,
     cseLoadBases,
     distinctParams: func.distinctParams || null,
     leanHashLocals: ctx.func.leanHashLocals,

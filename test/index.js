@@ -69,6 +69,7 @@ const TESTS = [
   'sentinel-guard',
   'twin-locals',
   'carry-elements',
+  'array-view',
   'passes',
   'dyn-closure-tables',
   'preeval',
