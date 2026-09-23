@@ -1071,6 +1071,58 @@ test('audit: word-only helper parameters normalize at the call boundary', () => 
   }
 })
 
+test('audit: checked integer locals normalize only at word consumers', () => {
+  for (const ctor of ['Int8Array','Uint8Array','Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array']) {
+    const src=`function word(a,i,j){const v=a[i],out=new Uint8Array(3);
+      out[j++]=v;if(v&8){out[j++]=v}for(let k=0;k<2;k++)out[k]=v;
+      return [v&255,v>>>0,out[0],out[1],out[2],j]}
+    export function f(i,j,n){const a=new ${ctor}(n?[255,-1,2147483648,4294967295]:[]);
+      return word(a.subarray(0),i,j)}
+    export function observed(i){const a=new ${ctor}([255,-1]),v=a[i],out=new Int32Array(1);
+      return [out[0]=v,v===undefined,v&255]}
+    export function float(i){const a=new ${ctor}([255,-1]),v=a[i],out=new Float64Array(1);
+      out[0]=v;return [out[0],v&255]}
+    export function clamped(i){const a=new ${ctor}([255,-1]),v=a[i],out=new Uint8ClampedArray(1);
+      out[0]=v;return [out[0],v&255]}
+    export function named(i){const a=new ${ctor}([255,-1]),v=a[i],out=new Int32Array(1);
+      out.extra=v;return [out.extra,v&255]}
+    export function capture(i){const a=new ${ctor}([255,-1]),v=a[i],read=()=>v;
+      return [read(),v&255]}
+    export function reassigned(i){const a=new ${ctor}([255,-1]);let v=a[i];v+=1;return v&255}`
+    const js=oracle(src)
+    for(const optimize of TIERS){
+      const wasm=jz(src,{optimize}).exports
+      for(const n of [0,1,0,1])for(const i of [-1,0,0,1,2,3,4])for(const j of [-1,0,3])
+        is(wasm.f(i,j,n),js.f(i,j,n),`${ctor} ${optimize}: word ${i}, ${j}, ${n}`)
+      for(const name of ['observed','float','clamped','named','capture','reassigned'])for(const i of [0,0,1,2,-1,0])
+        is(wasm[name](i),js[name](i),`${ctor} ${optimize}: ${name}(${i})`)
+    }
+  }
+  if(!onKernel()){
+    const src=`function word(a,out,i,j){const v=a[i];out[j]=v;out[j+1]=v;return v&7}
+      export function f(i,j){return word(new Uint32Array([4294967295]),new Int8Array(2),i|0,j|0)}`
+    const body=funcWat(compile(src,{optimize:{level:'speed',sourceInline:false,watr:false},wat:true}),'word')
+    ok(body.includes('i32.load')&&body.includes('i32.store8'),'checked load and stores survive')
+    ok(!/f64|__to_int32|trunc_sat/.test(body),'word-only local needs no float round trip or conversion helper')
+  }
+})
+
+test('audit: word-store demand preserves key effects, throws and assignment values', () => {
+  const src=`export function f(i){const a=new Int32Array([7]),v=a[i],out=new Int32Array(2);let calls=0;
+    const key={toString(){calls++;out[1]=99;return 'extra'}};
+    out[key]=v;return [calls,out.extra,out[1],v&255]}
+    export function observed(i){const a=new Int32Array([7]),v=a[i],out=new Int32Array(1);
+      const write=()=>out[0]=v;return [write(),v&7]}
+    export function throwing(i){const a=new Int32Array([7]),v=a[i];let out=new Int32Array(1);out=null;
+      try{out[0]=v}catch(e){return e.name}return v&7}`
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize}).exports
+    for(const name of ['f','observed','throwing'])for(const i of [0,0,1,-1,0])
+      is(wasm[name](i),js[name](i),`${optimize}: ${name}(${i})`)
+  }
+})
+
 test('audit: bounded numeric conversions retain missing and nonfinite values', () => {
   for (const ctor of ['Int32Array','Uint32Array','Float64Array']) {
     const src=`export function f(i,n){

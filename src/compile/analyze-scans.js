@@ -223,8 +223,9 @@ export const BINDING_USE_COMPUTED = 3
 export const BINDING_USE_COMPOUND = 4
 export const BINDING_USE_NULL_CMP = 7
 export const BINDING_USE_OP = 8
+export const BINDING_USE_STORE = 1 // BARE RHS only: discarded assignment's destination
 const SIMPLE_USE = Array.from({ length: 15 }, (_, kind) => [kind])
-// The records with metadata are read-only too and hold primitives alone, so
+// The interned records below are read-only and hold primitives alone, so
 // equal ones are shared as well: a member read or write is one record per
 // (key, optional/compound), a call argument one per (callee, position), a
 // comparison one per nullish-partner flag, a test one per operator. A body
@@ -320,9 +321,9 @@ export function scanBindingUses(body, trackNames) {
   // child (let-rhs, assign-rhs, call/index args, closure body, …) must route
   // through here or its use goes unrecorded (a latent miscompile: the binding
   // looks unused and an optimization fires unsoundly).
-  const val = (child, inClosure) => {
+  const val = (child, inClosure, discarded = false) => {
     if (typeof child === 'string') use(child, inClosure ? USE.CAPTURE : USE.BARE)
-    else walk(child, inClosure)
+    else walk(child, inClosure, discarded)
   }
 
   // Classify the target of an assignment-like node (`=`, compound, `++`, `--`).
@@ -343,7 +344,7 @@ export function scanBindingUses(body, trackNames) {
     walk(t)                                     // some other LHS shape — generic
   }
 
-  function walk(node, inClosure) {
+  function walk(node, inClosure, discarded = false) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (typeof op !== 'string') return          // literal node `[null, value]`
@@ -376,8 +377,23 @@ export function scanBindingUses(body, trackNames) {
       return
     }
 
+    if (op === ';' || isBlockBody(node)) {
+      for (let i = 1; i < node.length; i++) val(node[i], false, true)
+      return
+    }
+    if (op === 'for') {
+      val(node[1], false, true); val(node[2]); val(node[3], false, true); val(node[4], false, true)
+      return
+    }
+
     // === precise classification (outside any closure) ===
-    if (ASSIGN_OPS.has(op)) { assignTarget(node[1], op !== '='); val(node[2]); return }
+    if (ASSIGN_OPS.has(op)) {
+      assignTarget(node[1], op !== '=')
+      if (op === '=' && discarded && typeof node[2] === 'string' && node[1]?.[0] === '[]') {
+        use(node[2], USE.BARE, [USE.BARE, node[1]])
+      } else val(node[2])
+      return
+    }
     if (op === '++' || op === '--') { assignTarget(node[1], true); return }
     if (op === 'delete') {
       const t = node[1]
@@ -468,7 +484,7 @@ export function scanBindingUses(body, trackNames) {
       const c = node[1]
       if (typeof c === 'string') use(c, USE.BOOL_TEST, boolTest(op))
       else walk(c)
-      for (let i = 2; i < node.length; i++) val(node[i])
+      for (let i = 2; i < node.length; i++) val(node[i], false, op !== '?:')
       return
     }
 

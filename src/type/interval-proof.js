@@ -145,7 +145,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const L = lens(x)
       if (L != null) return [L, L]
     }
-    if (e.length === 2 && op === '()') return ev(x)   // grouping, not a call
+    // Grouping and numeric conversion preserve a proven integer interval.
+    // Load-CSE uses unary plus when its temporary needs a Number carrier.
+    if (e.length === 2 && (op === '()' || op === 'u+')) return ev(x)
     // Prepared post-increment indices use `(++cursor) - 1`. Transfer the
     // mutation and return the incremented interval so the outer subtraction
     // recovers the exact pre-increment index hull.

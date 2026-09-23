@@ -25,6 +25,9 @@ import { enterActiveFunction, restoreActiveFunction } from '../active-function.j
 import { isExported } from '../func-exports.js'
 import { analyzeBody } from '../analyze.js'
 import { VAL } from '../../reps.js'
+import { K, kind } from '../../summary/index.js'
+import { typedElementKey } from '../../typed-provenance.js'
+import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from '../analyze-scans.js'
 
 // Reuse the bounds interpreter at call sites. Start at unknown and refine only
 // when EVERY incoming site proves a hull. Each intermediate result is sound;
@@ -386,6 +389,25 @@ export function inferTypedValueRanges(storeRanges) {
   const summaries = new Map()
   for (const f of funcs) summaries.set(f.name, f.sig.params.map(() => ({ range: null, writes: false, bad: false })))
 
+  // Copying an element within one integer array preserves its all-writers
+  // hull. A missing read stores zero. Scalar temporaries may retain an older
+  // element, but must never be reassigned or captured. storedRange below
+  // rejects non-integer storage before publishing this identity.
+  const selfCopy = (f, n, name) => {
+    if (typeof n === 'string') {
+      const binding = scanBindingUses(f.body).get(n)
+      if (binding?.[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_USES].some(u =>
+        u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)) return false
+      n = binding[BINDING_USE_INIT]
+    }
+    return Array.isArray(n) && n[0] === '[]' && n[1] === name &&
+      typedElementKey(n[2], ctx.summary.at(f.sig).kindOfExpr(n[2]) === kind(K.NUMBER))
+  }
+  const writeRange = (f, n) => {
+    if (n[0] !== '=') return null
+    return selfCopy(f, n[2], n[1][1]) ? [0, 0] : storeRanges.get(f)?.get(n) ?? exprRange(n[2])
+  }
+
   // Direct effects: each function's own body, in isolation — an array-elem
   // write through a param seeds/widens that param's summary range; any alias,
   // return-escape, or opaque call poisons it (`bad`). User-call forwarding
@@ -404,7 +426,7 @@ export function inferTypedValueRanges(storeRanges) {
           return
         }
         if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && ps.has(n[1][1])) {
-          const s = sum[ps.get(n[1][1])], r = n[0] === '=' ? storeRanges.get(f)?.get(n) ?? exprRange(n[2]) : null
+          const s = sum[ps.get(n[1][1])], r = writeRange(f, n)
           s.writes = true
           if (!r) s.bad = true; else s.range = hull(s.range, r)
         }
@@ -491,7 +513,7 @@ export function inferTypedValueRanges(storeRanges) {
         }
         if (ASSIGN_OPS.has(n[0])) {
           if (Array.isArray(n[1]) && n[1][0] === '[]' && ranges.has(n[1][1]))
-            merge(n[1][1], n[0] === '=' ? storedRange(ctors.get(n[1][1]), storeRanges.get(f)?.get(n) ?? exprRange(n[2])) : null)
+            merge(n[1][1], storedRange(ctors.get(n[1][1]), writeRange(f, n)))
           for (const name of [...ranges.keys()]) {
             if (!freshDefs.has(n) && (n[1] === name || carries(n[2], name))) merge(name, null)
             if (Array.isArray(n[1]) && n[1][0] !== '[]' && mentions(n[1], name)) merge(name, null)

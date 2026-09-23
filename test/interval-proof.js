@@ -5,7 +5,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { funcWat, oracle } from './util.js'
 
 const GUARD = 'x >= 0 && x < 4 && y >= 0 && y < 4 && src[y * 4 + x] === 1'
 const KERNEL = `
@@ -124,6 +124,58 @@ function follow(a, remaining) {
 }
 export function f(n) { const a = new Int32Array(${length}); fill(a, n); return follow(a, n) }
 `
+
+const copiedTable = (ctor, edit = '', length = 8) => `
+function fill(a) { for (let i = 0; i < 8; i++) a[i] = i % 5 }
+function move(a, k) { const t = a[k]; a[k] = a[0]; a[0] = t; ${edit} }
+function gather(a, n) { const x = +a[n & 7]; return a[x] + a[x + 1] }
+export function f(n, k) {
+  const a = new ${ctor}(${length})
+  fill(a); move(a, k | 0)
+  return gather(a, n)
+}
+`
+
+test('interval proof: element copies preserve stored bounds through helpers and numeric conversion', () => {
+  for (const ctor of ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']) {
+    const src = copiedTable(ctor), native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      for (const k of [-1, 0, 0, 1, 7, 8, 99]) for (const n of [-1, 0, 1, 7, 8])
+        is(f(n, k), native(n, k), `${ctor}/O${level}: gather ${n} after moving ${k}`)
+    }
+  }
+  if (onKernel()) return
+  const src = copiedTable('Int32Array'), optimize = { level: 'speed', sourceInline: false, watr: false }
+  const inspect = compile(src, { optimize, inspect: true }).inspect
+  is(inspect.functions.gather.params[0].arrayElemRange, [0, 4], 'copies retain the fill hull, including missing-read zero')
+  const body = funcWat(compile(src, { optimize, wat: true }), 'gather')
+  ok(body.includes('i32.load'), 'the dependent reads remain')
+  ok(!body.includes('i32.lt_u'), 'both dependent reads use the preserved bounds')
+})
+
+test('interval proof: copy hulls reject named reads, replacement values and other arrays', () => {
+  const edits = [
+    'a.note = 99; a[0] = a["note"]',
+    'let x = a[1]; x = 99; a[0] = x',
+    'let x = a[1]; const modify = () => { x = 99 }; modify(); a[0] = x',
+    'const b = new Int32Array([99]); a[0] = b[0]',
+    'a[0] += 99',
+  ]
+  const sources = edits.map(edit => copiedTable('Int32Array', edit))
+  sources.push(copiedTable('Int32Array', '', 0))
+  for (const [ctor, values] of [['Int32Array', '[2, 3]'], ['Int32Array', '[-2147483648, 2147483647]'], ['Uint32Array', '[2147483648, 4294967295]']])
+    sources.push(copiedTable(ctor).replace(`${ctor}(8)`, `${ctor}(${values})`)
+      .replace('fill(a); ', '').replace('return gather(a, n)', 'return [a[0], a[1]]'))
+  for (const src of sources) {
+    const native = oracle(src).f
+    for (const level of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize: { level, sourceInline: false } }).exports.f
+      for (const k of [-1, 0, 7, 8]) for (const n of [0, 1, 7])
+        is(f(n, k), native(n, k), `O${level}: gather ${n} after moving ${k}`)
+    }
+  }
+})
 
 test('interval proof: immutable table bounds survive fill helpers and dependent reads', () => {
   const src = tableWalk('[1, 2, 3, 2147483647]')

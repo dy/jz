@@ -18,9 +18,12 @@ import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
   scanObjectArrayFacts, isFreshArrayCtor, stampCoInductionRanges,
+  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE,
 } from '../analyze-scans.js'
 import { makeTypedTracker } from './trackers.js'
 import { typedStorageNameCtor } from '../../typed-context.js'
+import { typedElementKey } from '../../typed-provenance.js'
+import { isPresentNumber } from '../../kind.js'
 import { scanIntervalIdx } from '../../type/interval-proof.js'
 import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
@@ -641,9 +644,25 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
   // Width lost by a typed read or unsigned value must propagate through
   // copies/arithmetic, even when an index use would otherwise permit wrapping.
   const valueWide = new Set()
+  let uses
+  const wordUse = u => {
+    if (u[BINDING_USE_KIND] === USE.WORD) return true
+    const dest = u[BINDING_USE_KIND] === USE.BARE ? u[BINDING_USE_STORE] : null
+    if (!dest || typeof dest[1] !== 'string' || !typedElementKey(dest[2], isPresentNumber(ctx, dest[2], body))) return false
+    const aux = typedElemAux(typedStorageNameCtor(ctx, dest[1], locals))
+    return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
+  }
   const widenValue = (name, rhs) => {
     if (locals.get(name) !== 'i32' || unsignedLocals.has(name) ||
         exprType(rhs, locals, null, false, body, readPresent) !== 'f64') return false
+    // A checked integer read may lose absence only when every use already
+    // asks for its word. Keep the bounds check; its missing arm becomes zero
+    // at the local's conversion instead of round-tripping through f64.
+    if (Array.isArray(rhs) && rhs[0] === '[]' && exprType(rhs, locals) === 'i32') {
+      uses ||= scanBindingUses(body)
+      const binding = uses.get(name), reads = binding?.[BINDING_USE_USES]
+      if (binding?.[BINDING_USE_DECLS] === 1 && reads?.length && reads.every(wordUse)) return false
+    }
     const exact = exprType(rhs, locals) !== 'f64' ||
       (typeof rhs === 'string' ? valueWide.has(rhs) : some(rhs, n => n.some(x => typeof x === 'string' && valueWide.has(x))))
     if (exact) valueWide.add(name)

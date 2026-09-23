@@ -12,7 +12,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { _compileInProcess } from '../index.js'
 import { run, oracle } from './util.js'
-import { scanBindingUses, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_USES, BINDING_USE_KIND, USE } from '../src/compile/analyze-scans.js'
+import { scanBindingUses, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, USE } from '../src/compile/analyze-scans.js'
 
 test('array census: reads, calls, writes and escapes have distinct safety policies', () => {
   _compileInProcess('export const empty = () => 0')
@@ -47,6 +47,23 @@ test('array census: reads, calls, writes and escapes have distinct safety polici
   const uses = scanBindingUses(body, new Set(['a'])).get('a')
   is(uses[BINDING_USE_USES][0][BINDING_USE_KIND], USE.MEMBER_CALL, 'parameter member call is retained')
   is(arrayUsesSafe(uses), false, 'parameter proof rejects a member call')
+})
+
+test('binding census: only discarded indexed assignments record a word-store candidate', () => {
+  _compileInProcess('export const empty = () => 0')
+  const target=['[]','a','i'], store=['=',target,'v']
+  const rows=[
+    [[';',store],true], [['{}',store],true], [['if','p',store],true],
+    [['while','p',store],true], [['for',store,'p',null,[';']],true],
+    [['return',store],false], [['let',['=','x',store]],false],
+    [['?:','p',store,[null,0]],false], [store,false],
+    [['=>',[],store],false], [['+=',target,'v'],false],
+  ]
+  for(const [body,discarded] of rows){
+    const uses=scanBindingUses(body,new Set(['v'])).get('v')?.[BINDING_USE_USES]
+    is(uses?.length,1,'the RHS use is retained')
+    is(uses[0][BINDING_USE_STORE]===target,discarded,JSON.stringify(body))
+  }
 })
 
 

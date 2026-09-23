@@ -305,7 +305,7 @@ export default (ctx) => {
     __dyn_del: ['__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
     __str_arr_idx: ['__str_length', '__char_at'],
     __typed_str_idx: ['__str_length', '__char_at'],
-    __typed_key_idx: ['__typed_str_idx', '__str_eq', '__to_num', '__to_str', '__ftoa', '__str_length', '__char_at', '__is_str_key'],
+    __typed_key_idx: ['__typed_str_idx', '__str_eq', '__to_num', '__ftoa', '__str_length', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
   })
 
@@ -1464,7 +1464,8 @@ export default (ctx) => {
   ctx.core.stdlib['__typed_str_idx'] = stringIndexWat('__typed_str_idx', 2147483647)
 
   // A typed-array key is an element index, an invalid canonical numeric key
-  // (-1), or an ordinary property (-2). The latter retains a sidecar value.
+  // (-1), or an ordinary property (-2). The caller normalizes non-number
+  // keys once and retains that string for the sidecar path as well.
   ctx.core.stdlib['__typed_key_idx'] = `(func $__typed_key_idx (param $key i64) (result i32)
     (local $i i32) (local $n f64)
     (local.set $n (f64.reinterpret_i64 (local.get $key)))
@@ -1473,8 +1474,6 @@ export default (ctx) => {
         (if (i32.or (f64.lt (local.get $n) (f64.const 0))
               (f64.ne (local.get $n) (f64.trunc (local.get $n)))) (then (return (i32.const -1))))
         (return (i32.trunc_sat_f64_s (local.get $n)))))
-    (if (i32.eqz (call $__is_str_key (local.get $key)))
-      (then (local.set $key (call $__to_str (local.get $key)))))
     (if (i32.eqz (call $__str_length (local.get $key))) (then (return (i32.const -2))))
     (local.set $i (call $__char_at (local.get $key) (i32.const 0)))
     (if (i32.and (i32.ge_u (i32.sub (local.get $i) (i32.const 48)) (i32.const 10))
@@ -1936,6 +1935,9 @@ export default (ctx) => {
     ${ctx.linkDemand.typedProperties ? `(if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
           (f64.ne (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj))))
       (then
+        (if (i32.and (f64.ne (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
+              (i32.eqz (call $__is_str_key (local.get $key))))
+          (then (local.set $key (call $__to_str (local.get $key)))))
         (local.set $kidx (call $__typed_key_idx (local.get $key)))
         (if (i32.ne (local.get $kidx) (i32.const -2))
           (then
