@@ -1340,9 +1340,9 @@
         <div class="pcol pleft">
           <div class="phead">
             <a class="logo" href="./" aria-label="JZ – home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
-            <h1>JS as it is<br class="hb">to native speed</h1>
+            <h1>Plain JS<br class="hb">at native speed</h1>
           </div>
-          <p class="sub">Compile plain JS to WASM.<br/> For DSP, math and visuals.</p>
+          <p class="sub">Compile plain JS to WASM, ahead of time.<br/> For DSP, math, visuals, and more.</p>
           <button class="install" id="install1" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
         </div>
 
@@ -1396,8 +1396,8 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans prose">
-            <p>JZ compiles JavaScript to WASM at native speed.</p>
-            <p><em>Valid JZ is valid JS</em>: same source runs as plain JS or compiles to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
+            <p>JZ (<em>javascript zero</em>) compiles JavaScript ahead of time to a plain <code>.wasm</code> module: no engine, no GC, no type annotations, auto-SIMD, byte-identical output.</p>
+            <p><em>Valid JZ is valid JS</em> – drop the compile step and the same file keeps running.</p>
             <table>
               <thead>
                 <tr>
@@ -1470,7 +1470,6 @@
                 <span class="t">eval Function with</span><span class="t">Proxy Reflect</span><span class="t">descriptors</span><span class="t">prototype chains</span><span class="t">top-level await</span><span class="t">import()</span><span class="t">DOM</span><span class="t">Node Intl Temporal</span>
               </div>
             </div>
-            <p>What's supported: classes, generators, async/await, destructuring, BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers.</p>
             <p>What differs: no GC (call <code>memory.reset()</code>), 64-bit BigInt, compile-time regexes, ASCII case and UTC dates. <a href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">Details →</a></p>
           </div>
         </details>
@@ -1551,10 +1550,10 @@
     <section class="author">
       <div class="author-wrap">
         <div class="author-text prose">
-          <h2>Why JZ exists</h2>
+          <h2>Inspiration</h2>
           <p>JS is considered slow and not serious: runtime with JIT, GC hits, language quirks. Spec only adds and never deprecates.</p>
-          <p>But I like minimal, functional JavaScript – <a href="https://www.crockford.com/javascript/" target="_blank" rel="noopener">Crockford’s good parts</a>. That created an urge to stabilize JS – drop the legacy, no OOP, no classes, no runtime. Javascript Zero. I am not a compiler engineer, but I know how to write minimal atomic code, so I went in steps: <a href="https://github.com/dy/subscript" target="_blank" rel="noopener">subscript</a> parser, then <a href="https://github.com/dy/watr" target="_blank" rel="noopener">watr</a> compiler, then JZ. AI improved the initial minimal architecture to what we have now.</p>
-          <p>The ambition: JS compiled AOT, faster than V8 on every kernel, smaller than AssemblyScript, same file still runs as JS.</p>
+          <p>I like minimal, functional JavaScript – <a href="https://www.crockford.com/javascript/" target="_blank" rel="noopener">Crockford’s good parts</a>. So I decided to stabilize the subset I use: drop the legacy, OOP, classes, runtime. Javascript Zero. Not a compiler engineer, but I like minimal atomic code, so I went in steps: <a href="https://github.com/dy/subscript" target="_blank" rel="noopener">subscript</a> parser, then <a href="https://github.com/dy/watr" target="_blank" rel="noopener">watr</a> compiler, then JZ. AI improved the initial minimal architecture to what we have now.</p>
+          <p>The ambition: faster than V8, smaller than AssemblyScript, JZ ⊂ JS.</p>
         </div>
         <div class="sponsor">
           <p>Find it useful?</p>
