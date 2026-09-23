@@ -942,6 +942,122 @@ test('audit: integer comparison peeling preserves signed and unsigned boundaries
   }
 })
 
+test('audit: checked integer comparisons preserve misses, signedness and operand order', () => {
+  for (const ctor of ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float64Array']) {
+    const src = `export function f(i,x,n){
+      const a=new ${ctor}(n?[0,-1,2147483647,2147483648,4294967295,NaN]:[]),s=x|0,u=x>>>0;
+      return [a[i]===s,a[i]!==s,a[i]<s,a[i]<=s,a[i]>s,a[i]>=s,
+        a[i]===u,a[i]!==u,a[i]<u,a[i]<=u,a[i]>u,a[i]>=u,
+        s===a[i],s!==a[i],s<a[i],s>=a[i],a[i]===undefined]
+    }
+    export function order(d){const a=new ${ctor}([1,2]);let i=d|0;
+      return [a[i++]===i,i,a[d]===(i=9),i,(i=0)===a[(i=1,d)],i]}`
+    const js = oracle(src)
+    for (const optimize of TIERS) {
+      const e = jz(src, { optimize }).exports
+      for (const n of [0, 1]) for (const i of [-1, 0, 1, 2, 3, 4, 5, 6])
+        for (const x of [-2147483648, -1, 0, 2147483647, 4294967295])
+          is(e.f(i,x,n), js.f(i,x,n), `${ctor} ${optimize}: i=${i}, x=${x}, n=${n}`)
+      for (const d of [-1, 0, 1, 2]) is(e.order(d), js.order(d), `${ctor} ${optimize}: order ${d}`)
+    }
+  }
+  if (!onKernel()) {
+    const src = `function cmp(a,i,x){return a[i]!==x}
+      export function f(i,x){return cmp(new Int32Array([1,2]),i|0,x|0)}`
+    const body = funcWat(compile(src, { optimize: { level: 'speed', sourceInline: false, watr: false }, wat: true }), 'cmp')
+    ok(body.includes('i32.load'), 'comparison reads the integer element')
+    ok(!/f64\.convert_i32/.test(body), 'checked integer comparison stays in integer registers')
+  }
+})
+
+test('audit: checked integer comparisons coerce objects instead of comparing pointer words', () => {
+  const src = `export function f(i){
+    const a=new Int32Array([1]),b={valueOf(){return 1}};
+    return [a[i]==b,a[i]!=b,a[i]===b,b==a[i],b!=a[i],b===a[i]]
+  }
+  export function effects(i){
+    let trace=0;
+    const a=new Int32Array([1]),b={valueOf(){trace=trace*10+2;return 1}};
+    const eq=a[(trace=trace*10+1,i)]==b;
+    const lt=b<a[(trace=trace*10+3,i)];
+    return [eq,lt,trace]
+  }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const e = jz(src, { optimize }).exports
+    for (const i of [-1, 0, 1, 0]) {
+      is(e.f(i), js.f(i), `${optimize}: object comparison at ${i}`)
+      is(e.effects(i), js.effects(i), `${optimize}: conversion order at ${i}`)
+    }
+  }
+})
+
+test('audit: cached global typed lengths survive empty, nullish and replacement lifecycles', () => {
+  const src = `let a;
+    export function reset(n,view){const b=new Int32Array(n+2);a=view?b.subarray(1,n+1):new Int32Array(n);for(let i=0;i<n;i++)a[i]=i+7}
+    export function clear(v){a=v?null:undefined}
+    export function read(n,k){let s=0;for(let i=0;i<n;i++)s+=a[k]|0;return s}
+    export function write(n,k){for(let i=0;i<n;i++)a[k]=(a[k]|0)+1;return 1}
+    function change(n){reset(n,0)}
+    export function changing(){let s=0;for(let i=0;i<4;i++){change(i);s+=a[1]|0}return s}`
+  for (const optimize of TIERS) {
+    const e = jz(src, { optimize }).exports, js = oracle(src)
+    is(e.read(0,0), 0, `${optimize}: uninitialized zero-work read`)
+    is(e.write(0,0), 1, `${optimize}: uninitialized zero-work write`)
+    throws(() => e.read(1,0), TypeError, `${optimize}: uninitialized read throws TypeError`)
+    for (const nil of [0, 1]) {
+      e.clear(nil); js.clear(nil)
+      is(e.read(0,0), 0, `${optimize}: nullish zero-work read`)
+      is(e.write(0,0), 1, `${optimize}: nullish zero-work write`)
+      throws(() => e.read(1,0), TypeError, `${optimize}: nullish read throws TypeError`)
+      throws(() => e.write(1,0), TypeError, `${optimize}: nullish write throws TypeError`)
+    }
+    for (const view of [0, 1]) for (const n of [0, 3, 3, 1, 0, 4]) {
+      e.reset(n,view); js.reset(n,view)
+      for (const k of [-1, 0, n-1, n]) {
+        is(e.read(3,k), js.read(3,k), `${optimize}: ${view ? 'view' : 'owned'} length ${n}, read ${k}`)
+        is(e.write(2,k), js.write(2,k))
+        is(e.read(3,k), js.read(3,k), 'element writes remain visible through the cached base')
+      }
+    }
+    is(e.changing(), js.changing(), 'callee replacement invalidates both base and length')
+  }
+  if (!onKernel()) {
+    const src = `let a=new Int32Array(0);export function reset(n){a=new Int32Array(n)}
+      function write(n,k){for(let i=0;i<n;i++)a[k]=(a[k]|0)+1}
+      export function f(n,k){write(n|0,k|0);return 1}`
+    const body = funcWat(compile(src, { optimize: { level: 'speed', sourceInline: false, watr: false }, wat: true }), 'write')
+    ok(body.includes('(loop'), 'the fixture retains its write loop')
+    const loop = body.slice(body.indexOf('(loop'))
+    is((loop.match(/\(i32\.load/g) || []).length, 2, 'both loop versions load only elements, not the allocation header')
+  }
+})
+
+test('audit: dependent integer reads keep the checked index in integer registers', () => {
+  const src = `let trace=0;
+    function make(){trace=trace*10+1;return new Int32Array([4,2])}
+    export function order(i){trace=0;const yes=make()[(trace=trace*10+2,i)]<3;return [yes,trace]}
+    export function f(i,n){const a=new Int32Array([7,11,13]),b=new Int32Array(n?[2,-1,3]:[]);
+      return [a[b[i]]|0,a[b[i]]===undefined]}
+    export function word(i){const a=new Int32Array([7,11,13]),b=new Int32Array([2,-1,3]);return a[b[i]]|0}`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const e = jz(src, { optimize }).exports
+    for (const i of [-1, 0, 1, 2, 3, 0]) {
+      is(e.order(i), js.order(i), `${optimize}: receiver and index effects on hit or miss`)
+      for (const n of [0, 1]) is(e.f(i,n), js.f(i,n), `${optimize}: nested index ${i}, length ${n ? 3 : 0}`)
+      is(e.word(i), js.word(i))
+    }
+  }
+  if (!onKernel()) {
+    const source = `function word(a,b,i){return a[b[i]]===13}
+      export function f(i){return word(new Int32Array([7,11,13]),new Int32Array([2,-1,3]),i|0)}`
+    const body = funcWat(compile(source, { optimize: { level: 'speed', sourceInline: false, watr: false }, wat: true }), 'word')
+    ok(body.includes('i32.load'), 'the fixture retains its dependent loads')
+    ok(!/f64\.convert_i32|trunc_sat_f64/.test(body), 'dependent integer load has no float round trip')
+  }
+})
+
 test('audit: word-only helper parameters normalize at the call boundary', () => {
   const src=`function word(v){return v&7}
     function identity(v){return v}

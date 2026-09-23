@@ -1714,7 +1714,9 @@ export default (ctx) => {
       // clamp, no select pair), guard misses yield undefined. ~6 ops/site
       // leaner than the branchless form below, whose only reason is keeping
       // SPEED-tier kernel bodies branch-free for the SIMD lift (off at -Os).
-      if ((ctx.transform.optFlags & OPTF.leanCheckedIdx)) {
+      // Dependent index reads are scalar gathers: a branch avoids the extra
+      // address clamp on their serial load chain.
+      if ((ctx.transform.optFlags & OPTF.leanCheckedIdx) || ctx.types.indexConsumer) {
         const ti = tempI32('tbi')
         const off = ['i32.add', typedDataAddr(emit(arr), isView),
           ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]

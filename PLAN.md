@@ -82,11 +82,12 @@ Architecture
   Named typed-array keys use property storage, canonical numeric keys convert
   to elements. Array indices follow the documented i32-truncating contract;
   object keys keep fractional names.
-- Numeric lowering (CONTRIBUTING has the forms): ToInt32 is the i64
-  truncation and wrap, range-proven values drop the infinity guard, a checked
-  read keeps its `__to_int32` call, load CSE keeps an exit-only `if`'s loads,
-  the small-constant loop unroll has a cost budget, and watr's `ifset` leaves
-  a branchy condition alone.
+- Numeric lowering (CONTRIBUTING has the forms): range-proven values avoid
+  general conversion helpers. Checked integer reads stay in words through
+  integer conversions and comparisons; missing elements remain undefined
+  until the consumer decides their result. Load CSE keeps an exit-only
+  `if`'s loads, small-constant unrolling has a cost budget, and watr's `ifset`
+  leaves a branchy condition alone.
 - Transcendentals share one evaluation tree (`polyTree`) across the scalar
   WAT, the two-wide WAT and the JS constant folder, so the three agree bit
   for bit. exp and exp2 are one table kernel at 0.5 ulp; the atan, asin and
@@ -152,17 +153,21 @@ Dependencies
 
 ## Remaining release work
 
-1. **Runtime and self-host speed.** The self-compile gate passes (warm
-   0.953× against the 1.03× cap, fresh 0.782× against 0.99× with the
-   published watr dependency). The compiler's
+1. **Runtime and self-host speed.** The final self-compile run passes (warm
+   0.961× against the 1.03× cap, fresh 0.837× against 0.99× with the
+   published watr dependency). An earlier fresh run failed at 1.073×;
+   the preceding compiler measured 0.966× warm / 0.955× fresh in the
+   follow-up comparison. Keep the failed run visible: quiet reference
+   evidence is still required. The compiler's
    own profile is flat (Map/Set probes and hashing 15%, pointer decoding 3%,
    the AST visitor 4.5%); call-site wrapper isolation, blanket forwarding
    inlining, a leaf-skipping visitor, closure-property precision and extended
    duplicate-read reuse each measured nothing and were removed, so a retry
    needs a new measurement first.
 
-   Remaining speed gaps include webaudio, watr, percolation and waves; the aggregate
-   speed win does not establish a win on every case.
+   Remaining speed gaps include webaudio, watr and the rival-Wasm rows below.
+   Percolation and waves lead in the current example run; the broader paired
+   percolation inputs and reference-hardware evidence remain relevant.
    webaudio now preserves channel-array types through iteration, accessors,
    base initializers and solver reachability. Pending `Object.assign` targets
    wait for their factories before joining source shapes. Small leaf loops
@@ -224,9 +229,15 @@ Dependencies
    Three camera settings match pixel for pixel; the binary grows 4637 → 4664
    bytes. Glyph parsing, sdf, noise and wordcount are unchanged by this
    optimization. These are diagnostic measurements, pending release hardware.
-   Percolation still trails on identical inputs: three fixed random grids at
-   four occupancy levels match pixels and cluster counts exactly, with a
-   0.949× V8/JZ geomean. Random-input variation alone does not explain its gap.
+   Checked integer comparisons and dependent indices now avoid float round
+   trips. Stable global typed-array snapshots also cache allocation lengths
+   under the existing call-graph write proof. Across three fixed grids and
+   four occupancy levels, two paired runs put percolation 7.6–8.0% faster
+   than 82b4e4e6, with identical pixels and cluster counts. V8/JZ is
+   1.046–1.048×; the final run leads on all 12 inputs. The earlier run
+   led on 11, with one 0.9% behind, so the narrow margins still need quiet
+   reference evidence. Its binary shrinks 13168 → 12969 bytes. Watr's size remains
+   319894 bytes. These are paired local diagnostics, not release evidence.
 
    The published watr 5.11.2 dependency closes the 320000-byte size backstop.
    Watr commit 434213d generalizes its existing block merging: a first
@@ -307,16 +318,18 @@ Dependencies
    approval. The watr optimizer rules, including the block-prefix size
    correction in item 1, are published and required by the dependency.
 
-## Gate evidence, September 22
+## Gate evidence, September 23
 
-- Core: 4636 passed, one skip (112442 assertions). Opt0: 4444
-  passed (92248 assertions); opt3: 4444 passed (92676 assertions);
-  WASI: 4497 passed (103003 assertions), each with one skip. All four ran
+- Core: 4640 passed, one skip (114002 assertions). Opt0: 4448
+  passed (93032 assertions); opt3: 4448 passed (93460 assertions);
+  WASI: 4501 passed (104563 assertions), each with one skip. All four ran
   on the same compiler tree with published watr 5.11.2. No compiler source
   changed during these gates.
 - Self-compile: 68 passed (2365 assertions). Perf ratchet: 10 passed.
-  Self-compile speed passes: warm 0.857× V8 (cap 1.03×), fresh 0.765×
-  (cap 0.99×). Public types and import lint pass.
+  The final self-compile speed run passes: warm 0.961× V8 (cap 1.03×), fresh
+  0.837× (cap 0.99×). An earlier fresh run failed at 1.073×; the old/current
+  comparison and loaded-machine limitation are recorded in item 1.
+  Public types and import lint pass.
 - Language conformance: 3201 pass, zero failures, two xfails; all 4045
   negative syntax cases reject. The receiver suite passes 23 tests in both
   hosts, including captured iterator operations, spread callback receivers
@@ -326,31 +339,30 @@ Dependencies
   parameters, restricted async grammar and mixed static/instance private
   accessor pairs. They reject through the Wasm-hosted compiler too. No xfail,
   negative ledger or coverage floor changed.
-- The full benchmark before early-return inlining: 262/271 pass. Speed
-  geomeans were 0.470× V8, 0.705× native C
-  and 0.488× AssemblyScript; size is 0.782× AssemblyScript. Perf-fuzz passes
-  (integer 0.93×, float 0.74×, mixed 0.85× V8), as does floatbeat (0.400×).
-  TinyGo coverage passes. Watr's current published-dependency size passes at 319894
-  bytes against 320000, and its 1.168× V8 runtime clears the existing 1.25×
-  trail gate, though it remains slower than V8.
-- That full run had nine red rows: fastest-Wasm fft 1.078×, glyfparse 1.429×,
-  sdf 1.420×, trace 1.071×, crc32 1.058×, noise 1.164× and wordcount 1.108×;
-  alpha's stale committed w2c row; and Ulam, now closed locally (below). Twelve checked kernels,
-  including sdf, glyfparse, crc32 and noise, remain byte-identical to 070f9adb.
-  The red-row count moved between runs on this loaded machine; that is not
-  evidence of a speed improvement. Timing bands and all caps remain unchanged.
+- The full benchmark: 263/271 pass. Speed geomeans are 0.474× V8,
+  0.706× native C and 0.496× AssemblyScript; size is 0.782× AssemblyScript.
+  Perf-fuzz passes (integer 0.85×, float 0.71×, mixed 0.86× V8), as does
+  floatbeat (0.395×). TinyGo coverage passes. Watr's size backstop passes at
+  319898 bytes against 320000; its runtime is 1.01× V8 in this run.
+- Eight checks remain red: fastest-Wasm fft 1.090×, glyfparse 1.366×,
+  sdf 1.514×, noise 1.175×, levenshtein 1.152× and wordcount 1.293×;
+  sdf/V8 1.026×; and alpha's stale committed w2c row. All six Wasm kernels
+  are byte-identical to 82b4e4e6 with identical build options, so these are
+  not regressions introduced by the checked-integer and length-cache work.
+  The changing red-row count on this loaded machine does not establish an
+  improvement. Timing bands and all caps remain unchanged.
 - The example driver had stale arguments for Ulam, waves, attractors and
   raymarcher. Their calls now match the current kernels, and an untimed
   arity check validates all 21 drivers. Lenia's effective zero seed is
   explicit. Kernel sources and timing caps are unchanged. Ulam's zero-size,
   repeated-view and changed-view outputs match JS pixel for pixel at O0,
-  O3 and WASI. The current example run has a 1.53× V8/JZ geomean and 19/21
-  strict wins; Ulam is now 1.87×, while waves at 0.61× and percolation at
-  0.97× trail V8. Ulam's five alternating before/after/V8 measurements give
+  O3 and WASI. The current example run has a 1.60× V8/JZ geomean and 21/21
+  strict wins: Ulam 1.66×, waves 1.12× and percolation 1.09×. Percolation's
+  separate three-grid paired comparison establishes the 7.6–8.0% improvement
+  recorded above; the benchmark alone does not establish a waves improvement.
+  Ulam's five alternating before/after/V8 measurements give
   a 45.9% runtime reduction and 1.68× V8 speed, with identical pixels at
-  three camera settings. Waves is byte-identical before and after this patch
-  (33534 bytes), so its current loss is not a compiler regression from it.
-  The full competitive benchmark was not repeated.
+  three camera settings.
 - The focused typed-loop suite passes 19 tests and 3671 assertions, including
   primitive signed-zero comparisons that the array deep-equality helper omits.
 - The machine exceeds the reference-evidence swap cap. These are diagnostics,

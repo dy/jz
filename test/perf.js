@@ -35,6 +35,19 @@ const median = (fn, n) => {
   xs.sort((a, b) => a - b)
   return xs[n >> 1]
 }
+
+// Entry guards may precede loop versioning. Select the first arm containing
+// a loop, rather than assuming the first `then` is the optimized body.
+function firstLoopArm(fn) {
+  for (let t = fn.indexOf('(then'); t >= 0;) {
+    let d = 0, i = t
+    for (; i < fn.length; i++) { if (fn[i] === '(') d++; else if (fn[i] === ')' && --d === 0) break }
+    const arm = fn.slice(t, i + 1)
+    if (arm.includes('(loop')) return arm
+    t = fn.indexOf('(then', i + 1)
+  }
+  return fn
+}
 // Time jsFn against wasmFn and pin the ratio. Under the gate only: without JZ_PERF=1
 // nothing is timed, so the correctness checks above each pin are all the suite runs.
 const pin = (label, jsFn, wasmFn, n, factor = 1.2, sample = bench, warm = 0) => {
@@ -1047,14 +1060,7 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
   // twin legitimately converts).
   const sweepArm = (w) => {
     const f = w.match(/\(func \$sweep[\s\S]*?\n  \)/)?.[0] ?? w
-    let t = f.indexOf('(then')
-    // wasi leg: exported fns open with the reactor's self-arming guard —
-    // `(then (call $__start))` is not the versioning arm; skip to the next
-    while (t >= 0 && /^\(then\s*\(call \$__start\)/.test(f.slice(t))) t = f.indexOf('(then', t + 1)
-    if (t < 0) return f
-    let d = 0, i = t
-    for (; i < f.length; i++) { if (f[i] === '(') d++; else if (f[i] === ')' && --d === 0) break }
-    return f.slice(t, i + 1)
+    return firstLoopArm(f)
   }
   const watSpeed = sweepArm(compile(src, { wat: true, optimize: 'speed' }))
   const watDefault = sweepArm(compile(src, { wat: true, optimize: 2 }))  // pin level 2 (pass off) — JZ_TEST_OPTIMIZE must not flip the gated half of this codegen pin
@@ -1100,19 +1106,9 @@ test('codegen: named i32 index feeder (let idx = y*W + x) computes in native i32
       return s
     }`, { wat: true })
   const at = wat.indexOf('(func $sum')
-  let fn = wat.slice(at, wat.indexOf('(func', at + 6))
+  const fn = firstLoopArm(wat.slice(at, wat.indexOf('(func', at + 6)))
   // Root F versioning: the checked twin's f64 paths are by design — measure the
   // FAST arm (paren-matched: the arm holds its own ifs)
-  {
-    let t = fn.indexOf('(then')
-    // skip the wasi reactor's self-arming `(then (call $__start))` prologue
-    while (t >= 0 && /^\(then\s*\(call \$__start\)/.test(fn.slice(t))) t = fn.indexOf('(then', t + 1)
-    if (t >= 0) {
-      let d = 0, i = t
-      for (; i < fn.length; i++) { if (fn[i] === '(') d++; else if (fn[i] === ')' && --d === 0) break }
-      fn = fn.slice(t, i + 1)
-    }
-  }
   const n = (re) => (fn.match(re) || []).length
   is(n(/i32\.trunc_sat_f64_s/g), 0, 'no f64→i32 truncation of the index')
   is(n(/f64\.mul/g), 0, 'row offset py*w is an i32.mul, not f64.mul')

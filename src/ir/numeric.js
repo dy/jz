@@ -14,7 +14,7 @@ import { int32 } from '../static.js'
 
 // An exact integer carrier and the signedness of its numeric interpretation.
 const compareWord = n => {
-  if (!Array.isArray(n)) return null
+  if (!Array.isArray(n) || n.ptrKind != null) return null
   if (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u')
     return { src: n[1], unsigned: n[0] === 'f64.convert_i32_u' }
   if (n.type === 'i32') return { src: n, unsigned: !!n.unsigned }
@@ -37,6 +37,17 @@ const topBitClear = n => {
  * Equality also depends on signedness: the same word can mean -1 or 2^32-1.
  * A mixed pair can compare in i32 only with a proof that the domains agree. */
 export function foldIntCompare(op, a, b) {
+  // A missing integer element compares as undefined, never as zero. Keep
+  // that answer in the guard while comparing present elements as words.
+  // The right operand must be a leaf: moving an effect into an arm would
+  // skip it on a miss, and moving an earlier read could change its value.
+  if (a.checkedNumRead) {
+    const y = compareWord(b)
+    if (y && (y.src[0] === 'local.get' || y.src[0] === 'i32.const')) {
+      const checked = mapCheckedRead(a, hit => foldIntCompare(op, hit, b), op === 'ne' ? 1 : 0, true)
+      if (checked) return checked
+    }
+  }
   const x = compareWord(a), y = compareWord(b)
   if (!x || !y) return null
   const eq = op === 'eq' || op === 'ne', same = x.unsigned === y.unsigned
@@ -77,6 +88,8 @@ export const asF64 = n => {
 /** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
 export const asI32 = n => {
   if (n.type === 'i32') return n
+  const checked = n.checkedNumRead && i32CheckedRead(n)
+  if (checked) return checked
   // Peephole: trunc_sat_f64_s(convert_i32_*(x)) === x. The argument of f64.convert_i32_*
   // is i32 by WASM validation, so peel unconditionally and re-tag.
   if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u')) {
@@ -410,30 +423,25 @@ const i32Narrowed = n => {
   return null
 }
 
-/** A checked integer-element read in the i32 ring: `(if (result f64) in (then convert(load)) (else undefined))`,
- *  the same under a block of index sets, or the branchless `(select convert(load) undefined in)`,
- *  each with the convert peeled and the miss arm zero. Null for any other shape (a float element). */
-const i32CheckedRead = n => {
-  const zero = ['i32.const', 0]
-  const arm = v => Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') && Array.isArray(v[1]) ? typed(v[1], 'i32') : null
-  const narrowIf = v => {
-    if (!Array.isArray(v) || v[0] !== 'if' || v.length !== 5 || !Array.isArray(v[3]) || v[3][0] !== 'then' || !Array.isArray(v[4]) || v[4][0] !== 'else') return null
-    const hit = arm(v[3][1])
-    return hit ? typed(['if', ['result', 'i32'], v[2], ['then', hit], ['else', zero]], 'i32') : null
+// Shared by integer conversion and comparison. Only callers holding the
+// checkedNumRead proof may replace the missing arm with its numeric answer.
+const mapCheckedRead = (n, hitOf, miss, branchOnly = false) => {
+  if (!Array.isArray(n)) return null
+  if (n[0] === 'block' && n[1]?.[0] === 'result' && n[1][1] === 'f64') {
+    const tail = mapCheckedRead(n[n.length - 1], hitOf, miss, branchOnly)
+    return tail && typed(['block', ['result', 'i32'], ...n.slice(2, -1), tail], 'i32')
   }
-  const narrowTail = v => {
-    const asIf = narrowIf(v)
-    if (asIf) return asIf
-    if (Array.isArray(v) && v[0] === 'select' && v.length === 4) { const hit = arm(v[1]); return hit ? typed(['select', hit, zero, v[3]], 'i32') : null }
-    return null
-  }
-  if (n[0] === 'if') return narrowIf(n)
-  if (n[0] === 'block' && Array.isArray(n[1]) && n[1][0] === 'result') {
-    const tail = narrowTail(n[n.length - 1])
-    return tail ? typed(['block', ['result', 'i32'], ...n.slice(2, -1), tail], 'i32') : null
-  }
-  return null
+  const branch = n[0] === 'if' && n.length === 5 && n[3]?.[0] === 'then' && n[3].length === 2 && n[4]?.[0] === 'else' && n[4].length === 2
+  if (!branch && !(n[0] === 'select' && n.length === 4)) return null
+  const hit = hitOf(branch ? n[3][1] : n[1])
+  if (!hit) return null
+  const cond = branch ? n[2] : n[3], absent = ['i32.const', miss]
+  return typed(branch || branchOnly
+    ? ['if', ['result', 'i32'], cond, ['then', hit], ['else', absent]]
+    : ['select', hit, absent, cond], 'i32')
 }
+const i32CheckedRead = n => mapCheckedRead(n, v =>
+  v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u' ? typed(v[1], 'i32') : null, 0)
 
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
  *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN

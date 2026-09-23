@@ -29,7 +29,10 @@ the existing binding-use census. This pass skips functions mixing numeric
 and named local references, which can alias. The duplicate JZ implementations and cleanup sweep are removed.
 Global-load optimizations share a lazy call-graph write proof; tiers without a
 consumer build neither it nor the subsumed coarse volatility census. Fixed
-number-carrier peepholes call the carrier directly, without a session lookup.
+typed-array global snapshots cache their immutable allocation length with the
+base under that same write proof. A zero base produces a harmless zero length
+until the original receiver check runs, preserving zero-trip and nullish behavior.
+Fixed number-carrier peepholes call the carrier directly, without a session lookup.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 Condition chaining and boolean simplification also run in watr, including the
@@ -279,6 +282,9 @@ unsigned carrier flag. Primitive parameters consumed only by word operators may
 convert once at the call boundary, as established by the binding-use census.
 Comparison emission and folding share one signedness proof: equal word bits
 do not imply equal numbers across signed and unsigned domains.
+Checked reads share one lowering for integer conversion and comparison:
+conversion maps absence to zero; comparison keeps the answer for undefined.
+Dependent index reads use branches to avoid address clamps on serial load chains.
 They also share exact integer expression narrowing, including conditionals;
 early conversion folding cannot hide those integer branches from SIMD lifting.
 Saturating integer conversions opt into the shared floating range query's

@@ -284,8 +284,21 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   }
   if (!chosen.size) return
 
+  const lengths = new Map()
   const replace = (node, parent, idx) => {
     if (!parent) return
+    // The allocation header of a fixed typed array never changes. Capture
+    // it alongside the base, so element stores cannot pin it inside loops.
+    const addr = node[0] === 'i32.load' && node.length === 2 ? node[1] : null
+    if (addr?.[0] === 'i32.sub' && addr[2]?.[0] === 'i32.const' && addr[2][1] === 8) {
+      const g = siteGlobal(addr[1])
+      if (chosen.has(g) && ctx.scope.globalValTypes?.get(g.slice(1)) === VAL.TYPED) {
+        let name = lengths.get(g)
+        if (!name) lengths.set(g, name = freshId())
+        parent[idx] = ['local.get', name]
+        return false
+      }
+    }
     const g = siteGlobal(node)
     if (g != null && chosen.has(g)) { parent[idx] = ['local.get', chosen.get(g)]; return false }
   }
@@ -301,6 +314,16 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
       ? ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['global.get', g]]]
       : ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['global.get', g]], ['i64.const', LAYOUT.OFFSET_MASK]]]
     snaps.push(['local.set', name, snap])
+    if (lengths.has(g)) {
+      const len = lengths.get(g)
+      decls.push(['local', len, 'i32'])
+      // An uninitialized global has offset zero. Speculation must remain
+      // safe for zero-trip loops; the original receiver check still throws
+      // if the program actually reaches a read or write through it.
+      snaps.push(['local.set', len, ['if', ['result', 'i32'], ['local.get', name],
+        ['then', ['i32.load', ['i32.sub', ['local.get', name], ['i32.const', 8]]]],
+        ['else', ['i32.const', 0]]]])
+    }
   }
   fn.splice(bodyStart, 0, ...decls, ...snaps)
   return chosen

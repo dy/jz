@@ -4478,14 +4478,14 @@ test('versioning: bound-not-first &&-cond stays checked (fail-closed)', () => {
       const a = new Uint8Array(8)
       for (let i = 0; i < 8; i++) a[i] = i
       let len = 0
-      while (a[len] < 6 && len < n) len++
+      while (a[len] < 9 && len < n) len++
       return len * 10 + (a[len] | 0)
     }`
   const wat = jz.compile(src, { optimize: 'speed', wat: true })
   const go = wat.slice(wat.indexOf('(func $go'))
-  ok(/nan:0x7FF8000200000000/.test(go), 'checked reads survive (no fast twin assumed)')
-  const { exports } = jz(src)
-  is(exports.go(100), 60 + 6, 'stops at a[6]=6 (checked semantics exact)')
+  ok(/i32\.(lt_u|ge_u)/.test(go), 'checked integer comparison retains its bounds guard')
+  const { exports } = jz(src, { optimize: 'speed' })
+  is(exports.go(100), 80, 'missing element stops the comparison instead of becoming zero')
   is(exports.go(3), 30 + 3, 'bound conjunct still exits at n')
 })
 
@@ -4503,10 +4503,12 @@ test('versioning: ||-cond never versions (accesses run past the bound)', () => {
     }`
   const wat = jz.compile(src, { optimize: 'speed', wat: true })
   const go = wat.slice(wat.indexOf('(func $go'))
-  ok(/nan:0x7FF8000200000000/.test(go), '||-cond keeps checked reads')
-  const { exports } = jz(src)
+  ok(/i32\.(lt_u|ge_u)/.test(go), '||-cond retains the integer read bounds guard')
+  const { exports } = jz(src, { optimize: 'speed' })
   is(exports.go(1), 3, 'runs past the bound conjunct until a[len] ≥ 3 (checked semantics)')
   is(exports.go(6), 6, 'bound-first exit exact')
+  is(exports.go(8), 8, 'missing element makes the right disjunct false at the boundary')
+  is(exports.go(20), 20, 'missing element stays false beyond the boundary')
 })
 
 // S2 narrowing + short-circuit refinement + range-rhs — the heapsort family:
