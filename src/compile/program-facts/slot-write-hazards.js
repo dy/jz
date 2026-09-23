@@ -17,6 +17,7 @@ import { withValueOverlay } from '../flow-state.js'
 import { collectBodyElemSids } from './shared.js'
 import { isExported } from '../func-exports.js'
 import { K, tagOf, paramOf, hasTag, UNKNOWN } from '../../summary/index.js'
+import { frameNode } from '../../function.js'
 
 // ————————————————————————————— slot-write hazards —————————————————————————————
 // The slot censuses (slotIntCertain here, slotTypes/slotTypedCtors in
@@ -433,7 +434,7 @@ export function collectSlotWriteHazards(ast, opts) {
         curFuncName = func.name
         curParamIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
       }
-      try { visit(func.body) }
+      try { visit(frameNode(func)) }   // a parameter default runs in the frame
       finally { curSids = curParamVts = curParamIntCertain = null; curFuncName = curParamIdx = null }
     })
   }

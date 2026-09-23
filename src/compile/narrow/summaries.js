@@ -28,6 +28,7 @@ import { VAL } from '../../reps.js'
 import { K, kind } from '../../summary/index.js'
 import { typedElementKey } from '../../typed-provenance.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from '../analyze-scans.js'
+import { frameNode } from '../../function.js'
 
 // Reuse the bounds interpreter at call sites. Start at unknown and refine only
 // when EVERY incoming site proves a hull. Each intermediate result is sound;
@@ -92,7 +93,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       let changed = false
       for (let k = 0; k < f.sig.params.length; k++) {
         const p = f.sig.params[k]
-        if (f.defaults?.[p.name] != null || (f.rest && k === f.sig.params.length - 1) || isReassigned(f.body, p.name)) continue
+        if (f.defaults?.[p.name] != null || (f.rest && k === f.sig.params.length - 1) || isReassigned(frameNode(f), p.name)) continue
         let range = undefined
         for (const cs of incoming.get(f)) {
           const v = observed.get(cs)?.[k]
@@ -250,7 +251,8 @@ export function inferInternalArrayLengths() {
   const safeParams = new Map(funcs.map(f => [f.name, f.sig.params.map(() => true)]))
   for (const f of funcs) {
     const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
-    walkAst(f.body, { enter: n => {
+    // a parameter default runs in the frame: its resizes and escapes count
+    walkAst(frameNode(f), { enter: n => {
       if (n[0] === '=>') { for (const [name, k] of ps) if (refs(n, name)) safe[k] = false; return false }
       if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') for (const [name, k] of ps) {
         if (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name))) safe[k] = false
@@ -272,7 +274,7 @@ export function inferInternalArrayLengths() {
     safeChanged = false
     for (const f of funcs) {
       const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
-      walkAst(f.body, { enter: n => {
+      walkAst(frameNode(f), { enter: n => {
         if (n[0] === '=>') return false
         if (n[0] === '()' && typeof n[1] === 'string' && safeParams.has(n[1])) {
           const args = callArgs(n), target = safeParams.get(n[1])
@@ -408,7 +410,8 @@ export function inferTypedValueRanges(storeRanges) {
     return selfCopy(f, n[2], n[1][1]) ? [0, 0] : storeRanges.get(f)?.get(n) ?? exprRange(n[2])
   }
 
-  // Direct effects: each function's own body, in isolation — an array-elem
+  // Direct effects: each function's own frame (its parameter defaults and its
+  // body), in isolation — an array-elem
   // write through a param seeds/widens that param's summary range; any alias,
   // return-escape, or opaque call poisons it (`bad`). User-call forwarding
   // (a param passed straight through to another narrowable function) is
@@ -449,7 +452,7 @@ export function inferTypedValueRanges(storeRanges) {
         }
         for (let i = 1; i < n.length; i++) walk(n[i], closure)
       }
-      walk(f.body)
+      walk(frameNode(f))
     }
   }
 
@@ -462,7 +465,7 @@ export function inferTypedValueRanges(storeRanges) {
       changed = false
       for (const f of funcs) {
         const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), sum = summaries.get(f.name)
-        walkAst(f.body, { enter: n => {
+        walkAst(frameNode(f), { enter: n => {
           if (n[0] === '=>') return false
           if (n[0] === '()' && typeof n[1] === 'string' && summaries.has(n[1])) {
             const args = callArgs(n), target = summaries.get(n[1])

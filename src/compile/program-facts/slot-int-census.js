@@ -10,6 +10,7 @@ import { staticObjectProps } from '../../static.js'
 import { intLevelChecker } from '../../type.js'
 import { collectSlotWriteHazards, applySlotWriteHazards } from './slot-write-hazards.js'
 import { collectBodyElemSids, effectiveWriteValue } from './shared.js'
+import { frameNode } from '../../function.js'
 
 /** Whole-program slot intCertain observation.
  *
@@ -153,7 +154,8 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     for (const func of ctx.funcs.list) {
       if (!func.body || func.raw) continue
       curSids = bodySidsOf(func)
-      visit(func.body, bodyIntCertainOf(func.body, fresh))
+      const frame = frameNode(func)   // a parameter default runs in the frame
+      visit(frame, bodyIntCertainOf(frame, fresh))
       curSids = null
     }
     if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {

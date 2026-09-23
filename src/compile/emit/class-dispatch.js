@@ -11,7 +11,7 @@
 
 import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { ctx, inc } from '../../ctx.js'
-import { createFunction } from '../../function.js'
+import { createFunction, frameRoots } from '../../function.js'
 import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from '../../ast.js'
 import { asF64, asI64, boolBoxIR, isNullish, isUndef, rawBigInt, temp, throwTypeErrorIR, typed } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
@@ -195,7 +195,7 @@ export function memberUses() {
     if (own != null) { read.add(own); walk(n[1]); return }
     for (let i = 1; i < n.length; i++) walk(n[i])
   }
-  for (const f of ctx.funcs.list) { walk(f.body); if (f.defaults) for (const d of Object.values(f.defaults)) walk(d) }
+  for (const f of ctx.funcs.list) for (const r of frameRoots(f)) walk(r)
   walk(ctx.module.entryInit)
   for (const init of ctx.module.moduleInits ?? []) walk(init)
   for (const props of ctx.schema.list) for (const prop of props) defined.add(prop)

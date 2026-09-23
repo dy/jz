@@ -19,6 +19,7 @@ import { paramNumericArrayLike } from '../param-numeric.js'
 import { ensureParamRep } from '../../param-reps.js'
 import { scanBindingUses, USE, BINDING_USE_KIND, BINDING_USE_USES } from '../analyze-scans.js'
 import { K, tagOf, core } from '../../summary/kind.js'
+import { frameNode } from '../../function.js'
 
 // narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
 // when every mutation of it is provably int-preserving. Reuses type.js's
@@ -116,7 +117,7 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
       if (r.wasm === 'i32' && p.type === 'i32') continue
       if (mutated === null) {
         mutated = new Set()
-        if (func.body) findMutations(func.body, new Set(func.sig.params.map(p => p.name)), mutated)
+        if (func.body) findMutations(frameNode(func), new Set(func.sig.params.map(p => p.name)), mutated)
       }
       if (mutated.has(p.name)) {
         if (r.wasm === 'f64') {
@@ -137,7 +138,7 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
         // zero only at the helper that actually asks for ToInt32.
         if (isExported(func) || !func.body ||
             tagOf(core(ctx.summary.at(func.sig).paramKindOf(p.name))) !== K.NUMBER) continue
-        uses ||= scanBindingUses(func.body, new Set(func.sig.params.map(p => p.name)))
+        uses ||= scanBindingUses(frameNode(func), new Set(func.sig.params.map(p => p.name)))
         const reads = uses.get(p.name)?.[BINDING_USE_USES]
         if (!reads?.length || !reads.every(u => u[BINDING_USE_KIND] === USE.WORD)) continue
       }
@@ -169,7 +170,7 @@ export function validateTypedLenParams(paramReps, addressTaken) {
     }
     if (!candidates) continue
     const mutated = new Set()
-    findMutations(func.body, new Set(candidates.keys()), mutated)
+    findMutations(frameNode(func), new Set(candidates.keys()), mutated)
     for (const name of mutated) candidates.get(name).typedLen = null
   }
 }
@@ -196,7 +197,7 @@ export function validateLenBoundOfParams(paramReps, addressTaken) {
       const pname = func.sig.params[k].name, recvName = func.sig.params[ri].name
       if (func.defaults?.[pname] != null || func.defaults?.[recvName] != null) { r.lenBoundOf = null; continue }
       const mutated = new Set()
-      findMutations(func.body, new Set([pname, recvName]), mutated)
+      findMutations(frameNode(func), new Set([pname, recvName]), mutated)
       if (mutated.has(pname) || mutated.has(recvName)) r.lenBoundOf = null
     }
   }
@@ -219,7 +220,7 @@ export function validateIntConstParams(paramReps, addressTaken) {
     }
     if (!candidates) continue
     const mutated = new Set()
-    findMutations(func.body, new Set(candidates.keys()), mutated)
+    findMutations(frameNode(func), new Set(candidates.keys()), mutated)
     for (const name of mutated) candidates.get(name).intConst = null
   }
 }
@@ -248,7 +249,7 @@ export function applyPointerParamAbi(paramReps, addressTaken) {
       if (func.defaults?.[p.name] != null) continue
       if (mutated === null) {
         mutated = new Set()
-        if (func.body) findMutations(func.body, new Set(func.sig.params.map(q => q.name)), mutated)
+        if (func.body) findMutations(frameNode(func), new Set(func.sig.params.map(q => q.name)), mutated)
       }
       if (mutated.has(p.name)) continue
       // OBJECT is the one PTR_ABI_KINDS member whose unboxed i32 offset is
@@ -306,7 +307,7 @@ export function applyTypedPointerParamAbi(paramReps, addressTaken) {
       if (func.defaults?.[p.name] != null) continue
       if (mutated === null) {
         mutated = new Set()
-        if (func.body) findMutations(func.body, new Set(func.sig.params.map(q => q.name)), mutated)
+        if (func.body) findMutations(frameNode(func), new Set(func.sig.params.map(q => q.name)), mutated)
       }
       if (mutated.has(p.name)) continue
       const aux = typedElemAux(ctor)
@@ -336,7 +337,7 @@ export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
     func.sig.params.forEach((p, k) => {
       if (k === restIdx || p.boundaryTyped || p.type !== 'f64' || p.ptrKind != null || p.jsstring || func.defaults?.[p.name] != null) return
-      const use = paramNumericArrayLike(func.body, p.name)
+      const use = paramNumericArrayLike(frameNode(func), p.name)
       if (!use) return
       const rep = ensureParamRep(paramReps, func.name, k)
       rep.val = VAL.TYPED

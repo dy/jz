@@ -20,7 +20,7 @@
  */
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
-import { createFunction } from '../../function.js'
+import { createFunction, frameRoots } from '../../function.js'
 import { ASSIGN_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
@@ -661,10 +661,7 @@ export const devirtGlobalCalls = (ast) => {
     for (let i = 1; i < node.length; i++) scanWrites(node[i], false)
   }
   for (const stmt of initStmts) scanWrites(stmt, true)
-  for (const fn of ctx.funcs.map.values()) if (fn.body && !fn.raw) {
-    scanWrites(fn.body, false)
-    if (fn.defaults) for (const d of Object.values(fn.defaults)) scanWrites(d, false)
-  }
+  for (const fn of ctx.funcs.map.values()) if (fn.body && !fn.raw) for (const r of frameRoots(fn)) scanWrites(r, false)
 
   // Resolve each global's value by a linear pass over init in execution order.
   const env = new Map()

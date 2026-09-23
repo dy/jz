@@ -70,6 +70,7 @@ const TESTS = [
   'twin-locals',
   'carry-elements',
   'array-view',
+  'param-defaults',
   'passes',
   'dyn-closure-tables',
   'preeval',

@@ -1,6 +1,7 @@
 import { ctx, inc } from '../ctx.js'
 import { typed } from '../ir.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
+import { frameNode } from '../function.js'
 
 /** Hoist each eligible param's `__to_num` coercion to a single entry `local.set`,
  *  rewriting per-use calls in `stmts` to a bare typed `local.get`. Mutates
@@ -14,7 +15,7 @@ export function hoistInvariantParamCoercions(stmts, func) {
     if (p.type !== 'f64' || p.ptrKind != null || p.jsstring) continue
     if (ctx.func.boxed?.has(p.name)) continue
     if (p.name in defaults) continue
-    if (!paramAllUsesNumeric(func.body, p.name)) continue
+    if (!paramAllUsesNumeric(frameNode(func), p.name)) continue
     const pat = (n) => Array.isArray(n) && n[0] === 'call' && n[1] === '$__to_num'
       && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64'
       && Array.isArray(n[2][1]) && n[2][1][0] === 'local.get' && n[2][1][1] === `$${p.name}`

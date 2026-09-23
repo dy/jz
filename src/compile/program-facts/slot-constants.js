@@ -2,6 +2,7 @@
 import { MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { staticObjectProps, constNumExpr } from '../../static.js'
+import { frameNode } from '../../function.js'
 
 export function collectSlotConstants(ast) {
   if (!ctx.schema?.register) return
@@ -116,8 +117,10 @@ export function collectSlotConstants(ast) {
   if (ast) { maskMax = collectMaskMax(ast); visit(ast) }
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
-    maskMax = collectMaskMax(func.body)
-    visit(func.body)
+    // a parameter default runs in the frame: its slot writes count
+    const frame = frameNode(func)
+    maskMax = collectMaskMax(frame)
+    visit(frame)
   }
   if ((ctx.module.initFacts?.hasSchemaLiterals) && ctx.module.moduleInits) {
     for (const mi of ctx.module.moduleInits) {

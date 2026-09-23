@@ -32,6 +32,7 @@ import { ctx } from '../../ctx.js'
 import { MUTATE_OPS, isBrand, isLiteralStr, isArrayIndexKey, walkAst, some, extractParams, collectParamNames, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { transitiveFrameEffects } from '../analyze/frame-effects.js'
+import { frameRoots } from '../../function.js'
 
 const STRUCTURAL = new Set(['length', '__proto__'])
 
@@ -98,8 +99,7 @@ export const declareWrittenKeys = (ast) => {
   for (const fn of ctx.funcs.list) {
     for (const p of fn.sig?.params ?? []) other(p.name)
     if (fn.rest) other(fn.rest)
-    if (fn.body && !fn.raw) census(fn.body)
-    if (fn.defaults) for (const v of Object.values(fn.defaults)) census(v)
+    if (fn.body && !fn.raw) for (const r of frameRoots(fn)) census(r)
   }
 
   // A key may only be declared in the literal when its store is DEFINITE: it
@@ -149,7 +149,7 @@ export const declareWrittenKeys = (ast) => {
   let frames = null
   const mentions = (fname, names) => {
     const fn = funcs?.get(fname)
-    return !fn?.body || names.some(n => refsName(fn.body, n, REFS_IN_EXPR) || Object.values(fn.defaults ?? {}).some(d => refsName(d, n, REFS_IN_EXPR)))
+    return !fn?.body || names.some(n => frameRoots(fn).some(r => refsName(r, n, REFS_IN_EXPR)))
   }
   const reaches = (callee, names) => {
     const f = (frames ??= transitiveFrameEffects(ctx.funcs.list)).get(callee)

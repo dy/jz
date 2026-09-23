@@ -50,6 +50,7 @@ import {
   BINDING_USE_KIND, BINDING_USE_COMPOUND, BINDING_USE_COMPUTED, scanBindingUses, USE,
 } from './analyze-scans.js'
 import { isExported } from './func-exports.js'
+import { frameNode, frameRoots } from '../function.js'
 
 // A candidate table may safely appear as: a `V[idx]` READ (any key — call
 // sites read-then-call, `.length`, comparisons, whatever) or a PLAIN
@@ -96,10 +97,7 @@ export function scanDynClosureTableCandidates(ast) {
   // that never declare them (the normal case — a global's uses are scattered
   // across every function that touches it, not just its declaring scope).
   const bodies = [...topRoots]
-  for (const func of ctx.funcs.list) {
-    if (func.body && !func.raw) bodies.push(func.body)
-    if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
-  }
+  for (const func of ctx.funcs.list) if (func.body && !func.raw) bodies.push(...frameRoots(func))
   for (const body of bodies) {
     const uses = scanBindingUses(body, candidates)
     for (const name of candidates) {
@@ -175,10 +173,7 @@ export function scanClosureTableLatticeCandidates(ast) {
   if (!candidates.size) return candidates
 
   const bodies = [...topRoots]
-  for (const func of ctx.funcs.list) {
-    if (func.body && !func.raw) bodies.push(func.body)
-    if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
-  }
+  for (const func of ctx.funcs.list) if (func.body && !func.raw) bodies.push(...frameRoots(func))
   for (const name of candidates)
     if (!bodies.every(b => everyUseIsIndexedCall(b, name))) candidates.delete(name)
   return candidates
@@ -339,10 +334,7 @@ export function scanImperativeClosureTableLatticeCandidates(ast) {
   if (!candidates.size) return candidates
 
   const bodies = [...topRoots]
-  for (const func of ctx.funcs.list) {
-    if (func.body && !func.raw) bodies.push(func.body)
-    if (func.defaults) for (const dv of Object.values(func.defaults)) bodies.push(dv)
-  }
+  for (const func of ctx.funcs.list) if (func.body && !func.raw) bodies.push(...frameRoots(func))
 
   for (const name of candidates)
     if (!bodies.every(b => everyUseIsIndexedCallOrLiteralWrite(b, name, false))) candidates.delete(name)
@@ -494,7 +486,7 @@ function proveClosureFactory(calleeName, programFacts, cache) {
       if (rets && rets.length) {
         for (const pname of Object.keys(fn.defaults)) {
           if (!rets.every(r => commaTail(r) === pname)) continue
-          if (isReassigned(fn.body, pname)) continue
+          if (isReassigned(frameNode(fn), pname)) continue
           const fact = ctx.scope.paramClosureDefaults?.get(`${calleeName}#${pname}`)
           if (!fact) continue
           const paramIdx = fn.sig.params.findIndex(p => p.name === pname)

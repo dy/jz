@@ -1313,9 +1313,11 @@ exists before the call) and `arenaUnsafe` (an allocation made during the call
 may outlive the frame: a heap-capable value stored into outer storage, a growth
 of an outer container, a captured or module binding assigned a heap value, an
 unknown or host callee). Parameter defaults run in the frame before the body:
-the census reads a function's `func.defaults` with it, as does every scan that
-decides what a function writes or captures (an arrow keeps its defaults in its
-parameter list). A store into a fresh local aggregate, a binding
+the census, like every scan of what a function reads, writes, reassigns or
+captures, walks `frameRoots(fn)` (`src/function.js`: the defaults, then the
+body; `frameNode` as one statement list), and an arrow keeps its defaults in
+its parameter list. A default runs only where its argument is missing, so the
+summary treats its writes as conditional. A store into a fresh local aggregate, a binding
 declared in the body whose every write is a literal or a `new`, is a store into
 fresh memory. The arena rewind (`src/optimize/arena-rewind.js`) restores the
 heap pointer at return for any function with a scalar non-pointer result whose

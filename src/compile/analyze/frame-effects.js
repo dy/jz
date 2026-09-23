@@ -61,6 +61,7 @@
 import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, isFunctionNode } from '../../ast.js'
 import { K, tagOf, hasTag } from '../../summary/kind.js'
 import { ctx } from '../../ctx.js'
+import { frameRoots } from '../../function.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
@@ -446,7 +447,7 @@ function frameEffectsOf(func) {
   for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
   // a parameter default runs in the frame, before the body
-  const out = census(view, func.defaults ? [...Object.values(func.defaults), body] : [body], [body], params, typedParams)
+  const out = census(view, frameRoots(func), [body], params, typedParams)
   // a loop's scope declares nothing of the function's: its parameters are
   // outer storage there (a block kept in one outlives the iteration)
   out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams) }))

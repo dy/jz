@@ -15,6 +15,7 @@ import { analyzeBody } from '../analyze.js'
 import { withValueOverlay } from '../flow-state.js'
 import { arrayUsesSafe, scanBindingUses } from '../analyze-scans.js'
 import { ARR_RESIZE_METHODS } from './shared.js'
+import { frameNode, frameRoots } from '../../function.js'
 
 // ————————————————————————— param neverGrown (cross-function) —————————————————————————
 // scanNeverGrown proves never-relocation for fresh-literal LOCALS only; a
@@ -119,7 +120,8 @@ export function analyzeParamNeverGrown(paramReps) {
         if (lhs[0] === '[]' && !isLiteralStr(lhs[2]) && maybeArray(lhs[1])) { dirty = true; return false }
       }
     } })
-    withValueOverlay(facts.valTypes, () => scan(func.body))
+    // a parameter default runs in the activation: its growth counts
+    withValueOverlay(facts.valTypes, () => { for (const r of frameRoots(func)) scan(r) })
     if (dirty) poisoned.add(func.name)
     else edges.set(func.name, out)
   }
@@ -138,7 +140,7 @@ export function analyzeParamNeverGrown(paramReps) {
     if (!func.body || func.raw || poisoned.has(func.name) || !edges.has(func.name)) continue
     const params = func.sig?.params || []
     if (!params.length) continue
-    const uses = scanBindingUses(func.body, new Set(params.map(p => p.name)))
+    const uses = scanBindingUses(frameNode(func), new Set(params.map(p => p.name)))
     for (let k = 0; k < params.length; k++) {
       if (func.rest && k === params.length - 1) continue
       if (!arrayUsesSafe(uses.get(params[k].name))) continue

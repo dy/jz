@@ -396,8 +396,8 @@ export function paramNeverString(body, name) {
 const EQ_OPS = new Set(['===', '!==', '==', '!='])
 const VALUE_CTORS = new Set(['BigInt', 'Number', 'String', 'Boolean'])
 
-/** True iff every use of param `name` in `body` (and in the parameter default
- *  initializers `defaults`, which run inside the function) reads it as a scalar
+/** True iff every use of param `name` in `body` (a function's frame,
+ *  `frameNode`: its parameter defaults run inside it) reads it as a scalar
  *  value. `let/const x = name` makes `x` carry the same value (fixpoint-
  *  collected) and `x`'s uses are judged the same way; a non-shadowing inner
  *  arrow that captures the name is scanned by the same rule.
@@ -411,15 +411,14 @@ const VALUE_CTORS = new Set(['BigInt', 'Number', 'String', 'Boolean'])
  *  object literal, an assigned value, a `return`, an `&&`/`||`/`??` value, a
  *  `?:` arm, a sequence element: the value would leave as itself, and a host
  *  handle passed there would still mean something. */
-export function paramValueOnly(body, name, defaults) {
+export function paramValueOnly(body, name) {
   if (body == null) return false
-  const roots = [body, ...Object.values(defaults ?? {})]
   const declarators = (n) => (n[0] === 'let' || n[0] === 'const' || n[0] === 'var')
     ? n.slice(1).filter(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') : []
   const names = new Set([name])
   for (let grew = true; grew;) {
     grew = false
-    for (const root of roots) walkAst(root, { enter: (n) => {
+    walkAst(body, { enter: (n) => {
       for (const d of declarators(n))
         if (typeof d[2] === 'string' && names.has(d[2]) && !names.has(d[1])) { names.add(d[1]); grew = true }
     } })
@@ -466,7 +465,7 @@ export function paramValueOnly(body, name, defaults) {
     if ((op === '.' || op === '?.') && node.length === 3) { walk(node[1]); return }   // the property name is not a use
     for (let i = 1; i < node.length; i++) walk(node[i])   // a bare name anywhere else leaves as itself
   }
-  for (const root of roots) walk(root)
+  walk(body)
   return ok
 }
 

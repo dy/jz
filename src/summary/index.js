@@ -56,6 +56,7 @@ import { typedElementKey } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
+import { frameRoots } from '../function.js'
 export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 
 import {
@@ -1256,10 +1257,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const fwdScanned = new Set()
   const addForward = (id, i) => { let l = forwards.get(id); if (!l) forwards.set(id, l = new Set()); if (!l.has(i)) { l.add(i); changed = true } }
   const argList = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
-  const scanForwards = (id, body, params) => {
+  const scanForwards = (id, body, params, defaults) => {
     if (!params || fwdScanned.has(body)) return
     fwdScanned.add(body)
-    const bad = new Set(reassignedIn(body, params))
+    const bad = new Set(reassignedIn(body, params, defaults))
     const index = (name) => { const i = typeof name === 'string' ? params.indexOf(name) : -1; return i >= 0 && !bad.has(name) ? i : -1 }
     const site = (e) => {
       if (!Array.isArray(e)) return
@@ -2698,11 +2699,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   // The parameters a body reassigns somewhere: structural, listed once per body.
   const reassigned = new Map()   // body → the parameter names assigned in it
-  const reassignedIn = (body, params) => {
+  // a parameter default runs in the frame: its assignments count (they are
+  // fixed per body, so the body keys the memo)
+  const reassignedIn = (body, params, defaults) => {
     let l = reassigned.get(body)
     if (!l) {
       const out = new Set()
       assignsIn(body, out)
+      if (defaults) for (const d of Object.values(defaults)) assignsIn(d, out)
       l = []
       for (const p of params) if (p != null && out.has(p)) l.push(p)
       reassigned.set(body, l)
@@ -2715,9 +2719,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()
-    scanForwards(key, body, params)
-    if (defaults) for (const p of defaultNamesOf(defaults)) bindParam(paramKey(key, p), expr(defaults[p]))
-    if (params) for (const p of reassignedIn(body, params)) { const id = paramKey(key, p); if (id !== null) pre.add(id) }
+    scanForwards(key, body, params, defaults)
+    // a default runs only where its argument is missing: its writes are on a path
+    if (defaults) { branch++; for (const p of defaultNamesOf(defaults)) bindParam(paramKey(key, p), expr(defaults[p])); branch-- }
+    if (params) for (const p of reassignedIn(body, params, defaults)) { const id = paramKey(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
       stmt(body)
       // A body that can fall through returns undefined.
@@ -2937,9 +2942,10 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const seedable = new Set()   // exported parameters (keys) the demand may seed NUMBER
   for (const f of funcs) if (exported(f)) for (const p of f.sig.params) if (!p.rest && !f.defaults?.[p.name]) seedable.add(keyIn(f.name, p.name))
   // An explicit numeric entry prologue is already the host boundary's coercion.
-  // Later reads observe the overwritten value and cannot revoke that contract.
+  // Later reads observe the overwritten value and cannot revoke that contract;
+  // a parameter default runs before the prologue and reads the host's value.
   const entryNumeric = new Set()
-  for (const f of funcs) if (exported(f)) {
+  for (const f of funcs) if (exported(f) && !f.defaults) {
     const pending = [f.body]
     while (pending.length) {
       const n = pending.shift()
@@ -2999,8 +3005,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // parameter that also flows to the host stays ANY.
   rounds(() => {
     demandChanged = false
-    for (const f of funcs) { current = f.name; demand(f.body) }
-    for (let id = 0; id < closureBodies.length; id++) { current = id; demand(closureBodies[id]) }
+    // a parameter default runs in the frame: its uses of the parameters count
+    for (const f of funcs) { current = f.name; for (const r of frameRoots(f)) demand(r) }
+    for (let id = 0; id < closureBodies.length; id++) { current = id; for (const r of frameRoots({ body: closureBodies[id], defaults: closureDefaults[id] })) demand(r) }
     current = null
     for (const top of tops) demand(top)
     return demandChanged

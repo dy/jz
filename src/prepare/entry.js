@@ -41,6 +41,7 @@ import { hoistIndexedConstLiterals, seedStaticGlobalAssignments } from './litera
 import { validateCoalesceMixing } from './module-resolve.js'
 import { fuseSparseMapReads } from './sparse-map.js'
 import { prepState, resetPrepState } from './state.js'
+import { frameNode } from '../function.js'
 
 
 
@@ -215,7 +216,7 @@ export default function prepare(node) {
       if (op === '()' && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && MUTATING_ARRAY_METHODS.has(lhs[2])) writes.add(lhs[1])
     }
     walkAst(ast, { enter: scan })
-    for (const f of ctx.funcs.list) if (f.body) walkAst(f.body, { enter: scan })
+    for (const f of ctx.funcs.list) if (f.body) walkAst(frameNode(f), { enter: scan })
     for (const name of writes) {
       ctx.scope.shapeStrs?.delete(name)
       ctx.scope.shapeStrArrays?.delete(name)

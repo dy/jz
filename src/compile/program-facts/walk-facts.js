@@ -502,7 +502,9 @@ export function collectProgramFacts(ast) {
     // function's own facts. They live outside `body` (prepare keeps them in
     // `defaults`), so the body walk above never reaches them: subscript's
     // `dispatch = (ops, tail, fn = (a, …) => { … loc(r, from) … }) => …`
-    // kept `loc` reachable only through this default.
+    // kept `loc` reachable only through this default. After the body, not
+    // through frameRoots: call sites merge in order, and only the body's walk
+    // is cached.
     if (func.defaults && !func.raw)
       for (const expr of Object.values(func.defaults)) mergeWalkFacts(f, walkFactsRoot(expr, true, func, doSchema, false))
   }

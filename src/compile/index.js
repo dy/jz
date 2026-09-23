@@ -30,7 +30,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  */
 
 import { ctx, err, PTR, HEAP } from '../ctx.js'
-import { createFunction } from '../function.js'
+import { createFunction, frameNode } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
 import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
@@ -548,7 +548,7 @@ export function assemble(ast, profiler) {
         if (!representationHostBoxesParam(ctx, f, i)) continue
         tag.push(i)
         const p = f.sig.params[i]
-        if (!p.rest && paramValueOnly(f.body, p.name, f.defaults)) val.push(i)
+        if (!p.rest && paramValueOnly(frameNode(f), p.name)) val.push(i)
       }
       if (tag.length) for (const exportName of exportNamesOf(f.name))
         lateHostAbi.push(val.length ? { name: exportName, tag, val } : { name: exportName, tag })

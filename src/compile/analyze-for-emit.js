@@ -31,6 +31,7 @@ import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
 import { arraySliceViews } from './array-view.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
+import { frameNode } from '../function.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
@@ -82,7 +83,7 @@ export function analyzeFuncForEmit(func, programFacts) {
       if (k >= sig.params.length) continue
       const pname = sig.params[k].name
       // Incoming constructor and payload facts cannot describe a reassigned parameter.
-      const reassigned = isReassigned(body, pname)
+      const reassigned = isReassigned(frameNode(func), pname)
       if (r.typedCtor && !reassigned) {
         if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
         if (!ctx.func.typedElem.has(pname)) ctx.func.typedElem.set(pname, r.typedCtor)
@@ -175,7 +176,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   // called through the class dispatch; a callee the census never named).
   const summary = ctx.summary?.at(sig)
   if (summary) for (const p of sig.params) {
-    if (p.rest || func.defaults?.[p.name] || isReassigned(body, p.name)) continue
+    if (p.rest || func.defaults?.[p.name] || isReassigned(frameNode(func), p.name)) continue
     seedSummaryParam(p.name, summary)   // a parameter already typed by the call lattice still takes the summary's exact shape
   }
   // Caller-side nullability: a NO-DEFAULT param observes the UNDEF pad whenever a
@@ -230,7 +231,7 @@ export function analyzeFuncForEmit(func, programFacts) {
           // wrapVal guarantees a number). The latter catches `acc + cre` float
           // kernels whose `+` would otherwise pull a per-iteration
           // string-concat fork (julia, floatbeats).
-          && (summary?.numericDemand(p.name) || paramAllUsesNumeric(body, p.name) || paramNeverString(body, p.name)))
+          && (summary?.numericDemand(p.name) || paramAllUsesNumeric(frameNode(func), p.name) || paramNeverString(frameNode(func), p.name)))
         // An f64 slot holds a genuine number (the JS API's ToNumber made
         // `undefined` NaN), and neither proof admits a nullish test, so the
         // UNDEF-pad nullability is moot: reads and loop bounds stay plain.
@@ -315,7 +316,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     ctx.func.locals = reanalyzeBody(body).locals
   }
   if (block) {
-    boxedCaptures(body)
+    boxedCaptures(frameNode(func))   // a closure a parameter default makes captures too
     // Lower provably-monomorphic pointer locals to i32 offset storage.
     // VAL.TYPED unbox requires a known element ctor (aux byte) — without it,
     // the use site can't pick the right i32.store{8,16}/i32.store width and

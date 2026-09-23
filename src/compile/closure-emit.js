@@ -25,6 +25,7 @@ import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummary
 import { paramAllUsesNumeric } from './param-numeric.js'
 import { unbounded } from '../summary/index.js'
 import { arraySliceViews } from './array-view.js'
+import { frameNode } from '../function.js'
 
 const normalizeClosureBody = cb => {
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
@@ -107,7 +108,7 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   // unknown code keeps its parameters boxed.
   const summary = ctx.summary?.at(cb.scope)
   for (const p of cb.params) {
-    if (cb.defaults?.[p] || isReassigned(cb.body, p)) continue
+    if (cb.defaults?.[p] || isReassigned(frameNode(cb), p)) continue
     seedSummaryParam(p, summary)
   }
   // Usage-only numeric proof for a parameter the call lattice never saw. A
@@ -116,7 +117,7 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   // NaN-box survives f64 arithmetic with its payload).
   for (const p of cb.params)
     if (!ctx.func.localReps?.get(p)?.val && !cb.defaults?.[p] && (summary?.kindOf(p) ?? 0) === 0 &&
-        paramAllUsesNumeric(cb.body, p, new Set(), true, false))
+        paramAllUsesNumeric(frameNode(cb), p, new Set(), true, false))
       updateRep(p, { val: VAL.NUMBER })
   // A parameter the summary cannot bound (an escaped callback's: a typed
   // array method's, a comparator's) holds whatever its any slot received: a
@@ -155,7 +156,7 @@ export function analyzeClosureBodyForEmit(cb) {
       ctx.func.sliceViews = facts.sliceViews
       ctx.func.arrayViews = ctx.transform.optimize?.arrayViews !== false ? arraySliceViews(cb.body) : null
       inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
-      boxedCaptures(cb.body, cb.params, cb.captures)
+      boxedCaptures(frameNode(cb), cb.params, cb.captures)
       for (const name of ctx.func.boxed.keys())
         if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64')
           ctx.func.locals.set(name, 'i32')

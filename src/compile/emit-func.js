@@ -21,6 +21,7 @@ import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './fu
 import { isBoundaryWrapped } from './boundary-wrap.js'
 import { hoistInvariantParamCoercions, hoistUnionCursorUnbox } from './coercion-hoist.js'
 import { isExported } from './func-exports.js'
+import { frameNode } from '../function.js'
 
 /**
  * Phase: emit one user function to WAT IR.
@@ -144,7 +145,7 @@ export function emitFunc(func, functionPlan, programFacts) {
       // duplicates that seeding (FunctionPlan.localReps already carries whatever
       // analyzeFuncForEmit settled, guarded — but re-applying the UNGUARDED
       // call-site fact here would undo it) so it needs the identical guard.
-      const reassigned = isReassigned(body, pname)
+      const reassigned = isReassigned(frameNode(func), pname)
       // paramValTrustworthy: `r.val` and `r.possibleKinds` are independent
       // lattices over the same call sites (param-reps.js's own header) — a
       // parameter fed by a mix of easily-proven and unresolved-argument call

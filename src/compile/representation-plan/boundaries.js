@@ -15,6 +15,7 @@ import {
   semanticFromRep, semanticKinds, semanticNullish, targetRepFor,
 } from './common.js'
 import { solveBigintProvenance } from './provenance.js'
+import { frameNode } from '../../function.js'
 
 const boundaryParamSemantic = (rep, uncovered) => {
   const sem = semanticFromRep(rep, uncovered ? 'open' : null)
@@ -146,7 +147,7 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
       current,
       target: targetRepFor(semantic, current),
       demand: demandFor(semantic),
-      stable: !isReassigned(func.body, param.name),
+      stable: !isReassigned(frameNode(func), param.name),
     }
   })
   // A callable's result is its contract: ProgramIndex holds the one the plan's

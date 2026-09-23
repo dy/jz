@@ -42,6 +42,7 @@ import {
   collectBindings,
 } from './common.js'
 import { isExported } from '../func-exports.js'
+import { frameRoots } from '../../function.js'
 
 // === Loop unrolling & scalarization ===
 
@@ -836,10 +837,9 @@ export function foldStaticConstAggregates(ast) {
   // so the body scan can't see them). Such a function is skipped (scan) / excluded
   // (rewrite) for that name.
   const paramNames = (f) => (f.sig?.params || []).map(p => p.name)
-  // Every AST a function can reference an outer binding from: its body PLUS each
-  // default-parameter expression (`(v = x[0]) => …`), which prepare extracts to
-  // `f.defaults` — separate from the body, so the body scan/rewrite would miss it.
-  const funcNodes = (f) => f.defaults ? [f.body, ...Object.values(f.defaults)] : [f.body]
+  // Every AST a function can reference an outer binding from: its body and each
+  // default-parameter expression (`(v = x[0]) => …`), which prepare keeps apart.
+  const funcNodes = frameRoots
 
   // Classify module statements. A binding's value comes from an inline decl
   // (`const x = […]`) OR — for `var`, which jzify lowers to `let x; x = […]` — a

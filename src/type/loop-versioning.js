@@ -23,6 +23,7 @@ import {
 import { intervalProvenIdx, intervalIdxRanges } from './interval-proof.js'
 import { exprType } from './expr-type.js'
 import { containsNestedClosure } from './loop-unroll.js'
+import { frameRoots } from '../function.js'
 
 /** Entry guards survive direct writes and calls alike. Calls cannot replace
  *  an uncaptured local, but may replace a global/cell with a shorter buffer or
@@ -44,7 +45,7 @@ export function stableLoopNames(body, cond, step) {
         if (n[0] === '()' && n.length === 2) return false
         if (n[0] !== '()' && n[0] !== '?.()' && n[0] !== 'new') return false
         const callee = n[1], fn = typeof callee === 'string' && ctx.funcs.map?.get(callee)
-        if (fn && !fn.raw) return changes(fn.body, fn.sig) || Object.values(fn.defaults || {}).some(d => changes(d, fn.sig))
+        if (fn && !fn.raw) return frameRoots(fn).some(r => changes(r, fn.sig))
         const math = typeof callee === 'string' ? /^(?:Math|math)\./.test(callee)
           : Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math'
         return !math || n[0] !== '()' || !callArgs(n).every(arg => core(ctx.summary?.at(owner).kindOfExpr(arg)) === NUMBER)

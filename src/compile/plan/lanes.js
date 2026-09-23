@@ -30,6 +30,7 @@ import { ASSIGN_OPS, isFunctionNode } from '../../ast.js'
 import { materializeVariant } from '../variant.js'
 import { isExported } from '../func-exports.js'
 import { transitiveFrameEffects } from '../analyze/frame-effects.js'
+import { frameRoots } from '../../function.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
@@ -136,7 +137,7 @@ export function laneRecordParams(programFacts) {
     if (func.raw || !func.body || func.rest || isExported(func) || addressTakenNames?.has(func.name)) continue
     const sites = sitesByCallee.get(func.name)
     if (!sites?.length || sites.some(s => s.node[1] !== func.name || s.argList.length !== func.sig.params.length)) continue
-    const nodes = func.defaults ? [func.body, ...Object.values(func.defaults)] : [func.body]
+    const nodes = frameRoots(func)
     for (let k = 0; k < func.sig.params.length; k++) {
       const p = func.sig.params[k]
       if (!p?.name || p.type !== 'f64' || p.ptrKind != null || func.defaults?.[p.name] != null) continue
