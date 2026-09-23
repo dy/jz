@@ -139,15 +139,26 @@ const inlinedBody = (func, args) => {
   return { prefix: argPrefix.length ? [...argPrefix, ...prefix] : prefix, value }
 }
 
-// Fold a single bare early return into a guard around the remaining void body.
+// Fold one early return into a guard, leaving at most one trailing return.
 const foldEarlyReturn = (func) => {
   const body = func.body
   if (!Array.isArray(body) || body[0] !== '{}' || !Array.isArray(body[1]) || body[1][0] !== ';') return false
   const seq = body[1]
   for (let i = 1; i < seq.length; i++) {
     const s = seq[i]
-    if (!Array.isArray(s) || s[0] !== 'if' || s.length !== 3 || !Array.isArray(s[2]) || s[2][0] !== 'return' || s[2].length !== 1) continue
+    if (!Array.isArray(s) || s[0] !== 'if' || s.length !== 3 || !Array.isArray(s[2]) || s[2][0] !== 'return') continue
     const rest = seq.slice(i + 1)
+    const last = rest[rest.length - 1]
+    if (s[2].length === 2) {
+      if (!Array.isArray(last) || last[0] !== 'return' || last.length !== 2) return false
+      rest.pop()
+      if (rest.some(r => some(r, n => n[0] === 'return'))) return false
+      const result = `${T}inret${freshId(ctx)}`
+      seq.splice(i, seq.length - i, ['let', result],
+        ['if', s[1], ['=', result, s[2][1]], ['{}', [';', ...rest, ['=', result, last[1]]]]],
+        ['return', result])
+      return true
+    }
     if (!rest.length || rest.some(r => some(r, n => n[0] === 'return'))) return false
     seq.splice(i, seq.length - i, ['if', ['!', s[1]], ['{}', [';', ...rest]]])
     return true
@@ -671,21 +682,12 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !isSmallKernel && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
     // Size tier: a looped kernel is spliced only where that duplicates nothing.
     if (hasLoop && sites.length > 1 && cfg && cfg.sourceInlineDup === false) continue
-    let stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     if (some(func.body, n => n[0] === '=>')) continue
     // throw/break/continue are unsupported; return is OK if it's a single
     // trailing return (rewritten to a value at inlining time).
     if (some(func.body, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) continue
-    let returnCount = 0
-    some(func.body, n => { if (n[0] === 'return') returnCount++; return false })
-    if (returnCount === 1 && stmts && foldEarlyReturn(func)) { changed = true; returnCount = 0; stmts = blockStmts(func.body) }
-    if (returnCount > 1) continue
-    if (returnCount === 1 && stmts) {
-      const last = stmts[stmts.length - 1]
-      if (!Array.isArray(last) || last[0] !== 'return') continue
-    }
     // Either a kernel (has a loop) or a tiny leaf (no loop, no calls, small body).
     // The leaf branch catches helpers like `isAlpha(c) => (c>=65 && c<=90) || …`
     // that get hammered from a hot caller's loop — replacing the call with its
@@ -748,6 +750,16 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // those loses narrowing without gaining a fixed result length.
     if (hasLoop && paramNames.size === 0 && tagOf(core(ctx.summary.resultOf(func.name))) === K.ARRAY &&
         !sites.some(site => site.callerFunc?.body && containsNode(site.callerFunc.body, site.node))) continue
+    // Normalize only after the other eligibility checks: an outlined function
+    // gains nothing from an extra result binding and branch.
+    let stmts = blockStmts(func.body), returnCount = 0
+    some(func.body, n => { if (n[0] === 'return') returnCount++; return false })
+    if (returnCount >= 1 && returnCount <= 2 && stmts && foldEarlyReturn(func)) { changed = true; returnCount--; stmts = blockStmts(func.body) }
+    if (returnCount > 1) continue
+    if (returnCount === 1 && stmts) {
+      const last = stmts[stmts.length - 1]
+      if (!Array.isArray(last) || last[0] !== 'return') continue
+    }
     if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
     if (!hasLoop) leaves.add(func.name)

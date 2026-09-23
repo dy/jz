@@ -161,7 +161,7 @@ Dependencies
    duplicate-read reuse each measured nothing and were removed, so a retry
    needs a new measurement first.
 
-   Remaining speed gaps include webaudio, watr and percolation; the aggregate
+   Remaining speed gaps include webaudio, watr, percolation and waves; the aggregate
    speed win does not establish a win on every case.
    webaudio now preserves channel-array types through iteration, accessors,
    base initializers and solver reachability. Pending `Object.assign` targets
@@ -197,8 +197,9 @@ Dependencies
    Against the fastest rival Wasm (`WASM_TODO` in `test/bench.js`): sdf's
    bounds checks are 72% of its gap and its scratch cursor's bounds come from
    sentinels in a mutable array, so a relational or sentinel hull is the
-   proof it needs; glyfparse's checks cost nothing and its lever is an i32
-   representation for the ToInt32-blind checked byte reads; noise stands at
+   proof it needs; glyfparse's checks cost nothing and its bounded byte/short
+   accumulations still use f64 inside bounds-proven loop versions. Preserve
+   the trip-count and step-width proof into integer narrowing; noise stands at
    1.13× of Rust with an instruction census at parity; shapes at 1.12× is
    untouched; sort is near parity with Zig. The checked-read i32 lowering
    has landed, but glyfparse still trails in the current gate. percolation's
@@ -216,6 +217,16 @@ Dependencies
    at levels 0–3. The final core, O3, self-compile and ratchet gates pass.
    wordcount's current 1.238× of C-wasm is not caused by the two new passes:
    its Wasm is byte-identical with them disabled.
+
+   Single early value returns now join the existing source-inlining path.
+   Ulam's arithmetic helper consequently inlines into the pixel loop: five
+   alternating local runs give median 1.440 → 0.780 ms, versus V8's 1.313 ms.
+   Three camera settings match pixel for pixel; the binary grows 4637 → 4664
+   bytes. Glyph parsing, sdf, noise and wordcount are unchanged by this
+   optimization. These are diagnostic measurements, pending release hardware.
+   Percolation still trails on identical inputs: three fixed random grids at
+   four occupancy levels match pixels and cluster counts exactly, with a
+   0.949× V8/JZ geomean. Random-input variation alone does not explain its gap.
 
    The published watr 5.11.2 dependency closes the 320000-byte size backstop.
    Watr commit 434213d generalizes its existing block merging: a first
@@ -298,13 +309,13 @@ Dependencies
 
 ## Gate evidence, September 22
 
-- Final core: 4633 passed, one skip (112414 assertions). Opt0: 4441
-  passed (92234 assertions); opt3: 4441 passed (92661 assertions);
-  WASI: 4494 passed (102975 assertions), each with one skip. All four ran
+- Core: 4636 passed, one skip (112442 assertions). Opt0: 4444
+  passed (92248 assertions); opt3: 4444 passed (92676 assertions);
+  WASI: 4497 passed (103003 assertions), each with one skip. All four ran
   on the same compiler tree with published watr 5.11.2. No compiler source
   changed during these gates.
 - Self-compile: 68 passed (2365 assertions). Perf ratchet: 10 passed.
-  Self-compile speed passes: warm 0.953× V8 (cap 1.03×), fresh 0.782×
+  Self-compile speed passes: warm 0.857× V8 (cap 1.03×), fresh 0.765×
   (cap 0.99×). Public types and import lint pass.
 - Language conformance: 3201 pass, zero failures, two xfails; all 4045
   negative syntax cases reject. The receiver suite passes 23 tests in both
@@ -315,15 +326,16 @@ Dependencies
   parameters, restricted async grammar and mixed static/instance private
   accessor pairs. They reject through the Wasm-hosted compiler too. No xfail,
   negative ledger or coverage floor changed.
-- Benchmark: 262/271 pass. Speed geomeans are 0.470× V8, 0.705× native C
+- The full benchmark before early-return inlining: 262/271 pass. Speed
+  geomeans were 0.470× V8, 0.705× native C
   and 0.488× AssemblyScript; size is 0.782× AssemblyScript. Perf-fuzz passes
   (integer 0.93×, float 0.74×, mixed 0.85× V8), as does floatbeat (0.400×).
-  TinyGo coverage passes. Watr's published-dependency size passes at 319898
+  TinyGo coverage passes. Watr's current published-dependency size passes at 319894
   bytes against 320000, and its 1.168× V8 runtime clears the existing 1.25×
   trail gate, though it remains slower than V8.
-- Nine red rows remain: fastest-Wasm fft 1.078×, glyfparse 1.429×,
+- That full run had nine red rows: fastest-Wasm fft 1.078×, glyfparse 1.429×,
   sdf 1.420×, trace 1.071×, crc32 1.058×, noise 1.164× and wordcount 1.108×;
-  alpha's stale committed w2c row; and Ulam (below). Twelve checked kernels,
+  alpha's stale committed w2c row; and Ulam, now closed locally (below). Twelve checked kernels,
   including sdf, glyfparse, crc32 and noise, remain byte-identical to 070f9adb.
   The red-row count moved between runs on this loaded machine; that is not
   evidence of a speed improvement. Timing bands and all caps remain unchanged.
@@ -332,8 +344,13 @@ Dependencies
   arity check validates all 21 drivers. Lenia's effective zero seed is
   explicit. Kernel sources and timing caps are unchanged. Ulam's zero-size,
   repeated-view and changed-view outputs match JS pixel for pixel at O0,
-  O3 and WASI. The current example run has a 1.54× V8/JZ geomean and 19/21
-  strict wins; Ulam at 0.90× and percolation at 0.93× still trail V8.
+  O3 and WASI. The current example run has a 1.53× V8/JZ geomean and 19/21
+  strict wins; Ulam is now 1.87×, while waves at 0.61× and percolation at
+  0.97× trail V8. Ulam's five alternating before/after/V8 measurements give
+  a 45.9% runtime reduction and 1.68× V8 speed, with identical pixels at
+  three camera settings. Waves is byte-identical before and after this patch
+  (33534 bytes), so its current loss is not a compiler regression from it.
+  The full competitive benchmark was not repeated.
 - The focused typed-loop suite passes 19 tests and 3671 assertions, including
   primitive signed-zero comparisons that the array deep-equality helper omits.
 - The machine exceeds the reference-evidence swap cap. These are diagnostics,

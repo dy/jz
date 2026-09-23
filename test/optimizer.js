@@ -1503,6 +1503,84 @@ test('sourceInline: early void returns preserve guards and argument effects', ()
   if (!belowOpt(2)) ok(!/\(call \$update\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
 })
 
+test('sourceInline: early value returns join the caller loop without evaluating the other arm', () => {
+  const src = `let trace = 0
+    function choose(x) {
+      trace = trace * 10 + 1
+      if (x === 0) return (trace = trace * 10 + 2, -0)
+      trace = trace * 10 + 3
+      let y = x * 2
+      return y + 1
+    }
+    export function main(n) {
+      trace = 0
+      let result = 0
+      for (let i = 0; i < n; i++) result += choose(i)
+      return [result, trace]
+    }
+    export function zero(n) { let result = 0; for (let i = 0; i < n; i++) result = choose(0); return result }`
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { main, zero } = run(src, { optimize })
+    is(main(0), [0, 0], `${optimize}: empty loop`)
+    is(main(2), [3, 1213], `${optimize}: early then trailing return`)
+    is(main(2), [3, 1213], `${optimize}: repeated invocation`)
+    is(main(1), [0, 12], `${optimize}: only early return`)
+    ok(Object.is(zero(1), -0), `${optimize}: returned signed zero`)
+  }
+  if (!belowOpt(3)) ok(!/\(call \$choose\b/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'early value helper inlines at its loop call sites')
+})
+
+test('sourceInline: early boolean results keep their identity in locals and mixed returns', () => {
+  const src = `function matches(x) {
+      if (x === 0) return x !== 1 || x > 2
+      return x === 1 && x !== 2
+    }
+    function mixed(x) { if (x < 2) return x !== 1 || x > 2; return 7 }
+    export function main() {
+      const a = matches(0), b = matches(1), c = matches(2), d = mixed(0), e = mixed(2)
+      return [typeof a, a, b, c, typeof d, d, e]
+    }
+    export function coerce(flag) {
+      const v = mixed(flag)
+      return [typeof v, v, +v, v + 2, v ? 12 : 34, v === true, +mixed(flag)]
+    }`
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { main, coerce } = run(src, { optimize })
+    is(main(), ['boolean', true, true, false, 'boolean', true, 7])
+    is(main(), ['boolean', true, true, false, 'boolean', true, 7])
+    is(coerce(0), ['boolean', true, 1, 3, 12, true, 1])
+    is(coerce(1), ['boolean', false, 0, 2, 34, false, 0])
+    is(coerce(2), ['number', 7, 7, 9, 12, false, 7])
+  }
+})
+
+test('sourceInline: value return folding keeps fallthrough scope and nested exits', () => {
+  const src = `function choose(x) {
+      const y = x + 1
+      if (x < 0) return y
+      let z = y * 3
+      if (x === 0) z += 2
+      return z
+    }
+    function nested(x) {
+      if (x < 0) return 11
+      if (x === 0) return 22
+      return 33
+    }
+    export function main(n) {
+      let a = 0, b = 0
+      for (let i = -1; i < n; i++) { a += choose(i); b += nested(i) }
+      return [a, b]
+    }`
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const { main } = run(src, { optimize })
+    is(main(-1), [0, 0])
+    is(main(0), [0, 11])
+    is(main(1), [5, 33])
+    is(main(3), [20, 99])
+  }
+})
+
 test('sourceInline: small loop helpers inline across several speed-tier sites', () => {
   const src = `function count(n) { let sum = 0; while (n > 0) { sum += n; n-- }; return sum }
     function total(n) { const a = count(n); const b = count(n + 1); const c = count(n + 2); return a + b + c }

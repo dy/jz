@@ -278,9 +278,9 @@ export function toNumF64(node, v) {
       return typed(['call', '$__to_num', prim], 'f64')
     }
   }
-  // intCertain locals: every reachable def is integer-valued, so the binding
-  // never carries a NaN-boxed pointer — skip the __to_num wrapper.
-  if (typeof node === 'string' && repOf(node)?.intCertain === true) return asF64(v)
+  // Integer-valued definitions may include booleans. Identity-observed locals
+  // retain their atoms and still need ToNumber at a numeric use.
+  if (typeof node === 'string' && repOf(node)?.intCertain === true && !numericDenied(node)) return asF64(v)
   // intCertain schema slot reads `o.x`: every observed write is integer-shaped,
   // so the loaded f64 is a plain number — same justification as the local case.
   if (Array.isArray(node) && node[0] === '.' && typeof node[1] === 'string' && typeof node[2] === 'string') {

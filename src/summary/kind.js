@@ -76,7 +76,11 @@ export const NUMBER_OPS = new Set(['-', '*', '/', '%', '**', '&', '|', '^', '<<'
 export const isPostfixRecovery = (op, a, b) => Array.isArray(b) && b[0] == null && b[1] === 1 && Array.isArray(a) &&
   (op === '-' ? a[0] === '++' || (a[0] === '=' && Array.isArray(a[2]) && a[2][0] === '+1')
     : op === '+' && (a[0] === '--' || (a[0] === '=' && Array.isArray(a[2]) && a[2][0] === '-1')))
-export const BOOL_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', 'in', 'instanceof'])
+// Boolean value identity is shared by summary, value typing and integer
+// carriers, including the inliner's eager boolean operators. Membership
+// operators stay outside integer certainty because their operands may throw.
+export const CMP_OPS = new Set(['!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', '__eager&&', '__eager||'])
+export const BOOL_OPS = new Set([...CMP_OPS, 'in', 'instanceof'])
 
 const COERCION_UNKNOWN = bitOf(K.TYPED) | bitOf(K.ARRAY) | bitOf(K.OBJECT) |
   bitOf(K.CLOSURE) | bitOf(K.MAP) | bitOf(K.SET) | bitOf(K.DATE) |

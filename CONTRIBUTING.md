@@ -696,6 +696,14 @@ in an innermost loop, where the call it removes is what kept the lane
 vectorizer out. Nested-call
 hoisting uses its body map for membership too, and reuses that map through the
 current function's rounds, before the function record's body is replaced.
+An eligible callee's single early return folds into a guard. When it returns a
+value, both paths assign one fresh result binding before the trailing return;
+only the chosen path runs. Eligibility is checked before normalization so an
+outlined function does not acquire unnecessary control flow or locals.
+The summary's boolean-operator table also serves value typing and integer
+certainty; internal eager boolean expressions keep their identity in locals.
+Integer certainty does not erase boolean identity: a mixed boolean/number
+result keeps tagged f64, and an identity-observed local still needs ToNumber.
 
 Concatenation results carry the lazy hash cell; the Map hash mixes a packed
 short string and loads a cached heap hash in place. Speed modes lay out a key

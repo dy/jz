@@ -191,9 +191,11 @@ export function narrowI32Results(funcs, paramReps) {
   // A pointer result is not a number, though an unboxed pointer parameter or
   // call reads as i32 to exprType: a result the summary proves a pointer kind
   // is not narrowed (an unknown one, a v128 helper's, is exprType's to decide).
+  // Boolean and numeric tails each fit i32, but their join needs tagged f64:
+  // one result carrier cannot distinguish true from 1 or false from 0.
   const numericResult = (func) => {
     const vs = valsOf(ctx.summary.resultOf(func.name))
-    return vs.length >= KIND_UNIVERSE.length || vs.every(v => v === VAL.NUMBER || v === VAL.BOOL)
+    return vs.length >= KIND_UNIVERSE.length || vs.length <= 1 && vs.every(v => v === VAL.NUMBER || v === VAL.BOOL)
   }
   let changed = true
   while (changed) {
