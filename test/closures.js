@@ -1743,6 +1743,21 @@ test('closures: for-head let captures per-iteration binding', () => {
   is(run(`export let f = () => { let fs = []; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) fs.push(() => i * 10 + j); return fs[0]() + fs[3]() }`).f(), 11)
 })
 
+// A parameter default belongs to its arrow: a loop binding only a default reads
+// is captured (a fresh binding per iteration), and a top-level function only a
+// default reassigns stays a mutable binding, neither lifted nor devirtualized
+// onto its first value. Each case was wrong before: 3,3,3 / 18 / 11.
+test('closures: a parameter default captures a loop binding and reassigns a function binding', () => {
+  for (const src of [
+    `export let run = (n) => { const fs = []; for (let i = 0; i < n; i++) fs.push((x = i) => x); return fs.map(f => f()).join(',') }`,
+    `const ns = {}\nfor (let k = 1; k < 3; k++) ns.f = (x = k) => x * 2\nexport let run = (n) => ns.f() + ns.f(n)`,
+    `let f = () => 1\nconst g = (x = (f = () => 2)) => 0\nexport let run = (n) => { const a = f(); g(); return a * 10 + f() + n }`,
+  ]) for (const optimize of levels(0, 2, 3)) {
+    const native = oracle(src).run, wasm = jz(src, { optimize }).exports.run
+    for (const n of [0, 1, 4]) is(wasm(n), native(n), `O${optimize} run(${n}): ${src.replace(/\s+/g, ' ').slice(0, 60)}`)
+  }
+})
+
 // re-audit #5 critical #3: the per-iteration mechanism above lived ENTIRELY
 // on the function-scope emit path (emitLoopFreshBoxed, gated on ctx.func.boxed
 // — populated by boxedCaptures, called from analyzeFuncForEmit/emitClosureBody,

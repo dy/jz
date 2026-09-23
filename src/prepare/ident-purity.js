@@ -7,7 +7,7 @@
  * @module prepare/ident-purity
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, PARAM_NAME, T, classifyParam, extractParams, walkAst } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, T, collectParamNames, extractParams, walkAst } from '../ast.js'
 import { ownerStack, renameSerial } from './state.js'
 
 
@@ -44,11 +44,10 @@ export const scanReassignedTopLevel = (root) => {
   const walk = (n, bound) => {
     if (!Array.isArray(n)) return
     if (n[0] === '=>') {
-      const inner = new Set(bound)
-      for (const p of extractParams(n[1])) {
-        const c = classifyParam(p)
-        if (c[PARAM_NAME]) inner.add(c[PARAM_NAME])
-      }
+      // defaults run where the parameters are bound, before the body's declarations
+      const params = collectParamNames(extractParams(n[1]), new Set(bound))
+      walk(n[1], params)
+      const inner = new Set(params)
       declaredIn(n[2], inner)
       walk(n[2], inner)
       return

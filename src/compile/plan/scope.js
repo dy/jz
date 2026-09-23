@@ -661,8 +661,10 @@ export const devirtGlobalCalls = (ast) => {
     for (let i = 1; i < node.length; i++) scanWrites(node[i], false)
   }
   for (const stmt of initStmts) scanWrites(stmt, true)
-  for (const fn of ctx.funcs.map.values())
-    if (fn.body && !fn.raw) scanWrites(fn.body, false)
+  for (const fn of ctx.funcs.map.values()) if (fn.body && !fn.raw) {
+    scanWrites(fn.body, false)
+    if (fn.defaults) for (const d of Object.values(fn.defaults)) scanWrites(d, false)
+  }
 
   // Resolve each global's value by a linear pass over init in execution order.
   const env = new Map()

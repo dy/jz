@@ -10,6 +10,7 @@ import jz, { compile } from '../index.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
 import { levels, onKernel } from './_matrix.js'
+import { oracle } from './util.js'
 
 const TAPE = { optimize: { watr: false } }   // the pass's own output, before watr folds dead allocations away
 const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}\n`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }
@@ -51,6 +52,16 @@ test('frame effects: an allocation escaping through a parameter, a callee, or a 
   is(whyNot('const cache = []; export function f(n) { const t = new Array(n).fill(0); cache.push(t.length); return cache.length }'), 'escape: grows cache', 'growth of a module array, even of a number')
   is(whyNot('import { log } from "env"; export function f(n) { const o = { x: n }; log(o); const t = new Array(n).fill(0); return t.length }', { imports: { env: { log() {} } } }), 'escape: calls log (unknown)', 'a host import may keep what it receives')
   ok(!rewinds('export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }'), 'no rewind emitted')
+  // a parameter default runs in the frame: its growth of a parameter array escapes
+  ok(/^escape: grows o/.test(whyNot('export function f(o, n, x = o.push([n])) { const t = new Array(n).fill(0); return t.length }')), 'through a parameter default')
+})
+
+test('frame effects: arrays a parameter default pushes into the caller keep their values', () => {
+  // the rewind freed them, and the next call's temporary overwrote them (63/0 at O2)
+  const src = `const f = (out, n, x = out.push([n, n + 1])) => n
+    const g = (n) => [n, n, n, n, n, n, n, n].length
+    export let run = (n) => { const out = []; let s = 0; for (let i = 0; i < n; i++) s += f(out, i) + g(i); let t = 0; for (const p of out) t += p[0] * 10 + p[1]; return s + '/' + t }`
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.run(6), oracle(src).run(6), `O${optimize}`)
 })
 
 // --- The widening: parameters, numbers into outer storage, fresh local containers.

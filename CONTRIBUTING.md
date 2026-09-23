@@ -1312,7 +1312,10 @@ transitive over direct calls: `writesOuter` (the body may write storage that
 exists before the call) and `arenaUnsafe` (an allocation made during the call
 may outlive the frame: a heap-capable value stored into outer storage, a growth
 of an outer container, a captured or module binding assigned a heap value, an
-unknown or host callee). A store into a fresh local aggregate, a binding
+unknown or host callee). Parameter defaults run in the frame before the body:
+the census reads a function's `func.defaults` with it, as does every scan that
+decides what a function writes or captures (an arrow keeps its defaults in its
+parameter list). A store into a fresh local aggregate, a binding
 declared in the body whose every write is a literal or a `new`, is a store into
 fresh memory. The arena rewind (`src/optimize/arena-rewind.js`) restores the
 heap pointer at return for any function with a scalar non-pointer result whose

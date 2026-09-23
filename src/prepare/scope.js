@@ -97,11 +97,12 @@ export function mintForScope(name, isLoopLocal) {
   return m
 }
 
-/** Does any arrow inside `node` reference `name`? The capture test for the
- *  per-iteration for-head `let` lowering (pay only when actually captured). */
+/** Does any arrow inside `node` reference `name`, in its body or a parameter
+ *  default? The capture test for the per-iteration for-head `let` lowering
+ *  (pay only when actually captured). */
 export function bodyCapturesName(node, name) {
   if (!Array.isArray(node)) return false
-  if (node[0] === '=>') return refsName(node[2], name, REFS_THROUGH_ARROWS)
+  if (node[0] === '=>') return refsName(node, name, REFS_THROUGH_ARROWS)
   for (let i = 1; i < node.length; i++) if (bodyCapturesName(node[i], name)) return true
   return false
 }
