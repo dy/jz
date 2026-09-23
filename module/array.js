@@ -730,7 +730,7 @@ export default (ctx) => {
 
   // === Index read ===
 
-  ctx.core.emit['[]'] = (arr, idx) => {
+  ctx.core.emit['[]'] = (arr, idx, node = null) => {
     // A rest slot view reads the argument slot (compile/rest-view.js).
     if (typeof arr === 'string' && ctx.func.restView?.has(arr)) return restViewRead(ctx.func.restView.get(arr), idx)
     const nullable = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
@@ -876,7 +876,7 @@ export default (ctx) => {
         return typed(['f64.reinterpret_i64', ['call', `$${fn}`, asI64(emit(arr)), asI64(storedValue(idx)),
           ...(present ? [['i32.const', PTR.TYPED]] : [])]], 'f64')
       }
-      const r = ctx.core.emit['.typed:[]'](arr, idx)
+      const r = ctx.core.emit['.typed:[]'](arr, idx, node)
       if (r) return r
     }
     // Literal string key on schema-known object → direct payload slot read (skip __dyn_get)

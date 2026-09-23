@@ -46,6 +46,7 @@ function stampClonedIdxProof(node, out) {
   const k = idxKey(node[1], node[2])
   const ip = intervalProvenIdx(ctx)   // memoized; NO_INTERVAL_PROVEN when no function ctx
   if (ip.has(k)) ip.add(idxKey(out[1], out[2]))
+  if (ip.has(node)) ip.add(out)   // the occurrence's own proof, carried to its clone
   // intervalProvenIdx(ctx) above already populated getFactStore().ipRanges for
   // ctx.func.body when it's a valid function body (AdHocMemo retirement — was
   // ctx.func.ipRanges, a plain field mirroring the same memoized Map).

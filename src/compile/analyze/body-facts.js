@@ -192,7 +192,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
       for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
       scanIntervalIdx(body, presentKeys, lens, null, null, entry)
     }
-    return presentNodes.has(e) || presentKeys.has(idxKey(e[1], e[2]))
+    return presentNodes.has(e) || presentKeys.has(e) || presentKeys.has(idxKey(e[1], e[2]))
   }
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===

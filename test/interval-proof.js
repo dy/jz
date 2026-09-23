@@ -419,3 +419,114 @@ test('interval proof: typed-store assignment values retain the original magnitud
       is(wasm(key), native(key), `dynamic property ${key}, O${optimize}`)
   }
 })
+
+// A checked element read yields undefined (or, consumed by arithmetic, NaN) on
+// its miss arm; the count of those arms is the count of checked reads (loop
+// rotation copies a loop test's read).
+const missArms = (wat) => (wat.match(/\(else \(f64\.const nan\b/g) || []).length
+const NO_GUARDS = { level: 'speed', sentinelGuards: false }
+
+// A loop exits where its test failed. The exit state is the head invariant
+// (entry ∪ back edges) refined by the failed test, never the state the body
+// ran in, and the test's own reads are judged on the head: a read in the test
+// that runs once more at the exiting value stays checked.
+const LOOP_EXITS = {
+  // `while (i < 5 && j < 3)` exits with j = 3, so a[3] reads past the array
+  counters: `export function f(n) {
+    const a = new Int32Array(3); a[0] = 11; a[1] = 22; a[2] = 33
+    let i = 0, j = n & 1
+    while (i < 5 && j < 3) { i++; j++ }
+    const r = a[j]; return r === undefined ? -1 : r }`,
+  // a stride-two counter passes its bound: from 1, `i += 2` exits at 11
+  stride: `export function f(n) {
+    const a = new Int32Array(11); for (let t = 0; t < 11; t++) a[t] = t
+    let i = 1 + (n & 1)
+    while (i < 10) i += 2
+    const r = a[i]; return r === undefined ? -1 : r }`,
+  // the test reads a[i] before comparing i, so the last test reads a[4]
+  testRead: `export function f(n) {
+    const a = new Int32Array(4); for (let t = 0; t < 4; t++) a[t] = t + 1
+    let i = n & 1
+    while (a[i] !== -1 && i < 4) i++
+    return i }`,
+  forTestRead: `export function f(n) {
+    const a = new Int32Array(4); for (let t = 0; t < 4; t++) a[t] = t + 1
+    let s = 0
+    for (let i = n & 1; a[i] > 0 && i < 4; i++) s += 1
+    return s }`,
+}
+
+test('interval proof: a loop exit is where its test failed, not where its body ran', () => {
+  for (const optimize of levels(0, 2, 3, 'size')) for (const [name, src] of Object.entries(LOOP_EXITS)) {
+    const native = oracle(src).f, wasm = jz(src, { optimize }).exports.f
+    for (const n of [0, 1, 2, 3]) is(wasm(n), native(n), `${name}(${n}), O${optimize}`)
+  }
+  if (onKernel()) return
+  for (const name of ['testRead', 'forTestRead'])
+    ok(hasCheckedTypedAccess(compile(LOOP_EXITS[name], { optimize: NO_GUARDS, wat: true })), `${name}: the test's read stays checked`)
+})
+
+// On the true path of `x <= a[k]` the read hit, so k is an element index there:
+// the body's read of another array of that length at k needs no check. The
+// test's own read has no such help, so the pop that runs k to -1 stops on its miss.
+test('interval proof: a relational test on a typed read bounds its index where it held', () => {
+  const src = `export function f(n) {
+    const a = new Float64Array(8), b = new Float64Array(8)
+    for (let t = 0; t < 8; t++) { a[t] = t * 1.5; b[t] = t + 0.25 }
+    let k = 7, s = 0
+    while (n <= a[k]) { s += b[k]; k-- }
+    return s + k * 1000 }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const native = oracle(src).f, wasm = jz(src, { optimize }).exports.f
+    for (const n of [-1, 0, 5, 20, NaN, -Infinity]) is(wasm(n), native(n), `f(${n}), O${optimize}`)
+  }
+  if (onKernel()) return
+  // `a[k] + 0` is the same test (undefined + 0 is NaN), with no read to hit
+  const plain = src.replace('n <= a[k]', 'n <= a[k] + 0')
+  is(oracle(plain).f(-1), oracle(src).f(-1))
+  const checked = (s) => missArms(funcWat(compile(s, { optimize: NO_GUARDS, wat: true }), 'f'))
+  is(checked(plain) - checked(src), 1, 'the body read b[k] is unchecked where the test read hit')
+})
+
+// Proofs are per occurrence: a[k] where k is bounded is unchecked even though
+// the same text a[k] later reads with an unbounded k (which keeps its check).
+test('interval proof: an access keeps its own proof beside an unprovable twin', () => {
+  const src = `export function f(n) {
+    const a = new Int32Array(4)
+    for (let t = 0; t < 4; t++) a[t] = t + 10
+    let k = 0, s = 0
+    for (let t = 0; t < 4; t++) { k = t; s += a[k] }
+    k = n | 0
+    const r = a[k]
+    return s * 100 + (r === undefined ? -1 : r) }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const native = oracle(src).f, wasm = jz(src, { optimize }).exports.f
+    for (const n of [0, 3, 4, -1, 2147483647]) is(wasm(n), native(n), `f(${n}), O${optimize}`)
+  }
+  if (onKernel()) return
+  is(missArms(funcWat(compile(src, { optimize: NO_GUARDS, wat: true }), 'f')), 1, 'the unbounded read alone is checked')
+})
+
+// A stack cursor pushed once per outer iteration and popped by an inner loop
+// rises by at most 1 an iteration: its store and read stay unchecked. The
+// pop's own test bounds it below (`k > 0`).
+test('interval proof: a cursor that also falls keeps its rise budgeted', () => {
+  const src = `export function f(seed) {
+    const st = new Int32Array(16)
+    let k = 0, s = seed | 0
+    for (let q = 0; q < 15; q++) {
+      s = (s * 1103515245 + 12345) | 0
+      while (k > 0 && (s & 7) < 3) { k--; s = (s * 1103515245 + 12345) | 0 }
+      st[k] = q + st[k]
+      k++
+    }
+    let h = 0
+    for (let i = 0; i < 16; i++) h = (h * 31 + st[i]) | 0
+    return h + k }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const native = oracle(src).f, wasm = jz(src, { optimize }).exports.f
+    for (const seed of [1, 7, 12345, -3]) is(wasm(seed), native(seed), `f(${seed}), O${optimize}`)
+  }
+  if (onKernel()) return
+  ok(!hasCheckedTypedAccess(compile(src, { optimize: NO_GUARDS, wat: true })), 'the stack store and read are unchecked')
+})

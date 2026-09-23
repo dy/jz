@@ -35,12 +35,19 @@ const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 /** Walk one function body; lens(name) returns a static element count or null.
  *  Optional calls/stores collect scalar hulls under the supplied entry ranges.
  *  Those maps preseed requested AST nodes with undefined; null means unknown.
- *  Repeated structural keys join conservatively across every occurrence. */
-export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null) {
+ *  Repeated structural keys join conservatively across every occurrence.
+ *  `out` receives both: a key string proven at every occurrence, and each
+ *  access NODE proven at its own position. `misses`, when given, maps each
+ *  unproven access node of known length to [lo, hi, L]: the hull of its index
+ *  over the walk (null bounds where unknown), for a guard to test. */
+export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null, misses = null) {
   const env = new Map(entry)   // name → [lo, hi] | null (unknown)
   // Structural keys survive lowering clones, but each occurrence must prove
   // its own bounds. One unchecked twin permanently rejects the shared proof.
-  const rejected = new Set()
+  // The access node itself carries its own occurrence's proof: a clone made
+  // after this walk is a different node and keeps to the key's verdict, so a
+  // provable read keeps its proof beside an unprovable twin.
+  const rejected = new Set(), rejectedNodes = new Set()
   let guardProofContext = 0
   const underGuardProof = (guarded, fn) => {
     if (!guarded) return fn()
@@ -106,8 +113,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   }, REFS_THROUGH_ARROWS)
   const setEnv = (name, v) => {
     invalidateBool(name)
-    if (closureWrites.has(name) || !ipOk(v)) v = null
     const f = activeFacts.get(name)
+    // A theorem's upper bound clamps the raw transfer before the word check:
+    // `++k` on a hull that touched the i32 top returns under the theorem's cap
+    // with its lower bound kept, instead of falling to the theorem alone.
+    if (f && v && Number.isFinite(v[1]) && v[1] > f[1]) v = [v[0], f[1]]
+    if (closureWrites.has(name) || !ipOk(v)) v = null
     if (f) v = v ? [Math.max(v[0], f[0]), Math.min(v[1], f[1])] : f
     env.set(name, v)
   }
@@ -290,6 +301,49 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     const r = refineRaw(c, negate)
     return r && r[1][0] <= r[1][1] && ipOk(r[1]) ? r : null
   }
+  // Whether the test cannot come out `!negate` from the current state: a
+  // comparison whose refinement of its name's known interval is empty (`k > 0`
+  // with k = 0), alone or as a conjunct that must hold (`&&` true, `||`
+  // false). The code the test guards is unreachable from here, and walking it
+  // would join states no execution has. The compared name must not be written
+  // by the test itself.
+  const impossible = (c, negate) => {
+    if (!Array.isArray(c)) return false
+    if (c[0] === (negate ? '||' : '&&') && c.length === 3) return impossible(c[1], negate) || impossible(c[2], negate)
+    const r = refineRaw(c, negate)
+    return !!r && r[1][0] > r[1][1] && !isReassigned(c, r[0])
+  }
+  // A relational comparison with undefined is false (undefined converts to
+  // NaN), and an element read of a receiver of known length L (a typed array,
+  // an array) is undefined wherever its index is not an element index. So
+  // where `E op a[x ± c]` HELD (op one of < <= > >=), the read hit:
+  // x ± c ∈ [0, L − 1]. The
+  // sentinel-terminated scans rely on it, e.g. the lower envelope's
+  // `while (s <= z[k]) k--`, whose body never runs with z[k] missed. The index
+  // must be a name, alone or with a literal offset, that E does not write, and
+  // an integer the walk already tracks (a known interval or an i32 local):
+  // a hit proves the index an element index, not that the name is a number.
+  const readHit = (c) => {
+    if (!Array.isArray(c) || c.length !== 3 || !(c[0] === '<' || c[0] === '<=' || c[0] === '>' || c[0] === '>=')) return null
+    for (const [read, other] of [[c[1], c[2]], [c[2], c[1]]]) {
+      if (!Array.isArray(read) || read[0] !== '[]' || read.length !== 3 || typeof read[1] !== 'string') continue
+      const L = lens(read[1])
+      if (L == null || L < 1) continue
+      let x = read[2], bias = 0
+      if (Array.isArray(x) && x.length === 3 && (x[0] === '+' || x[0] === '-') && typeof x[1] === 'string' && intLiteralValue(x[2]) != null) {
+        bias = x[0] === '+' ? intLiteralValue(x[2]) : -intLiteralValue(x[2]); x = x[1]
+      }
+      else if (Array.isArray(x) && x.length === 3 && x[0] === '+' && typeof x[2] === 'string' && intLiteralValue(x[1]) != null) {
+        bias = intLiteralValue(x[1]); x = x[2]
+      }
+      if (typeof x !== 'string' || closureWrites.has(x) || isReassigned(other, x)) continue
+      const known = env.get(x) ?? fullI32Range(x)
+      if (!known) continue
+      const v = [Math.max(known[0], -bias), Math.min(known[1], L - 1 - bias)]
+      if (v[0] <= v[1] && ipOk(v)) return [x, v]
+    }
+    return null
+  }
   // Every conjunct holds on the positive path. Intersect repeated facts for
   // the same name: together `x >= 0 && x < W` prove a valid index domain.
   const refineAll = (c2, namedSeed = false) => {
@@ -303,6 +357,16 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         if (Array.isArray(c3) && c3[0] === '&&') { gatherKnown(c3[1]); gatherKnown(c3[2]); return }
         const r = refineRaw(c3, false, false)
         if (r && r[1][0] <= r[1][1] && ipOk(r[1])) out.push(r)
+        // A read's hit refines its index name, intersected with that name's other conjuncts.
+        const h = readHit(c3)
+        if (h) {
+          const i = out.findIndex(o => o[0] === h[0])
+          if (i < 0) out.push(h)
+          else {
+            const m = [Math.max(out[i][1][0], h[1][0]), Math.min(out[i][1][1], h[1][1])]
+            if (m[0] <= m[1]) out[i] = [h[0], m]
+          }
+        }
       }
       gatherKnown(c2)
       return out
@@ -322,7 +386,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         if (bd) gather(bd.def)
       } else if (Array.isArray(c3) && c3[0] === '&&') {
         gather(c3[1]); gather(c3[2])
-      } else add(refineRaw(c3, false, seedUnknown))
+      } else { add(refineRaw(c3, false, seedUnknown)); add(readHit(c3)) }
     }
     gather(c2)
     return [...facts].filter(([, v]) => v && ipOk(v)).map(([name, v]) => [name, v])
@@ -361,29 +425,40 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
     }
   }
-  // LOOP BODY FIXPOINT (2-round widening). Pass A walks from the ENTRY state
-  // (∩ cond) and yields the back-edge state; the JOIN hulls entry with it (a
-  // name known on only one edge → null); pass B re-walks from join∩cond and
-  // any name whose back-edge escapes its join widens to unknown; the FINAL
-  // pass walks the stable env with proof recording ON, leaving env at the
-  // loop invariant. `seedFn` re-applies body-independent theorems (canonical
-  // iv ranges, wrap cursors) each pass; `condNode` refines at body top,
-  // descending `&&` (both conjuncts hold when the loop is entered).
+  // LOOP FIXPOINT over the loop HEAD, the state where the condition is
+  // evaluated: entry ∪ back edges (2-round widening). Each pass restores a
+  // head state, re-applies the body-independent theorems (`seedFn`: wrap
+  // cursors, cursor budgets), and walks `walkFn(afterCond)`: the condition is
+  // visited on the head state itself (its reads get no help from its own
+  // truth, so `while (a[i] > 0 && i < n)` keeps `a[i]` checked), then
+  // `afterCond` refines by `condNode`, descending `&&` (both conjuncts hold
+  // when the body runs), and the body walks. Pass A yields the back-edge
+  // state; the JOIN hulls entry with it (a name known on only one edge →
+  // null); pass B re-walks from the join and any name whose back edge
+  // escapes it widens to unknown; the FINAL pass walks the stable head with
+  // proof recording ON. The exit is the head invariant where the condition
+  // failed, ∪ the break states.
   const loopFixpoint = (seedFn, walkFn, condNode, exitBodyEnd = false) => {
-    const applyCond = () => { if (condNode != null) for (const r of refineAll(condNode)) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
+    // Refines by the test and reports whether the body can run from here.
+    const applyCond = () => {
+      if (condNode == null) return true
+      if (impossible(condNode, false)) return false
+      for (const r of refineAll(condNode)) if (!closureWrites.has(r[0])) env.set(r[0], r[1])
+      return true
+    }
     const restore = (m) => { env.clear(); for (const [k2, v2] of m) env.set(k2, v2) }
     // every pass walks under a loop frame: continue edges are back-edges too,
     // so their snapshots hull into the pass-end state before any join/verify
     const walkPass = () => {
       const lc = { kind: 'loop', breaks: [], continues: [] }
-      loopStack.push(lc); walkFn(); loopStack.pop()
+      loopStack.push(lc); walkFn(applyCond); loopStack.pop()
       for (const s of lc.continues) hullInto(s)
       return lc
     }
     const entryEnv = new Map(env)
     const prevRec = recording
     recording = false
-    seedFn(); applyCond(); walkPass()                   // pass A: discovery
+    seedFn(); walkPass()                                // pass A: discovery
     const stepEnv = new Map(env)
     // WIDENING JOIN: an escaping bound widens to the i32 extreme instead of the
     // one-step hull — the pass-B seed's cond refinement then clamps it to the
@@ -412,10 +487,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (!a || !b || a[0] < 0 || b[0] < 0) continue
       fields.set(k2, [j[0] === I32_MIN ? 0 : j[0], j[1] === I32_MAX ? fieldAbove(Math.max(a[1], b[1])) : j[1]])
     }
-    restore(joined); seedFn(); applyCond(); walkPass()  // pass B: verify
-    // the back edge re-evaluates the condition before re-entering the body, so
-    // the state to verify against the invariant is walk-end ∩ cond
-    applyCond()
+    restore(joined); seedFn(); walkPass()               // pass B: verify
+    // the back edge returns to the head, where the condition is evaluated
+    // again: the walk-end state itself must lie in the head invariant
     const holds = (k2, j) => { const v2 = env.get(k2); return !!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1]) }
     const failed = new Set()
     for (const [k2, j] of joined) if (j && !holds(k2, j)) failed.add(k2)
@@ -427,7 +501,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // failed name must hold, or nothing from it is adopted.
       const trial = new Map(joined)
       for (const [k2, f] of fields) trial.set(k2, f)
-      restore(trial); seedFn(); applyCond(); walkPass(); applyCond()
+      restore(trial); seedFn(); walkPass()
       if ([...fields].every(([k2, f]) => holds(k2, f)) && [...failed].every(k2 => holds(k2, joined.get(k2)))) {
         for (const [k2, f] of fields) joined.set(k2, f)
         failed.clear()
@@ -439,8 +513,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // when the loop's true range is finite (`i = child` copy chains: i only
     // ever receives root- or cond-clamped child-values, so hull(entry,
     // end-state) is the real invariant). Each pass recomputes the hull from
-    // the stable state — every reachable back-edge state ⊆ F(joined ∩ cond),
-    // so hull(entry, F(joined ∩ cond)) contains them all and only TIGHTENS
+    // the stable state — every reachable back-edge state ⊆ F(joined), so
+    // hull(entry, F(joined)) contains them all and only TIGHTENS
     // (meet with the previous invariant keeps the sequence decreasing).
     //
     // GATE (exact, not heuristic — a raw compile-time win jz.wasm pays for):
@@ -457,7 +531,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       return false
     }
     for (let np = 0; np < 2 && widened(); np++) {
-      restore(joined); seedFn(); applyCond(); walkPass(); applyCond()
+      restore(joined); seedFn(); walkPass()
       let changed = false
       for (const [k2, j] of joined) {
         const a = entryEnv.get(k2), b = env.get(k2)
@@ -468,17 +542,21 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (!changed) break
     }
     recording = prevRec
-    restore(joined); seedFn(); applyCond()
+    restore(joined); seedFn()
     const lcF = walkPass()                              // FINAL: record on the stable env
-    // exit state:
-    //  - default: the invariant (joined) — sound for any trip count.
+    // exit state, where the condition failed:
+    //  - default: the head invariant (joined) — sound for any trip count.
     //  - exitBodyEnd (caller proved ≥1 trip): the final walk's BODY-END state —
-    //    tighter for defined-every-iteration names (an inlined preamble's
-    //    `inl_i = 0` keeps [0,0] where the join would null it), and sound
-    //    because the walk ran from the verified invariant, so its end state
-    //    covers every real last-iteration state. Zero-trip loops must NOT use
-    //    it: their real exit is the ENTRY state, which body-end doesn't cover.
+    //    the head state of the next test, tighter for defined-every-iteration
+    //    names (an inlined preamble's `inl_i = 0` keeps [0,0] where the join
+    //    would null it), and sound because the walk ran from the verified
+    //    invariant, so its end state covers every real last-iteration state.
+    //    Zero-trip loops must NOT use it: their real exit is the ENTRY state,
+    //    which body-end doesn't cover.
+    // Either way the failed condition refines it (`while (i < n)` exits i ≥ n).
     if (!exitBodyEnd) restore(joined)
+    const rX = condNode != null ? refine(condNode, true) : null
+    if (rX && !closureWrites.has(rX[0])) env.set(rX[0], rX[1])
     // ∪ break-edge states (a break bypasses the loop condition and reaches the
     // exit mid-body; the caller's tighter iv/wrap exit forms stay sound — each
     // is an every-point invariant that covers break states)
@@ -515,8 +593,17 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const L = lens(n[1]), k = idxKey(n[1], n[2])
       const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
       if (!recording) return proven   // exploratory fixpoint pass: env effects only
-      if (!proven) { rejected.add(k); out.delete(k) }
-      else if (!rejected.has(k)) out.add(k)
+      if (!proven) {
+        rejected.add(k); out.delete(k); rejectedNodes.add(n); out.delete(n)
+        if (misses && L != null) {
+          const prev = misses.get(n), lo = idxV ? idxV[0] : null, hi = idxV ? idxV[1] : null
+          misses.set(n, prev ? [prev[0] == null || lo == null ? null : Math.min(prev[0], lo), prev[1] == null || hi == null ? null : Math.max(prev[1], hi), L] : [lo, hi, L])
+        }
+      }
+      else {
+        if (!rejected.has(k)) out.add(k)
+        if (!rejectedNodes.has(n)) out.add(n)
+      }
       // A bounded idx against an UNKNOWN length is half a proof — export the hull
       // (joined over every sighting of this key) for the versioning guard to close
       // with a runtime `hi < len` conjunct (the wrap-cursor + dynamic-table class).
@@ -659,7 +746,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // advance along any one body path; over a literal-trip loop this gives a
       // whole-body invariant `entry <= cursor <= entry + trips*maxAdvance`.
       // Unknown writes, nested control loops, abrupt edges, or closures reject.
-      const advanceBudget = (root, name) => maxAdvanceBudget(root, name, { constInt, evRange: ev, closureWrites, MUTATE_OPS })
+      const advanceBudget = (root, name, upperOnly = false) => maxAdvanceBudget(root, name, { constInt, evRange: ev, closureWrites, MUTATE_OPS, upperOnly })
       // Two-counter amortized budget. Track `cursor + credit` path-sensitively
       // through one loop body. This proves buffered/RLE emitters where a rare
       // path writes K+1 bytes only after `credit > 0` and resets the credit:
@@ -776,6 +863,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         return max
       }
       const budgeted = []
+      // Upper caps for cursors that also fall: every write inside the loop is
+      // capped, no seed is set, and the loop fixpoint discovers the lower bound.
+      const capped = []
       if (iv && ivStep > 0 && range && range[0] <= range[1]) {
         const trips = Math.floor((range[1] - range[0]) / ivStep) + 1
         const stmts = Array.isArray(lbody) && (lbody[0] === ';' || lbody[0] === '{}') ? lbody.slice(1) : [lbody]
@@ -820,7 +910,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         const indexCaps = new Map()
         walkAst(lbody, { enter: x => {
           if (x[0] === '=>') return false
-          if (x[0] === '[]' && typeof x[1] === 'string' && ctx.func.typedElem?.has(x[1])) {
+          if (x[0] === '[]' && typeof x[1] === 'string') {
             const L = lens(x[1])
             if (L != null) {
               const names = new Set(); collectNames(x[2], names)
@@ -849,26 +939,40 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
             if (ipOk(ph) && ph[1] < h[1]) h = ph
           }
           if (ipOk(h)) budgeted.push([name, h])
+          else if (entry) {
+            // No decrement raises the cursor, so its rise stays budgeted when it also falls.
+            const up = advanceBudget(lbody, name, true)
+            const cap = up != null ? [I32_MIN, entry[1] + trips * up] : null
+            if (ipOk(cap)) capped.push([name, cap])
+          }
         }
       }
       // Body fixpoint (same engine as `while` below): the canonical-iv range is
       // a body-independent theorem re-seeded each pass; everything else
       // discovers its invariant. This is what proves heapsort's `child` chains,
       // medianUs's `samples[mid]`, and strided codec input/output cursors.
+      // The condition sees the iv's HEAD range, one step past the body range
+      // (the test that exits); the body sees the body range.
       const seeded = iv && ipOk(range) && range[0] <= range[1] && !closureWrites.has(iv)
+      const headRange = seeded ? (ivStep > 0 ? [range[0], range[1] + ivStep] : [range[0] - 1, range[1]]) : null
       const priorCoupled = new Map(coupled.map(([name]) => [name, coupledEnv.get(name)]))
-      const priorFacts = new Map(budgeted.map(([name]) => [name, activeFacts.get(name)]))
+      const priorFacts = new Map([...budgeted, ...capped].map(([name]) => [name, activeFacts.get(name)]))
       for (const [name, h] of budgeted) activeFacts.set(name, h)
+      for (const [name, h] of capped) activeFacts.set(name, h)
       const seeds = () => {
-        if (seeded) env.set(iv, range)
+        if (seeded) env.set(iv, ipOk(headRange) ? headRange : null)
         else if (iv) env.set(iv, null)
         for (const [name, h, incNode] of coupled) coupledEnv.set(name, { h, incNode })
         for (const [name, h] of budgeted) setEnv(name, h)
       }
       loopFixpoint(seeds,
-        () => { if (cond != null) visit(cond); visit(lbody); if (step != null) visit(step) },
+        (afterCond) => {
+          if (cond != null) visit(cond)
+          if (seeded) env.set(iv, range)
+          if (afterCond()) { visit(lbody); if (step != null) visit(step) }
+        },
         cond, seeded)
-      for (const [name] of budgeted) {
+      for (const [name] of [...budgeted, ...capped]) {
         const prior = priorFacts.get(name)
         if (prior) activeFacts.set(name, prior)
         else activeFacts.delete(name)
@@ -948,20 +1052,26 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           else symWraps.push([nm, { lo: 0, hiName: Cname, hiBias: -1, entryHi: prior?.entryHi ?? e0[1] }, a2])
         }
       }
-      // Body fixpoint (loopFixpoint below): the monotone-iv/wrap/symWrap seeds
-      // are theorems independent of the body, re-applied each pass; everything
-      // else discovers its invariant. Bounds heapsort's `while (child < n)`
-      // chains, medianUs's downward insertion scan, and interpreter
-      // `while (pc < N)` dispatch — shapes the single-kill walk lost entirely.
+      // Body fixpoint (loopFixpoint below): the wrap/symWrap seeds are theorems
+      // independent of the body, re-applied each pass; the monotone iv's body
+      // range (entry lo up to the bound, the test having held) applies after
+      // the test; everything else discovers its invariant. Bounds heapsort's
+      // `while (child < n)` chains, medianUs's downward insertion scan, and
+      // interpreter `while (pc < N)` dispatch — shapes the single-kill walk
+      // lost entirely.
       const seeds = () => {
-        if (iv) env.set(iv, [entry[0], brange[1] - 1])
         for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)
         for (const [nm, h, incNode] of symWraps) if (!closureWrites.has(nm)) symEnv.set(nm, { h, incNode })
       }
-      loopFixpoint(seeds, () => { visit(c); for (let k = 2; k < n.length; k++) visit(n[k]) }, c)
-      // exit state: the invariant (already in env) hulls entry ∪ back-edges;
-      // iv/wraps publish their tighter exit forms
-      if (iv) env.set(iv, [Math.min(entry[0], brange[0]), Math.max(entry[1], brange[1])])
+      loopFixpoint(seeds, (afterCond) => {
+        visit(c)
+        if (iv) env.set(iv, [entry[0], brange[1] - 1])
+        if (afterCond()) for (let k = 2; k < n.length; k++) visit(n[k])
+      }, c)
+      // exit state: the head invariant where the test failed (already in env);
+      // an iv stepping by more than one can pass its bound (`i += 2` exits at
+      // B + 1), which the head invariant carries and a `[., B]` form did not.
+      // Wraps publish their tighter exit forms.
       for (const [nm, r] of wraps) if (!closureWrites.has(nm)) env.set(nm, r)   // holds at exit too
       for (const [nm] of symWraps) symEnv.delete(nm)
       // The adjacent increment/reset pair also holds at exit. An unknown call
@@ -998,16 +1108,21 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // every `&&` conjunct holds on the then path (`if (child+1 < n && a[child] <
       // a[child+1]) child++` — the ++ under BOTH bounds)
       const namedGuard = typeof c === 'string' && boolDefs.has(c)
-      const thenRefs = refineAll(c, namedGuard)
+      // An arm its test rules out from this state never runs: it is not walked
+      // and the other arm's state is the exit.
+      const thenDead = impossible(c, false), elseDead = !thenDead && impossible(c, true)
+      const thenRefs = thenDead ? [] : refineAll(c, namedGuard)
       for (const rT of thenRefs) if (!closureWrites.has(rT[0])) env.set(rT[0], rT[1])
-      underGuardProof(namedGuard && thenRefs.length, () => visit(thenB))
+      if (!thenDead) underGuardProof(namedGuard && thenRefs.length, () => visit(thenB))
       const afterThen = new Map(env)
       env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
       // the fall-through state refines by ¬cond whether or not an else arm exists
       // (`if (xi >= 64) xi = 63` leaves xi < 64 on the other path)
-      const rE = refine(c, true)
+      const rE = elseDead ? null : refine(c, true)
       if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
-      if (elseB !== undefined) visit(elseB)
+      if (elseB !== undefined && !elseDead) visit(elseB)
+      if (thenDead) return
+      if (elseDead) { env.clear(); for (const [k2, v2] of afterThen) env.set(k2, v2); return }
       // join: both arms merge (min lo, max hi); known-in-one-arm-only joins unknown
       const keys = new Set([...afterThen.keys(), ...env.keys()])
       for (const k2 of keys) {
@@ -1119,6 +1234,24 @@ export function intervalProvenIdx(ctx) {
   cache.set(body, out)
   getFactStore().ipRanges.set(body, ranges)
   return out
+}
+
+/** The unproven access nodes of a function body (the current one by default)
+ *  with their index hulls (scanIntervalIdx `misses`), from a fresh walk. */
+export function intervalMisses(ctx, body = ctx.func?.body) {
+  const misses = new Map()
+  if (!Array.isArray(body)) return misses
+  const lens = (name) => ctx.func.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
+    ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
+  const entry = new Map()
+  for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
+  scanIntervalIdx(body, new Set(), lens, null, null, entry, null, misses)
+  return misses
+}
+
+/** Drop the memoized proofs of a body rewritten in place. */
+export function invalidateIntervalProof(body) {
+  if (body && typeof body === 'object') { getFactStore().ipProven.delete(body); getFactStore().ipRanges.delete(body) }
 }
 
 /** Idx-interval hulls the walk computed but could not discharge (receiver length

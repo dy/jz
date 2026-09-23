@@ -283,8 +283,15 @@ const NO_LIT_BOUNDS = new Map()
  * An abrupt edge out of a nested loop keeps the bound (fewer trips, never
  * more). Both the interval prover (advanceBudget) and the analysis-time
  * co-induction stamp state their cursor budgets through this one walk.
+ *
+ * `upperOnly` also admits decrements (`x--`, `x -= c`, `x = x - c` with c ≥ 0),
+ * which advance by zero, and a nested loop of any trip count whose iterations
+ * advance by zero: the result bounds how far the counter can RISE over one
+ * execution, never how far it falls, so it proves an upper bound alone. A
+ * stack cursor pushed once per outer iteration and popped by an inner scan
+ * (the lower envelope's `k`) advances by at most 1.
  */
-export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS }) {
+export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false }) {
   const stmts = Array.isArray(root) && (root[0] === ';' || root[0] === '{}') ? root.slice(1) : [root]
   const bodyDecls = new Map()
   for (const st of stmts) collectDecls(st, bodyDecls)
@@ -363,6 +370,12 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
       const d = n[2][1] === name ? constInt(n[2][2]) : n[2][2] === name ? constInt(n[2][1]) : null
       return d != null && d > 0 ? d : null
     }
+    if (!upperOnly) return null
+    if (n[0] === '--') return 0
+    if (n[0] === '-=') { const d = constInt(n[2]); return d != null && d >= 0 ? 0 : null }
+    if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '-' && n[2][1] === name) {
+      const d = constInt(n[2][2]); return d != null && d >= 0 ? 0 : null
+    }
     return null
   }
   const seq = (xs) => { let n = 0; for (const x of xs) { const d = eff(x); if (d == null) return null; n += d } return n }
@@ -384,11 +397,13 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
       return a == null || b == null ? null : a + Math.max(0, b)
     }
     if ((op === 'for' || op === 'while') && isReassigned(n, name)) {
-      const trips = nestedTrips(n)
-      if (trips == null) return null
       const head = op === 'for' ? eff(n[1]) : 0
       const per = op === 'for' ? seq([n[2], n[3], n[4]]) : seq([n[1], n[2]])
-      return head == null || per == null ? null : head + trips * per
+      if (head == null || per == null) return null
+      // iterations that cannot raise the counter raise it by zero, however many run
+      if (upperOnly && per === 0) return head
+      const trips = nestedTrips(n)
+      return trips == null ? null : head + trips * per
     }
     if (op === 'while' || op === 'for' || op === 'do' || op === 'for-of' || op === 'for-in' ||
         op === 'switch' || op === 'try' || op === 'catch' || op === 'finally' ||

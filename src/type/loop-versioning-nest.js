@@ -54,7 +54,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string'
           && ctx.func.typedElem?.has(n[1]) && stable2(n[1])) {
         const key = idxKey(n[1], n[2])
-        if (!seen.has(key) && !typedIdxProven(n[1], n[2])) {
+        if (!seen.has(key) && !typedIdxProven(n[1], n[2], n)) {
           const rng = intervalIdxRanges(ctx).get(key)
           if (rng && (rng.hiName == null || stable2(rng.hiName))) {
             seen.add(key); cands.push({ recv: n[1], idx: n[2], range: rng })

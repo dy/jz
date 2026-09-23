@@ -160,7 +160,7 @@ Dependencies
 
    | Remaining class | Evidence and next proof |
    | --- | --- |
-   | SDF scratch-array gathers | Bounds checks account for about 72% of its gap. Its cursor stops at sentinels in mutable arrays; removing those checks requires a relational or sentinel proof. |
+   | SDF scratch-array gathers | Sentinel guards remove the hull cursor's checks on the fast path (below). The rest of the gap is loop-carried reuse: C keeps `v[k]` and `z[k]` in registers across the pop, where JZ reloads them, plus the per-pass guard. |
    | Bounded byte/short accumulators | Glyph parsing's fast loop retains f64 because its checked fallback can produce NaN. Preserve the bounded trip count and step width into integer narrowing. |
    | Noise's dependent lookups | The candidate preserves all-writers element hulls through in-place copies and swaps, and preserves intervals through load-CSE's unary plus. Four lookup checks disappear, but the Rust-Wasm gap is still open. |
    | FFT, sort, CRC32, wordcount | CRC32 remains red; FFT and sort vary between runs. Wordcount's duplicate tag check is removed and the latest row passes. The attempted FFT pointer advancement lost both speed and size. Require quiet paired evidence before treating a fluctuating row as closed. |
@@ -197,6 +197,25 @@ Dependencies
      The same audit fixed a pre-existing growth allocation: the optional
      four-byte hash lane was counted as a boolean byte. Host collection
      decoding now shares forwarding, tombstone filtering and insertion order.
+   - Sentinel guards (`compile/sentinel-guard.js`) version the reads that
+     only SDF's `±∞` sentinels bound: the hull pop, the scan and the read after
+     the scan run unchecked under one range test per pass. A relational test on
+     a typed read now proves its index where the test held, and each access
+     node keeps its own proof beside an unprovable twin. Paired SDF medians
+     improve 1.407 → 1.190× C-Wasm and 0.974 → 0.820× V8 with checksum
+     1749682117 unchanged; the speed binary grows 3056 → 3292 bytes and the
+     size tier copies nothing. Removing every remaining check in the kernel
+     (WAT surgery, measurement only) reaches about 0.75× of the original
+     against the guards' 0.83×.
+   - The interval proof iterated body-entry states and took a loop's exit
+     from the body's end. Two pre-existing miscompiles followed: after
+     `while (i < 5 && j < 3)`, `a[j]` read 0 instead of undefined, and after
+     `i = 1; while (i < 10) i += 2`, `a[i]` read 0. Loop proofs now iterate
+     the head state and exit where the test failed (`test/interval-proof.js`).
+   - Loop rotation cannot rotate SDF's loops while their per-iteration
+     arena-rewind markers remain; `arenaRewind` removes them only after
+     `rotateLoops`. Running the rewind first rotated all six `edt1d` loops
+     but measured about 1%, so the link order is unchanged.
    - Cursor guards require a local that exists at entry and whose writes are
      all covered by the body budget. Nested declarations, header writes and
      external mutation cannot borrow that proof. A nested gather formerly

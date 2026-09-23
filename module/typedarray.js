@@ -1687,7 +1687,7 @@ export default (ctx) => {
     }
   }
 
-  ctx.core.emit['.typed:[]'] = (arr, i) => {
+  ctx.core.emit['.typed:[]'] = (arr, i, node = null) => {
     const r = resolveElem(arr)
     if (r == null) return null // open ctor: array.js uses the tagged runtime reader
     const { et, isView, isBigInt } = r
@@ -1703,7 +1703,7 @@ export default (ctx) => {
       rd.valKind = VAL.NUMBER
       return rd
     }
-    const proven = typedIdxProven(arr, i) || (key != null && ctx.types.rmwBounds?.has(key))
+    const proven = typedIdxProven(arr, i, node) || (key != null && ctx.types.rmwBounds?.has(key))
     const loadOf = (off) => elemLoadIR(r, off)
     if (!proven) {
       const bundleIn = typedBundleGuard(arr, i)
@@ -1905,11 +1905,11 @@ export default (ctx) => {
   // the RHS (its effects and the assignment's value are unconditional per spec),
   // then store only when `i u< len` — JS silently IGNORES out-of-bounds typed
   // writes, where the unchecked store corrupted adjacent heap (Root F).
-  ctx.core.emit['.typed:[]='] = (arr, i, val, void_ = false) => {
+  ctx.core.emit['.typed:[]='] = (arr, i, val, void_ = false, node = null) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView, isBigInt } = r
-    const proven = typedIdxProven(arr, i)
+    const proven = typedIdxProven(arr, i, node)
     const nullable = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(arr)) &&
       !(typeof arr === 'string' && (repOf(arr)?.ptrKind != null || ctx.func.refinements?.get(arr)?.val != null || activeBoundsAssumption(ctx, arr, i)))
     const nestedIndex = Array.isArray(i) && i[0] === '[]'

@@ -209,7 +209,7 @@ export const assignmentOps = {
         return afterStaging(staged.pre, putReference(staged.ref, value))
       }
     }
-    if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
+    if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val, name)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '__raw_prop')  return emitPropertyAssign(name[1], name[2], val, true)   // the accessor probe's plain-store arm
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)} — jz assigns to a plain variable, obj.prop, or arr[i] only`)

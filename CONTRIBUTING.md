@@ -295,6 +295,13 @@ The interval interpreter spans the full signed word; overflowing transfers
 become unknown. Integer payloads alone never prove bounded accumulation.
 Counted reductions combine element bounds with the trip count, including every
 intermediate step. Counter proofs reject additional writes in the loop header.
+Loop proofs iterate the head state: each pass applies the test before the
+body, so a test's own reads never borrow its refinement, and the exit state is
+the head where the test failed, never the body's end. The body-end exit let
+`a[j]` after `while (i < 5 && j < 3)` read an element instead of undefined.
+A relational test on a typed read proves its index an element index where the
+test held; an arm the state makes impossible is not walked. A cursor that also
+falls keeps an upper-only advance budget.
 Repeated regions require a fresh initializer; peeled copies
 join their hulls and every write must be covered. Escaping arithmetic values
 propagate backward through local copies. Explicit word conversions still wrap.
@@ -930,7 +937,16 @@ exports, indirect calls, missing arguments and unknown writes retain checks.
 The same ValueRep range feeds integer arithmetic and indexing after lowering.
 Typed-store summaries account for element wrapping and fresh zeroed storage.
 Truncated division preserves its quotient range only when it cannot wrap i32.
-Structural index proofs require every occurrence to succeed. Loop versioning
+Structural index proofs require every occurrence to succeed; an access node
+also carries its own occurrence's proof, so an unprovable twin no longer
+re-checks a proven read. Sentinel guards (`compile/sentinel-guard.js`) version
+what no static proof bounds: a cursor that only a data sentinel stops, like the
+lower envelope's pop `while (s <= z[k]) k--` and scan `while (z[k + 1] < q) k++`.
+A loop whose test reads at the cursor becomes `while (G && C′) B′; if (!G)
+while (C) B`, and a block's rest after the statement that steps the cursor
+becomes `if (G) S′ else S`. G tests only the bounds the unproven reads lack.
+Counted loops and computed indexes stay with loop-entry versioning, which
+tests once per entry instead of once per pass. Loop versioning
 groups cursor offsets by their shared extent and omits already-covered nest
 guards; negative offsets participate in the lower bound. A nested level lifts
 its guard to the nest entry only when every name that guard reads is stable

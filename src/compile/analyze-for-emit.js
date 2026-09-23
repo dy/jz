@@ -26,6 +26,7 @@ import { narrowBoundedSquare } from './loop-square.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
+import { guardSentinels } from './sentinel-guard.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
@@ -254,8 +255,14 @@ export function analyzeFuncForEmit(func, programFacts) {
   const arrayReps = programFacts.arrayReps?.get(func)
   if (arrayReps) for (const [name, rep] of arrayReps) updateRep(name, rep)
   // These whole-program facts were unavailable to the earlier body cache.
-  const bodyFacts = block ? (arrayReps ? reanalyzeBody(body) : analyzeBody(body)) : null
+  let bodyFacts = block ? (arrayReps ? reanalyzeBody(body) : analyzeBody(body)) : null
   if (bodyFacts) ctx.func.locals = bodyFacts.locals
+  // Sentinel guards (compile/sentinel-guard.js) read the settled lengths and
+  // local types, version the sentinel-bounded reads, and hand the body back.
+  if (block && _o && _o.sentinelGuards !== false && guardSentinels(body, bodyFacts)) {
+    bodyFacts = reanalyzeBody(body)
+    ctx.func.locals = bodyFacts.locals
+  }
   if (bodyFacts?.valTypes) {
     for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
   }

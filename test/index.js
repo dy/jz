@@ -66,6 +66,7 @@ const TESTS = [
   'reachability-mutants',
   'self-families',
   'interval-proof',
+  'sentinel-guard',
   'passes',
   'dyn-closure-tables',
   'preeval',

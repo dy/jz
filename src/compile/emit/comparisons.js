@@ -323,8 +323,8 @@ const nullableOperand = (n) => {
     // is itself a checked typed read (`out[count[d]]`, d OOB). Keep identity
     // tests live so the propagated miss bit can produce `undefined`.
     if (Array.isArray(n[2]) && n[2][0] === '[]' && typeof n[2][1] === 'string' &&
-        lookupValType(n[2][1]) === VAL.TYPED && !typedIdxProven(n[2][1], n[2][2])) return true
-    return !typedIdxProven(n[1], n[2])
+        lookupValType(n[2][1]) === VAL.TYPED && !typedIdxProven(n[2][1], n[2][2], n[2])) return true
+    return !typedIdxProven(n[1], n[2], n)
   }
   if (censusMaybeUndefined(n)) return true
   // The summary carries presence beside the kind: an element or slot read

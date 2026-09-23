@@ -96,10 +96,14 @@ export function typedStaticLen(rhs) {
  *     the guarded arm of a loop whose runtime extent check covers exactly this
  *     (recv, idx) pair (see versionableTypedFor / the 'for' emitter);
  *  5. the static interval walk (intervalProvenIdx) — const-bound nests whose index
- *     chains (incl. the clamp idiom) provably fit a static receiver length. */
-export function typedIdxProven(recv, idx) {
+ *     chains (incl. the clamp idiom) provably fit a static receiver length; given
+ *     the access `node` being emitted, that node's own occurrence proof counts
+ *     even where a twin of its key is unprovable. */
+export function typedIdxProven(recv, idx, node = null) {
   if (typeof recv !== 'string') return false
-  if (typedIndexKnown(ctx, recv, idx) || intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
+  const ip = intervalProvenIdx(ctx)
+  if (node != null && node[1] === recv && node[2] === idx && ip.has(node)) return true
+  if (typedIndexKnown(ctx, recv, idx) || ip.has(idxKey(recv, idx))) return true
   const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
     ?? ctx.func.localReps?.get(recv)?.arrayLen
   if (len == null) return false
@@ -474,7 +478,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
       const absent = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(n[1])) &&
         repOf(n[1])?.ptrKind == null && ctx.func.refinements?.get(n[1])?.val == null &&
         !activeBoundsAssumption(ctx, n[1], n[2])
-      const bounded = typedIdxProven(n[1], n[2])
+      const bounded = typedIdxProven(n[1], n[2], n)
       if (!seen.has(key) && absent && bounded) {
         seen.add(key); cands.push({ recv: n[1], idx: n[2], presence: true })
       } else if (!seen.has(key) && !bounded) {

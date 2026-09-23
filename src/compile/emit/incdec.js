@@ -111,7 +111,7 @@ export const incdecOps = {
     // instead of a bare `i32.load`, so an unproven index just falls through
     // to the general path below, unchanged).
     if (Array.isArray(n) && n[0] === '[]' && typeof n[1] === 'string' &&
-        wrapTruncatingTypedElemName(n[1]) && typedIdxProven(n[1], n[2]))
+        wrapTruncatingTypedElemName(n[1]) && typedIdxProven(n[1], n[2], n))
       return typed([`i32.${fn}`, asI32(emit(n)), ['i32.const', 1]], 'i32')
     return emit([sym, n, [, 1]])
   }])),

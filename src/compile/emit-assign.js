@@ -367,7 +367,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
       ['else', undefExpr()]]], 'f64')
 }
 
-export function emitElementAssign(arr, idx, val) {
+export function emitElementAssign(arr, idx, val, node = null) {
   // A static object key is a field write, with the same carrier and setter
   // semantics as dot syntax. Keep expression receivers on that one path too.
   if (isLiteralStr(idx) && ctx.summary?.at(ctx.func.current).objectSidOfExpr(arr) != null)
@@ -582,14 +582,14 @@ export function emitElementAssign(arr, idx, val) {
         const overlay = ctx.func.localValTypesOverlay, old = overlay.get(idx)
         let fast
         overlay.set(idx, NUMBER)
-        try { fast = ctx.core.emit['.typed:[]='](arr, idx, val, true) }
+        try { fast = ctx.core.emit['.typed:[]='](arr, idx, val, true, node) }
         finally { if (old === undefined) overlay.delete(idx); else overlay.set(idx, old) }
         if (fast) return typed(['if', ['f64.eq', asF64(keyExpr), ['f64.trunc', asF64(keyExpr)]],
           ['then', fast], ['else', ['drop', asF64(slow)]]], 'void')
       }
       return slow
     }
-    const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
+    const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_, node)
     if (r) return r
     // Element ctor unknown — runtime aux-byte dispatch over the generic tagged
     // value channel. Numeric and BigInt destinations validate/coerce without

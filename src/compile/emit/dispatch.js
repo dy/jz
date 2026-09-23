@@ -40,7 +40,9 @@ import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summa
 // already was — an opt-in Set, not a blanket `handler(...args, node)` for
 // every op, because SOME handlers (variadic ones) take a REST-shaped `args`
 // where an appended trailing element would corrupt the operand list.
-const SELF_AWARE_OPS = new Set(['u-', '~', ...BIGINT_JOINT_BINARY_OPS, ...JOIN_OPS])
+// `[]` hands its node to the element read: an access node carries its own
+// occurrence's bounds proof (type/interval-proof.js).
+const SELF_AWARE_OPS = new Set(['u-', '~', '[]', ...BIGINT_JOINT_BINARY_OPS, ...JOIN_OPS])
 
 // Host globals auto-imported as `(import "env" "name" (global … i64))` when
 // referenced as a value. Drained from ctx.core.hostGlobals at assembly.
