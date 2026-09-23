@@ -1821,9 +1821,10 @@ export default (ctx) => {
     }
     // Non-bigint typed elements are plain NUMBERS — tag the load so numeric-arm
     // predicates (isNumArm: `+` dispatch numSide, ?:/?? canon) skip box guards.
+    // A proven read is also present: the binding it initializes holds a Number.
     const t = typed(value, 'f64')
     if (indexValid) t.checkedNumRead = true
-    else t.valKind = VAL.NUMBER
+    else { t.valKind = VAL.NUMBER; t.presentNumRead = true }
     return t
   }
 

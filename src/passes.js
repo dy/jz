@@ -91,6 +91,7 @@ export const PASS_NAMES = [
   'forInUnroll',              // for-in over a static schema → key-literal-substituted body copies
   'versionTypedBounds',       // typed-bounds loop versioning (guarded fast arm + checked twin)
   'sentinelGuards',           // one range test versions a sentinel-bounded cursor's reads (compile/sentinel-guard.js)
+  'twinLocals',               // a versioned counted loop's checked twin writes locals of its own (compile/twin-locals.js)
   'hoistConstLit',            // loop-invariant const array/object literal hoist (allocate once)
   'unrollScalarChain',        // serial-chain (address-carried scalar) ×2 pairing — speed-only
   'selectArmUpdates',         // disjoint-arm update chain → select accumulation — speed-only

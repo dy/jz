@@ -287,6 +287,8 @@ export const BINDING_USE_USES = 2
 // compile/index.js does this after function and closure analysis.
 export function resetBindingUsesCache() { getFactStore().bindingUses = new WeakMap() }
 export function invalidateBindingUsesCache(body) { getFactStore().bindingUses.delete(body) }
+/** Every node's memoized assigned names: an in-place rewrite stales each ancestor of the rewritten node. */
+export function resetMutationNamesCache() { getFactStore().mutationNames = new WeakMap() }
 const _CMP_OPS = new Set(['==', '!=', '===', '!==', '<', '>', '<=', '>='])
 const _isNullishLit = (e) =>
   e === 'null' || e === 'undefined' ||

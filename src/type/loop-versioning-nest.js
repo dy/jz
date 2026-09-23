@@ -16,7 +16,7 @@ import { intLiteralValue } from '../static.js'
 import { idxKey, redeclaresName, lengthRecv } from './canonical-bounds.js'
 import { intervalIdxRanges } from './interval-proof.js'
 import { containsNestedClosure } from './loop-unroll.js'
-import { versionableTypedFor, typedIdxProven, stableLoopNames } from './loop-versioning.js'
+import { versionableTypedFor, typedIdxProven, stableLoopNames, sourceVersionedLoop } from './loop-versioning.js'
 import { exprType } from './expr-type.js'
 
 /** Nest-level versioning scan: the intercepted loop PLUS every nested loop whose
@@ -50,7 +50,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     const cands = [], seen = new Set()
     const stable2 = stableLoopNames(b2, c2)
     const scan = (n) => {
-      if (n[0] === '=>') return false
+      if (n[0] === '=>' || sourceVersionedLoop(n)) return false
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string'
           && ctx.func.typedElem?.has(n[1]) && stable2(n[1])) {
         const key = idxKey(n[1], n[2])
@@ -72,7 +72,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     scanStmts(b2)
   }
   const scanStmts = (n) => {
-    if (!Array.isArray(n) || n[0] === '=>') return
+    if (!Array.isArray(n) || n[0] === '=>' || sourceVersionedLoop(n)) return
     if (n[0] === 'while' && n.length === 3 && Array.isArray(n[1])) { walkLoop(null, n[1], null, n[2], null, false); return }
     if (n[0] === 'for' && n.length === 5) { walkLoop(n[1], n[2], n[3], n[4], null, false); return }
     if (n[0] === ';' || n[0] === '{}') {
@@ -92,7 +92,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
         if (Array.isArray(st) && st[0] === 'while' && st.length === 3
             && Array.isArray(st[1]) && condIvName(st[1]) != null) {
           walkLoop(null, st[1], null, st[2], lastDecls.get(condIvName(st[1])) ?? null, false)
-        } else if (Array.isArray(st) && st[0] === 'for' && st.length === 5) {
+        } else if (Array.isArray(st) && st[0] === 'for' && st.length === 5 && !sourceVersionedLoop(st)) {
           walkLoop(st[1], st[2], st[3], st[4], null, false)
         } else scanStmts(st)
         lastDecls = new Map()   // any other statement may disturb tracked entries

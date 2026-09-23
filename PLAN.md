@@ -161,7 +161,7 @@ Dependencies
    | Remaining class | Evidence and next proof |
    | --- | --- |
    | SDF scratch-array gathers | Sentinel guards remove the hull cursor's checks on the fast path (below). The rest of the gap is loop-carried reuse: C keeps `v[k]` and `z[k]` in registers across the pop, where JZ reloads them, plus the per-pass guard. |
-   | Bounded byte/short accumulators | Glyph parsing's fast loop retains f64 because its checked fallback can produce NaN. Preserve the bounded trip count and step width into integer narrowing. |
+   | Bounded byte/short accumulators | Twin locals give glyph parsing's versioned coordinate loops i32 locals of their own (below). The flag loop's `rep` stays f64: its checked read meets only `rep > 0` and the decrement that test guards, a miss-blind use the word-storage census does not yet admit. |
    | Noise's dependent lookups | The candidate preserves all-writers element hulls through in-place copies and swaps, and preserves intervals through load-CSE's unary plus. Four lookup checks disappear, but the Rust-Wasm gap is still open. |
    | FFT, sort, CRC32, wordcount | CRC32 remains red; FFT and sort vary between runs. Wordcount's duplicate tag check is removed and the latest row passes. The attempted FFT pointer advancement lost both speed and size. Require quiet paired evidence before treating a fluctuating row as closed. |
    | webaudio | Numeric-width loop versions retain all numeric input types and specialize floating outputs. Reprofile receiver reads and automation callbacks before adding another version. |
@@ -197,6 +197,14 @@ Dependencies
      The same audit fixed a pre-existing growth allocation: the optional
      four-byte hash lane was counted as a boolean byte. Host collection
      decoding now shares forwarding, tombstone filtering and insertion order.
+   - Twin locals (`compile/twin-locals.js`) version a counted loop in the
+     source when its checked twin would widen the fast copy's locals: the
+     twin declares its own names, so glyph parsing's fast coordinate loops
+     accumulate in i32 while the twins keep f64. Sixteen alternating rounds
+     measure 1.162 → 1.060× C-Wasm with checksum 4073289688 unchanged; the
+     speed binary grows 3082 → 3174 bytes. The fast loops match a scratch
+     variant with hand-written `| 0` hints op for op; that variant also
+     hinting the flag loop's `rep` reached about 0.96× C.
    - Sentinel guards (`compile/sentinel-guard.js`) version the reads that
      only SDF's `±∞` sentinels bound: the hull pop, the scan and the read after
      the scan run unchecked under one range test per pass. A relational test on

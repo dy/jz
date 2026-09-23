@@ -11,7 +11,7 @@
  * @module type/loop-versioning
  */
 import { isReassigned, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, callArgs } from '../ast.js'
-import { ctx } from '../ctx.js'
+import { ctx, getFactStore } from '../ctx.js'
 import { isNullable, core, NUMBER } from '../summary/kind.js'
 import { repOf } from '../reps.js'
 import { typedStorageNameCtor } from '../typed-context.js'
@@ -98,16 +98,18 @@ export function typedStaticLen(rhs) {
  *  5. the static interval walk (intervalProvenIdx) — const-bound nests whose index
  *     chains (incl. the clamp idiom) provably fit a static receiver length; given
  *     the access `node` being emitted, that node's own occurrence proof counts
- *     even where a twin of its key is unprovable. */
+ *     even where a twin of its key is unprovable;
+ *  6. the extent test of a loop versioned in the source (compile/twin-locals.js),
+ *     which proves the fast copy's own access nodes. */
 export function typedIdxProven(recv, idx, node = null) {
   if (typeof recv !== 'string') return false
   const ip = intervalProvenIdx(ctx)
-  if (node != null && node[1] === recv && node[2] === idx && ip.has(node)) return true
+  if (node != null && node[1] === recv && node[2] === idx && (ip.has(node) || getFactStore().guardProven.has(node))) return true
   if (typedIndexKnown(ctx, recv, idx) || ip.has(idxKey(recv, idx))) return true
   const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
     ?? ctx.func.localReps?.get(recv)?.arrayLen
   if (len == null) return false
-  // 6. refined-range proof: an i32-typed index whose closed hull (branch-local
+  // 7. refined-range proof: an i32-typed index whose closed hull (branch-local
   //    compare refinements ∩ ranged decl reps ∩ const chains) fits [0, len).
   //    The i32 gate makes the int-tightened refinement bounds sound (a
   //    fractional value cannot type i32).
@@ -247,6 +249,20 @@ export function bodyAffineEnv(body, iv) {
   } })
   return env
 }
+
+/** Whether a typed access's receiver may be absent at run time: nullable, with
+ *  no pointer representation, refinement or active bounds assumption. An extent
+ *  test reads the receiver's length, so it must establish presence first. */
+export function receiverMayBeAbsent(recv, idx) {
+  return isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(recv)) &&
+    repOf(recv)?.ptrKind == null && ctx.func.refinements?.get(recv)?.val == null &&
+    !activeBoundsAssumption(ctx, recv, idx)
+}
+
+/** Whether `n` is a loop versioned in the source (compile/twin-locals.js): the
+ *  emitter versions neither copy again, and an enclosing loop's scan leaves
+ *  both copies' accesses to them. */
+export const sourceVersionedLoop = (n) => n[0] === 'for' && n.length === 5 && getFactStore().sourceVersioned.has(n[4])
 
 /** `idx` as a MONOTONE CURSOR reference: a bare non-iv local name `c`, or `c + K0`
  *  / `K0 + c` with K0 an int literal — the shapes a data-dependent stream cursor
@@ -470,14 +486,13 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   let forcePre = false
   const isPost = () => !forcePre && bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
   const scan = (n) => {
+    if (sourceVersionedLoop(n)) return false
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
         && typedStorageNameCtor(ctx, n[1]) && stable(n[1])) {
       const key = idxKey(n[1], n[2])
       // Stored length bounds do not prove the receiver exists. Versioning can
       // establish both facts once, keeping nullable globals out of hot reads.
-      const absent = isNullable(ctx.summary?.at(ctx.func.current).kindOfExpr(n[1])) &&
-        repOf(n[1])?.ptrKind == null && ctx.func.refinements?.get(n[1])?.val == null &&
-        !activeBoundsAssumption(ctx, n[1], n[2])
+      const absent = receiverMayBeAbsent(n[1], n[2])
       const bounded = typedIdxProven(n[1], n[2], n)
       if (!seen.has(key) && absent && bounded) {
         seen.add(key); cands.push({ recv: n[1], idx: n[2], presence: true })

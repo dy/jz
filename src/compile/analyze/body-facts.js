@@ -19,12 +19,13 @@ import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
   scanObjectArrayFacts, isFreshArrayCtor, stampCoInductionRanges,
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE,
+  invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
 import { makeTypedTracker } from './trackers.js'
 import { typedStorageNameCtor } from '../../typed-context.js'
 import { typedElementKey } from '../../typed-provenance.js'
 import { isPresentNumber } from '../../kind.js'
-import { scanIntervalIdx } from '../../type/interval-proof.js'
+import { scanIntervalIdx, invalidateIntervalProof } from '../../type/interval-proof.js'
 import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
 // Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
@@ -192,7 +193,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
       for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
       scanIntervalIdx(body, presentKeys, lens, null, null, entry)
     }
-    return presentNodes.has(e) || presentKeys.has(e) || presentKeys.has(idxKey(e[1], e[2]))
+    return presentNodes.has(e) || presentKeys.has(e) || presentKeys.has(idxKey(e[1], e[2])) || getFactStore().guardProven.has(e)
   }
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
@@ -795,6 +796,15 @@ export function invalidateLocalsCache(body) {
 export function reanalyzeBody(body, read = () => analyzeBody(body)) {
   invalidateLocalsCache(body)
   return read()
+}
+
+/** A pass that rewrites `body` in place (keeping its identity) drops the
+ *  per-body facts the old shape keyed: the binding-use census, the interval
+ *  proof and the mutation memo of every node. It reanalyzes before its next read. */
+export function invalidateRewrittenBody(body) {
+  invalidateBindingUsesCache(body)
+  invalidateIntervalProof(body)
+  resetMutationNamesCache()
 }
 
 /** Replace `func.body` and drop any bodyFacts entry for the new node — see

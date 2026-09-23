@@ -1,4 +1,5 @@
 import { ctx } from '../ctx.js'
+import { makeMapOverlay } from './map-overlay.js'
 
 // Every scope here names its field statically. The record is a fixed-shape
 // object; one computed-key access (`frame[field] = value`) would make it a
@@ -75,6 +76,16 @@ export function withTypedElems(value, fn) {
   frame.typedElem = value
   try { return fn() }
   finally { frame.typedElem = previous }
+}
+
+/** A query before emission that must see the body analysis's local typed
+ *  receivers and lengths, which the emitter installs later. */
+export function withBodyTypedFacts(facts, fn) {
+  const frame = ctx.func, elem = frame.typedElem, len = frame.typedLen
+  if (facts?.typedElems?.size) frame.typedElem = makeMapOverlay(elem ?? new Map(), new Map(facts.typedElems))
+  if (facts?.typedLens?.size) frame.typedLen = makeMapOverlay(len ?? new Map(), new Map(facts.typedLens))
+  try { return fn() }
+  finally { frame.typedElem = elem; frame.typedLen = len }
 }
 
 export function withPendingLabel(value, fn) {

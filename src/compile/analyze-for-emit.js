@@ -27,6 +27,7 @@ import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
+import { splitTwins } from './twin-locals.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
@@ -262,6 +263,12 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (block && _o && _o.sentinelGuards !== false && guardSentinels(body, bodyFacts)) {
     bodyFacts = reanalyzeBody(body)
     ctx.func.locals = bodyFacts.locals
+  }
+  // Twin locals (compile/twin-locals.js) version a counted loop in the source
+  // when its checked twin would widen the fast copy's locals.
+  if (block && _o && _o.versionTypedBounds !== false && _o.twinLocals !== false) {
+    const split = splitTwins(body, bodyFacts, () => reanalyzeBody(body))
+    if (split) { bodyFacts = split; ctx.func.locals = bodyFacts.locals }
   }
   if (bodyFacts?.valTypes) {
     for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })

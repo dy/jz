@@ -946,7 +946,20 @@ A loop whose test reads at the cursor becomes `while (G && C′) B′; if (!G)
 while (C) B`, and a block's rest after the statement that steps the cursor
 becomes `if (G) S′ else S`. G tests only the bounds the unproven reads lack.
 Counted loops and computed indexes stay with loop-entry versioning, which
-tests once per entry instead of once per pass. Loop versioning
+tests once per entry instead of once per pass. Emitted from one AST, the
+fast copy and checked twin of a loop-entry version share their locals, so a
+checked integer read's `undefined` keeps an accumulator f64 in both. Such a
+loop is versioned in the source instead (`compile/twin-locals.js`):
+`L → if (G) L else { let x′ = x; L′ }`, with G the extent test in source form.
+The fast copy keeps its names and G proves its candidate reads; the twin
+declares its own names and a fresh copy of each outer local dead after the
+loop, and reads its original's summary kind through a summary alias. The
+emitter versions neither copy again, and a split that narrows no local is
+undone. A typed read emitted as proven marks its IR `presentNumRead`, so the
+binding it initializes records a present Number rather than the summary's
+nullable kind. A pass that rewrites a body in place calls
+`invalidateRewrittenBody`: the binding-use census, interval proof and mutation
+memo are keyed by node identity. Loop versioning
 groups cursor offsets by their shared extent and omits already-covered nest
 guards; negative offsets participate in the lower bound. A nested level lifts
 its guard to the nest entry only when every name that guard reads is stable

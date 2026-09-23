@@ -1076,7 +1076,7 @@ function setFlowVal(name, vt, expr, value) {
   // flow fact of one store's kind would read its atom as a raw number.
   if (boolTaggedBinding(name)) { ctx.func.localValTypesOverlay?.delete(name); return }
   const k = value?.checkedNumRead ? orAbsent(NUMBER)
-    : vt === VAL.NUMBER && isPresentNumber(ctx, expr) ? NUMBER : ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
+    : value?.presentNumRead || vt === VAL.NUMBER && isPresentNumber(ctx, expr) ? NUMBER : ctx.summary?.at(ctx.func.current).kindOfExpr(expr)
   // A nullable BigInt operation also produces Number on its absent arm.
   // Its payload-oriented VT must not turn the stored union into raw BigInt.
   if (vt === VAL.BIGINT && k != null && hasTag(k, K.NUMBER)) {

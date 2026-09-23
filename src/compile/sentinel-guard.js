@@ -45,8 +45,9 @@ import { walkAst, some, isReassigned, collectAllBoundNames, stmtList, hasOwnBrea
 import { freshId } from '../ir.js'
 import { intLiteralValue } from '../static.js'
 import { cloneWithSubst } from '../type/clone.js'
-import { intervalMisses, invalidateIntervalProof } from '../type/interval-proof.js'
-import { makeMapOverlay } from './map-overlay.js'
+import { intervalMisses } from '../type/interval-proof.js'
+import { invalidateRewrittenBody } from './analyze/body-facts.js'
+import { withBodyTypedFacts } from './flow-state.js'
 
 const isArr = Array.isArray
 const LOOPS = new Set(['for', 'while', 'do', 'for-of', 'for-in'])
@@ -119,16 +120,6 @@ const guardOf = (c, lo, hi) => {
   return tests.length === 2 ? ['&&', ...tests] : tests[0]
 }
 
-/** The interval proof's unproven accesses of `body`, with the body analysis's
- *  local typed receivers and lengths visible (the emitter installs them later). */
-const missesOf = (body, facts) => {
-  const f = ctx.func, elem = f.typedElem, len = f.typedLen
-  if (facts?.typedElems?.size) f.typedElem = makeMapOverlay(elem ?? new Map(), new Map(facts.typedElems))
-  if (facts?.typedLens?.size) f.typedLen = makeMapOverlay(len ?? new Map(), new Map(facts.typedLens))
-  try { return intervalMisses(ctx, body) }
-  finally { f.typedElem = elem; f.typedLen = len }
-}
-
 /**
  * Guard the sentinel-bounded cursor reads of `body` the interval proof left
  * unproven; `facts` is the body analysis (its local typed receivers and
@@ -136,7 +127,7 @@ const missesOf = (body, facts) => {
  */
 export function guardSentinels(body, facts = null) {
   if (!isArr(body)) return false
-  const misses = missesOf(body, facts)
+  const misses = withBodyTypedFacts(facts, () => intervalMisses(ctx, body))
   if (!misses.size) return false
   const guardable = (c) => typeof c === 'string' && ctx.func.locals?.has(c) && !ctx.func.boxed?.has(c)
     && !some(body, x => x[0] === '=>' && isReassigned(x, c))
@@ -235,6 +226,6 @@ export function guardSentinels(body, facts = null) {
       stmts.splice(p, stmts.length - p, ['if', G, ['{}', [';', ...fast]], ['{}', [';', ...rest]]])
     }
   }
-  invalidateIntervalProof(body)
+  invalidateRewrittenBody(body)
   return true
 }

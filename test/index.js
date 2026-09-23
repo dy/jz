@@ -67,6 +67,7 @@ const TESTS = [
   'self-families',
   'interval-proof',
   'sentinel-guard',
+  'twin-locals',
   'passes',
   'dyn-closure-tables',
   'preeval',

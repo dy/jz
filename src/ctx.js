@@ -388,6 +388,11 @@ function createFactStore() {
     constPropAliases: new WeakMap(),  // src/compile/flow-types.js constPropAliases (was ctx.func._constPropAliasBody/_constPropAliases)
     boolEager: new WeakMap(),         // src/compile/emit.js boolEagerBody (was ctx.func._boolEagerBody/_boolEagerValue)
     typedBundleGuards: new WeakMap(), // module/typedarray.js typedBundleGuard (was ctx.func._typedBundleBody/_typedBundleGuards)
+    // A loop versioned in the source (compile/twin-locals.js): the typed
+    // accesses its extent test proves, and both copies' bodies, which the
+    // emitter versions no further.
+    guardProven: new WeakSet(),
+    sourceVersioned: new WeakSet(),
   }
 }
 /** The current session's fact store — `ctx.facts`, built fresh by `reset()`

@@ -8,7 +8,7 @@ import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
   T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, mutatesArrayLength, some, walkAst,
 isArrayIndexKey } from '../../ast.js'
-import { LAYOUT, PTR, ctx, err, inc } from '../../ctx.js'
+import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
   asF64, asI32, freshId, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, toBoolFromEmitted, typed, undefExpr,
 } from '../../ir.js'
@@ -510,7 +510,7 @@ export const controlFlowOps = {
     // same intercept — per frame, so a REUSED AST (same source compiled twice, the
     // self-compile warm path) versions afresh in the next compile instead of silently
     // skipping, and the AST carries no frame reference.
-    if (!labeledContinue && !ctx.func.versioned?.has(body)
+    if (!labeledContinue && !ctx.func.versioned?.has(body) && !getFactStore().sourceVersioned.has(body)
         && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
       const levels = versionableTypedNest(init, cond, step, body, ctx.func.locals)
       if (levels) {
