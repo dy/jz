@@ -2844,8 +2844,11 @@ function prepareModule(specifier, source) {
       // property name is a literal key and must not be renamed even if it collides
       // with a module-scoped binding (e.g. `IMM.reftype` where `const reftype` exists).
       if (node[0] === '.' || node[0] === '?.') { node[1] = walk(node[1], skip); return node }
+      // An arrow's parameters bind their names for its defaults and its body.
       if (node[0] === '=>') {
-        node[2] = walk(node[2], collectParamNames(extractParams(node[1]), new Set(skip)))
+        const inner = collectParamNames(extractParams(node[1]), new Set(skip))
+        node[1] = walk(node[1], inner)
+        node[2] = walk(node[2], inner)
         return node
       }
       // The head is an AST operator, never a binding (e.g. ['bool', 1]).

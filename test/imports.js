@@ -399,6 +399,23 @@ test('import: method name colliding with module-scoped binding is not renamed', 
   is(exports.a(), 7)
 })
 
+test('import: a nested arrow\'s default reads a module-scoped binding', () => {
+  // The rename walk renamed an arrow's body but not its parameter list, so a
+  // default of an arrow inside a function declaration kept the bare name:
+  // "'C' is not in scope". A default naming an earlier parameter still reads it.
+  const mod = `
+    const B = 2, C = 3
+    function order(n) {
+      const pick = (x, alt = C, { k = B } = {}) => x + alt + k
+      const same = (C, alt = C) => alt
+      return pick(n) + pick(n, 10) + same(7)
+    }
+    export const f = (x) => order(x)
+  `
+  const { exports } = jz('import { f } from "./m.jz"; export let a = (n) => f(n)', { modules: { './m.jz': mod } })
+  is(exports.a(1), (1 + 3 + 2) + (1 + 10 + 2) + 7)
+})
+
 test('import.meta.url lowers from compile option', () => {
   const result = jz('export let f = () => import.meta.url', { importMetaUrl: 'file:///tmp/jz/main.js' })
   is(result.memory.read(result.exports.f()), 'file:///tmp/jz/main.js')
