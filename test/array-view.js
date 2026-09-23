@@ -41,10 +41,16 @@ test('array views: a spread slice reads its array in place, at every level', () 
     const s6 = a.slice(k, k + 2); out.push([...s6].join(''))
     const j = n > 4 ? '2' : null
     const s7 = a.slice(j); out.push([...s7].join(''))
+    const m = n > 4 ? Infinity : n > 2 ? -Infinity : NaN
+    const s8 = a.slice(m); out.push([...s8].join(''))
+    const s9 = a.slice(1, m); out.push([...s9].join(''))
     return out.join('|') }`, [0, 3, 5, 12])
   // strings, typed arrays and other values take the ordinary slice
   check('receivers', `const f = (v) => { const t = v.slice(1); return [0, ...t].length }
-    export let run = (n) => f('abc' + n) + f(new Int8Array(n + 2)) + f([n, n, n]) + f('')`, [0, 4])
+    export let run = (n) => f('abc' + n) + f(new Int8Array(n + 2)) + f([n, n, n]) + f('') + f([]) * 10 + f([n]) * 100`, [0, 4])
+  // a nullish receiver throws where the slice would
+  check('nullish', `const f = (v) => { try { const t = v.slice(1); return [0, ...t].length } catch (e) { return -1 } }
+    export let run = (n) => f(n > 2 ? null : [1, 2]) + f(n > 1 ? undefined : 'ab') * 10`, [0, 2, 4])
   // two spreads on one path, a view in a loop, and a push onto the sliced array itself
   check('uses', `export let run = (n) => { const a = [1, 2, 3], out = []
     const t = a.slice(1); const w = [...t, 0, ...t]
