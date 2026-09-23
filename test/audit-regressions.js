@@ -1107,6 +1107,34 @@ test('audit: checked integer locals normalize only at word consumers', () => {
   }
 })
 
+// A missing element read as zero is exact where every use answers undefined
+// and zero alike: `rep > 0`, and the decrement only that test's true arm runs.
+// Each decline would change a result on a miss: `>= 0` holds for zero, an
+// unguarded or do-body step turns undefined to NaN, `!== 0` fails for zero.
+test('audit: checked integer locals keep words where a miss meets only tests zero answers alike', () => {
+  const src=`function run(s,off,n){let r=off,p=0,h=0;const out=new Uint8Array(64)
+      while(p<n){const f=s[r++];out[p++&63]=f;if(f&8){let rep=s[r++];while(rep>0){out[p++&63]=f;rep--}}}
+      for(let i=0;i<64;i++)h=h*31+out[i]|0
+      return [h,p,r]}
+    export function f(off,n){const s=new Uint8Array(12);for(let i=0;i<12;i++)s[i]=(i*3+7)&15;return run(s,off|0,n|0)}
+    export function notBlind(i){const a=new Uint8Array([3]),v=a[i];return v>=0?1:2}
+    export function unguarded(i){const a=new Uint8Array([3]);let v=a[i];v--;return v&255}
+    export function doBody(i){const a=new Uint8Array([3]);let v=a[i],t=0;do{t++;v--}while(v>0);return [t,v&255]}
+    export function strict(i){const a=new Uint8Array([3]);let v=a[i],t=0;if(v===3)t=1;if(v!==0)t+=2;while(v>1){v-=2;t+=4}return [t,v&255]}`
+  const js=oracle(src)
+  for(const optimize of TIERS){
+    const wasm=jz(src,{optimize}).exports
+    for(const off of [-2,0,5,11,12,20])for(const n of [0,3,10,40])
+      is(wasm.f(off,n),js.f(off,n),`${optimize}: flags ${off}, ${n}`)
+    for(const name of ['notBlind','unguarded','doBody','strict'])for(const i of [-1,0,1])
+      is(wasm[name](i),js[name](i),`${optimize}: ${name}(${i})`)
+  }
+  if(!onKernel()){
+    const wat=compile(src,{optimize:'speed',wat:true}),body=funcWat(wat,'run')||funcWat(wat,'f')
+    ok(/\(local \$[^\s)]*rep i32\)/.test(body),'the repeat count stays a word')
+  }
+})
+
 test('audit: word-store demand preserves key effects, throws and assignment values', () => {
   const src=`export function f(i){const a=new Int32Array([7]),v=a[i],out=new Int32Array(2);let calls=0;
     const key={toString(){calls++;out[1]=99;return 'extra'}};

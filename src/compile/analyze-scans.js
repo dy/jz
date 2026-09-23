@@ -224,6 +224,10 @@ export const BINDING_USE_COMPOUND = 4
 export const BINDING_USE_NULL_CMP = 7
 export const BINDING_USE_OP = 8
 export const BINDING_USE_STORE = 1 // BARE RHS only: discarded assignment's destination
+// A comparison or step a missing element read as zero leaves unchanged: the
+// comparison answers undefined and zero alike, the step runs only where a
+// test excluded both (checked integer reads, analyze/body-facts.js).
+export const BINDING_USE_MISS = 9
 const SIMPLE_USE = Array.from({ length: 15 }, (_, kind) => [kind])
 // The interned records below are read-only and hold primitives alone, so
 // equal ones are shared as well: a member read or write is one record per
@@ -266,6 +270,31 @@ const callArg = (callee, index) => {
 }
 const COMPARE_PLAIN = [USE.COMPARE, undefined, undefined, undefined, undefined, undefined, undefined, false]
 const COMPARE_NULLISH = [USE.COMPARE, undefined, undefined, undefined, undefined, undefined, undefined, true]
+const COMPARE_MISS = [USE.COMPARE, undefined, undefined, undefined, undefined, undefined, undefined, false, undefined, true]
+const GUARDED_STEP = [USE.REASSIGN, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true]
+const isNumLit = (e) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number'
+const FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' }
+// How `x op k` (the name on the left when `left`) answers for undefined and
+// for zero: 2 when both are false, 1 when both agree otherwise, 0 when they differ.
+const missClass = (op, left, k) => {
+  const o = left ? op : FLIP[op] ?? op
+  if (o === '>') return k >= 0 ? 2 : 0
+  if (o === '>=') return k > 0 ? 2 : 0
+  if (o === '<') return k <= 0 ? 2 : 0
+  if (o === '<=') return k < 0 ? 2 : 0
+  if (o === '===' || o === '==') return k !== 0 ? 2 : 0
+  if (o === '!==' || o === '!=') return k !== 0 ? 1 : 0
+  return 0
+}
+// The names a test excludes a missing element from where it holds: a bare
+// name's truthiness, or a comparison both undefined and zero fail.
+const missGuards = (t, out = []) => {
+  if (typeof t === 'string') out.push(t)
+  else if (Array.isArray(t) && t[0] === '&&') { missGuards(t[1], out); missGuards(t[2], out) }
+  else if (Array.isArray(t) && t.length === 3 && _CMP_OPS.has(t[0]))
+    for (let i = 1; i <= 2; i++) if (typeof t[i] === 'string' && isNumLit(t[3 - i]) && missClass(t[0], i === 1, t[3 - i][1]) === 2) out.push(t[i])
+  return out
+}
 const BOOL_TEST_BY_OP = new Map()
 const boolTest = (op) => {
   let r = BOOL_TEST_BY_OP.get(op)
@@ -314,6 +343,15 @@ export function scanBindingUses(body, trackNames) {
     return s
   }
   const use = (name, kind, record) => { slot(name)[BINDING_USE_USES].push(record || SIMPLE_USE[kind]) }
+  // Names a test excluded a missing element from, on the arms it guards.
+  const guarded = new Map()
+  const underGuards = (test, fn) => {
+    const names = missGuards(test)
+    for (const n of names) guarded.set(n, (guarded.get(n) || 0) + 1)
+    fn()
+    for (const n of names) guarded.set(n, guarded.get(n) - 1)
+  }
+  const guardedStep = (t, step) => typeof t === 'string' && step && guarded.get(t) > 0
 
   // Static string key of a `[]` index node, else null (computed).
   const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : staticIndexKey(k)
@@ -384,19 +422,25 @@ export function scanBindingUses(body, trackNames) {
       return
     }
     if (op === 'for') {
-      val(node[1], false, true); val(node[2]); val(node[3], false, true); val(node[4], false, true)
+      val(node[1], false, true); val(node[2])
+      underGuards(node[2], () => { val(node[3], false, true); val(node[4], false, true) })
       return
     }
 
     // === precise classification (outside any closure) ===
     if (ASSIGN_OPS.has(op)) {
+      if (guardedStep(node[1], (op === '+=' || op === '-=') && isNumLit(node[2]))) { use(node[1], USE.REASSIGN, GUARDED_STEP); return }
       assignTarget(node[1], op !== '=')
       if (op === '=' && discarded && typeof node[2] === 'string' && node[1]?.[0] === '[]') {
         use(node[2], USE.BARE, [USE.BARE, node[1]])
       } else val(node[2])
       return
     }
-    if (op === '++' || op === '--') { assignTarget(node[1], true); return }
+    if (op === '++' || op === '--') {
+      if (guardedStep(node[1], true)) use(node[1], USE.REASSIGN, GUARDED_STEP)
+      else assignTarget(node[1], true)
+      return
+    }
     if (op === 'delete') {
       const t = node[1]
       if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') && typeof t[1] === 'string') {
@@ -463,7 +507,9 @@ export function scanBindingUses(body, trackNames) {
     if (_CMP_OPS.has(op) && node.length === 3) {
       for (let i = 1; i <= 2; i++) {
         const side = node[i]
-        if (typeof side === 'string') use(side, USE.COMPARE, _isNullishLit(node[3 - i]) ? COMPARE_NULLISH : COMPARE_PLAIN)
+        const other = node[3 - i]
+        if (typeof side === 'string') use(side, USE.COMPARE, _isNullishLit(other) ? COMPARE_NULLISH
+          : isNumLit(other) && missClass(op, i === 1, other[1]) ? COMPARE_MISS : COMPARE_PLAIN)
         else walk(side)
       }
       return
@@ -486,7 +532,14 @@ export function scanBindingUses(body, trackNames) {
       const c = node[1]
       if (typeof c === 'string') use(c, USE.BOOL_TEST, boolTest(op))
       else walk(c)
-      for (let i = 2; i < node.length; i++) val(node[i], false, op !== '?:')
+      // the first arm (then, the loop body, the true value) runs where the test held
+      underGuards(c, () => val(node[2], false, op !== '?:'))
+      for (let i = 3; i < node.length; i++) val(node[i], false, op !== '?:')
+      return
+    }
+    if (op === '&&' && node.length === 3) {
+      val(node[1])
+      underGuards(node[1], () => val(node[2]))
       return
     }
 

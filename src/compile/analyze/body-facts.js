@@ -18,7 +18,7 @@ import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
   scanObjectArrayFacts, isFreshArrayCtor, stampCoInductionRanges,
-  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE,
+  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
 import { makeTypedTracker } from './trackers.js'
@@ -653,16 +653,20 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
     const aux = typedElemAux(typedStorageNameCtor(ctx, dest[1], locals))
     return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
   }
+  // A use that cannot tell a missing element from zero: a test undefined and
+  // zero answer alike, or a step a test excluded both from (analyze-scans.js).
+  const missUse = u => u[BINDING_USE_MISS] === true || u[BINDING_USE_KIND] === USE.BOOL_TEST && u[BINDING_USE_OP] !== 'typeof'
   const widenValue = (name, rhs) => {
     if (locals.get(name) !== 'i32' || unsignedLocals.has(name) ||
         exprType(rhs, locals, null, false, body, readPresent) !== 'f64') return false
     // A checked integer read may lose absence only when every use already
-    // asks for its word. Keep the bounds check; its missing arm becomes zero
-    // at the local's conversion instead of round-tripping through f64.
+    // asks for its word or cannot tell a missing element from zero. Keep the
+    // bounds check; its missing arm becomes zero at the local's conversion
+    // instead of round-tripping through f64.
     if (Array.isArray(rhs) && rhs[0] === '[]' && exprType(rhs, locals) === 'i32') {
       uses ||= scanBindingUses(body)
       const binding = uses.get(name), reads = binding?.[BINDING_USE_USES]
-      if (binding?.[BINDING_USE_DECLS] === 1 && reads?.length && reads.every(wordUse)) return false
+      if (binding?.[BINDING_USE_DECLS] === 1 && reads?.length && reads.every(u => wordUse(u) || missUse(u))) return false
     }
     const exact = exprType(rhs, locals) !== 'f64' ||
       (typeof rhs === 'string' ? valueWide.has(rhs) : some(rhs, n => n.some(x => typeof x === 'string' && valueWide.has(x))))

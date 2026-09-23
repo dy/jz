@@ -140,9 +140,12 @@ with the summary: their result is an element or an exception, never undefined.
 Computed typed-element reads delegate their bounds check to the element reader.
 Checked integer-read locals stay in word storage when the binding-use census
 proves every read is a bitwise operand or a discarded integer-element store.
-The bounds check remains; only its missing result becomes zero. Observed
-assignment results, captures, reassignments, named properties, floating and
-clamped destinations retain the original value. The census records destination
+The bounds check remains; only its missing result becomes zero. A read may
+also meet tests undefined and zero answer alike (`x > 0`, `x === 3`, a
+truthiness test) and constant steps inside the arm such a test guards
+(`while (rep > 0) rep--`): a missing element never reaches the step. Observed
+assignment results, captures, other reassignments, named properties, floating
+and clamped destinations retain the original value. The census records destination
 syntax, while the existing typed-storage and numeric-key facts decide the demand.
 Dynamic typed-array stores normalize object keys once before choosing the
 element or named-property path; both paths use that same primitive key.
