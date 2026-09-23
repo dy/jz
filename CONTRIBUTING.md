@@ -962,7 +962,15 @@ undone. A typed read emitted as proven marks its IR `presentNumRead`, so the
 binding it initializes records a present Number rather than the summary's
 nullable kind. A pass that rewrites a body in place calls
 `invalidateRewrittenBody`: the binding-use census, interval proof and mutation
-memo are keyed by node identity. Loop versioning
+memo are keyed by node identity. An element a loop stores for its next pass
+stays in a local (`compile/carry-elements.js`): the loop reads `A[I]` once
+before it starts, and the store `A[I] = E` also sets the local to E's
+converted value. The store must be proven in bounds, and nothing between it
+and the next pass's read may write I's names, store to A at a maybe-equal
+index, store to an array that may share A's buffer, or call. An integer
+element always takes its conversion (`E | 0` for Int32Array): a copy of a
+loop counter would otherwise rate the local unbounded and widen it to f64.
+Loop versioning
 groups cursor offsets by their shared extent and omits already-covered nest
 guards; negative offsets participate in the lower bound. A nested level lifts
 its guard to the nest entry only when every name that guard reads is stable

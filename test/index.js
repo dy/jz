@@ -68,6 +68,7 @@ const TESTS = [
   'interval-proof',
   'sentinel-guard',
   'twin-locals',
+  'carry-elements',
   'passes',
   'dyn-closure-tables',
   'preeval',

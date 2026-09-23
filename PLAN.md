@@ -160,7 +160,7 @@ Dependencies
 
    | Remaining class | Evidence and next proof |
    | --- | --- |
-   | SDF scratch-array gathers | Sentinel guards remove the hull cursor's checks on the fast path (below). The rest is loop-carried forwarding, read off V8's TurboFan code for both builds: clang's pass keeps `v[k]` (the `q` just stored) and `z[k]` (the `sMid` just stored) in registers, so the `f[v[k]]` gather issues at once and the first pop test is `fcmp` against a register; JZ reloads `v[k]` at the top of each pass, a dependent load before the gather and the divide. `distinctParams` already proves `v` and `z` distinct; the missing piece is forwarding a proven store into the next pass (and the pop's first test, peeled). The guarded pop test also lowers to `fcmp; cset; cbz` where a direct branch would do. |
+   | SDF scratch-array gathers | Sentinel guards remove the hull cursor's checks on the fast path (below). The rest is loop-carried forwarding, read off V8's TurboFan code for both builds: clang's pass keeps `v[k]` (the `q` just stored) and `z[k]` (the `sMid` just stored) in registers, so the `f[v[k]]` gather issues at once and the first pop test is `fcmp` against a register; JZ reloads `v[k]` at the top of each pass, a dependent load before the gather and the divide. Carried elements now forward `v[k]` (below). The guarded pop and scan tests lower to `fcmp; cset; cbz`: watr's `conditions` pass chains only `local.tee` diamonds, and the guard's `&&` has a constant arm (below). `z[k]` would need the pop's first test peeled; its load issues beside the divide, off the critical path. |
    | Bounded byte/short accumulators | Twin locals give glyph parsing's versioned coordinate loops i32 locals of their own, and the word-storage census admits the flag loop's `rep`, whose checked read meets only `rep > 0` and the decrement that test guards (below). Glyph parsing reaches parity with C-Wasm; a clear lead needs quiet evidence. |
    | Noise's dependent lookups | The candidate preserves all-writers element hulls through in-place copies and swaps, and preserves intervals through load-CSE's unary plus. Four lookup checks disappear, but the Rust-Wasm gap is still open. |
    | FFT, sort, CRC32, wordcount | CRC32's red is timing noise: in V8's TurboFan code for both builds the per-byte recurrence is five dependent instructions (`eor`, mask, table add, `ldr`, `eor`); clang only fuses the mask with the shift (`ubfiz`) where JZ fuses the shift with the table add, and JZ's loop test adds one `cmp`. The committed rows lead (0.988×). FFT and sort vary between runs. Wordcount's duplicate tag check is removed and the latest row passes. The attempted FFT pointer advancement lost both speed and size. Require quiet paired evidence before treating a fluctuating row as closed. |
@@ -205,6 +205,16 @@ Dependencies
      speed binary grows 3082 → 3174 bytes. The fast loops match a scratch
      variant with hand-written `| 0` hints op for op; that variant also
      hinting the flag loop's `rep` reached about 0.96× C.
+   - Carried elements (`compile/carry-elements.js`) keep an element a loop
+     stores for its next pass in a local. In V8's code for SDF's first pass
+     the `f[v[k]]` gather now issues from a register, as in clang's; the
+     binary grows 4 bytes and the checksum is unchanged. No timing yet: at
+     29 GB of swap every build measured 105–113 ms against about 6.5 ms.
+   - watr's `conditions` pass now also chains a diamond with a constant arm,
+     the boolean `a && b` / `a || b` (watr, unreleased): each
+     guarded SDF exit becomes one fused compare-and-branch per conjunct, and
+     V8's `edt1d` drops 565 → 556 instructions and 11 → 2 `cset`s with the
+     checksum unchanged. jz picks it up with the next watr release.
    - The word-storage census admits a checked integer read whose uses
      answer undefined and zero alike, including a constant step the test's
      true arm guards: glyph parsing's `rep` becomes a word. Sixteen rounds at

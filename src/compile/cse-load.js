@@ -56,7 +56,8 @@ const CONTROL = new Set(['for', 'while', 'do', 'if', 'loop', 'block', 'switch', 
 const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
 const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])
 
-function buildFacts(body) {
+/** Index facts for provablyDiffer: single-definition names and loop bounds known positive. */
+export function indexFacts(body) {
   const def = new Map(), declCount = new Map(), positive = new Set()
   walkAst(body, { enter: n => {
     const op = n[0]
@@ -101,7 +102,8 @@ const asBasePlus = (e, F) => {
   return null
 }
 
-function provablyDiffer(idx, idx2, F) {
+/** Whether indexes `idx` and `idx2` can never be equal (`F` from indexFacts). */
+export function provablyDiffer(idx, idx2, F) {
   const ka = idxKey(idx), kb = idxKey(idx2)
   if (ka === kb) return false
   const va = cval(idx), vb = cval(idx2)
@@ -122,7 +124,7 @@ function provablyDiffer(idx, idx2, F) {
  */
 export function cseLoads(body, isTypedArray, freshName, isNumeric, isReadonlyCall = null) {
   if (!isArr(body)) return 0
-  const F = buildFacts(body)
+  const F = indexFacts(body)
   let eliminated = 0
 
   // A branch arm that leaves the sequence and stores nothing: the statements

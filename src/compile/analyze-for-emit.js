@@ -28,6 +28,7 @@ import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
+import { carryElements } from './carry-elements.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
@@ -269,6 +270,12 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (block && _o && _o.versionTypedBounds !== false && _o.twinLocals !== false) {
     const split = splitTwins(body, bodyFacts, () => reanalyzeBody(body))
     if (split) { bodyFacts = split; ctx.func.locals = bodyFacts.locals }
+  }
+  // Carried elements (compile/carry-elements.js) keep an element a loop stores
+  // for its next pass in a local across the back edge.
+  if (block && _o && _o.carryElements !== false) {
+    const carried = carryElements(body, bodyFacts, func.distinctParams, () => reanalyzeBody(body))
+    if (carried) { bodyFacts = carried; ctx.func.locals = bodyFacts.locals }
   }
   if (bodyFacts?.valTypes) {
     for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })
