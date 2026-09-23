@@ -437,7 +437,11 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   const cursorKCache = new Map()
   const cursorAdvanceOf = (name) => {
     if (cursorKCache.has(name)) return cursorKCache.get(name)
-    const K = maxCursorAdvance(body, name)
+    // The guard reads the entry value. Body declarations do not exist there;
+    // captured/global cursors and header writes can change outside this budget.
+    const K = !locals?.has(name) || ctx.func.boxed?.has(name)
+      || redeclaresName(body, name) || isReassigned(cond, name) || isReassigned(step, name)
+      ? null : maxCursorAdvance(body, name)
     cursorKCache.set(name, K)
     return K
   }

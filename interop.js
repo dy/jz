@@ -635,7 +635,11 @@ export const memory = (src) => {
     }
     // p is now i64 bits (BigInt). Decode with integer ops — never materialize as f64.
     if (!isBox(p)) return i64ToF64(p)    // non-NaN bits → genuine number
-    const m = dv(), t = type(p), a = aux(p), off = offset(p)
+    const m = dv(), t = type(p), a = aux(p)
+    let off = offset(p)
+    // Arrays and collections retain their identity when storage grows.
+    if (t === 1 || t >= 7 && t <= 9)
+      while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
     if (t === 0 && off === 0) {
       if (a === 0) return NaN
       if (a === 1) return null
@@ -645,11 +649,8 @@ export const memory = (src) => {
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
     if (t === 1) {  // ARRAY
-      let aOff = off
-      // Follow forwarding pointers (cap === -1 means array was reallocated)
-      while (m.getInt32(aOff - 4, true) === -1) aOff = m.getInt32(aOff - 8, true)
-      const len = m.getInt32(aOff - 8, true), out = new Array(len)
-      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(aOff + i * 8, true))
+      const len = m.getInt32(off - 8, true), out = new Array(len)
+      for (let i = 0; i < len; i++) out[i] = mem.read(m.getBigInt64(off + i * 8, true))
       return out
     }
     if (t === 3) {  // TYPED
@@ -700,28 +701,26 @@ export const memory = (src) => {
       }
       return obj
     }
-    if (t === 7) {  // HASH
-      const size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true), obj = {}
-      for (let i = 0, found = 0; i < cap && found < size; i++) {
-        if (m.getBigInt64(off + i * 24, true) !== 0n) {
-          obj[mem.read(m.getBigInt64(off + i * 24 + 8, true))] = mem.read(m.getBigInt64(off + i * 24 + 16, true))
-          found++
+    if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
+      const cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
+      for (let i = 0; i < cap; i++) {
+        const slot = off + i * stride, hash = m.getBigUint64(slot, true)
+        // Match __coll_order: a durable-heap tombstone is not a live key.
+        if (hash && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
+          slots.push([Number(hash >> 32n), slot])
+      }
+      slots.sort((a, b) => a[0] - b[0])
+      const out = t === 7 ? {} : t === 8 ? new Set() : new Map()
+      for (const [, slot] of slots) {
+        const key = mem.read(m.getBigInt64(slot + 8, true))
+        if (t === 8) out.add(key)
+        else {
+          const value = mem.read(m.getBigInt64(slot + 16, true))
+          if (t === 7) out[key] = value
+          else out.set(key, value)
         }
       }
-      return obj
-    }
-    if (t === 8) {  // SET
-      const size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true), set = new Set()
-      for (let i = 0; i < cap && set.size < size; i++)
-        if (m.getBigInt64(off + i * 16, true) !== 0n) set.add(mem.read(m.getBigInt64(off + i * 16 + 8, true)))
-      return set
-    }
-    if (t === 9) {  // MAP
-      const size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true), map = new Map()
-      for (let i = 0; i < cap && map.size < size; i++)
-        if (m.getBigInt64(off + i * 24, true) !== 0n)
-          map.set(mem.read(m.getBigInt64(off + i * 24 + 8, true)), mem.read(m.getBigInt64(off + i * 24 + 16, true)))
-      return map
+      return out
     }
     return i64ToF64(p)  // canonical NaN-number / CLOSURE / unknown — reinterpret to f64
   }

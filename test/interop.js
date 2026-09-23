@@ -14,8 +14,32 @@ import jz, { compile } from '../index.js'
 import * as interop from 'jz/interop'
 import { onWasi, onKernel, levels } from './_matrix.js'
 import { HEAP } from '../layout.js'
+import { oracle } from './util.js'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
+
+test('interop: grown collections decode live entries in insertion order', () => {
+  const src = `
+    export function array(n){const a=[];for(let i=0;i<n;i++)a.push('k'+i);return a}
+    export function dict(n,edit){const d={};for(let i=0;i<n;i++){const k=i%7?'k'+i:''+i;d[k]=(d[k]|0)+i}
+      if(edit&&n>1){const k='k1';delete d[k];d[k]=n*2}return d}
+    export function map(n,edit){const m=new Map();for(let i=0;i<n;i++)m.set(i%7?'k'+i:i,i);
+      if(edit&&n>1){m.delete('k1');m.set('k1',n*2)}if(edit===2)m.clear();return m}
+    export function set(n,edit){const s=new Set();for(let i=0;i<n;i++)s.add(i%7?'k'+i:i);
+      if(edit&&n>1){s.delete('k1');s.add('k1')}if(edit===2)s.clear();return s}`
+  const native = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const compiled = interop.instantiate(compile(src, { optimize })).exports
+    for (const n of [0, 1, 1, 6, 7, 8, 9, 13, 80, 0, 3]) {
+      is(compiled.array(n), native.array(n), `O${optimize}, array n=${n}`)
+      for (const edit of [0, 1, 2]) {
+        is(Object.entries(compiled.dict(n, edit)), Object.entries(native.dict(n, edit)), `O${optimize}, dictionary n=${n}, edit=${edit}`)
+        is([...compiled.map(n, edit)], [...native.map(n, edit)], `O${optimize}, Map n=${n}, edit=${edit}`)
+        is([...compiled.set(n, edit)], [...native.set(n, edit)], `O${optimize}, Set n=${n}, edit=${edit}`)
+      }
+    }
+  }
+})
 
 test('interop: subpath surface matches expected exports', () => {
   for (const name of ['instantiate', 'toModule', 'memory', 'wrap', 'ptr', 'offset', 'type', 'aux',

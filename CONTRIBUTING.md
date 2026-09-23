@@ -105,6 +105,11 @@ capacity. `arrayLiteralMinCap` remains an explicit override for kernel builds;
 smaller initial storage uses the existing alias and named-property forwarding.
 Named-property sidecars start with two slots at every tier and grow on demand;
 the speed tier's array reserve does not apply to those sparse property tables.
+Collection growth uses `collectionStride` for the entry and optional hash lane;
+a boolean selecting the lane is not its byte width. Dictionary slot updates
+receive keys already normalized to strings. The host decoder follows forwarding
+for arrays and collections and reads collection entries in their stored insertion
+order, excluding tombstones.
 
 Array joining captures length before separator conversion and reads elements
 through the checked, tagged reader. Each conversion runs once, in order; a
@@ -147,6 +152,9 @@ add zero to that hull; named keys, captures, replacement values and other
 arrays cannot borrow it. The binding-use census proves the local's identity.
 Interval transfer preserves numeric conversion of a proven integer, including
 the unary plus that load-CSE inserts for its Number temporaries.
+Cursor loop guards read an existing, uncaptured local at entry. A body-declared
+index, header write or externally mutable cursor cannot use a per-body advance
+budget. Nested declarations count even when the assignment census excludes them.
 Presence queries retain their own check because they do not load an element.
 The reader and length helper share the element-count expression over decoded
 offset/aux facts. Bounds use the view descriptor before resolving its data base;

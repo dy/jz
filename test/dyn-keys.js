@@ -658,6 +658,51 @@ test('loop guards reject changes to bounds, offsets and duplicate cursor steps',
   }
 })
 
+test('cursor guards require an existing local whose writes stay in the body budget', () => {
+  const sources = [
+    ...['let', 'const'].map(decl => `function scan(a, indices, n) {
+      let s = 0;
+      for (let i = 0; i < n; i++) {
+        let t = 0;
+        while (t < 2) { ${decl} c = indices[t]; s += a[c]; t++; }
+      }
+      return s;
+    }
+    export function run(n, last) {
+      return scan(new Float64Array([7]), new Int32Array([0, last]), n);
+    }`),
+    `function scan(a, n) {
+      let c = 0, s = 0;
+      for (let i = 0; i < n && (c += 2) > 0; i++) s += a[c];
+      return s;
+    }
+    export function run(n, last) { return scan(new Float64Array([7, 11, last]), n); }`,
+    `let c = 0;
+    function move() { c += 2; }
+    function scan(a, n) {
+      c = 0; let s = 0;
+      for (let i = 0; i < n; i++) { move(); s += a[c]; }
+      return s;
+    }
+    export function run(n, last) { return scan(new Float64Array([7, 11, last]), n); }`,
+    `function scan(a, n) {
+      let c = 0, s = 0;
+      const move = () => { c += 2; };
+      for (let i = 0; i < n; i++) { move(); s += a[c]; }
+      return s;
+    }
+    export function run(n, last) { return scan(new Float64Array([7, 11, last]), n); }`,
+  ]
+  for (const src of sources) {
+    const expected = oracle(src).run
+    for (const optimize of levels(0, 2, 3, 'size', { level: 3, sourceInline: false })) {
+      const { run } = jz(src, { optimize }).exports
+      for (const [n, last] of [[0, 3], [1, 0], [1, 0], [1, 3], [2, -1], [3, 9], [0, 0]])
+        is(run(n, last), expected(n, last), `O${JSON.stringify(optimize)}: ${n}/${last}`)
+    }
+  }
+})
+
 test('cached typed loads preserve absence separately from numeric arithmetic', () => {
   const src = `export function f(n) {
     const a = new Float64Array(n), value = a[0];
@@ -905,6 +950,24 @@ test('dyn-keys: loop-built dict (element-sourced keys) — the trap class', () =
 
 test('dyn-keys: histogram RMW stays lean-eligible (the fused read is not a plain read)', () => {
   is(run(`const d = {}; const ks = ['a','b','a']; for (let i = 0; i < ks.length; i++) d[ks[i]] = (d[ks[i]] | 0) + 1; return (d['a'] | 0) * 10 + (d['b'] | 0)`), 21)
+})
+
+test('dictionary slot updates hash every string representation after key normalization', () => {
+  const keys = `['', '0', 'a', 'abcdef', 'abcdefg', 'Ā🙂', 'long heap ' + n, ('prefix-tail-' + n).slice(7)]`
+  for (const mode of ['fixed', 'growing', 'escaping']) {
+    const src = `function count(keys,n){const d={};for(let i=0;i<n;i++){
+      ${mode === 'growing' ? "keys.push('new-' + i);" : ''}
+      const k=keys[i%keys.length];d[k]=(d[k]|0)+1
+    }${mode === 'escaping' ? 'return d' : 'let s=0;for(let j=0;j<keys.length;j++)s=(Math.imul(s,31)+(d[keys[j]]|0))|0;return s'}}
+    export function f(n){return count(${keys},n)}`
+    const probe = mode === 'fixed' ? '__hash_slot_eph_fixed' : mode === 'growing' ? '__hash_slot_eph' : '__hash_slot'
+    ok(new RegExp(`call \\$${probe}\\s`).test(compile(src, { wat: true, optimize: { level: 'speed', watr: false } })), `${mode}: exercises its slot probe`)
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const { f } = jz(src, { optimize }).exports
+      for (const n of [0, 1, 1, 17, 80, 0, 3]) is(f(n), expected(n), `${mode}, O${optimize}, n=${n}`)
+    }
+  }
 })
 
 test('dyn-keys: atom-vs-NaN key split (index contract preserved)', () => {

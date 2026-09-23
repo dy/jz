@@ -35,6 +35,8 @@ const hasProbeLane = () => collectionLaneBytes() !== 0
 // Probes address allocated entries: key/value fields use their fixed memargs
 // directly. The layout proof belongs here, before generic WAT optimization.
 
+// The slot-update emitter normalizes dictionary keys before probing. Map keys
+// use their own hash helper; the inline arms below therefore receive strings.
 // The key's hash into `$h`. Speed tiers inline `$__str_hash`'s two FAST arms
 // (the SSO arithmetic mix and the heap lazy-hash-cell load, one of which the
 // dictionary-count hot path pays per probe) and call the helper only for the
@@ -48,19 +50,17 @@ const keyHashIR = (hashFn = '$__str_hash') => hashFn !== '$__str_hash' || ctx.tr
   : `(local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
     (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $h (i32.const 0))
-    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
+    (if (i32.shr_u (local.get $kaux) (i32.const 14))
       (then
-        (if (i32.shr_u (local.get $kaux) (i32.const 14))
-          (then
-            (local.set $h (i32.mul
-              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
-              (i32.const 0xC2B2AE35)))
-            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
-            (if (i32.le_u (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
-          (else
-            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
-                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
-              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
+        (local.set $h (i32.mul
+          (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
+          (i32.const 0xC2B2AE35)))
+        (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
+        (if (i32.le_u (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
+      (else
+        (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
+              (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
+          (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))
     (if (i32.eqz (local.get $h)) (then (local.set $h (call $__str_hash (local.get $key)))))`
 
 // Shared grow-capacity policy for every open-addressing Set/Map/Hash table
@@ -633,7 +633,7 @@ function genEphemeralSlotUpsert(name, entrySize) {
     (if (i32.ge_s (i32.shl (local.get $size) (i32.const 2)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
         ${nextCapIR()}
-        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize + lane})))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
         ${growBases}
         (local.set $i (i32.const 0))
         (block $rd (loop $rl

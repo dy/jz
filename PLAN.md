@@ -163,7 +163,7 @@ Dependencies
    | SDF scratch-array gathers | Bounds checks account for about 72% of its gap. Its cursor stops at sentinels in mutable arrays; removing those checks requires a relational or sentinel proof. |
    | Bounded byte/short accumulators | Glyph parsing's fast loop retains f64 because its checked fallback can produce NaN. Preserve the bounded trip count and step width into integer narrowing. |
    | Noise's dependent lookups | The candidate preserves all-writers element hulls through in-place copies and swaps, and preserves intervals through load-CSE's unary plus. Four lookup checks disappear, but the Rust-Wasm gap is still open. |
-   | FFT, sort, CRC32, wordcount | FFT, sort and CRC32 remain red in the latest run; wordcount's standing varies. TinyGo's scalar FFT advances pointers directly while JZ's SIMD loop still calculates indexed addresses. Compare paired hot loops before changing code. |
+   | FFT, sort, CRC32, wordcount | CRC32 remains red; FFT and sort vary between runs. Wordcount's duplicate tag check is removed and the latest row passes. The attempted FFT pointer advancement lost both speed and size. Require quiet paired evidence before treating a fluctuating row as closed. |
    | webaudio | Numeric-width loop versions retain all numeric input types and specialize floating outputs. Reprofile receiver reads and automation callbacks before adding another version. |
    | watr | Separate cold tier-up from steady-state helper work. Cold paths out of line and size-aware speculation remain the useful levers. |
 
@@ -190,6 +190,20 @@ Dependencies
      calls, JavaScript parity and effects that forbid reordering.
      The combined benchmark closes the Levenshtein row: 1.22 ms versus
      AssemblyScript's 1.69 ms (0.721×). This agrees with the paired improvement.
+   - Dictionary probes reuse the emitter's string-key proof, removing a
+     duplicate tag test. Wordcount shrinks 4333 → 4318 bytes. Two sets of ten
+     alternating normal-tier pairs improve 909.5 → 568 and 823.5 → 594.5 µs;
+     forced-optimized measurements vary, so this is not a steady-state claim.
+     The same audit fixed a pre-existing growth allocation: the optional
+     four-byte hash lane was counted as a boolean byte. Host collection
+     decoding now shares forwarding, tombstone filtering and insertion order.
+   - Cursor guards require a local that exists at entry and whose writes are
+     all covered by the body budget. Nested declarations, header writes and
+     external mutation cannot borrow that proof. A nested gather formerly
+     returned 7 instead of NaN. Removing its invalid loop version also shrinks
+     SDF 3583 → 3056 bytes; ten optimized pairs measure 7574 → 7593 µs with
+     checksum 1749682117 unchanged, so the size win is established, not a
+     speed win. The corrected tree passes the correctness gates below.
    - webaudio's five paired runs improve 7.447 → 6.471 ms with checksum
      2866527759 unchanged, versus the earlier V8 diagnostic of 4.88 ms.
      Speed size grows 598817 → 616071 bytes; size mode skips width versioning.
@@ -198,8 +212,8 @@ Dependencies
      49.4 ms with the passes versus 86.8 ms with both disabled, 16197 →
      15014 bytes, matching checksums. Ulam's early-return inlining improves
      1.440 → 0.780 ms versus V8's 1.313 ms, with identical pixels.
-   - The combined tree passes self-compile speed: warm 0.955× (cap 1.03×),
-     fresh 0.775× (cap 0.99×). The preceding tree measured 0.961× / 0.837×,
+   - The combined tree passes self-compile speed: warm 0.969× (cap 1.03×),
+     fresh 0.790× (cap 0.99×). The preceding tree measured 0.955× / 0.775×,
      with an earlier fresh run failing at 1.073×. These loaded-machine
      timings still need quiet reference evidence.
    - Published watr 5.11.2 closes the 320000-byte size backstop. The latest
@@ -214,6 +228,11 @@ Dependencies
    to bounded i32 narrowing without an in-loop guard, not a larger wide loop.
    Earlier self-host wrapper isolation, forwarding inlining, leaf-skipping
    visitors and broader read reuse also measured no gain and were removed.
+   Advancing six pointers in the SIMD butterfly instead of calculating
+   addresses also loses: 2872 → 2947 bytes and 1082.5 → 1090.5 µs in ten
+   optimized pairs. It remains out of the source. Making all checked SDF reads
+   branchy saves 55 bytes but measures 7683 → 7821 µs, so that policy stays
+   confined to its existing consumers.
 
 2. **Memory.** Close the Jessie and watr RSS gaps. webaudio already measured
    70.3 MB versus V8's 70.6 MB on the earlier paired tree: per-sample arena
@@ -250,7 +269,9 @@ Dependencies
    glyfparse/C-Wasm 1.418×, SDF/C-Wasm 1.420×, noise/Rust-Wasm 1.148×,
    wordcount/C-Wasm 1.011×, watr/V8 1.546× and Jessie/V8 0.988×.
 
-4. **Public VST scope and identity.** The builder is JZ/macOS/mono-or-stereo.
+4. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
+   defers native release work until JZ v1 and requires verification from its
+   installed tarball. The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Use
    `org.audiojs` for the permanent vendor root, matching the audio compiler
    contract and the user's audiojs choice. Restart-flagged edits take effect
@@ -266,25 +287,25 @@ Dependencies
 
 ## Gate evidence, September 23
 
-Validated candidate on top of `4b729882`: checked integer-word demand,
-single key conversion, same-array element hulls, unary-plus interval transfer
-and integer recurrence scheduling. The full sequence ran with the same
-315 source/test inputs, checked by digest before each gate and after completion.
+Validated candidate on top of `b0f38d36`: dictionary key-proof reuse, corrected
+collection growth, shared host collection decoding and sound cursor guards.
+The full sequence ran with the same 318 source/test inputs, checked by digest
+before each gate and after completion. The preceding checked-integer and
+recurrence-scheduling changes are committed in `22a9712f` and `b0f38d36`.
 
-- Core: 4648 passed, one skip (118421 assertions). Opt0: 4456
-  passed (96173 assertions); opt3: 4456 passed (96601 assertions);
-  WASI: 4509 passed (108982 assertions), each with one skip. All four ran
+- Core: 4651 passed, one skip (118756 assertions). Opt0: 4459
+  passed (96342 assertions); opt3: 4459 passed (96805 assertions);
+  WASI: 4512 passed (109317 assertions), each with one skip. All four ran
   on the same compiler tree with published watr 5.11.2. No compiler source
   changed during these gates.
-- Self-compile: 68 passed (2365 assertions). Perf ratchet: 10 passed.
-  The final self-compile speed run passes: warm 0.955× V8 (cap 1.03×), fresh
-  0.775× (cap 0.99×). An earlier fresh run failed at 1.073×; the old/current
+- Self-compile: 70 passed (2369 assertions). Perf ratchet: 10 passed.
+  The final self-compile speed run passes: warm 0.969× V8 (cap 1.03×), fresh
+  0.790× (cap 0.99×). An earlier fresh run failed at 1.073×; the old/current
   comparison and loaded-machine limitation are recorded in item 1.
   Public types and import lint pass.
-  Regenerating `dist/jz.wasm` and running the scheduler suite through that
-  compiler also passes all eight tests and 1871 assertions. An initial check
-  had selected an older local artifact; the release gates use fresh private
-  builds and were unaffected.
+  The fresh private kernel passes the growing-dictionary and nested-cursor
+  regression samples. Local `dist/jz.wasm` was also regenerated from the same
+  source: 19048276 bytes. Generated artifacts remain uncommitted.
 - Language conformance: 3201 pass, zero failures, two xfails; all 4045
   negative syntax cases reject. The receiver suite passes 23 tests in both
   hosts, including captured iterator operations, spread callback receivers
@@ -294,17 +315,16 @@ and integer recurrence scheduling. The full sequence ran with the same
   parameters, restricted async grammar and mixed static/instance private
   accessor pairs. They reject through the Wasm-hosted compiler too. No xfail,
   negative ledger or coverage floor changed.
-- The full benchmark: 266/271 pass. Speed geomeans are 0.467× V8,
-  0.694× native C and 0.481× AssemblyScript; size is 0.781× AssemblyScript.
-  Perf-fuzz passes (integer 0.87×, float 0.71×, mixed 0.86× V8), as does
-  floatbeat (0.402×). TinyGo coverage passes. Watr's size backstop passes at
-  319898 bytes against 320000; its runtime is 1.24× V8 in this run.
-- Five checks remain red: fastest-Wasm fft 1.061× (TinyGo), sdf 1.467×
-  (C-Wasm), sort 1.144× (Zig-Wasm), crc32 1.051× (C-Wasm), and alpha's
-  stale committed w2c row. FFT and SDF are byte-identical to the preceding
-  tree. Levenshtein's 0.721× AssemblyScript result follows
-  a measured scheduling improvement; glyfparse, noise and wordcount passing
-  in this run does not establish that their standing gaps are closed.
+- The full benchmark: 266/271 pass. Speed geomeans are 0.473× V8,
+  0.706× native C and 0.493× AssemblyScript; size is 0.781× AssemblyScript.
+  Perf-fuzz passes (integer 0.88×, float 0.69×, mixed 0.85× V8), as does
+  floatbeat (0.400×). TinyGo coverage passes. Watr's size backstop passes at
+  319898 bytes against 320000; its runtime is 1.041× V8 in this run.
+- Five checks remain red: SDF versus V8 1.016× and C-Wasm 1.526×,
+  glyfparse versus C-Wasm 1.085×, CRC32 versus C-Wasm 1.053×, and alpha's
+  stale committed w2c row. Levenshtein is 0.733× AssemblyScript and wordcount
+  is 0.851× C-Wasm, following the measured changes above. FFT, sort and noise
+  pass this run; those flips alone do not close their standing gaps.
   Timing bands and all caps remain unchanged.
 - The example driver had stale arguments for Ulam, waves, attractors and
   raymarcher. Their calls now match the current kernels, and an untimed
@@ -312,7 +332,7 @@ and integer recurrence scheduling. The full sequence ran with the same
   explicit. Kernel sources and timing caps are unchanged. Ulam's zero-size,
   repeated-view and changed-view outputs match JS pixel for pixel at O0,
   O3 and WASI. The current example run has a 1.60× V8/JZ geomean and 21/21
-  strict wins; the new candidate run measures 1.61× and also wins 21/21.
+  strict wins; the new candidate run measures 1.58× and also wins 21/21.
   The preceding run measured Ulam 1.66×, waves 1.12× and percolation 1.09×. Percolation's
   separate three-grid paired comparison establishes the 7.6–8.0% improvement
   recorded above; the benchmark alone does not establish a waves improvement.
@@ -321,7 +341,8 @@ and integer recurrence scheduling. The full sequence ran with the same
   three camera settings.
 - The focused typed-loop suite passes 19 tests and 3671 assertions, including
   primitive signed-zero comparisons that the array deep-equality helper omits.
-- The machine exceeds the reference-evidence swap cap. These are diagnostics,
+- The machine uses 23999.56 MB of swap, above the 4096 MB reference-evidence
+  cap. These are diagnostics,
   not refreshed release evidence. No timing, size or memory cap was changed.
 - The original four review fixes have regressions in `test/destruct.js`,
   `test/value-number.js` and `test/schedule.js`. Addition carriers and
