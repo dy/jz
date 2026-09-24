@@ -352,6 +352,17 @@ Dependencies
    remains: each level of the recursion copies the list below it into a new
    one, and only the outermost survives. Closing the gap to V8's peak needs
    that copy reused in place or reclaimed. Keep the parser source unchanged.
+   A standalone array-growth trial removed the `alloc:false` restriction from
+   the existing heap-top extension. A 100-element builder dropped from 1984 to
+   1040 allocated bytes and its allocation/alias tests passed, but neither
+   library's RSS gap closed. Watr's ordinary-tier timings regressed in four
+   of five alternating pairs; fully optimized pairs were near parity. The
+   trial is not retained. A corresponding string-growth trial is also rejected:
+   self-assignment alone does not prove the old string has no retained aliases
+   (`snapshots.push(s); s += 'ab'`). That alias defect also reproduces with the
+   existing default allocator, so string ownership needs a sound census proof
+   before broadening in-place growth.
+
    Watr retains 64 KB code buffers between assemblies; use its lifetime
    evidence before changing allocation policy. Its run ends at 153 MB RSS:
    a 50.6 MB host baseline, a 59 MB heap peak in 64 MB of linear memory, and
