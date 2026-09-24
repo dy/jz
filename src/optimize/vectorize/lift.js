@@ -51,6 +51,16 @@ export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: fal
 const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.crPow = false }
 registerResetHook(resetVectorizeState)
 
+// The one lift context shape: the self-compile kernel infers one struct layout per shared
+// callee (liftStmt/liftExprV/liftFail), so every recognizer builds its ctx here rather than
+// as its own literal. Positional, so no differently-shaped option objects reach it either.
+// Omitted trailing fields read as absent: no AoS stride, no pure-call inlining, no
+// constant locals, no ramp.
+export const liftCtx = (laneType, incVar, localKind, freshIdRef, fnLocals = null, newLanedLocals = new Map(), extraLocals = [],
+  aosPixelStride = 1, pureFuncMap = null, constLocals = null, rampVar = null, widenLoads = false) =>
+  ({ laneType, incVar, rampVar, rampTemp: null, widenLoads, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef,
+    fail: false, failReason: null, aosPixelStride, pureFuncMap, inlineDepth: 0, constLocals })
+
 // Mark a lift bail and record its reason. First-write-wins: the innermost failing op
 // sets ctx.failReason; outer frames see ctx.fail already set and return without
 // overwriting, so the reason names the actual blocking op, not a wrapper.

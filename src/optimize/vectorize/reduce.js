@@ -1,10 +1,11 @@
 import { walkAst } from '../../ast.js'
-import { _offsetLocalStride, constNum, hasSideEffect, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
+import { _offsetLocalStride, constNum, hasSideEffect, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, affineIvCoeff } from './addr-model.js'
 import { isProfitable } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
-import { liftExprV, liftFail, vecState } from './lift.js'
+import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
+import { simdLoop } from './scaffold.js'
 
 // ---- Reduction recognizer -------------------------------------------------
 //
@@ -289,7 +290,7 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   for (const name of addrLocals.keys()) localKind.set(name, 'addr')
   for (const name of offsetTees.keys()) localKind.set(name, 'addr')
 
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
+  const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals)
 
   const liftedExpr = liftExprV(exprNode, ctx)
   // liftExprV's contract is "null ⟺ ctx.fail"; under self-compile (jz.wasm) it can diverge and
@@ -299,15 +300,22 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (ctx.fail || liftedExpr == null) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
 
-  // Synthesize SIMD prefix block + horizontal reduce + (preserved scalar tail).
+  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32)
+}
+
+// SIMD prefix + horizontal fold + (preserved scalar tail), shared by tryReduceReassoc and
+// tryGeneralReduce: N vector accumulators over the lifted operand, combined and folded
+// across lanes, merged into the live accumulator; the original loop runs the remainder.
+// `widen`/`sawWidenF32` are the narrow-widening sum shapes only tryReduceReassoc produces.
+function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, widen, sawWidenF32) {
+  const { incVar } = bl
+  const stride = LANE_INFO[laneType].stride
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
   const simdAccName = `$__simd_acc${id}`   // accumulator 0 — the one the merge folds
-  const simdBrkLabel = `$__simd_brk${id}`
-  const simdLoopLabel = `$__simd_loop${id}`
   const info = LANE_INFO[laneType]
   const lanes = info.lanes
-  const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
+  const boundExpr = bl.boundLocal ? ['local.get', bl.boundLocal] : bl.bound
 
   // Multi-accumulator unroll. A reduction's loop-carried accumulator is a latency
   // chain — each iteration's op waits on the previous result, so a single vector
@@ -342,14 +350,7 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   const loopBody = []
   for (let k = 0; k < NACC; k++) loopBody.push(['local.set', accK(k), [reduceEntry.simd, ['local.get', accK(k)], accOperandFor(k)]])
   loopBody.push(['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes * NACC]]])
-  const simdBlock = ['block', simdBrkLabel,
-    ['loop', simdLoopLabel,
-      ['br_if', simdBrkLabel,
-        ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
-      ...loopBody,
-      ['br', simdLoopLabel]
-    ]
-  ]
+  const simdBlock = simdLoop(id, incVar, simdBoundName, loopBody)
   // Combine the N accumulators into acc 0 (lane-wise) before the horizontal fold.
   const combineAccs = []
   for (let k = 1; k < NACC; k++) combineAccs.push(['local.set', simdAccName, [reduceEntry.simd, ['local.get', simdAccName], ['local.get', accK(k)]]])
@@ -545,16 +546,10 @@ export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
 
 // ---- General base-layer REDUCTION recognizer (dispatch-chain terminal) ----------------
 //
-// Generalizes `tryReduce`'s (`tryReduceReassoc`) shape-specific address proof — `matchLaneAddr`'s
-// literal post-lowering WAT-pattern list — to an AST-level affine-in-IV proof, the SAME lever
-// `tryGeneralMap` already applied to the MAP class (design §2/§3 step 3, REDUCTION slice —
-// .work/archive/vectorizer-generality-design.md). `ivCoeff`/`matchAddr` below are a PORT of
-// `tryGeneralMap`'s own (itself ported from `tryStencil`) — not a literal import, matching
-// `tryGeneralMap`'s own "port, don't share" precedent so `tryReduceReassoc`'s already-gated
-// corpus behavior stays byte-for-byte untouched. One difference from `tryGeneralMap`'s copy:
-// `matchAddr` takes the lane stride as an explicit parameter instead of inferring it from the
-// first load site — a reduction's accumulator (and its associative op) already fixes the lane
-// type before any load is scanned, so there is nothing to infer.
+// Generalizes `tryReduceReassoc`'s shape-specific address proof (`matchLaneAddr`'s literal
+// post-lowering WAT-pattern list) to the affine-in-IV proof `tryGeneralMap` uses for maps:
+// `affineIvCoeff` + `matchStrideAddr`. The lane stride is passed to `matchAddr` explicitly:
+// the accumulator fixes the lane type before any load is scanned.
 //
 // Preconditions (design brief): single scalar accumulator, ONE recognized associative-
 // commutative op (`REDUCE_OP_LOOKUP`: i32/i64 add·mul·xor·and·or, f32/f64 add·mul — the SAME
@@ -651,32 +646,8 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   const accType = fnLocals.get(accName)
   if (accType !== reduceEntry.laneType) return null
 
-  // Affine-in-IV coefficient solver — verbatim port of tryGeneralMap's own `ivCoeff` (see the
-  // header doc above for the soundness argument reference).
-  const ivCoeff = (n) => {
-    if (isLocalGet(n)) {
-      const nm = n[1]
-      if (nm === incVar) return 1
-      return writes.has(nm) ? null : 0
-    }
-    if (isI32Const(n)) return 0
-    if (isArr(n) && n[0] === 'global.get') return 0
-    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
-      const a = ivCoeff(n[1]), b = ivCoeff(n[2])
-      if (a == null || b == null) return null
-      const c = n[0] === 'i32.add' ? a + b : a - b
-      return c === 0 || c === 1 ? c : null
-    }
-    if (isArr(n) && n[0] === 'i32.mul' && n.length === 3)
-      return ivCoeff(n[1]) === 0 && ivCoeff(n[2]) === 0 ? 0 : null
-    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return ivCoeff(n[2])
-    return null
-  }
+  const ivCoeff = affineIvCoeff(incVar, writes)
   const offTees = new Map(), addrTees = new Map()
-  // matchOffset/matchAddr: shared with tryGeneralStencil/tryGeneralMap, see
-  // addr-model.js's matchStrideOffset/matchStrideAddr header doc (pipeline-
-  // minimality campaign, the six verbatim load/store validator ports).
-  const matchOffset = (off, expectStride) => matchStrideOffset(off, expectStride, offTees, ivCoeff)
   const matchAddr = (addr, expectStride) => matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff)
 
   // Scan EXPR for lane-aligned loads. Stores forbidden. Re-references of accName forbidden (the
@@ -720,7 +691,7 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   for (const name of addrTees.keys()) localKind.set(name, 'addr')
   for (const name of offTees.keys()) localKind.set(name, 'addr')
 
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
+  const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals)
   const liftedExpr = liftExprV(exprNode, ctx)
   // Same fail-open contract as tryReduceReassoc (see its own doc): a null lift without the
   // flag (self-compile divergence) bails rather than splicing a literal `null` operand.
@@ -736,84 +707,5 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (!isProfitable(body, [[reduceEntry.simd, liftedExpr]], LANE_INFO[laneType].lanes, 0))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
-  // ---- Codegen: byte-identical to tryReduceReassoc's own horizontal-fold synth — see header
-  // doc. `widen`/`sawWidenF32` fixed at "off": this recognizer never produces those shapes.
-  const widen = null, sawWidenF32 = false
-  const id = freshIdRef.next++
-  const simdBoundName = `$__simd_bound${id}`
-  const simdAccName = `$__simd_acc${id}`
-  const simdBrkLabel = `$__simd_brk${id}`
-  const simdLoopLabel = `$__simd_loop${id}`
-  const info = LANE_INFO[laneType]
-  const lanes = info.lanes
-  const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
-
-  const plainReduce = !reduceEntry.minmaxSelect && !widen && !sawWidenF32 && canonC == null
-  const NACC = (multiAcc && plainReduce && (laneType === 'f64' || laneType === 'f32')) ? 4 : 1
-  const accK = (k) => k === 0 ? simdAccName : `$__simd_acc${id}_${k}`
-  const laneBytes = lanes * stride
-
-  const accSplat = widen ? 'i32x4.splat' : info.splat
-  const accumOperand = widen ? widen.steps.reduce((e, s) => [s, e], liftedExpr) : liftedExpr
-  const offsetLoads = (node, off) => !isArr(node) ? node
-    : node[0] === 'v128.load' ? ['v128.load', ['i32.add', node[1], ['i32.const', off]]]
-    : node.map(c => offsetLoads(c, off))
-  const accOperandFor = (k) => k === 0 ? accumOperand : offsetLoads(normTee(accumOperand), k * laneBytes)
-
-  const initAcc = []
-  for (let k = 0; k < NACC; k++) initAcc.push(['local.set', accK(k), [accSplat, reduceEntry.constNode ?? reduceEntry.identity]])
-  const loopBody = []
-  for (let k = 0; k < NACC; k++) loopBody.push(['local.set', accK(k), [reduceEntry.simd, ['local.get', accK(k)], accOperandFor(k)]])
-  loopBody.push(['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes * NACC]]])
-  const simdBlock = ['block', simdBrkLabel,
-    ['loop', simdLoopLabel,
-      ['br_if', simdBrkLabel,
-        ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
-      ...loopBody,
-      ['br', simdLoopLabel]
-    ]
-  ]
-  const combineAccs = []
-  for (let k = 1; k < NACC; k++) combineAccs.push(['local.set', simdAccName, [reduceEntry.simd, ['local.get', simdAccName], ['local.get', accK(k)]]])
-
-  const extraDecls = []
-  let mergeStmts
-  if (reduceEntry.minmaxSelect) {
-    const ht = `$__simd_h${id}`
-    extraDecls.push(['local', ht, reduceEntry.pmaxF64 ? 'f64' : 'i32'])
-    const lane = (k) => [reduceEntry.extract, k, ['local.get', simdAccName]]
-    const minmaxSel = reduceEntry.pmaxF64
-      ? (a, b) => reduceEntry.isMax ? ['select', b, a, ['f64.lt', a, b]] : ['select', b, a, ['f64.lt', b, a]]
-      : (a, b) => ['select', a, b, [reduceEntry.isMax ? 'i32.gt_s' : 'i32.lt_s', a, b]]
-    mergeStmts = [['local.set', ht, lane(0)]]
-    for (let k = 1; k < lanes; k++) mergeStmts.push(['local.set', ht, minmaxSel(lane(k), ['local.get', ht])])
-    mergeStmts.push(['local.set', accName, minmaxSel(['local.get', accName], ['local.get', ht])])
-  } else {
-    const foldLanes = widen ? 4 : lanes
-    let horiz = [reduceEntry.extract, 0, ['local.get', simdAccName]]
-    for (let k = 1; k < foldLanes; k++) {
-      horiz = [opName, horiz, [reduceEntry.extract, k, ['local.get', simdAccName]]]
-    }
-    const merged = [opName, ['local.get', accName], horiz]
-    mergeStmts = canonC == null
-      ? [['local.set', accName, merged]]
-      : [['local.set', accName, merged],
-         ['local.set', accName,
-           ['select', canonC, ['local.get', accName],
-             [`${laneType}.ne`, ['local.get', accName], ['local.get', accName]]]]]
-  }
-  const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes * NACC - 1]]]
-
-  // No accI32/accF64 narrow-widened entries here (out of scope — see header doc), so the SIMD
-  // prefix is always unguarded (full-width identities, exactly like tryReduceReassoc's own
-  // documented distinction for that case).
-  const core = [...initAcc, simdBlock, ...combineAccs, ...mergeStmts]
-  const wrapper = ['block', boundSetup, ...core, bl.blockNode]
-  const newLocalDecls = [
-    ['local', simdBoundName, 'i32'],
-    ['local', simdAccName, 'v128'],
-    ...Array.from({ length: NACC - 1 }, (_, k) => ['local', accK(k + 1), 'v128']),
-    ...extraDecls,
-  ]
-  return { wrapper, newLocalDecls }
+  return reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, canonC, laneType, liftedExpr, null, false)
 }

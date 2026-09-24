@@ -1,9 +1,9 @@
 import { cloneNode, walkAst } from '../../ast.js'
 import { constNum, laneAccess, isI32Const, isLocalGet, matchLaneAddr } from './addr-model.js'
 import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
-import { liftExprV, liftStmt } from './lift.js'
+import { liftCtx, liftExprV, liftStmt } from './lift.js'
 import { isArr } from './node-utils.js'
-import { matchBlockLoop } from './scaffold.js'
+import { matchBlockLoop, simdLoop } from './scaffold.js'
 
 // ---- Byte-map recognizer (ramp + widening loads) ---------------------------
 //
@@ -125,7 +125,7 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
   const newLanedLocals = new Map()
   const extraLocals = []
   const freshV128 = (tag) => { const n = `$__${tag}${freshIdRef.next++}`; extraLocals.push(['local', n, 'v128']); return n }
-  const ctx = { laneType: 'i32', incVar: ivName, rampVar: ivName, rampTemp: null, widenLoads: true, localKind, fnLocals: null, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
+  const ctx = liftCtx('i32', ivName, localKind, freshIdRef, null, newLanedLocals, extraLocals, 1, null, null, ivName, true)
 
   // A byte store fed by one value expression (inline, or via a single lane-local
   // temp `tw = EXPR; store(addr, tw)`) carries no loop-carried state, so we can
@@ -321,19 +321,12 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
 
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
-  const simdBrkLabel = `$__simd_brk${id}`
-  const simdLoopLabel = `$__simd_loop${id}`
   const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
 
   const scaledIncs = increments.map(({ name, c }) =>
     ['local.set', name, ['i32.add', ['local.get', name], ['i32.const', c * LANES]]])
 
-  const simdBlock = ['block', simdBrkLabel,
-    ['loop', simdLoopLabel,
-      ['br_if', simdBrkLabel, ['i32.eqz', ['i32.lt_s', ['local.get', ivName], ['local.get', simdBoundName]]]],
-      ...lifted,
-      ...scaledIncs,
-      ['br', simdLoopLabel]]]
+  const simdBlock = simdLoop(id, ivName, simdBoundName, [...lifted, ...scaledIncs])
   // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
   const boundSetup = ['local.set', simdBoundName,
     ['i32.add', ['local.get', ivName],

@@ -48,6 +48,14 @@ import { isArr } from './node-utils.js'
 // raw-node) reads the flat statement lists they were tuned against. Post-order: children are
 // already flat when a block is spliced up. A labeled block (branch target) or result-carrying
 // block (value producer) is kept — including the `(block $brk (loop …))` SIMD scaffold itself.
+
+/** The counted SIMD loop every recognizer emits (see index.js): exit once `iv` reaches the
+ *  `bound` local, run `body` (which advances `iv`), repeat. Labels are keyed by `id`. */
+export const simdLoop = (id, iv, bound, body) => ['block', `$__simd_brk${id}`,
+  ['loop', `$__simd_loop${id}`,
+    ['br_if', `$__simd_brk${id}`, ['i32.eqz', ['i32.lt_s', ['local.get', iv], ['local.get', bound]]]],
+    ...body,
+    ['br', `$__simd_loop${id}`]]]
 export function normalizeTransparentBlocks(node) {
   if (!isArr(node)) return
   for (let i = 1; i < node.length; i++) normalizeTransparentBlocks(node[i])

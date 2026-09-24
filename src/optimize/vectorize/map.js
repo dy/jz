@@ -1,10 +1,11 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
+import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, affineIvCoeff, hasNestedLoopOrCall } from './addr-model.js'
 import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
-import { liftFail, liftStmt, peelNarrowConv } from './lift.js'
+import { liftCtx, liftFail, liftStmt, peelNarrowConv } from './lift.js'
 import { isArr } from './node-utils.js'
+import { simdLoop } from './scaffold.js'
 
 /**
  * Try to vectorize the inner loop. Returns the replacement node array
@@ -352,7 +353,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   // Build lifted body. If anything fails to lift, bail.
   const newLanedLocals = new Map()  // origName → laneName (bare string; see getOrAllocLanedLocal)
   const extraLocals = []  // canon temps allocated during lift
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null, aosPixelStride, pureFuncMap, inlineDepth: 0, constLocals }
+  const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals, newLanedLocals, extraLocals, aosPixelStride, pureFuncMap, constLocals)
   const lifted = []
   for (const s of body2) {
     const r = liftStmt(s, ctx)
@@ -367,8 +368,6 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   // Generate fresh names
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
-  const simdBrkLabel = `$__simd_brk${id}`
-  const simdLoopLabel = `$__simd_loop${id}`
 
   const info = LANE_INFO[laneType]
   const lanes = info.lanes
@@ -378,16 +377,8 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   const boundExpr = boundLocal
     ? ['local.get', boundLocal]
     : bound  // i32.const N
-  const simdBlock = ['block', simdBrkLabel,
-    ['loop', simdLoopLabel,
-      ['br_if', simdBrkLabel,
-        ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
-      ...lifted,
-      ['local.set', incVar,
-        ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
-      ['br', simdLoopLabel]
-    ]
-  ]
+  const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
+    ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])
 
   // Bound setup: align the SPAN, not the bound — simdBound = iv + ((bound − iv)
   // & ~(lanes−1)). `bound & mask` assumed a 0 entry: a loop entering at k=1
@@ -438,52 +429,17 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   if (blHasGlobalSet) return null
   if (!boundLocal && !isI32Const(bound)) return null
 
-  // Nested loop / non-$math call inside the body breaks the "every site is one straight-line
-  // lane op" assumption a flat scan here relies on (verbatim from tryStencil).
-  const hasNestedLoopOrCall = (n) => {
-    let found = false
-    walkAst(n, { enter: x => {
-      if (found) return false
-      if (x[0] === 'loop' || (x[0] === 'call' && (typeof x[1] !== 'string' || !x[1].startsWith('$math.'))) || x[0] === 'call_indirect') { found = true; return false }
-    } })
-    return found
-  }
+  // Nested loop / non-$math call breaks the "every site is one straight-line lane op" assumption.
   if (body.some(hasNestedLoopOrCall)) return null
 
-  // Affine-in-IV coefficient solver, i32 domain only (no toroidal wrap, no float-derived index —
-  // both genuinely stencil-specific; see header doc). Returns 0 (loop-invariant), 1 (stride-1
-  // affine — IV itself, or ± a loop-invariant term, nested arbitrarily deep), or null (unprovable).
-  const ivCoeff = (n) => {
-    if (isLocalGet(n)) {
-      const nm = n[1]
-      if (nm === incVar) return 1
-      return writes.has(nm) ? null : 0
-    }
-    if (isI32Const(n)) return 0
-    if (isArr(n) && n[0] === 'global.get') return 0
-    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
-      const a = ivCoeff(n[1]), b = ivCoeff(n[2])
-      if (a == null || b == null) return null
-      const c = n[0] === 'i32.add' ? a + b : a - b
-      return c === 0 || c === 1 ? c : null
-    }
-    if (isArr(n) && n[0] === 'i32.mul' && n.length === 3)
-      return ivCoeff(n[1]) === 0 && ivCoeff(n[2]) === 0 ? 0 : null
-    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return ivCoeff(n[2])
-    return null
-  }
+  // i32-domain affine proof only: no toroidal wrap, no float-derived index (stencil-specific).
+  const ivCoeff = affineIvCoeff(incVar, writes)
 
-  // Address match: `base + (IDX << K)` (or the flipped operand order), IDX affine coefficient 1,
-  // K matching the site's own element stride. Tee-CSE resolved via addrTees/offTees, exactly like
-  // tryStencil's own matchAddr (ported, not re-derived — same soundness argument).
+  // Address match: `base + (IDX << K)` (either operand order), IDX affine coefficient 1,
+  // K matching the site's own element stride; tee-CSE resolved via addrTees/offTees.
   let laneType = null, stride = -1
   const offTees = new Map(), addrTees = new Map()
   const sites = []   // { kind, base, idx, memBytes }
-  // matchOffset/matchAddr: shared with tryGeneralStencil/tryGeneralReduce, see
-  // addr-model.js's matchStrideOffset/matchStrideAddr header doc (pipeline-
-  // minimality campaign, the six verbatim load/store validator ports —
-  // this pair is the byte-lane arm's own origin).
-  const matchOffset = (off, expectStride) => matchStrideOffset(off, expectStride, offTees, ivCoeff)
   const matchAddr = (addr, expectStride = stride) => matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff)
   const scan = (n, parent, pi) => {
     if (!isArr(n)) return true
@@ -631,7 +587,7 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   }
 
   const newLanedLocals = new Map(), extraLocals = []
-  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null, aosPixelStride: 1, pureFuncMap: null, inlineDepth: 0, constLocals: null }
+  const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals, newLanedLocals, extraLocals)
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -647,18 +603,14 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   const id = freshIdRef.next++
-  const simdBoundName = `$__simd_bound${id}`, simdBrkLabel = `$__simd_brk${id}`, simdLoopLabel = `$__simd_loop${id}`
+  const simdBoundName = `$__simd_bound${id}`
   const info = LANE_INFO[laneType], lanes = info.lanes, mask = -lanes
   const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
   const boundSetup = ['local.set', simdBoundName,
     ['i32.add', ['local.get', incVar],
       ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', mask]]]]
-  const simdBlock = ['block', simdBrkLabel,
-    ['loop', simdLoopLabel,
-      ['br_if', simdBrkLabel, ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
-      ...lifted,
-      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
-      ['br', simdLoopLabel]]]
+  const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
+    ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])
   // Runtime alias versioning (see header doc): when `aliasGuards` is non-null, the SIMD path
   // (unchanged) runs only behind a hoisted disjointness check; the else-branch is a FRESH clone
   // of the original loop — `bl.blockNode` itself stays reserved for the tail-after-SIMD use

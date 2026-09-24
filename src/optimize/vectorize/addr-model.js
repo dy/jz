@@ -86,7 +86,7 @@ export function laneAccess(body, name, outsideReads) {
   return kind === 'write' && outsideReads?.has(name) ? 'liveout' : kind
 }
 
-export function firstAccess(node, name) {
+function firstAccess(node, name) {
   if (!isArr(node)) return null
   const op = node[0]
   // Walk children first — operands evaluate before the op. For local.set/tee
@@ -252,30 +252,38 @@ export function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPi
 }
 
 /**
- * Shared "base + (IDX << K)" address matcher for the tryGeneral* recognizer
- * family (tryGeneralStencil/tryGeneralMap/tryGeneralReduce) — three verbatim
- * ports of tryStencil's own original matchOffset/matchAddr, unified here
- * (pipeline-minimality campaign, `.work/archive/pipeline-minimality.md`'s
- * batch-2 follow-up (c): "the six verbatim load/store validator ports across
- * vectorize map/stencil/reduce are one walker copied six times"). All three
- * ports are code-identical (including the byte-lane offset fallback below,
- * which tryGeneralMap's own header comment says is ITS addition — "needed
- * here for the first time because tryStencil never reached i8 lanes at all" —
- * ported on to tryGeneralStencil/tryGeneralReduce from there, not from
- * tryStencil). tryStencil's own original — the ancestor these three ported
- * their SHAPE from, predating the byte-lane arm, not one of the six copies —
- * stays independent (its inline offset match has no such arm to unify).
+ * Shared "base + (IDX << K)" address matcher for the tryGeneral* recognizers
+ * (tryGeneralMap/tryGeneralStencil/tryGeneralReduce). tryStencil keeps its own
+ * inline offset match: it predates the byte-lane arm below.
  *
- * `ivCoeff` is deliberately NOT unified — it differs by recognizer
- * (tryGeneralStencil's own carries the toroidal wrap-select / float-domain-
- * grid-index arms the plain map/reduce recognizers never need — see the "port,
- * don't share" note above `tryGeneralStencil`), so it threads through as a
- * plain callback instead. `writes`/`offTees`/`addrTees` are the caller's own
- * per-scan mutable state (offTees/addrTees accumulate tee-CSE bindings across
- * the whole scan; `writes` is the block-loop scaffold's written-names set).
+ * `ivCoeff` is the caller's affine-in-IV solver: `affineIvCoeff` for the plain
+ * map/reduce recognizers, the stencil index model's (wrap-select, float-domain
+ * grid index) for the stencil ones. `offTees`/`addrTees` accumulate tee-CSE
+ * bindings across one scan; `writes` is the loop scaffold's written-names set.
  */
 function isInvariantBase(b, writes) {
   return (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
+}
+
+/** Affine-in-IV coefficient solver, i32 domain: 0 (loop-invariant), 1 (stride-1 — the IV,
+ * or it ± a loop-invariant term, nested arbitrarily deep), or null (unprovable). */
+export const affineIvCoeff = (incVar, writes) => {
+  const coeff = (n) => {
+    if (isLocalGet(n)) return n[1] === incVar ? 1 : writes.has(n[1]) ? null : 0
+    if (isI32Const(n)) return 0
+    if (isArr(n) && n[0] === 'global.get') return 0
+    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
+      const a = coeff(n[1]), b = coeff(n[2])
+      if (a == null || b == null) return null
+      const c = n[0] === 'i32.add' ? a + b : a - b
+      return c === 0 || c === 1 ? c : null
+    }
+    if (isArr(n) && n[0] === 'i32.mul' && n.length === 3)
+      return coeff(n[1]) === 0 && coeff(n[2]) === 0 ? 0 : null
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return coeff(n[2])
+    return null
+  }
+  return coeff
 }
 
 /** Resolve one `(IDX << K)` offset operand — tee-CSE via `offTees`, `ivCoeff(IDX)
@@ -284,7 +292,7 @@ function isInvariantBase(b, writes) {
  * compiler never wraps in `i32.shl 0`) — dead for tryGeneralReduce in practice
  * (no i8/i16 REDUCE_CANON entry) but kept for parity, exactly as the ported
  * comment at its call site says. */
-export function matchStrideOffset(off, expectStride, offTees, ivCoeff) {
+function matchStrideOffset(off, expectStride, offTees, ivCoeff) {
   let ot = null, o = off
   if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
   if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
@@ -606,6 +614,18 @@ export const hasImpureCall = (node) => {
   walkAst(node, { enter: n => {
     if (found) return false
     if (n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) { found = true; return false }
+  } })
+  return found
+}
+
+// True if the tree holds a nested loop, an indirect call or a call to anything but a
+// `$math.*` helper: a leaf map/stencil body is straight-line lane arithmetic, and a
+// nested loop's loads would be misread as neighbour reads.
+export const hasNestedLoopOrCall = (node) => {
+  let found = false
+  walkAst(node, { enter: x => {
+    if (found) return false
+    if (x[0] === 'loop' || (x[0] === 'call' && (typeof x[1] !== 'string' || !x[1].startsWith('$math.'))) || x[0] === 'call_indirect') { found = true; return false }
   } })
   return found
 }
