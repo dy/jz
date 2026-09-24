@@ -1,26 +1,18 @@
-// Value numbering (src/optimize/value-number.js): one computation per value,
-// through locals. A helper inlined twice with one argument leaves two chains
-// of differently named locals that hold the same values; watr's CSE dedupes
-// identical subtrees only, so the chains stayed two and the kernel ran twice.
-// Every case is a differential against the same program with the pass off:
-// the bits never change, the call count does.
+// Value numbering (watr's valueNumber, enabled by jz with its math runtime vouched
+// pure: src/optimize/watr-tail.js): one computation per value, through locals. A
+// helper inlined twice with one argument leaves two chains of differently named
+// locals that hold the same values; CSE dedupes identical subtrees only, so the
+// chains stayed two and the kernel ran twice. Every case is a differential against
+// the same program with the pass off: the bits never change, the call count does.
+// The pass's own unit cases live with it, in watr's test/value-number.js.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { funcWat as funcWatOf, run, wat } from './util.js'
-import parseWat from 'watr/parse'
-import encodeWat from 'watr/compile'
-import { valueNumber } from '../src/optimize/value-number.js'
-import { pureCallees, buildPureFuncMap } from '../src/optimize/pure-funcs.js'
+import { buildPureFuncMap } from '../src/optimize/pure-funcs.js'
 import { collectReachableMemoryWrites } from '../src/optimize/globals.js'
 
 const ON = { optimize: 'speed' }
 const OFF = { optimize: { level: 'speed', valueNumber: false } }
-const numberWat = source => {
-  const ast = parseWat(source), funcs = ast.filter(n => Array.isArray(n) && n[0] === 'func')
-  const pure = pureCallees(funcs)
-  for (const fn of funcs) valueNumber(fn, pure)
-  return new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
-}
 const calls = (text, name) => (text.match(new RegExp(`\\(call \\$${name.replace(/\./g, '\\.')}\\b`, 'g')) || []).length
 /** The function's WAT, under its own name or its export wrapper's. */
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
@@ -29,23 +21,6 @@ const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name
 // results back through a return value, never through the host's array.
 const SPOW = `const spow = (a, e) => { const s = a < 0 ? -1 : 1, av = a < 0 ? -a : a; return s * av ** e }
 export let f = (src, n, e) => { const dst = new Float64Array(n); for (let i = 0; i < n; i++) { const L = src[i] / 100; dst[i] = (1 + 2 * spow(L / 3, e)) / (1 + 3 * spow(L / 3, e)) } let s = 0; for (let i = 0; i < n; i++) s += dst[i] * (i + 1); return s }`
-
-test('value numbering: branch-only repeats need no capture locals', () => {
-  const ast = parseWat(`(module
-    (func $f (export "f") (param $c i32) (param $x f64) (result f64)
-      (if (result f64) (local.get $c)
-        (then (f64.sqrt (local.get $x)))
-        (else (f64.sqrt (local.get $x))))))`)
-  const fn = ast[1]
-  valueNumber(fn)
-  is(fn.filter(n => Array.isArray(n) && n[0] === 'local').length, 0, 'neither branch can reuse the other capture')
-  const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
-  for (const c of [0, 1]) {
-    is(f(c, 9), 3)
-    ok(Object.is(f(c, -0), -0))
-    ok(Number.isNaN(f(c, -1)))
-  }
-})
 
 test('value numbering: a helper inlined twice with one argument runs once', () => {
   const on = funcWat(wat(SPOW, ON), 'f'), off = funcWat(wat(SPOW, OFF), 'f')
@@ -132,27 +107,7 @@ test('value numbering: a holder assigned inside a switch arm does not reach past
   for (const k of [0, 1, 2, 3]) is(run(src, ON).f(0.7, k), run(src, OFF).f(0.7, k), `k=${k}`)
 })
 
-test('value numbering: a global write invalidates a read-only call', () => {
-  const { f } = numberWat(`(module (global $g (mut i32) (i32.const 0))
-    (func $read (result i32) (global.get $g))
-    (func $f (export "f") (result i32) (local $a i32)
-      (global.set $g (i32.const 1))
-      (local.set $a (call $read))
-      (global.set $g (i32.add (call $read) (i32.const 1)))
-      (i32.add (local.get $a) (call $read))))`)
-  is(f(), 3); is(f(), 3)
-})
-
 test('value numbering: floating constants preserve the sign of zero', () => {
-  for (const type of ['f32', 'f64']) {
-    const div = zero => [`${type}.div`, ['local.get', '$x'], [`${type}.const`, zero]]
-    const fn = ['func', '$f', ['export', '"f"'], ['param', '$x', type], ['result', type], ['local', '$a', type],
-      ['local.set', '$a', div(0)], div(-0)]
-    valueNumber(fn)
-    const { f } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', fn]))).exports
-    is(f(1), -Infinity, type)
-    is(f(-1), Infinity, type)
-  }
   const src = 'export let f = () => { let a = +0, b = -0; return 1 / a === 1 / b }'
   for (const optimize of [2, 'speed', 'size']) is(run(src, { optimize }).f(), false, String(optimize))
 })
@@ -174,53 +129,16 @@ test('value numbering: a shared assignment stays after sibling reads', () => {
 test('purity: every store width and SIMD lane store is effectful', () => {
   for (const op of ['i32.store', 'i32.store8', 'i32.store16', 'i64.store', 'i64.store8', 'i64.store16', 'i64.store32', 'f32.store', 'f64.store', 'v128.store', 'v128.store8_lane', 'v128.store16_lane', 'v128.store32_lane', 'v128.store64_lane']) {
     const fn = ['func', '$write', ['param', '$x', 'f64'], [op, ['i32.const', 0], ['local.get', '$x']]]
-    ok(!pureCallees([fn]).has('$write'), op)
     ok(!buildPureFuncMap([fn]).has('$write'), `${op} is not lane-inline pure`)
     ok(collectReachableMemoryWrites([fn]).get('$write').has('*'), `${op} invalidates memory hoists`)
   }
-  const { f } = numberWat(`(module (memory 1)
-    (func $bump (result i32)
-      (i32.store8 (i32.const 0) (i32.add (i32.load8_u (i32.const 0)) (i32.const 1)))
-      (i32.load8_u (i32.const 0)))
-    (func $f (export "f") (result i32)
-      (i32.store8 (i32.const 0) (i32.const 0))
-      (i32.add (call $bump) (call $bump))))`)
-  is(f(), 3); is(f(), 3)
 })
 
 test('purity: random calls and atomic writes stay effectful', () => {
   const random = ['func', '$random', ['result', 'f64'], ['call', '$math.random']]
-  ok(!pureCallees([random]).has('$random'))
   ok(!buildPureFuncMap([random]).has('$random'))
   const writer = ['func', '$write', ['drop', ['i32.atomic.rmw8.add_u', ['i32.const', 0], ['i32.const', 1]]]]
-  ok(!pureCallees([writer]).has('$write'))
   ok(!buildPureFuncMap([writer]).has('$write'))
   ok(collectReachableMemoryWrites([writer]).get('$write').has('*'))
 })
 
-test('purity: numeric coercion can call user code', () => {
-  const wrapper = parseWat('(func $coerce (param $x f64) (result f64) (call $__to_num (local.get $x)))')
-  ok(!pureCallees([wrapper]).has('$coerce'))
-  // Lane inlining has a separate numeric-argument proof; generic calls do not.
-  const { f, count } = numberWat(`(module (global $count (export "count") (mut i32) (i32.const 0))
-    (func $__to_num (param $x f64) (result f64)
-      (global.set $count (i32.add (global.get $count) (i32.const 1))) (local.get $x))
-    (func $coerce (param $x f64) (result f64) (call $__to_num (local.get $x)))
-    (func $f (export "f") (result f64)
-      (f64.add (call $coerce (f64.const 2)) (call $coerce (f64.const 2)))))`)
-  is(f(), 4); is(count.value, 2)
-  is(f(), 4); is(count.value, 4)
-})
-
-test('value numbering: a shared trapping expression stays after preceding effects', () => {
-  const { f, g } = numberWat(`(module (global $g (export "g") (mut i32) (i32.const 0))
-    (func $f (export "f") (param $d i32) (result i32)
-      (i32.add
-        (block (result i32) (global.set $g (i32.const 1)) (i32.const 0))
-        (i32.add (i32.div_s (i32.const 6) (local.get $d)) (i32.div_s (i32.const 6) (local.get $d))))))`)
-  let error
-  try { f(0) } catch (e) { error = e }
-  ok(error instanceof WebAssembly.RuntimeError)
-  is(g.value, 1, 'the write precedes the division trap')
-  is(f(2), 6)
-})

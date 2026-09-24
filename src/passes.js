@@ -60,8 +60,8 @@ export const PASS_NAMES = [
   'hoistAddrBase',
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
-  'valueNumber',              // value numbering over straight-line regions: one computation per value, through locals (optimize/value-number.js)
-  'scheduleStatements',       // straight-line statements in order of the work depending on them: independent kernel calls start together (optimize/schedule.js)
+  'valueNumber',              // value numbering over straight-line regions: one computation per value, through locals (watr's valueNumber)
+  'scheduleStatements',       // straight-line statements in order of the work depending on them: independent kernel calls start together (watr's schedule)
   'unswitchTypedParamLoop',   // Float64Array param loop-unswitch → base-hoisted f64.load/store fast path (vectorizes)
   'unswitchStringRepLoop',    // leaf char scans: hoist invariant SSO/heap selection out of the byte loop
   'propagateLocals',          // watr local propagation after link, including the fast cleanup profile

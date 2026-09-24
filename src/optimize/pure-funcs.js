@@ -1,57 +1,17 @@
 /**
- * Read-only callee proofs for value numbering and scheduling, plus the SIMD
- * lane inliner's stronger numeric-argument context. Read-only calls may trap;
- * numeric lane clones may remove coercions that ordinary calls still need.
+ * The math runtime's purity, and the SIMD lane inliner's numeric-argument
+ * context: numeric lane clones may remove coercions that ordinary calls still
+ * need. (Read-only user functions are watr's to find, from call effects.)
  *
  * @module optimize/pure-funcs
  */
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { isMemWrite } from 'watr/optimize'
-import { mayTrapOp } from '../ir/classify.js'
 
-/** The math runtime depends only on its operands, except for its random source. */
+/** The math runtime depends only on its operands, except for its random source, and
+ *  cannot trap: jz vouches for it to watr's value numbering and scheduling (watr-tail.js). */
 export const pureKernel = name => typeof name === 'string' && name.startsWith('$math.') && !name.startsWith('$math.random')
-
-/**
- * The user functions whose result depends on their arguments and the state
- * they read alone: no global write, no store, no
- * table write, no explicit throw or trapping arithmetic, and every call (a tail call included)
- * to the math runtime (less its random source) or to
- * another such function (the greatest fixpoint, so mutual and self
- * recursion qualify). Value numbering (optimize/value-number.js) treats
- * their calls as values under the memory/global clock. Read-only does not
- * prove safe to speculate: loads can trap and recursion need not terminate,
- * so motion retains their order with effects. `$__to_num` may call user code.
- * @param funcs the module's `(func …)` nodes
- * @returns {Set<string>} their names
- */
-export function pureCallees(funcs) {
-  const pure = new Set(), callees = new Map()
-  for (const fn of funcs) {
-    if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string' || fn[1].startsWith('$__')) continue
-    let clean = true
-    const calls = new Set()
-    walkAst(fn, { enter: n => {
-      if (!clean) return false
-      const op = n[0]
-      if (typeof op !== 'string') return
-      if (op === 'global.set' || op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect' || op === 'return_call_ref' ||
-          op === 'throw' || op === 'throw_ref' || op === 'rethrow' || (mayTrapOp(op) && !op.includes('.load')) ||
-          isMemWrite(op) || op.startsWith('memory.') || op.startsWith('table.') || op.includes('atomic')) clean = false
-      else if ((op === 'call' || op === 'return_call') && typeof n[1] === 'string') {
-        if (n[1].startsWith('$math.random')) clean = false
-        else if (!pureKernel(n[1])) calls.add(n[1])
-      }
-    } })
-    if (clean) { pure.add(fn[1]); callees.set(fn[1], calls) }
-  }
-  for (let changed = true; changed;) {
-    changed = false
-    for (const name of pure) for (const c of callees.get(name)) if (!pure.has(c)) { pure.delete(name); changed = true; break }
-  }
-  return pure
-}
 
 /** Build private candidates for call sites whose substituted SIMD arguments are
  *  proven numeric. A bare f64 parameter can carry a NaN box, so ordinary calls

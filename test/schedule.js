@@ -1,14 +1,12 @@
-// Statement scheduling (src/optimize/schedule.js): within a straight-line
-// run, statements go by the longest chain of work still depending on them,
-// so independent kernel calls start together. Every case is a differential
-// against the same program with the pass off: the bits never change.
+// Statement scheduling (watr's schedule, enabled by jz with its math runtime vouched
+// pure: src/optimize/watr-tail.js): within a straight-line run, statements go by
+// the longest chain of work still depending on them, so independent kernel calls
+// start together. Every case is a differential against the same program with the
+// pass off: the bits never change. The pass's own unit cases live with it, in
+// watr's test/schedule.js.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is } from 'tst/assert.js'
 import { funcWat as funcWatOf, run, wat } from './util.js'
-import parseWat from 'watr/parse'
-import encodeWat from 'watr/compile'
-import { scheduleStatements } from '../src/optimize/schedule.js'
-import { pureCallees } from '../src/optimize/pure-funcs.js'
 
 const ON = { optimize: 'speed' }
 const OFF = { optimize: { level: 'speed', scheduleStatements: false } }
@@ -40,94 +38,6 @@ test('scheduling: an effectful call keeps its place among effects', () => {
   const src = `let log = []
 export let k = (a, b) => { log = []; const p = Math.sin(a); log.push(p); const q = Math.sin(b); log.push(q); log.push(Math.sin(p) + Math.sin(q)); return log.length === 3 ? log[0] + log[1] * 2 + log[2] * 4 : -1 }`
   is(run(src, ON).k(0.3, 0.9), run(src, OFF).k(0.3, 0.9))
-})
-
-test('scheduling: direct and read-only callee loads retain their trap order', () => {
-  for (const indirect of [false, true]) for (const before of [false, true]) {
-    const load = indirect ? '(call $read (local.get $p))' : '(f64.load (local.get $p))'
-    const write = '(global.set $g (i32.const 1))'
-    const ast = parseWat(`(module (memory 1)
-      (global $g (export "g") (mut i32) (i32.const 0))
-      (func $read (param $p i32) (result f64) (f64.load (local.get $p)))
-      (func $math.sqrt (param $x f64) (result f64) (f64.sqrt (local.get $x)))
-      (func $f (export "f") (param $p i32) (param $skip i32) (result f64) (local $a f64) (local $b f64)
-        (if (local.get $skip) (then (return (f64.const 7))))
-        ${before ? write : ''}
-        (local.set $a (call $math.sqrt (call $math.sqrt ${load})))
-        ${before ? '' : write}
-        (local.set $b (call $math.sqrt (f64.const 4)))
-        (f64.add (local.get $a) (local.get $b))))`)
-    const funcs = ast.filter(n => Array.isArray(n) && n[0] === 'func'), pure = pureCallees(funcs)
-    for (const fn of funcs) scheduleStatements(fn, pure)
-    const { f, g } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
-    is(f(65536, 1), 7, 'zero-work path does not load'); is(g.value, 0)
-    let error
-    try { f(65536, 0) } catch (e) { error = e }
-    ok(error instanceof WebAssembly.RuntimeError)
-    is(g.value, before ? 1 : 0, `write ${before ? 'before' : 'after'} ${indirect ? 'callee' : 'direct'} load`)
-    is(f(65528, 0), 2, 'last valid f64 load'); is(g.value, 1)
-    is(f(0, 0), 2, 'reuse with a different address')
-  }
-})
-
-
-// The same integer recurrence with each comparison spelling. The evolving
-// input must join the independent minimum/maximum last, without a new guard.
-const reductionModule = (op, reverse = false, effect = '', second = op, type = 'i32') => {
-  const get = n => `(local.get $${n})`, c = n => `(${type}.const ${n})`
-  const cmp = input => `(${op} ${get(reverse ? 'm' : input)} ${get(reverse ? input : 'm')})`
-  const update = (input, relation = op) => `(if ${cmp(input).replace(op, relation)}
-    (then ${effect} (local.set $m ${get(input)})))`
-  return parseWat(`(module (global $calls (export "calls") (mut i32) (i32.const 0))
-    (func $f (export "f") (param $n i32) (param $carry ${type}) (param $bound ${type}) (result ${type})
-      (local $i i32) (local $next ${type}) (local $other ${type}) (local $m ${type})
-      (block $done (loop $again
-        (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
-        (local.set $next (${type}.add ${get('carry')} ${c(3)}))
-        (local.set $other ${get('bound')})
-        (local.set $m ${c(7)})
-        ${update('next')}
-        ${update('other', second)}
-        (local.set $carry ${get('m')})
-        (local.set $i (i32.add (local.get $i) (i32.const 1)))
-        (br $again)))
-      ${get('carry')}))`)
-}
-const wasmModule = ast => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
-
-test('scheduling: integer min/max chains consume recurrence inputs last', () => {
-  for (const sign of ['s', 'u']) for (const rel of ['lt', 'le', 'gt', 'ge']) for (const reverse of [false, true]) {
-    const op = `i32.${rel}_${sign}`, ast = reductionModule(op, reverse), original = wasmModule(ast)
-    const fn = ast.find(n => n?.[0] === 'func'), loop = fn.find(n => n?.[0] === 'block')[2]
-    const i = loop.findIndex(n => n?.[0] === 'if'), first = loop[i], second = loop[i + 1]
-    scheduleStatements(fn)
-    ok(loop[i] === second && loop[i + 1] === first, `${op}, reverse=${reverse}: independent update first`)
-    const once = JSON.stringify(fn)
-    scheduleStatements(fn)
-    is(JSON.stringify(fn), once, 'scheduling is stable when repeated')
-    const changed = wasmModule(ast)
-    for (const n of [0, 1, 1, 2, 7]) for (const seed of [-2147483648, -1, 0, 2147483647]) for (const bound of [-2147483648, -1, 0, 7, 2147483647])
-      is(changed.f(n, seed, bound), original.f(n, seed, bound), `${op}/${reverse}: n=${n}, seed=${seed}, bound=${bound}`)
-  }
-})
-
-test('scheduling: float, mixed reductions and observable updates retain their order', () => {
-  for (const [op, second, type, effect] of [
-    ['i32.lt_s', 'i32.gt_s', 'i32', ''],
-    ['i32.lt_s', 'i32.lt_u', 'i32', ''],
-    ['f64.lt', 'f64.lt', 'f64', ''],
-    ['i32.lt_s', 'i32.lt_s', 'i32', '(global.set $calls (i32.add (global.get $calls) (i32.const 1)))'],
-  ]) {
-    const ast = reductionModule(op, false, effect, second, type), original = wasmModule(ast)
-    const fn = ast.find(n => n?.[0] === 'func'), before = JSON.stringify(fn)
-    scheduleStatements(fn)
-    is(JSON.stringify(fn), before, `${op}/${second}: leave the noncommuting sequence intact`)
-    const changed = wasmModule(ast)
-    for (const n of [0, 1, 1, 4]) for (const seed of (type === 'f64' ? [NaN, -0, 0, Infinity, -Infinity] : [-2147483648, -1, 0, 2147483647])) {
-      is(changed.f(n, seed, -1), original.f(n, seed, -1))
-      is(changed.calls.value, original.calls.value, 'same observable updates across repeated calls')
-    }
-  }
 })
 
 test('scheduling: integer recurrence agrees with JavaScript across optimization tiers', () => {

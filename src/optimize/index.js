@@ -64,7 +64,7 @@ export { specializeMkptr } from './specialize-mkptr.js'
 
 // Pure-function detection for the SIMD lane inliner (buildPureFuncMap) and its
 // dead string-dispatch fold (foldStrDispatchF64) — see src/optimize/pure-funcs.js.
-export { buildPureFuncMap, foldStrDispatchF64, pureCallees } from './pure-funcs.js'
+export { buildPureFuncMap, foldStrDispatchF64 } from './pure-funcs.js'
 
 // Loop unswitching/peeling family (unswitchTypedParamLoop) — see
 // src/optimize/unswitch.js for the full doc. (unswitchStringRepLoop stays

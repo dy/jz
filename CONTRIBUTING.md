@@ -469,36 +469,23 @@ unknown. Allocating
 helpers cannot be speculated before zero-trip loops or crossed by allocator-global
 reads.
 
-Two passes close the per-function pipeline on the shapes the inliners and the
-vectorizer leave. Value numbering (`optimize/value-number.js`) names values,
-not locals: a local's number is its definition's, an expression's its operator
-over its operands' numbers (including the sign of a floating zero), a load's adds a state clock that every store,
-global write, effectful call and region boundary advances. A helper inlined twice with one
-argument (colorpq's `spow(L / 10000, nv)` in a numerator and its denominator)
-leaves two chains of locals holding the same values under different names;
-watr's CSE matches subtrees and so kept both, and the kernel ran twice. A
-computation whose number a local still holds becomes a read of it; the first
-site of a number read again later becomes a statement of its own before the
-statement it sat in, or a tee in place when local read/write dependencies,
-a possible trap or a condition prevent moving it. Loop bodies, `if`
-arms and targeted blocks are regions: every local assigned inside is unknown
-on entry and on exit. Read-only user functions (`pureCallees`, the greatest
-fixpoint over no-store, no-global-write bodies calling only the math runtime
-or each other) are values too, under the clock. Numeric coercion can invoke
-user code and is not pure; lane inlining has its own numeric-argument proof.
-The passes share watr's memory-write classifier, including narrow and SIMD
-stores. Read-only calls can still trap or diverge, so they and direct loads
-retain their order with observable effects. The scheduler
-(`optimize/schedule.js`) then orders each straight-line run of statements by
-the longest chain of work still depending on each, so independent kernel
-calls start together and overlap: colorpq's three inner pows run first, then
-its three outer ones, 97 to 75 ms. Both are differential against the same
-program with the pass off in `test/value-number.js` and `test/schedule.js`.
-The occurrence census is an upper bound: a capture that receives no dominating
-reuse is restored to its original expression, without retaining a local.
-Helper expansion comes after both: `$__ptr_offset` stays a call through every
-pass (LICM hoists it, unswitch and devirt recognize it, value numbering shares
-a repeated one), and its inline fast path is lowering, the last step.
+Value numbering and statement scheduling are watr's (`valueNumber`, `schedule`),
+run once before its rounds; jz enables them (`valueNumber`, `scheduleStatements`
+in its config) and vouches for its math runtime through watr's `pure` option: those
+calls read and write nothing and cannot trap (their loads read constant tables,
+their truncations are guarded), so they share and move like arithmetic. Read-only
+user functions come from watr's own call effects. Value numbering names values,
+not locals: a helper inlined twice with one argument (colorpq's `spow(L / 10000,
+nv)` in a numerator and its denominator) leaves two chains of locals holding the
+same values under different names, which subtree CSE kept apart, and the kernel ran
+twice. Scheduling orders each straight-line run by the longest chain of work still
+depending on each statement, so independent kernel calls start together and
+overlap: colorpq's three inner pows run first, then its three outer ones, 97 to 75
+ms. The passes' unit cases live in watr; jz keeps differential cases against the
+same program with the pass off in `test/value-number.js` and `test/schedule.js`.
+Helper expansion ends the per-function pipeline: `$__ptr_offset` stays a call
+through every pass (LICM hoists it, unswitch and devirt recognize it), and its
+inline fast path is lowering, the last step.
 
 Argument lowering and result packing are independent: ordinary, rest and spread
 calls share multi-value materialization. Tail calls require the complete result

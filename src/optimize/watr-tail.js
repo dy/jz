@@ -17,6 +17,7 @@ import { ctx } from '../ctx.js'
 import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
 } from './index.js'
+import { pureKernel } from './pure-funcs.js'
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see
@@ -132,6 +133,10 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   if (watrOpts.conditions === undefined) watrOpts.conditions = cfg.chainConditions !== false
   if (watrOpts.bool === undefined) watrOpts.bool = cfg.fusedRewrite !== false
   if (watrOpts.poolConstants === undefined) watrOpts.poolConstants = cfg.hoistConstantPool !== false
+  // Value numbering and statement scheduling are generic Wasm (watr's); watrTail
+  // vouches for the math runtime they may share and move.
+  if (watrOpts.valueNumber === undefined) watrOpts.valueNumber = cfg.valueNumber !== false
+  if (watrOpts.schedule === undefined) watrOpts.schedule = cfg.scheduleStatements !== false
   return watrOpts
 }
 
@@ -460,6 +465,10 @@ export function watrTail(module, cfg, {
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
+  // The math runtime depends only on its operands and cannot trap (its loads read constant
+  // tables, its truncations are guarded): value numbering and scheduling treat its calls
+  // like arithmetic.
+  if (watrOpts) watrOpts.pure = legalized.filter(n => Array.isArray(n) && n[0] === 'func' && pureKernel(n[1])).map(n => n[1])
   // Generic local rewrites run only here, after link consumed JZ annotations.
   // Fast mode uses the same passes without the full module fixpoint.
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts))
