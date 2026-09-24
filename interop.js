@@ -1344,6 +1344,22 @@ const prepareInterop = (opts) => {
     const method = obj[Symbol.iterator]
     return method == null ? 0 : 1
   }
+  // JSON.stringify's walker met a host object: the host's text, each line
+  // indented to the walker's depth, or undefined where the host writes none.
+  opts._interp.__ext_json = (objBig, gapPtr, gapLen, depth) => {
+    const obj = extRecv(objBig, 'toJSON', 'serialization')
+    const gap = String.fromCharCode(...new Uint16Array(state.mem.buffer, gapPtr, gapLen))
+    const text = JSON.stringify(obj, null, gap)
+    return text === undefined ? bits(UNDEF_NAN) : bits(state.mem.wrapVal(gap ? text.replace(/\n/g, '\n' + gap.repeat(depth)) : text))
+  }
+  opts._interp.__ext_json_omits = (objBig) => {
+    const obj = state.extMap[offset(objBig)]
+    return typeof obj === 'function' || typeof obj === 'symbol' ? 1 : 0
+  }
+  opts._interp.__ext_enum = (objBig, mode) => {
+    const obj = extRecv(objBig, 'keys', 'enumeration')
+    return bits(state.mem.wrapVal(mode === 0 ? Object.keys(obj) : mode === 1 ? Object.values(obj) : Object.entries(obj)))
+  }
   opts._interp.__ext_has = (objBig, propBig) => {
     const prop = state.mem.read(propBig)
     return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0

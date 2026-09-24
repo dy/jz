@@ -24,6 +24,7 @@ import { walkObjectProperties } from './object.js'
 import { ENUM_DATA, ENUM_GET, viewsOn, enumViewsOn } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { TO_JSON } from '../src/compile/emit/to-json.js'
+import { demandHostReceiver } from '../src/compile/func-exports.js'
 import print from 'watr/print'
 import { deletedMaskWat, DATA_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 
@@ -192,10 +193,11 @@ export default (ctx) => {
     __stringify: () => [...toJSONDeps(), '__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
     __json_to: ['__ptr_type'],
     __json_setgap: ['__alloc', '__ptr_type', '__str_length', '__char_at'],
-    __json_omit: ['__ptr_type', '__ptr_aux'],
+    __json_omit: () => ['__ptr_type', '__ptr_aux', ...(ctx.linkDemand.external ? ['__ext_json_omits'] : [])],
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
     __json_val: () => [...toJSONDeps(), '__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj',
+      ...(ctx.linkDemand.external ? ['__ext_json', '__jput_raw'] : []),
       ...(typedLive() ? ['__json_typed'] : [])],
     __json_typed: ['__ptr_aux', '__len', '__typed_idx', '__jput', '__jindent', '__jput_num', '__json_val'],
     __json_hash: () => [...toJSONDeps(), '__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order'],
@@ -211,6 +213,7 @@ export default (ctx) => {
     // next stage; without the explicit edge they ride the auto-dep scan, which
     // silently yields nothing under self-compile (test/self-compile-includes.js).
     __jput_num: ['__ftoa', '__jput_str'],
+    __jput_raw: ['__jput', '__str_length', '__char_at'],
     __jput_str: ['__char_at', '__str_length', '__jput'],
     __jp: ['__jp_ws', '__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_length'],
     __jp_val: ['__jp_ws', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
@@ -414,6 +417,15 @@ export default (ctx) => {
       (br $l))))`
 
   // __jput_num(val: f64) — convert number to string, append bytes to buffer
+  // Text the host already serialized, written as it is.
+  ctx.core.stdlib['__jput_raw'] = `(func $__jput_raw (param $ptr i64)
+    (local $len i32) (local $i i32)
+    (local.set $len (call $__str_length (local.get $ptr)))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
+      (call $__jput (call $__char_at (local.get $ptr) (local.get $i)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l))))`
   ctx.core.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
     (call $__jput_str (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
 
@@ -426,13 +438,15 @@ export default (ctx) => {
   // it falls through the same "no known tag matched" arm that already
   // renders null for them, which is the ARRAY-position spec answer for
   // free), and make a top-level JSON.stringify return undefined.
-  ctx.core.stdlib['__json_omit'] = `(func $__json_omit (param $val i64) (result i32)
+  ctx.core.stdlib['__json_omit'] = () => `(func $__json_omit (param $val i64) (result i32)
     (local $f f64) (local $t i32)
     (local.set $f (f64.reinterpret_i64 (local.get $val)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (i32.const 0))))
     (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (i32.const 1))))
     (local.set $t (call $__ptr_type (local.get $val)))
-    (if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (then (return (i32.const 1))))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (then (return (i32.const 1))))${ctx.linkDemand.external ? `
+    ;; a host function or symbol serializes as nothing (interop.js)
+    (if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})) (then (return (call $__ext_json_omits (local.get $val)))))` : ''}
     ;; PTR.ATOM(=0) is the SHARED tag for null/false/true/Symbol — AND for a
     ;; genuine, un-boxed arithmetic NaN (module/symbol.js's own doc: "0 =
     ;; reserved" is PTR.ATOM's tag value itself, not just one of its aux ids
@@ -567,7 +581,12 @@ export default (ctx) => {
       (then (call $__jput (i32.const 123)) (call $__jput (i32.const 125)) (return)))` : ''}
     ;; OBJECT — schema-based: iterate props with schema name table
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
-      (then (call $__json_obj (local.get $val)) (return)))
+      (then (call $__json_obj (local.get $val)) (return)))${ctx.linkDemand.external ? `
+    ;; A host object serializes as the host writes it, at this depth (interop.js __ext_json)
+    (if (i32.eq (local.get $type) (i32.const ${PTR.EXTERNAL}))
+      (then
+        (local.set $val (call $__ext_json (local.get $val) (global.get $__jgap) (global.get $__jgaplen) (global.get $__jdepth)))
+        (if (i64.ne (local.get $val) (i64.const ${UNDEF_NAN})) (then (call $__jput_raw (local.get $val)) (return)))))` : ''}
     ;; BIGINT: JSON.stringify throws per spec. The compile-time emitter already
     ;; throws for statically-proven BigInt; this arm covers the dynamic case, a
     ;; tagged box reaching the runtime walker from a kind-merge in any position.
@@ -782,6 +801,10 @@ export default (ctx) => {
     (call $__jput (i32.const 125))
     (call $__json_leave))`
   }
+
+  // A host object's JSON text, indented to the walker's depth, or undefined (interop.js)
+  ctx.core.stdlib['__ext_json'] = '(import "env" "__ext_json" (func $__ext_json (param i64 i32 i32 i32) (result i64)))'
+  ctx.core.stdlib['__ext_json_omits'] = '(import "env" "__ext_json_omits" (func $__ext_json_omits (param i64) (result i32)))'
 
   // __stringify(val: i64, space: i64) → f64 (NaN-boxed string)
   ctx.core.stdlib['__stringify'] = () => `(func $__stringify (param $val i64) (param $space i64) (result f64)
@@ -1567,6 +1590,8 @@ ${localDecls}
     if (noReplacer && valTypeOf(x) === VAL.REGEX)
       return typed(['block', ['result', 'f64'], ['drop', asF64(emit(x))], asF64(emit(['str', '{}']))], 'f64')
     inc('__stringify')
+    // a value of unknown kind may be, or hold, a host object (__json_val's host arm)
+    demandHostReceiver()
     // storedValue (not raw emit): MECHANISM A (research.md §Carrier invariant) —
     // `__json_val`'s runtime dispatcher already discriminates a genuine number
     // from a boxed TRUE_NAN/FALSE_NAN atom (it checks "not NaN" before any

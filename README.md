@@ -133,9 +133,13 @@ slower dynamic path, and `why` shows where.
 <details>
 <summary><strong>How do values cross the boundary?</strong></summary>
 
-Numbers pass directly. Strings, arrays, objects and typed arrays are copied in
-and decoded on the way out; a JZ buffer (`memory.Float64Array(n)`) is the
-storage itself, so hand hot loops one of those instead of copying per call.
+Numbers pass directly. Strings, arrays and typed arrays are copied in and
+decoded on the way out; numeric writes to an array argument are copied back
+after the call, other changes to it (length, non-numeric elements) are not. A
+plain object passes by reference: the module reads, writes, lists and
+serializes it through the host, so the caller sees its changes. A JZ buffer
+(`memory.Float64Array(n)`) is the storage itself, so hand hot loops one of
+those instead of copying per call.
 
 ```js
 const { exports } = jz`

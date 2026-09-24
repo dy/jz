@@ -28,6 +28,7 @@ import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { withControlFrame } from '../src/compile/flow-state.js'
 import { captureCallback } from './array/callback.js'
+import { demandHostReceiver } from '../src/compile/func-exports.js'
 import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, enumViewsOn } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
@@ -386,6 +387,8 @@ export default (ctx) => {
   ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
   ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param i64 i64) (result i32)))'
+  // A host object's own enumerable keys (mode 0), values (1) or entries (2), a jz array (interop.js)
+  ctx.core.stdlib['__ext_enum'] = '(import "env" "__ext_enum" (func $__ext_enum (param i64 i32) (result i64)))'
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
   // Hash function: simple f64 → i32 hash
@@ -2613,7 +2616,10 @@ export default (ctx) => {
         ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]]
 
     inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_str', '__dyn_has')
-    if (ctx.linkDemand.external) inc('__ext_has')
+    // The receiver may be a host object, which the host answers for, as dot
+    // reads ask it (array.js ensureHostOpaqueGet).
+    const ext = demandHostReceiver()
+    if (ext) inc('__ext_has')
     const dynHas = () => ['call', '$__dyn_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]
 
     return typed(['block', ['result', 'i32'],
@@ -2648,7 +2654,7 @@ export default (ctx) => {
             ['then', ['call', '$__hash_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]],
             ['else', ['call', '$__hash_has', ['i64.reinterpret_f64', objVal], ['call', '$__to_str', ['i64.reinterpret_f64', keyVal]]]]]]]],
 
-      ...(ctx.linkDemand.external ? [['if', ['i32.eq', typeVal, ['i32.const', PTR.EXTERNAL]],
+      ...(ext ? [['if', ['i32.eq', typeVal, ['i32.const', PTR.EXTERNAL]],
         ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has',
           ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]]]]] : []),
 

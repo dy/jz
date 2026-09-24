@@ -220,3 +220,17 @@ test('typed-array field on an external object survives memory growth', () => {
   is(step(o, 10), 4)
   is(step(o, 200000), 4)  // forces Memory.grow(); read-back of o.buf must not throw or see a detached view
 })
+
+// a host object that matches no layout stays a host reference: `in`, the
+// builtins that list it, a copy and JSON.stringify go through the host, where
+// each saw nothing (null)
+test('A host object lists, copies and serializes as JS', () => {
+  if (onWasi()) return
+  const src = `export const run = (o, g) => JSON.stringify([Object.keys(o), Object.values(o), Object.entries(o),
+    (() => { const r = []; for (const k in o) r.push(k); return r })(), 'a' in o, 'z' in o,
+    { ...o, c: 3 }, Object.assign({ c: 3 }, o), JSON.stringify({ o, n: [o] }, null, g)])`
+  const host = () => ({ a: 1, b: 'x', f() {}, d: { e: [1, { h: true }] } })
+  const js = new Function(src.replace('export const run = ', 'return '))()
+  const { run } = jz(src).exports
+  for (const g of [undefined, 2, '--']) is(run(host(), g), js(host(), g), `gap ${g}`)
+})

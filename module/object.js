@@ -21,6 +21,7 @@ import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err
 import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG } from '../layout.js'
 import { enumView, enumKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
+import { demandHostReceiver } from '../src/compile/func-exports.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -1614,7 +1615,14 @@ function runtimeKeysFromTemp(t, tag, ro) {
 const idxEnum = (t, mode) => {
   ctx.module.include('string')
   inc('__idx_enum')
-  return ['call', '$__idx_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]
+  const own = ['call', '$__idx_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]
+  if (!demandHostReceiver()) return own
+  // a host object lists its own (collection.js __ext_enum)
+  ctx.module.include('collection')
+  inc('__ext_enum', '__ptr_type')
+  return ['if', ['result', 'f64'], ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.EXTERNAL]],
+    ['then', ['f64.reinterpret_i64', ['call', '$__ext_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]]],
+    ['else', own]]
 }
 
 function emitRuntimeValues(obj) {

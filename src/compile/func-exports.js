@@ -1,4 +1,4 @@
-import { ctx } from '../ctx.js'
+import { ctx, setLinkDemand } from '../ctx.js'
 
 // =============================================================================
 // Single-source export semantics
@@ -49,6 +49,15 @@ export const hasExternalIngress = () => {
     ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64'))
   )
   return ctx.facts.externalIngress
+}
+
+/** Whether a receiver a site cannot type may be a host object (the host can
+ *  hand the module one, hasExternalIngress), demanding the host arm of the
+ *  kernels the site calls. */
+export const demandHostReceiver = () => {
+  if (!ctx.transform.targetProfile.envImports || !hasExternalIngress()) return false
+  setLinkDemand('external')
+  return true
 }
 
 /** Collect JS-visible export names that resolve to `funcName` (as an array).
