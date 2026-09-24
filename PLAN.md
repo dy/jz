@@ -340,7 +340,18 @@ Dependencies
    they are prototype members. Mark the instance literal's member slots so the
    enumeration view (`layoutView`) hides them.
 
-5. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
+5. **Index keys and host objects.** A computed read over a receiver of
+   unknown kind misses a string's index (`pick(k)['0']` where `pick` may
+   return `'ab'`): the generic property read ends a string's lookup at
+   `length`. An array hole enumerates as an index holding undefined
+   (`Object.keys([7, , 8])` lists `"1"`). A host object that matches no
+   layout enters as a host reference: its properties read, but `in`,
+   `Object.keys`, for-in, spread and `JSON.stringify` see nothing (`null`),
+   where the README says objects are copied in. An Error lists `message` and
+   `name` by the decision recorded in `test/errors.js`; the enumeration view
+   now hides a slot at no cost, so reconsider it with item 4.
+
+6. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
    defers native release work until JZ v1 and requires verification from its
    installed tarball. The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Use
