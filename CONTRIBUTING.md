@@ -1707,7 +1707,7 @@ node kept one, else the message): `heap-return`, `heap-loop`, `deopt-generic`,
 read lowered and the receiver's candidate shapes), `class-generic` (a class
 kept as closures and why), `shape-lost` (the first cause the summary lost an
 object layout by, with the function and statement), `host-global`,
-`set-map-order`, `jsstring-declined`, `int-global-truncation`; `simd-why-not`
+`jsstring-declined`, `int-global-truncation`; `simd-why-not`
 and `rewind-why-not` need `why`. Warnings are delivered after the pipeline
 returns, so a warning callback may compile again; a compile attempted while
 the pipeline is active is rejected.

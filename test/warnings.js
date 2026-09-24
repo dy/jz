@@ -152,10 +152,11 @@ test('warnings: instanceof on Error types is sound, no warning (jzify, audit-#8 
   is(ws.length, 0)
 })
 
-test('warnings: set-map-order on JSON.stringify(map)', () => {
-  const ws = warningsFor('export let f = () => JSON.stringify(new Map())')
-  is(ws.length, 1)
-  is(ws[0].code, 'set-map-order')
+// Map and Set keep insertion order (test/property-order.js) and JSON.stringify
+// writes either as {}: iterating, spreading or serializing one is JS's answer.
+test('warnings: iterating or serializing a Map or Set warns nothing', () => {
+  const ws = warningsFor('export let f = () => { const m = new Map([[1, 2]]), s = new Set([3]); let n = 0; for (const [k] of m) n += k; m.forEach(v => n += v); return JSON.stringify([m, [...s], n]) }')
+  is(ws.filter(w => w.code === 'set-map-order').length, 0)
 })
 
 test('warnings: jsstring-declined when concat blocks externref carrier', () => {

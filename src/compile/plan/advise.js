@@ -4,7 +4,7 @@ import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
 import { adviseJsstringCarrier } from '../narrow.js'
 
-/** Compile-time advisories — heap growth, Map iteration order, SIMD hints. */
+/** Compile-time advisories — heap growth, SIMD hints. */
 const HEAP_LOOP_OPS = new Set(['for', 'for-in', 'for-of', 'while', 'do', 'do-while'])
 const HEAP_VALS = new Set([
   VAL.ARRAY, VAL.STRING, VAL.OBJECT, VAL.HASH, VAL.SET, VAL.MAP,
@@ -114,94 +114,6 @@ function adviseHeapGrowth() {
         `${detail}; call memory.reset() between batches from the host`,
         { fn }, func.body.loc)
     }
-  }
-}
-
-const SET_MAP_ITER_OPS = new Set(['for-in', 'for-of'])
-const SET_MAP_METHODS = new Set(['keys', 'values', 'entries', 'forEach'])
-const SET_MAP_SLOT_ORDER = 'uses slot order, not insertion order — results may differ from JavaScript'
-
-function newSetMapKind(node) {
-  if (!Array.isArray(node)) return null
-  if (node[0] === 'new') {
-    const ctor = node[1]
-    const name = typeof ctor === 'string' ? ctor
-      : Array.isArray(ctor) && ctor[0] === '()' && typeof ctor[1] === 'string' ? ctor[1]
-      : null
-    if (name === 'Set') return 'set'
-    if (name === 'Map') return 'map'
-  }
-  if (node[0] === '()' && typeof node[1] === 'string') {
-    if (node[1] === 'new.Set') return 'set'
-    if (node[1] === 'new.Map') return 'map'
-  }
-  return null
-}
-
-function collectSetMapBindings(body) {
-  const bindings = new Map()
-  walkAst(body, { enter: node => {
-    const op = node[0]
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const d = node[i]
-        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
-        const kind = newSetMapKind(d[2])
-        if (kind) bindings.set(d[1], kind)
-      }
-    }
-  } })
-  return bindings
-}
-
-function exprSetMapKind(expr, bindings) {
-  const direct = newSetMapKind(expr)
-  if (direct) return direct
-  return typeof expr === 'string' ? bindings.get(expr) || null : null
-}
-
-function isJsonStringifyCall(node) {
-  if (!Array.isArray(node) || node[0] !== '()') return false
-  const callee = node[1]
-  if (callee === 'JSON.stringify') return true
-  return Array.isArray(callee) && callee[0] === '.' && callee[1] === 'JSON' && callee[2] === 'stringify'
-}
-
-function adviseSetMapIterationOrder() {
-  if (!ctx.warnings) return
-
-  for (const func of ctx.funcs.list) {
-    if (func.raw || !func.body) continue
-    const fn = func.name
-    const bindings = collectSetMapBindings(func.body)
-
-    const warnOrder = (msg, loc) => warn('set-map-order', msg, { fn }, loc)
-    const label = (kind) => kind === 'set' ? 'Set' : 'Map'
-
-    walkAst(func.body, { enter: node => {
-      const op = node[0]
-
-      if (SET_MAP_ITER_OPS.has(op)) {
-        const kind = exprSetMapKind(node[2], bindings)
-        if (kind) warnOrder(`${label(kind)} iteration ${SET_MAP_SLOT_ORDER}`, node.loc ?? node[2]?.loc)
-      }
-
-      if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.') {
-        const [, recv, method] = node[1]
-        const kind = SET_MAP_METHODS.has(method) ? exprSetMapKind(recv, bindings) : null
-        if (kind) warnOrder(`${label(kind)}.${method}() ${SET_MAP_SLOT_ORDER}`, node.loc ?? recv?.loc)
-      }
-
-      if (isJsonStringifyCall(node)) {
-        const kind = exprSetMapKind(node[2], bindings)
-        if (kind) warnOrder(`JSON.stringify on a ${kind} serializes entries in slot order, not insertion order — output may differ from JavaScript`, node.loc)
-      }
-
-      if (op === '...') {
-        const kind = exprSetMapKind(node[1], bindings)
-        if (kind) warnOrder(`spread over a ${kind} follows slot order, not insertion order — element order may differ from JavaScript`, node.loc)
-      }
-    } })
   }
 }
 
@@ -337,7 +249,6 @@ function adviseGenericDispatch() {
 
 export function adviseProgram(programFacts) {
   adviseHeapGrowth()
-  adviseSetMapIterationOrder()
   if (programFacts) adviseJsstringCarrier(programFacts.paramReps, programFacts.programIndex.addressTaken)
   adviseSimdLoops()
   adviseGenericDispatch()
