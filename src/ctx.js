@@ -795,10 +795,6 @@ export function reset(proto, globals, bridge) {
     cseId: 0,           // monotonic id for CSE temps (freshCseName) — per-compile, so warm-process WAT text is deterministic
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.
-    loopPlanId: 0,      // monotonic id for loop-model's HIR provenance LoopPlan records
-                        // (.work/evidence.md §BodyModel slice 4, freshLoopPlanId) — a SEPARATE
-                        // space from loopXformId: identifies a loop RECORD, never names anything
-                        // emitted. Per-compile (reset here) for the same determinism reason.
     closureId: 0,       // monotonic id for src/compile/closure-plan.js's ClosureId — a SEPARATE
                         // space from the others above: identifies a closure PLAN RECORD, never
                         // names anything emitted.
@@ -900,8 +896,8 @@ export function reset(proto, globals, bridge) {
 
   // ctx.plans — session-owned plan store: the pre-emission frozen-fact
   // WeakMaps (src/compile/closure-plan.js's ClosureEnvPlan records,
-  // src/compile/loop-model.js's LoopPlan records, representation-plan.js's
-  // normalized carrier facts, and src/ir.js's WAT-side loopPlanLink records)
+  // representation-plan.js's normalized carrier facts, and the lowering links
+  // that carry each emitted loop's facts, src/ir/control.js)
   // must be rebuilt directly by reset() every session, as ONE ctx subtree —
   // the SAME idiom ctx.features/ctx.linkDemand already use just above (a
   // plain object assigned fresh every reset(), no hook-array indirection).
@@ -910,7 +906,7 @@ export function reset(proto, globals, bridge) {
   // into the next one; owning the maps on ctx and rebuilding them in reset()
   // closes that leak without each module keeping private reset plumbing.
   // Consumers (module/function.js's ctx.closure.make, src/compile/emit.js's
-  // loop/closure-plan reads, src/optimize/vectorize.js's loopPlanLink read)
+  // closure-plan reads, the optimizer's lowering-link reads)
   // read ctx.plans.* — no import-time WeakMap binding to go stale.
   ctx.plans = {
     programIndex: null,           // frozen source/graph facts plus the variant-ID registrar, closed before emit
@@ -924,8 +920,7 @@ export function reset(proto, globals, bridge) {
     typedStorageProgram: { initialized: false, calls: new Map(), info: new Map(), hasTypedFields: false },
     start: null,                  // synthetic __start identity, planned before body emission
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
-    loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node
-    loweringLinks: new WeakMap(), // src/ir.js, keyed on the WAT loop-block node — { plan, lowering }
+    loweringLinks: new WeakMap(), // src/ir/control.js, keyed on the WAT loop-block node: { plan, lowering }
     compoundOf: new WeakMap(),    // an emitter-rebuilt node → the slot it lands in: a binding name, a member reference, or true for a tagged slot (emit/assignment.js, module/array/callback.js)
   }
 

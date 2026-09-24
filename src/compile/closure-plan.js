@@ -3,14 +3,13 @@ import { findFreeVars } from './analyze.js'
 import { ctx } from '../ctx.js'
 import { repOf } from '../reps.js'
 
-// ClosureEnvPlan (.work/archive/closure-plan-design.md) — mirrors loop-model.js's
-// astLoopPlan/mintLoopPlans idiom: a frozen, pre-emission fact keyed on AST
-// node identity, computed once after this function's analysis has settled,
-// read-only from emission on.
+// ClosureEnvPlan (.work/archive/closure-plan-design.md): a frozen, pre-emission
+// fact keyed on AST node identity, computed once after this function's analysis
+// has settled, read-only from emission on.
 //
 // Design invariants (see the design doc's own tail):
-//   1. Keyed on the arrow's BODY node (the loopPlanLink precedent — the
-//      identity that survives lowering; decl nodes die in prepare). WeakMap,
+//   1. Keyed on the arrow's BODY node (the identity that survives lowering;
+//      decl nodes die in prepare). WeakMap,
 //      fail-open: a lookup miss falls through to ctx.closure.make's own
 //      inline re-derivation, never a hard error.
 //   2. There is no static-closure-env path to reconcile with: module/
@@ -25,7 +24,7 @@ import { repOf } from '../reps.js'
 //   id       — ClosureId: a stable id minted once per plan, a monotonic
 //              counter scoped to the compile session (ctx.transform.closureId,
 //              src/ctx.js's reset()) — identifies a PLAN RECORD, never names
-//              anything emitted (freshLoopPlanId's sibling, ir.js).
+//              anything emitted.
 //   storage  — 'none' (envCaptures.length === 0 post-constant-fold — no
 //              allocation, module/function.js's mkPtrIR env=0 tier) or 'heap'
 //              (fresh $__alloc'd env array — every non-constant capture gets
@@ -86,9 +85,9 @@ const collectPatternNames = (pat, out) => {
   for (let i = 1; i < pat.length; i++) collectPatternNames(pat[i], out)
 }
 
-// Walks `body` (a function's, or a closure's OWN body — mirrors mintLoopPlans:
-// never descends into a nested `=>`/`function`, which gets its own separate
-// mint call when ITS OWN analyzeFuncForEmit/emitClosureBody pass runs) for
+// Walks `body` (a function's, or a closure's OWN body: never descends into a
+// nested `=>`/`function`, which gets its own separate mint call when ITS OWN
+// analyzeFuncForEmit/emitClosureBody pass runs) for
 // arrow-literal `=>` nodes, minting one frozen plan per closure reached.
 export function mintClosureEnvPlans(body) {
   const mintArrow = (arrowNode) => {
@@ -173,9 +172,8 @@ export function mintClosureEnvPlans(body) {
     ctx.plans.closures.set(key, Object.freeze({ id: freshClosureId(), storage, captures: Object.freeze(captureRecords) }))
     // Do NOT recurse into arrowBody/rawParams: a closure nested inside this
     // one gets its OWN mint call from emitClosureBody's mintClosureEnvPlans
-    // (cb.body) once THIS closure's own body is itself compiled — matching
-    // mintLoopPlans's identical "separate function, separate mint call"
-    // boundary discipline.
+    // (cb.body) once THIS closure's own body is itself compiled: separate
+    // function, separate mint call.
   }
 
   const walk = (node) => {

@@ -306,6 +306,14 @@ The interval interpreter spans the full signed word; overflowing transfers
 become unknown. Integer payloads alone never prove bounded accumulation.
 Counted reductions combine element bounds with the trip count, including every
 intermediate step. Counter proofs reject additional writes in the loop header.
+Loop facts have one producer: the `for` emitter derives them once per loop it
+emits (`loopFacts`, `src/compile/loop-model.js`), under the refinements that loop
+is emitted in: the counter's hull and step, each secondary counter's range
+(`k += s` beside `j++` holds k₀ + t·s below the trip bound), the guard's bound.
+They refine the body, the typed-bounds versioner scans under them, and the
+loop's lowering link (`src/ir/control.js`) hands them to the optimizer, where the
+fractional-recurrence bound reads the trip count. A pass that keeps a loop's node
+keeps its facts; one that changes what an iteration does must drop the link.
 Loop proofs iterate the head state: each pass applies the test before the
 body, so a test's own reads never borrow its refinement, and the exit state is
 the head where the test failed, never the body's end. The body-end exit let

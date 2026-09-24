@@ -9,13 +9,12 @@
  * @module optimize/peephole
  */
 import { simplifyCast } from 'watr/optimize'
-import { LAYOUT, FORWARDING_MASK } from '../ctx.js'
+import { LAYOUT, FORWARDING_MASK, ctx } from '../ctx.js'
 import { nanboxF64 } from '../abi/index.js'
-import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, I32_MAX, cloneIR, valueTruthyIR } from '../ir.js'
+import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthyIR } from '../ir.js'
 import { foldIntCompare, narrowI32, int32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst } from '../ast.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
-import { constNum, matchExitBrIf, matchInc1 } from './vectorize/addr-model.js'
 const TWO_63 = 2 ** 63
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
@@ -298,7 +297,9 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
 }
 
 // All writes must be constants or one constant increment per counted iteration.
-// Integer enclosures avoid assuming repeated floating addition equals N * step:
+// The count comes from the facts HIR proved for the loop (loopFacts, on its lowering
+// link): a counter only its step moves stays within its hull, so the body runs at most
+// ⌊(hi - lo) / step⌋ + 1 times per entry. Integer enclosures avoid assuming repeated floating addition equals N * step:
 // rounding is monotone, and each integral bound + floor/ceil(step) is exact
 // while its magnitude stays within 2^53. These are magnitude bounds, not an
 // integer-value proof; the accumulator itself remains f64.
@@ -340,30 +341,15 @@ function boundedFloatLocal(name, writes, owners, params) {
     const c = self(a) ? b : op === 'f64.add' && self(b) ? a : null
     if ((op !== 'f64.add' && op !== 'f64.sub') || c?.[0] !== 'f64.const' || typeof c[1] !== 'number' || !Number.isFinite(c[1])) return null
     const delta = (op === 'f64.sub' ? -1 : 1) * c[1]
-    const info = owners.get(w), loop = info?.node
-    if (!loop) return null
-    const parent = info.parent?.node, back = loop.at(-1), inc = loop.at(-2)
-    if (!parent) return null
-    const ctr = matchInc1(inc), exit = matchExitBrIf(loop[2], parent[1])
-    const bound = exit && constNum(exit.bound)
-    if (parent[0] !== 'block' || back?.[0] !== 'br' || back[1] !== loop[1] ||
-        !ctr || exit?.ind !== ctr || bound == null || !Number.isInteger(bound) || bound < 0 || bound > I32_MAX) return null
-    let ctrWrites = 0, valueWrites = 0, backedges = 0, numericBranch = false
-    walkAst(loop, { enter: n => {
-      if (n[0] === 'local.set' || n[0] === 'local.tee') {
-        if (n[1] === ctr) ctrWrites++
-        if (n[1] === name) valueWrites++
-      }
-      if (n[0] === 'br' || n[0] === 'br_if' || n[0] === 'br_table')
-        for (let i = 1; i < n.length; i++) {
-          if (typeof n[i] === 'number') numericBranch = true
-          if (n[i] === loop[1]) backedges++
-        }
-    } })
-    if (ctrWrites !== 1 || valueWrites !== 1 || backedges !== 1 || numericBranch) return null
-    const start = initial(name, info), from = initial(ctr, info)
-    if (start == null || from == null || !Number.isInteger(from) || from < 0 || from > I32_MAX) return null
-    const count = Math.max(0, bound - from)
+    const info = owners.get(w), loop = info?.node, block = info?.parent?.node
+    const facts = block && ctx.plans.loweringLinks?.get(block)?.plan
+    if (!facts?.hull) return null
+    let valueWrites = 0
+    walkAst(loop, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) valueWrites++ } })
+    if (valueWrites !== 1) return null
+    const start = initial(name, info)
+    if (start == null) return null
+    const count = Math.floor((facts.hull.hi - facts.hull.lo) / facts.step) + 1
     const down = count * Math.min(0, Math.floor(delta)), up = count * Math.max(0, Math.ceil(delta))
     if (!Number.isSafeInteger(down) || !Number.isSafeInteger(up)) return null
     const low = Math.floor(start) + down

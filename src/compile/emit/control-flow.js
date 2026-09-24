@@ -14,7 +14,8 @@ import {
   asF64, asI32, freshId, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, toBoolFromEmitted, typed, undefExpr,
 } from '../../ir.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
-import { constIntExpr, forCounterRange, guardCounterName, intExprRange, intLiteralValue } from '../../static.js'
+import { constIntExpr, intExprRange, intLiteralValue } from '../../static.js'
+import { loopFacts, counterRefinements } from '../loop-model.js'
 import {
   MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
 } from '../../type.js'
@@ -75,10 +76,10 @@ function freshenUnrolledScalarBindings(body, ir) {
   }
   if (!rename.size) return ir
 
-  // HIR provenance link upkeep (.work/evidence.md §BodyModel slice 4 — found via its own
-  // shadow-assert, vectorize.js's assertLoopPlanAgrees): this rename mutates local names IN
-  // PLACE on the ALREADY-linked block node the nested loop's own 'for' emission minted a
-  // LoopPlan for — the block's IDENTITY survives (same array), so loopPlanLink still resolves
+  // Lowering link upkeep (src/ir/control.js; found via its own shadow-assert,
+  // vectorize.js's assertLoopPlanAgrees): this rename mutates local names IN
+  // PLACE on the ALREADY-linked block node the nested loop's own 'for' emission
+  // linked. The block's IDENTITY survives (same array), so its link still resolves
   // it, but its `lowering.ivName`/`lowering.guardName` (captured pre-rename) would go STALE if a
   // renamed name was the loop's own induction/guard variable — exactly the small-const-unrolled-
   // outer-loop-with-nested-loop shape (`splitScratch`'s only use case). Keep the fact accurate
@@ -482,7 +483,9 @@ export const controlFlowOps = {
     return ['if', c, ['then', ...thenBody]]
   },
 
-  'for': (init, cond, step, body) => {
+  // `entered`: a versioned arm re-emits the loop whose `init` already ran before its guard.
+  // The arm takes `init` only to prove its counter facts and emits the loop proper alone.
+  'for': (init, cond, step, body, entered = false) => {
     if (body === undefined) return err('for-in/for-of not supported')
     // An enclosing labeled statement (`outer: for …`) hands its label down so `continue outer`
     // can target this loop's continue point. The immediately-enclosed loop consumes it.
@@ -491,13 +494,13 @@ export const controlFlowOps = {
     const labeledContinue = myLabel != null && hasLabeledContinueTo(body, myLabel)
     // Don't unroll a loop that is the target of a `continue <label>` — unrolling would lose the
     // continue edge. (Plain loops with no labeled-continue still unroll.)
-    if (!labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
+    if (!entered && !labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
       const unrolled = unrollSmallConstFor(init, cond, step, body)
       if (unrolled) return unrolled
     }
     // for-in over a static schema → unroll with key-literal substitution (folds
     // o[k] to schema slots). Recognized via the for-in-exclusive __keys_ro intrinsic.
-    if (!labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.forInUnroll !== false)) {
+    if (!entered && !labeledContinue && (!ctx.transform.optimize || ctx.transform.optimize.forInUnroll !== false)) {
       const fu = unrollForIn(init, cond, step, body)
       if (fu) return fu
     }
@@ -512,30 +515,23 @@ export const controlFlowOps = {
     // same intercept — per frame, so a REUSED AST (same source compiled twice, the
     // self-compile warm path) versions afresh in the next compile instead of silently
     // skipping, and the AST carries no frame reference.
-    if (!labeledContinue && !ctx.func.versioned?.has(body) && !getFactStore().sourceVersioned.has(body)
+    if (!entered && !labeledContinue && !ctx.func.versioned?.has(body) && !getFactStore().sourceVersioned.has(body)
         && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
-      const levels = versionableTypedNest(init, cond, step, body, ctx.func.locals)
+      // The scan reads the body's counter ranges (loopFacts), so an access they
+      // already bound is no candidate for a runtime guard.
+      const topFacts = loopFacts(init, cond, step, body)
+      const levels = withRefinements(counterRefinements(topFacts), body, () => versionableTypedNest(init, cond, step, body, ctx.func.locals))
       if (levels) {
         const versioned = ctx.func.versioned ??= new Set()
         versioned.add(body)
         // every LIFTED level is proven by THIS guard — brake their own intercepts
         // (re-versioning per level compounds 2^depth checked twins)
         for (const vs of levels) if (vs.bodyNode && !vs.partial) versioned.add(vs.bodyNode)
-        // Loop-counter RANGE-PROOF lever (c8700daa), rescued from this guard's OWN
-        // re-emission: both arms below re-emit the loop via `controlFlowOps['for'](null,
-        // cond, step, body)` — init nulled because the REAL init already ran once,
-        // just above — and forCounterRange(null, …) can prove nothing from a null
-        // init, so the counter's own body-internal arithmetic (e.g. a comma-step
-        // dual-IV header's dropped post-increment value) falls to the f64
-        // round-trip in BOTH arms. The fact is provable exactly once, from the
-        // REAL init still in scope here — unlike the bound-name magnitude lever
-        // below (sound only conditional on the guard passing), the counter's own
-        // [lo, hi] hull holds unconditionally for either arm: same init/cond/step,
-        // only the body's access forms differ.
-        const topCounterName = guardCounterName(cond)
-        const topCounterRange = topCounterName ? forCounterRange(init, cond, step, topCounterName) : null
-        const topCounterRefs = topCounterRange
-          ? new Map([[topCounterName, { rlo: topCounterRange[0], rhi: topCounterRange[1] }]]) : null
+        // The counters' ranges hold unconditionally in either arm (same init, cond and
+        // step; only the body's access forms differ), unlike the bound-name magnitude
+        // lever below, which holds only once the guard passed. They cover each arm whole,
+        // so the counters' own step arithmetic (`j++, k += step`) stays integer too.
+        const topCounterRefs = counterRefinements(topFacts)
         const result = []
         if (init != null) result.push(...emitVoid(init))
         const i64c = (n) => ['i64.const', n]
@@ -919,7 +915,7 @@ export const controlFlowOps = {
         // per-name integral+magnitude ones) DIDN'T all hold, so it must stay
         // unrefined. withRefinements (flow-types.js) itself re-checks isReassigned
         // against `body` as a second, independent safety net.
-        const emitArm = () => controlFlowOps['for'](null, cond, step, body)
+        const emitArm = () => controlFlowOps['for'](init, cond, step, body, true)
         // topCounterRefs (the counter's own [lo, hi], unconditional) wraps BOTH
         // arms; freeRefs (bound-name magnitude, sound only once the guard has
         // passed) wraps the fast arm alone — see comments above each.
@@ -958,7 +954,7 @@ export const controlFlowOps = {
     // cell (sets frame.loopFresh; emitDecl then stores rather than re-allocates).
     const freshBoxed = emitLoopFreshBoxed(body, frame)
     const result = []
-    if (init != null) result.push(...emitVoid(init))
+    if (init != null && !entered) result.push(...emitVoid(init))
     for (const lit of preLoopLits) result.push(...emitVoid(lit))   // allocate hoisted literals once
     // Hoist a loop-invariant immutable-length bound out of the condition. A typed
     // array's `.length` is fixed, so `i < arr.length` otherwise reloads the header
@@ -976,31 +972,20 @@ export const controlFlowOps = {
       }
     }
     // Loop-counter RANGE-PROOF lever: `for (let i = C; i < B; i++)` proves a real
-    // [lo, hi] hull for `i` — see forCounterRange's own doc. Scoped to exactly
-    // this body via withRefinements (flow-types.js), same machinery an `if
-    // (x >= 0 && x < W)` branch guard already uses for its own int-range
-    // refinement — so intExprRange(i) (and every addFitsI32/mulFitsI32 caller
-    // that routes through it) sees the fact for the duration of this emit only.
-    const counterName = guardCounterName(cond)
-    const counterRange = counterName ? forCounterRange(init, cond, step, counterName) : null
-    const counterRefs = counterRange ? new Map([[counterName, { rlo: counterRange[0], rhi: counterRange[1] }]]) : null
-    // Loop-guard hull channel (addLiteralFitsI32's doc, above near
-    // addRangeFitsI32): `while(name < bound)` / `for(…; name < bound; …)`
-    // proves an upper bound for `name` — sound WITHOUT forCounterRange's
-    // monotone-step induction (works for a reassigned, non-counter guard
-    // variable like heapify's `child`), because it's an emission-position
-    // fact torn down at the FIRST write to `name` (writeVar, ir.js), not a
-    // whole-body induction hull. `bound`'s own intExprRange needs BOTH sides
-    // (gap-(a)'s typed-`.length` fact supplies that for a typed receiver);
-    // only the resulting UPPER half is installed here.
-    const guardName = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
-    const guardBoundRange = guardName ? intExprRange(cond[2]) : null
-    // HIR provenance link fact (.work/evidence.md §BodyModel slice 4): the guard's RHS is a
-    // provable COMPILE-TIME CONSTANT exactly when its proven range collapses to a single point —
-    // the WAT-level bound the vectorizer later sees must be that SAME i32.const when so (see
-    // ir.js's loopPlanLink doc + vectorize.js's assertLoopPlanAgrees). No new semantics:
-    // reuses guardBoundRange, above.
-    const boundConst = guardBoundRange && guardBoundRange[0] === guardBoundRange[1] ? guardBoundRange[0] : null
+    // [lo, hi] hull for `i` (forCounterRange's own doc), scoped to exactly this body
+    // via withRefinements (flow-types.js), the machinery an `if (x >= 0 && x < W)`
+    // guard already uses for its own int-range refinement, so intExprRange(i) (and
+    // every addFitsI32/mulFitsI32 caller that routes through it) sees the fact for
+    // the duration of this emit only.
+    // Loop-guard hull channel (addLiteralFitsI32's doc, above near addRangeFitsI32):
+    // `while(name < bound)` / `for(…; name < bound; …)` proves an upper bound for
+    // `name`, sound without the counter's monotone-step induction (heapify's reassigned
+    // `child` guard): an emission-position fact the first write to `name` ends
+    // (writeVar, ir.js). The bound's own intExprRange needs both sides (the typed
+    // `.length` fact supplies them for a typed receiver); only the upper half is installed.
+    // The same facts ride this loop's lowering link to the optimizer (loopFacts' doc).
+    const facts = loopFacts(init, cond, step, body)
+    const { iv: counterName, guard: guardName, guardRange: guardBoundRange } = facts
     let guardHadPrev = false, guardPrev
     if (guardBoundRange) {
       const map = loopGuardHi()
@@ -1012,7 +997,7 @@ export const controlFlowOps = {
     // The test guards the body: what it proves about a name (a truthy assignment, a
     // typeof, a bound) holds on every iteration's entry, merged into the counter's
     // own hull (a second map for the same name would replace its lower bound).
-    const bodyRefs = counterRefs ? new Map(counterRefs) : new Map()
+    const bodyRefs = counterRefinements(facts)
     if (condForLoop) extractRefinements(condForLoop, bodyRefs, true)
     const emitLoopBody = () => withRefinements(bodyRefs, body, () => emitVoid(body))
     const loopBody = []
@@ -1042,21 +1027,10 @@ export const controlFlowOps = {
     if (ctx.plans.rewindLoops?.has(bodyNode0) && !ctx.memory.atomic
         && (!ctx.transform.optimize || ctx.transform.optimize.arenaRewind !== false))
       (ctx.func.loopRewinds ??= new Set()).add(loop)
-    // HIR provenance link (.work/evidence.md §BodyModel slice 4; pre-
-    // emission move): stamp this WAT loop's originating HIR facts so the vectorizer's
-    // dispatch can shadow-assert against them — see ir.js's loopPlanLink doc for the
-    // {plan, lowering} split and the identity/fail-open contract. `plan` (id/hull/
-    // boundConst) is no longer built HERE — it's minted pre-emission, once per AST
-    // loop, by loop-model.js's mintLoopPlans (called from analyzeFuncForEmit /
-    // emitClosureBody, before any function's body is emitted), keyed by `bodyNode0`
-    // (this loop's OWN body identity — survives both the hoist rebind above and the
-    // typed-bounds guard's fast/checked-arm double-emission of this same AST loop,
-    // see mintLoopPlans' own doc). A miss (pre-trio spec 2: fail-open) means no HIR
-    // facts were minted for this loop — skip the link entirely rather than fabricate
-    // one; `lowering` (the WAT-side name map) stays mutable, kept in sync by
-    // freshenUnrolledScalarBindings.
-    const plan = ctx.plans.loops.get(bodyNode0)
-    if (plan) ctx.plans.loweringLinks.set(loopBlockNode, { plan, lowering: { ivName: counterName, guardName } })
+    // The lowering link hands this loop's facts to the optimizer (src/ir/control.js):
+    // `plan` the facts, `lowering` the WAT names of its counter and guard, which a rename
+    // of this block's locals keeps current (freshenUnrolledScalarBindings).
+    ctx.plans.loweringLinks.set(loopBlockNode, { plan: facts, lowering: { ivName: counterName, guardName } })
     result.push(loopBlockNode)
     return result.length === 1 ? result[0] : result
     })

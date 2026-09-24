@@ -9,12 +9,10 @@
 // post-order block walk that applies a per-statement rewrite. One home for all of them
 // — adding the next loop transform is then one recognizer over these, not a fourth copy.
 
-import { MUTATE_OPS, walkAst } from '../ast.js'
+import { MUTATE_OPS, walkAst, isReassigned } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
-import { guardCounterName, forCounterRange, intExprRange } from '../static.js'
-import { withRefinements } from './flow-types.js'
-import { freshLoopPlanId } from '../ir.js'
+import { guardCounterName, forCounterRange, intExprRange, counterInit, constIntExpr } from '../static.js'
 
 // Fresh id for a loop transform's generated locals (`__lsrx<id>`, `__pks<id>`, …). Backed by
 // a per-compile counter (reset in ctx.reset), NOT a module-global: a module-`let` counter
@@ -22,12 +20,6 @@ import { freshLoopPlanId } from '../ir.js'
 // names depend on how many programs were compiled before it. Distinct prefixes keep the shared
 // id space collision-free across transforms.
 export const freshLoopId = () => ctx.transform.loopXformId++
-
-// The HIR provenance link (loopPlanLink) used to live here, but this module is AST-level loop
-// primitives (pre-emission), while the link connects an EMITTED WAT block node back to HIR facts
-// — a different layer. It now lives in ir.js (WAT-node-level helpers, the neutral module both
-// emit.js and vectorize.js already import) — see the doc there for the {plan, lowering} split and
-// the identity/fail-open contract (.work/evidence.md §BodyModel slice 4).
 
 // Post-prepare number literals are sparse-array holes `[<hole>, v]` (length 2, the op
 // slot `n[0]` is the elided hole == null). `loopLitVal` returns the numeric value or
@@ -150,71 +142,79 @@ export function rewriteBlocks(body, tryStmt) {
   return walk(body)
 }
 
-// === LoopPlan pre-emission mint (previously minted inside emit.js's 'for'
-// handler at emission time; moved here so the frozen HIR half is computed once,
-// where the facts originate, BEFORE any semantic consumer — ir.js's loopPlanLink
-// doc for the {plan, lowering} split and identity/fail-open contract is unchanged;
-// this only moves WHERE/WHEN `plan` is built, not what it means or where the link
-// itself lives) ===
+// === Loop facts: what HIR proves about one emitted loop ===
 //
-// Keyed by the loop's own BODY node identity — NOT the wrapping `['for', …]`/
-// `['while', …]` statement node, and NOT the WAT block (that's loopPlanLink's own
-// key, ir.js). Two reasons `body` is the right anchor, both load-bearing in
-// emit.js's 'for' handler: (1) emit.js's typed-bounds guard split
-// (`versionableTypedNest`) re-emits the SAME logical loop twice via
-// `emitter['for'](null, cond, step, body)` — `init` nulled, but `body` passed
-// through unchanged — so keying by `body` naturally gives both the fast and
-// checked arm the SAME plan (correct: it's one AST loop, twice lowered), where
-// keying by the wrapping statement node would need one to be reconstructed and
-// wouldn't exist for this recursive call shape at all. (2) `'while'` delegates
-// to the SAME handler (`emitter['for'](null, cond, null, body)`) — `body` is the
-// only piece common to both loop kinds. emit.js captures this same identity as
-// `bodyNode0` at its handler's own entry, "survives the hoist rebind below" —
-// this WeakMap uses that identical anchor.
-// COMPILE-SESSION-OWNED (folded into ctx.plans — .work/archive/todo.md; see
-// src/compile/closure-plan.js's sibling doc comment for the full
-// stale-plan-HIT hazard under self-compiling). Lives at `ctx.plans.loops`,
-// a fresh WeakMap every reset() (src/ctx.js).
+// The 'for' emitter (compile/emit/control-flow.js) derives these once per loop it emits, in
+// the refinement context that loop is emitted under (enclosing counters, branch guards, a
+// versioned arm's magnitude proofs), so they are exactly the facts its body is emitted with.
+// The emitter hands them to the optimizer through the loop's lowering link
+// (ctx.plans.loweringLinks, src/ir/control.js): one derivation, read at every level.
+//   iv, hull, step: the counter the guard tests, the range {lo, hi} it holds in the body, and
+//     its step per iteration. Hull and step only when the step alone moves the counter (the
+//     body never writes it), so the body runs at most ⌊(hi - lo) / step⌋ + 1 times per entry.
+//   counters: the loop's other counters, `k` of `for (let j = 0, k = 0; …; j++, k += s)`: each
+//     moves by an invariant amount per pass, so in the body it holds k₀ + t·s for a pass t
+//     below the trip bound: [lo, hi] per counter. Only with a counter hull (the trip bound).
+//   guard, guardRange, boundConst: the name a `<`/`<=` guard bounds, its bound's range, and
+//     that bound when the range is one point. The first write to the name ends the fact,
+//     so it needs no counter discipline.
+export function loopFacts(init, cond, step, body) {
+  const iv = guardCounterName(cond)
+  const range = iv && !isReassigned(body, iv) ? forCounterRange(init, cond, step, iv) : null
+  const guard = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
+  const guardRange = guard ? intExprRange(cond[2]) : null
+  return Object.freeze({
+    iv,
+    hull: range ? Object.freeze({ lo: range[0], hi: range[1] }) : null,
+    step: range ? range.step : null,
+    counters: range ? Object.freeze(secondaryCounters(init, step, body, iv, Math.floor((range[1] - range[0]) / range.step) + 1)) : [],
+    guard,
+    guardRange,
+    boundConst: guardRange && guardRange[0] === guardRange[1] ? guardRange[0] : null,
+  })
+}
 
-// Walks `body` (a function's, or a closure's OWN body — never descends into a
-// nested `=>`/`function`, which gets its own separate mint call when ITS
-// analyzeFuncForEmit runs) for 'for'/'while' loop statements, in the same
-// structural pre-order emit.js's own dispatch visits them, stacking each loop's
-// OWN counter refinement (withRefinements, matching emit.js's `counterRefs`)
-// before recursing into its body — so a NESTED loop's hull/boundConst proof sees
-// the same enclosing-counter context emission would install live. Not a strict
-// requirement for soundness: forCounterRange/intExprRange (static.js) fold
-// refinements monotonically (intersecting, never widening) — a proof made with
-// LESS context than emission's own can only come out less precise (a null hull/
-// boundConst) or identical, never a DIFFERENT concrete value, so any nesting
-// mismatch here fails open per the pre-trio spec, it does not miscompile.
-// Called once per function/closure, from analyzeFuncForEmit — after that
-// function's own loop-AST-rewrite passes (loop-divmod/loop-square/
-// unrollRecurrence/…, which run before analyze) and after its reps have
-// settled, so this sees the SAME final AST + maximally-settled `repOf` facts
-// emit.js's own (still separately, locally computed — this mint does not
-// replace emit.js's OPERATIONAL counterRange/guardBoundRange, only the
-// PROVENANCE `plan` record fed to loopPlanLink) computation will later see.
-export function mintLoopPlans(body) {
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=>' || op === 'function') return   // separate function, separate mint call
-    const L = normalizeLoop(node)
-    if (!L) { for (let i = 0; i < node.length; i++) walk(node[i]); return }
-    const { init, cond, step, body: loopBody } = L
-    const counterName = guardCounterName(cond)
-    const counterRange = counterName ? forCounterRange(init, cond, step, counterName) : null
-    const guardName = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
-    const guardBoundRange = guardName ? intExprRange(cond[2]) : null
-    const boundConst = guardBoundRange && guardBoundRange[0] === guardBoundRange[1] ? guardBoundRange[0] : null
-    if (Array.isArray(loopBody)) ctx.plans.loops.set(loopBody, Object.freeze({
-      id: freshLoopPlanId(),
-      hull: counterRange ? Object.freeze({ lo: counterRange[0], hi: counterRange[1] }) : null,
-      boundConst,
-    }))
-    const counterRefs = counterRange ? new Map([[counterName, { rlo: counterRange[0], rhi: counterRange[1] }]]) : null
-    withRefinements(counterRefs, loopBody, () => walk(loopBody))
+/** The refinements a loop's facts give its body: each counter's range there. */
+export function counterRefinements(facts) {
+  const refs = new Map()
+  if (facts.hull) refs.set(facts.iv, { rlo: facts.hull.lo, rhi: facts.hull.hi })
+  for (const { name, lo, hi } of facts.counters) refs.set(name, { rlo: lo, rhi: hi })
+  return refs
+}
+
+// A step that moves `name` by a fixed amount per pass: `x++`, `x--`, `x += S`, `x -= S`,
+// `x = x ± S`, `x = S + x` (a postfix value, `(++x) - 1`, is the same write) →
+// { name, by, sign }, else null.
+function counterStep(s) {
+  if (Array.isArray(s) && s.length === 3 && (s[0] === '-' || s[0] === '+') && Array.isArray(s[1]) &&
+      (s[1][0] === '++' || s[1][0] === '--') && constIntExpr(s[2]) === 1) s = s[1]
+  if (!Array.isArray(s) || typeof s[1] !== 'string') return null
+  const [op, x, v] = s
+  if ((op === '++' || op === '--') && s.length === 2) return { name: x, by: 1, sign: op === '++' ? 1 : -1 }
+  if (op === '+=' || op === '-=') return { name: x, by: v, sign: op === '+=' ? 1 : -1 }
+  if (op === '=' && Array.isArray(v) && v.length === 3 && (v[0] === '+' || v[0] === '-') && v[1] === x) return { name: x, by: v[2], sign: v[0] === '+' ? 1 : -1 }
+  if (op === '=' && Array.isArray(v) && v.length === 3 && v[0] === '+' && v[2] === x) return { name: x, by: v[1], sign: 1 }
+  return null
+}
+
+// The loop's secondary counters and their body ranges, given at most `trips` passes per entry.
+// A step amount is a literal or a name that neither the body nor the step writes.
+function secondaryCounters(init, step, body, iv, trips) {
+  const steps = Array.isArray(step) && step[0] === ',' ? step.slice(1) : [step]
+  const moves = steps.map(counterStep)
+  const written = new Set(moves.filter(Boolean).map(m => m.name))
+  const out = []
+  for (const m of moves) {
+    if (!m || m.name === iv || moves.filter(x => x?.name === m.name).length !== 1 || isReassigned(body, m.name)) continue
+    if (typeof m.by === 'string' && (written.has(m.by) || isReassigned(body, m.by) || steps.some(x => isReassigned(x, m.by)))) continue
+    if (typeof m.by !== 'string' && constIntExpr(m.by) == null && typeof m.by !== 'number') continue
+    const from = counterInit(init, m.name)
+    const k0 = from == null ? null : intExprRange(from)
+    const by = typeof m.by === 'number' ? [m.by, m.by] : intExprRange(m.by)
+    if (!k0 || !by) continue
+    const [sLo, sHi] = m.sign > 0 ? by : [-by[1], -by[0]]
+    const lo = k0[0] + Math.min(0, sLo * (trips - 1)), hi = k0[1] + Math.max(0, sHi * (trips - 1))
+    if (Number.isSafeInteger(lo) && Number.isSafeInteger(hi)) out.push(Object.freeze({ name: m.name, lo, hi }))
   }
-  walk(body)
+  return out
 }

@@ -15,6 +15,7 @@ import jz from '../index.js'
 import { onKernel, levels } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
+import { ctx } from '../src/ctx.js'
 import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
@@ -2117,8 +2118,10 @@ test('bounded fractional indices retain their original property keys', () => {
   }
 })
 
-test('fractional recurrence IR keeps captured values and rejects numeric aliases and extra backedges', () => {
-  for (const mode of ['bounded', 'alias', 'backedge']) {
+test('fractional recurrence IR takes its trip bound from the loop facts and rejects numeric aliases', () => {
+  // The count of passes is the loop's lowering-link fact (loopFacts, src/compile/loop-model.js):
+  // a loop without one, like any loop the 'for' emitter did not produce, keeps its guards.
+  for (const mode of ['bounded', 'alias', 'unlinked']) {
     const fn = parseWat(`(func $f (export "f") (param $again i32) (result i32)
       (local $p f64) (local $i i32) (local $s i32) (local $t f64)
       (local.set $p (f64.const 0.25))
@@ -2132,7 +2135,6 @@ test('fractional recurrence IR keeps captured values and rejects numeric aliases
             (i32.const 0) (f64.ne (local.get $t) (f64.const inf)))))
         ${mode === 'alias' ? '(local.set 1 (f64.const inf))' : ''}
         (local.set $p (f64.add (local.get $p) (f64.const 0.5)))
-        ${mode === 'backedge' ? '(if (local.get $again) (then (local.set $again (i32.const 0)) (br $loop)))' : ''}
         (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $loop)))
       (local.get $s))`)
     walk(fn, n => {
@@ -2141,6 +2143,10 @@ test('fractional recurrence IR keeps captured values and rejects numeric aliases
     })
     const instantiate = f => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', f]))).exports.f
     const before = instantiate(fn)
+    if (mode !== 'unlinked') walk(fn, n => {
+      if (n[0] === 'block' && n[1] === '$exit')
+        ctx.plans.loweringLinks.set(n, { plan: { hull: { lo: 0, hi: 2 }, step: 1 }, lowering: { ivName: 'i', guardName: 'i' } })
+    })
     fusedRewrite(fn)
     const after = instantiate(fn)
     for (const again of [0, 0, 1, 0]) is(after(again), before(again), `${mode}, again=${again}`)

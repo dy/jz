@@ -18,7 +18,7 @@ import {
 } from './analyze.js'
 import { inferLocals } from './infer.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
-import { mintLoopPlans, closureMutatedVars } from './loop-model.js'
+import { closureMutatedVars } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
 import { mintRepresentationPlan, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
@@ -410,17 +410,9 @@ export function analyzeFuncForEmit(func, programFacts) {
     p.boundaryI64 = rv !== VAL.NUMBER && rv !== VAL.BOOL
   }
 
-  // LoopPlan pre-emission mint (.work/evidence.md §BodyModel /
-  // LoweredLoopPlan): last, so it sees this function's FINAL AST (every loop-
-  // AST-rewrite pass above has already run) and maximally-settled `repOf`
-  // facts (every updateRep call above has already landed) — the same two
-  // preconditions emit.js's own (separately, locally computed) counter/guard
-  // range facts enjoy today, just at analyze time instead of emit time.
-  mintLoopPlans(body)
-  // ClosureEnvPlan pre-emission mint (Slice 1, .work/archive/closure-plan-design.md)
-  // — same call site, same "last, sees final AST + settled ctx.func.boxed"
-  // guarantee; ctx.closure.make reads astClosurePlan back at each closure
-  // literal's own emission.
+  // ClosureEnvPlan pre-emission mint (Slice 1, .work/archive/closure-plan-design.md):
+  // last, so it sees this function's final AST and settled ctx.func.boxed;
+  // ctx.closure.make reads astClosurePlan back at each closure literal's own emission.
   mintClosureEnvPlans(body)
   // TypedStoragePlan snapshots the settled receiver/result/storage ctor facts.
   // Every typed emitter consumes this frozen plan rather than re-reading the

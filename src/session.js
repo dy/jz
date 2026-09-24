@@ -234,7 +234,7 @@ export function targetProfileFor(host) {
  * @property {object} bridge     emit/flat/wat dispatch bound at reset()
  * @property {object} features   frozen FeaturePlan (SESSION+PROGRAM+ANALYSIS strata)
  * @property {object} linkDemand DEMAND stratum (emission-produced reachability facts)
- * @property {object} plans      pre-emission frozen-fact WeakMaps: functions, closures, loops, loweringLinks
+ * @property {object} plans      pre-emission frozen-fact WeakMaps: functions, closures, loweringLinks
  * @property {?object} inspect   inspection sink, populated when transform.inspect is true
  * @property {?object} warnings  advisory sink, populated when opts.warnings is set
  */

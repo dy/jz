@@ -439,13 +439,9 @@ export function guardCounterName(cond) {
   if (Array.isArray(lhs) && lhs.length === 3 && lhs[0] === '-' && typeof lhs[1] === 'string' && constIntExpr(lhs[2]) != null) return lhs[1]
   return null
 }
-export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) {
-  if (!Array.isArray(cond) || !RELATIONAL_OPS.has(cond[0])) return null
-  const shift = nameShift(cond[1], name)
-  if (shift == null) return null
-  const increasing = cond[0] === '<' || cond[0] === '<='
-  // Both source multi-declarations and lowering's cached-length sequence may
-  // accompany the counter initializer. A second counter write rejects it.
+// The value a loop's `init` gives `name`, or null. Both source multi-declarations and
+// lowering's cached-length sequence may accompany the initializer; a second write rejects it.
+export function counterInit(init, name) {
   const inits = Array.isArray(init) && (init[0] === ';' || init[0] === ',') ? init.slice(1) : [init]
   let initExpr = null
   for (const n of inits) {
@@ -457,6 +453,15 @@ export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) 
       } else if (isReassigned(d, name)) return null
     }
   }
+  return initExpr
+}
+
+export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) {
+  if (!Array.isArray(cond) || !RELATIONAL_OPS.has(cond[0])) return null
+  const shift = nameShift(cond[1], name)
+  if (shift == null) return null
+  const increasing = cond[0] === '<' || cond[0] === '<='
+  const initExpr = counterInit(init, name)
   if (initExpr == null) return null
   const posConst = (e) => { const k = constIntExpr(e); return k != null && k > 0 }
   // A comma-sequenced step (`j++, k += step`) — postfix `j++`'s VALUE is
