@@ -408,8 +408,12 @@ The prior gate evidence below describes its own tree, not this candidate.
   arguments, while a null receiver's nonoptional property read throws first.
   Array searches evaluate their search value once, including empty input.
   The self-host spread-omission crash and diagnostic forwarding checks pass.
+- Nullable numeric helper results retain their Number.isNaN proof. This lets
+  the self-hosted optimizer normalize numeric NaN payloads instead of treating
+  them as object tags. Module-initializer array construction passes again;
+  null, undefined, finite numbers and signed NaN payloads have regressions.
 - Still open in the Wasm-hosted suite: nested array-pattern scalarization,
-  module-initializer array construction, named-regex replacement, typed output
+  named-regex replacement, typed output
   buffer inference, and a lone-CR parser rejection. Use the kernel test target,
   not just native tests, when checking these. The next full CI run is the
   authority for additional remaining failures.

@@ -342,3 +342,25 @@ test('Number/parseFloat: full decimal exponent range and high-product carries', 
     is(num('5e-324'), 5e-324, 'minimum subnormal after invalid input')
   }
 })
+
+test('Number.isNaN retains the numeric proof across a nullable helper result', () => {
+  const src = `function maybe(k) {
+    if (k === 0) return null
+    if (k === -1) return undefined
+    if (k === 2) return 7
+    const b = new ArrayBuffer(8), u = new Uint32Array(b), f = new Float64Array(b)
+    u[1] = k === 3 ? 0xfffa0000 : 0x7ffa0000
+    u[0] = 32
+    return f[0]
+  }
+  export function f(k) {
+    const n = maybe(k), v = n != null ? n : 1
+    const record = {value: Number.isNaN(v) ? NaN : v}
+    return [Number.isNaN(n), Number.isNaN(v), String(record.value)]
+  }`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0, 0, -1, 1, 1, 2, 3, 0]) is(f(k), native(k), `O${optimize}, input ${k}`)
+  }
+})

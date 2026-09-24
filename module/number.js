@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR, isNullish } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, storedValue, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned, isUndefinedLiteral } from '../src/ast.js'
@@ -17,6 +17,7 @@ import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
 import { stringBytes } from '../src/string-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
+import { K, core, tagOf, isNullable } from '../src/summary/kind.js'
 import { inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 
@@ -1461,15 +1462,10 @@ export default (ctx) => {
     ['i64.eq', ['local.get', bitsLocal], ['i64.const', NAN_BITS]],
     ['i64.eq', ['i64.and', ['local.get', bitsLocal], ['i64.const', '0xFFF0000000000000']], ['i64.const', '0xFFF0000000000000']]]
 
-  // maybeUndefined gate (.work/archive/todo.md §deletion-sweep §1/§4): a NUMBER claim
-  // sourced from a dict/map value census (censusMaybeUndefined) is really
-  // NUMBER|undefined — an absent key reads back UNDEF_NAN at runtime, a bit
-  // pattern that (unlike a genuine number-NaN) must NOT satisfy Number.isNaN.
-  // A non-census proven-NUMBER arg (loop counters, arithmetic results, schema
-  // slots) can never carry ANY boxed pointer/atom, so its bare self-compare
-  // stays exact and pays nothing extra — only census reads fall through to the
-  // tag-discriminating dynamic path below (already sound for kind-unknown args;
-  // reused as-is, no new coercion logic needed here).
+  // Proven numbers use a raw self-compare. Numeric unions with absence only
+  // exclude null/undefined; unknown values require full NaN-box discrimination.
+  // Map/dictionary number claims can include an absent key, so retain the
+  // summary's nullability proof even when the value-type census says NUMBER.
   const emitIsNaN = (x) => {
     const vt = valTypeOf(x)
     if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
@@ -1477,6 +1473,11 @@ export default (ctx) => {
     const t = temp('t')
     const raw = typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
     if (vt === VAL.NUMBER && !censusMaybeUndefined(x)) return raw
+    const kind = ctx.summary?.at(ctx.func.current).kindOfExpr(x)
+    // A numeric union with absence cannot contain a string/object box. Keep
+    // that proof instead of mistaking a numeric NaN payload for a heap tag.
+    if (kind != null && tagOf(core(kind)) === K.NUMBER && isNullable(kind))
+      return typed(['i32.and', raw, ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))]], 'i32')
     const bits = tempI64('b')
     return typed(['if', ['result', 'i32'], raw,
       ['then', ['block', ['result', 'i32'],
