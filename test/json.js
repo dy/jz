@@ -1,12 +1,24 @@
 // JSON.stringify and JSON.parse tests
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 import { instantiate, aux } from '../interop.js'
-import { run, cases } from './util.js'
+import { run, cases, oracle } from './util.js'
 import { levels } from './_matrix.js'
 
 // === JSON.stringify ===
+
+// A typed array's own keys are its indices; a Map, a Set, an ArrayBuffer and a
+// DataView have none. Each was null (a Map wrote its entries). A BigInt element
+// throws, as a BigInt value does.
+test('JSON.stringify writes builtin objects by their own keys', () => {
+  const src = (e) => `export const run = () => { try { return String(${e}) } catch (e) { return e.name } }`
+  for (const e of ['JSON.stringify(new Float64Array([1.5, NaN, -Infinity]))', 'JSON.stringify([new Uint8Array([1, 2]), new Int32Array(0)])',
+    'JSON.stringify({ t: new Int16Array([-1]), c: new Uint8ClampedArray([300]) }, null, 2)', 'JSON.stringify(new Float32Array([1, 2]).subarray(1))',
+    'JSON.stringify([new Map([["a", 1]]), new Set([1]), new ArrayBuffer(2), new DataView(new ArrayBuffer(2))], null, 1)',
+    'JSON.stringify(new BigInt64Array(1))', 'JSON.stringify(new BigInt64Array(0))'])
+    for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.run(), oracle(src(e)).run(), `${e} O${optimize}`)
+})
 
 test('JSON.stringify', () => {
   cases([

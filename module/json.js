@@ -25,7 +25,7 @@ import { ENUM_DATA, ENUM_GET, viewsOn } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { TO_JSON } from '../src/compile/emit/to-json.js'
 import print from 'watr/print'
-import { deletedMaskWat } from '../layout.js'
+import { deletedMaskWat, DATA_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 
 function jsonConstString(ctx, expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
@@ -183,6 +183,11 @@ export default (ctx) => {
   // toJSON passes each value through it, with its key, before the omit test.
   const toJSON = () => !!ctx.funcs.runtimeRoots?.has(TO_JSON)
   const toJSONDeps = () => toJSON() ? ['__json_to'] : []
+  // Whether the program can hold a typed array or buffer (its module, or a host
+  // value), a Map or a Set: the walker writes each as an object, and links none
+  // a program never holds.
+  const typedLive = () => ctx.module.demanded.has('typedarray') || ctx.linkDemand.external
+  const collectionsLive = () => ctx.linkDemand.map || ctx.linkDemand.set
   deps({
     __stringify: () => [...toJSONDeps(), '__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
     __json_to: ['__ptr_type'],
@@ -190,7 +195,9 @@ export default (ctx) => {
     __json_omit: ['__ptr_type', '__ptr_aux'],
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
-    __json_val: () => [...toJSONDeps(), '__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
+    __json_val: () => [...toJSONDeps(), '__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj',
+      ...(typedLive() ? ['__json_typed'] : [])],
+    __json_typed: ['__ptr_aux', '__len', '__typed_idx', '__jput', '__jindent', '__jput_num', '__json_val'],
     __json_hash: () => [...toJSONDeps(), '__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order'],
     // Durable-receiver global-table merge (see __json_obj's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
@@ -546,10 +553,18 @@ export default (ctx) => {
         (call $__jput (i32.const 93))  ;; ]
         (call $__json_leave)
         (return)))
-    ;; HASH/MAP — iterate entries: {"key":val,...}
-    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
-                (i32.eq (local.get $type) (i32.const ${PTR.MAP})))
-      (then (call $__json_hash (local.get $val)) (return)))
+    ;; HASH — iterate entries: {"key":val,...}
+    (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+      (then (call $__json_hash (local.get $val)) (return)))${typedLive() ? `
+    ;; A typed array's own keys are its indices; a DataView and an ArrayBuffer have none
+    (if (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+      (then (call $__json_typed (local.get $val)) (return)))` : ''}${collectionsLive() || typedLive() ? `
+    ;; A Map's entries and a Set's values are no properties: {}
+    (if ${collectionsLive() && typedLive() ? `(i32.or (i32.or (i32.eq (local.get $type) (i32.const ${PTR.MAP})) (i32.eq (local.get $type) (i32.const ${PTR.SET})))
+          (i32.eq (local.get $type) (i32.const ${PTR.BUFFER})))`
+        : collectionsLive() ? `(i32.or (i32.eq (local.get $type) (i32.const ${PTR.MAP})) (i32.eq (local.get $type) (i32.const ${PTR.SET})))`
+        : `(i32.eq (local.get $type) (i32.const ${PTR.BUFFER}))`}
+      (then (call $__jput (i32.const 123)) (call $__jput (i32.const 125)) (return)))` : ''}
     ;; OBJECT — schema-based: iterate props with schema name table
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then (call $__json_obj (local.get $val)) (return)))
@@ -561,6 +576,34 @@ export default (ctx) => {
     ;; Unknown type → null
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`
+
+  // __json_typed(val: i64) — a typed array as the object its indices key,
+  // {"0":v0,...}; an element renders as a number does, a BigInt one throws, and
+  // a DataView has no own key.
+  ctx.core.stdlib['__json_typed'] = () => `(func $__json_typed (param $val i64)
+    (local $len i32) (local $i i32)
+    (local.set $len (call $__len (local.get $val)))
+    (if (i32.and (call $__ptr_aux (local.get $val)) (i32.const ${DATA_VIEW_FLAG})) (then (local.set $len (i32.const 0))))
+    (if (i32.and (i32.ne (i32.and (call $__ptr_aux (local.get $val)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})) (i32.const 0)) (i32.ne (local.get $len) (i32.const 0)))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.JSON_BIGINT)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.JSON_BIGINT)}))))
+    (call $__jput (i32.const 123))
+    (if (local.get $len) (then (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))))
+    (block $d (loop $l
+      (br_if $d (i32.ge_u (local.get $i) (local.get $len)))
+      (if (local.get $i) (then (call $__jput (i32.const 44))))
+      (call $__jindent)
+      (call $__jput (i32.const 34))
+      (call $__jput_num (f64.convert_i32_u (local.get $i)))
+      (call $__jput (i32.const 34)) (call $__jput (i32.const 58))
+      (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
+      (call $__json_val (i64.reinterpret_f64 (call $__typed_idx (local.get $val) (local.get $i))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (if (local.get $len)
+      (then
+        (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
+        (call $__jindent)))
+    (call $__jput (i32.const 125)))`
 
   // __json_hash(val: i64) — stringify HASH/MAP: emit {"key":val,...} in insertion
   // order. Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. __coll_order
