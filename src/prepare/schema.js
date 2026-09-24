@@ -7,6 +7,7 @@
  */
 
 import { isBrand } from '../ast.js'
+import { enumKeys } from '../../module/schema.js'
 import { ctx } from '../ctx.js'
 import { assignSid, declInitUnknown } from './state.js'
 
@@ -26,7 +27,8 @@ export function objLiteralSid(prhs) {
       const sid = typeof p[1] === 'string' ? ctx.schema.idOf(p[1]) : objLiteralSid(p[1])
       const props = sid == null ? null : ctx.schema.list[sid]
       if (!props) return null
-      for (const name of props) add(name)
+      // a spread copies values: an accessor is the data key it defines (module/schema.js enumView)
+      for (const name of enumKeys(props)) add(name)
     } else return null
   }
   return names.length || brand ? ctx.schema.register(names, brand) : null

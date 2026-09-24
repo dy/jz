@@ -5,6 +5,7 @@
  */
 
 import { encodePtrHi, i64Hex } from '../../../layout.js'
+import { enumKeys } from '../../../module/schema.js'
 import {
   T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, mutatesArrayLength, some, walkAst,
 isArrayIndexKey } from '../../ast.js'
@@ -264,7 +265,8 @@ function unrollForIn(init, cond, step, body) {
 
   const closed = closedKeysOf(src)
   const open = closed ? null : openKeysOf(src)
-  const keys = closed ?? open ?? censusKeysOf(src)
+  // the layout's own keys: an accessor pair by its name (module/schema.js enumView)
+  const layout = closed ?? open ?? censusKeysOf(src), keys = layout && enumKeys(layout)
   if (!keys || !keys.length || keys.length > FORIN_UNROLL_MAX) return null
 
   const rest = body.slice(2)

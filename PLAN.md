@@ -113,6 +113,13 @@ Architecture
   its tables are read from the custom sections and merged on copies, so a
   rejected module's start function, data segments and tables never touch the
   memory, and a merge commits whole or not at all.
+- An object literal's accessor is the one own property it defines wherever a
+  property is listed, copied, keyed or deleted: Object.keys, values and entries,
+  for-in, `in`, JSON.stringify, Object.assign, spread, structuredClone, a
+  computed key and an object the host receives see it through the layout's
+  enumeration view (`layoutView`), which reads it through its getter once;
+  JSON.stringify calls a value's toJSON, its own or its class's, with the key
+  (CONTRIBUTING has the forms).
 - An array pattern over a value the summary proves an array reads by index
   (a plan sweep): the protocol's cursor record and its pool are module state
   no rewound frame may touch, and the protocol cost a call per element.
@@ -326,15 +333,12 @@ Dependencies
    glyfparse/C-Wasm 1.418×, SDF/C-Wasm 1.420×, noise/Rust-Wasm 1.148×,
    wordcount/C-Wasm 1.011×, watr/V8 1.546× and Jessie/V8 0.988×.
 
-4. **Builtins over accessors and `toJSON`.** At every level, `Object.values`,
-   `Object.entries`, `JSON.stringify` and `Object.assign` do not run a
-   literal's getter: `Object.values({ a: 1, get g() { return 7 } })` gives
-   `[1, null]`, `Object.entries` exposes the slot as `g__get`, `JSON.stringify`
-   omits it and `Object.assign` leaves it undefined. Spread copies the getter
-   itself, so it runs at each later read instead of once at the spread.
-   `JSON.stringify` ignores a class's `toJSON` (`{}` for `{"v":1}`); a
-   literal's is rejected at compile time. Each should read the value as JS
-   does, or reject the program.
+4. **Closure-lowered class members.** A class kept as closures (declared in a
+   function, under a base the module cannot see, or an expression with
+   statics) puts its methods and accessors on each instance as slots, so
+   `Object.keys` and for-in list them (`m`, `g__get`) where JS lists neither:
+   they are prototype members. Mark the instance literal's member slots so the
+   enumeration view (`layoutView`) hides them.
 
 5. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
    defers native release work until JZ v1 and requires verification from its

@@ -30,10 +30,10 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  */
 
 import { ctx, err, PTR, HEAP } from '../ctx.js'
-import { createFunction, frameNode } from '../function.js'
+import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
-import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
+import { beginAssignedMemo, endAssignedMemo, layoutView } from '../ast.js'
 import {
   structInlinePass, unionInlinePass, invalidateAllBodyFacts,
 } from './analyze.js'
@@ -66,6 +66,9 @@ import { programPins } from '../optimize/watr-tail.js'
 import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
 import { synthesizeToPrimitive } from './emit/to-primitive.js'
+import { synthesizeAccessorCall } from './emit/accessor-call.js'
+import { synthesizeToJSON } from './emit/to-json.js'
+import { settleViews } from '../../module/schema.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { paramValueOnly } from './param-numeric.js'
@@ -120,6 +123,8 @@ export function assemble(ast, profiler) {
   // Populate known function names + lookup map on ctx.func for direct call detection
   ctx.module.entryInit = ast   // the entry module's own statements, beside `moduleInits`
   synthesizeToPrimitive()        // OrdinaryToPrimitive for user toString/valueOf, called by the coercion kernels
+  synthesizeAccessorCall()       // a literal's getter or setter, called by the enumeration and property kernels
+  synthesizeToJSON()             // a value's toJSON, called by JSON.stringify's walker
   synthesizeClassDispatchers()   // the class dispatchers, functions like any other from here on
   ctx.funcs.names.clear()
   ctx.funcs.map.clear()
@@ -127,7 +132,7 @@ export function assemble(ast, profiler) {
   // The summary owns semantic facts; ctx also carries mutable lowering state.
   // Rebuild from explicit inputs after source rewrites, never from old facts.
   const summarizeProgram = () => summarize(ast, {
-    inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, exported: isExported,
+    inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, exported: isExported,
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
     hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
@@ -175,6 +180,10 @@ export function assemble(ast, profiler) {
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = timePhase(profiler, 'summary', summarizeProgram)
+  // A layout's view runs only where the code the program lowers builds an
+  // object literal with an accessor (module/schema.js viewsOn).
+  settleViews([ast, ...(ctx.module.moduleInits ?? []),
+    ...ctx.funcs.list.filter(f => !f.raw && programFacts.programIndex.reachableForLowering(f)).flatMap(frameRoots)])
 
   // A module global's declaration-time literal length holds only while nothing
   // rewrites the binding (the element kind is an all-writers fact already).
@@ -832,6 +841,7 @@ export function assemble(ast, profiler) {
     rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
     report: ctx.transform.whyNotRewind ?? null,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(),
+    viewSids: ctx.schema.list.flatMap((names, sid) => layoutView(names, ctx.transform.literalAccessorNames) ? [sid] : []),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false,
   } }

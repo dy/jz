@@ -572,6 +572,7 @@ export function reset(proto, globals, bridge) {
     //    function survives treeshake (checked by name post-treeshake,
     //    src/compile/index.js — a plain equality check, not a re-parse).
     namedUses: [],
+    views: false,          // code the program lowers builds an object literal with an accessor (module/schema.js viewsOn)
     vars: new Map(),
     poisoned: new Set(),   // names whose assignments disagree on shape (literal +
                            //   non-literal, or two different literals). A poisoned
@@ -781,6 +782,8 @@ export function reset(proto, globals, bridge) {
     memberUses: null,   // the member names the program calls, reads and stores (src/compile/emit/class-dispatch.js memberUses)
     accessorNames: null, // Set of property names some class or object literal defines an accessor
     dynamicAccessorNames: null, // the subset a derived class installs dynamically (jzify/classes.js recordAccessor)
+    literalAccessorNames: null, // the subset an object literal defines (jzify/classes.js lowerObjectLiteralAccessors):
+                         // own enumerable properties, which enumeration lists by name (module/schema.js enumView)
                          // for (jzify/classes.js records `get x`/`set x` as it lowers them to the
                          // `x__get`/`x__set` slots; every module is lowered before emit). The `.`
                          // reader and the property store dispatch these names on OBJECT/unknown

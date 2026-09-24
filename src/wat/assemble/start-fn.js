@@ -23,6 +23,7 @@ import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
 import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
+import { enumView, viewsOn } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
 import { dataLen, dataAlign, dataPush, pushStaticSlots } from '../../static-data.js'
 
@@ -101,6 +102,49 @@ function buildBoxInit() {
     }
   }
   return boxInit
+}
+
+/** A view entry as one exact number: its slot, kind and setter slot + 1. */
+const viewEntry = (e) => e.slot + e.kind * 2 ** 24 + (e.set + 1) * 2 ** 26
+
+/** The enumeration views of the program's layouts (module/schema.js enumView)
+ *  when it builds an object literal with an accessor, else null. */
+function viewsOf() {
+  if (!viewsOn()) return null
+  const views = ctx.schema.list.map(enumView)
+  return views.some(Boolean) ? views : null
+}
+
+/** Bind `__schema_view` to the view table at `off` in static data. */
+function viewTable(off) {
+  if (!ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
+  ctx.scope.globals.get('__schema_view').init = off
+  ;(ctx.runtime.staticI32GlobalInits ??= []).push('__schema_view')
+}
+
+/** The view table built at start (the schema table's own fallback): `n`
+ *  zeroed entries, a view's keys and map stored at its layout's. */
+function viewInitIR(views, n) {
+  const vtbl = `${T}vtbl`, varr = `${T}varr`
+  ctx.func.locals.set(vtbl, 'i32')
+  ctx.func.locals.set(varr, 'i32')
+  inc('__alloc', '__alloc_hdr', '__mkptr')
+  if (!ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
+  const ir = [
+    ['local.set', `$${vtbl}`, ['call', '$__alloc', ['i32.const', n * 16]]],
+    ['memory.fill', ['local.get', `$${vtbl}`], ['i32.const', 0], ['i32.const', n * 16]],
+    ['global.set', '$__schema_view', ['local.get', `$${vtbl}`]]]
+  const array = (vals, at) => {
+    ir.push(['local.set', `$${varr}`, ['call', '$__alloc_hdr', ['i32.const', vals.length], ['i32.const', vals.length]]])
+    vals.forEach((v, k) => ir.push(['f64.store', ['i32.add', ['local.get', `$${varr}`], ['i32.const', k * 8]], v]))
+    ir.push(['f64.store', ['i32.add', ['local.get', `$${vtbl}`], ['i32.const', at]], mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${varr}`])])
+  }
+  views.forEach((v, s) => {
+    if (!v) return
+    array(v.map(e => asF64(emit(['str', String(e.key)]))), s * 16)
+    array(v.map(e => ['f64.const', viewEntry(e)]), s * 16 + 8)
+  })
+  return ir
 }
 
 /** Schema name-table init: static data-segment layout when every key folds
@@ -232,6 +276,23 @@ function buildSchemaInit() {
       ;(ctx.runtime.staticI32GlobalInits ??= []).push('__schema_tbl')
       if (!runtimeReserve && dataLen() > schemaDataStart)
         ctx.runtime.reclaimSpans.push({ global: '__schema_tbl', start: schemaDataStart, end: dataLen() })
+      // Enumeration views (module/schema.js enumView) beside the table: per
+      // schema, its view keys and its map (viewEntry, one number a position),
+      // both boxed static arrays; zeros for a layout without one. A span of
+      // their own: the host reads them without the table (interop decoding
+      // through __view_data), and a live view span keeps the table before it.
+      const views = viewsOf()
+      if (views) {
+        const zero = '0x0000000000000000', viewDataStart = dataLen()
+        const keyBits = views.map(v => v?.map(e => extractF64Bits(asF64(emit(['str', String(e.key)])))))
+        if (keyBits.every(k => !k || k.every(b => b != null))) {
+          const slots = views.flatMap((v, s) => v ? [extractF64Bits(staticArrayPtr(keyBits[s])),
+            extractF64Bits(staticArrayPtr(v.map(e => extractF64Bits(['f64.const', viewEntry(e)]))))] : [zero, zero])
+          viewTable(pushStaticSlots([...slots, ...Array(runtimeReserve * 2).fill(zero)]))
+          if (!runtimeReserve && dataLen() > viewDataStart)
+            ctx.runtime.reclaimSpans.push({ global: '__schema_view', start: viewDataStart, end: dataLen() })
+        } else schemaInit.push(...viewInitIR(views, nSchemas + runtimeReserve))
+      }
       if (runtimeReserve) {
         if (!ctx.scope.globals.has('__schema_next')) declGlobal('__schema_next', 'i32')
         const nextG = ctx.scope.globals.get('__schema_next')
@@ -262,6 +323,8 @@ function buildSchemaInit() {
           ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
             mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
       }
+      const views = viewsOf()
+      if (views) schemaInit.push(...viewInitIR(views, nSchemas + runtimeReserve))
     }
   }
   return schemaInit
@@ -297,6 +360,10 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   compilePendingClosures()
 
   const boxInit = buildBoxInit()
+  // An object literal's accessor: the host decodes such an object through the
+  // data copy the module exports (collection.js __view_data), which reads the
+  // schema and view tables.
+  if (viewsOn()) { inc('__view_data'); ctx.runtime.schemaTblConsumed = true }
 
   // Runtime tables serve transitive helpers too (for example hash_set's
   // dynamic object-store fallback), not just the helpers emission called.

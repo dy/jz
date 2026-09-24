@@ -1230,7 +1230,24 @@ probes for the slot only where a literal's schema or a static pair may carry
 it (`slotAccessorRead`, `accessorStore`), so a dispatcher's fallback reads
 plainly in a program without them, and a receiver the summary types skips
 the probe unless a side property of that slot may be present
-(`accessorHolders`). `why: true` and any
+(`accessorHolders`). An object literal's accessor is the one own property it
+defines wherever a property is listed, copied or keyed: the layout's
+enumeration view (`layoutView`, `src/ast.js`) names it at its first
+definition, index keys first, and reads it through its getter (undefined for a
+setter alone). The static paths read the view off the layout; at runtime
+`__schema_view[sid]` holds the view's keys and a map of each key's slot, kind
+and setter slot, read by the enumeration walker (`walkObjectProperties`),
+JSON's object walker, the computed-key kernels after a miss in the layout's own
+slots (`__view_find`, `__view_get`, `__view_set`, `__view_del`) and the data
+copy a spread or a clone makes (`__view_data`), which the module exports: the
+host decodes such an object through it (`jz:views` lists the layouts). After a
+`delete` of an accessor, a read or store of its name through a binding takes
+the dynamic path. The table and every runtime path that reads it exist only
+when code the program lowers builds such a literal (`viewsOn`, settled after
+the plan). Getters and setters run through one prepared
+function (`src/compile/emit/accessor-call.js`), a value's `toJSON` through
+another (`src/compile/emit/to-json.js`, only in a program that names JSON), an
+own property shadowing its class's method. `why: true` and any
 `warnings` sink report `shape-lost` with the first cause a layout was lost by;
 the census is the first thing to read when a library compiles dynamic.
 

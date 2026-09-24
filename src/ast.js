@@ -755,3 +755,39 @@ export const paramList = extractParams
  *  `x__get`/`x__set` on the instance; the emitter dispatches `o.x` reads and
  *  `o.x = v` writes through them on OBJECT/unknown receivers. */
 export const ACCESSOR_GET = '__get', ACCESSOR_SET = '__set'
+
+/** Kinds of an enumerated property: a data slot, an accessor read through its
+ *  getter, an accessor with a setter alone (it reads undefined). */
+export const ENUM_DATA = 0, ENUM_GET = 1, ENUM_SET = 2
+
+/** The accessor a slot carries, `x__get` or `x__set` of a name in
+ *  `accessors`: its name and whether it is the getter. Null for data. */
+export const accessorOf = (name, accessors) => {
+  if (typeof name !== 'string') return null
+  const get = name.endsWith(ACCESSOR_GET)
+  if (!get && !name.endsWith(ACCESSOR_SET)) return null
+  const base = name.slice(0, -(get ? ACCESSOR_GET : ACCESSOR_SET).length)
+  return accessors.has(base) ? { base, get } : null
+}
+
+/** The view enumeration takes of a layout, `accessors` the names object
+ *  literals define accessors for (ctx.transform.literalAccessorNames). Such an
+ *  accessor lowers to the slots `x__get` and `x__set` (jzify/classes.js); an
+ *  enumeration, a spread or a computed key sees the one property `x`. A later
+ *  definition of a key replaces an earlier one in place, so the view is the
+ *  literal's definitions in order, index keys first: `{ key, slot, kind, set }`,
+ *  `slot` the data slot or the accessor's (the getter's where it has one),
+ *  `set` the setter's slot or -1. Null for a layout without accessors, whose
+ *  slots are the view. */
+export function layoutView(names, accessors) {
+  if (!accessors?.size || !names?.some(n => accessorOf(n, accessors))) return null
+  const byKey = new Map()
+  names.forEach((n, slot) => {
+    const a = accessorOf(n, accessors)
+    if (!a) return void byKey.set(n, { key: n, slot, kind: ENUM_DATA, set: -1 })
+    const e = byKey.get(a.base), pair = e && e.kind !== ENUM_DATA ? e : null
+    if (a.get) byKey.set(a.base, { key: a.base, slot, kind: ENUM_GET, set: pair ? pair.set : -1 })
+    else byKey.set(a.base, pair?.kind === ENUM_GET ? { ...pair, set: slot } : { key: a.base, slot, kind: ENUM_SET, set: slot })
+  })
+  return canonicalKeyOrder([...byKey.keys()]).map(k => byKey.get(k))
+}

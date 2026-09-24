@@ -71,6 +71,7 @@ const TESTS = [
   'carry-elements',
   'array-view',
   'param-defaults',
+  'accessor-enumeration',
   'passes',
   'dyn-closure-tables',
   'preeval',

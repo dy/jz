@@ -3,8 +3,9 @@
  * they describe only what survived: `jz:schema` (the property lists of the
  * schemas some surviving node or named use still references; a dead schema
  * keeps its slot, shrunk to its id, so ids stay stable), `jz:errcls` (the
- * error class name per surviving error schema) and `jz:brand` (the class brand
- * per surviving user-class schema).
+ * error class name per surviving error schema), `jz:brand` (the class brand
+ * per surviving user-class schema) and `jz:views` (the surviving schemas with
+ * an object literal's accessor).
  *
  * @module link/sections
  */
@@ -22,7 +23,7 @@ const encProp = (out, p) => {
   else { out.push(3); encStr(out, JSON.stringify(p).slice(1, -1)) }
 }
 
-export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids }) {
+export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids, viewSids }) {
   const FUNC = intern('func')
   const used = new Set()
   walk(root, (id) => { if (T.sid[id] !== NONE) used.add(T.sid[id]) })
@@ -75,5 +76,14 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
     varint(out, brands.length)
     for (const [sid, brand] of brands) { varint(out, sid); encStr(out, brand) }
     custom('jz:brand', out)
+  }
+  // A layout with an object literal's accessor (src/ast.js layoutView): the
+  // host decodes such an object through the data copy the module exports.
+  const views = (viewSids ?? []).filter(sid => used.has(sid))
+  if (views.length) {
+    const out = []
+    varint(out, views.length)
+    for (const sid of views) varint(out, sid)
+    custom('jz:views', out)
   }
 }

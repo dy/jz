@@ -718,7 +718,8 @@ function accessorStore(obj, prop, val) {
   // a schema carrying the slot calls it statically; a literal without the slot
   // stores plainly; anything else probes (see module/core.js accessorRead)
   const sid = typeof obj === 'string' ? ctx.schema.idOf(obj) : null
-  const known = sid != null && ctx.schema.slotOf(obj, setter) >= 0
+  // an object literal's accessor a `delete` may have removed stores dynamically (collection.js __view_set)
+  const known = sid != null && ctx.schema.slotOf(obj, setter) >= 0 && !(ctx.types.anyDelete && ctx.transform.literalAccessorNames?.has(prop))
   if (Array.isArray(obj) && obj[0] === '{}') return null
   // a schema without the slot holds it only when a derived class installs it
   // dynamically; a scalar-replaced literal never leaves its function

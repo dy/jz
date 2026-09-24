@@ -226,13 +226,15 @@ function lowerObjectLiteralAccessors(args) {
   const out = props.map(p => {
     if (!Array.isArray(p) || (p[0] !== 'get' && p[0] !== 'set')) return p
     const [slot, params, body] = accessorMethod(p, constStrings)
+    ;(ctx.transform.literalAccessorNames ??= new Set()).add(slot.slice(0, -ACCESSOR_GET.length))
     return [':', slot, ['function', null, params, body]]
   })
   return out.length === 1 ? [out[0]] : [[',', ...out]]
 }
 
 function lowerObjectLiteralThis(args) {
-  const props = objectLiteralEntries(args)
+  // a shorthand `n` is the property `n: n`
+  const props = objectLiteralEntries(args).map(p => typeof p === 'string' ? [':', p, p] : p)
   if (props.length === 0 || !props.some(objectMethodUsesThis)) return null
   if (!props.every(p => Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string')) return null
 

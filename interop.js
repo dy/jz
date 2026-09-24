@@ -248,9 +248,15 @@ const _enhanced = new WeakSet()
  * nested [null, name] (synthetic shape), type 3 a JSON-escaped property name
  * without its quotes, type 2 legacy text.
  */
-const NO_TABLES = { errorClasses: new Map(), brands: new Map(), fields: [], schemas: [] }
+const NO_TABLES = { errorClasses: new Map(), brands: new Map(), fields: [], schemas: [], views: new Set() }
 const moduleTables = (mod) => {
-  const errorClasses = new Map(), brands = new Map(), fields = [], schemas = []
+  const errorClasses = new Map(), brands = new Map(), fields = [], schemas = [], views = new Set()
+  // the schemas with an object literal's accessor: read through the module's data copy (`__view_data`)
+  const viewBytes = customSection(mod, 'jz:views')
+  if (viewBytes) {
+    const r = sectionReader(viewBytes), n = r.varint()
+    for (let j = 0; j < n; j++) views.add(r.varint())
+  }
   const errClsBytes = customSection(mod, 'jz:errcls')
   if (errClsBytes) {
     const r = sectionReader(errClsBytes), n = r.varint()
@@ -286,7 +292,7 @@ const moduleTables = (mod) => {
     const n = r.varint()
     for (let j = 0; j < n; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); schemas.push(props) }
   }
-  return { errorClasses, brands, fields, schemas }
+  return { errorClasses, brands, fields, schemas, views }
 }
 
 /**
@@ -313,6 +319,7 @@ const moduleTables = (mod) => {
 const mergeTables = (mem, t) => {
   const errorSidToClass = new Map(mem.errorSidToClass), brandOfSid = new Map(mem.brandOfSid)
   const schemas = [...(mem.schemas || [])], _schemaKeyToId = new Map(mem._schemaKeyToId), fieldContracts = [...(mem.fieldContracts || [])]
+  const views = new Set([...(mem.views || []), ...t.views])
   for (const [sid, name] of t.errorClasses) if (!errorSidToClass.has(sid)) errorSidToClass.set(sid, name)
   const keys = t.schemas.map((s, j) => { const salt = t.errorClasses.get(j) ?? t.brands.get(j); return JSON.stringify(s) + (salt ? '\x02' + salt : '') })
   keys.forEach((key, j) => {
@@ -326,7 +333,7 @@ const mergeTables = (mem, t) => {
       throw new TypeError('jz: incompatible field contracts for a schema already bound to this memory')
     fieldContracts[j] = row
   })
-  return { schemas, _schemaKeyToId, errorSidToClass, brandOfSid, fieldContracts }
+  return { schemas, _schemaKeyToId, errorSidToClass, brandOfSid, fieldContracts, views }
 }
 
 /**
@@ -396,6 +403,7 @@ export const memory = (src) => {
   // The module's tables joined to the memory's (rejected before anything
   // changes when the module compiled with other ids), committed as a whole
   Object.assign(mem, mergeTables(mem, mod ? moduleTables(mod) : NO_TABLES))
+  if (wasmExports?.__view_data) mem.viewData = wasmExports.__view_data
 
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
@@ -689,6 +697,9 @@ export const memory = (src) => {
     // A boxed BigInt's 8-byte payload is the raw two's-complement i64.
     if (t === 5) return m.getBigInt64(off, true)  // BIGINT
     if (t === 6) {  // OBJECT
+      // An object literal's accessor reads through its getter: the module
+      // copies such an object's data into a dictionary, decoded below.
+      if (mem.views?.has(a) && mem.viewData) return mem.read(mem.viewData(p))
       const keys = mem.schemas[a]
       if (!keys) return p
       const obj = {}

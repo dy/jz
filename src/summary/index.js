@@ -48,7 +48,7 @@
  *
  * @module summary
  */
-import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey } from '../ast.js'
+import { MUTATE_OPS, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA } from '../ast.js'
 import { encodeTypedElemAux } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { VAL } from '../reps.js'
@@ -87,7 +87,7 @@ const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, 
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, liftedProp = () => null }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, liftedProp = () => null }) {
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -1786,14 +1786,24 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     return sid
   }
+  // A layout's own properties as a spread copies them: an object literal's
+  // accessor is the one data key it defines, its value the getter's (ast.js layoutView).
+  const ownEntries = (sid) => {
+    const view = layoutView(schemas[sid], accessors)
+    return view ? view.filter(e => !isBrand(e.key)).map(e => [e.key, e.kind === ENUM_DATA ? slots(sid)[e.slot] : ANY])
+      : schemas[sid].flatMap((key, j) => isBrand(key) ? [] : [[key, slots(sid)[j]]])
+  }
+  const viewed = (source) => tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN &&
+    shapesOf(paramOf(source)).some(sid => layoutView(schemas[sid], accessors))
   /** A literal with a spread or a computed key, walked by its sources. */
   const dynamicLiteral = (n) => {
     // The single-source lowering clones its runtime representation. A clone
-    // may share conservative content facts without sharing runtime storage.
+    // may share conservative content facts without sharing runtime storage;
+    // a source with an accessor copies its values instead (below).
     if (n.length === 2 && n[1]?.[0] === '...') {
       const source = expr(n[1][1]), t = tagOf(source)
       if (t === K.NONE) return K.NONE
-      return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
+      if (!viewed(source)) return !isNullable(source) && (t === K.OBJECT || t === K.HASH) ? source : cellOf(n, K.HASH, ANY)
     }
     const writes = [], names = [], init = definite.get(n)
     let brand = null, dynamic = false, pending = false, wildKind = K.NONE
@@ -1817,7 +1827,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           dynamic = true
           if (keyedCells.has(c)) { for (const [name, k] of cellProps.get(c) ?? []) add(name, k); wildKind = merge(wildKind, cellWild.get(c) ?? K.NONE) }
           else wildKind = merge(wildKind, elemOf(source))
-          for (const sid of shapesInCell(c)) { if (openSchemas.has(sid) || lostSchema(sid)) { wildKind = ANY; continue } for (let j = 0; j < schemas[sid].length; j++) if (!isBrand(schemas[sid][j])) add(schemas[sid][j], slots(sid)[j]) }
+          for (const sid of shapesInCell(c)) { if (openSchemas.has(sid) || lostSchema(sid)) { wildKind = ANY; continue } for (const [key, k] of ownEntries(sid)) add(key, k) }
           continue
         }
         // Conditional insertion uses a dictionary even when every present
@@ -1832,7 +1842,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (isNullable(source) || ids.some(sid => openSchemas.has(sid))) {
           dynamic = true
           for (const sid of ids) {
-            for (let j = 0; j < schemas[sid].length; j++) if (!isBrand(schemas[sid][j])) add(schemas[sid][j], slots(sid)[j])
+            for (const [key, k] of ownEntries(sid)) add(key, k)
             for (const [name, k] of sideProps.get(sid) ?? []) add(name, k)
             if (sideWild.has(sid)) wildKind = merge(wildKind, sideWild.get(sid))
           }
@@ -1842,15 +1852,13 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         // name is what the sources holding it store, absent for the others.
         if (ids.some(sid => layouts[sid] !== layouts[sourceSid])) {
           dynamic = true
-          const keys = new Set(); for (const sid of ids) for (const key of schemas[sid]) if (!isBrand(key)) keys.add(key)
-          for (const key of keys) { let value = K.NONE; for (const sid of ids) { const j = schemas[sid].indexOf(key); value = merge(value, j < 0 ? ABSENT : slots(sid)[j]) } add(key, value) }
+          const own = ids.map(sid => new Map(ownEntries(sid)))
+          const keys = new Set(); for (const m of own) for (const key of m.keys()) keys.add(key)
+          for (const key of keys) { let value = K.NONE; for (const m of own) value = merge(value, m.has(key) ? m.get(key) : ABSENT); add(key, value) }
           continue
         }
-        for (let j = 0; j < schemas[sourceSid].length; j++) {
-          let value = K.NONE
-          for (const sid of ids) value = merge(value, slots(sid)[j])
-          add(schemas[sourceSid][j], value)
-        }
+        const own = ids.map(ownEntries)
+        own[0].forEach(([key], j) => { let value = K.NONE; for (const entries of own) value = merge(value, entries[j][1]); add(key, value) })
       } else {
         if (Array.isArray(p)) for (let j = 1; j < p.length; j++) escape(expr(p[j]))
         dynamic = true; wildKind = ANY
@@ -1920,6 +1928,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       const i = schemas[paramOf(recv)].indexOf(prop)
       if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
+      // a deleted accessor reads as absent, or as whatever a store added under its name
+      if (gi >= 0 && deletable.has(paramOf(recv))) return optionalResult(op, recv, ANY)
       if (gi >= 0) {
         const g = slots(paramOf(recv))[gi]
         return optionalResult(op, recv, knownClosure(g) ? callClosure(paramOf(g), sp, 0, null, recv) : tagOf(g) === K.NONE ? K.NONE : ANY)

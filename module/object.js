@@ -19,6 +19,8 @@ import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder } from '../s
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR, HEAP } from '../layout.js'
+import { enumView, enumKeys, viewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
+import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -363,11 +365,11 @@ export default (ctx) => {
     // flattened function property or a store through an alias; the summary
     // sees the object.
     const closed = typeof obj === 'string' ? closedLayoutOf(obj) : null
-    if (closed) return emitStringArray(closed)
+    if (closed) return emitStringArray(enumKeys(closed))
     const schema = runtimePresence(obj) ? null : resolveSchema(obj)
     const literalUnsafe = Array.isArray(obj) && obj[0] === '{}' && hasUnsafeLiteralValueEffect(obj)
     if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj) && !literalUnsafe)
-      return emitStringArray(schema)
+      return emitStringArray(enumKeys(schema))
     // Unknown receiver, schema with possible dyn props, or (rare) a direct
     // literal argument whose values aren't provably side-effect-free: dispatch
     // on ptr-type at runtime (HASH probe table / OBJECT schema+dyn merge /
@@ -402,7 +404,7 @@ export default (ctx) => {
     const assigned = Array.isArray(obj) && obj[0] === '=' && typeof obj[1] === 'string'
     const closed = typeof obj === 'string' || assigned ? closedLayoutOf(obj) : null
     if (closed) {
-      const slots = closed.map(name => extractF64Bits(asF64(emit(['str', name]))))
+      const slots = enumKeys(closed).map(name => extractF64Bits(asF64(emit(['str', name]))))
       if (slots.every(b => b !== null)) {
         const pool = staticArrayPtr(slots)
         return assigned ? typed(['block', ['result', 'f64'], ['drop', asF64(emit(obj))], pool], 'f64') : pool
@@ -417,7 +419,7 @@ export default (ctx) => {
     if (!ctx.types.anyDelete && typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
       const schema = runtimePresence(obj) ? null : resolveSchema(obj)
       if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj)) {
-        const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
+        const slots = enumKeys(schema).map(name => extractF64Bits(asF64(emit(['str', name]))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
       }
     }
@@ -434,7 +436,7 @@ export default (ctx) => {
     const litKey = Array.isArray(key) && key[0] === 'str' ? String(key[1]) : null
     if (litKey != null) {
       if (Array.isArray(obj) && obj[0] === '{}') {
-        const has = obj.slice(1).some(p => Array.isArray(p) && p[0] === ':' && String(p[1]) === litKey)
+        const has = enumKeys(literalProps(obj).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])).some(k => String(k) === litKey)
         return typed(['block', ['result', 'i32'],
           ['drop', asF64(emit(obj))],
           ['i32.const', has ? 1 : 0]], 'i32')
@@ -521,13 +523,13 @@ export default (ctx) => {
     const schema = resolveSchema(obj)
     if (!schema || hasOutOfSchemaWrites(obj, schema) || mayHaveDynProps(obj)) return emitRuntimeValues(obj)
     const va = asF64(emit(obj))
-    const n = schema.length
+    const entries = enumEntries(schema)
     const t = temp('ov'), base = tempI32('vb')
-    const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
+    const out = allocPtr({ type: PTR.ARRAY, len: entries.length, tag: 'oa' })
     const body = [['local.set', `$${t}`, va], out.init,
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
-    for (let i = 0; i < n; i++)
-      body.push(['f64.store', slotAddr(out.local, i), ctx.abi.object.ops.load(['local.get', `$${base}`], i)])
+    entries.forEach((e, i) =>
+      body.push(['f64.store', slotAddr(out.local, i), enumValue(e, ['local.get', `$${base}`], ['local.get', `$${t}`])]))
     body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -584,18 +586,16 @@ export default (ctx) => {
     const schema = resolveSchema(obj)
     if (!schema || hasOutOfSchemaWrites(obj, schema) || mayHaveDynProps(obj)) return emitRuntimeEntries(obj)
     const va = asF64(emit(obj))
-    const n = schema.length
+    const entries = enumEntries(schema)
     const t = temp('oe'), pair = tempI32('op'), base = tempI32('eb')
-    const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
+    const out = allocPtr({ type: PTR.ARRAY, len: entries.length, tag: 'oa' })
     const body = [['local.set', `$${t}`, va], out.init,
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
-    for (let i = 0; i < n; i++) {
-      body.push(
-        ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
-        ['f64.store', slotAddr(pair, 0), emit(['str', schema[i]])],
-        ['f64.store', slotAddr(pair, 1), ctx.abi.object.ops.load(['local.get', `$${base}`], i)],
-        ['f64.store', slotAddr(out.local, i), mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])])
-    }
+    entries.forEach((e, i) => body.push(
+      ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+      ['f64.store', slotAddr(pair, 0), emit(['str', e.key])],
+      ['f64.store', slotAddr(pair, 1), enumValue(e, ['local.get', `$${base}`], ['local.get', `$${t}`])],
+      ['f64.store', slotAddr(out.local, i), mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])]))
     body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -1013,6 +1013,41 @@ function closedLayoutOf(obj) {
   return sid == null ? null : ctx.schema.list[sid] ?? null
 }
 
+// The value an enumerated entry reads off an object, `base` its payload and
+// `obj` its box: the slot, the getter's result (compile/emit/accessor-call.js),
+// or undefined for a setter alone.
+const enumValue = (e, base, obj) => e.kind === ENUM_DATA ? ctx.abi.object.ops.load(base, e.slot)
+  : e.kind === ENUM_GET ? ['call', `$${ACCESSOR_CALL}`, ctx.abi.object.ops.load(base, e.slot), obj, undefExpr()]
+  : undefExpr()
+
+// Every entry a layout enumerates, a data slot per name when it has no view.
+const enumEntries = (names) => enumView(names) ?? names.map((key, slot) => ({ key, slot, kind: ENUM_DATA }))
+
+// Point a walk's schema row (`src`, `sn`) at the layout's view keys, and `map`
+// at its map, when `sid` has a view: `__schema_view[sid]`
+// (src/wat/assemble/start-fn.js) holds an accessor-bearing layout's view keys
+// and its map, each position's `slot + kind·2^24 + (setter slot + 1)·2^26`.
+const viewRowIR = (sid, src, sn, map) => {
+  const at = (k) => ['i64.load', ['i32.add', ['global.get', '$__schema_view'], ['i32.add', ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 4]], ['i32.const', k]]]]
+  const off = (k) => ['i32.wrap_i64', ['i64.and', at(k), ['i64.const', LAYOUT.OFFSET_MASK]]]
+  return ['if', ['i32.ne', ['global.get', '$__schema_view'], ['i32.const', 0]], ['then',
+    ['if', ['i64.ne', at(0), ['i64.const', 0]], ['then',
+      ['local.set', `$${src}`, off(0)],
+      ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
+      ['local.set', `$${map}`, off(8)]]]]]
+}
+
+// A schema slot's value in a walk (walkObjectProperties): the slot, or under a
+// view (`kind`) its getter's result, undefined for a setter alone.
+const slotValue = ({ base, i, kind, obj }) => {
+  const load = ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
+  if (!kind) return load
+  return ['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${kind}`]], ['then', load],
+    ['else', ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${kind}`], ['i32.const', ENUM_GET]],
+      ['then', ['call', `$${ACCESSOR_CALL}`, load, ['local.get', `$${obj}`], undefExpr()]],
+      ['else', undefExpr()]]]]
+}
+
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)
   const errSchema = errorLiteralSchema(obj)
@@ -1099,7 +1134,8 @@ function mergeSpreadNames(props) {
       if (conditionalSpreadGroup(p[1])) return null
       const s = spreadSourceSchema(p[1])
       if (!s) return null
-      for (const n of s) if (!seen.has(n)) { seen.add(n); names.push(n) }
+      // a spread copies values: an accessor is the data key it defines (module/schema.js enumView)
+      for (const n of enumKeys(s)) if (!seen.has(n)) { seen.add(n); names.push(n) }
     } else if (Array.isArray(p) && p[0] === ':' && !seen.has(p[1])) {
       seen.add(p[1]); names.push(p[1])
     }
@@ -1189,7 +1225,18 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
             ['else', ...absent]])
         continue
       }
-      const sSchema = spreadSourceSchema(p[1])
+      const sSchema = spreadSourceSchema(p[1]), view = enumView(sSchema)
+      if (view) {
+        // each key's value, once: an accessor through its getter (enumValue)
+        const sv = temp('ospv')
+        body.push(['local.set', `$${sv}`, asF64(emit(p[1]))],
+          ['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sv}`]]]])
+        for (const e of view) {
+          const ti = schema.indexOf(e.key)
+          if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, enumValue(e, ['local.get', `$${src}`], ['local.get', `$${sv}`])))
+        }
+        continue
+      }
       body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(p[1]))]]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = schema.indexOf(sSchema[si])
@@ -1543,6 +1590,16 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
   const get = n => ['local.get', `$${n}`], set = (n, v) => ['local.set', `$${n}`, v]
   const c = n => ['i32.const', n], load = (p, i, shift = 3) => ['i64.load', ['i32.add', get(p), ['i32.shl', get(i), c(shift)]]]
   const { src, sn, base, mask, ordS, dnS, ordG, dnG, i, slot } = env
+  // Under an enumeration view (module/schema.js enumView) the schema stream
+  // walks the view's keys: `row` is the position (keys, dedup), decoded
+  // through the view's `map` into the slot `i` (values, deletion) and `kind`.
+  const { row = i, map, kind } = env
+  const atRow = (r) => map
+    ? [set(row, r), ['if', get(map), ['then',
+        set(i, ['i32.wrap_i64', ['i64.trunc_f64_u', ['f64.load', ['i32.add', get(map), ['i32.shl', get(row), c(3)]]]]]),
+        set(kind, ['i32.and', ['i32.shr_u', get(i), c(24)], c(3)]), set(i, ['i32.and', get(i), c(0xffffff)])],
+        ['else', set(i, get(row)), set(kind, c(0))]]]
+    : [set(i, r)]
   const key = local('owkey', 'i64'), j = local('owj'), skip = local('owskip'), other = local('owother')
   const pick = local('owpick'), best = local('owbest', 'i64')
   const streams = [{ src, n: sn }, { src: ordS, n: dnS }, { src: ordG, n: dnG }].map((s, n) => ({
@@ -1569,7 +1626,7 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
   const field = ctx.types.anyDelete ? local('owfield') : null
   const staticValue = () => ['if', ['i32.eqz', deletedSlotIR(mask, i, load(base, i))], ['then', ...onStatic()]]
   const arms = streams.map(s => {
-    const emit = s.nsrc === 0 ? [set(i, get(s.pos)),
+    const emit = s.nsrc === 0 ? [...atRow(get(s.pos)),
       ...(field ? [set(skip, c(0)),
         ...scan(`$owinit${pick}`, dnS, dynKey(ordS), [set(skip, c(1))]),
         ...scan(`$owrun${pick}`, dnG, dynKey(ordG), [set(skip, c(1))]),
@@ -1581,7 +1638,10 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
           ...scan(`$owdyn${pick}${s.nsrc}`, s.nsrc === 1 ? dnG : dnS, dynKey(s.nsrc === 1 ? ordG : ordS),
             s.nsrc === 1 ? [set(slot, get(other))] : [set(skip, c(1))]),
           ['if', ['i32.eqz', get(skip)], ['then',
-            ...(field ? [['if', ['i32.ge_s', get(field), c(0)], ['then', set(i, get(field)), staticValue()], ['else', ...onDynamic()]]]
+            // under a view, a deleted accessor a store re-added is the dynamic value
+            ...(field ? [['if', ['i32.ge_s', get(field), c(0)], ['then', ...atRow(get(field)),
+                map ? ['if', ['i32.eqz', deletedSlotIR(mask, i, load(base, i))], ['then', ...onStatic()], ['else', ...onDynamic()]] : staticValue()],
+              ['else', ...onDynamic()]]]
               : onDynamic())]]]]]
     return ['if', ['i32.eq', get(pick), c(s.nsrc)], ['then', set(key, get(s.key)), ...emit,
       set(s.pos, ['i32.add', get(s.pos), c(1)]), ...advance(s)]]
@@ -1633,13 +1693,17 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   const dnGReal = tempI32('oednGr'), dnSReal = tempI32('oednSr')
   const total = tempI32('oetot')
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
+  // Under a view (viewRowIR) the schema stream's position and slot differ.
+  const map = viewsOn() ? tempI32('oemap') : null
+  const row = map ? tempI32('oerow') : i, kind = map ? tempI32('oekind') : null
+  if (map && !ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
   const slot = tempI32('oesl')
   // The deleted-slot mask (layout.js): a deleted schema field keeps undefined in
   // its slot, so its absence is read from the header, not the slot.
   const mask = tempI32('oedm')
   const pair = tempI32('oep')
   const id = freshId(ctx)
-  const env = { out, o, src, base, i, slot, pair }
+  const env = { out, o, src, base, i, slot, pair, row, kind, obj: t }
   // for-in's enum cache is per site (an inline cache): one site enumerates
   // one receiver at a time, and sites in alternation (jessie's parse.space
   // over parse.comment, its number scan over parse.number) must not evict
@@ -1706,6 +1770,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
           ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
           ['i64.const', LAYOUT.OFFSET_MASK]]]],
         ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]]]]]),
+    ...(map ? [['local.set', `$${map}`, ['i32.const', 0]], ...(dynOnly ? [] : [viewRowIR(sid, src, sn, map)])] : []),
     // Dyn-props: heap OBJECTs carry a HASH propsPtr either at base-16
     // (populated by an init-time write, or by any write at all on an
     // EPHEMERAL receiver — one allocated after the post-init high-water
@@ -1791,7 +1856,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
       ['then',
         ['local.set', `$${ordS}`, ['call', '$__prop_order', ['local.get', `$${poffS}`], ['local.get', `$${pcapS}`], ['i32.const', 24]]],
         ['local.set', `$${dnSReal}`, ['global.get', '$__coll_order_n']]]],
-    ...walkObjectProperties({ src, sn, base, mask, ordS, dnS: dnSReal, ordG, dnG: dnGReal, i, slot },
+    ...walkObjectProperties({ src, sn, base, mask, ordS, dnS: dnSReal, ordG, dnG: dnGReal, i, slot, row, map, kind },
       () => [...emitStaticStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]],
       () => [...emitDynStore(env), ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]],
       (name, type) => type === 'i64' ? tempI64(name) : tempI32(name)),
@@ -1803,10 +1868,10 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
 // Object.keys for an OBJECT — copy schema key (i64@src+i*8) then dyn key (i64@slot+8).
 // ro (for-in): serve the static schema array / enum cache — see emitEnumerateObject.
 const objectKeysFromTemp = (t, ro, dynOnly = false) => emitEnumerateObject(t,
-  ({ out, o, src, i }) => [
+  ({ out, o, src, row }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]],
+      ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${row}`], ['i32.const', 3]]]]]],
   ({ out, o, slot }) => [
     ['i64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
@@ -1814,10 +1879,10 @@ const objectKeysFromTemp = (t, ro, dynOnly = false) => emitEnumerateObject(t,
 
 // Object.values for an OBJECT — copy schema value (f64@base+i*8) then dyn value (f64@slot+16).
 const objectValuesFromTemp = (t) => emitEnumerateObject(t,
-  ({ out, o, base, i }) => [
+  (env) => [
     ['f64.store',
-      ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]],
+      ['i32.add', ['local.get', `$${env.out}`], ['i32.shl', ['local.get', `$${env.o}`], ['i32.const', 3]]],
+      slotValue(env)]],
   ({ out, o, slot }) => [
     ['f64.store',
       ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
@@ -1827,15 +1892,14 @@ const objectValuesFromTemp = (t) => emitEnumerateObject(t,
 // schema slot (key from src+i*8, value from base+i*8) then each dyn slot
 // (key@slot+8, value@slot+16) and box the pair into out[o*8].
 const objectEntriesFromTemp = (t) => emitEnumerateObject(t,
-  ({ out, o, src, base, i, pair }) => [
-    ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
-    ['i64.store', ['local.get', `$${pair}`],
-      ['i64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-    ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
-      ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+  (env) => [
+    ['local.set', `$${env.pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+    ['i64.store', ['local.get', `$${env.pair}`],
+      ['i64.load', ['i32.add', ['local.get', `$${env.src}`], ['i32.shl', ['local.get', `$${env.row}`], ['i32.const', 3]]]]],
+    ['f64.store', ['i32.add', ['local.get', `$${env.pair}`], ['i32.const', 8]], slotValue(env)],
     ['f64.store',
-      ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${o}`], ['i32.const', 3]]],
-      mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])]],
+      ['i32.add', ['local.get', `$${env.out}`], ['i32.shl', ['local.get', `$${env.o}`], ['i32.const', 3]]],
+      mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${env.pair}`])]],
   ({ out, o, slot, pair }) => [
     ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
     ['i64.store', ['local.get', `$${pair}`],

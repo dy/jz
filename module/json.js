@@ -9,7 +9,7 @@ import { stringBytes } from '../src/string-data.js'
  * @module json
  */
 
-import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
+import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
 import { emit, bool, deps, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
@@ -21,6 +21,9 @@ import { throwErrorWat } from './core/error-object.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { canonicalKeyOrder } from '../src/ast.js'
 import { walkObjectProperties } from './object.js'
+import { ENUM_DATA, ENUM_GET, viewsOn } from './schema.js'
+import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
+import { TO_JSON } from '../src/compile/emit/to-json.js'
 import print from 'watr/print'
 import { deletedMaskWat } from '../layout.js'
 
@@ -62,15 +65,6 @@ const literalChildren = node => {
   if (node[0] === '{}') return node.slice(1)
     .filter(e => Array.isArray(e) && e[0] === ':').map(e => e[2])
   return []
-}
-const literalTreeHasCallableToJSON = node => {
-  if (!Array.isArray(node)) return false
-  if (node[0] === '{}') for (let i = 1; i < node.length; i++) {
-    const e = node[i]
-    if (Array.isArray(e) && e[0] === ':' && e[1] === 'toJSON' && valTypeOf(e[2]) === VAL.CLOSURE)
-      return true
-  }
-  return literalChildren(node).some(literalTreeHasCallableToJSON)
 }
 const literalTreeHasDynamicRegex = node => {
   if (typeof node === 'string') return valTypeOf(node) === VAL.REGEX
@@ -185,20 +179,25 @@ function hashCapFor(n) {
 }
 
 export default (ctx) => {
+  // JSON.stringify's toJSON step (compile/emit/to-json.js): a program defining
+  // toJSON passes each value through it, with its key, before the omit test.
+  const toJSON = () => !!ctx.funcs.runtimeRoots?.has(TO_JSON)
+  const toJSONDeps = () => toJSON() ? ['__json_to'] : []
   deps({
-    __stringify: ['__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
+    __stringify: () => [...toJSONDeps(), '__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
+    __json_to: ['__ptr_type'],
     __json_setgap: ['__alloc', '__ptr_type', '__str_length', '__char_at'],
     __json_omit: ['__ptr_type', '__ptr_aux'],
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
-    __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
-    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order'],
+    __json_val: () => [...toJSONDeps(), '__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
+    __json_hash: () => [...toJSONDeps(), '__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order'],
     // Durable-receiver global-table merge (see __json_obj's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
     // machinery is actually part of this build (mirrors array.js's
     // needsArrayDynMove-gated deps thunks) — a program that never writes a
     // dynamic prop anywhere never loads collection.js.
-    __json_obj: () => [...(ctx.schema.dateSid != null ? ['__date_to_iso_string'] : []),
+    __json_obj: () => [...toJSONDeps(), ...(ctx.schema.dateSid != null ? ['__date_to_iso_string'] : []),
       '__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val', '__prop_order', '__str_index_key', '__str_eq',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     // Chain edges ($__jput_num → $__jput_str → $__jput): each body CALLS the
@@ -476,7 +475,19 @@ export default (ctx) => {
     (global.set $__jsp (i32.sub (global.get $__jsp) (i32.const 1))))`
 
   // __json_val(val: i64) — stringify any value, append to buffer
-  ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val i64)
+  // A value keyed `key` through its toJSON (to-json.js): an object, a
+  // dictionary or an array; anything else serializes as itself.
+  ctx.core.stdlib['__json_to'] = () => `(func $__json_to (param $val i64) (param $key i64) (result i64)
+    (local $t i32)
+    (if (f64.eq (f64.reinterpret_i64 (local.get $val)) (f64.reinterpret_i64 (local.get $val))) (then (return (local.get $val))))
+    (local.set $t (call $__ptr_type (local.get $val)))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
+          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.HASH})) (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))))
+      (then (return (i64.reinterpret_f64 (call $${TO_JSON} (f64.reinterpret_i64 (local.get $val)) (f64.reinterpret_i64 (local.get $key)))))))
+    (local.get $val))`
+  // `wat` keyed `key`, through its toJSON where the program defines one.
+  const jsonTo = (wat, key) => toJSON() ? `(call $__json_to ${wat} ${key})` : wat
+  ctx.core.stdlib['__json_val'] = () => `(func $__json_val (param $val i64)
     (local $type i32) (local $len i32) (local $i i32) (local $off i32) (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $val)))
     ;; Number (not NaN) — but Infinity must be null per JSON spec
@@ -525,7 +536,7 @@ export default (ctx) => {
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (if (local.get $i) (then (call $__jput (i32.const 44))))  ;; ,
           (call $__jindent)
-          (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (call $__json_val ${jsonTo('(i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))', '(i64.reinterpret_f64 (f64.convert_i32_s (local.get $i)))')})
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l)))
         (if (i32.gt_s (local.get $len) (i32.const 0))
@@ -554,7 +565,7 @@ export default (ctx) => {
   // __json_hash(val: i64) — stringify HASH/MAP: emit {"key":val,...} in insertion
   // order. Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. __coll_order
   // returns the n live slot offsets sorted by packed seq, matching the JS spec.
-  ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val i64)
+  ctx.core.stdlib['__json_hash'] = () => `(func $__json_hash (param $val i64)
     (local $off i32) (local $cap i32) (local $n i32) (local $i i32) (local $slot i32) (local $ord i32) (local $first i32) (local $pv i64)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -569,7 +580,7 @@ export default (ctx) => {
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
       (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
-      (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
+      (local.set $pv ${jsonTo('(i64.load (i32.add (local.get $slot) (i32.const 16)))', '(i64.load (i32.add (local.get $slot) (i32.const 8)))')})
       (if (i32.eqz (call $__json_omit (local.get $pv)))
         (then
           (if (i32.eqz (local.get $first))
@@ -599,8 +610,14 @@ export default (ctx) => {
   // at the time this string would eagerly evaluate).
   ctx.core.stdlib['__json_obj'] = () => {
     const locals = []
+    // A layout with an object literal's accessor serializes its view
+    // (module/schema.js enumView, object.js viewRowIR): keys by position, each
+    // value through its slot's getter; a setter alone is undefined, so omitted.
+    const views = viewsOn()
+    if (views && !ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
+    const viewRow = (k) => ['i64.load', ['i32.add', ['global.get', '$__schema_view'], ['i32.add', ['i32.shl', ['local.get', '$sid'], ['i32.const', 4]], ['i32.const', k]]]]
     const property = (key, value) => [
-      ['local.set', '$pv', value],
+      ['local.set', '$pv', toJSON() ? ['call', '$__json_to', value, key] : value],
       ['if', ['i32.eqz', ['call', '$__json_omit', ['local.get', '$pv']]], ['then',
         ['if', ['i32.eqz', ['local.get', '$first']], ['then', ['call', '$__jput', ['i32.const', 44]]]],
         ['local.set', '$first', ['i32.const', 0]], ['call', '$__jindent'],
@@ -609,8 +626,15 @@ export default (ctx) => {
         ['if', ['global.get', '$__jgaplen'], ['then', ['call', '$__jput', ['i32.const', 32]]]],
         ['call', '$__json_val', ['local.get', '$pv']]]]]
     const at = base => ['i64.load', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', '$i'], ['i32.const', 3]]]]
-    const walk = walkObjectProperties({ src: 'koff', sn: 'nkeys', base: 'off', mask: 'mask', ordS: 'ordS', dnS: 'dnS', ordG: 'ordG', dnG: 'dnG', i: 'i', slot: 'slot' },
-      () => property(at('$koff'), at('$off')),
+    const slotValue = () => !views ? at('$off')
+      : ['if', ['result', 'i64'], ['i32.eq', ['local.get', '$kind'], ['i32.const', ENUM_DATA]], ['then', at('$off')],
+        ['else', ['if', ['result', 'i64'], ['i32.eq', ['local.get', '$kind'], ['i32.const', ENUM_GET]],
+          ['then', ['i64.reinterpret_f64', ['call', `$${ACCESSOR_CALL}`, ['f64.reinterpret_i64', at('$off')],
+            ['f64.reinterpret_i64', ['local.get', '$val']], ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]],
+          ['else', ['i64.const', UNDEF_NAN]]]]]
+    const walk = walkObjectProperties({ src: 'koff', sn: 'nkeys', base: 'off', mask: 'mask', ordS: 'ordS', dnS: 'dnS', ordG: 'ordG', dnG: 'dnG', i: 'i', slot: 'slot',
+        ...(views ? { row: 'row', map: 'map', kind: 'kind' } : {}) },
+      () => property(views ? ['i64.load', ['i32.add', ['local.get', '$koff'], ['i32.shl', ['local.get', '$row'], ['i32.const', 3]]]] : at('$koff'), slotValue()),
       () => property(['i64.load', ['i32.add', ['local.get', '$slot'], ['i32.const', 8]]], ['i64.load', ['i32.add', ['local.get', '$slot'], ['i32.const', 16]]]),
       (name, type = 'i32') => { const n = name + locals.length; locals.push(['local', '$' + n, type]); return n })
     return `(func $__json_obj (param $val i64)
@@ -618,6 +642,7 @@ export default (ctx) => {
     (local $mask i32)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32) (local $first i32) (local $pv i64)
+    ${views ? '(local $row i32) (local $map i32) (local $kind i32)' : ''}
     (local $props i64) (local $slot i32) (local $j i32) (local $skip i32)
     ;; Two dyn-prop sources for a DURABLE receiver — see collection.js's
     ;; heapResetWat and module/object.js's emitEnumerateObject for the full
@@ -651,6 +676,13 @@ export default (ctx) => {
           (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
         (local.set $nkeys (call $__len
           (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))))
+    ${views ? `(local.set $map (i32.const 0))
+    (if (i32.ne (global.get $__schema_view) (i32.const 0))
+      (then (if (i64.ne ${print(viewRow(0))} (i64.const 0))
+        (then
+          (local.set $koff (call $__ptr_offset ${print(viewRow(0))}))
+          (local.set $nkeys (call $__len ${print(viewRow(0))}))
+          (local.set $map (call $__ptr_offset ${print(viewRow(8))}))))))` : ''}
     (local.set $first (i32.const 1))
     (call $__json_enter (local.get $val))
     (call $__jput (i32.const 123))
@@ -709,7 +741,9 @@ export default (ctx) => {
   }
 
   // __stringify(val: i64, space: i64) → f64 (NaN-boxed string)
-  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (param $space i64) (result f64)
+  ctx.core.stdlib['__stringify'] = () => `(func $__stringify (param $val i64) (param $space i64) (result f64)
+    ${toJSON() ? `;; the root's key is the empty string
+    (local.set $val (call $__json_to (local.get $val) (i64.const ${extractF64Bits(mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0))})))` : ''}
     ;; Top-level undefined / function serializes to nothing → return undefined.
     (if (call $__json_omit (local.get $val)) (then (return ${UNDEF_WAT})))
     ;; Reset output buffer + cycle stack
@@ -1446,8 +1480,6 @@ ${localDecls}
   // the runtime call entirely. The runtime `__stringify` path (which ignores a
   // replacer) handles every non-constant case unchanged.
   ctx.core.emit['JSON.stringify'] = (x, replacer, space) => {
-    if (literalTreeHasCallableToJSON(x))
-      err('JSON.stringify callable toJSON hooks are not supported; call toJSON explicitly before stringifying')
     if (literalTreeHasDynamicRegex(x))
       err('JSON.stringify cannot serialize a dynamically nested RegExp value; stringify it separately or replace it with a plain object')
     // An explicit `null`/`undefined` replacer is spec-equivalent to none; only a

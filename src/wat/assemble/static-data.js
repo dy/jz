@@ -46,7 +46,9 @@ export function stripDeadLazyTables(sec) {
   const scan = (n) => walkAst(n, { enter: x => {
     if ((x[0] === 'call' || x[0] === 'return_call' || x[0] === 'ref.func') && typeof x[1] === 'string') mark(x[1])
   } })
-  for (const f of sec.funcs) if (f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
+  // an exported func is a root, a stdlib one that exports itself too (collection.js __view_data)
+  for (const arr of [sec.funcs, sec.stdlib])
+    for (const f of arr || []) if (Array.isArray(f) && f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
   for (const f of sec.start) scan(f)
   for (const part of [sec.elem, sec.globals, sec.tags, sec.table]) for (const n of part || []) {
     if (!Array.isArray(n)) continue
@@ -133,7 +135,9 @@ export function stripDeadInternedSpans(sec) {
     if ((x[0] === 'call' || x[0] === 'return_call' || x[0] === 'ref.func') && typeof x[1] === 'string') mark(x[1])
     else if ((x[0] === 'global.get' || x[0] === 'global.set') && typeof x[1] === 'string') liveGlobals.add(x[1].slice(1))
   } })
-  for (const f of sec.funcs) if (f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
+  // an exported func is a root, a stdlib one that exports itself too (collection.js __view_data)
+  for (const arr of [sec.funcs, sec.stdlib])
+    for (const f of arr || []) if (Array.isArray(f) && f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
   // An inline-exported global (`declGlobal(name, ty, init, { export: '…' })`) is a
   // host-facing root exactly like an exported func — live with no in-wasm
   // reference at all, same rule optimize/index.js's dead-global elimination

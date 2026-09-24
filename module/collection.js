@@ -28,6 +28,8 @@ import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { withControlFrame } from '../src/compile/flow-state.js'
 import { captureCallback } from './array/callback.js'
+import { ENUM_DATA, ENUM_GET, enumKeys, viewsOn } from './schema.js'
+import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 // Inline only compact closed schemas. SSO bit compares are tiny; heap-string
@@ -216,9 +218,18 @@ export default (ctx) => {
   // self-compile's auto-scan would otherwise drop these helpers and every
   // kernel-compiled `.delete()` would trap.
   const relogDeps = () => needsDurableFwdLog() ? ['__durable_slot_relog', '__durable_slot_cancel'] : []
+  // A program that builds an object literal with an accessor resolves a
+  // computed key through a layout's view as well (__view_find below).
+  const viewDeps = (...names) => viewsOn() ? ['__view_find', ...names] : []
   deps({
     __schema_slot: ['__str_eq', '__str_hash'],
     __schema_slot_h: ['__str_eq'],
+    __view_find: ['__str_eq'],
+    __view_get: ['__view_find'],
+    __view_set: ['__view_find'],
+    __view_del: ['__view_find'],
+    __view_has: [],
+    __view_data: ['__hash_new', '__hash_set_local', '__ptr_type', '__ptr_offset', '__prop_order'],
     __same_value_zero: ['__str_eq'],
     __map_hash: ['__hash', '__str_hash'],
     // '__durable_fwd_log' on __set_add/__map_set/__hash_set/__hash_set_local: an
@@ -239,7 +250,7 @@ export default (ctx) => {
     __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
-    __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
+    __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals', ...viewDeps('__view_has', '__view_data')],
     __sclone_hash_vals: ['__sclone_rec'],
     __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
@@ -282,8 +293,8 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
-    __dyn_get_t_hm: () => ['__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => [...viewDeps('__view_get'), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_hm: () => [...viewDeps('__view_get'), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
@@ -299,10 +310,10 @@ export default (ctx) => {
       '__dyn_get_t_h', '__hash_get_local_h', ...(ctx.linkDemand.external ? ['__ext_prop'] : []),
     ],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: () => ['__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
+    __dyn_set: () => [...viewDeps('__view_set'), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
-    __dyn_del: ['__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
+    __dyn_del: () => [...viewDeps('__view_del'), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux', '__str_eq'],
     __str_arr_idx: ['__str_length', '__char_at'],
     __typed_str_idx: ['__str_length', '__char_at'],
     __typed_key_idx: ['__typed_str_idx', '__str_eq', '__to_num', '__ftoa', '__str_length', '__char_at'],
@@ -911,6 +922,14 @@ export default (ctx) => {
 
     (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
       (then
+        ${viewsOn() ? `;; a layout with an object literal's accessor clones its data (__view_data):
+        ;; memo first, so a getter answering its own object keeps the cycle
+        (if (call $__view_has (local.get $bits))
+          (then
+            (local.set $out (f64.reinterpret_i64 (call $__view_data (local.get $bits))))
+            (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+            (call $__sclone_hash_vals (call $__ptr_offset (i64.reinterpret_f64 (local.get $out))) (local.get $memo))
+            (return (local.get $out))))` : ''}
         (local.set $out (call $__obj_clone (local.get $v)))
         (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
         ;; deep the schema slots — slot count via aux → schema table, like __obj_clone
@@ -1404,6 +1423,145 @@ export default (ctx) => {
     (i32.const -1))` }
   ctx.core.stdlib['__schema_slot'] = () => schemaSlotBody('__schema_slot', false)
   ctx.core.stdlib['__schema_slot_h'] = () => schemaSlotBody('__schema_slot_h', true)
+  // A computed key naming an object literal's accessor (module/schema.js
+  // enumView) misses the schema search, whose rows hold the accessor's slots
+  // `x__get`/`x__set`: the layout's view (`__schema_view`, start-fn.js) lists it
+  // by name. `__view_find` answers the view entry of `key` on an OBJECT (its
+  // map number, object.js viewRowIR), -1 where the layout has no view or no
+  // such key; `__view_get` reads through the getter (undefined for a setter
+  // alone; TOMB where `key` names no accessor); `__view_set` stores through the
+  // setter and answers whether `key` names an accessor (a getter alone keeps
+  // its value, as in sloppy JS).
+  ctx.core.stdlib['__view_find'] = () => {
+    if (!ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
+    return `(func $__view_find (param $obj i64) (param $key i64) (result i64)
+    (local $row i32) (local $keys i32) (local $n i32) (local $i i32) (local $e i64)
+    ${ctx.types.anyDelete ? '(local $off i32) (local $slot i32) (local $dmask i32) (local $val i64)' : ''}
+    (if (i32.eqz (global.get $__schema_view)) (then (return (i64.const -1))))
+    (local.set $row (i32.add (global.get $__schema_view) (i32.shl
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))
+      (i32.const 4))))
+    (if (i64.eqz (i64.load (local.get $row))) (then (return (i64.const -1))))
+    (local.set $keys (i32.wrap_i64 (i64.and (i64.load (local.get $row)) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $n (i32.load (i32.sub (local.get $keys) (i32.const 8))))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (if (call $__str_eq (i64.load (i32.add (local.get $keys) (i32.shl (local.get $i) (i32.const 3)))) (local.get $key))
+        (then
+          (local.set $e (i64.trunc_f64_u (f64.load (i32.add
+            (i32.wrap_i64 (i64.and (i64.load offset=8 (local.get $row)) (i64.const ${LAYOUT.OFFSET_MASK})))
+            (i32.shl (local.get $i) (i32.const 3))))))
+          ${ctx.types.anyDelete ? `;; a deleted accessor is gone (__view_del)
+          (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+          (local.set $slot (i32.and (i32.wrap_i64 (local.get $e)) (i32.const 0xffffff)))
+          (local.set $dmask ${deletedMaskWat('$off')})
+          (local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $slot) (i32.const 3)))))
+          (if ${deletedSlotWat('$dmask', '$slot', '$val')} (then (return (i64.const -1))))` : ''}
+          (return (local.get $e))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan)))
+    (i64.const -1))`
+  }
+  // The accessor slot's closure: a view entry's low 24 bits, or its setter's (bits 26 on, + 1).
+  const viewSlotWat = (slot) => `(f64.load (i32.add (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))) (i32.shl ${slot} (i32.const 3))))`
+  ctx.core.stdlib['__view_get'] = () => `(func $__view_get (param $obj i64) (param $key i64) (result i64)
+    (local $e i64) (local $w i32)
+    (local.set $e (call $__view_find (local.get $obj) (local.get $key)))
+    (local.set $w (i32.and (i32.shr_u (i32.wrap_i64 (local.get $e)) (i32.const 24)) (i32.const 3)))
+    (if (i32.or (i64.lt_s (local.get $e) (i64.const 0)) (i32.eq (local.get $w) (i32.const ${ENUM_DATA})))
+      (then (return (i64.const ${TOMB_NAN}))))
+    (if (i32.eq (local.get $w) (i32.const ${ENUM_GET}))
+      (then (return (i64.reinterpret_f64 (call $${ACCESSOR_CALL}
+        ${viewSlotWat('(i32.and (i32.wrap_i64 (local.get $e)) (i32.const 0xffffff))')}
+        (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))))
+    (i64.const ${UNDEF_NAN}))`
+  ctx.core.stdlib['__view_set'] = () => `(func $__view_set (param $obj i64) (param $key i64) (param $val i64) (result i32)
+    (local $e i64) (local $s i32)
+    (local.set $e (call $__view_find (local.get $obj) (local.get $key)))
+    (if (i32.or (i64.lt_s (local.get $e) (i64.const 0))
+          (i32.eqz (i32.and (i32.shr_u (i32.wrap_i64 (local.get $e)) (i32.const 24)) (i32.const 3))))
+      (then (return (i32.const 0))))
+    (local.set $s (i32.wrap_i64 (i64.shr_u (local.get $e) (i64.const 26))))
+    (if (local.get $s) (then (drop (call $${ACCESSOR_CALL}
+      ${viewSlotWat('(i32.sub (local.get $s) (i32.const 1))')}
+      (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $val))))))
+    (i32.const 1))`
+  // `delete o[k]` of an accessor: both its slots read undefined and are marked
+  // deleted (layout.js); answers whether `key` names one.
+  ctx.core.stdlib['__view_del'] = () => `(func $__view_del (param $obj i64) (param $key i64) (result i32)
+    (local $e i64) (local $off i32) (local $s i32)
+    (local.set $e (call $__view_find (local.get $obj) (local.get $key)))
+    (if (i32.or (i64.lt_s (local.get $e) (i64.const 0))
+          (i32.eqz (i32.and (i32.shr_u (i32.wrap_i64 (local.get $e)) (i32.const 24)) (i32.const 3))))
+      (then (return (i32.const 0))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $s (i32.and (i32.wrap_i64 (local.get $e)) (i32.const 0xffffff)))
+    (i64.store (i32.add (local.get $off) (i32.shl (local.get $s) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+    ${markDeletedSlotWat('$off', '$s', true)}
+    (local.set $s (i32.wrap_i64 (i64.shr_u (local.get $e) (i64.const 26))))
+    (if (local.get $s) (then
+      (local.set $s (i32.sub (local.get $s) (i32.const 1)))
+      (i64.store (i32.add (local.get $off) (i32.shl (local.get $s) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+      ${markDeletedSlotWat('$off', '$s', true)}))
+    (i32.const 1))`
+  // Whether an OBJECT's layout has a view (__schema_view).
+  ctx.core.stdlib['__view_has'] = () => {
+    if (!ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
+    return `(func $__view_has (param $obj i64) (result i32)
+    (if (result i32) (i32.eqz (global.get $__schema_view)) (then (i32.const 0))
+      (else (i64.ne (i64.load (i32.add (global.get $__schema_view) (i32.shl
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))
+        (i32.const 4)))) (i64.const 0)))))`
+  }
+  // An object with an object literal's accessor copied as data (a spread of an
+  // unknown source, structuredClone: core.js __obj_clone, __sclone_rec; the host,
+  // interop.js decoding such an object, through the export): a
+  // dictionary of its view's keys, each value read once (the getter's result,
+  // undefined for a setter alone), then the keys a write added after the
+  // literal, from its sidecar, in insertion order. A deleted field stays absent.
+  // Bits in and out: the host passes a pointer as an i64, which keeps its payload.
+  ctx.core.stdlib['__view_data'] = () => `(func $__view_data (export "__view_data") (param $bits i64) (result i64)
+    (local $row i32) (local $keys i32) (local $map i32) (local $n i32) (local $i i32)
+    (local $w i32) (local $off i32) (local $h i64) (local $val i64) (local $props i64) (local $poff i32) (local $slot i32)
+    ${ctx.types.anyDelete ? '(local $dmask i32)' : ''}
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $row (i32.add (global.get $__schema_view) (i32.shl
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))
+      (i32.const 4))))
+    (local.set $keys (i32.wrap_i64 (i64.and (i64.load (local.get $row)) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $map (i32.wrap_i64 (i64.and (i64.load offset=8 (local.get $row)) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $n (i32.load (i32.sub (local.get $keys) (i32.const 8))))
+    ${ctx.types.anyDelete ? `(local.set $dmask ${deletedMaskWat('$off')})` : ''}
+    (local.set $h (i64.reinterpret_f64 (call $__hash_new)))
+    (block $vd (loop $vl
+      (br_if $vd (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $w (i32.wrap_i64 (i64.trunc_f64_u (f64.load (i32.add (local.get $map) (i32.shl (local.get $i) (i32.const 3)))))))
+      (local.set $slot (i32.and (local.get $w) (i32.const 0xffffff)))
+      (local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $slot) (i32.const 3)))))
+      (local.set $w (i32.and (i32.shr_u (local.get $w) (i32.const 24)) (i32.const 3)))
+      (if ${ctx.types.anyDelete ? `(i32.eqz ${deletedSlotWat('$dmask', '$slot', '$val')})` : '(i32.const 1)'} (then
+        (if (i32.eq (local.get $w) (i32.const ${ENUM_GET}))
+          (then (local.set $val (i64.reinterpret_f64 (call $${ACCESSOR_CALL}
+            (f64.reinterpret_i64 (local.get $val)) (f64.reinterpret_i64 (local.get $bits)) (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))))
+        (if (i32.gt_u (local.get $w) (i32.const ${ENUM_GET})) (then (local.set $val (i64.const ${UNDEF_NAN}))))
+        (local.set $h (call $__hash_set_local (local.get $h)
+          (i64.load (i32.add (local.get $keys) (i32.shl (local.get $i) (i32.const 3)))) (local.get $val)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $vl)))
+    (if (i32.ge_u (local.get $off) (global.get $__heap_start)) (then
+      (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+      (if (i32.eq (call $__ptr_type (local.get $props)) (i32.const ${PTR.HASH})) (then
+        (local.set $poff (call $__ptr_offset (local.get $props)))
+        (local.set $map (call $__prop_order (local.get $poff) (i32.load (i32.sub (local.get $poff) (i32.const 4))) (i32.const 24)))
+        (local.set $n (global.get $__coll_order_n))
+        (local.set $i (i32.const 0))
+        (block $sd (loop $sl
+          (br_if $sd (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $slot (i32.load (i32.add (local.get $map) (i32.shl (local.get $i) (i32.const 2)))))
+          (local.set $h (call $__hash_set_local (local.get $h) (i64.load offset=8 (local.get $slot)) (i64.load offset=16 (local.get $slot))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $sl)))))))
+    (local.get $h))`
   // The schema arm of a dynamic read, FIRST for an OBJECT receiver: a schema
   // field lives in its slot only (buildObjectSchemaSetArm's invariant), so a
   // read of a schema key is the slot and never probes a sidecar. A deleted
@@ -1428,7 +1586,12 @@ export default (ctx) => {
                (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))`
             : `(local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))
                (local.set $dmask ${deletedMaskWat('$off')})
-               (return (select (i64.const ${TOMB_NAN}) (local.get $val) ${deletedSlotWat('$dmask', '$idx', '$val')}))`}))))` : ''
+               (return (select (i64.const ${TOMB_NAN}) (local.get $val) ${deletedSlotWat('$dmask', '$idx', '$val')}))`}))
+        ${!viewsOn() ? '' : !presence ? `
+        (local.set $val (call $__view_get (local.get $obj) (local.get $key)))
+        (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val))))`
+          : `(if (i64.ge_s (call $__view_find (local.get $obj) (local.get $key)) (i64.const 0))
+          (then (return (i64.const ${UNDEF_NAN}))))`}))` : ''
   // Same lazy-gating story as buildObjectSchemaArm above — observed at
   // template-expansion time so schemas registered later in the compile
   // still pull the arm in.
@@ -1452,7 +1615,8 @@ export default (ctx) => {
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
             ${markDeletedSlotWat('$off', '$idx', false)}
             ${ctx.types.anyDelete ? `(if (i32.eqz (local.get $reinsert)) (then (return (local.get $val))))
-            (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))` : '(return (local.get $val))'}))))` : ''
+            (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))` : '(return (local.get $val))'}))
+        ${viewsOn() ? `(if (call $__view_set (local.get $obj) (local.get $key) (local.get $val)) (then (return (local.get $val))))` : ''}))` : ''
 
   // Canonical array-index parse of a string key: '0' | [1-9][0-9]{0,9} within
   // i32 range → the index, else -1. JS property semantics: a canonical numeric
@@ -2112,7 +2276,12 @@ export default (ctx) => {
             (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
             ${markDeletedSlotWat('$off', '$idx', true)}
             (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
-            (local.set $hit (i32.const 1))))))` : ''
+            (local.set $hit (i32.const 1))))
+        ${viewsOn() ? `;; an accessor's own name (__view_find): both its slots go
+        (if (i32.eqz (local.get $hit)) (then
+          (if (call $__view_del (local.get $obj) (local.get $key)) (then
+            (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
+            (local.set $hit (i32.const 1))))))` : ''}))` : ''
 
   ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)
     (local $root i64) (local $props i64) (local $oldProps i64)
@@ -2316,8 +2485,10 @@ export default (ctx) => {
       hasOutOfSchemaWrite = true
       break
     }
+    // its own properties: an accessor is present by its name (module/schema.js enumView)
+    const members = schema && enumKeys(schema)
     let compareCost = 0
-    if (schema) for (const prop of schema) {
+    if (members) for (const prop of members) {
       compareCost += ctx.features.sso && ssoEncode(String(prop)) ? 1 : 3
       if (compareCost > IN_SCHEMA_COMPARE_BUDGET) break
     }
@@ -2328,9 +2499,9 @@ export default (ctx) => {
       ctx.summary?.at(ctx.func.current).openSidOfExpr(obj) == null   // a store the per-name census cannot see
     if (schemaClosed) {
       if (Array.isArray(key) && key[0] === 'str')
-        return typed(['i32.const', schema.includes(key[1]) ? 1 : 0], 'i32')
+        return typed(['i32.const', members.includes(key[1]) ? 1 : 0], 'i32')
 
-      const contentCompare = schema.some(prop => !ctx.features.sso || !ssoEncode(String(prop)))
+      const contentCompare = members.some(prop => !ctx.features.sso || !ssoEncode(String(prop)))
       inc('__is_str_key', '__to_str')
       if (contentCompare) inc('__str_eq')
       const keyTmp = temp('in_key')
@@ -2340,8 +2511,8 @@ export default (ctx) => {
       // Nested result-if chain short-circuits on the first matching field.
       // Canonical SSO keys need only bit equality; longer/non-ASCII names use
       // content equality so host/runtime-built strings remain correct.
-      for (let i = schema.length - 1; i >= 0; i--) {
-        const prop = String(schema[i])
+      for (let i = members.length - 1; i >= 0; i--) {
+        const prop = String(members[i])
         const propBits = asI64(emit(['str', prop]))
         const same = ctx.features.sso && ssoEncode(prop)
           ? ['i64.eq', keyBits, propBits]

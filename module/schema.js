@@ -11,9 +11,46 @@ import { typed, asF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { K, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { inc } from '../src/ctx.js'
-import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey } from '../src/ast.js'
+import { ctx, inc } from '../src/ctx.js'
+import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey, layoutView, accessorOf } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
+
+export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
+
+/** Enumeration's view of a layout in this program (src/ast.js layoutView):
+ *  Object.keys, values and entries, for-in, spread, Object.assign,
+ *  JSON.stringify and a computed key see an object literal's accessor as the
+ *  one property it defines. Null for a layout without one. */
+export const enumView = (names) => layoutView(names, ctx.transform.literalAccessorNames)
+
+/** Whether code the program lowers builds an object literal with an accessor:
+ *  the runtime view table (`__schema_view`, src/wat/assemble/start-fn.js), every
+ *  path that reads it (enumeration, JSON, the computed-key kernels, the data
+ *  copy) and the data copy the module exports turn on with it, and a program
+ *  without one, or with one only in code nothing reaches, pays nothing. Settled
+ *  after the plan (settleViews). */
+export const viewsOn = () => ctx.schema.views
+
+/** Settle viewsOn over `roots`, the prepared bodies the program lowers. */
+export function settleViews(roots) {
+  const acc = ctx.transform.literalAccessorNames
+  ctx.schema.views = !!acc?.size && roots.some(r => buildsView(r, acc))
+}
+
+// An object literal with an accessor's slot (`x__get`, `x__set`) in `n`.
+const buildsView = (n, acc) => {
+  if (!Array.isArray(n)) return false
+  if (n[0] === '{}') {
+    const props = n.length === 2 && Array.isArray(n[1]) && n[1][0] === ',' ? n[1].slice(1) : n.slice(1)
+    if (props.some(p => Array.isArray(p) && p[0] === ':' && accessorOf(p[1], acc))) return true
+  }
+  for (let i = 1; i < n.length; i++) if (buildsView(n[i], acc)) return true
+  return false
+}
+
+/** The keys a layout enumerates, and its own properties: its slots, or its
+ *  view's (an accessor pair is the one key it defines). */
+export const enumKeys = (names) => enumView(names)?.map(e => e.key) ?? names
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
 export function initSchema(ctx) {
