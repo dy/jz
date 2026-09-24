@@ -250,6 +250,11 @@ const createsTypedArrayAlias = (node, name) => some(node, node =>
   (node[0] === '=' && refsAsValue(node[2], name)) ||                              // let b = name / x = name
   ((node[0] === '[' || node[0] === '{}') && node.slice(1).some(e => refsAsValue(e, name))), // [name] / {k:name}
   REFS_THROUGH_ARROWS)
+// A nested function that reads or writes `name` runs when it is called, which
+// the sync around each unsafe statement does not bracket: a mirrored array's
+// closure would reach the scalar slots while memory holds the elements, or the
+// reverse. A fully scalar array has no memory, so its closures stay coherent.
+const capturedByFunction = (node, name) => some(node, n => n[0] === '=>' && refsName(n, name, REFS_IN_EXPR), REFS_THROUGH_ARROWS)
 const rewriteScalarTypedArrayUses = (node, arrays) => {
   if (!Array.isArray(node)) return node
   const op = node[0]
@@ -355,16 +360,19 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     const fixed = fixedScalarTypedArray(decl[2])
     if (fixed == null) continue
     const { len, coerce } = fixed
-    let hasSafeUse = false, hasUnsafeUse = false, hasAliasUse = false
+    let hasSafeUse = false, hasUnsafeUse = false, hasAliasUse = false, captured = false
     for (let j = 0; j < stmts.length; j++) {
       if (j === i) continue
-      if (!refsName(stmts[j], decl[1])) continue
+      // a use inside a nested function is a use: the rewrite reaches it
+      if (!refsName(stmts[j], decl[1], REFS_IN_EXPR)) continue
+      captured ||= capturedByFunction(stmts[j], decl[1])
       const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len, coerce)
       hasSafeUse ||= safe
       hasUnsafeUse ||= !safe
       hasAliasUse ||= createsTypedArrayAlias(stmts[j], decl[1])
     }
     if (hasAliasUse) continue   // persistent aliasing view (subarray) — keep memory-backed
+    if (hasUnsafeUse && captured) continue   // a closure beside a mirrored array — keep memory-backed
     if (hasUnsafeUse && (!hasSafeUse || coerce)) continue
     if (!hasUnsafeUse) candidates.set(decl[1], { index: i, len, coerce, mirrored: false })
     else mirrored.set(decl[1], { index: i, len, coerce, mirrored: true })
@@ -516,6 +524,8 @@ const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
 const scalarizeTypedArrayParams = (func, paramCands) => {
   for (const [name, c] of [...paramCands]) if (!safeScalarTypedArrayUse(func.body, name, c.len, c.coerce)) paramCands.delete(name)
   for (const [name] of [...paramCands]) if (!hasScalarTypedArrayRead(func.body, name)) paramCands.delete(name)
+  // the slots sync with memory at entry and exit only: a closure runs outside both
+  for (const [name] of [...paramCands]) if (capturedByFunction(func.body, name)) paramCands.delete(name)
   if (!paramCands.size) return { body: func.body, changed: false }
   const arrays = new Map()
   for (const [name, c] of paramCands) {

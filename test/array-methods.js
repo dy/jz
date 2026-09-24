@@ -1321,6 +1321,24 @@ test('typed array: writes through a captured alias reach the original (no scalar
   is(runHost(`export let f = () => { let a = new Float64Array(5); for (let i=0;i<5;i++) a[i]=i+1; let arr = [a]; arr[0][0]=99; return a[0] }`).f(), 99)
 })
 
+// A nested function that reads or writes such an array runs whenever it is
+// called, outside the sync around the statement that hands the array to a call:
+// its store went to the scalar while the callee read memory, and a closure that
+// passes the array on read a name the scalarizer had dissolved (a compile error).
+test('typed array: a closure and a callee reach one array (no scalarize desync)', () => {
+  const src = (body) => `const g = (buf, o) => { const a = buf[0]; o.f(); const b = buf[0]; return a * 100 + b }
+export const run = () => { ${body} }`
+  for (const body of [
+    'const buf = new Float64Array(2); buf[0] = 1; const o = { f: () => { buf[0] = 7; return 1 } }; return g(buf, o)',
+    'const buf = new Float64Array(2); buf[0] = 1; const f = () => g(buf, { f: () => 0 }); buf[0] = 4; return f()',
+    'const buf = new Int32Array(2); buf[0] = 1; const f = () => { buf[0] = 7; return buf[1] }; f(); return buf[0] * 10 + buf[1]',
+  ]) for (const optimize of levels(0, 1, 2, 3)) is(jz(src(body), { optimize }).exports.run(), oracle(src(body)).run(), `${body} O${optimize}`)
+  // a parameter's slots were written back only for the stores outside a closure
+  const param = `const k = (b) => { const f = () => { b[0] = 7 }; f(); b[1] = b[0] + 1 }
+export const run = () => { const buf = new Float64Array(2); buf[0] = 1; k(buf); return buf[0] * 10 + buf[1] }`
+  for (const optimize of levels(0, 1, 2, 3)) is(jz(param, { optimize }).exports.run(), 78, `a closure over a parameter O${optimize}`)
+})
+
 // `new T([literals])` / `T.from([…])` builds the typed array natively — alloc + one
 // native-typed store per element — rather than materializing a boxed-f64 ARRAY (every
 // element a 9-byte f64.const) and a per-element f64→elem copy loop. Pins both the
