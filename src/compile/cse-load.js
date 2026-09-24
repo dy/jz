@@ -200,7 +200,7 @@ export function cseLoads(body, isTypedArray, freshName, isNumeric, isReadonlyCal
         avail.set(key, { arr, idxNode: node[2], idxVars: vars, firstStmt: si, occ: [{ parent, idx: pi, numeric }] })
         return                                            // don't descend into a stable index
       }
-      if (node[0] === '()' || node[0] === 'call') { if (!(isReadonlyCall && isReadonlyCall(node))) flush(); for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey); return }
+      if (node[0] === '()' || node[0] === '?.()' || node[0] === 'call') { if (!(isReadonlyCall && isReadonlyCall(node))) flush(); for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey); return }
       for (let i = 1; i < node.length; i++) reads(node[i], node, i, si, noCseKey)
     }
 

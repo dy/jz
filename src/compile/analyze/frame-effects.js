@@ -456,6 +456,12 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       walkExpr(n[1]); walkExpr(n[2])
       return
     }
+    // an optional call is a call when its callee is present: `['?.()', callee, ...args]`
+    if (op === '?.()') {
+      call(n[1], n.length > 3 ? [',', ...n.slice(2)] : n[2])
+      for (let i = 1; i < n.length; i++) walkExpr(n[i])
+      return
+    }
     if (op === 'new') {
       allocates()
       const inner = n[1]
