@@ -265,7 +265,7 @@ const COMPILE_FAMILY_OWNERS = [
   ['intern-table.js', ['buildInternTable']],
   ['func-inspect.js', ['repView', 'captureFuncInspect']],
   ['boundary-wrap.js', ['isBoundaryWrapped', 'synthesizeBoundaryWrappers']],
-  ['coercion-hoist.js', ['hoistInvariantParamCoercions', 'hoistUnionCursorUnbox']],
+  ['coercion-hoist.js', ['hoistUnionCursorUnbox']],
   ['analyze-for-emit.js', ['freshCseName', 'analyzeFuncForEmit', 'seedLocalIntConsts']],
   ['emit-func.js', ['emitFunc']],
   ['closure-emit.js', ['normalizeClosureBody', 'closureSig', 'enterClosureFrame', 'seedClosureFrame', 'analyzeClosureBodyForEmit', 'emitClosureBody']],

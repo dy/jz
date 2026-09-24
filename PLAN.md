@@ -168,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 from npm and watr `5ed6b5d` (on 5.11.3); 5.11.3 carries the two
+- subscript ^10.8.0 from npm and watr `d0f421a` (on 5.11.3); 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -487,6 +487,40 @@ JZ/V8 median time ratios: watr 0.8905, Jessie 0.7705, webaudio 1.4907, sdf
 0.9432, noise 0.6075, crc32 1.0204, sort 1.0477, glyfparse 0.6920. Every
 checksum matched. This is a diagnostic subset, not the complete release dataset.
 Watr/Jessie process RSS was 154380/111584 KiB against V8's 96988/100196 KiB.
+
+## CI follow-up, September 24
+
+Candidate `be6a9f2f` closes the seven original self-host failures. The full
+Wasm-hosted suite passes 3773 tests with one skip; its sole failure, also the
+sole failure in opt0, opt3 and WASI, is an architecture assertion naming the
+removed parameter-coercion hoist. That assertion is corrected in the follow-up.
+The 71 self-compile round-trip tests, fuzz and test262 pass. Default also has
+only that stale assertion (4722 pass, six skips). Bench passes 252 of 253;
+its sole hard failure is alpha's old committed native row, 3.52x versus its
+3.5x cap. Claims retains stale evidence reds.
+
+Watr's fresh size is **312146 B**, below its unchanged **320000 B** cap.
+All eight AS size losses in the old claims snapshot also pass fresh builds:
+bezfit 2949/3017, fft 1707/1758, immutable 1221/1481, lz 1893/1910,
+sdf 2082/2209, shapes 1509/1695, slices 1635/1657 and wordcount 3208/3480
+(JZ/AssemblyScript bytes). These builds do not refresh old timing evidence.
+
+The five-round CI probe on the same candidate (Linux x64 EPYC 9V74, Node
+24.21) gives JZ/V8 median time ratios: watr 0.896, Jessie 0.679, webaudio
+1.362, sdf 0.960, noise 0.625, crc32 0.997, sort 1.046 and glyfparse 0.694.
+All checksums match. Watr/Jessie process RSS is 156072/111568 KiB versus V8's
+98168/101008 KiB. This diagnostic subset leaves webaudio and sort speed and
+both memory gaps open; it does not establish the complete release claims.
+
+A boundary test for a possible load-reuse improvement exposed an existing
+watr unclamp ordering defect: a select reads its index before its guard, but
+an if reads it afterward. The shared optimizer now checks intervening writes
+and retains skipped address effects and traps. Named and numeric slots, zero
+length, negative/boundary indices, signed zero and NaN have regression tests.
+Watr's full suite passes (353 core tests, 268 spec tests; 22 skips). The JZ
+integration regression passes all four requested tiers (36 assertions), the
+other 284 optimizer tests pass, and all ten perf ratchets pass. The updated
+pin retains watr's 312146-byte size. Full CI must confirm this follow-up.
 
 ## Gate evidence, September 23
 

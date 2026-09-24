@@ -4955,6 +4955,16 @@ test('decomposed charCodeAt unswitches SSO vs heap outside leaf byte loops', () 
   is(ex.heap(), 3120, 'heap loop version stays exact')
 })
 
+test('checked typed reads preserve their index before a reused guard slot', () => {
+  const src = `const a=new Float64Array([4,1,-0,NaN]), out=new Float64Array(1)
+    export function f(i){if(a[i]>=3)return -1;return out[0]=a[i]}`
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const js = oracle(src), wasm = run(src, { optimize })
+    for (const i of [-1, 0, 1, 2, 3, 4, 2, 2, 1])
+      ok(Object.is(wasm.f(i), js.f(i)), `${optimize}: index ${i}, including missing, signed zero and NaN`)
+  }
+})
+
 test('a checked typed read used as an index carries its miss outward', () => {
   const src = `export let f=(d)=>{const count=new Int32Array(1),out=new Uint8Array(2);count[0]=1;out[count[d]]=9;return out[0]*10+out[1]}
     export let g=(d)=>{const count=new Uint8Array(1),out=new Uint8Array(256);count[0]=1;out[0]=7;out[1]=9;return out[count[d]]===undefined?-1:out[count[d]]}`
