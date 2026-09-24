@@ -57,6 +57,16 @@ export const run = (k) => { const o = { ...mk(k) }; return JSON.stringify([o, Ob
   ['a clone is deep', `export const run = () => { const o = { a: 1, get g() { return { deep: [1, 2] } } }; const c = structuredClone(o); c.g.deep.push(3); return JSON.stringify([c, o.g]) }`],
 ]))
 
+test('literal accessors: Object.assign stores through a setter and reads a getter once', () => agree([
+  // the setter was replaced by data, or a data slot stored beside it
+  ['a literal target', `export const run = () => { let log = 0; const r = Object.assign({ set x(v) { log = v } }, { x: 5 }); return JSON.stringify([log, Object.keys(r), String(r.x)]) }`],
+  ['a bound target', `export const run = () => { let log = 0; const t = { a: 1, set x(v) { log = v } }; Object.assign(t, { x: 5, y: 6 }); return JSON.stringify([log, Object.keys(t), String(t.x), t.y]) }`],
+  ['a pair', `export const run = () => { let v = 1; const t = { get x() { return v }, set x(n) { v = n * 2 } }; Object.assign(t, { x: 5 }); return t.x }`],
+  // the target took the getter itself, which then ran at each read
+  ['a getter into a binding', `export const run = () => { let n = 0; const t = { a: 0 }; Object.assign(t, { get g() { n++; return 7 } }); return JSON.stringify([t.g, t.g, n, Object.keys(t)]) }`],
+  ['a setter alone copies undefined', `export const run = () => { const t = { a: 0 }; Object.assign(t, { set s(v) {} }); return JSON.stringify([Object.keys(t), 's' in t, String(t.s)]) }`],
+]))
+
 test('literal accessors: a computed key reaches them', () => agree([
   // `o[k]` read undefined and `o[k] = v` stored beside the setter
   ['read', `export const run = (k) => { const o = { a: 1, get g() { return 7 } }; return String(o[k]) }`, ['g']],

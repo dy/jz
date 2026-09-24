@@ -620,8 +620,9 @@ export default (ctx) => {
     // Object.assign copies each source's own enumerable keys onto target
     // left-to-right via an ordinary [[Set]] (later source wins on a
     // collision); CopyDataProperties (object spread) merges the identical run
-    // of props/sources the identical way — jz has no getters/setters/Proxies
-    // to tell the two apart. So for a literal target ONLY,
+    // of props/sources the identical way unless the target defines an
+    // accessor, whose setter [[Set]] calls and a spread would replace with
+    // data (such a literal keeps the assign). So for a literal target ONLY,
     // `Object.assign({...targetProps}, s1, s2)` reduces structurally to
     // `{...targetProps, ...s1, ...s2}` — the exact merge emitObjectSpread
     // already builds (own props first, each source as a spread group, later
@@ -632,7 +633,7 @@ export default (ctx) => {
     // wrong here) — so any source key absent from the target literal silently
     // had no slot to land in (`Object.assign({}, {a:1})` produced a 0-slot
     // object; JS gives `{a:1}`).
-    if (Array.isArray(target) && target[0] === '{}')
+    if (Array.isArray(target) && target[0] === '{}' && !enumView(literalProps(target).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])))
       return emitObjectSpread([...literalProps(target), ...sources.map(s => ['...', s])])
     const knownSchema = sourceSchema
     if (typeof target === 'string') {
@@ -678,8 +679,11 @@ export default (ctx) => {
     const sourceSchemas = sources.map(knownSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
     // Existing targets cannot grow their physical schema. Extra source keys
-    // must use the property table rather than disappear from a slot-only copy.
-    if (sourceSchemas.some(s => !s || s.some(p => !tSchema.includes(p)))) return emitObjectAssignDynamic(target, sources)
+    // must use the property table rather than disappear from a slot-only copy,
+    // and a key the target defines as an accessor stores through its setter:
+    // both take the computed-key store (an accessor read off a source is its
+    // getter's value, module/schema.js enumView).
+    if (enumView(tSchema) || sourceSchemas.some(s => !s || enumKeys(s).some(p => !tSchema.includes(p)))) return emitObjectAssignDynamic(target, sources)
     // Extern-write belt: cross-schema slot copies into the TARGET's sid below
     // (plan's hazard scan marks the same target when it resolves it).
     const tSid = typeof target === 'string'
@@ -697,10 +701,8 @@ export default (ctx) => {
       const sSchema = sourceSchemas[i]
       body.push(['local.set', `$${s}`, asF64(emit(source))])
       body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-      for (let si = 0; si < sSchema.length; si++) {
-        const ti = tSchema.indexOf(sSchema[si])
-        body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase2}`], si)))
-      }
+      for (const e of enumEntries(sSchema))
+        body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], tSchema.indexOf(e.key), enumValue(e, ['local.get', `$${sBase2}`], ['local.get', `$${s}`])))
     }
     body.push(['local.get', `$${t}`])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -897,8 +899,9 @@ function emitObjectAssignDynamic(target, sources) {
     body.push(['local.set', `$${s}`, asF64(emit(source))])
     if (sSchema) {
       body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-      for (let pi = 0; pi < sSchema.length; pi++)
-        body.push(setKey(asI64(emit(['str', String(sSchema[pi])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], pi)))
+      for (const e of enumEntries(sSchema))
+        body.push(setKey(asI64(emit(['str', String(e.key)])), e.kind === ENUM_DATA ? ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], e.slot)
+          : asI64(typed(enumValue(e, ['local.get', `$${sBase}`], ['local.get', `$${s}`]), 'f64'))))
       continue
     }
     body.push(

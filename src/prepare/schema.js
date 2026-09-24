@@ -94,7 +94,10 @@ export function inferAssignSchema(callNode) {
       const srcId = ctx.schema.vars.get(src)
       if (srcId != null) srcProps = ctx.schema.list[srcId]
     }
-    if (srcProps) for (const p of srcProps) if (!merged.includes(p)) merged.push(p)
+    // the keys a source copies, and the target's own: an accessor is the
+    // property it defines (module/schema.js enumKeys), which the target's
+    // setter takes rather than a slot beside it
+    if (srcProps) for (const p of enumKeys(srcProps)) if (!enumKeys(merged).includes(p)) merged.push(p)
   }
   // Poisoned names stay out of the shared channel.
   if (merged.length && !ctx.schema.poisoned?.has(target))
