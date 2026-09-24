@@ -28,7 +28,7 @@ import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { withControlFrame } from '../src/compile/flow-state.js'
 import { captureCallback } from './array/callback.js'
-import { ENUM_DATA, ENUM_GET, enumKeys, viewsOn } from './schema.js'
+import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, enumViewsOn } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -221,6 +221,9 @@ export default (ctx) => {
   // A program that builds an object literal with an accessor resolves a
   // computed key through a layout's view as well (__view_find below).
   const viewDeps = (...names) => viewsOn() ? ['__view_find', ...names] : []
+  // Whether the schema id `sid` (a WAT i32 expression) is an Error class's.
+  const errorSidTest = (sid) => [...ctx.schema.errorSidEntries().keys()]
+    .map(id => `(i32.eq ${sid} (i32.const ${id}))`).reduce((a, b) => `(i32.or ${a} ${b})`, '(i32.const 0)')
   deps({
     __schema_slot: ['__str_eq', '__str_hash'],
     __schema_slot_h: ['__str_eq'],
@@ -250,7 +253,7 @@ export default (ctx) => {
     __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
-    __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals', ...viewDeps('__view_has', '__view_data')],
+    __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals', ...(enumViewsOn() ? ['__view_has', '__view_data'] : [])],
     __sclone_hash_vals: ['__sclone_rec'],
     __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
@@ -922,9 +925,10 @@ export default (ctx) => {
 
     (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
       (then
-        ${viewsOn() ? `;; a layout with an object literal's accessor clones its data (__view_data):
-        ;; memo first, so a getter answering its own object keeps the cycle
-        (if (call $__view_has (local.get $bits))
+        ${enumViewsOn() ? `;; a layout with a view clones what it enumerates (__view_data), but an
+        ;; Error stays an Error; memo first, so a getter answering its own object keeps the cycle
+        (if (i32.and (call $__view_has (local.get $bits))
+              (i32.eqz ${errorSidTest('(call $__ptr_aux (local.get $bits))')}))
           (then
             (local.set $out (f64.reinterpret_i64 (call $__view_data (local.get $bits))))
             (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
@@ -943,6 +947,9 @@ export default (ctx) => {
           (f64.store (local.get $slot) (call $__sclone_rec (f64.load (local.get $slot)) (local.get $memo)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $ol)))
+        ;; an Error's clone carries its class, message and name, no other property
+        ${ctx.schema.errorSidEntries().size ? `(if ${errorSidTest('(call $__ptr_aux (local.get $bits))')}
+          (then (i64.store (i32.sub (local.get $dst) (i32.const 16)) (i64.const 0)) (return (local.get $out))))` : ''}
         ;; deep the dyn-props sidecar's values (__obj_clone already re-tabled it)
         (local.set $side (i64.load (i32.sub (local.get $dst) (i32.const 16))))
         (if (i32.eq (call $__ptr_type (local.get $side)) (i32.const ${PTR.HASH}))
@@ -1540,9 +1547,9 @@ export default (ctx) => {
       (local.set $val (i64.load (i32.add (local.get $off) (i32.shl (local.get $slot) (i32.const 3)))))
       (local.set $w (i32.and (i32.shr_u (local.get $w) (i32.const 24)) (i32.const 3)))
       (if ${ctx.types.anyDelete ? `(i32.eqz ${deletedSlotWat('$dmask', '$slot', '$val')})` : '(i32.const 1)'} (then
-        (if (i32.eq (local.get $w) (i32.const ${ENUM_GET}))
+        ${viewsOn() ? `(if (i32.eq (local.get $w) (i32.const ${ENUM_GET}))
           (then (local.set $val (i64.reinterpret_f64 (call $${ACCESSOR_CALL}
-            (f64.reinterpret_i64 (local.get $val)) (f64.reinterpret_i64 (local.get $bits)) (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))))
+            (f64.reinterpret_i64 (local.get $val)) (f64.reinterpret_i64 (local.get $bits)) (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))))` : ''}
         (if (i32.gt_u (local.get $w) (i32.const ${ENUM_GET})) (then (local.set $val (i64.const ${UNDEF_NAN}))))
         (local.set $h (call $__hash_set_local (local.get $h)
           (i64.load (i32.add (local.get $keys) (i32.shl (local.get $i) (i32.const 3)))) (local.get $val)))))
@@ -2501,8 +2508,9 @@ export default (ctx) => {
       hasOutOfSchemaWrite = true
       break
     }
-    // its own properties: an accessor is present by its name (module/schema.js enumView)
-    const members = schema && enumKeys(schema)
+    // its own properties: an accessor is present by its name, a hidden slot as
+    // itself (module/schema.js ownKeys)
+    const members = schema && ownKeys(schema)
     let compareCost = 0
     if (members) for (const prop of members) {
       compareCost += ctx.features.sso && ssoEncode(String(prop)) ? 1 : 3

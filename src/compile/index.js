@@ -136,7 +136,7 @@ function summaryInputs(ast, ids) {
     data({ params: f.sig?.params?.map(p => [p.name, p.rest, p.boundaryTyped]), results: f.sig?.results, ptrKind: f.sig?.ptrKind, ptrAux: f.sig?.ptrAux, unsignedResult: f.sig?.unsignedResult, dispatcher: f.sig?.dispatcher }),
     Object.entries(f.defaults ?? {}).map(([k, v]) => `${k}=${node(v)}`).join('&')].join('|'))
   return [node(ast), node(ctx.module.moduleInits), ...funcs,
-    data(ctx.schema.list), data(ctx.schema.list.map((_, sid) => ctx.schema.brandOf(sid))), data(ctx.schema.vars), data(ctx.schema.poisoned),
+    data(ctx.schema.list), data(ctx.schema.list.map((_, sid) => ctx.schema.brandOf(sid))), data(ctx.schema.vars), data(ctx.schema.poisoned), data(ctx.schema.hidden),
     data(ctx.transform.classes), data(ctx.transform.literalAccessorNames),
     data(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1])), data(ctx.module.hostImportValTypes),
     data(ctx.funcs.exports), data(ctx.funcs.names), data(ctx.funcs.multiProp), data([...ctx.scope.globals.keys()]),
@@ -164,7 +164,7 @@ export function assemble(ast, profiler) {
   // by content, which is cheap. A summary built under the current key is still the
   // program's; JZ_DEBUG_INVARIANTS checks each reuse against its full inputs.
   const summaryOf = () => summarize(ast, {
-    inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, exported: isExported,
+    inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, hidden: ctx.schema.hidden, exported: isExported,
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
     hostGlobals: Object.entries(ctx.funcs.exports).map(([name, v]) => v === true ? name : v).filter(v => typeof v === 'string'),
@@ -180,7 +180,7 @@ export function assemble(ast, profiler) {
   const nodeIds = DBG_INVARIANTS ? { of: new WeakMap(), next: 0 } : null
   const summaryKey = () => {
     let key = `${getFactStore().revision}|${ctx.schema.list.length}|${ctx.funcs.list.length}|${ctx.funcs.names.size}|${ctx.scope.globals.size}` +
-      `|${ctx.schema.poisoned?.size ?? 0}|${ctx.transform.classes?.size ?? 0}|${ctx.module.imports.length}|${ctx.scope.constStrs?.size ?? 0}|${ctx.scope.shapeStrs?.size ?? 0}`
+      `|${ctx.schema.poisoned?.size ?? 0}|${ctx.schema.hidden.size}|${ctx.transform.classes?.size ?? 0}|${ctx.module.imports.length}|${ctx.scope.constStrs?.size ?? 0}|${ctx.scope.shapeStrs?.size ?? 0}`
     for (const [name, sid] of ctx.schema.vars) key += `|${name}=${sid}`
     return key
   }

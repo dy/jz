@@ -164,3 +164,20 @@ test('a literal\'s method reads this beside a shorthand property', () => agree([
   ['method', `export const run = (n) => ({ n, m() { return this.n * 2 } }).m()`, [4]],
   ['getter', `export const run = (n) => ({ n, get dbl() { return this.n * 2 } }).dbl`, [4]],
 ]))
+
+// a class kept as closures (declared in a function, or an expression with
+// statics) puts its members on each instance as slots; each builtin listed
+// `m` and `g__get`, and a copy carried them (module/schema.js hides them)
+const inFn = `const make = (v) => { class C { constructor(x) { this.x = x; this.y = 2 } m() { return this.x } get g() { return this.x * 2 } set g(v) { this.x = v } } return new C(v) }`
+const expr = `const C = class { static z = 1; constructor(x) { this.x = x } m() { return this.x } }; const make = (v) => new C(v)`
+const members = (cls, op) => `${cls}\nexport const run = () => { const o = make(3); return JSON.stringify(${op}) }`
+test('closure-lowered class members are not own properties', () => agree([
+  ['keys', members(inFn, 'Object.keys(o)')],
+  ['values', members(inFn, 'Object.values(o)')],
+  ['entries', members(inFn, 'Object.entries(o)')],
+  ['for-in', members(inFn, '(() => { const r = []; for (const k in o) r.push(k); return r })()')],
+  ['spread', members(inFn, '[Object.keys({ ...o }), typeof { ...o }.m]')],
+  ['assign', members(inFn, 'Object.keys(Object.assign({}, o))')],
+  ['calls', members(inFn, "[o.m(), typeof o.m, 'm' in o, 'g' in o, o.g, (o.g = 5, o.x)]")],
+  ['expression', members(expr, "[Object.keys(o), o.m(), 'm' in o]")],
+]))

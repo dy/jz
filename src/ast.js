@@ -777,13 +777,16 @@ export const accessorOf = (name, accessors) => {
  *  definition of a key replaces an earlier one in place, so the view is the
  *  literal's definitions in order, index keys first: `{ key, slot, kind, set }`,
  *  `slot` the data slot or the accessor's (the getter's where it has one),
- *  `set` the setter's slot or -1. Null for a layout without accessors, whose
- *  slots are the view. */
-export function layoutView(names, accessors) {
-  if (!accessors?.size || !names?.some(n => accessorOf(n, accessors))) return null
+ *  `set` the setter's slot or -1. `hidden` names the slots the layout owns but
+ *  does not enumerate (an Error's `message` and `name`), which the view leaves
+ *  out. Null for a layout with neither, whose slots are the view. */
+export function layoutView(names, accessors, hidden) {
+  const withAccessors = !!accessors?.size && !!names?.some(n => accessorOf(n, accessors))
+  if (!withAccessors && !hidden?.size) return null
   const byKey = new Map()
   names.forEach((n, slot) => {
-    const a = accessorOf(n, accessors)
+    if (hidden?.has(n)) return
+    const a = withAccessors ? accessorOf(n, accessors) : null
     if (!a) return void byKey.set(n, { key: n, slot, kind: ENUM_DATA, set: -1 })
     const e = byKey.get(a.base), pair = e && e.kind !== ENUM_DATA ? e : null
     if (a.get) byKey.set(a.base, { key: a.base, slot, kind: ENUM_GET, set: pair ? pair.set : -1 })

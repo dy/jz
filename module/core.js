@@ -25,7 +25,7 @@ import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
-import { initSchema, viewsOn } from './schema.js'
+import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
 import { eqIdentityChain } from '../layout-kinds.js'
@@ -112,7 +112,7 @@ export default (ctx) => {
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
     // machinery is actually part of this build (mirrors json.js's __json_obj
     // and array.js's needsArrayDynMove-gated deps thunks).
-    __obj_clone: () => [...(viewsOn() ? ['__view_has', '__view_data'] : []), '__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__cap', '__alloc_hdr', '__alloc_hdr_n', '__mkptr',
+    __obj_clone: () => ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__cap', '__alloc_hdr', '__alloc_hdr_n', '__mkptr',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     __durable_fwd_log: ['__alloc'],
     __durable_fwd_heal: [],
@@ -1157,8 +1157,6 @@ export default (ctx) => {
     (local.set $t (call $__ptr_type (local.get $bits)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
       (then
-        ${viewsOn() ? `;; a layout with an object literal's accessor copies its data (collection.js __view_data)
-        (if (call $__view_has (local.get $bits)) (then (return (f64.reinterpret_i64 (call $__view_data (local.get $bits))))))` : ''}
         (local.set $sid (call $__ptr_aux (local.get $bits)))
         (local.set $src (call $__ptr_offset (local.get $bits)))
         (local.set $n (i32.const 0))

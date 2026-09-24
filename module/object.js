@@ -19,7 +19,7 @@ import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder } from '../s
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG } from '../layout.js'
-import { enumView, enumKeys, viewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
+import { enumView, enumKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
@@ -738,7 +738,7 @@ export default (ctx) => {
       }
     }
     const tSchema = resolveSchema(target)
-    const sourceSchemas = sources.map(knownSchema)
+    const sourceSchemas = sources.map(copiedSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
     // Existing targets cannot grow their physical schema. Extra source keys
     // must use the property table rather than disappear from a slot-only copy,
@@ -957,7 +957,7 @@ function emitObjectAssignDynamic(target, sources) {
 
   for (let si = 0; si < sources.length; si++) {
     const source = sources[si]
-    const sSchema = sourceSchema(source)
+    const sSchema = copiedSchema(source)
     body.push(['local.set', `$${s}`, asF64(emit(source))])
     if (sSchema) {
       body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
@@ -982,6 +982,14 @@ function emitObjectAssignDynamic(target, sources) {
   }
   body.push(['local.get', `$${t}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
+
+// The layout a copy reads a source by, or null where the source may hold a
+// property outside it (an added key the sidecar holds), which the copy reads
+// by its runtime keys.
+const copiedSchema = (src) => {
+  const s = sourceSchema(src)
+  return s && !hasOutOfSchemaWrites(src, s) && !mayHaveDynProps(src) ? s : null
 }
 
 // A bound var is dynamically keyed when some `obj[k]=v` (non-literal key) wrote
@@ -1241,7 +1249,16 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
     if (sourceKind !== VAL.OBJECT && sourceKind !== VAL.HASH) return emitDynamicSpread(props)
     inc('__obj_clone')
     if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
-    return typed(['call', '$__obj_clone', asF64(emit(props[0][1]))], 'f64')
+    if (!enumViewsOn()) return typed(['call', '$__obj_clone', asF64(emit(props[0][1]))], 'f64')
+    // a layout with a view copies what it enumerates (collection.js __view_data):
+    // an accessor's value, no hidden slot
+    inc('__view_has', '__view_data')
+    ctx.runtime.schemaTblConsumed = true
+    const src = temp('scs')
+    return typed(['block', ['result', 'f64'], ['local.set', `$${src}`, asF64(emit(props[0][1]))],
+      ['if', ['result', 'f64'], ['call', '$__view_has', ['i64.reinterpret_f64', ['local.get', `$${src}`]]],
+        ['then', ['f64.reinterpret_i64', ['call', '$__view_data', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]]],
+        ['else', ['call', '$__obj_clone', ['local.get', `$${src}`]]]]], 'f64')
   }
   if (!allKnown) return emitDynamicSpread(props)
 
@@ -1680,8 +1697,8 @@ export function walkObjectProperties(env, onStatic, onDynamic, local) {
   const atRow = (r) => map
     ? [set(row, r), ['if', get(map), ['then',
         set(i, ['i32.wrap_i64', ['i64.trunc_f64_u', ['f64.load', ['i32.add', get(map), ['i32.shl', get(row), c(3)]]]]]),
-        set(kind, ['i32.and', ['i32.shr_u', get(i), c(24)], c(3)]), set(i, ['i32.and', get(i), c(0xffffff)])],
-        ['else', set(i, get(row)), set(kind, c(0))]]]
+        ...(kind ? [set(kind, ['i32.and', ['i32.shr_u', get(i), c(24)], c(3)])] : []), set(i, ['i32.and', get(i), c(0xffffff)])],
+        ['else', set(i, get(row)), ...(kind ? [set(kind, c(0))] : [])]]]
     : [set(i, r)]
   const key = local('owkey', 'i64'), j = local('owj'), skip = local('owskip'), other = local('owother')
   const pick = local('owpick'), best = local('owbest', 'i64')
@@ -1776,9 +1793,10 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   const dnGReal = tempI32('oednGr'), dnSReal = tempI32('oednSr')
   const total = tempI32('oetot')
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
-  // Under a view (viewRowIR) the schema stream's position and slot differ.
-  const map = viewsOn() ? tempI32('oemap') : null
-  const row = map ? tempI32('oerow') : i, kind = map ? tempI32('oekind') : null
+  // Under a view (viewRowIR) the schema stream's position and slot differ;
+  // only an accessor's gives a slot a kind other than data.
+  const map = enumViewsOn() ? tempI32('oemap') : null
+  const row = map ? tempI32('oerow') : i, kind = map && viewsOn() ? tempI32('oekind') : null
   if (map && !ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
   const slot = tempI32('oesl')
   // The deleted-slot mask (layout.js): a deleted schema field keeps undefined in

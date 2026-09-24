@@ -577,6 +577,8 @@ export function reset(proto, globals, bridge) {
     //    src/compile/index.js — a plain equality check, not a re-parse).
     namedUses: [],
     views: false,          // code the program lowers builds an object literal with an accessor (module/schema.js viewsOn)
+    hidden: new Map(),     // a registered name list → the slots its layout owns but does not enumerate (module/schema.js enumView)
+    hiddenViews: false,    // enumeration may meet such a layout: the code constructs or catches an Error (module/schema.js enumViewsOn)
     vars: new Map(),
     poisoned: new Set(),   // names whose assignments disagree on shape (literal +
                            //   non-literal, or two different literals). A poisoned
@@ -786,6 +788,7 @@ export function reset(proto, globals, bridge) {
     memberUses: null,   // the member names the program calls, reads and stores (src/compile/emit/class-dispatch.js memberUses)
     accessorNames: null, // Set of property names some class or object literal defines an accessor
     dynamicAccessorNames: null, // the subset a derived class installs dynamically (jzify/classes.js recordAccessor)
+    classMembers: null,  // a class kept as closures: its instance brand → the member slots enumeration hides (jzify/classes.js)
     literalAccessorNames: null, // the subset an object literal defines (jzify/classes.js lowerObjectLiteralAccessors):
                          // own enumerable properties, which enumeration lists by name (module/schema.js enumView)
                          // for (jzify/classes.js records `get x`/`set x` as it lowers them to the

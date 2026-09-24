@@ -1,9 +1,9 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
-import { run, cases } from './util.js'
+import { run, cases, oracle } from './util.js'
 
 
 const throws = (code, match, msg, opts) => {
@@ -1156,10 +1156,10 @@ test('instanceof: internal errors retain brands and numbers do not (both modes)'
 // a legal property name from every jz program. Redesigned: class identity now
 // lives in the pointer's SCHEMA ID (module/schema.js's ctx.schema.errorSid —
 // one id per class), a real hidden brand no source-level write can reach —
-// `instanceof` reads the sid, `.name`/`.message` are two perfectly ordinary,
-// fully public/enumerable properties, and there is no reserved slot left to
-// filter anywhere. `__errcls__` is un-stolen: an ordinary user property name,
-// usable on ANY object, Error or not.
+// `instanceof` reads the sid, `.name`/`.message` are the layout's two slots,
+// which its enumeration view hides as JS does (not enumerable), and there is
+// no reserved slot left to filter anywhere. `__errcls__` is un-stolen: an
+// ordinary user property name, usable on ANY object, Error or not.
 test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)', () => {
   is(jz(`export let f = () => { let o = { message: "x", name: "TypeError", __errcls__: 1 }; return o.__errcls__ }`).exports.f(), 1,
     'a plain object literal spelling __errcls__ as a key compiles and reads back')
@@ -1172,51 +1172,30 @@ test('errors: __errcls__ is an ordinary, un-stolen property name (audit-#9 P0-2)
     'writing .__errcls__ on a real Error cannot flip instanceof — identity is the sid, not a slot')
   is(jz(`export let f = () => { let e = new TypeError("x"); let k = "__errcls__"; e[k] = 1; return e instanceof RangeError }`).exports.f(), false,
     'computed write to __errcls__ cannot flip instanceof either')
-  is(jz(`export let f = () => { let e = new TypeError("x"); return Object.keys(e).length }`).exports.f(), 2,
-    'Object.keys(caught error) sees exactly message, name — the object\'s real, only slots')
-  is(jz(`export let f = () => { let e = new TypeError("x"); return JSON.stringify(e) }`).exports.f(), '{"message":"x","name":"TypeError"}',
-    'JSON.stringify(caught error)')
-  is(jz(`export let f = () => { let e = new TypeError("x"); let n = 0; for (let k in e) n++; return n }`).exports.f(), 2,
-    'for-in over a caught error sees 2 keys')
+  is(jz(`export let f = () => { let e = new TypeError("x"); return Object.keys(e).length }`).exports.f(), 0,
+    'Object.keys(error) lists neither message nor name: neither is enumerable')
+  is(jz(`export let f = () => { let e = new TypeError("x"); return JSON.stringify(e) }`).exports.f(), '{}',
+    'JSON.stringify(error)')
+  is(jz(`export let f = () => { let e = new TypeError("x"); let n = 0; for (let k in e) n++; return n }`).exports.f(), 0,
+    'for-in over an error sees no key')
 })
 
 // audit-#9 P0-2 groups 1/2: Object.assign/spread over a real Error object used
 // to crash the compiler outright (`__arr_set_idx_ptr` never registered /
-// `Unknown section func,$__obj_clone` — neither had been taught the old
-// __errcls__ slot existed, so resolveSchema saw an "unknown schema" source and
-// routed into machinery with its own unrelated pre-existing bugs). audit-#9
-// P0-2 fixed the crash by making Error's spread/assign SOURCE schema `[]`
-// (real JS: `message`/`name` are own but NON-enumerable, so a real Error's
-// spread/assign copies nothing there) — but that made spread/assign disagree
-// with `Object.keys`/`JSON.stringify`/for-in (immediately above), which see
-// the physical 2-slot layout on the SAME object. audit-#10 finding-3
-// (.work/archive/todo.md §deletion-sweep, "enumerability contradiction") named this an
-// internally-impossible state and asked for a DECIDED, CONSISTENT choice
-// between (a) full JS fidelity (non-enumerable on all four surfaces — needs
-// a new per-property enumerability flag threaded through every enumeration
-// site: keys/JSON/spread/for-in) or (b) documented divergence (enumerable on
-// all four surfaces, matching jz's own established preference — see
-// module/object.js's `sourceSchema` comment — against re-growing the exact
-// "enumerated invariant" shape the Brand redesign above spent a session
-// removing). DECIDED (b): Error is an ordinary object on every enumeration
-// surface. Diverges from real JS (whose Error properties are non-enumerable
-// everywhere) but keeps jz's own four surfaces mutually consistent at zero
-// added machinery — `isErrorSchemaSource`'s override is deleted, `sourceSchema`
-// is now a plain alias for `resolveSchema`.
-test('errors: Object.assign/spread over an Error copies message/name — no crash, consistent with Object.keys (audit-#9 P0-2 crash fix, audit-#10 finding-3 enumerability decision)', () => {
-  const j = (code) => jz(code, { optimize: 0 }).exports.f()
-  is(j(`export let f = () => Object.keys({...new TypeError("x")}).sort().join(',')`), 'message,name', '{...new TypeError(x)} copies message+name (spread always builds a fresh merged-schema object, unaffected by any target-growth limit)')
-  is(j(`export let f = () => { let e = new TypeError("y"); return Object.keys({...e}).sort().join(',') }`), 'message,name', 'spread from a BOUND Error variable copies message+name')
-  is(j(`export let f = () => JSON.stringify({...new TypeError("x")})`), '{"message":"x","name":"TypeError"}', 'spread content matches Object.keys(err)/JSON.stringify(err) above — one consistent story')
-  // Object.assign onto a target whose OWN schema already has message/name slots
-  // — isolates the SOURCE-schema/enumerability decision this test pins from
-  // target-growth behavior (Object.assign onto a literal target now grows for
-  // new keys too, fixed by a0614fc3 — see the literal-target-growth test below).
-  is(j(`export let f = () => { let t = {message: '', name: ''}; return Object.keys(Object.assign(t, new TypeError("x"))).sort().join(',') }`), 'message,name', 'Object.assign copies message+name onto a target with matching slots')
-  is(j(`export let f = () => { let t = {message: '', name: ''}; let e = new TypeError("y"); return JSON.stringify(Object.assign(t, e)) }`), '{"message":"y","name":"TypeError"}', 'Object.assign from a BOUND Error variable copies the real values')
-  // optimize:2/3 must not crash either (kernel-parity-adjacent smoke check)
-  is(jz(`export let f = () => Object.keys({...new TypeError("x")}).length`, { optimize: 2 }).exports.f(), 2, 'O2 does not crash (spread)')
-  is(jz(`export let f = () => { let t = {message: '', name: ''}; return Object.keys(Object.assign(t, new TypeError("x"))).length }`, { optimize: 2 }).exports.f(), 2, 'O2 does not crash (assign)')
+// `Unknown section func,$__obj_clone`). audit-#10 finding-3 then asked for one
+// consistent answer across keys, JSON, spread and for-in: (a) JS fidelity,
+// non-enumerable on every surface, which needed a per-slot enumerability fact
+// threaded through every enumeration site, or (b) enumerable everywhere. (b)
+// held until the enumeration view (module/schema.js enumView) became that
+// fact: an Error's layout hides `message` and `name` (ctx.schema.hidden), so
+// every surface lists neither, as JS does, and a spread or assign copies
+// neither. A property the program adds stays enumerable.
+test('errors: Object.keys, JSON, for-in, spread and assign see no Error field, as JS', () => {
+  const src = (e) => `export let f = () => { let e = new TypeError("x"); e.code = 7; return JSON.stringify(${e}) }`
+  for (const e of ['Object.keys(e)', 'Object.values(e)', 'Object.entries(e)', '(() => { const r = []; for (const k in e) r.push(k); return r })()',
+    'e', '{ ...e }', '[({ ...new TypeError("x") }).message]', 'Object.assign({}, e)', '[e.message, e.name, "message" in e, e instanceof TypeError]',
+    '(() => { let t = { message: "", name: "" }; Object.assign(t, e); return t })()'])
+    for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.f(), oracle(src(e)).f(), `${e} O${optimize}`)
 })
 
 // FIXED (was KNOWN-FAIL, pre-existing, general, Error-unrelated — found live
@@ -1253,13 +1232,9 @@ test('Object.assign onto an object-literal target grows the result with every so
   is(jz(`export let f = () => Object.assign({}, {a: 1}, {a: 2}).a`).exports.f(), 2, 'later source wins on a collision (OrdinarySetWithOwnDescriptor: last write standing)')
   is(jz(`export let f = () => Object.assign({a: 1}, {a: 2}).a`).exports.f(), 2, 'a source overwrites a matching key the target literal already declared')
   is(jz(`export let f = () => Object.assign({a: 1, b: 2}, {a: 9}).b`).exports.f(), 2, 'a target key absent from every source survives untouched')
-  // Consistent with the enumerability decision above (audit-#10 finding-3:
-  // Error is an ordinary object on every enumeration surface) rather than
-  // "coincidentally 0 for the unrelated growth-bug reason" the old pin
-  // recorded — matches `{...new TypeError('x')}`'s own message,name above
-  // exactly. Both diverge from real JS's true `[]` (Error props really are
-  // non-enumerable) by the SAME documented, decided choice — not a fluke.
-  is(jz(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).sort().join(',')`).exports.f(), 'message,name', 'Error source into a literal target now copies message/name too, same divergence as spread')
+  // An Error source copies no field: neither is enumerable (the enumeration
+  // decision above), as JS gives.
+  is(jz(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).sort().join(',')`).exports.f(), '', 'Error source into a literal target copies no field, as spread')
   // optimize:2/3 must not crash either (mirrors the O2/O3 smoke checks above).
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`, { optimize: 2 }).exports.f(), 1, 'O2 does not crash and grows correctly')
   is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`, { optimize: 3 }).exports.f(), 1, 'O3 does not crash and grows correctly')

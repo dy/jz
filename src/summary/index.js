@@ -87,7 +87,7 @@ const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, 
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, liftedProp = () => null }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, liftedProp = () => null }) {
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -1787,14 +1787,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     return sid
   }
   // A layout's own properties as a spread copies them: an object literal's
-  // accessor is the one data key it defines, its value the getter's (ast.js layoutView).
+  // accessor is the one data key it defines, its value the getter's, and a
+  // hidden slot is none (ast.js layoutView).
+  const viewOf = (sid) => layoutView(schemas[sid], accessors, hidden?.get(schemas[sid]))
   const ownEntries = (sid) => {
-    const view = layoutView(schemas[sid], accessors)
+    const view = viewOf(sid)
     return view ? view.filter(e => !isBrand(e.key)).map(e => [e.key, e.kind === ENUM_DATA ? slots(sid)[e.slot] : ANY])
       : schemas[sid].flatMap((key, j) => isBrand(key) ? [] : [[key, slots(sid)[j]]])
   }
   const viewed = (source) => tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN &&
-    shapesOf(paramOf(source)).some(sid => layoutView(schemas[sid], accessors))
+    shapesOf(paramOf(source)).some(sid => viewOf(sid))
   /** A literal with a spread or a computed key, walked by its sources. */
   const dynamicLiteral = (n) => {
     // The single-source lowering clones its runtime representation. A clone

@@ -21,7 +21,7 @@ import { throwErrorWat } from './core/error-object.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { canonicalKeyOrder } from '../src/ast.js'
 import { walkObjectProperties } from './object.js'
-import { ENUM_DATA, ENUM_GET, viewsOn } from './schema.js'
+import { ENUM_DATA, ENUM_GET, viewsOn, enumViewsOn } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { TO_JSON } from '../src/compile/emit/to-json.js'
 import print from 'watr/print'
@@ -653,10 +653,10 @@ export default (ctx) => {
   // at the time this string would eagerly evaluate).
   ctx.core.stdlib['__json_obj'] = () => {
     const locals = []
-    // A layout with an object literal's accessor serializes its view
-    // (module/schema.js enumView, object.js viewRowIR): keys by position, each
-    // value through its slot's getter; a setter alone is undefined, so omitted.
-    const views = viewsOn()
+    // A layout with a view serializes it (module/schema.js enumView, object.js
+    // viewRowIR): keys by position, a hidden slot none, an accessor's value
+    // through its getter; a setter alone is undefined, so omitted.
+    const views = enumViewsOn(), accessors = viewsOn()
     if (views && !ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
     const viewRow = (k) => ['i64.load', ['i32.add', ['global.get', '$__schema_view'], ['i32.add', ['i32.shl', ['local.get', '$sid'], ['i32.const', 4]], ['i32.const', k]]]]
     const property = (key, value) => [
@@ -669,14 +669,14 @@ export default (ctx) => {
         ['if', ['global.get', '$__jgaplen'], ['then', ['call', '$__jput', ['i32.const', 32]]]],
         ['call', '$__json_val', ['local.get', '$pv']]]]]
     const at = base => ['i64.load', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', '$i'], ['i32.const', 3]]]]
-    const slotValue = () => !views ? at('$off')
+    const slotValue = () => !accessors ? at('$off')
       : ['if', ['result', 'i64'], ['i32.eq', ['local.get', '$kind'], ['i32.const', ENUM_DATA]], ['then', at('$off')],
         ['else', ['if', ['result', 'i64'], ['i32.eq', ['local.get', '$kind'], ['i32.const', ENUM_GET]],
           ['then', ['i64.reinterpret_f64', ['call', `$${ACCESSOR_CALL}`, ['f64.reinterpret_i64', at('$off')],
             ['f64.reinterpret_i64', ['local.get', '$val']], ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]],
           ['else', ['i64.const', UNDEF_NAN]]]]]
     const walk = walkObjectProperties({ src: 'koff', sn: 'nkeys', base: 'off', mask: 'mask', ordS: 'ordS', dnS: 'dnS', ordG: 'ordG', dnG: 'dnG', i: 'i', slot: 'slot',
-        ...(views ? { row: 'row', map: 'map', kind: 'kind' } : {}) },
+        ...(views ? { row: 'row', map: 'map', ...(accessors ? { kind: 'kind' } : {}) } : {}) },
       () => property(views ? ['i64.load', ['i32.add', ['local.get', '$koff'], ['i32.shl', ['local.get', '$row'], ['i32.const', 3]]]] : at('$koff'), slotValue()),
       () => property(['i64.load', ['i32.add', ['local.get', '$slot'], ['i32.const', 8]]], ['i64.load', ['i32.add', ['local.get', '$slot'], ['i32.const', 16]]]),
       (name, type = 'i32') => { const n = name + locals.length; locals.push(['local', '$' + n, type]); return n })
@@ -685,7 +685,7 @@ export default (ctx) => {
     (local $mask i32)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32) (local $first i32) (local $pv i64)
-    ${views ? '(local $row i32) (local $map i32) (local $kind i32)' : ''}
+    ${views ? `(local $row i32) (local $map i32)${accessors ? ' (local $kind i32)' : ''}` : ''}
     (local $props i64) (local $slot i32) (local $j i32) (local $skip i32)
     ;; Two dyn-prop sources for a DURABLE receiver — see collection.js's
     ;; heapResetWat and module/object.js's emitEnumerateObject for the full

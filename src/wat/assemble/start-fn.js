@@ -23,7 +23,7 @@ import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
 import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
-import { enumView, viewsOn } from '../../../module/schema.js'
+import { enumView, viewsOn, enumViewsOn } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
 import { dataLen, dataAlign, dataPush, pushStaticSlots } from '../../static-data.js'
 
@@ -108,9 +108,9 @@ function buildBoxInit() {
 const viewEntry = (e) => e.slot + e.kind * 2 ** 24 + (e.set + 1) * 2 ** 26
 
 /** The enumeration views of the program's layouts (module/schema.js enumView)
- *  when it builds an object literal with an accessor, else null. */
+ *  when enumeration may meet one (enumViewsOn), else null. */
 function viewsOf() {
-  if (!viewsOn()) return null
+  if (!enumViewsOn()) return null
   const views = ctx.schema.list.map(enumView)
   return views.some(Boolean) ? views : null
 }

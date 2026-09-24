@@ -12,7 +12,7 @@ import { emit } from '../src/bridge.js'
 import { K, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, inc } from '../src/ctx.js'
-import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey, layoutView, accessorOf } from '../src/ast.js'
+import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey, layoutView, accessorOf, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
@@ -20,8 +20,10 @@ export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
 /** Enumeration's view of a layout in this program (src/ast.js layoutView):
  *  Object.keys, values and entries, for-in, spread, Object.assign,
  *  JSON.stringify and a computed key see an object literal's accessor as the
- *  one property it defines. Null for a layout without one. */
-export const enumView = (names) => layoutView(names, ctx.transform.literalAccessorNames)
+ *  one property it defines, and none of the slots the layout hides
+ *  (ctx.schema.hidden: an Error's `message` and `name`). Null for a layout
+ *  with neither. */
+export const enumView = (names) => layoutView(names, ctx.transform.literalAccessorNames, ctx.schema.hidden.get(names))
 
 /** Whether code the program lowers builds an object literal with an accessor:
  *  the runtime view table (`__schema_view`, src/wat/assemble/start-fn.js), every
@@ -31,10 +33,27 @@ export const enumView = (names) => layoutView(names, ctx.transform.literalAccess
  *  after the plan (settleViews). */
 export const viewsOn = () => ctx.schema.views
 
-/** Settle viewsOn over `roots`, the prepared bodies the program lowers. */
+/** Whether enumeration may meet a view: an accessor's (viewsOn) or a layout's
+ *  hidden slots, which an Error the program constructs or catches carries.
+ *  Enumeration reads the view table then; the property kernels, which reach
+ *  hidden slots as the slots they are, need no view for them. */
+export const enumViewsOn = () => ctx.schema.views || ctx.schema.hiddenViews
+
+/** Settle viewsOn and enumViewsOn over `roots`, the prepared bodies the program lowers. */
 export function settleViews(roots) {
   const acc = ctx.transform.literalAccessorNames
   ctx.schema.views = !!acc?.size && roots.some(r => buildsView(r, acc))
+  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || roots.some(seesError)
+}
+
+// An Error the code constructs (`new TypeError(m)`, prepared as a call) or a
+// bound catch, which may hold one the runtime threw.
+const seesError = (n) => {
+  if (!Array.isArray(n)) return false
+  if (n[0] === '()' && ERR_CLASS_NAMES.includes(n[1])) return true
+  if (n[0] === 'catch' && typeof n[2] === 'string') return true
+  for (let i = 1; i < n.length; i++) if (seesError(n[i])) return true
+  return false
 }
 
 // An object literal with an accessor's slot (`x__get`, `x__set`) in `n`.
@@ -48,9 +67,19 @@ const buildsView = (n, acc) => {
   return false
 }
 
-/** The keys a layout enumerates, and its own properties: its slots, or its
- *  view's (an accessor pair is the one key it defines). */
+/** The keys a layout enumerates: its slots, or its view's (an accessor pair
+ *  is the one key it defines, a hidden slot none). */
 export const enumKeys = (names) => enumView(names)?.map(e => e.key) ?? names
+
+/** A layout's own properties, what `in` and hasOwnProperty answer for: the
+ *  keys it enumerates and those it hides, an accessor's by its name. */
+export const ownKeys = (names) => {
+  const hidden = ctx.schema.hidden.get(names)
+  if (!hidden) return enumKeys(names)
+  const own = new Set(enumKeys(names))
+  for (const n of names) if (hidden.has(n)) own.add(n.endsWith(ACCESSOR_GET) ? n.slice(0, -ACCESSOR_GET.length) : n.endsWith(ACCESSOR_SET) ? n.slice(0, -ACCESSOR_SET.length) : n)
+  return [...own]
+}
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
 export function initSchema(ctx) {
@@ -80,7 +109,11 @@ export function initSchema(ctx) {
     }
     // A class instance's literal salts with its brand (ast.js BRAND): the
     // schema is the class's own, found again from the id.
-    if (salt && isBrand(salt)) { brandBySid.set(id, salt); sidByBrand.set(salt, id) }
+    if (salt && isBrand(salt)) {
+      brandBySid.set(id, salt); sidByBrand.set(salt, id)
+      const members = ctx.transform.classMembers?.get(salt)
+      if (members) ctx.schema.hidden.set(ctx.schema.list[id], members)
+    }
     return id
   }
   /** The class brand a schema was registered under, or null for a plain shape. */
@@ -114,6 +147,8 @@ export function initSchema(ctx) {
     let id = errorSidByClass.get(className)
     if (id == null) {
       id = ctx.schema.register(ERR_SCHEMA_PROPS, className)
+      // `message` and `name` are an Error's own or inherited, not enumerable
+      ctx.schema.hidden.set(ctx.schema.list[id], new Set(ERR_SCHEMA_PROPS))
       errorSidByClass.set(className, id)
       errorClassBySid.set(id, className)
     }

@@ -542,6 +542,14 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   }
   for (const [mname, mparams, mbody, kind] of methods)
     litProps.push([':', mname, methodValue(mparams, mbody, kind, self)])
+  // The instance holds its class's members as slots, which JS keeps on the
+  // prototype: a brand gives the instance a layout of its own, whose members
+  // enumeration hides (module/schema.js ctx.schema.hidden).
+  if (heritage == null && methods.length) {
+    const brand = BRAND + (ctx.transform.classId = (ctx.transform.classId ?? 0) + 1)
+    ;(ctx.transform.classMembers ??= new Map()).set(brand, new Set(methods.map(([mname]) => mname)))
+    litProps.push([':', brand, UNDEF])
+  }
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
   let params = ctorParams ?? ['()', null]
   const dynamicBase = heritage != null && typeof heritage !== 'string'
