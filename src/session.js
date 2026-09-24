@@ -145,6 +145,12 @@ export function targetProfileFor(host) {
  *                                (collectSlotWriteHazards). Same DEPS as
  *                                walkCache; the `late` flag is compared on
  *                                read, not a separate invalidation path.
+ *   revision                     the program revision: advanced by every
+ *                                rewriting seam (setFuncBody, invalidateRewrittenBody,
+ *                                invalidateBodies, invalidateAllBodyFacts,
+ *                                invalidateProgramFactsCache). The summary is rebuilt
+ *                                only when it moved (compile/index.js summarizeProgram);
+ *                                JZ_DEBUG_INVARIANTS checks each reuse against its inputs.
  *   bodyFacts                    analyzeBody's per-function-body memo (locals,
  *                                valTypes, arrElemSchemas, …). Invalidated by:
  *                                (a) a fresh session (wholesale); (b) the

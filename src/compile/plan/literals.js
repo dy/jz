@@ -42,6 +42,7 @@ import {
   collectBindings,
 } from './common.js'
 import { isExported } from '../func-exports.js'
+import { invalidateProgramFactsCache } from '../program-facts.js'
 import { frameRoots } from '../../function.js'
 
 // === Loop unrolling & scalarization ===
@@ -940,6 +941,7 @@ export function foldStaticConstAggregates(ast) {
     }
     seq.splice(1, seq.length - 1, ...kept)
   }
+  invalidateProgramFactsCache(...seqs)
   // Rewrite each function body AND its default-parameter expressions, excluding the
   // folded names its params shadow.
   for (const f of funcs) {
@@ -948,7 +950,7 @@ export function foldStaticConstAggregates(ast) {
     const rw = shadows
       ? (n) => rewriteScalarObjectUses(rewriteScalarArrayUses(n, new Map([...arr].filter(([k]) => !pn.includes(k)))), new Map([...objects].filter(([k]) => !pn.includes(k))))
       : rewrite
-    f.body = rw(f.body)
+    setFuncBody(f, rw(f.body))
     if (f.defaults) for (const k of Object.keys(f.defaults)) f.defaults[k] = rw(f.defaults[k])
   }
   return true

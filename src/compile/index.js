@@ -29,7 +29,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
-import { ctx, err, PTR, HEAP } from '../ctx.js'
+import { ctx, err, PTR, HEAP, getFactStore } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
@@ -116,6 +116,33 @@ export function tailFacts(cfg) {
 }
 
 /** Every pass before link: the module's sections in order, and link's inputs. */
+// JZ_DEBUG_INVARIANTS: every input the summary reads (the module globals by name, all it asks
+// of them), its AST nodes by identity as well as content (the summary keys its facts by node),
+// for checking a reuse under an unchanged key.
+function summaryInputs(ast, ids) {
+  const node = (n) => {
+    if (!Array.isArray(n)) return typeof n === 'bigint' ? `${n}n` : JSON.stringify(n) ?? String(n)
+    let id = ids.of.get(n)
+    if (id == null) ids.of.set(n, id = ++ids.next)
+    return `[${id}:${n.map(node).join(',')}]`
+  }
+  const data = (v, d = 0) => d > 6 ? '…'
+    : v instanceof Map || v instanceof Set ? `<${[...v].map(x => data(x, d + 1)).join(',')}>`
+    : Array.isArray(v) ? `[${v.map(x => data(x, d + 1)).join(',')}]`
+    : typeof v === 'bigint' ? `${v}n` : typeof v === 'function' ? 'fn'
+    : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${k}=${data(v[k], d + 1)}`).join(',')}}`
+    : JSON.stringify(v) ?? String(v)
+  const funcs = ctx.funcs.list.map(f => [f.name, node(f.body), f.closure, f.rest, isExported(f),
+    data({ params: f.sig?.params?.map(p => [p.name, p.rest, p.boundaryTyped]), results: f.sig?.results, ptrKind: f.sig?.ptrKind, ptrAux: f.sig?.ptrAux, unsignedResult: f.sig?.unsignedResult, dispatcher: f.sig?.dispatcher }),
+    Object.entries(f.defaults ?? {}).map(([k, v]) => `${k}=${node(v)}`).join('&')].join('|'))
+  return [node(ast), node(ctx.module.moduleInits), ...funcs,
+    data(ctx.schema.list), data(ctx.schema.list.map((_, sid) => ctx.schema.brandOf(sid))), data(ctx.schema.vars), data(ctx.schema.poisoned),
+    data(ctx.transform.classes), data(ctx.transform.literalAccessorNames),
+    data(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1])), data(ctx.module.hostImportValTypes),
+    data(ctx.funcs.exports), data(ctx.funcs.names), data(ctx.funcs.multiProp), data([...ctx.scope.globals.keys()]),
+    data(ctx.scope.shapeStrs), data(ctx.scope.constStrs)].join('\n')
+}
+
 export function assemble(ast, profiler) {
   // Contract: callers (jzCompileInner / scripts/self.js compileSelf) must set
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
@@ -130,8 +157,13 @@ export function assemble(ast, profiler) {
   ctx.funcs.map.clear()
   for (const f of ctx.funcs.list) { ctx.funcs.names.add(f.name); ctx.funcs.map.set(f.name, f) }
   // The summary owns semantic facts; ctx also carries mutable lowering state.
-  // Rebuild from explicit inputs after source rewrites, never from old facts.
-  const summarizeProgram = () => summarize(ast, {
+  // Rebuild from explicit inputs after source rewrites, never from old facts, and
+  // only when they changed. It is keyed by what it reads: the program by its
+  // revision (every rewrite of a body or a signature advances it through a mutation
+  // seam: compile/analyze/body-facts.js, plan's sweeps), the registries beside it
+  // by content, which is cheap. A summary built under the current key is still the
+  // program's; JZ_DEBUG_INVARIANTS checks each reuse against its full inputs.
+  const summaryOf = () => summarize(ast, {
     inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, exported: isExported,
     boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)
     imports: new Map(ctx.module.imports.filter(imp => imp[3]?.[0] === 'func').map(imp => imp[3][1].replace(/^\$/, '')).map(name => [name, ctx.module.hostImportValTypes.get(name) ?? null])),
@@ -144,7 +176,25 @@ export function assemble(ast, profiler) {
     constStrings: jsonShapeStrings,
     constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
   })
-  ctx.summary = timePhase(profiler, 'summary', summarizeProgram)
+  let built = null
+  const nodeIds = DBG_INVARIANTS ? { of: new WeakMap(), next: 0 } : null
+  const summaryKey = () => {
+    let key = `${getFactStore().revision}|${ctx.schema.list.length}|${ctx.funcs.list.length}|${ctx.funcs.names.size}|${ctx.scope.globals.size}` +
+      `|${ctx.schema.poisoned?.size ?? 0}|${ctx.transform.classes?.size ?? 0}|${ctx.module.imports.length}|${ctx.scope.constStrs?.size ?? 0}|${ctx.scope.shapeStrs?.size ?? 0}`
+    for (const [name, sid] of ctx.schema.vars) key += `|${name}=${sid}`
+    return key
+  }
+  const summarizeProgram = () => {
+    const key = summaryKey()
+    if (built?.key !== key) built = { key, summary: timePhase(profiler, 'summary', summaryOf), inputs: nodeIds && summaryInputs(ast, nodeIds) }
+    else if (nodeIds) {
+      const now = summaryInputs(ast, nodeIds).split('\n'), was = built.inputs.split('\n')
+      const at = now.findIndex((line, i) => line !== was[i])
+      if (at >= 0 || now.length !== was.length) throw new Error(`[summary] its inputs changed under an unchanged key, a rewrite that bypassed the mutation seams (compile/analyze/body-facts.js): ${(now[at] ?? '').slice(0, 160)}`)
+    }
+    return built.summary
+  }
+  ctx.summary = summarizeProgram()
   // Include imported functions for call resolution (e.g. template interpolations).
   // Also register a synthesized sig in func.map so emit's arity-aware branches see
   // the import's declared param count — needed for arg pad/truncate to match it.
@@ -179,7 +229,7 @@ export function assemble(ast, profiler) {
   const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, summarizeProgram))
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
-  ctx.summary = timePhase(profiler, 'summary', summarizeProgram)
+  ctx.summary = summarizeProgram()
   // A layout's view runs only where the code the program lowers builds an
   // object literal with an accessor (module/schema.js viewsOn).
   settleViews([ast, ...(ctx.module.moduleInits ?? []),

@@ -25,6 +25,7 @@ export function resetProgramFactsCache() {
 
 /** Drop cached walks for specific AST roots (in-place module rewrites). */
 export function invalidateProgramFactsCache(...roots) {
+  getFactStore().revision++
   const pf = getFactStore().programFacts
   for (const r of roots) {
     if (r == null || typeof r !== 'object') continue

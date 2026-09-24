@@ -889,3 +889,14 @@ test('summary: named typed properties survive a numeric width join', () => {
     for (const flag of [0, 0, 1, 0]) is(f(flag), expected(flag))
   }
 })
+
+test('summary: rebuilt only when the program changed', () => {
+  // Every rewrite advances the program revision (compile/analyze/body-facts.js, plan's sweeps);
+  // a summary built at the current revision is reused. JZ_DEBUG_INVARIANTS checks each reuse
+  // against the summary's inputs.
+  if (onKernel()) return   // the kernel keeps no profile
+  const builds = (src) => { const profile = {}; compile(src, { profile }); return profile.entries.filter(e => e.name === 'summary').length }
+  is(builds('export let f = (x) => x * 2'), 1, 'a program the plan leaves alone is summarized once')
+  ok(builds('const g = (a) => a + 1; export let f = (x) => { let s = 0; for (let i = 0; i < x; i++) s += g(i); return s }') > 1,
+    'a program the plan rewrites is summarized again')
+})

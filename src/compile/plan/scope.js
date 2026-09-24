@@ -372,10 +372,12 @@ export const inferModuleIntGlobals = (ast) => {
       bareEscaped = collectBareEscapes(programBody, null, true)
   }
 
+  let retyped = false
   for (const name of candidates) {
     if (fractional.has(name)) continue
     if (strictLevel.get(name) !== 2 && bareEscaped.has(name)) continue
     declGlobal(name, 'i32')
+    retyped = true
     // Advisory only (off unless opts.warnings): the value flows in from a parameter,
     // which may be a fractional Number that the i32 carrier truncates.
     if (ctx.warnings && fromParam.has(name))
@@ -383,6 +385,7 @@ export const inferModuleIntGlobals = (ast) => {
         `module global '${name}' is inferred i32 (integer) but is assigned from a parameter — if it can hold a fractional Number (e.g. DSP/filter state), the fraction is truncated; store fractional state in a Float64Array instead`,
         { fn: fromParam.get(name) })
   }
+  return retyped
 }
 
 /**

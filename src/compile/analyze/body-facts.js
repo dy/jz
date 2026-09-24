@@ -796,6 +796,10 @@ export function invalidateLocalsCache(body) {
  * An overlay change must use reanalyzeBody before its next dependent read.
  * Program-wide fact changes use invalidateAllBodyFacts, including anonymous
  * bodies that do not have an entry in ctx.funcs.list.
+ *
+ * Every rewriting seam (setFuncBody, invalidateRewrittenBody, invalidateBodies,
+ * invalidateAllBodyFacts) also advances the program revision (ctx.js fact
+ * store), which whole-program facts such as the summary are fresh against.
  */
 export function reanalyzeBody(body, read = () => analyzeBody(body)) {
   invalidateLocalsCache(body)
@@ -806,6 +810,7 @@ export function reanalyzeBody(body, read = () => analyzeBody(body)) {
  *  per-body facts the old shape keyed: the binding-use census, the interval
  *  proof and the mutation memo of every node. It reanalyzes before its next read. */
 export function invalidateRewrittenBody(body) {
+  getFactStore().revision++
   invalidateBindingUsesCache(body)
   invalidateIntervalProof(body)
   resetMutationNamesCache()
@@ -814,6 +819,7 @@ export function invalidateRewrittenBody(body) {
 /** Replace `func.body` and drop any bodyFacts entry for the new node — see
  *  the seam doc above `invalidateLocalsCache`. */
 export function setFuncBody(func, node) {
+  getFactStore().revision++
   func.body = node
   invalidateLocalsCache(node)
 }
@@ -821,6 +827,7 @@ export function setFuncBody(func, node) {
 /** Invalidate a known set of bodies (funcs already filtered by the caller —
  *  e.g. narrowReturnArrayElems's `targets`). See the seam doc above. */
 export function invalidateBodies(bodies) {
+  getFactStore().revision++
   for (const body of bodies) invalidateLocalsCache(body)
 }
 
@@ -830,5 +837,6 @@ export function invalidateBodies(bodies) {
  *  callerLocals/valTypes lattices, or the final flush before emit begins).
  *  See the seam doc above. */
 export function invalidateAllBodyFacts() {
+  getFactStore().revision++
   resetBodyFactsCache()
 }

@@ -1035,6 +1035,12 @@ dependency has an explicit invalidation owner:
 | Compile session | New fact store / `resetBodyFactsCache` | `session.js` |
 
 Global invalidation clears the complete cache, including anonymous roots.
+Every rewriting seam, and every plan sweep that reports a change, also advances
+one program revision. The summary is keyed by it and by the contents of the
+registries beside the program (schemas, functions, globals, binding schemas),
+and is rebuilt only when the key moved (`summarizeProgram`,
+`src/compile/index.js`). `JZ_DEBUG_INVARIANTS=1` checks each reuse against the
+summary's full inputs, so a rewrite that bypasses the seams fails there.
 Signature checking does not authorize stale overlay reads. New passes use these
 existing seams; they must not add another cache or rely on ambient facts staying
 unchanged accidentally.

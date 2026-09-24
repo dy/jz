@@ -26,7 +26,7 @@
  * @module plan
  */
 
-import { ctx } from '../../ctx.js'
+import { ctx, getFactStore } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import {
   collectProgramFacts, collectSlotConstants, analyzeSchemaSlotIntCertain, collectSlotWriteHazards, analyzeParamNeverGrown,
@@ -60,7 +60,7 @@ import {
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
 } from './literals.js'
 
-/** Plan the program: `summarize` computes the program summary (src/summary) of the AST as it stands. */
+/** Plan the program: `summarize` returns the program summary (src/summary) of the AST as it stands, rebuilt only when the program changed. */
 export default function plan(ast, profiler, summarize) {
   // Per-pass timing under `plan:` — the plan stage is the compile pipeline's
   // multi-pass hot spot (each mutating pass triggers a whole-program fact
@@ -83,14 +83,14 @@ export default function plan(ast, profiler, summarize) {
     return _facts
   }
   const sweep = (name, pass) => {
-    if (t(name, pass)) _dirty = true
+    if (t(name, pass)) { _dirty = true; getFactStore().revision++ }
   }
 
   // The module globals' kinds are the summary's, whole-program from the start:
   // a NUMBER global reaches inferModuleIntGlobals's candidacy below.
   t('moduleGlobalKinds', () => moduleGlobalKinds(ctx.summary))
   t('unboxConstTypedGlobals', unboxConstTypedGlobals)
-  t('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
+  sweep('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
   facts()
   // Receiver-HASH global classification (.work/archive/todo.md §deletion-sweep):
@@ -205,7 +205,7 @@ export default function plan(ast, profiler, summarize) {
     // f = (s) => s.length` still flips to externref. Likewise the result kinds,
     // so `export let f = (a) => a > 2` boxes its boundary atom.
     applyJsstringBoundaryCarrierStandalone(programFacts)
-    ctx.summary = t('summary', summarize)
+    ctx.summary = summarize()
     seedResultKinds()
     strictBoundaryTypeCheck(programFacts)
     adviseProgram(programFacts)
@@ -224,12 +224,12 @@ export default function plan(ast, profiler, summarize) {
   // The program the sweeps rewrote (inlined calls, scalar-replaced literals),
   // with the export contract: narrowing reads the parameter kinds from it.
   t('collectSlotConstants', () => collectSlotConstants(ast))
-  ctx.summary = t('summary', summarize)
+  ctx.summary = summarize()
   // Normalizing an input can prove the values stored into an output buffer.
   // Close that dependency before narrowing. Each round fixes at least one
   // previously untyped boundary parameter; established contracts are skipped.
   while (t('applyExportTypedArrayAbi', () => applyExportTypedArrayAbi(programFacts.paramReps, programFacts.callSites, programFacts.programIndex.addressTaken)))
-    ctx.summary = t('summary', summarize)
+    ctx.summary = summarize()
   t('narrowSignatures', () => narrowSignatures(programFacts, ast))
 
     // After narrowSignatures (params now carry ptrKind): mark typed-array params that every call
