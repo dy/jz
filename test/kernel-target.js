@@ -93,10 +93,15 @@ const modulesJSONFor = (self, opts) =>
 // opts.host ('wasi' | 'js') → plain string over the ABI; 0 = native undefined default.
 const hostFor = (self, opts) => opts.host ? self.memory.String(opts.host) : 0
 const sourceTypeFor = (self, opts) => opts.sourceType ? self.memory.String(opts.sourceType) : 0
-const buildJSONFor = (self, opts) => opts.alloc == null && typeof opts.memory !== 'number' && !opts.whyNotRewind && !opts.whyNotSimd ? 0 : self.memory.String(JSON.stringify({
+const buildJSONFor = (self, opts) => !opts.imports && opts.alloc == null && typeof opts.memory !== 'number' && !opts.whyNotRewind && !opts.whyNotSimd ? 0 : self.memory.String(JSON.stringify({
   alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
   whyNotRewind: !!opts.whyNotRewind, whyNotSimd: !!opts.whyNotSimd,
-}))
+  // Only import signatures cross the compiler ABI. Implementations stay with
+  // the host that instantiates the produced module; they are never serialized.
+  imports: opts.imports,
+  externalImports: !!opts.imports && Object.values(opts.imports).some(mod =>
+    Object.values(mod || {}).some(spec => typeof spec === 'function')),
+}, (key, value) => typeof value === 'function' ? {params: value.length} : value))
 
 const optJSONFor = (self, opts) => {
   if (opts.optimize === false || opts.optimize === 0) return 0

@@ -401,7 +401,7 @@ The prior gate evidence below describes its own tree, not this candidate.
   accidentally exporting a void command entry; brittle SIMD instruction-count
   assertions (pixel parity remains); a built-in conformance case that now passes.
 - Watr's scheduler moved a result-producing call out of its folded value
-  position. JZ pins the tested public watr commit `a5d1d51` until a release carries
+  position. JZ pins the tested public watr commit `5ed6b5d` until a release carries
   it. Both EventTarget speed-tier reproducers pass with this dependency.
 - Runtime method dispatch now requires the correct receiver family. NaN and
   BigInt no longer enter array helpers via optional calls; missing methods skip
@@ -419,12 +419,25 @@ The prior gate evidence below describes its own tree, not this candidate.
 - The follow-up opt0 failures were inherited Object methods rejected by the
   new receiver-family guard. Registered Object methods now retain their generic
   receiver contract; string own-property checks use their string emitter.
+- Watr's slot allocator now keeps implicit zeros when a nested branch bypasses
+  a first assignment. This fixes O1 negative regex lookahead and the kernel's
+  lone-CR parser rejection. Host import signatures also cross the kernel ABI;
+  implementations remain in the host, including external-object results.
+- Latest local validation: 71 self-compile tests and 10 performance-ratchet tests
+  pass. The remaining seven previously failing self-host tests still fail in
+  focused runs; full CI is pending. GitHub API rate limiting currently blocks
+  status reads. No claim of a green release is justified.
 - Still open in the Wasm-hosted suite: nested array-pattern scalarization,
-  named-regex replacement, typed output
-  buffer inference, and a lone-CR parser rejection. Use the kernel test target,
-  not just native tests, when checking these. The next full CI run is the
+  named-regex replacement, typed output buffer inference, duplicate helper calls
+  in a lane loop, and twin-local versioning. Use the kernel test target, not just
+  native tests, when checking these. The next full CI run is the
   authority for additional remaining failures.
-- The watr size backstop still fails. No byte, speed or memory cap was relaxed.
+- A separate watr full-optimizer issue was reproduced with numeric branch
+  depths through nested blocks (`br 2` becomes an invalid label after the full
+  rewrite sequence). The local-slot pass now conservatively leaves numeric
+  targets alone. JZ's named-label output does not exercise that separate issue.
+- The watr size backstop is 323672 B against its 320000 B cap. No byte, speed
+  or memory cap was relaxed.
   Committed benchmark and memory evidence is stale; the repaired manual
   `bench-probe` workflow retains actual measurements as an artifact and fails
   when the runner produces none. It does not regenerate the release corpus.

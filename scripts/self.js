@@ -14,7 +14,7 @@ import { DBG_INVARIANTS, assertCtxInvariants } from '../src/debug.js'
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, initWarnings } from '../src/ctx.js'
+import { ctx, initWarnings, setLinkDemand } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
 import { beginSession, configureDiagnostics } from '../src/session.js'
@@ -76,6 +76,8 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
   if (build) {
     configureDiagnostics(build)
+    if (build.imports) ctx.module.hostImports = build.imports
+    if (build.externalImports) setLinkDemand('external')
     if (typeof build.memory === 'number') ctx.memory.pages = build.memory
     if (build.compactCollections) ctx.transform.compactCollections = true
   }

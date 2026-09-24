@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr revision `a5d1d51`
+escape decoding and the async-member parse fixes) and watr revision `5ed6b5d`
 (on 5.11.3). This pin includes the scheduler fix that keeps result-producing
 calls at the end of folded blocks; effect purity alone does not prove a
 statement has no result. The WAT printer joins fragments once per node so wide
@@ -29,7 +29,9 @@ Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
 including level 1: disjoint temporaries share storage instead of inflating
 recursive stack frames. Its lifetime proof preserves implicit zero values,
-conditional writes and loop-carried values. No JZ-specific allocator is needed.
+conditional writes, nested branch exits and loop-carried values. A branch that
+bypasses the first assignment preserves the local's implicit zero; named region
+exits are recorded in the allocator's existing traversal. No JZ-specific allocator is needed.
 Dominating small constants propagate into control flow using
 the existing binding-use census. This pass skips functions mixing numeric
 and named local references, which can alias. The duplicate JZ implementations and cleanup sweep are removed.

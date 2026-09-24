@@ -198,3 +198,12 @@ test('method receiver: inherited object methods accept erased receiver families'
     for (const key of ['x', '0', 'length', 'missing', 'toString'])
       is(f(i, key), native(i, key), `receiver ${i}, key ${key}`)
 })
+
+
+test('method receiver: host-import signatures retain external object results', () => {
+  const source = `import { make, offset } from 'env'
+    export function f(n) {const o = make(n); return o.value + offset}`
+  const imports = {env: {make: n => ({value: n * 2}), offset: 3}}
+  const f = jz(source, {imports}).exports.f
+  for (const n of [0, 0, 7, -1, 0]) is(f(n), n * 2 + 3)
+})
