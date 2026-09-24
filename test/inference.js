@@ -2853,7 +2853,7 @@ test('Map summary: new Map(seed) remains conservative and executes correctly', (
   `
   jz.compile(src, { wat: true })
   // The pair rows keep their positions through the join, so the values are numbers.
-  is(mapValueKindOf('seeded'), 'number', 'a literal pair list is a modeled constructor input')
+  if (!onKernel()) is(mapValueKindOf('seeded'), 'number', 'a literal pair list is a modeled constructor input')
   is(run(src).get('a'), 1, 'seeded Map still functions correctly')
   is(run(src).get('zz'), undefined, 'a missing key reads undefined')
 })

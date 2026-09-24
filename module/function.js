@@ -72,6 +72,7 @@ export default (ctx) => {
   }
 
   ctx.core.stdlib.__closure_length = () => {
+    if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
     if (ctx.closure.lengthData == null) {
       ctx.closure.lengthData = dataLen()
       dataPush(new Uint8Array(ctx.closure.lengths))

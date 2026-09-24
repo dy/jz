@@ -321,7 +321,7 @@ test('frame effects: a static getter on a class value is code the census cannot 
 test('frame effects: an optional call is a call', () => {
   const src = (between) => `const g = (buf, o, h) => { const a = buf[0]; ${between}; const b = buf[0]; return a * 100 + b }
 const via = (o, h, buf) => { o.f?.(); return h?.(buf) }
-export const run = () => { const buf = new Float64Array(2); buf[0] = 1; const o = { f: () => { buf[0] = 7; return 1 } }; return g(buf, o, (b) => { b[0] = 8; return 1 }) }`
+export const entry = () => { const buf = new Float64Array(2); buf[0] = 1; const o = { f: () => { buf[0] = 7; return 1 } }; return g(buf, o, (b) => { b[0] = 8; return 1 }) }`
   for (const between of ['const v = o.f?.()', 'const v = h?.(buf)', 'const v = o?.f?.()', 'const v = via(o, h, buf)'])
-    for (const optimize of levels(0, 2, 3)) is(jz(src(between), { optimize }).exports.run(), oracle(src(between)).run(), `${between} O${optimize}`)
+    for (const optimize of levels(0, 2, 3)) is(jz(src(between), { optimize }).exports.entry(), oracle(src(between)).entry(), `${between} O${optimize}`)
 })

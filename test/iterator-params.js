@@ -3,7 +3,7 @@ import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { oracle, batch } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, onKernel } from './_matrix.js'
 
 const same = src => is(jz(src).exports.f(), oracle(src).f())
 
@@ -23,8 +23,10 @@ test('pattern parameters: positional bindings avoid a synthetic rest array', () 
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const j = jz(src, { optimize })
     is(j.exports.f(), '3,7', 'callback index and collection arguments remain unobserved')
-    const pick = ctx.funcs.list.find(f => f.name === 'pick')
-    ok(pick && !pick.rest && pick.sig.params.length === 1, 'one positional argument, no rest packing')
+    if (!onKernel()) {  // the hosted compiler does not populate the host's ctx
+      const pick = ctx.funcs.list.find(f => f.name === 'pick')
+      ok(pick && !pick.rest && pick.sig.params.length === 1, 'one positional argument, no rest packing')
+    }
   }
   sameMany([
     `export let f = () => { let log = ''; function g([a = (log += 'a', 2)] = [], {b = (log += 'b', a + 1)} = {}, c = (log += 'c', b + 1)) { return [a,b,c,log].join(',') } return g() }`,

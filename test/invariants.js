@@ -1216,17 +1216,19 @@ test('debug lifecycle: real compiles retain semantics across shape changes and e
     import jz from ${JSON.stringify(entry)}
     const sources = [
       'export function f(){return 0}',
+      'export let f = (p0) => { let unused = 0; return 0; }',
       'export function f(){let p={x:1,y:2};p={x:3};return p.x}',
       'export function f(){let p={x:1,y:2};p={x:3};p.y=4;return p.y}',
       'export function f(){class B {x=3;m(){return this.x}} class D extends B {n(){return this.x+1}} const d=new D();return d.n()}',
       'export function f(){const o={x:5};const g=()=>{const p=o;return p.x};return g()}'
     ]
     const values = []
-    for (const i of [0,0,1,2,3,3,4]) values.push(jz(sources[i]).exports.f())
+    for (const optimize of [0,2,3])
+      for (const i of [0,0,1,2,3,4,4,5]) values.push(jz(sources[i], { optimize }).exports.f())
     try { jz('export function f( {') } catch {}
     values.push(jz(sources[0]).exports.f())
     console.log(JSON.stringify(values))
   `], { env: { ...process.env, JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 30000 })
   is(child.status, 0, child.stderr)
-  is(JSON.parse(child.stdout), [0,0,3,4,4,4,5,0], 'A → A → different shapes → closures → error → A')
+  is(JSON.parse(child.stdout), [...Array(3).fill([0,0,0,3,4,4,4,5]).flat(),0], 'A → A → different shapes → closures → error → A, every tier')
 })

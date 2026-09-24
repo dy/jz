@@ -2515,7 +2515,8 @@ export default (ctx) => {
   }
   ctx.core.emit['.indexOf'] = (arr, val, fromIndex) => {
     const recv = hoistArrayValue(arr)
-    const vv = val === undefined ? undefExpr() : storedValue(val)
+    const value = temp('ixv')
+    const vv = typed(['local.get', `$${value}`], 'f64')
     const positions = positionArgs([fromIndex])
     const eq = arrEqIR(val)
     const result = tempI32('ix'), len = tempI32('ixl'), ptr = tempI32('ixp')
@@ -2528,6 +2529,7 @@ export default (ctx) => {
     ], len, ptr, false, ['local.get', `$${from.local}`])
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ['local.set', `$${value}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
       ...positions.setup,
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
@@ -2575,13 +2577,11 @@ export default (ctx) => {
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
-  // Mirror of .indexOf scanning to the highest matching index — no early break, the last hit wins.
-  // Registering it (alongside .string:lastIndexOf) is what lets lastIndexOf leave STRING_ONLY_METHODS:
-  // an untyped receiver now forks string-vs-array at runtime instead of force-narrowing to string
-  // (which returned -1 for every array). fromIndex is unsupported, matching .indexOf's array path.
+  // Capture the search value once, then scan backwards from fromIndex.
   ctx.core.emit['.lastIndexOf'] = (arr, val, fromIndex) => {
     const recv = hoistArrayValue(arr)
-    const vv = val === undefined ? undefExpr() : storedValue(val)
+    const value = temp('lxv')
+    const vv = typed(['local.get', `$${value}`], 'f64')
     const positions = positionArgs([fromIndex])
     const eq = arrEqIR(val)
     const result = tempI32('lx'), len = tempI32('lxl'), ptr = tempI32('lxp')
@@ -2595,6 +2595,7 @@ export default (ctx) => {
     ], len, ptr, true, ['local.get', `$${from.local}`])
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ['local.set', `$${value}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
       ...positions.setup,
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],

@@ -17,7 +17,7 @@ import watrPrint from 'watr/print'
 import { ctx, initWarnings } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
-import { beginSession } from '../src/session.js'
+import { beginSession, configureDiagnostics } from '../src/session.js'
 import { assemble, linkAssembled, tailFacts } from '../src/compile/index.js'
 
 import {
@@ -75,6 +75,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   // own build graph into a later user compile.
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
   if (build) {
+    configureDiagnostics(build)
     if (typeof build.memory === 'number') ctx.memory.pages = build.memory
     if (build.compactCollections) ctx.transform.compactCollections = true
   }

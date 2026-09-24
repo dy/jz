@@ -12,7 +12,11 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr 5.11.3, which
+escape decoding and the async-member parse fixes) and watr revision `ba449f2`
+(on 5.11.3). This pin includes the scheduler fix that keeps result-producing
+calls at the end of folded blocks; effect purity alone does not prove a
+statement has no result. Return to a published version once it carries the fix.
+The dependency also
 carries the two optimizer rules jz's speed rows rely on: the mixed-sign
 truncation-of-convert fold under a non-negative operand (base64's decode
 loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).
@@ -93,8 +97,12 @@ uses retain undefined, while numeric-only uses normalize it. Index definitions
 come from the binding census and positive bounds apply only inside their strict
 loop guard. Every counter proof rejects additional writes in the loop step.
 Method effects require a proven receiver and no own override, not just a name
-matching a built-in. Local shape facts are seeded before representation plans
-freeze, including closure bodies.
+matching a built-in. Runtime method dispatch checks the receiver family too:
+boxed primitives never reach array helpers, and an optional missing method
+skips its arguments. Array searches capture the search value before iteration,
+even when empty. Shared diagnostic configuration serves both compiler hosts. Local shape facts are seeded before representation plans
+freeze, including closure bodies. Body-fact queries for another body use a scratch
+representation overlay; they must not write facts into the active frame.
 
 The summary must distinguish a pending factory result from an unknown value.
 Object mutation models wait for bottom-valued targets and descriptors rather

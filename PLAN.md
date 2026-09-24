@@ -391,6 +391,33 @@ Dependencies
    Present the pinned candidate and complete gates for independent review.
    Implementation alone is not expert approval.
 
+## CI review, September 24
+
+The CI candidate is on `codex/v1-review-ci-20260924`. V1 is not ready.
+The prior gate evidence below describes its own tree, not this candidate.
+
+- Fixed from the first CI run: inactive-frame analysis leaking representation
+  facts under debug fuzzing; shared-memory function-arity setup; WASI tests
+  accidentally exporting a void command entry; brittle SIMD instruction-count
+  assertions (pixel parity remains); a built-in conformance case that now passes.
+- Watr's scheduler moved a result-producing call out of its folded value
+  position. JZ pins the tested public watr commit `ba449f2` until a release carries
+  it. Both EventTarget speed-tier reproducers pass with this dependency.
+- Runtime method dispatch now requires the correct receiver family. NaN and
+  BigInt no longer enter array helpers via optional calls; missing methods skip
+  arguments, while a null receiver's nonoptional property read throws first.
+  Array searches evaluate their search value once, including empty input.
+  The self-host spread-omission crash and diagnostic forwarding checks pass.
+- Still open in the Wasm-hosted suite: nested array-pattern scalarization,
+  module-initializer array construction, named-regex replacement, typed output
+  buffer inference, and a lone-CR parser rejection. Use the kernel test target,
+  not just native tests, when checking these. The next full CI run is the
+  authority for additional remaining failures.
+- The watr size backstop still fails. No byte, speed or memory cap was relaxed.
+  Committed benchmark and memory evidence is stale; the repaired manual
+  `bench-probe` workflow retains actual measurements as an artifact and fails
+  when the runner produces none. It does not regenerate the release corpus.
+
 ## Gate evidence, September 23
 
 Validated candidate on top of `b0f38d36`: dictionary key-proof reuse, corrected

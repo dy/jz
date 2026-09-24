@@ -10,6 +10,7 @@
 import { ctx, getFactStore } from '../../ctx.js'
 import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
+import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, updateRep } from '../../reps.js'
 import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
@@ -85,8 +86,15 @@ export function analyzeBody(body) {
   // The names declared in the body and the arrays whose initial contents it
   // described: two tables keyed by the body's names, dropped at exit.
   const elemOrigin = takeScratchSet()
+  // Program queries also visit bodies without entering their emission frame.
+  // Their chained range facts are scratch state, not facts about the caller.
+  const frame = ctx.func, previous = frame.localReps, scoped = frame.body !== body
+  if (scoped) frame.localReps = makeMapOverlay(previous)
   try { return computeBodyFacts(body, bodyFacts, elemOrigin) }
-  finally { releaseScratchSet(elemOrigin) }
+  finally {
+    if (scoped) frame.localReps = previous
+    releaseScratchSet(elemOrigin)
+  }
 }
 
 function computeBodyFacts(body, bodyFacts, elemOrigin) {

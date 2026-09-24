@@ -52,7 +52,7 @@ import watrPrint from "watr/print";
 import { ctx, err, warn, setLinkDemand, flushWarnings } from './src/ctx.js'
 import { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
-import { beginSession } from './src/session.js'
+import { configureDiagnostics, beginSession } from './src/session.js'
 import compile, { tailFacts } from './src/compile/index.js'
 import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
 import { watrTail } from './src/optimize/watr-tail.js'
@@ -579,17 +579,7 @@ const compilePipeline = (code, opts = {}) => {
     ctx.transform.optimize.slp = false
   }
 
-  // opts.whyNotSimd (CLI --why): emit a `simd-why-not` warning per
-  // canonical loop that the auto-vectorizer declined, naming the blocking op —
-  // a diagnostic to find loops that are "one op away" from SIMD. Rides the
-  // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
-  if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
-  // opts.whyNotRewind (CLI --why): why a function that could rewind
-  // its arena was declined — an escaping allocation, an unsafe callee, a host
-  // import, or no allocation at all (optimize/arena-rewind.js). `true` emits a
-  // `rewind-why-not` warning per function; a function receives (name, reason).
-  if (typeof opts.whyNotRewind === 'function') ctx.transform.whyNotRewind = opts.whyNotRewind
-  else if (opts.whyNotRewind) ctx.transform.whyNotRewind = (name, reason) => warn('rewind-why-not', `${name}: ${reason}`, { fn: name.slice(1) })
+  configureDiagnostics(opts)
 
   // opts.stencil: the neighbour-load stencil vectorizer (a[i±1] / 2-D 5-point).
   // Now default-on at optimize:'speed' (proven bit-exact corpus-wide); the opt is two-way so an

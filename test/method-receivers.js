@@ -124,3 +124,66 @@ test('method receiver: proven closure calls keep argument order without a receiv
   for (const strict of [false, true])
     is(jz(`export const f=()=>{${body}}`, {strict}).exports.f(), [24,12])
 })
+
+
+test('method receiver: optional builtin calls prove the receiver family before arguments', () => {
+  const src = `export function f(k) {
+    let n = 0
+    const values = [NaN, 1n, false, 0, null, undefined, 'ban', ['ban'], [],
+      new Uint8Array([1]), {}, {indexOf(x) {return x === 'ban' ? 42 : -1}}]
+    const value = values[k]?.indexOf?.((n++, 'ban'))
+    return [value, n]
+  }`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 2, 3]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [0, 0, 6, 7, 8, 9, 10, 11, 4, 5, 1, 2, 3, 6])
+      is(f(k), native(k), `O${optimize}, receiver ${k}`)
+  }
+})
+
+test('method receiver: nonoptional missing builtins evaluate arguments then throw', () => {
+  const src = `export function f(k) {
+    let n = 0
+    const values = [NaN, 1n, false, 0, {}, 'ban', ['ban']]
+    try {return [values[k].indexOf((n++, 'ban')), n]}
+    catch(e) {return [e.name, n]}
+  }`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 2, 3]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [0, 0, 1, 2, 3, 4, 5, 6, 0]) is(f(k), native(k), `O${optimize}, receiver ${k}`)
+  }
+})
+
+test('method receiver: search arguments run once before length and position conversion', () => {
+  for (const method of ['indexOf', 'lastIndexOf', 'includes']) {
+    const src = `export function f(n) {
+      let count = 0
+      const a = []
+      for (let i = 0; i < n; i++) a.push(i)
+      const from = {valueOf() {return count}}
+      const found = a.${method}((count++, 2), from)
+      return [found, count]
+    }`
+    const native = new Function(src.replace('export ', '') + ';return f')()
+    const { f } = jz(src).exports
+    for (const n of [0, 0, 1, 4, 0]) is(f(n), native(n), `${method}, length ${n}`)
+  }
+})
+
+
+test('method receiver: optional call does not make its property read optional', () => {
+  for (const call of ["values[k].indexOf((n++, 'a'))", "values[k].indexOf?.((n++, 'a'))"]) {
+    const src = `export function f(k) {
+      let n = 0
+      const values = [null, undefined, NaN, 'a']
+      try {return [${call}, n]} catch(e) {return [e.name, n]}
+    }`
+    const native = new Function(src.replace('export ', '') + ';return f')()
+    for (const optimize of [0, 2, 3]) {
+      const { f } = jz(src, { optimize }).exports
+      for (const k of [0, 0, 1, 2, 3, 0]) is(f(k), native(k), `O${optimize}, receiver ${k}`)
+    }
+  }
+})

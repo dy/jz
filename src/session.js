@@ -16,7 +16,7 @@
  * @module src/session
  */
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
-import { ctx, reset, initWarnings, optFlagsOf } from './ctx.js'
+import { ctx, reset, initWarnings, optFlagsOf, warn } from './ctx.js'
 import { clearDollar } from './ir.js'
 import { clearStdlibParseCache } from './wat/assemble.js'
 import { resolveOptimize } from './optimize/index.js'
@@ -283,4 +283,13 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-reset')
   return ctx.transform.optimize
+}
+
+
+/** Shared diagnostic policy for the native and Wasm compiler entry points. */
+export function configureDiagnostics({ whyNotSimd, whyNotRewind }) {
+  if (whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
+  if (typeof whyNotRewind === 'function') ctx.transform.whyNotRewind = whyNotRewind
+  else if (whyNotRewind) ctx.transform.whyNotRewind = (name, reason) =>
+    warn('rewind-why-not', `${name}: ${reason}`, { fn: name.slice(1), reason })
 }

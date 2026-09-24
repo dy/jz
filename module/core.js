@@ -2365,10 +2365,10 @@ export default (ctx) => {
   // the dispatched access) but must evaluate once. Rep-seeding for the temp,
   // when the receiver's value-type drives downstream dispatch, lives inside
   // the useFn callback so it runs before the consumer IR consults reps.
-  const evalOnce = (value, useFn) => {
+  const evalOnce = (value, useFn, otherwise = undefExpr()) => {
     const t = temp()
     const va = asF64(emit(value))
-    return optionalGuard(t, va, useFn(t))
+    return optionalGuard(t, va, useFn(t), otherwise)
   }
 
   // Optional chaining: obj?.prop → undefined if obj is nullish, else obj.prop.
@@ -2451,14 +2451,14 @@ export default (ctx) => {
     if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && typeof callee[2] === 'string') {
       const base = ctx.scope.chain[callee[1]] || callee[1]
       if (ctx.funcs.names.has(`${base}$${callee[2]}`) && !ctx.funcs.multiProp.has(`${base}.${callee[2]}`)) {
-        const callArgs = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+        const callArgs = args.length === 0 ? null : [',', ...args]
         return asF64(ctx.core.emit['()'](callee, callArgs))
       }
     }
     // Method-reference callee: `recv.m(...)` or `recv?.m(...)` form. Methods are
-    // statically registered emitters and aren't real closure values, so route them
-    // as a direct method call. The outer optional short-circuits when the receiver
-    // is nullish — the method itself is statically known to exist.
+    // registered emitters rather than closure values. Keep the optional-call
+    // policy through method dispatch: registration alone does not prove that
+    // this receiver has the method.
     if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
       const method = callee[2]
       if (ctx.core.emit[`.${method}`]) {
@@ -2470,12 +2470,11 @@ export default (ctx) => {
           // Re-enter the full `()` method dispatch (runtime string/array dispatch,
           // charCodeAt, schema, …) rather than the bare generic `.${method}` emitter
           // — that emitter is the *array* `includes`/`indexOf`/… and would mis-run on
-          // a string receiver. Mirrors `?.[]`'s re-entry into `[]`. The method is
-          // statically known to exist, so the inner optional is moot; `t` is already
-          // nullish-guarded by evalOnce. Args re-bundle into the `()` arg slot.
-          const callArgs = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
-          return asF64(ctx.core.emit['()'](['.', t, method], callArgs))
-        })
+          // a string receiver. The runtime dispatcher must preserve a missing
+          // method's short circuit. Keep a comma expression as one argument.
+          const callArgs = args.length === 0 ? null : [',', ...args]
+          return asF64(ctx.core.emit['()'](['.', t, method], callArgs, null, true))
+        }, callee[0] === '.' ? throwTypeErrorIR('read') : undefExpr())
       }
     }
     if (!ctx.closure.call) err('`fn?.()` optional call on a closure value needs jz\'s closure-call runtime, which this program never linked in — call a closure unconditionally at least once elsewhere in the file')

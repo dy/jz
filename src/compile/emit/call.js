@@ -417,7 +417,7 @@ export const callOps = {
 
   // Linear callee-kind dispatcher. Each strategy below is its own named function
   // (extracted to module scope above); this body is just the routing table.
-  '()': (callee, callArgs, thisArg = null) => {
+  '()': (callee, callArgs, thisArg = null, optional = false) => {
     const argList = commaList(callArgs)
     const parsed = parseCallArgs(argList)
 
@@ -428,7 +428,7 @@ export const callOps = {
     if (typeof callee === 'string' && ctx.funcs.globalDevirt?.has(callee))
       callee = ctx.funcs.globalDevirt.get(callee)
 
-    if (Array.isArray(callee) && callee[0] === '.')  return emitMethodCall(callee, parsed, callArgs)
+    if (Array.isArray(callee) && callee[0] === '.')  return emitMethodCall(callee, parsed, callArgs, optional)
 
     if (typeof callee === 'string' && ctx.core.emit[callee] && !isBoundName(callee) && !isUserFunc(callee))
       return emitBuiltinCall(callee, parsed)

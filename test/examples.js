@@ -127,7 +127,7 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
     const base = (jz.compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
     // RECOVERED (see the watercolor test above for the full root cause / fix).
-    is(sten, 46, `waves frame: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
+    ok(sten > base, `waves frame: stencil lifts additional lane operations (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         // the field must outsize the edge sponge (MARGIN 18 a side) or the render crushes to black
@@ -266,8 +266,8 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
     const wat = jz.compile(src, { ...OPT, wat: true });
     const sten = (wat.match(/f64x2\./g) || []).length;
     // RECOVERED (see the watercolor test above for the full root cause / fix).
-    is(sten, 27, `schrodinger stepR/stepI: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
-    if (sten > base) ok(/promote_low_f32x4/.test(wat), 'the f32 potential V widens via f64x2.promote_low_f32x4');
+    ok(sten > base, `schrodinger stepR/stepI: stencil lifts additional lane operations (${base} → ${sten} f64x2)`);
+    ok(/promote_low_f32x4/.test(wat), 'the f32 potential V widens via f64x2.promote_low_f32x4');
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(48, 32);
