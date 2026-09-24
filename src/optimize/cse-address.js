@@ -21,7 +21,7 @@ import { findBodyStart, nextLocalId } from '../ir.js'
  *     a var is alive after the `if` only if alive in BOTH arms with the same region
  *     (so the same tee was reachable on every path).
  *   - `loop` body walks with empty alive (next iteration may re-enter after a write)
- *   - `block` is sequential (br jumps out, never in)
+ *   - branch targets and exception regions close the outgoing region
  *
  * Threshold: a region is committed only when it has ≥2 sites. Singleton regions
  * (one tee with no follow-up gets) are pure cost and skipped.
@@ -59,7 +59,7 @@ export function hoistPtrType(fn) {
  *    - `if`/`else` arms walk independently from the if-entry open set; after
  *      the if, a region is open iff it was open on BOTH arms (same region ref).
  *    - `loop` clears open before AND after — back edges may skip the original tee.
- *    - `block` / func body — sequential walk.
+ *    - branch targets / exception regions close open regions on exit.
  *
  *  `matchSite(node, parent, pi)` returns `{ key, deps }` for a CSE-able site
  *  (key is a stable string; deps lists locals whose writes invalidate this key)
@@ -75,6 +75,8 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
   const open = new Map()
   // local-name → keys depending on it (so `local.set X` closes all dependent keys).
   const localToKeys = new Map()
+  const exits = new Set()
+  let unsupportedBranch = false
 
   const addDep = (name, key) => {
     let s = localToKeys.get(name)
@@ -85,7 +87,7 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
     const s = localToKeys.get(name)
     if (!s) return
     for (const k of s) open.delete(k)
-    localToKeys.delete(name)
+    // Keep dependencies of regions restored after a sibling arm.
   }
 
   const walk = (node, parent, pi) => {
@@ -119,6 +121,7 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
 
     if (op === 'if') {
       let i = 1
+      if (typeof node[i] === 'string' && node[i][0] === '$') i++
       while (i < node.length && Array.isArray(node[i]) && node[i][0] === 'result') i++
       if (i < node.length) walk(node[i], node, i)
       i++
@@ -148,10 +151,11 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
       for (const [k, vT] of afterThen) {
         if (afterElse.get(k) === vT) open.set(k, vT)
       }
+      if (exits.has(node[1])) open.clear()
       return
     }
 
-    if (op === 'loop') {
+    if (op === 'loop' || op === 'try' || op === 'try_table') {
       open.clear()
       for (let i = 1; i < node.length; i++) walk(node[i], node, i)
       open.clear()
@@ -159,11 +163,22 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
     }
 
     for (let i = 0; i < node.length; i++) walk(node[i], node, i)
+    if (op === 'br' || op === 'br_if' || op === 'br_table' || op.startsWith('br_on_') || op.startsWith('catch')) {
+      const targets = op === 'br_table' ? node.slice(1).filter(x => !Array.isArray(x))
+        : op.startsWith('catch') ? [node[node.length - 1]] : [node[1]]
+      for (const target of targets) {
+        if (typeof target !== 'string' || target[0] !== '$') unsupportedBranch = true
+        else exits.add(target)
+      }
+    }
+    // A branch may have skipped the first site or a dependent local's write.
+    if (op === 'block' && exits.has(node[1]) || op === 'return' || op === 'return_call' ||
+        op === 'return_call_indirect' || op === 'throw' || op === 'throw_ref' || op === 'unreachable') open.clear()
   }
 
   for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
 
-  if (regions.size === 0) return
+  if (unsupportedBranch || regions.size === 0) return
 
   // Commit: ≥2 sites per region to be worthwhile (a singleton is pure cost).
   let hoistId = nextLocalId(fn, localPrefix)

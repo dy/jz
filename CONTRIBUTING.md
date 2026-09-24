@@ -100,12 +100,23 @@ at its first occurrence, never before preceding operands; identity-observing
 uses retain undefined, while numeric-only uses normalize it. Index definitions
 come from the binding census and positive bounds apply only inside their strict
 loop guard. Every counter proof rejects additional writes in the loop step.
+Mutable loop bounds stay in the loop until IR memory-effect analysis proves
+invariance. Prepare does not infer method purity from a name. Immutable string
+and typed-array lengths may move when the binding is stable; the shared
+reassignment census includes writes by closures and the loop step.
+Address CSE ends regions at branch targets and exception boundaries, and keeps
+dependency invalidation valid when restoring a sibling arm's incoming regions.
 Method effects require a proven receiver and no own override, not just a name
 matching a built-in. Runtime method dispatch checks the receiver family too:
 boxed primitives never reach array helpers, and an optional missing method
 skips its arguments. Kernel host imports carry signatures and numeric constants,
 not function implementations. Their JSON transport uses numeric text to preserve
 signed zero, NaN and infinities; presence checks accept zero-valued bindings.
+Shared callback construction retains its source kind for builtin overloads and
+owns separate IR at each branch. A BigInt representation describes the BigInt
+member of a value; call-edge boxing still requires the shared semantic proof.
+Regex alternatives retry the remaining sequence before committing a branch;
+capture boundaries remain inside that continuation.
 Array searches capture the search value before iteration,
 even when empty. Shared diagnostic configuration serves both compiler hosts. Local shape facts are seeded before representation plans
 freeze, including closure bodies. Body-fact queries for another body use a scratch

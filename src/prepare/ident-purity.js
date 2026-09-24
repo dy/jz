@@ -1,13 +1,13 @@
 /**
- * BindingId renaming and call/receiver purity predicates: `mintLocal` (the
+ * BindingId renaming and call purity predicates: `mintLocal` (the
  * function-local rename minter), `scanReassignedTopLevel`, `\u` escape decoding
- * (IDESC/decodeIdent), and the callFree/boundSafeCalls/writesReceiver family used to
- * recognize safe-to-fold calls and receiver mutation.
+ * (IDESC/decodeIdent), and the callFree predicate used to
+ * recognize safe-to-fold calls.
  *
  * @module prepare/ident-purity
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, T, collectParamNames, extractParams, walkAst } from '../ast.js'
+import { ASSIGN_OPS, T, collectParamNames, extractParams, walkAst } from '../ast.js'
 import { ownerStack, renameSerial } from './state.js'
 
 
@@ -91,42 +91,6 @@ const callFree = node => {
   for (let i = 1; i < node.length; i++) if (!callFree(node[i])) return false
   return true
 }
-// Calls that provably can't resize ANY receiver: read-only builtin methods
-// (no mutators, no callback-takers — a callback could close over the receiver
-// and push) and pure namespaces. Everything else (user fns, push/splice,
-// map/forEach) may reach the bound receiver through an alias — disqualifies
-// the length snapshot. A user object shadowing one of these names with a
-// mutating closure is a documented divergence (same class as for-of's).
-const _BOUND_PURE_NS = new Set(['Math', 'math', 'Number', 'String', 'JSON', 'console', 'Date', 'performance'])
-const _BOUND_RO_METHODS = new Set([
-  'charCodeAt', 'charAt', 'codePointAt', 'at', 'indexOf', 'lastIndexOf', 'includes',
-  'startsWith', 'endsWith', 'slice', 'substring', 'trim', 'toUpperCase', 'toLowerCase',
-  'join', 'concat', 'toString', 'get', 'has', 'now',
-])
-export const boundSafeCalls = node => {
-  if (!Array.isArray(node)) return true
-  if (node[0] === 'new') return false
-  if (node[0] === '()' || node[0] === '?.()') {
-    const callee = node[1]
-    const safe = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') &&
-      (_BOUND_RO_METHODS.has(callee[2]) ||
-       (typeof callee[1] === 'string' && _BOUND_PURE_NS.has(callee[1])))
-    if (!safe) return false
-  }
-  for (let i = 1; i < node.length; i++) if (!boundSafeCalls(node[i])) return false
-  return true
-}
-export const writesReceiver = (node, recv) => {
-  if (!Array.isArray(node)) return false
-  const op = node[0]
-  if (MUTATE_OPS.has(op) &&
-      (node[1] === recv ||
-       (Array.isArray(node[1]) && (node[1][0] === '[]' || node[1][0] === '.') && node[1][1] === recv)))
-    return true
-  for (let i = 1; i < node.length; i++) if (writesReceiver(node[i], recv)) return true
-  return false
-}
-
 export const normalizeIdents = node => {
   if (!Array.isArray(node)) return
   // Literal-value wrapper [null, X] / [undefined, X]: X is a value, not an identifier

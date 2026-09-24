@@ -805,3 +805,18 @@ test('regex: the m flag makes ^ and $ line anchors', () => {
     'x\ny\nz'.replace(/^/gm, '-'), /^$/m.test('a\n\nb'), /^a$/m.test('a'), 'ab\r\ncd'.match(/^c/m) !== null, 'a\u2028b'.match(/^b/m) !== null]
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(), want, `O${optimize}`)
 })
+
+
+test('regex: alternatives retry the continuation and retain capture boundaries', () => {
+  const patterns = [
+    /^(i32|i64|f32|f64|v128|i8x16|i16x8|i32x4|i64x2|f32x4|f64x2)\./,
+    /^(a|ab)c$/, /^(?:a|ab)c$/, /^((a)|(ab))c$/, /^(|a)b$/,
+    /^(a(b|bc)|ab)cd$/, /^(a+|ab)c$/, /^(a|ab)(c|cd)e$/,
+  ]
+  const inputs = ['', 'f64.add', 'f64x2.add', 'i32x4.add', 'v128.load', 'f64x2',
+    'ac', 'abc', 'b', 'ab', 'abccd', 'abcd', 'aabc', 'aaac', 'abcde']
+  for (const re of patterns) for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(`export function f(s){const m=${re}.exec(s);return m?Array.from(m):null}`, { optimize }).exports
+    for (const s of [...inputs, 'abc', 'abc', 'ac']) is(f(s), re.exec(s) ? Array.from(re.exec(s)) : null, `${re}: ${s}`)
+  }
+})

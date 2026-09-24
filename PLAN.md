@@ -168,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 and watr ^5.11.3 from npm; 5.11.3 carries the two
+- subscript ^10.8.0 from npm and watr `5ed6b5d` (on 5.11.3); 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -425,21 +425,34 @@ The prior gate evidence below describes its own tree, not this candidate.
   implementations remain in the host, including external-object results. Numeric
   constants retain signed zero, NaN and infinities across JSON transport; native
   and kernel imports accept zero-valued named/default bindings.
-- Validation at `64221145`: 71 self-compile tests and 10 performance-ratchet
-  tests pass. The numeric-import review follow-up passes 143 affected native
-  tests and three focused kernel tests, plus import lint and public types. The remaining seven previously failing self-host tests still fail in
-  focused runs; full CI is pending. GitHub API rate limiting currently blocks
-  status reads. No claim of a green release is justified.
-- Still open in the Wasm-hosted suite: nested array-pattern scalarization,
-  named-regex replacement, typed output buffer inference, duplicate helper calls
-  in a lane loop, and twin-local versioning. Use the kernel test target, not just
-  native tests, when checking these. The next full CI run is the
-  authority for additional remaining failures.
+- CI at `a1e18874`: conformance and fuzz pass. The native matrix fails on
+  the nullable typed-store regression; WASI also runs a JS-host-only test.
+  The self-hosted suite has eight failures (the previous seven plus that store).
+- The current fix ends address-CSE regions at branch exits and exception
+  handlers, and keeps dependency invalidation valid across sibling arms.
+  Nullable Boolean bindings preserve both their Boolean identity and nullish
+  values. Call-argument BigInt boxing uses the existing semantic proof: a raw
+  carrier for a possible BigInt does not prove that a Number or array is one.
+  The external-object import test now follows the existing WASI exclusion.
+- Both source-level loop-length scans are removed. Mutable bounds stay live
+  until the IR optimizer proves invariance; stable strings and typed arrays
+  retain their immutable-length optimization. The cached reassignment census
+  invalidates static lengths on closure writes and loop-step rebinding.
+- Shared method callbacks retain their semantic kind and separate IR per arm.
+  Regex alternatives include the remaining sequence before committing a match:
+  `f64|f64x2` followed by a dot now recognizes vector operators in self-hosted
+  value numbering instead of dropping them from its value graph.
+- Validation: 495 affected native tests pass (6804 assertions), plus 96 regex
+  and value-number tests (810 assertions). A fresh normal self-host build passes
+  all seven original failures and the nullable-store failure: 12 focused tests,
+  2746 assertions. New boundary regressions pass at all five optimization tiers.
+  The unchanged instruction ratchet passes 10/10. Full CI is still required.
+  GitHub status reads are working again. No green-release claim is justified.
 - A separate watr full-optimizer issue was reproduced with numeric branch
   depths through nested blocks (`br 2` becomes an invalid label after the full
   rewrite sequence). The local-slot pass now conservatively leaves numeric
   targets alone. JZ's named-label output does not exercise that separate issue.
-- The watr size backstop is 323672 B against its 320000 B cap. No byte, speed
+- The watr size backstop is 322948 B against its 320000 B cap. No byte, speed
   or memory cap was relaxed.
   Committed benchmark and memory evidence is stale; the repaired manual
   `bench-probe` workflow retains actual measurements as an artifact and fails

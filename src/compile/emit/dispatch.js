@@ -10,7 +10,7 @@ import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../../reps.js'
@@ -259,19 +259,9 @@ export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
   // are the sole call-edge carrier authority. A nullable
   // BigInt merge can still carry its nullish sentinel, so normalization must
   // preserve that member instead of treating it as a box or raw i64 payload.
-  // Shape #6: valTypeOf(node) is NOT the gate for whether repAction applies —
-  // it's DELIBERATELY incomplete for a storage-read call-member node
-  // (`arr.at(i)`/`.get`/`.pop`/`.shift`; see VT['()']'s own "NO `.get`
-  // short-circuit" doc comment above — an absent-key/out-of-bounds read can
-  // legitimately be `undefined`, so valTypeOf soundly declines to commit to
-  // an exact kind there). representationCallArgAction only ever returns
-  // UNBOX/BOX when its OWN edgeAction proof already found BOTH the source
-  // and target CLOSED bigint representations (materializedNames/
-  // hostBoxParams-gated) — a strictly stronger, presence-aware proof than
-  // valTypeOf's conservative default, so trusting repAction directly here
-  // (instead of requiring valTypeOf's agreement first) is exactly the "sole
-  // authority" contract this comment already claims, now honored for this
-  // shape too.
+  // Carrier facts describe the BigInt member, not the whole value. A raw
+  // schema slot can also contain a Number: BOX needs the shared semantic
+  // proof before reinterpreting that Number's bits as a BigInt payload.
   if (node !== undefined && (valTypeOf(node) === VAL.BIGINT || repAction === REP_EDGE_UNBOX || repAction === REP_EDGE_BOX)) {
     if (repAction === REP_EDGE_UNBOX) {
       // maybeUnboxBigInt, not unboxBigInt (range-boundary BOX/UNBOX OOB fix,
@@ -290,7 +280,7 @@ export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
           ['else', fromI64(maybeUnboxBigInt(tGet))]]], 'f64')
     }
     if (repAction === REP_EDGE_BOX) {
-      if (!nodeIsNullishBigintMerge(node)) return boxBigInt(asI64(ir))
+      if (!nodeIsNullishBigintMerge(node)) return applyBigintRepresentationAction(ir, node, repAction)
       const t = temp('argbx')
       const tGet = typed(['local.get', `$${t}`], 'f64')
       return typed(['block', ['result', 'f64'],
@@ -598,7 +588,9 @@ export function boolTaggedBinding(name) {
 
 /** The value a store into `name` lands: a Boolean's atom for a tagged binding. */
 export function boolCarrier(name, node, ir) {
-  return boolTaggedBinding(name) && valTypeOf(node) === VAL.BOOL ? boolBoxIR(ir) : ir
+  if (!boolTaggedBinding(name) || valTypeOf(node) !== VAL.BOOL) return ir
+  const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
+  return k & SUMMARY_NULL_BITS ? nullableBoolBoxIR(ir) : boolBoxIR(ir)
 }
 
 /** Emit let/const initializations as typed local.set instructions. */

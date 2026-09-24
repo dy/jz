@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, levels } from './_matrix.js'
 
 const cases = {
 identity: `const o={v:3,m(){'use strict';return this}}; const m=o.m; return [o.m()===o,m()===undefined,m.call(null)===null,m.call(false)===false,m.call(0)===0,m.call()===undefined,m.apply()===undefined]`,
@@ -201,9 +201,42 @@ test('method receiver: inherited object methods accept erased receiver families'
 
 
 test('method receiver: host-import signatures retain external object results', () => {
+  if (onWasi()) return
   const source = `import { make, offset } from 'env'
     export function f(n) {const o = make(n); return o.value + offset}`
   const imports = {env: {make: n => ({value: n * 2}), offset: 3}}
   const f = jz(source, {imports}).exports.f
   for (const n of [0, 0, 7, -1, 0]) is(f(n), n * 2 + 3)
+})
+
+
+test('method receiver: union dispatch preserves block callback kinds and evaluation order', () => {
+  const src = `let calls=0,log='';
+    function pick(k){log+='r';return k===0?null:k===1?'aa':
+      {replace(pattern,fn){log+='o';return fn('z')}}}
+    export function f(k){calls=0;log='';
+      const result=pick(k)?.replace((log+='p','a'),m=>{calls++;log+='c';return m+'!'});
+      return [result,calls,log]}`
+  const js = new Function(src.replace('export ', '') + ';return f')()
+  const regex = `function rewrite(s){return s.replace(/(?<first>a)/,'[$<first>]')}
+    export function f(k){return rewrite(k?'ab':[])}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [0, 1, 1, 2, 0]) is(f(k), js(k), `${optimize}: ${k}`)
+    is(jz(regex, { optimize }).exports.f(1), '[a]b')
+  }
+})
+
+test('method receiver: union families omit unreachable typed dispatch', () => {
+  const src = `function cut(s){return s.slice(1)}
+    export function f(k){return cut(k?'abc':[1,2,3])}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [1, 1, 0, 1, 0]) is(f(k), k ? 'bc' : [2,3])
+    const wat = compile(src, { optimize, wat:true })
+    ok(!wat.includes('(func $__typed_slice'), 'Array|String does not emit typed slicing')
+  }
+  const { f } = jz(`function cut(s){return s.slice(1)}
+    export function f(k){return cut(k?new Uint8Array([1,2,3]):[4,5,6])}` ).exports
+  is(Array.from(f(1)), [2,3]); is(f(0), [5,6])
 })

@@ -31,7 +31,7 @@ import { hasFunc, isFuncValueLocal, isUnresolvableBareIdent, renameFunc, shadows
 import { STD_HOST_EXPORTS } from '../std/index.js'
 import { MUTATING_ARRAY_METHODS, alwaysFalsy, alwaysTruthy, dropDeadPostfix, foldConstIf, stringValue, stripBoolNot, truncateUnreachable } from './const-fold.js'
 import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternItems, substPattern } from './destructure.js'
-import { boundSafeCalls, mintLocal, scanReassignedTopLevel, writesReceiver } from './ident-purity.js'
+import { mintLocal, scanReassignedTopLevel } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
@@ -1352,25 +1352,9 @@ const handlers = {
         const lenExpr = cond[0] === '<' || cond[0] === '<=' ? cond[2] : cond[1]
         if (Array.isArray(lenExpr) && lenExpr[0] === '.' &&
             (lenExpr[2] === 'length' || lenExpr[2] === 'size' || lenExpr[2] === 'byteLength')) {
-          const recv = lenExpr[1]
           const bound = ['|', lenExpr, [, 0]]
-          const lengthStable = typeof recv === 'string' &&
-            boundSafeCalls(body) && boundSafeCalls(step) && !writesReceiver(body, recv) && !writesReceiver(step, recv)
-          if (lengthStable) {
-            // Body can't change the bound → snapshot it once into an i32 local. Keeps
-            // the counter `i` i32 through compare + `i++` (no per-iteration f64 round
-            // trip) and gives the vectorizer the hoisted trip count it matches on.
-            const lenVar = `${T}len${freshPrepareId()}`
-            const lenDecl = ['let', ['=', lenVar, bound]]
-            init = init ? [';', init, lenDecl] : lenDecl
-            if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], lenVar]
-            else cond = [cond[0], lenVar, cond[2]]
-          } else {
-            // Body may grow/shrink the array (push/pop, or alias mutation through a
-            // call) → re-read every iteration, as JS does. Still `| 0` for an i32 bound.
-            if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], bound]
-            else cond = [cond[0], bound, cond[2]]
-          }
+          if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], bound]
+          else cond = [cond[0], bound, cond[2]]
         }
       }
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? dropDeadPostfix(prepStatement(step)) : null, dropDeadPostfix(prepStatement(body))]

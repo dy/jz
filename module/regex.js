@@ -409,14 +409,25 @@ const compileSeq = (items, c) => {
   for (let i = 0; i < items.length; i++) {
     const item = items[i]
     if (!Array.isArray(item) || i >= items.length - 1) { compileNode(item, c); continue }
+    // A branch succeeds only when the rest of the sequence succeeds too.
+    // Flatten groups into the same continuation, retaining capture boundaries.
+    const rest = items.slice(i + 1)
+    if (item[0] === 'seq') { compileSeq([...item.slice(1), ...rest], c); return }
+    if (item[0] === '()' || item[0] === '(?:)') {
+      const id = item[0] === '()' ? item[2] : null
+      if (id != null) c.code.push(`(local.set $g${id}_start (local.get $pos))`)
+      compileSeq([item[1], ...(id == null ? [] : [['captureEnd', id]]), ...rest], c)
+      return
+    }
+    if (item[0] === '|') { compileAlt(item.slice(1), c, rest); return }
     // Greedy quantifier followed by more items → needs backtracking
     if (GREEDY_OPS.has(item[0])) {
-      compileGreedyBacktrack(item, items.slice(i + 1), c)
+      compileGreedyBacktrack(item, rest, c)
       return
     }
     // Lazy quantifier followed by more items → expand-on-fail
     if (LAZY_OPS.has(item[0])) {
-      compileLazyBacktrack(item, items.slice(i + 1), c)
+      compileLazyBacktrack(item, rest, c)
       return
     }
     compileNode(item, c)
@@ -553,6 +564,7 @@ const compileNode = (node, c) => {
   if (!Array.isArray(node)) return
   const op = node[0]
   switch (op) {
+    case 'captureEnd': c.code.push(`(local.set $g${node[1]}_end (local.get $pos))`); break
     case 'seq': compileSeq(node.slice(1), c); break
     case '|': compileAlt(node.slice(1), c); break
     case '*': compileRepeatN(node[1], 0, Infinity, true, c); break
@@ -623,21 +635,23 @@ const resetCaptures = (node, c) => {
     c.code.push(`(local.set $g${id}_start (i32.const -1))`, `(local.set $g${id}_end (i32.const -1))`)
 }
 
-const compileAlt = (branches, c) => {
+const compileAlt = (branches, c, rest = []) => {
+  const save = `$alt_pos_${c.labelId++}`
+  c.code.unshift(`(local ${save} i32)`)
   const endLabel = `$alt_end_${c.labelId++}`
   c.code.push(`(block ${endLabel}`)
   for (let i = 0; i < branches.length; i++) {
     const isLast = i === branches.length - 1
     const tryLabel = `$alt_try_${c.labelId++}`
-    if (!isLast) { c.code.push(`(block ${tryLabel}`); c.code.push('(local.set $save (local.get $pos))') }
+    if (!isLast) { c.code.push(`(block ${tryLabel}`); c.code.push(`(local.set ${save} (local.get $pos))`) }
     const saved = c.failLabel
     if (!isLast) c.failLabel = tryLabel
-    resetCaptures(['|', ...branches], c)
-    compileNode(branches[i], c)
+    resetCaptures(['seq', ['|', ...branches], ...rest], c)
+    compileSeq([branches[i], ...rest], c)
     c.failLabel = saved
     if (!isLast) {
       c.code.push(`(br ${endLabel})`); c.code.push(')') // end try block
-      c.code.push('(local.set $pos (local.get $save))')
+      c.code.push(`(local.set $pos (local.get ${save}))`)
     }
   }
   c.code.push(')')

@@ -7,7 +7,7 @@
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import { enumKeys } from '../../../module/schema.js'
 import {
-  T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, mutatesArrayLength, some, walkAst,
+  T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, some, walkAst,
 isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
@@ -304,21 +304,18 @@ function unrollForIn(init, cond, step, body) {
   return out.length ? out : ['nop']
 }
 
-// Loop-bound hoisting (see the 'for' emitter): comparison ops whose invariant side
-// is worth lifting, and the test for an immutable, loop-stable `arr.length`. A typed
-// array's length is fixed, so it is loop-invariant whenever `arr` is not reassigned.
-// A plain array's length CAN change (push/pop/index-grow/length=), so it is hoistable
-// only when the loop body provably never mutates it — `mutatesArrayLength` decides that.
-const immutableLenBound = (node, body) => {
+// Typed-array and string lengths are immutable when their local cannot change.
+// Mutable array lengths belong to the IR optimizer's memory-effect proof:
+// a source scan of one receiver misses mutations through aliases and calls.
+const immutableLenBound = (node, body, step) => {
   // Unwrap the `| 0` i32 coercion jz wraps a loop bound in (`i < arr.length`
   // emits `i < (arr.length | 0)`).
   if (Array.isArray(node) && node[0] === '|' && Array.isArray(node[2]) && node[2][0] == null && node[2][1] === 0)
     node = node[1]
   if (!(Array.isArray(node) && node[0] === '.' && node[2] === 'length' && typeof node[1] === 'string')) return false
   const vt = lookupValType(node[1])
-  if (vt === VAL.TYPED) return !isReassigned(body, node[1])
-  if (vt === VAL.ARRAY) return !mutatesArrayLength(body, node[1])
-  return false
+  return (vt === VAL.TYPED || vt === VAL.STRING) && ctx.func.locals.has(node[1]) && !ctx.func.boxed?.has(node[1]) &&
+    !isReassigned(body, node[1]) && !isReassigned(step, node[1])
 }
 
 // Pull `const x = <array/object literal>` decls out of a loop body when the literal is
@@ -963,7 +960,7 @@ export const controlFlowOps = {
     // keeps the per-iteration eval (correct, only misses the speedup).
     let condForLoop = cond
     if (cond && Array.isArray(cond) && RELATIONAL_OPS.has(cond[0])) {
-      const side = immutableLenBound(cond[2], body) ? 2 : immutableLenBound(cond[1], body) ? 1 : 0
+      const side = immutableLenBound(cond[2], body, step) ? 2 : immutableLenBound(cond[1], body, step) ? 1 : 0
       if (side) {
         const lt = tempI32('len')
         result.push(['local.set', `$${lt}`, asI32(emit(cond[side]))])

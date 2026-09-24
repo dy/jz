@@ -109,7 +109,7 @@ export function analyzeFuncNamespaces(ast) {
     // callee only the invoked function VALUE, never f's property table, so
     // neither shape disqualifies. `prep()` keeps `?.()` a distinct op from
     // `()` (same flattened-args shape — see prepare/index.js's `'?.()'`
-    // handler) — mirror both here, exactly as `boundSafeCalls` does.
+    // handler). Mirror both call forms here.
     if (op === '()' || op === '?.()') {
       const m = memberOf(node[1])
       if (m) rec(m[1]).props.add(m[2])

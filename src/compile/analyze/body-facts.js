@@ -183,7 +183,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n),
     n => typedLens?.get(n),
     (n, l) => { (typedLens ||= new Map()).set(n, l) },
-    n => typedLens?.delete(n))
+    n => typedLens?.delete(n), body)
 
   // Payload width alone cannot authorize integer storage: a missing read is
   // undefined. Reuse the interval interpreter and canonical-loop recognizer
@@ -752,7 +752,8 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
  *  tags, never the unknown kind (which carries every tag). */
 export const mixedBoolKind = k => {
   const c = core(k) & ~UNKNOWN
-  return hasTag(c, K.BOOL) && tagOf(c) === K.ANY && c !== (core(kind(K.ANY)) & ~UNKNOWN)
+  return hasTag(c, K.BOOL) && (tagOf(c) === K.ANY || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) &&
+    c !== (core(kind(K.ANY)) & ~UNKNOWN)
 }
 
 /** Drop the cached analyzeBody entry for this body. Used by emitFunc after

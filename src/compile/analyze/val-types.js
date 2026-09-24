@@ -219,7 +219,7 @@ export function analyzeValTypes(body) {
     (n) => ctx.func.typedElem?.delete(n),
     (n) => ctx.func.typedLen?.get(n),
     (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l),
-    (n) => ctx.func.typedLen?.delete(n),
+    (n) => ctx.func.typedLen?.delete(n), body,
   )
   // Total write count for `name` across the whole body, recursing into nested
   // closures so a closure that reassigns the var is also counted. Capped at 2 —

@@ -22,6 +22,7 @@ import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
+import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -35,6 +36,29 @@ const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isA
 // call count is vacuous-0 for hoist pins and false-0 for keep pins.
 const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
 const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
+
+test('address CSE: exits and sibling writes end the dominating region', () => {
+  for (const pass of [hoistAddrBase, hoistPtrType]) {
+    const site = pass === hoistAddrBase
+      ? '(i32.add (local.get $x) (i32.shl (local.get $i) (i32.const 3)))'
+      : '(call $__ptr_type (local.get $x))'
+    for (const body of [
+      `(block $out (br_if $out (local.get $skip)) (drop ${site})) ${site}`,
+      `(block $out (try_table (catch_all $out) (if (local.get $skip) (then (throw $err))) (drop ${site}))) ${site}`,
+      `(drop ${site}) (if (local.get $skip) (then (local.set $x (i32.const 7)))
+        (else (drop ${site}) (local.set $x (i32.const 9)) (drop ${site}))) ${site}`,
+    ]) {
+      const ast = parseWat(`(module (tag $err)
+        (func $__ptr_type (param $x i32) (result i32) (local.get $x))
+        (func $f (export "f") (param $x i32) (param $i i32) (param $skip i32) (result i32) ${body}))`)
+      const instantiate = () => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+      const before = instantiate()
+      pass(findFunc(ast, '$f'))
+      const after = instantiate()
+      for (const skip of [1, 1, 0, 1, 0]) is(after(13, 2, skip), before(13, 2, skip))
+    }
+  }
+})
 
 
 test('LICM effects: every memory writer blocks mutable helper reads', () => {
@@ -3278,7 +3302,7 @@ test('for-bound snapshot: read-only builtin calls do not block the .length hoist
   // `callFree` used to disqualify ANY call in the loop body — a charCodeAt /
   // Math.imul body re-decoded the NaN-boxed string length every iteration
   // (≈3× slower on byte loops). Read-only builtins can't resize the receiver,
-  // so the bound must snapshot into a pre-loop i32 local (boundSafeCalls).
+  // so the proven immutable string bound can snapshot into a pre-loop local.
   const src = `export const main = (s) => {
     let h = 0x811c9dc5 | 0
     for (let i = 0; i < s.length; i++) {
@@ -3299,9 +3323,34 @@ test('for-bound snapshot: read-only builtin calls do not block the .length hoist
   is(main('hello world'), js('hello world'))
 })
 
+test('for-bound snapshot: aliases, helper arguments and captured bindings remain live', () => {
+  const sources = [
+    `function change(tag,a,i,n){if(i===0)a.length=n}
+     export function f(n){const a=[1,2];let count=0;
+       for(let i=0;i<a.length;i++){change('x',a,i,n);count++}return count}`,
+    `export function f(n){const a=[1,2],b=a;let count=0;
+       for(let i=0;i<a.length;i++){if(i===0)b.length=n;count++}return count}`,
+    `export function f(n){const a=[1,2];const change=()=>{a.length=n};let count=0;
+       for(let i=0;i<a.length;i++){if(i===0)change();count++}return count}`,
+    `export function f(n){let a=new Uint8Array(2);const change=()=>{a=new Uint8Array(n)};let count=0;
+       for(let i=0;i<a.length;i++){if(i===0)change();count++}return count}`,
+    `export function f(n){let a=new Uint8Array(2);let count=0;
+       for(let i=0;i<a.length;i++,a=new Uint8Array(n)){count++}return count}`,
+    `export function f(n){const a=[];let count=0;
+       for(let i=0;i<a.length;i++){a.length=n;count++}return count}`,
+  ]
+  for (const src of sources) {
+    const js = new Function(src.replace('export ', '') + ';return f')()
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { f } = jz(src, { optimize }).exports
+      for (const n of [0, 0, 4, 1, 2]) is(f(n), js(n), `${optimize}: ${src}`)
+    }
+  }
+})
+
 test('for-bound snapshot: a mutating call in the body still re-reads the bound', () => {
   // push() grows the array mid-loop — JS re-reads the bound every iteration,
-  // so the read-only whitelist must NOT claim this loop (2 elems + 1 pushed → 3 iters).
+  // so the mutable length must remain live (2 elems + 1 pushed → 3 iters).
   const src = `export const main = () => {
     let a = [1, 2]
     let n = 0

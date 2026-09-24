@@ -6,13 +6,14 @@
  *
  * @module compile/analyze/trackers
  */
+import { isReassigned } from '../../ast.js'
 import { ctx, setLinkDemand } from '../../ctx.js'
 import { isGlobal } from '../../ir/vars.js'
 import { TYPED_CTOR_CONFLICT } from '../../typed-provenance.js'
 import { typedStorageFactFromName } from '../../typed-context.js'
 import { typedStaticLen } from '../../type.js'
 
-export const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
+export const makeTypedTracker = (get, set, del, getLen, setLen, delLen, body) => {
   let poison = null
   const invalidate = (name) => { (poison ||= new Set()).add(name); del(name); if (delLen) delLen(name) }
   // Resolve a variable-name ternary branch to its known typed-array ctor: a
@@ -44,7 +45,9 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
         // A module global's length is a program-wide fact (ctx.scope.globalTypedLen,
         // dropped when any function rewrites the binding): a write here proves
         // nothing for a read before it, nor for another function's reads.
-        if (setLen && isGlobal(name)) delLen(name)
+        // The cached reassignment census includes closure writes, which the
+        // local tracker does not visit.
+        if (setLen && (isGlobal(name) || isReassigned(body, name))) delLen(name)
         else if (setLen) {
           // A name alias (`let x = a` — the inliner's param-alias splice) carries
           // the source's static length: typed arrays never resize, and typedLen

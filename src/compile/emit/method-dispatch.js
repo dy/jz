@@ -6,10 +6,10 @@
 
 import { positionArgs, storedValue } from '../../bridge.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
-import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../../summary/index.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
-import { T, isLeaf, isReassigned } from '../../ast.js'
+import { T, cloneNode, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
@@ -424,8 +424,15 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // exclusive paths. Re-emitting the AST minted a whole body (including its
     // nested closures) per arm. Expression arrows stay available for inlining.
     if (parsed.normal.some(arg => Array.isArray(arg) && arg[0] === '=>' && arg[2]?.[0] === '{}')) {
-      parsed = { ...parsed, normal: parsed.normal.map(arg =>
-        Array.isArray(arg) && arg[0] === '=>' && arg[2]?.[0] === '{}' ? emit(arg) : arg) }
+      parsed = { ...parsed, normal: parsed.normal.map(arg => {
+        if (!Array.isArray(arg) || arg[0] !== '=>' || arg[2]?.[0] !== '{}') return arg
+        const name = temp('callback'), value = emit(arg)
+        copyReceiverFacts(arg, name)
+        ctx.summary?.at(ctx.func.current).alias(name, arg)
+        // Keep the source kind visible to builtin overload selection. A bare
+        // WAT construction loses CLOSURE and replace treats it as text.
+        return [',', ['=', name, value], name]
+      }) }
       callMethod = (recv, emitter) => emitMethodCallSpread(recv, emitter, parsed, method)
     }
     const t = `${T}rt${freshId(ctx)}`, tt = `${T}rtt${freshId(ctx)}`
@@ -433,7 +440,11 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // Finite numbers have no tag. Boxed primitives are selected below before
     // any heap-backed builtin can read their payload as an object header.
     const numEmitter = ctx.core.emit[`.number:${method}`]
-    const mayBeUndef = ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) !== false
+    const view = ctx.summary?.at(ctx.func.current), receiverKind = view?.kindOfExpr(obj)
+    // A union has no single valType, but its tag set still excludes families.
+    // Do not emit the typed-array machinery for an Array|String receiver.
+    const mayBe = kind => !receiverKind || hasTag(receiverKind, kind)
+    const mayBeUndef = view?.mayBeNullishExpr(obj) !== false
     // A runtime tag must select the builtin's receiver family. Other objects
     // use a property call; primitive payloads must never reach an array helper.
     const materializeBuiltinResult = (kind, value) => {
@@ -472,8 +483,8 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
         : inherited
     } else generic = tryDynamicPropCall({ obj: t, method, parsed, vt: null, optional }) ?? missing
     const cases = []
-    if (strEmitter) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
-    if (typedEmitter) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
+    if (strEmitter && mayBe(K.STRING)) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
+    if (typedEmitter && mayBe(K.TYPED)) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
     // A boxed BigInt receiver (`x.toString(16)` on a carrier the program
     // could not kind) takes the `.bigint:` emitter; `t` holds the box, so the
     // emitter's readI64 unboxes it (ir/bigint.js isTaggedLocal).
@@ -495,14 +506,15 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     if (mayBeUndef) boxed = typed(['if', ['result', 'f64'],
       isNullish(typed(['local.get', `$${t}`], 'f64')),
       ['then', throwTypeErrorIR('read')], ['else', boxed]], 'f64')
-    return block64(
+    // Each mutually exclusive use owns its IR, including shared callback setup.
+    return cloneNode(block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['if', ['result', 'f64'],
         ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
         ['then', primitive],
         ['else', block64(
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-          boxed)]])
+          boxed)]]))
   }
 }
 

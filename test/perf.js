@@ -1756,12 +1756,8 @@ test('closure-heavy parser: behavior behind the size pin', () => {
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])
     is(f(input), expected, JSON.stringify(input))
 })
-// Baseline 985→1062: the for-loop `buf.length` is hoisted into a pre-loop
-// local only when nothing in the body can mutate `buf` (no writes to it, no
-// calls — any call may reach `buf` through an alias the compiler can't track).
-// The `callFree`/`writesReceiver` recursion adds a per-loop guard plus the
-// snapshot store; soundness fix (prior bytes assumed unconditional hoist,
-// which was unsafe when the loop body invoked anything).
+// Baseline 985→1062 included the old prepare-time bound snapshot. Bound
+// hoisting now uses immutable receiver kinds or IR memory-effect proofs.
 // 1062→873: guardRefine (watr/optimize) folds NaN-box tag reads under the
 // dominating `tag==K` guard, so the generic helpers inlineOnce splices into
 // `new Float64Array(x)`'s ARRAY arm drop their impossible tag-dispatch arms
