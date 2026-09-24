@@ -450,6 +450,10 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
       ctx.schema.list.some(schema => schema.includes(method))
     if (canShadowProbe && ownMethodPossible) includeModule('collection')
     const missing = optional ? undefExpr() : emitNonCallable(undefExpr(), parsed)
+    // Object-prototype emitters accept every non-null receiver, including
+    // primitives. Reuse their registration instead of treating them as arrays.
+    const objectMethod = genEmitter && (ctx.core.emit[`.${VAL.OBJECT}:${method}`] === genEmitter
+      || method === 'toString' || method === 'valueOf')
     let generic
     if (genEmitter) {
       const builtin = materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter))
@@ -457,7 +461,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
         : ['forEach', 'keys', 'values', 'entries'].includes(method) ? [PTR.ARRAY, PTR.MAP, PTR.SET] : [PTR.ARRAY]
       const accepts = tags.map(tag => ['i32.eq', ['local.get', `$${tt}`], ['i32.const', tag]])
         .reduce((a, b) => ['i32.or', a, b])
-      const inherited = method === 'toString' || method === 'valueOf' ? builtin
+      const inherited = objectMethod ? builtin
         : typed(['if', ['result', 'f64'], accepts, ['then', builtin], ['else', missing]], 'f64')
       // One override probe serves both builtin and plain-object receivers.
       // No probe is needed when the summary proves this name is never stored.
@@ -484,8 +488,9 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // dispatch), so pass it through instead of paying for a second
     // `$__ptr_type` call.
     const fallback = dateAuxFallback(t, method, callMethod, generic, tt)
-    cases.push([PTR.ATOM, numEmitter ? asF64(callMethod(t, numEmitter)) : missing])
-    if (!bigintEmitter) cases.push([PTR.BIGINT, missing])
+    const primitive = numEmitter ? asF64(callMethod(t, numEmitter)) : objectMethod ? generic : missing
+    cases.push([PTR.ATOM, primitive])
+    if (!bigintEmitter) cases.push([PTR.BIGINT, objectMethod ? generic : missing])
     let boxed = dispatchByPtrType(tt, cases, fallback)
     if (mayBeUndef) boxed = typed(['if', ['result', 'f64'],
       isNullish(typed(['local.get', `$${t}`], 'f64')),
@@ -494,7 +499,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['if', ['result', 'f64'],
         ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
-        ['then', numEmitter ? asF64(callMethod(t, numEmitter)) : missing],
+        ['then', primitive],
         ['else', block64(
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
           boxed)]])

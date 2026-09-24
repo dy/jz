@@ -479,6 +479,20 @@ export default (ctx) => {
   // ptr-type dispatch + __hash_has for HASH, dyn_props probe for OBJECT).
   // A boolean, as `in` is (kind-traits BOOL_METHODS; the i32 carrier boxes to
   // true/false where identity is observed).
+  const stringHasOwn = (obj, key) => {
+    ctx.module.include('collection')
+    ctx.module.include('string')
+    inc('__str_arr_idx', '__str_length', '__is_str_key', '__to_str', '__str_eq')
+    const s = temp('hos'), k = tempI64('hok'), i = tempI32('hoi')
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${s}`, asF64(emit(obj))],
+      ['local.set', `$${k}`, asI64(emit(key))],
+      ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${k}`]]], ['then', ['local.set', `$${k}`, ['call', '$__to_str', ['local.get', `$${k}`]]]]],
+      ['local.set', `$${i}`, ['call', '$__str_arr_idx', ['local.get', `$${k}`]]],
+      ['i32.or',
+        ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], ['i32.const', 0]], ['i32.lt_s', ['local.get', `$${i}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
+        ['call', '$__str_eq', ['local.get', `$${k}`], asI64(emit(['str', 'length']))]]], 'i32')
+  }
   ctx.core.emit['.hasOwnProperty'] = (obj, key) => {
     const litKey = Array.isArray(key) && key[0] === 'str' ? String(key[1]) : null
     if (litKey != null) {
@@ -491,22 +505,7 @@ export default (ctx) => {
       if (!ctx.types.anyDelete && typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
         return typed(['i32.const', 1], 'i32')
     }
-    // A string's own properties are its indices and its length, where `in`
-    // on a primitive answers nothing.
-    if (stringValType(obj)) {
-      ctx.module.include('collection')
-      ctx.module.include('string')
-      inc('__str_arr_idx', '__str_length', '__is_str_key', '__to_str', '__str_eq')
-      const s = temp('hos'), k = tempI64('hok'), i = tempI32('hoi')
-      return typed(['block', ['result', 'i32'],
-        ['local.set', `$${s}`, asF64(emit(obj))],
-        ['local.set', `$${k}`, asI64(emit(key))],
-        ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${k}`]]], ['then', ['local.set', `$${k}`, ['call', '$__to_str', ['local.get', `$${k}`]]]]],
-        ['local.set', `$${i}`, ['call', '$__str_arr_idx', ['local.get', `$${k}`]]],
-        ['i32.or',
-          ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], ['i32.const', 0]], ['i32.lt_s', ['local.get', `$${i}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
-          ['call', '$__str_eq', ['local.get', `$${k}`], asI64(emit(['str', 'length']))]]], 'i32')
-    }
+    if (stringValType(obj)) return stringHasOwn(obj, key)
     // This fallback is emitted as an `in` AST node; own the operator module
     // even when no source-level `in` triggered prepare-time autoload.
     ctx.module.include('collection')
@@ -515,7 +514,7 @@ export default (ctx) => {
   ctx.core.emit[`.${VAL.HASH}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.OBJECT}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.ARRAY}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
-  ctx.core.emit[`.${VAL.STRING}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  ctx.core.emit[`.${VAL.STRING}:hasOwnProperty`] = stringHasOwn
   ctx.core.emit[`.${VAL.CLOSURE}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   // Object.hasOwn(o, k) — ES2022 static equivalent of o.hasOwnProperty(k).
   // Reuses the same own-property emitter; receiver-type variants above apply.

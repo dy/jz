@@ -187,3 +187,14 @@ test('method receiver: optional call does not make its property read optional', 
     }
   }
 })
+
+
+test('method receiver: inherited object methods accept erased receiver families', () => {
+  const src = `const values = [{}, JSON.parse('{"x":1}'), 'ab', [3], 7, NaN, true, 1n]
+    export function f(i, key) {return values[i].hasOwnProperty(key)}`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  const f = jz(src).exports.f
+  for (const i of [0, 0, 1, 2, 3, 4, 5, 6, 7, 0])
+    for (const key of ['x', '0', 'length', 'missing', 'toString'])
+      is(f(i, key), native(i, key), `receiver ${i}, key ${key}`)
+})
