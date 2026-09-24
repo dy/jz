@@ -10,7 +10,7 @@
 import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
-import { emit, storedValue, storedFieldValue } from '../src/bridge.js'
+import { emit, storedValue, storedFieldValue, deps } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -18,7 +18,7 @@ import { ctx, err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
-import { deletedMaskIR, deletedSlotIR, HEAP } from '../layout.js'
+import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG } from '../layout.js'
 import { enumView, enumKeys, viewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
@@ -378,6 +378,43 @@ export default (ctx) => {
     return emitRuntimeKeys(obj, ro)
   }
   ctx.core.emit['Object.keys'] = (obj) => emitKeysGeneric(obj, false)
+
+  // The own enumerable properties of a receiver no layout or dictionary
+  // describes (the runtime enumerations below): an array's, a typed array's
+  // and a string's indices, as keys (mode 0), values (1) or [key, value]
+  // entries (2); a DataView and any other kind have none.
+  deps({ __idx_enum: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'] })
+  ctx.core.stdlib['__idx_enum'] = `(func $__idx_enum (param $v i64) (param $mode i32) (result f64)
+    (local $t i32) (local $n i32) (local $i i32) (local $base i32) (local $out i32) (local $pair i32) (local $k f64) (local $e f64)
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+      (then (local.set $n (call $__len (local.get $v))) (local.set $base (call $__ptr_offset (local.get $v)))))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
+      (then (if (i32.eqz (i32.and (call $__ptr_aux (local.get $v)) (i32.const ${DATA_VIEW_FLAG})))
+        (then (local.set $n (call $__len (local.get $v)))))))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+      (then (local.set $n (call $__str_len (local.get $v)))))
+    (local.set $out (call $__alloc_hdr (local.get $n) (local.get $n)))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+      (if (i32.ne (local.get $mode) (i32.const 1))
+        (then (local.set $k (f64.reinterpret_i64 (call $__to_str (i64.reinterpret_f64 (f64.convert_i32_s (local.get $i))))))))
+      (if (local.get $mode) (then
+        (local.set $e (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+          (then (f64.load (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))))
+          (else (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
+            (then (call $__typed_idx (local.get $v) (local.get $i)))
+            (else (call $__str_idx (local.get $v) (local.get $i)))))))))
+      (if (i32.eq (local.get $mode) (i32.const 2)) (then
+        (local.set $pair (call $__alloc_hdr (i32.const 2) (i32.const 2)))
+        (f64.store (local.get $pair) (local.get $k))
+        (f64.store offset=8 (local.get $pair) (local.get $e))
+        (local.set $e (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $pair)))))
+      (f64.store (i32.add (local.get $out) (i32.shl (local.get $i) (i32.const 3)))
+        (select (local.get $k) (local.get $e) (i32.eqz (local.get $mode))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $out)))`
   // The keys a layout gained after its literal – for-in's tail behind the
   // unrolled declared keys (control-flow.js unrollForIn): the sidecar's and
   // the global table's, in insertion order, none of the schema's. The receiver
@@ -1515,7 +1552,6 @@ function runtimeKeysFromTemp(t, tag, ro) {
     declGlobal('__schema_tbl', 'i32')
   ctx.runtime.schemaTblConsumed = true
   const tt = tempI32(`${tag}t`)
-  const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: `${tag}e` })
   return ['block', ['result', 'f64'],
     ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
@@ -1528,7 +1564,15 @@ function runtimeKeysFromTemp(t, tag, ro) {
       ['else', ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
         ['then', objectKeysFromTemp(t, ro)],
-        ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]]
+        ['else', idxEnum(t, 0)]]]]]
+}
+
+// An index-keyed receiver's keys, values or entries (__idx_enum): what a
+// runtime enumeration lists for a kind neither a layout nor a dictionary holds.
+const idxEnum = (t, mode) => {
+  ctx.module.include('string')
+  inc('__idx_enum')
+  return ['call', '$__idx_enum', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', mode]]
 }
 
 function emitRuntimeValues(obj) {
@@ -1537,7 +1581,6 @@ function emitRuntimeValues(obj) {
     declGlobal('__schema_tbl', 'i32')
   ctx.runtime.schemaTblConsumed = true
   const t = temp('rv'), tt = tempI32('rvt')
-  const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'rve' })
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
     ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -1547,7 +1590,7 @@ function emitRuntimeValues(obj) {
       ['else', ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
         ['then', objectValuesFromTemp(t)],
-        ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
+        ['else', idxEnum(t, 1)]]]]], 'f64')
 }
 
 function emitRuntimeEntries(obj) {
@@ -1556,7 +1599,6 @@ function emitRuntimeEntries(obj) {
     declGlobal('__schema_tbl', 'i32')
   ctx.runtime.schemaTblConsumed = true
   const t = temp('re'), tt = tempI32('ret')
-  const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'ree' })
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
     ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -1566,7 +1608,7 @@ function emitRuntimeEntries(obj) {
       ['else', ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
         ['then', objectEntriesFromTemp(t)],
-        ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
+        ['else', idxEnum(t, 2)]]]]], 'f64')
 }
 
 // Shared scaffold for Object.{keys,values,entries} on a runtime OBJECT.
