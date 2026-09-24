@@ -191,6 +191,24 @@ export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=
 /** Every op that writes its first operand: assignments plus ++/--. */
 export const MUTATE_OPS = new Set([...ASSIGN_OPS, '++', '--'])
 
+/** The value a compound assignment / inc-dec effectively stores — synthesized
+ *  so census value-analyses (isIntExpr, kind checks) see the real shape:
+ *  `o.n++` → `['+', o.n, 1]` (self-referential, resolved by the censuses' own
+ *  optimistic fixpoint), `o.f ||= x` → either arm. */
+export function effectiveWriteValue(op, lhs, rhs) {
+  if (op === '=') return rhs
+  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
+  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
+  return [op.slice(0, -1), lhs, rhs]
+}
+
+// === Comparison ===
+
+export const RELATIONAL_OPS = new Set(['<', '<=', '>', '>='])
+export const EQUALITY_OPS = new Set(['==', '!=', '===', '!=='])
+/** Relational and equality operators: each always yields a boolean. */
+export const COMPARE_OPS = new Set([...RELATIONAL_OPS, ...EQUALITY_OPS])
+
 /** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
  *
  *  Emission-scoped memo: emit-time callers query this against the SAME enclosing
@@ -676,7 +694,6 @@ export function cloneNode(node) {
 // Share exact literal keys with watr's LICM. The recursive key distinguishes
 // BigInt, NaN, infinities and signed zero on both the host and self-hosted compiler;
 // JSON.stringify alone (or its unsupported in-kernel replacer) cannot do that.
-export { structuralKey as stableNodeKey } from 'watr/optimize'
 import { structuralKey as stableNodeKey } from 'watr/optimize'
 export function nodeEqual(a, b) {
   return stableNodeKey(a) === stableNodeKey(b)
@@ -746,9 +763,6 @@ export function someDeep(node, pred) {
   for (let i = 1; i < node.length; i++) if (someDeep(node[i], pred)) return true
   return false
 }
-
-/** Alias for {@link extractParams}. */
-export const paramList = extractParams
 
 
 /** Accessor slot suffixes: jzify lowers `get x()`/`set x(v)` to the methods

@@ -16,7 +16,7 @@
  */
 import { ctx, inc, PTR } from '../../ctx.js'
 import { createFunction } from '../../function.js'
-import { typed, asF64, asI64, ptrTypeEq, UNDEF_NAN, TOMB_NAN } from '../../ir.js'
+import { typed, asF64, asI64, ptrTypeEq, UNDEF_NAN, TOMB_NAN, TO_PRIMITIVE } from '../../ir.js'
 import { emit } from '../../bridge.js'
 import { errorCodeLiteral, ERR } from '../../../err-codes.js'
 import { stringHash } from '../../string-data.js'
@@ -24,9 +24,9 @@ import { memberUses } from './class-dispatch.js'
 
 const T = '__jz_tp_'
 /** Hint string: `toString`, then `valueOf`. */
-export const TO_PRIM_STR = T + 'str'
+const TO_PRIM_STR = TO_PRIMITIVE.string
 /** Hint number and default: `valueOf`, then `toString`. */
-export const TO_PRIM_NUM = T + 'num'
+const TO_PRIM_NUM = TO_PRIMITIVE.number
 const R = T + 'r', V = T + 'v', M = T + 'm'
 
 const classes = () => ctx.transform.classes

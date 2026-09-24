@@ -20,7 +20,7 @@ import {
 } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { emit, emitBlockBody, emitIdentitySafe } from './emit.js'
-import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummaryParam } from './func-entry.js'
+import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummaryParam, seedSummaryLocals } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
 import { unbounded } from '../summary/index.js'
 import { arraySliceViews } from './array-view.js'
@@ -208,6 +208,7 @@ export function analyzeClosureBodyForEmit(cb) {
       params: cb.params.map(name => ({ name, type: 'f64' })),
       results: ['f64'],
     }
+    seedSummaryLocals(ctx.summary?.at(cb.scope))
     mintTypedStoragePlan(ctx, cb, repSig, cb.body, ctx.func.localReps)
     // A closure's result crosses its ABI (`$ftN`, an any slot) tagged: its
     // result contract (summary/contract.js) is the boxed carrier, which its

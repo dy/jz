@@ -99,19 +99,6 @@ export function sub(a, b) {
   return trim(out)
 }
 
-/** Add a small (< 2^15) value (returns new limbs). */
-export function addSmall(a, k) {
-  if (k === 0) return a
-  const out = a.slice()
-  let carry = k
-  for (let i = 0; carry > 0; i++) {
-    const s = (i < out.length ? out[i] : 0) + carry   // carry may itself exceed BASE on the
-    out[i] = s % BASE                                  // first step (k unrestricted) — floor/mod,
-    carry = Math.floor(s / BASE)                        // not a single conditional subtract, handles it
-  }
-  return out
-}
-
 /** Multiply by a small (< 2^16) value. limb < 2^15, k < 2^16 -> product < 2^31,
  *  safely under Number.MAX_SAFE_INTEGER AND under the signed-i32 product bound
  *  that keeps this exact under jz's own `*` narrowing (see module doc). */
@@ -139,7 +126,7 @@ export function mulSmall(a, k) {
  *  its doc). Flagging so a future O3-miscompile hunt has a lead: two call
  *  sites to the same small exported function, one with a literal `k`, one
  *  with a variable `k`, both under -O3. */
-export function divModSmall(a, k) {
+function divModSmall(a, k) {
   if (isZero(a)) return [ZERO, 0]
   const out = new Array(a.length)
   let rem = 0
@@ -176,7 +163,7 @@ export function mul(a, b) {
 }
 
 /** Bit length (0 for zero). */
-export function bitLength(a) {
+function bitLength(a) {
   if (isZero(a)) return 0
   const top = a[a.length - 1]
   let bits = 0, v = top
@@ -265,7 +252,7 @@ export function toDecimalString(a) {
 
 /** Parse an unsigned digit-string in the given small radix (2, 8, 10, or 16) into limbs.
  *  Pure structural digit accumulation (fused multiply-by-radix + add-digit, inline —
- *  see the loop comment below for why not the separate mulSmall/addSmall primitives) —
+ *  see the loop comment below for why not a mulSmall call) —
  *  no BigInt, no `typeof` classification of the input text at any point (see parse.js's
  *  bigint-literal tag). */
 export function fromRadixDigits(text, radix) {
@@ -277,7 +264,7 @@ export function fromRadixDigits(text, radix) {
     else if (c >= 97 && c <= 102) d = c - 97 + 10
     else if (c >= 65 && c <= 70) d = c - 65 + 10
     else continue   // skip stray non-digit chars defensively (callers pre-strip underscores)
-    // Fused multiply-by-radix + add-digit, NOT `addSmall(mulSmall(acc,radix),d)`:
+    // Fused multiply-by-radix + add-digit, NOT `mulSmall(acc,radix)` then an add:
     // mulSmall's OTHER call site (pre-eval.js ratToF64's `mulSmall(rem,10)`, a
     // LITERAL `k`) observably cross-contaminated THIS call site's variable `radix`
     // under O3 self-compile (traced live: fromRadixDigits computing `0xffffffffffffffffn`

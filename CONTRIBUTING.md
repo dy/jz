@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr 5.11.2, which
+escape decoding and the async-member parse fixes) and watr 5.11.3, which
 carries the two optimizer rules jz's speed rows rely on: the mixed-sign
 truncation-of-convert fold under a non-negative operand (base64's decode
 loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).
@@ -87,6 +87,15 @@ canonical bits rather than source spellings and skips literals too cheap to pool
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
+Load reuse visits reads and writes in evaluation order. A shared load executes
+at its first occurrence, never before preceding operands; identity-observing
+uses retain undefined, while numeric-only uses normalize it. Index definitions
+come from the binding census and positive bounds apply only inside their strict
+loop guard. Every counter proof rejects additional writes in the loop step.
+Method effects require a proven receiver and no own override, not just a name
+matching a built-in. Local shape facts are seeded before representation plans
+freeze, including closure bodies.
+
 The summary must distinguish a pending factory result from an unknown value.
 Object mutation models wait for bottom-valued targets and descriptors rather
 than escaping their arguments before the solver has visited the factory.
@@ -110,6 +119,13 @@ a boolean selecting the lane is not its byte width. Dictionary slot updates
 receive keys already normalized to strings. The host decoder follows forwarding
 for arrays and collections and reads collection entries in their stored insertion
 order, excluding tombstones.
+Derived closure-class members reserve a hidden enumeration rank in the existing
+hash entry. Growth preserves it; an ordinary assignment gives the entry a new
+own rank and invalidates enumeration caches. No collection entry grows.
+Function arity is source arity (before a default or rest parameter), indexed by
+closure table slot independently of body deduplication. Its byte table is linked
+only when a length reader is reachable.
+
 
 Array joining captures length before separator conversion and reads elements
 through the checked, tagged reader. Each conversion runs once, in order; a
@@ -954,6 +970,8 @@ lower envelope's pop `while (s <= z[k]) k--` and scan `while (z[k + 1] < q) k++`
 A loop whose test reads at the cursor becomes `while (G && C′) B′; if (!G)
 while (C) B`, and a block's rest after the statement that steps the cursor
 becomes `if (G) S′ else S`. G tests only the bounds the unproven reads lack.
+Renamed locals retain their original summary kinds through an alias, including
+nullish possibilities; this also covers temporaries introduced by load-CSE.
 Counted loops and computed indexes stay with loop-entry versioning, which
 tests once per entry instead of once per pass. Emitted from one AST, the
 fast copy and checked twin of a loop-entry version share their locals, so a
@@ -1355,7 +1373,10 @@ declared in the body whose every write is a literal or a `new`, is a store into
 fresh memory. A nested function's writes count wherever it is made, a
 declaration's initializer included. A callback a builtin runs (an array
 method's, `Array.from`'s map function) is walked as part of the frame; a
-callback name resolves to its arrow only while no nested function rebinds it. The arena rewind (`src/optimize/arena-rewind.js`) restores the
+callback name resolves to its arrow only while no nested function rebinds it. In a program that defines
+`toString` or `valueOf`, converting a value the summary cannot prove primitive (an operator's
+operand, a property key, a builtin's argument, a typed element store) is a call to the
+ToPrimitive function it lowers to (`runsConversion`). The arena rewind (`src/optimize/arena-rewind.js`) restores the
 heap pointer at return for any function with a scalar non-pointer result whose
 frame is not `arenaUnsafe`, parameters included; the link pass adds what the
 source cannot show: a `global.set` of anything but the heap pointers, the error
@@ -1368,7 +1389,12 @@ cycle of clean kernels stays safe; allocation counts through callees. The
 durable-heap logs are census-guarded: they record only outer-container
 mutations, which no rewind candidate performs. `whyNotRewind` names the reason
 for every declined candidate. Load CSE (`src/compile/cse-load.js`) keeps a
-cached typed-array load across a call whose callee does not `writesOuter`.
+cached typed-array load across a call whose callee does not `writesOuter`; any other
+call or user conversion invalidates after its operands, which run first. A store keeps
+a cached load only when it cannot reach the element: storage that never holds typed
+elements, or the same element grid (the same binding, or two non-view typed arrays of
+one constructor) at a provably different index. A view or another element type over the
+same buffer shifts or splits the grid, so an index inequality proves nothing there.
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration

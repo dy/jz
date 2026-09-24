@@ -2600,10 +2600,7 @@ export default (ctx) => {
       const matched = ['f64.eq', load(), ['local.get', `$${needle}`]]
       if (fromIndex == null)
         return [['if', matched, ['then', ['local.set', `$${found}`, ['local.get', `$${i}`]]]]]
-      const lim = ['if', ['result', 'i32'], ['i32.lt_s', ['local.get', `$${fiL}`], ['i32.const', 0]],
-        ['then', ['i32.add', ['local.get', `$${fiL}`], ['local.get', `$${len}`]]],
-        ['else', ['local.get', `$${fiL}`]]]
-      return [['if', ['i32.and', ['i32.le_s', ['local.get', `$${i}`], lim], matched],
+      return [['if', ['i32.and', ['i32.le_s', ['local.get', `$${i}`], fromStart(fiL, len)], matched],
         ['then', ['local.set', `$${found}`, ['local.get', `$${i}`]]]]]
     })
     if (!loop) return null

@@ -85,6 +85,23 @@ test('sentinel guard: the size tier copies nothing', () => {
   is(compile(ENVELOPE, { optimize: 'size', wat: true }), compile(ENVELOPE, { optimize: { level: 'size', sentinelGuards: false }, wat: true }))
 })
 
+test('sentinel guard: copied gather locals retain their numeric kinds and missing values', () => {
+  // Keep the worker shared so load-CSE introduces its temporary before the
+  // guard copies it. Source inlining can otherwise hide the missing kind.
+  const src = ENVELOPE.replace(`edt1d(f, d, v, z, ${N})`,
+    `edt1d(f, d, v, z, ${N}); edt1d(d, f, v, z, ${N})`)
+  const optimize = { level: 'speed', sourceInline: false }
+  if (!onKernel()) {
+    const worker = funcWat(compile(src, { optimize, wat: true }), 'edt1d')
+    ok(worker, 'the shared numeric worker remains present')
+    ok(!/\(call \$(?:__to_num|__add_slow|__typed_idx|__typed_prop_get)\b/.test(worker),
+      'renaming a numeric gather does not introduce generic conversion or property dispatch')
+  }
+  const native = oracle(src).run, wasm = jz(src, { optimize }).exports.run
+  for (let mode = 0; mode < 4; mode++) for (let seed = 1; seed <= 4; seed++)
+    is(wasm(seed, mode), native(seed, mode), `shared worker: mode ${mode}, seed ${seed}`)
+})
+
 // The forms decline where a copy could not stand for the original: a loop that
 // breaks itself (the slow loop would run after the break), a cursor a closure
 // writes, a cursor the suffix writes. Each still computes the host's result.

@@ -9,10 +9,6 @@
  *     and slot-int-census.js's `analyzeSchemaSlotIntCertain` (late-mode
  *     body-local element-alias sids — both must resolve receivers identically
  *     or the hazard scan poisons slots the census just proved).
- *   - `effectiveWriteValue`: the slot-range and
- *     slot-int-census.js's `analyzeSchemaSlotIntCertain` (compound-assign /
- *     inc-dec's effective stored value). Also part of this module's public
- *     API surface (re-exported from the barrel).
  * @module program-facts/shared
  */
 import { walkAst } from '../../ast.js'
@@ -51,13 +47,3 @@ export function collectBodyElemSids(func, paramReps) {
   return sids.size ? sids : null
 }
 
-/** The value a compound assignment / inc-dec effectively stores — synthesized
- *  so census value-analyses (isIntExpr, kind checks) see the real shape:
- *  `o.n++` → `['+', o.n, 1]` (self-referential, resolved by the censuses' own
- *  optimistic fixpoint), `o.f ||= x` → either arm. */
-export function effectiveWriteValue(op, lhs, rhs) {
-  if (op === '=') return rhs
-  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
-  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
-  return [op.slice(0, -1), lhs, rhs]
-}

@@ -374,7 +374,7 @@ function encodeDataBytes(bytes) {
  * ranges when neither their owner nor an inlined address survives. Ranges stay
  * at their original addresses, so no pointer rebasing is needed.
  */
-export function stripDeadLateData(module, lazySpans, staticSpan) {
+function stripDeadLateData(module, lazySpans, staticSpan) {
   const spans = []
   if (lazySpans) for (let i = 0; i < lazySpans.length; i++) spans.push(lazySpans[i])
   if (staticSpan) spans.push(staticSpan)

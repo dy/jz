@@ -66,8 +66,12 @@ function inheritedObjectString(value) {
   return typed(['block', ['result', 'i64'], ['drop', asF64(value)], inheritedObjectTag()], 'i64')
 }
 
+/** The prepared OrdinaryToPrimitive functions (compile/emit/to-primitive.js), by hint:
+ *  runtime roots only in a program that defines toString or valueOf. */
+export const TO_PRIMITIVE = { string: '__jz_tp_str', number: '__jz_tp_num' }
+
 function objectToPrimitive(v, hint) {
-  const name = hint === 'string' ? '__jz_tp_str' : '__jz_tp_num'
+  const name = hint === 'string' ? TO_PRIMITIVE.string : TO_PRIMITIVE.number
   if (!ctx.funcs.runtimeRoots.has(name)) return inheritedObjectString(v)
   const recv = temp('tpr')
   return typed(['block', ['result', 'i64'], ['local.set', `$${recv}`, asF64(v)],
@@ -139,7 +143,7 @@ export const coerceAtomsToNum = (valIR) => {
  *  (String()/template-literal/`+`-concat), which autoload.js's own MOD_DEPS
  *  already makes depend on 'number' before 'string' loads, so `__static_str`
  *  is always registered by the time this runs. */
-export const coerceNullishToStr = (valIR) => {
+const coerceNullishToStr = (valIR) => {
   inc('__static_str')
   return typed(
     ['if', ['result', 'i64'],

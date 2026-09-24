@@ -38,7 +38,7 @@
  */
 
 export {
-  resetBodyFactsCache, analyzeBody, invalidateLocalsCache, reanalyzeBody,
+  analyzeBody, reanalyzeBody,
   setFuncBody, invalidateBodies, invalidateAllBodyFacts,
 } from './analyze/body-facts.js'
 

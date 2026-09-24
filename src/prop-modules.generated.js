@@ -80,6 +80,7 @@ export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
   "keys": ["collection"],
   "lastIndex": ["regex"],
   "lastIndexOf": ["array", "string", "typedarray"],
+  "length": ["fn"],
   "localeCompare": ["string"],
   "map": ["array", "typedarray"],
   "match": ["regex", "string"],

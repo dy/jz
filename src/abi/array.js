@@ -91,7 +91,3 @@ export const structInline = (K, packed = false) => {
     },
   }
 }
-
-// Default carrier — picked when the narrower has no stronger evidence.
-// Reached via `ctx.abi.array`.
-export default taggedLinear

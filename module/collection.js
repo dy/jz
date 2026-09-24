@@ -20,7 +20,7 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
-import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG } from '../layout.js'
+import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat } from './core/error-object.js'
@@ -64,12 +64,17 @@ export const stringIndexWat = (name, max) => `(func $${name} (param $key i64) (r
 // arm in __dyn_get_t_h and __length's property-fallback arm (module/core.js).
 // ssoEncode('length') never returns null (6 ASCII).
 export const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
+const SIZE_SSO_I64 = (() => { const e = ssoEncode('size'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
+const builtinPropDeps = () => [
+  ...(ctx.linkDemand.map || ctx.linkDemand.set ? ['__len'] : []),
+  ...(ctx.core.stdlib.__closure_length ? ['__closure_length'] : []),
+]
 
 // Shared physical layout constants for collection helpers and diagnostics.
-export const SET_ENTRY = 16  // hash + key
+const SET_ENTRY = 16  // hash + key
 export const MAP_ENTRY = 24  // hash + key + value
-export const INIT_CAP = 8    // user-program default (must be power of 2)
-export const collectionInitCap = () => {
+const INIT_CAP = 8    // user-program default (must be power of 2)
+const collectionInitCap = () => {
   const cap = ctx.transform.optimize?.collectionInitCap | 0
   return cap >= 2 && (cap & (cap - 1)) === 0 ? cap : INIT_CAP
 }
@@ -87,7 +92,7 @@ export const dynPropsFilterSetIR = (offExpr) =>
 // True (i32) when the filter bit is clear — i.e. offExpr is PROVEN never inserted,
 // safe to skip the __ihash_get_local probe entirely. False (bit set) means "maybe
 // present, maybe a collision" — falls through to the real probe.
-export const dynPropsFilterMissIR = (offExpr) =>
+const dynPropsFilterMissIR = (offExpr) =>
   `(i64.eqz (i64.and (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
 
 import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode } from './collection/durable.js'
@@ -182,13 +187,9 @@ const strEqG = keyEq('(call $__str_eq (i64.load offset=8 (local.get $slot)) (loc
 const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
 const bitEq = '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
 
-import { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
+import { collectionLaneBytes, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
-// Re-exported from their new home (module/collection/upsert.js — the
-// hash-table probe/upsert/lookup/delete pipeline, pure-moved out of this
-// file) so module/core.js's `collectionLaneBytes` import and
-// module/object.js's `GROW_QUAD_CAP` import stay untouched.
-export { LANE, collectionLaneBytes, collectionStride, GROW_QUAD_CAP }
+export { collectionLaneBytes }
 
 
 export default (ctx) => {
@@ -290,6 +291,9 @@ export default (ctx) => {
     __hash_set_local: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __map_slot: () => ['__map_hash', '__same_value_zero', '__alloc_hdr_n', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_slot: () => ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __hash_lookup_slot: ['__str_hash', '__str_eq', '__ptr_offset_fwd'],
+    __hash_hide: ['__hash_lookup_slot'],
+    __hide_member: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__ihash_get_local', '__hash_hide'],
     __hash_slot_eph: ['__str_hash', '__str_eq', '__alloc_hdr_n', '__ptr_offset_fwd'],
     __hash_slot_eph_fixed: ['__str_hash', '__str_eq'],
     __hash_reuse_eph: ['__ptr_type', '__ptr_offset_fwd', '__alloc_hdr_n', '__mkptr'],
@@ -297,8 +301,8 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: () => [...viewDeps('__view_get'), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
-    __dyn_get_t_hm: () => [...viewDeps('__view_get'), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
@@ -1296,6 +1300,11 @@ export default (ctx) => {
   // would eagerly evaluate (same reasoning as module/core.js's __obj_clone).
   ctx.core.stdlib['__hash_set_local'] = () => genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
   ctx.core.stdlib['__hash_slot'] = () => genUpsert('__hash_slot', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, true, false, true)
+  ctx.core.stdlib.__hash_lookup_slot = () => genLookup('__hash_lookup_slot', MAP_ENTRY, '$__str_hash', strEqG, PTR.HASH, 'slot')
+  ctx.core.stdlib.__hash_hide = `(func $__hash_hide (param $props i64) (param $key i64)
+    (local $slot i32)
+    (local.set $slot (call $__hash_lookup_slot (local.get $props) (local.get $key)))
+    (if (local.get $slot) (then (i32.store offset=4 (local.get $slot) (i32.const ${HIDDEN_PROPERTY_SEQ})))))`
   ctx.core.stdlib['__hash_slot_eph'] = genEphemeralSlotUpsert('__hash_slot_eph', MAP_ENTRY)
   ctx.core.stdlib['__hash_slot_eph_fixed'] = genEphemeralFixedSlot('__hash_slot_eph_fixed', MAP_ENTRY)
   // The RMW fusion's value update — the store plus the durable-heal protocol
@@ -1705,10 +1714,20 @@ export default (ctx) => {
               (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))`
     // A string's canonical index key reads its code unit ('ab'['1']).
     const strIndex = !presence && ctx.core.stdlib['__str_idx']
-    const fallback = ctx.linkDemand.typedProperties ? `(if (result i64)
+    let fallback = ctx.linkDemand.typedProperties ? `(if (result i64)
       (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
       (then (call $__typed_prop_get (local.get $obj) (local.get $key) (local.get $h) ${miss}))
       (else ${miss}))` : miss
+    if (ctx.linkDemand.map || ctx.linkDemand.set) fallback = `(if (result i64)
+      (i32.and (i32.or (i32.eq (local.get $type) (i32.const ${PTR.MAP})) (i32.eq (local.get $type) (i32.const ${PTR.SET})))
+        (call $__str_eq (local.get $key) (i64.const ${SIZE_SSO_I64})))
+      (then ${presence ? '(i64.const 0)' : '(i64.reinterpret_f64 (f64.convert_i32_u (call $__len (local.get $obj))))'})
+      (else ${fallback}))`
+    if (ctx.core.stdlib.__closure_length) fallback = `(if (result i64)
+      (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (call $__str_eq (local.get $key) (i64.const ${LENGTH_SSO_I64})))
+      (then ${presence ? '(i64.const 0)' : '(i64.reinterpret_f64 (f64.convert_i32_u (call $__closure_length (local.get $obj))))'})
+      (else ${fallback}))`
+    const hasFallback = fallback !== miss
     return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
@@ -1859,7 +1878,7 @@ export default (ctx) => {
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
-              (then ${ctx.linkDemand.typedProperties ? `
+              (then ${hasFallback ? `
                 (local.set $val (call $__hash_get_local_hm (local.get $props) (local.get $key) (local.get $h)))
                 (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val)))))`
                 : `(return (call $${sidecarGet} (local.get $props) (local.get $key) (local.get $h))))`}))
@@ -2280,6 +2299,29 @@ export default (ctx) => {
           (then (i64.store (i32.sub (local.get $off) (i32.const 16))
                            (i64.or (local.get $oldProps) (i64.const 1)))))))
     (local.get $val))`
+
+  // A lowered class installs methods as own storage, but they carry no own
+  // enumeration rank. Mark both property homes; ordinary assignment creates
+  // an own rank and table relocation copies the complete hash/sequence word.
+  ctx.core.emit.__hide_member = (obj, key) => {
+    setLinkDemand('hiddenMembers')
+    inc('__hide_member')
+    return typed(['block', ['result', 'f64'], ['call', '$__hide_member', asI64(emit(obj)), asI64(emit(key))], ['f64.const', 0]], 'f64')
+  }
+  ctx.core.stdlib.__hide_member = () => `(func $__hide_member (param $obj i64) (param $key i64)
+    (local $off i32) (local $type i32) (local $props i64)
+    (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
+    (local.set $type (call $__ptr_type (local.get $obj)))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+      (then (call $__hash_hide (local.get $obj) (local.get $key)) (return)))
+    (local.set $off (call $__ptr_offset (local.get $obj)))
+    (if (i32.and (i32.ge_u (local.get $off) (i32.const 16)) ${hasPropsSidecarWat('(local.get $type)', '(local.get $obj)')})
+      (then
+        (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+        (call $__hash_hide (local.get $props) (local.get $key))))
+    (if (f64.ne (global.get $__dyn_props) (f64.const 0))
+      (then (call $__hash_hide (call $__ihash_get_local (i64.reinterpret_f64 (global.get $__dyn_props))
+        (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))) (local.get $key)))))`
 
   // Tag-dispatched delete (mirrors __dyn_set's dispatch). Returns 1 if a slot was
   // found+tombstoned, 0 otherwise. Header types (ARRAY non-shifted, OBJECT heap-only,

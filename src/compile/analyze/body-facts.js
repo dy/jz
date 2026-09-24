@@ -37,7 +37,7 @@ import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 // the next reset.
 // Session-owned (audit P1 stage 5) — getFactStore().bodyFacts, NOT a private
 // module-level Map; see src/session.js's factStore DEPS table.
-export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
+function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
 
 /**
  * Unified per-body analysis — see module header for slice overview.

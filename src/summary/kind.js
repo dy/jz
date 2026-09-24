@@ -1,4 +1,5 @@
 /** The summary's kind lattice and pure scalar transfer rules. No solver state. */
+import { COMPARE_OPS } from '../ast.js'
 import { VAL } from '../reps.js'
 import { TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
 
@@ -79,7 +80,7 @@ export const isPostfixRecovery = (op, a, b) => Array.isArray(b) && b[0] == null 
 // Boolean value identity is shared by summary, value typing and integer
 // carriers, including the inliner's eager boolean operators. Membership
 // operators stay outside integer certainty because their operands may throw.
-export const CMP_OPS = new Set(['!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', '__eager&&', '__eager||'])
+export const CMP_OPS = new Set(['!', ...COMPARE_OPS, '__eager&&', '__eager||'])
 export const BOOL_OPS = new Set([...CMP_OPS, 'in', 'instanceof'])
 
 const COERCION_UNKNOWN = bitOf(K.TYPED) | bitOf(K.ARRAY) | bitOf(K.OBJECT) |

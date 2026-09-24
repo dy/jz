@@ -131,6 +131,10 @@ Architecture
   lookup chain's string and array arms, which ended at `length` and at the
   indices; a first-character digit test read in place keeps an identifier
   key off the index parse. A canonical index literal takes the index dispatch.
+- Derived closure-class methods use a hidden rank in the existing property hash;
+  growth preserves it and an own assignment restores enumeration. Runtime keys
+  read Map/Set size and source function arity through the shared lookup chain.
+  Function arities stay beside closure table entries after body deduplication.
 - An array hole is an `undefined` element: `[1, , 3]` lists `"1"`. The
   divergence is in the README; a hole would need an element value apart
   from undefined, tested on every read.
@@ -164,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 and watr ^5.11.2 from npm; 5.11.2 carries the two
+- subscript ^10.8.0 and watr ^5.11.3 from npm; 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -178,6 +182,30 @@ Dependencies
    evidence below, plus webaudio and watr. Caps stay unchanged; benchmark
    sources stay fixed. Paired local measurements on this loaded machine
    are diagnostics, not release evidence.
+
+   **JSC focus, September 24:** resample, sdf, spmv, synth, vm, colorlog,
+   crc32, delayline and dict. Recontest all nine against both Bun and the
+   standalone JSC shell. The vm/dict/crc32 claim exception remains a
+   regression band, not a reason to stop optimizing these cases.
+
+   | Case | Current diagnosis and next proof |
+   | --- | --- |
+   | resample | Four adjacent taps retain separate checks around a floating phase index. Extend the shared range proof with an enclosure for repeated floating addition; preserve rounding and out-of-range behavior. |
+   | sdf | Sentinel copies lost their locals' summary kinds, introducing generic conversions and property dispatch. Preserve the original kind through the existing alias query, including missing values. The measured speed artifact shrinks from 12705 to 3420 bytes; alternating timings are too noisy to establish a speed improvement. Next isolate guard placement and dependent gather checks. |
+   | spmv | The current tree leads JSC in all four paired rounds (JZ/JSC 0.403–0.437). Keep the indirect-gather path pinned and confirm on a quiet machine before refreshing the older public loss. |
+   | synth | The scalar phase/envelope/biquad loop still trails JSC (paired median 1.110). Inspect polynomial speculation and the phase conversion in machine code; changes to generic sinking or scheduling belong in watr. |
+   | vm | Near parity in this run (paired median 0.989; range 0.814–1.018). Recheck dispatch and dependent operand loads under stable load; this does not establish leadership. |
+   | colorlog | Both public and fresh output remain checksum-DIFF. Measure the exp2 error separately from speed and preserve the documented numerical contract; do not count this as a correct-result win. |
+   | crc32 | The dependent byte/table recurrence still trails JSC (paired median 1.302). Compare generated machine code and general dependency-chain transformations. |
+   | delayline | Leads JSC in the public snapshot and in the fresh paired median (0.762). Keep the masked ring indices and feedback recurrence as regression controls. |
+   | dict | Largest paired JSC gap here (median 1.441, range 1.093–1.562). Profile probe branches, repeated slot reads and address generation; existing integer narrowing alone does not close it. |
+
+   These readings used the unchanged corpus, four alternating rounds per
+   target, and the current uncommitted compiler tree. Large timing drift
+   makes them diagnostic only. Reproduce with
+   `JSC_BIN=~/.jsvu/bin/javascriptcore node bench/bench.mjs --targets=jz,bun,jsc,v8 --cases=resample,sdf,spmv,synth,vm,colorlog,crc32,delayline,dict --paired=4 --json=/tmp/jz-focus.json`.
+   Keep the published snapshot unchanged until the tree passes its gates and
+   quiet measurements support a refresh.
 
    | Remaining class | Evidence and next proof |
    | --- | --- |
@@ -347,19 +375,7 @@ Dependencies
    glyfparse/C-Wasm 1.418×, SDF/C-Wasm 1.420×, noise/Rust-Wasm 1.148×,
    wordcount/C-Wasm 1.011×, watr/V8 1.546× and Jessie/V8 0.988×.
 
-4. **Derived closure-lowered class members.** A derived class kept as
-   closures (declared in a function, or over a base the module cannot see)
-   adds its methods and accessors to the base instance as dynamic properties,
-   so `Object.keys` and for-in list them (`n`), where JS lists neither. The
-   property hash has no per-entry flag to hide an entry; adding one changes
-   the entry layout Map and Set share. A non-derived class already hides them.
-
-5. **Built-in properties by a runtime key.** A Map's or Set's `size` and a
-   function's `length` read through a runtime key (`m[k]`, k `'size'`) are
-   undefined; a string's index and an array's length already answer there.
-   Each needs its arm in the lookup chain, a function's `length` its arity.
-
-6. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
+4. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
    defers native release work until JZ v1 and requires verification from its
    installed tarball. The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Use
@@ -368,7 +384,7 @@ Dependencies
    on next setup; active restart needs the component-handler interface.
    Events and wider layouts remain refused.
 
-7. **Proof and independent review.** Reachable dynamic calls can still make
+5. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation and work proofs unknown. Empirical block checks prove
    neither allocation freedom for all inputs nor callback deadlines. Reuse
    entry-range facts for useful bounds; a full-i32 domain proves no deadline.

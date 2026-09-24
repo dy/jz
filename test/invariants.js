@@ -18,7 +18,7 @@ import { ctx, reset } from '../src/ctx.js'
 import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 import { analyzeBody, reanalyzeBody, setFuncBody, invalidateAllBodyFacts } from '../src/compile/analyze.js'
-import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
+import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run, wat } from './util.js'
 import { onKernel, levels } from './_matrix.js'
@@ -82,13 +82,13 @@ test('invariant: shared power generator reconstructs every decimal entry exactly
 
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
   if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-compile leg
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('const X = 10; export let f = () => X')
   ok(ctx.scope.consts?.has('X'), 'const X should be tracked in ctx.scope.consts')
 })
 
 test('invariant: let does not appear in ctx.scope.consts', () => {
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('let x = 10; export let f = () => x')
   ok(!ctx.scope.consts?.has('x'), 'let x should NOT be in ctx.scope.consts')
 })
@@ -183,7 +183,7 @@ test('invariant: division always produces f64 result', () => {
 
 test('invariant: a signature retype invalidates a cached body on its next read', () => {
   if (onKernel()) return
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
   const func = ctx.funcs.map.get('f'), prior = ctx.func.current
   ctx.func.current = func.sig
@@ -200,7 +200,7 @@ test('invariant: a signature retype invalidates a cached body on its next read',
 
 test('invariant: explicit body mutation seams refresh cached facts', () => {
   if (onKernel()) return
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
   const func = ctx.funcs.map.get('f')
   ctx.func.current = func.sig
@@ -260,7 +260,7 @@ const ROOT = join(import.meta.dirname, '..')
 const COMPILE_FAMILY_OWNERS = [
   ['func-exports.js', ['isExported', 'exportNamesOf']],
   ['func-entry.js', ['enterFunc', 'emitPreboxedLocalInits']],
-  ['param-numeric.js', ['NUM_BIN_OPS', 'REL_OPS', 'isStrLiteral', 'paramAllUsesNumeric', 'STRING_RECV_METHODS', 'paramNeverString', 'paramValueOnly']],
+  ['param-numeric.js', ['NUM_BIN_OPS', 'isStrLiteral', 'paramAllUsesNumeric', 'STRING_RECV_METHODS', 'paramNeverString', 'paramValueOnly']],
   ['throw-runtime.js', ['ensureThrowRuntime']],
   ['intern-table.js', ['buildInternTable']],
   ['func-inspect.js', ['repView', 'captureFuncInspect']],
@@ -1176,7 +1176,7 @@ test('invariant: in-process inspection preserves the selected execution compiler
 
 // Exercise developer diagnostics independently of the compiler's debug setting.
 test('debug lifecycle: repeated sessions, drift and failed-session recovery', () => {
-  const bridge = Object.fromEntries(['emit','flat','body','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
+  const bridge = Object.fromEntries(['emit','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
   const fresh = () => ({
     core: { includes: new Set(), emit: {} }, module: {}, scope: {},
     funcs: { list: [], names: new Set(), map: new Map(), multiProp: new Map() },
@@ -1217,14 +1217,16 @@ test('debug lifecycle: real compiles retain semantics across shape changes and e
     const sources = [
       'export function f(){return 0}',
       'export function f(){let p={x:1,y:2};p={x:3};return p.x}',
-      'export function f(){let p={x:1,y:2};p={x:3};p.y=4;return p.y}'
+      'export function f(){let p={x:1,y:2};p={x:3};p.y=4;return p.y}',
+      'export function f(){class B {x=3;m(){return this.x}} class D extends B {n(){return this.x+1}} const d=new D();return d.n()}',
+      'export function f(){const o={x:5};const g=()=>{const p=o;return p.x};return g()}'
     ]
     const values = []
-    for (const i of [0,0,1,2]) values.push(jz(sources[i]).exports.f())
+    for (const i of [0,0,1,2,3,3,4]) values.push(jz(sources[i]).exports.f())
     try { jz('export function f( {') } catch {}
     values.push(jz(sources[0]).exports.f())
     console.log(JSON.stringify(values))
   `], { env: { ...process.env, JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 30000 })
   is(child.status, 0, child.stderr)
-  is(JSON.parse(child.stdout), [0,0,3,4,0], 'A → A → different shapes → error → A')
+  is(JSON.parse(child.stdout), [0,0,3,4,4,4,5,0], 'A → A → different shapes → closures → error → A')
 })

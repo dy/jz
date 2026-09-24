@@ -826,6 +826,64 @@ test('codegen: sound load-CSE — reuse arr[idx] across a disjoint-index store, 
   is(onR, offR, 'load-CSE preserves the result')
 })
 
+test('codegen: load-CSE never reuses a load across a store through an aliasing view', () => {
+  // Index inequality proves disjoint elements only on one element grid. A view (`subarray`)
+  // shifts the grid and a reinterpret (`new Uint8Array(f.buffer)`) changes the width, so a
+  // store at a different index through either must reload `A[1]` / `F[0]`.
+  const subarray = `let A = new Float64Array(8), B = A.subarray(1)
+    export let f = () => { for (let i = 0; i < 8; i++) A[i] = i; let x = A[1]; B[0] = 100; let y = A[1]; return x + y }`
+  const width = `let F = new Float64Array(4), U = new Uint8Array(F.buffer)
+    export let f = () => { F[0] = 1.5; let x = F[0]; U[7] = 192; let y = F[0]; return x + y }`
+  const widthJs = (() => { const F = new Float64Array(4), U = new Uint8Array(F.buffer); F[0] = 1.5; const x = F[0]; U[7] = 192; return x + F[0] })()
+  for (const optimize of [2, 'speed']) {
+    is(jz(subarray, { optimize }).exports.f(), 101, `subarray view store reloads (optimize ${optimize})`)
+    is(jz(width, { optimize }).exports.f(), widthJs, `byte-view store reloads the f64 (optimize ${optimize})`)
+  }
+})
+
+test('codegen: load-CSE reloads after user code — calls, and conversions that run toString/valueOf', () => {
+  // A call runs after its arguments, so a load read in them does not survive it; a user
+  // toString/valueOf runs inside `'' + p`, `p * 2` or `Math.abs(p)`, in this frame or a callee's.
+  const cases = {
+    'argument load before a writing call': [`let a = new Float64Array(4)
+      let g = (v, d) => { a[0] = 5; return d > 0 ? g(v, d - 1) : v }
+      export let f = () => { a[0] = 1; const t = g(a[0], 0); const z = a[0]; return t + z }`, 6],
+    'toString in a concatenation': [`let a = new Float64Array(4)
+      class P { toString() { a[0] = 5; return 'p' } }
+      export let f = () => { a[0] = 1; let p = new P(); const x = a[0]; const s = '' + p; const z = a[0]; return x + z + s.length }`, 7],
+    'valueOf in arithmetic': [`let a = new Float64Array(4)
+      class P { valueOf() { a[0] = 5; return 1 } }
+      export let f = () => { a[0] = 1; let p = new P(); const x = a[0]; const m = p * 2; const z = a[0]; return x + z + m }`, 8],
+    'toString in a callee': [`let a = new Float64Array(4)
+      class P { toString() { a[0] = 5; return 'p' } }
+      let h = (k, d) => d > 0 ? h(k, d - 1) : String(new P()).length + k
+      export let f = () => { a[0] = 1; const x = a[0]; const t = h(1, 0); const z = a[0]; return x + z + t }`, 8],
+    'valueOf under Math.abs in a callee': [`let a = new Float64Array(4)
+      class P { valueOf() { a[0] = 5; return -3 } }
+      let h = (q, d) => d > 0 ? h(q, d - 1) : Math.abs(q)
+      export let f = () => { a[0] = 1; const x = a[0]; const t = h(new P(), 0); const z = a[0]; return x + z + t }`, 9],
+  }
+  for (const [name, [src, expect]] of Object.entries(cases))
+    for (const optimize of [2, 'speed']) is(jz(src, { optimize }).exports.f(), expect, `${name} (optimize ${optimize})`)
+})
+
+test('codegen: load-CSE preserves expression order and scoped index proofs', () => {
+  const cases = [
+    ['nested store', `let y=a[0]+(a[0]=2)+a[0];return y`, 5],
+    ['index update', `let i=0;let y=a[i]+(i=1)+a[i];return y`, 4],
+    ['call before first read', `let y=g(0)+a[0]+a[0];return y`, 10],
+    ['short circuit', `let y=n&&a[0];a[0]=5;let z=a[0];return y+z`, 5],
+    ['inclusive zero bound', `let s=0;for(let j=0;j<=n;j++){let i=j,b=i+n;let x=a[i];a[b]=7;let y=a[i];s+=x+y}return s`, 8],
+    ['zero-trip guard does not dominate', `for(let j=0;j<n;j++)a[2]=j;let i=0,b=i+n;let x=a[i];a[b]=7;let y=a[i];return x+y`, 8],
+    ['reassigned alias', `for(let j=0;j<2;j++){let i=0,b=i+1;b=i;let x=a[i];a[b]=7;let y=a[i];return x+y}`, 8],
+    ['changed alias base', `let i=0,b=i+1;i=1;let x=a[i];a[b]=7;let y=a[i];return x+y`, 9],
+  ]
+  for (const [name, body, expected] of cases) for (const optimize of [2, 'speed']) {
+    const src = `let a=new Float64Array([1,2,3]);function g(n){a[0]=5;return n>0?g(n-1):0}export function f(n){${body}}`
+    is(jz(src, { optimize }).exports.f(0), expected, `${name}, ${optimize}`)
+  }
+})
+
 test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => {
   // The typed-array i32-read narrowing must NOT apply to Uint32Array, whose element can
   // exceed signed-i32 range: `U[0] + 1` at 2^32-1 is 4294967296, not a wrapped 0. exprType

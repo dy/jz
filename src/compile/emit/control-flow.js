@@ -8,10 +8,10 @@ import { encodePtrHi, i64Hex } from '../../../layout.js'
 import { enumKeys } from '../../../module/schema.js'
 import {
   T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, mutatesArrayLength, some, walkAst,
-isArrayIndexKey } from '../../ast.js'
+isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
-  asF64, asI32, freshId, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, toBoolFromEmitted, typed, undefExpr,
+  asF64, asI32, freshId, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { constIntExpr, intExprRange, intLiteralValue } from '../../static.js'
@@ -309,7 +309,6 @@ function unrollForIn(init, cond, step, body) {
 // array's length is fixed, so it is loop-invariant whenever `arr` is not reassigned.
 // A plain array's length CAN change (push/pop/index-grow/length=), so it is hoistable
 // only when the loop body provably never mutates it — `mutatesArrayLength` decides that.
-const HOIST_CMP = new Set(['<', '<=', '>', '>='])
 const immutableLenBound = (node, body) => {
   // Unwrap the `| 0` i32 coercion jz wraps a loop bound in (`i < arr.length`
   // emits `i < (arr.length | 0)`).
@@ -402,7 +401,7 @@ export const controlFlowOps = {
       if (els != null) return emitVoid(els)
       return null
     }
-    const c = ce.type === 'i32' ? ce : toBoolFromEmitted(ce)
+    const c = ce.type === 'i32' ? ce : truthyIR(ce)
     // Flow-sensitive type refinement: narrow types within each branch based on the guard.
     const thenRefs = extractRefinements(cond, new Map(), true)
     const elseRefs = extractRefinements(cond, new Map(), false)
@@ -963,7 +962,7 @@ export const controlFlowOps = {
     // the body. Only the simple top-level comparison forms — anything fancier just
     // keeps the per-iteration eval (correct, only misses the speedup).
     let condForLoop = cond
-    if (cond && Array.isArray(cond) && HOIST_CMP.has(cond[0])) {
+    if (cond && Array.isArray(cond) && RELATIONAL_OPS.has(cond[0])) {
       const side = immutableLenBound(cond[2], body) ? 2 : immutableLenBound(cond[1], body) ? 1 : 0
       if (side) {
         const lt = tempI32('len')

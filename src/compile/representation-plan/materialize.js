@@ -16,7 +16,7 @@ export function representationPlanOf(ctx, identity) {
   return handle
 }
 
-export function representationBoundaryOf(ctx, identity) {
+function representationBoundaryOf(ctx, identity) {
   const program = programPlanRecord(ctx)
   const func = typeof identity === 'string' ? ctx.funcs.map.get(identity) : identity
   const handle = (func && ctx.plans.representations.get(func)) || (program?.bigint === false ? program.emptyHandle : null)

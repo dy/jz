@@ -27,12 +27,6 @@ function containerValueVal(name, tag) {
 function mapValueKindSet(name) { return containerValueKindSet(name, K.MAP) }
 export function mapValueKindOf(name) { return containerValueVal(name, K.MAP) }
 
-/** The bounded value families stored in a dictionary or Map. */
-export function censusKindsOf(name) {
-  const s = dictValueKindSet(name) ?? mapValueKindSet(name)
-  return s ? new Set(s) : new Set()
-}
-
 export const censusShapedNode = (node) =>
   (Array.isArray(node) && (node[0] === '[]' || node[0] === '.') && node.length === 3 && typeof node[1] === 'string') ||
   (Array.isArray(node) && node[0] === '()' && node.length === 3 &&

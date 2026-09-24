@@ -16,11 +16,11 @@
 
 export { nullishArm } from './kind/lattice.js'
 export {
-  dictValueKindOf, mapValueKindOf, censusKindsOf, censusShapedNode,
+  dictValueKindOf, mapValueKindOf, censusShapedNode,
   censusMaybeUndefinedKind, BIGINT_JOINT_BINARY_OPS,
   censusMaybeUndefined,
 } from './kind/dict-census.js'
-export { shapeOf, jsonConstString } from './kind/shape.js'
+export { shapeOf } from './kind/shape.js'
 export {
   hasAmbiguousBoolMerge, valTypeOf, isPresentNumber, shapeOfObjectLiteralAst, numericDenied,
 } from './kind/val-type-of.js'

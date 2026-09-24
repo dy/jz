@@ -8,7 +8,7 @@ import { valTypeOf } from '../kind.js'
 import { paramValTrustworthy } from '../param-reps.js'
 import { I32_MIN, I32_MAX } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
-import { enterFunc, seedSummaryParam } from './func-entry.js'
+import { enterFunc, seedSummaryParam, seedSummaryLocals } from './func-entry.js'
 import { isExported } from './func-exports.js'
 import { paramAllUsesNumeric, paramNeverString } from './param-numeric.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
@@ -25,12 +25,13 @@ import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
-import { cseLoads } from './cse-load.js'
+import { cseLoads, UNTYPED } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
 import { arraySliceViews } from './array-view.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
+import { runsConversion } from './analyze/frame-effects.js'
 import { frameNode } from '../function.js'
 import { viewsOn } from '../../module/schema.js'
 
@@ -39,6 +40,8 @@ import { viewsOn } from '../../module/schema.js'
 // freshLoopId pattern): a module-level counter made warm-process WAT text
 // history-dependent (`cse0/1` then `cse2/3` for the same program).
 const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
+// Kinds whose storage never holds typed elements: a store into one leaves cached typed loads intact.
+const UNTYPED_KINDS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.HASH, VAL.STRING, VAL.SET, VAL.MAP])
 
 export function analyzeFuncForEmit(func, programFacts) {
   const { paramReps } = programFacts
@@ -239,8 +242,9 @@ export function analyzeFuncForEmit(func, programFacts) {
         updateRep(p.name, { val: VAL.NUMBER, nullable: false })
     }
   }
-  // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when every intervening
-  // store writes a provably-different element (idx2 ≠ idx). Recovers the fft butterfly's redundant
+  // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when no intervening
+  // store can reach it (cse-load.js: same element grid and idx2 ≠ idx, or storage that never
+  // holds typed elements). Recovers the fft butterfly's redundant
   // `re[a]` load. Before analyze so the introduced temp is typed/narrowed like any local.
   // mapOrOverlaySize (not `.size` directly): ctx.func.typedElem is now a MapOverlay
   // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
@@ -251,8 +255,13 @@ export function analyzeFuncForEmit(func, programFacts) {
   // store the element (analyze/frame-effects.js runsAccessor; a closure has no
   // census of its own).
   if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem) && !(func.frame ? func.frame.runsAccessor : viewsOn())
-      && cseLoads(body, n => ctx.func.typedElem.has(n), freshCseName, n => valTypeOf(n) === VAL.NUMBER,
-        n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false) > 0)
+      && cseLoads(body, n => ctx.func.typedElem.get(n) ?? (UNTYPED_KINDS.has(valTypeOf(n)) ? UNTYPED : null), read => {
+        const name = freshCseName()
+        summary?.alias(name, read, false)
+        return name
+      }, n => valTypeOf(n) === VAL.NUMBER,
+        n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false,
+        n => runsConversion(summary, n)) > 0)
     invalidateLocalsCache(body)
 
   if (block) {
@@ -413,6 +422,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   // ClosureEnvPlan pre-emission mint (Slice 1, .work/archive/closure-plan-design.md):
   // last, so it sees this function's final AST and settled ctx.func.boxed;
   // ctx.closure.make reads astClosurePlan back at each closure literal's own emission.
+  seedSummaryLocals(summary)
   mintClosureEnvPlans(body)
   // TypedStoragePlan snapshots the settled receiver/result/storage ctor facts.
   // Every typed emitter consumes this frozen plan rather than re-reading the

@@ -523,8 +523,3 @@ export const JSS_IMPORT_SIGS = {
   length:       { params: ['externref'],            result: 'i32' },
   charCodeAt:   { params: ['externref', 'i32'],     result: 'i32' },
 }
-
-// Default carrier — picked when narrower has no stronger evidence. Reached
-// via `ctx.abi.string` (which the default-bundle in `src/abi/index.js` binds
-// to this export).
-export default sso

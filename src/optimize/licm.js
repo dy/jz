@@ -14,6 +14,7 @@ import { LAYOUT } from '../ctx.js'
 import { findBodyStart, buildRefcount, nextLocalId } from '../ir.js'
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
+import { pureKernel } from './pure-funcs.js'
 
 /**
  * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot
@@ -74,9 +75,7 @@ const READONLY_MEM_CALLS = new Set(['$__typed_idx'])
 // cannot change under the loop (`for (j = 0; j < line.length; j++)` hoists to
 // one call instead of one per character — the strbuild row-scan shape).
 const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key', '$__str_length'])
-const isPureFnCall = (callee) =>
-  typeof callee === 'string' &&
-  ((callee.startsWith('$math.') && !callee.startsWith('$math.random')) || PURE_CALL_I32.has(callee))
+const isPureFnCall = (callee) => pureKernel(callee) || PURE_CALL_I32.has(callee)
 
 export function hoistInvariantPtrOffset(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return

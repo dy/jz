@@ -8,13 +8,14 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * # Stage contract
  *   IN:  prepared AST (from prepare) + `ctx.funcs.list` with raw bodies.
  *   OUT: WAT IR `['module', ...sections]` ready for watrCompile/watrPrint.
- *   FLOW: orchestrator only. Calls analyze passes per function, then emit(body) via
- *         src/emit.js's dispatch, then optimizeFunc (src/optimize.js) per function,
- *         finally assembles module sections in canonical order.
+ *   FLOW: orchestrator only. Summarizes and plans the program, analyzes each function,
+ *         emits its body via src/compile/emit.js's dispatch, then assembles module sections
+ *         in canonical order (src/wat/assemble.js, which runs optimizeFunc per function) and
+ *         hands them to link.
  *
  * # Core abstraction
  * Emitter table (ctx.core.emit) maps AST ops → WASM IR generators. Base operators defined
- * in `emitter` export (src/emit.js); on reset, ctx.core.emit starts as a flat copy of emitter
+ * in `emitter` export (src/compile/emit.js); on reset, ctx.core.emit starts as a flat copy of emitter
  * and modules add/override entries directly. No prototype chain.
  * emit(node) dispatches: numbers → i32/f64.const, strings → local.get, arrays → ctx.core.emit[op].
  *
@@ -33,7 +34,7 @@ import { ctx, err, PTR, HEAP, getFactStore } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
-import { beginAssignedMemo, endAssignedMemo, layoutView } from '../ast.js'
+import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import {
   structInlinePass, unionInlinePass, invalidateAllBodyFacts,
 } from './analyze.js'
@@ -68,7 +69,7 @@ import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
 import { synthesizeToPrimitive } from './emit/to-primitive.js'
 import { synthesizeAccessorCall } from './emit/accessor-call.js'
 import { synthesizeToJSON } from './emit/to-json.js'
-import { settleViews } from '../../module/schema.js'
+import { settleViews, enumView } from '../../module/schema.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { paramValueOnly } from './param-numeric.js'
@@ -891,7 +892,7 @@ export function assemble(ast, profiler) {
     rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
     report: ctx.transform.whyNotRewind ?? null,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(),
-    viewSids: ctx.schema.list.flatMap((names, sid) => layoutView(names, ctx.transform.literalAccessorNames) ? [sid] : []),
+    viewSids: ctx.schema.list.flatMap((names, sid) => enumView(names) ? [sid] : []),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false,
   } }

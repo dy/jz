@@ -18,7 +18,7 @@ import { ARR_RESIZE_METHODS } from './shared.js'
 import { frameNode, frameRoots } from '../../function.js'
 
 // ————————————————————————— param neverGrown (cross-function) —————————————————————————
-// scanNeverGrown proves never-relocation for fresh-literal LOCALS only; a
+// neverGrownCandidate proves never-relocation for fresh-literal LOCALS only; a
 // read-only array PARAM (the word-frequency kernel's `words`) re-resolves its
 // base through `__ptr_offset` on every element read because the param-holding
 // function can't see its callers. The cross-function proof: during any
@@ -33,7 +33,7 @@ import { frameNode, frameRoots } from '../../function.js'
 // Name-keyed caller facts (arrResized/nameEscapes) can't express this — the
 // builder's `words.push` (its own local) would collide with the kernel's
 // read-only param of the same name; the activation-scoped argument doesn't.
-// MEMORY-SAFETY CRITICAL (same class as scanNeverGrown): default-deny —
+// MEMORY-SAFETY CRITICAL (same class as neverGrownCandidate): default-deny —
 // nested arrows are walked as part of the enclosing body (builtin-invoked
 // callbacks run within the activation), unknown callees poison.
 const _NG_SAFE_CALLEES = new Set([

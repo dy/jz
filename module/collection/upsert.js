@@ -19,7 +19,7 @@
 
 import { TOMB_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
-import { STR_HCACHE_BIT } from '../../layout.js'
+import { STR_HCACHE_BIT, HIDDEN_PROPERTY_SEQ } from '../../layout.js'
 import { durableFwdLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from './durable.js'
 
 // Normal outputs keep the cache-dense HASH LANE introduced for wordcount
@@ -27,9 +27,9 @@ import { durableFwdLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancel
 // redundant copy: probes walk the entry-resident low hash word instead. This is
 // resolved while templates are materialized, so neither layout pays a runtime
 // branch and ordinary user output remains byte-identical.
-export const LANE = 4
+const LANE = 4
 export const collectionLaneBytes = () => ctx.transform.compactCollections ? 0 : LANE
-export const collectionStride = (entrySize) => entrySize + collectionLaneBytes()
+const collectionStride = (entrySize) => entrySize + collectionLaneBytes()
 const hasProbeLane = () => collectionLaneBytes() !== 0
 
 // Probes address allocated entries: key/value fields use their fixed memargs
@@ -100,7 +100,7 @@ const keyHashIR = (hashFn = '$__str_hash') => hashFn !== '$__str_hash' || ctx.tr
 // change: same open addressing, same probe sequence shape, same $__seq-
 // ordered iteration (capacity is never observable from JS), just fewer
 // generations for a table large enough to reach the tier.
-export const GROW_QUAD_CAP = 8192
+const GROW_QUAD_CAP = 8192
 const nextCapIR = (capLocal = '$cap', newcapLocal = '$newcap') =>
   `(local.set ${newcapLocal} (i32.shl (local.get ${capLocal})
     (select (i32.const 2) (i32.const 1) (i32.ge_u (local.get ${capLocal}) (i32.const ${GROW_QUAD_CAP})))))`
@@ -190,9 +190,15 @@ const zombieRescan = (entrySize) => hasProbeLane()
 // sequence rides along for free. Iteration reads it back (via __coll_order) to
 // restore JS insertion order. Emitted only on the insert-new branch — updates
 // keep the original entry (and its sequence) in place.
-const seqStore = `(i64.store (local.get $slot)
+const seqStore = () => `${ctx.linkDemand.hiddenMembers ? `(if (i32.eq (global.get $__seq) (i32.const ${HIDDEN_PROPERTY_SEQ})) (then (global.set $__seq (i32.const 0))))` : ''}
+          (i64.store (local.get $slot)
             (i64.or (i64.extend_i32_u (local.get $h)) (i64.shl (i64.extend_i32_u (global.get $__seq)) (i64.const 32))))
           (global.set $__seq (i32.add (global.get $__seq) (i32.const 1)))`
+
+// An assignment over a lowered prototype member creates an enumerable own property.
+const revealProperty = () => ctx.linkDemand.hiddenMembers
+  ? `(if (i32.eq (i32.load offset=4 (local.get $slot)) (i32.const ${HIDDEN_PROPERTY_SEQ}))
+      (then ${seqStore()} (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))))` : ''
 
 /** Generate upsert (add/set) probe for a growable collection (Set/Map). hasVal: store
  *  value at slot+16. hasExt: emit EXTERNAL fallthrough (call $__ext_set on non-matching
@@ -213,8 +219,8 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
   const storeVal = slotOnly ? `\n          (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))`
     : hasVal ? `\n          (i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}` : ''
   const onMatch = hasVal && !slotOnly
-    ? `(then\n          (i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}\n          (br $done))`
-    : `(then (br $done))`
+    ? `(then\n          ${revealProperty()} (i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}\n          (br $done))`
+    : `(then ${slotOnly ? revealProperty() : ''} (br $done))`
   const rehashVal = hasVal
     ? `\n              (i64.store offset=16 (local.get $newslot) (i64.load offset=16 (local.get $oldslot)))`
     : ''
@@ -288,7 +294,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
           (if (local.get $zb)
             (then ${useRememberedZombie()})
             (else ${slotFromLane(entrySize)}))
-          ${seqStore}
+          ${seqStore()}
           ${probeHashStore()}
           (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
@@ -308,7 +314,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
           ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
           ${restoreZombieProbe()}
-          ${seqStore}
+          ${seqStore()}
           ${probeHashStore()}
           (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
@@ -324,11 +330,13 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
  *  hasExt: emit EXTERNAL fallthrough (delegate to __ext_prop/__ext_has).
  *  hashFn=null: accept the hash as a parameter instead of computing it. */
 function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue = true, hasExt = false, missing = UNDEF_NAN) {
+  const slot = wantValue === 'slot'
+  if (slot) wantValue = false
   const rt = wantValue ? 'i64' : 'i32'
   const onEmpty = wantValue
     ? `(return (i64.const ${missing}))`
     : '(return (i32.const 0))'
-  const onFound = wantValue
+  const onFound = slot ? '(return (local.get $slot))' : wantValue
     ? '(return (i64.load offset=16 (local.get $slot)))'
     : '(return (i32.const 1))'
   const notFound = wantValue
@@ -538,7 +546,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           (if (local.get $zb)
             (then ${useRememberedZombie()})
             (else ${slotFromLane(entrySize)}))
-          ${seqStore}
+          ${seqStore()}
           ${probeHashStore()}
           (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
@@ -553,6 +561,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
               (then ${rememberZombie()})))
             (else (if ${eqExpr}
               (then
+                ${revealProperty()}
                 (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
                 (br $done)))))))
       ${probeNext(entrySize)}
@@ -562,7 +571,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
           ${restoreZombieProbe()}
-          ${seqStore}
+          ${seqStore()}
           ${probeHashStore()}
           (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}
           (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}
@@ -765,7 +774,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
   const valParam = hasVal ? '(param $val i64) ' : ''
   const storeValNew = hasVal ? `\n          (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}` : ''
   const storeValMatch = hasVal
-    ? `(then\n                (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}\n                (br $done))`
+    ? `(then\n                ${revealProperty()} (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}\n                (br $done))`
     : `(then (br $done))`
   return `(func $${name} (param $obj i64) (param $key i64) (param $h i32) ${valParam}(result i64)
     (local $off i32) (local $cap i32) (local $end i32) (local $slot i32) (local $zb i32) (local $ztr i32)
@@ -791,7 +800,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
           (if (local.get $zb)
             (then ${useRememberedZombie()})
             (else ${slotFromLane(entrySize)}))
-          ${seqStore}
+          ${seqStore()}
           ${probeHashStore()}
           (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeValNew}
           (i32.store (i32.sub (local.get $off) (i32.const 8))
@@ -812,7 +821,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
           ${zombieRescan(entrySize)}
           (local.set $slot (local.get $zb))
           ${restoreZombieProbe()}
-          ${seqStore}
+          ${seqStore()}
           ${probeHashStore()}
           (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeValNew}
           (i32.store (i32.sub (local.get $off) (i32.const 8))

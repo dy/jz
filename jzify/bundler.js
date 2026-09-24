@@ -5,7 +5,7 @@
 
 import {
   handlerArgs, JZ_BLOCK_OPS, bindingOf, cloneNode, nodeEqual, descriptorProps,
-  literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, paramList,
+  literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, extractParams,
 } from '../src/ast.js'
 
 export function foldStaticExportHelpers(ast) {
@@ -262,7 +262,7 @@ function staticExportCall(stmt, helpers) {
 
 function getterReturnExpr(node) {
   if (!Array.isArray(node) || node[0] !== '=>') return null
-  const params = paramList(node[1])
+  const params = extractParams(node[1])
   if (params.length !== 0) return null
   const body = node[2]
   if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === 'return') return body[1][1]

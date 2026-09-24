@@ -21,7 +21,7 @@ const CLOSURE_ABI = Object.freeze({ results: Object.freeze(['f64']), ptrKind: nu
 const NO_ABI = Object.freeze({ results: Object.freeze([]), ptrKind: null, ptrAux: null, unsignedResult: false })
 
 /** The projection of the kind's NULLISH/ABSENT bits; a kind that never completes (NONE) is undefined. */
-export const presenceOf = k => tagOf(k) === K.NONE || hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) ? PRESENCE.MAYBE_UNDEF
+const presenceOf = k => tagOf(k) === K.NONE || hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) ? PRESENCE.MAYBE_UNDEF
   : hasTag(k, K.NULLISH) ? PRESENCE.MAYBE_NULL : PRESENCE.PRESENT
 
 /** The BigInt half of the carrier, decided from the kind and the callable's ABI

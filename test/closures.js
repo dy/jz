@@ -107,6 +107,21 @@ const fnBody = (w, name) => {
   return m ? w.slice(m.index, m.index + 4000) : null
 }
 
+test('function length uses source parameters, including runtime keys and deduplicated bodies', () => {
+  const src = `function named(a,b,c){return 1}
+    export function f(k,n){let capture=9;const fs=[()=>1,a=>1,(a,b)=>1,(a,b=2,c)=>1,(a,...r)=>1,(...r)=>1,named,(a,b)=>capture];return fs[n][k]}`
+  for (const optimize of [0, 2, 'speed']) {
+    const f = jz(src, { optimize }).exports.f
+    for (const [i, n] of [0,1,2,1,1,0,3,2].entries()) is(f('length', i), n, `arity ${i}, ${optimize}`)
+    is(f('missing', 2), undefined, 'missing property')
+    is(f('length', 0), 0, 'repeat after another function')
+    is(jz('export function f(){let g=(a,b)=>a+b;return g.length}', { optimize }).exports.f(), 2, 'literal property')
+  }
+  const memory = new WebAssembly.Memory({ initial: 16, maximum: 256 })
+  const first = jz(src, { memory }).exports.f, second = jz(src, { memory }).exports.f
+  is([first('length', 4), second('length', 6), first('length', 7)], [1,3,2], 'arity bytes relocate with each module in shared memory')
+})
+
 const throws = (code, match, msg, opts) => {
   let error
   try { compile(code, opts) } catch (e) { error = e }

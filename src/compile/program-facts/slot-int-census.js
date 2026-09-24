@@ -9,7 +9,8 @@ import { repOf } from '../../reps.js'
 import { staticObjectProps } from '../../static.js'
 import { intLevelChecker } from '../../type.js'
 import { collectSlotWriteHazards, applySlotWriteHazards } from './slot-write-hazards.js'
-import { collectBodyElemSids, effectiveWriteValue } from './shared.js'
+import { collectBodyElemSids } from './shared.js'
+import { effectiveWriteValue } from '../../ast.js'
 import { frameNode } from '../../function.js'
 
 /** Whole-program slot intCertain observation.

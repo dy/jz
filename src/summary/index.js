@@ -65,7 +65,7 @@ import {
   valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
 } from './kind.js'
-export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, kindOfVal, valsOf, core } from './kind.js'
+export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
 // Builtins that read their arguments and never write a field of them; any
 // other unresolved callee may store into an object it receives.
@@ -1144,6 +1144,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         return r
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
+      if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
       const f = funcByName.get(callee)
       if (f) {
         bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]))

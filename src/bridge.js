@@ -116,8 +116,6 @@ export function positionArgs(nodes) {
   } }
 }
 
-export const flat = (...a) => ctx.bridge.flat(...a)
-export const body = (...a) => ctx.bridge.body(...a)
 export const bool = (...a) => ctx.bridge.bool(...a)
 /** Index expr → i32 IR. */
 export const idx = (...a) => ctx.bridge.idx(...a)

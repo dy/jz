@@ -10,13 +10,12 @@ import { STR_HCACHE_BIT } from '../../../layout.js'
 import { ASSIGN_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
-  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toBoolFromEmitted, toI32, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  callWithArgs, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, UNDEF_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, carrierF64Narrow, emitNum, extractF64Bits, flat, freshId, fromI64, isBoolAtom, isBoundName, isGlobal, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, maybeUnboxBigInt, mkPtrIR, nullExpr, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../../reps.js'
-import { seedSummaryShape } from '../func-entry.js'
-import { toNumF64 } from '../../ir/coerce.js'
 import { nonNegIntLiteral } from '../../static.js'
+import { functionLength } from '../../function.js'
 import { exprType, isTerminator } from '../../type.js'
 import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OP, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
@@ -210,7 +209,7 @@ export function toBool(node) {
     return typed(['if', ['result', 'i32'], la, ['then', ['i32.const', 1]], ['else', lb]], 'i32')
   }
   const emitted = emit(node)
-  const generic = toBoolFromEmitted(emitted)
+  const generic = truthyIR(emitted)
   if (Array.isArray(generic) && generic[0] === 'call' && generic[1] === '$__is_truthy') return kindTruthyIR(node, emitted) ?? generic
   return generic
 }
@@ -670,7 +669,7 @@ export function emitDecl(...inits) {
 
     // SRoA flat object: `let o = {a:1, b:2}` — dissolve fields into `o#i`
     // locals, no heap alloc. Each field local ← asF64(value). Reads/writes are
-    // rewritten by the `.`/`[]` flat hooks. See scanFlatObjects (analyze.js).
+    // rewritten by the `.`/`[]` flat hooks. See flatObjectCandidate (analyze-scans.js).
     // Monotonic-extension fields (`o.newProp = …`) carry no literal value —
     // they init to undefined so a read before the write matches JS.
     const flatDecl = ctx.func.flatObjects?.get(name)
@@ -735,7 +734,7 @@ export function emitDecl(...inits) {
         }
       }
     }
-    // No-copy slice view: `let t = s.slice(...)` whose result scanSliceViews
+    // No-copy slice view: `let t = s.slice(...)` whose result sliceViewCandidate
     // proved never escapes — lower the initializer to a SLICE_BIT view instead
     // of a copying slice. Everything downstream treats `t` as an ordinary
     // string. Gated here (not in the analysis) on a statically-known STRING
@@ -865,8 +864,6 @@ export function emitDecl(...inits) {
     // downstream `arrVar[i]`/`.length` in the loop then takes the ARRAY-known fast path
     // instead of falling to the generic __typed_idx/__length dispatch.
     setFlowVal(name, valTypeOf(init), init, val)
-    // The summary's exact shape for the binding, as a parameter takes it.
-    if (!isGlobal(name)) seedSummaryShape(name, ctx.summary?.at(ctx.func.current))
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
     // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
     // isReassigned is conservative across nested arrow shadows — we miss the optimization
@@ -1306,7 +1303,7 @@ export function emitIdentitySafeArms(node) {
     const [, a, b, c] = node
     const ca = emit(a)
     if (isLit(ca)) { const v = litVal(ca); return (v !== 0 && v === v) ? emitIdentitySafe(b) : emitIdentitySafe(c) }
-    const cond = toBoolFromEmitted(ca)
+    const cond = truthyIR(ca)
     const thenRefs = extractRefinements(a, new Map(), true)
     const elseRefs = extractRefinements(a, new Map(), false)
     const vb = withRefinements(thenRefs, b, () => emitIdentitySafe(b))
@@ -1351,7 +1348,7 @@ export function emitIdentitySafeArms(node) {
     }
     const t = temp()
     const fa = asF64(va)
-    const generic = toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64'))
+    const generic = truthyIR(typed(['local.tee', `$${t}`, fa], 'f64'))
     const teedCond = Array.isArray(generic) && generic[0] === 'call' && generic[1] === '$__is_truthy'
       ? typed(['block', ['result', 'i32'], ['local.set', `$${t}`, fa], kindTruthyIR(a, typed(['local.get', `$${t}`], 'f64')) ?? typed(['call', '$__is_truthy', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], 'i32')], 'i32')
       : generic
@@ -1504,7 +1501,7 @@ function liftOptionalChain(node) {
 /**
  * Emit single AST node to typed WASM IR.
  * Every returned node has .type = 'i32' | 'f64'.
- * @param {import('./prepare.js').ASTNode} node
+ * @param {import('../../prepare/module-resolve.js').ASTNode} node
  * @returns {Array} typed WASM S-expression
  */
 export function emit(node, expect) {
@@ -1629,7 +1626,7 @@ export function emit(node, expect) {
       // a bare value has no captures (its real params are forwarded inline
       // by the trampoline body, not carried via an env block), so the
       // default {len:0, cellMask:0} meta is correct here too.
-      const idx = ctx.closure.mint(trampolineName)
+      const idx = ctx.closure.mint(trampolineName, functionLength(func.sig.params, func.defaults, func.rest))
       const ir = mkPtrIR(PTR.CLOSURE, idx, 0)
       ir.closureFuncIdx = idx
       return ir

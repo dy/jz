@@ -9,7 +9,7 @@ import { UNDEF_NAN, NULL_NAN } from '../interop.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { ctx, reset } from '../src/ctx.js'
 import { targetProfileFor } from '../src/session.js'
-import { emit, emitter, emitVoid as flat, emitBlockBody, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
+import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { analyzeValTypes, analyzeIntCertain, analyzeBody } from '../src/compile/analyze.js'
 import { repOf, updateRep, VAL } from '../src/reps.js'
 import { T } from '../src/ast.js'
@@ -968,7 +968,7 @@ test('typed-narrow: .map on Int32Array preserves distinct elem aux', () => {
 // rep entry"). `paramVals` mirrors what narrowSignatures pre-seeds in the real
 // pipeline — needed only for tests that exercise `.length` / receiver-typed.
 function runAnalyze(code, paramVals) {
-  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   // reset() alone (unlike beginSession) leaves targetProfile at its null default —
   // modules the analyzer pulls in (e.g. module/math.js) read it unconditionally.
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
@@ -1123,7 +1123,7 @@ test('intCertain: transitive — j = i + 1 follows i', () => {
 // anything to read. Seeded AFTER `ctx.func.locals` resolves binding names
 // (BindingId totality) so plain source spellings translate correctly.
 function runAnalyzeMayBeUndefined(code, dynWriteVarNames) {
-  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse(code))
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
@@ -1188,7 +1188,7 @@ test('mayBeUndefined: an empty Map read is absent', () => {
 })
 
 test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH mayBeUndefined and presentVal are set', () => {
-  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse('let f = () => 0'))
   updateRep('probeBoth', { presentVal: VAL.NUMBER, mayBeUndefined: true })
@@ -1223,7 +1223,7 @@ test('censusMaybeUndefinedKind: bare-name REP fallback answers only when BOTH ma
 // does (reps.js `presentVal` doc comment, analyze.js `setPresentVal`).
 // ============================================================================
 function runAnalyzePresentVal(code, dynWriteVarNames) {
-  reset(emitter, GLOBALS, { emit, flat, body: emitBlockBody, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   ctx.transform.targetProfile = targetProfileFor(ctx.transform.host)
   prepare(parse(code))
   const fn = ctx.funcs.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))

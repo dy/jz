@@ -15,6 +15,24 @@ import { onWasi, OPT_LEVEL } from './_matrix.js'
 import jz, { compile as compileWat } from '../index.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
+
+test('derived closure class methods stay hidden through property growth and copying', () => {
+  const prefix = `function make(x){class B{x;constructor(v){this.x=v}m(){return this.x}}
+    class D extends B{n(){return this.m()+1}get total(){return this.x+2}}return new D(x)}
+    export function f(n){let d=make(3);for(let i=0;i<n;i++)d['k'+i]=i;`
+  for (const optimize of [0, 2, 'speed']) {
+    const keys = jz(prefix + `return Object.keys(d).join(',')}`, { optimize }).exports.f
+    for (const n of [0, 1, 32, 0]) is(keys(n), ['x', ...Array.from({ length: n }, (_, i) => 'k' + i)].join(','), `keys ${n}, ${optimize}`)
+    for (const expr of ['Object.keys({...d}).join()', 'Object.keys(Object.assign({},d)).join()', 'Object.keys(structuredClone(d)).join()', 'Object.values(d).join()', 'JSON.stringify(d)']) {
+      const expected = expr.startsWith('Object.values') ? '3' : expr.startsWith('JSON') ? '{"x":3}' : 'x'
+      is(jz(prefix + `return ${expr}}`, { optimize }).exports.f(0), expected, expr)
+    }
+    is(jz(prefix + `let s='';for(let k in d)s+=k;return s}`, { optimize }).exports.f(0), 'x', 'for-in')
+    is(jz(prefix + `return d.n()+d.total+('n' in d)}`, { optimize }).exports.f(32), 10, 'calls, getter and presence survive growth')
+    is(jz(prefix + `const before=Object.keys(d).join();d.n=()=>7;return before+':'+Object.keys(d).join()+':'+d.n()}`, { optimize }).exports.f(0), 'x:x,n:7', 'an own assignment invalidates the enumeration cache')
+    is(jz(prefix + `return d}`, { optimize }).exports.f(0), {x:3}, 'boundary data uses the same enumeration view')
+  }
+})
 const rejects = (src, re) => {
   let msg = null
   try { jz(src, { jzify: true }) } catch (e) { msg = e.message }

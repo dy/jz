@@ -9,7 +9,7 @@
  */
 
 /** Ops prepare rejects when they appear in the AST (handler or identifier). */
-export const REJECT_OPS = {
+const REJECT_OPS = {
   async: 'this `async` shape needs the jzify lowering: the default mode lowers async functions, arrows, methods and generators; strict mode takes none of them',
   await: '`await` outside an async function (or in a shape the jzify lowering does not cover) — move it inside an `async` function',
   class: 'class not supported: use object literals',

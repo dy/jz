@@ -45,9 +45,9 @@ export const isLit = n => (n[0] === 'i32.const' || n[0] === 'f64.const') && type
 // not emitted-IR, and both validate the literal shape before extracting).
 export const litVal = n => n[1]
 
-export const isNullLit = n => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] == null
+const isNullLit = n => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] == null
 
-export const isUndefLit = n => Array.isArray(n) && n.length === 0
+const isUndefLit = n => Array.isArray(n) && n.length === 0
 
 export const isNullishLit = n => isNullLit(n) || isUndefLit(n)
 

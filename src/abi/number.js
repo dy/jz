@@ -130,8 +130,3 @@ const isHighOnly = (n) => {
   } else return false
   return (bi & 0xFFFFFFFFn) === 0n
 }
-
-// Default carrier — picked when narrower has no stronger evidence. Reached
-// via `ctx.abi.number` (which the default-bundle in `src/abi/index.js` binds
-// to this export).
-export default nanboxF64

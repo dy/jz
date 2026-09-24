@@ -17,6 +17,20 @@ const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}\n`); if (i
 const rewinds = (src, opts = {}) => /heap_save/.test(bodyOf(compile(src, { wat: true, ...TAPE, ...opts }), 'f'))
 const whyNot = (src, opts = {}) => { const why = []; compile(src, { ...TAPE, ...opts, whyNotRewind: (n, r) => why.push([n, r]) }); return why.find(([n]) => n === '$f')?.[1] ?? null }
 
+test('frame effects: own builtin-named methods retain their call effects', () => {
+  for (const [init, method] of [['new Map()', 'get'], ['[1,2]', 'slice'], ['{}', 'get']]) {
+    const src = `let a=new Float64Array([1]);let o=${init};
+      o.${method}=()=>{a[0]=5;return 0};
+      function g(n){return n>0?g(n-1):o.${method}(0)}
+      export function f(){a[0]=1;let x=a[0];g(0);let y=a[0];return x+y}`
+    for (const optimize of levels(0, 2, 3)) {
+      const f = jz(src, { optimize }).exports.f
+      is(f(), 6, `${init}.${method}, O${optimize}`)
+      is(f(), 6, 'the override still writes on a repeated call')
+    }
+  }
+})
+
 // --- The miscompile: an allocation that escapes the frame through a store into module state.
 
 test('frame effects: a fresh object stored into a module field survives the call', () => {
@@ -48,12 +62,12 @@ test('frame effects: a fresh object pushed into a module array, and a string, su
 test('frame effects: an allocation escaping through a parameter, a callee, or a host import vetoes the rewind', () => {
   ok(/^escape: heap value into o/.test(whyNot('export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }')), 'through a parameter (the prepared name of `o`)')
   is(whyNot('const reg = []; function keep(o) { reg.push(o) } export function f(n) { const o = { x: n }; keep(o); return 1 }'), 'escape: grows reg', 'through a callee that grows module state')
-  ok(/^escape: grows a/.test(whyNot('export function f(a, n) { a.push(1); const t = new Array(n).fill(0); return t.length }')), 'growth of a parameter array (its storage may extend into fresh memory)')
+  is(whyNot('export function f(a, n) { a.push(1); const t = new Array(n).fill(0); return t.length }'), 'escape: method push', 'an unproven receiver may override push and retain fresh memory')
   is(whyNot('const cache = []; export function f(n) { const t = new Array(n).fill(0); cache.push(t.length); return cache.length }'), 'escape: grows cache', 'growth of a module array, even of a number')
   is(whyNot('import { log } from "env"; export function f(n) { const o = { x: n }; log(o); const t = new Array(n).fill(0); return t.length }', { imports: { env: { log() {} } } }), 'escape: calls log (unknown)', 'a host import may keep what it receives')
   ok(!rewinds('export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }'), 'no rewind emitted')
   // a parameter default runs in the frame: its growth of a parameter array escapes
-  ok(/^escape: grows o/.test(whyNot('export function f(o, n, x = o.push([n])) { const t = new Array(n).fill(0); return t.length }')), 'through a parameter default')
+  is(whyNot('export function f(o, n, x = o.push([n])) { const t = new Array(n).fill(0); return t.length }'), 'escape: method push', 'through an unproven parameter default receiver')
 })
 
 test('frame effects: arrays a parameter default pushes into the caller keep their values', () => {

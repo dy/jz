@@ -20,7 +20,7 @@ import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { createFunction } from '../function.js'
 import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
-import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
+import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
@@ -1503,15 +1503,9 @@ const handlers = {
     const isFuncValueRecv = obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey) || isPromiseHelperPropRecv
     if (isFuncValueRecv && (prop === 'caller' || prop === 'callee'))
       err('`.caller`/`.callee` are prohibited: deprecated function stack introspection — jz has no equivalent; pass what you need as an explicit argument instead')
-    // `.length`/`.name` on a function VALUE is real ECMAScript function-object
-    // reflection (own data properties every Function instance carries) — jz
-    // compiles a closure/named function straight to a WASM func with no
-    // metadata object behind it, so there is nothing to read. Confirmed live
-    // as a silent wrong value, not a reject: `((a,b)=>a+b).length` and a
-    // named `function f(a,b){}`'s `f.length` both read plain `undefined`
-    // instead of `2`. Same class, same remedy as `.caller`/`.callee` just
-    // above — reject rather than guess.
-    if (isFuncValueRecv && (prop === 'length' || prop === 'name'))
+    // User functions expose source arity through the closure table. Names and
+    // native-helper reflection have no corresponding metadata.
+    if (isFuncValueRecv && (prop === 'name' || prop === 'length' && isPromiseHelperPropRecv))
       err(`.${prop} is not supported on a function value — jz compiles closures/named functions straight to WASM funcs with no reflectable metadata object; jz has no general function-object reflection`)
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
@@ -1801,7 +1795,7 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
         (fn, arg) => ['()', exports.get(fn), arg]))
       return
     }
-    includeForArrayPattern()
+    includeForArrayAccess()
     const items = patternItems(pattern[1])
     for (let j = 0; j < items.length; j++) {
       const item = items[j]
@@ -2042,8 +2036,7 @@ function prepDecl(op, ...inits) {
     let [, name, init] = i
     // `const alias = fn` whose RHS is a bare identifier naming a known function
     // is a compile-time function alias — the ES `export { fn as alias }` written
-    // in declaration form (a recurring kernel idiom: paramList = extractParams,
-    // toBoolFromEmitted = truthyIR …). Resolve `alias` straight to the function
+    // in declaration form (`const alias = fn`). Resolve `alias` straight to the function
     // so calls compile to a direct call and the export table re-exports the same
     // mangled func. Otherwise it would box a closure into a module global that a
     // cross-module callee resolves to the bare, unmangled name → "not in scope".

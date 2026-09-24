@@ -244,7 +244,7 @@ test('minimal: function-local mutated array is fresh each call', () => {
 
 // === Small function-local literal arrays scalarize — no memory, no allocator ===
 // A non-escaping, fixed-length array of compile-time-constant values, indexed only by
-// static integers, dissolves into scalar `a#i` locals (scanFlatObjects, same machinery
+// static integers, dissolves into scalar `a#i` locals (flatObjectCandidate, same machinery
 // as flat objects). No heap, no `(memory)`, no allocator — `let a=[1,2,3]; a[0]+a[2]`
 // is just two local reads. Bounded to FLAT_ARRAY_MAX elements; a constant element only.
 const FLAT_ARRAYS = {
@@ -316,7 +316,7 @@ for (const [name, src] of Object.entries(NO_FOLD)) {
 // be grown, so its index reads derive the base directly — no `__ptr_offset` forwarding
 // chase. The SAFETY INVARIANT is the converse: any array that COULD be relocated must
 // keep forwarding, or a read through a stale base corrupts memory. Both directions are
-// pinned (the second is memory-safety-critical — see scanNeverGrown's default-deny proof).
+// pinned (the second is memory-safety-critical — see neverGrownCandidate's default-deny proof).
 // Float elements stay a plain heap array (not promoted to a typed/int vector) and the
 // dynamic loop index keeps it from scalarizing — so this exercises the plain-array
 // never-grown read path specifically.

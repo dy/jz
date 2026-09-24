@@ -16,3 +16,14 @@ export const frameRoots = (fn) => fn.defaults ? [...Object.values(fn.defaults), 
 /** The same nodes as one statement list, for a scan that takes a single node
  *  (the body itself where there is no default). */
 export const frameNode = (fn) => { const roots = frameRoots(fn); return roots.length > 1 ? [';', ...roots] : fn.body }
+
+/** Function.length counts parameters before the first default or rest parameter. */
+export const functionLength = (params, defaults, rest) => {
+  let n = 0
+  for (const p of params) {
+    const name = typeof p === 'string' ? p : p.name
+    if (name === rest || defaults && Object.hasOwn(defaults, name)) break
+    n++
+  }
+  return n
+}

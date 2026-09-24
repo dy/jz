@@ -284,6 +284,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 4 at the 2026-09-05 refresh; a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
 | `scriptc` | scriptc (vercel-labs, npm `scriptc`): TS/JS AOT-compiled to a **static** native binary (TypeScript-checker typing + LLVM; constructs outside its LLVM tier fall back to its C emitter, still static). `scriptc build <case>-flat.js -o <bin>`, then the binary is measured. Its `--dynamic` island (embedded quickjs-ng) is never passed: the lane measures the engine-less shipping artifact, and a case its static tier can't swallow records an honest fail. Set `SCRIPTC_BIN` to override |
+| `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
@@ -343,7 +344,8 @@ SHERMES_BIN=/path/to/shermes \
 GRAALJS_BIN=/path/to/graaljs \
 PORF_BIN=/path/to/porf \
 SCRIPTC_BIN=/path/to/scriptc \
-node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native,scriptc
+PERRY_BIN=/path/to/perry \
+node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native,scriptc,perry
 ```
 
 ## Reading the numbers (darwin/arm64, M-class)

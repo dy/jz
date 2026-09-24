@@ -16,7 +16,7 @@ import { createActiveFunction } from './compile/active-function.js'
 import { DBG_INVARIANTS, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from './debug.js'
 import { HOT_PASSES } from './passes.js'
 import { INTRINSIC_ARITY } from './builtin-signatures.js'
-export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR, followForwardingWat } from '../layout.js'
+export { HEAP, LAYOUT, PTR, FORWARDING_MASK, ssoBitI64Hex, followForwardingWat } from '../layout.js'
 
 // === Carrier layout ===
 // Canonical bit layout lives in layout.js (compiler-free). Re-exported above for
@@ -114,7 +114,7 @@ function createFunctions() {
 
 /** Reset-hook registry: a subsystem that keeps MODULE-scope working state
  *  outside ctx for performance (prepare/index.js's working set,
- *  module/regex.js's literal parser, optimize/vectorize.js's why-not-simd
+ *  module/regex.js's literal parser, optimize/vectorize/'s why-not-simd
  *  arm/disarm flags) registers its own reset callback here once at module
  *  load, instead of wiring an independent reset point of its own. reset()
  *  (used by every entry point — beginSession AND raw-reset test harnesses
@@ -691,6 +691,8 @@ export function reset(proto, globals, bridge) {
   ctx.closure = {
     types: null,
     table: null,
+    lengths: null,        // source arity per table slot, independent of body deduplication
+    lengthData: null,     // demand-built static byte table
     bodies: null,
     make: null,
     call: null,
@@ -874,7 +876,7 @@ export function reset(proto, globals, bridge) {
   // view-constructing EMIT handlers (`new.*`'s buffer-reinterpret/unknown-arg
   // branches, `.typed:subarray` — genuinely DEMAND-shaped, only known once
   // emission walks those call sites, past post-analyze). Its one reader,
-  // optimize/vectorize.js's SLP store-pairing bail, runs inside optimizeModule
+  // optimize/vectorize/'s SLP store-pairing bail, runs inside optimizeModule
   // — PHASE ORDERING VERIFIED: compile/index.js emits every function AND
   // closure body (emitFuncs/emitClosures/buildStartFn, the only writers) all
   // complete before assertCtxInvariants('pre-assemble'), which itself precedes
@@ -890,13 +892,14 @@ export function reset(proto, globals, bridge) {
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
+    hiddenMembers: false, // closure-lowered derived methods stored in property hashes
     f16: false,       // Float16Array construction anywhere.
     clamped: false,   // Uint8ClampedArray construction anywhere.
     typedView: false, // A typed-array VIEW (subarray / buffer-reinterpret / unknown-arg ctor
                       // that may zero-copy) exists somewhere in the program — set by
                       // analyze.js's typed tracker (`c.endsWith('.view')`) and by
                       // module/typedarray.js's view-constructing emit handlers. Read by
-                      // the SLP vectorizer (optimize/vectorize.js) to bail on cross-base
+                      // the SLP vectorizer (optimize/vectorize/) to bail on cross-base
                       // pairing when any view could alias. See the phase-ordering note
                       // above this object.
   }

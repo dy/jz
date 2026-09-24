@@ -15,6 +15,10 @@ export function seedSummaryShape(name, summary) {
   return true
 }
 
+export function seedSummaryLocals(summary) {
+  for (const name of ctx.func.locals.keys()) seedSummaryShape(name, summary)
+}
+
 // Direct and closure bodies consume the same settled call-site facts. Keep
 // their boxed ABI; this publishes value/layout knowledge, not a new carrier.
 export function seedSummaryParam(name, summary) {

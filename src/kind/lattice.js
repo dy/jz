@@ -9,10 +9,10 @@
  * @module kind/lattice
  */
 
+import { COMPARE_OPS } from '../ast.js'
 import { BOOL_OPS } from '../kind-traits.js'
 import { intLiteralValue } from '../static.js'
 
-const COMPARE_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!=='])
 
 export function literalTruthiness(expr) {
   if (typeof expr === 'number') return expr !== 0 && expr === expr

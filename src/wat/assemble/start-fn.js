@@ -23,7 +23,7 @@ import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
 import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
-import { enumView, viewsOn, enumViewsOn } from '../../../module/schema.js'
+import { enumView, enumViewsOn } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
 import { dataLen, dataAlign, dataPush, pushStaticSlots } from '../../static-data.js'
 
@@ -363,7 +363,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // An object literal's accessor: the host decodes such an object through the
   // data copy the module exports (collection.js __view_data), which reads the
   // schema and view tables.
-  if (viewsOn()) { inc('__view_data'); ctx.runtime.schemaTblConsumed = true }
+  if (viewsOf()) { inc('__view_data'); ctx.runtime.schemaTblConsumed = true }
 
   // Runtime tables serve transitive helpers too (for example hash_set's
   // dynamic object-store fallback), not just the helpers emission called.

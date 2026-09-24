@@ -60,6 +60,7 @@ const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 // scriptc (vercel-labs) — TS/JS → native AOT (TypeScript-checker typing + LLVM,
 // C fallback lane; no engine unless --dynamic). npm: `npm i -g scriptc`.
 const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
+const PERRY_BIN = process.env.PERRY_BIN || 'perry'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
@@ -328,11 +329,10 @@ const parseMaxRss = stderr => {
 const positiveTiming = row => row?.medianUs > 0 && Number.isFinite(row.medianUs)
 
 const runProc = (argv, opts = {}) => {
-  // Caveat for future opts.timeout users: with the wrapper, a timeout kill hits
-  // time(1), which does not forward signals — the bench child would orphan and
-  // keep burning CPU under later rows. No lane passes a timeout today; if one
-  // must, run it unwrapped (memKb null) rather than risk a hot orphan.
-  const wrapped = TIME_BIN ? [TIME_BIN, ...TIME_ARGS, ...argv] : argv
+  // time(1) does not forward timeout signals. Run bounded lanes directly so
+  // a timed-out executable cannot keep burning CPU under later measurements.
+  const timed = TIME_BIN && !opts.timeout
+  const wrapped = timed ? [TIME_BIN, ...TIME_ARGS, ...argv] : argv
   const r = spawnSync(wrapped[0], wrapped.slice(1), {
     cwd: BENCH_DIR,
     encoding: 'utf8',
@@ -342,7 +342,7 @@ const runProc = (argv, opts = {}) => {
   if (r.status !== 0) return { error: `exit ${r.status}: ${(r.stderr || r.stdout || r.signal || '').trim().slice(0, 240)}` }
   const parsed = parseLine(r.stdout)
   if (!parsed) return { error: `unparseable stdout: ${(r.stdout || r.stderr || '').trim().slice(0, 240)}` }
-  parsed.memKb = TIME_BIN && r.stderr ? parseMaxRss(r.stderr) : null
+  parsed.memKb = timed && r.stderr ? parseMaxRss(r.stderr) : null
   return parsed
 }
 
@@ -386,6 +386,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       const stamp = join(caseBuild(c), `.prep-${id}`)
       const identity = id === 'porf-native' ? porfIdentity() : ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
+        id !== 'perry' &&
         !(id === 'porf-native' && _porfCheckoutDirty)
       const artifact = targets[id]?.bin?.(c)
       let fresh = false
@@ -413,6 +414,8 @@ const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const porfFlatPath = c => join(caseBuild(c), `${c.id}-porf-flat.js`)
+const nativeFlatPath = c => join(caseBuild(c), `${c.id}-native-flat.js`)
+const perryBinPath = c => join(caseBuild(c), `${c.id}-perry`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
 const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
@@ -582,8 +585,8 @@ const compileJzSelfIsolated = c => {
 }
 
 const flatInputs = new Set()
-const writeFlat = (c, { nativePerformance = false } = {}) => {
-  const path = nativePerformance ? porfFlatPath(c) : flatPath(c)
+const writeFlat = (c, { nativePerformance = false, nativeGlobals = false } = {}) => {
+  const path = nativeGlobals ? nativeFlatPath(c) : nativePerformance ? porfFlatPath(c) : flatPath(c)
   if (flatInputs.has(path)) return path
   mkdirSync(caseBuild(c), { recursive: true })
   let out = `const __benchGlobal = typeof globalThis !== 'undefined' ? globalThis : this
@@ -675,15 +678,16 @@ if (typeof TextEncoder === 'undefined') {
   } else {
     body += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   }
-  const contents = out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '') + body
+  // Native compilers with their own Web globals need no shell polyfills.
+  const contents = (nativeGlobals ? '' : out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '')) + body
   if (!existsSync(path) || readFileSync(path, 'utf8') !== contents) writeFileSync(path, contents)
   flatInputs.add(path)
   return path
 }
-const runFlat = (id, c, argv, prep = null, options) => {
+const runFlat = (id, c, argv, prep = null, options, runOptions = {}) => {
   const src = writeFlat(c, options)
   return tryRun(id, c, prep ? () => prep(src) : null, argv(src),
-    prep ? { cacheInputMtime: statSync(src).mtimeMs } : {})
+    { ...(prep ? { cacheInputMtime: statSync(src).mtimeMs } : {}), ...runOptions })
 }
 // esbuild is a devDependency used only by the flat-file writer for module-graph
 // cases — loaded lazily so plain corpus runs never touch it.
@@ -970,6 +974,17 @@ const targets = {
       execFileSync(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env })
     }),
   },
+  perry: {
+    name: 'Perry → native (LLVM)',
+    available: () => has(PERRY_BIN),
+    bin: perryBinPath,
+    run: c => runFlat('perry', c, () => [perryBinPath(c)], src => {
+      execFileSync(PERRY_BIN, ['compile', src, '-o', perryBinPath(c), '--fp-contract', 'off', '--cache-dir', join(BUILD, 'perry-cache')], {
+        cwd: caseBuild(c), stdio: 'pipe', timeout: 120_000,
+        env: { ...process.env, PERRY_NO_UPDATE_CHECK: '1', PERRY_UPDATE_MODE: 'off' },
+      })
+    }, { nativeGlobals: true }, { timeout: 60_000 }),
+  },
   graaljs: {
     name: 'GraalJS',
     available: () => !!graalJsBin(),
@@ -1167,6 +1182,7 @@ const TARGET_CMDS = {
   graaljs: 'graaljs <case>-flat.js',
   'porf-native': 'porf native <case>-porf-flat.js -o <case>-porfnat  (AOT via C, cc -flto) → run binary',
   scriptc: 'scriptc build <case>-flat.js -o <case>-scriptc  (static AOT: TS-checker typing + LLVM, no engine) → run binary',
+  perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
@@ -1689,6 +1705,7 @@ if (JSON_PATH) {
       // Includes checkout HEAD when available; also invalidates the prep cache.
       porffor: has(PORF_BIN) && porfIdentity(),
       scriptc: has(SCRIPTC_BIN) && ver(SCRIPTC_BIN),
+      perry: has(PERRY_BIN) && ver(PERRY_BIN),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
       clang: has('clang') && ver('clang'),

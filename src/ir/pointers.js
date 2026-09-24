@@ -13,11 +13,6 @@ import { ptrBoxPrefixBigInt, ptrBits, i64Hex } from '../../layout.js'
 import { typed } from './tag.js'
 import { tempI32 } from './locals.js'
 
-/** NaN-box prefix for a pointer of VAL kind K with aux bits: `0x7FF8 | type<<47 | aux<<32`. */
-function ptrBoxPrefix(ptrType, aux = 0) {
-  return ptrBoxPrefixBigInt(ptrType, aux)
-}
-
 /** Build f64 NaN-boxed pointer IR from an i32 offset node of known kind.
  *  `aux` is the 15-bit secondary tag (schema ID for OBJECT, element type for TYPED, etc.).
  *  Second PTR.OBJECT construction site (mkPtrIR's own doc names both, including the
@@ -25,7 +20,7 @@ function ptrBoxPrefix(ptrType, aux = 0) {
  *  applyPointerParamAbi devirt, e.g. a recursive OBJECT param) mints no NEW mkptr call,
  *  so it must tag the schema-liveness fact onto ITS OWN result node. */
 export function boxPtrIR(i32node, ptrType, aux = 0) {
-  const prefix = ptrBoxPrefix(ptrType, aux)
+  const prefix = ptrBoxPrefixBigInt(ptrType, aux)
   // i64Hex, not prefix.toString(16) — prefix is BY CONSTRUCTION a NaN-box
   // pattern (NAN_PREFIX_BITS | type<<47 | aux<<32), the exact self-host
   // hazard fixed identically in specializeMkptr/extractF64Bits (see their
@@ -170,17 +165,6 @@ const VAL_TO_PTR = {
 }
 
 export const valKindToPtr = (vt) => VAL_TO_PTR[vt]
-
-/** Type-tag extraction for a NaN-boxed pointer. Unambiguous VAL → constant; known i32
- *  offset of a ptrKind → constant (no reinterpret); otherwise inline bit-extraction. */
-export function ptrTypeIR(valIR, valType) {
-  if (valIR.ptrKind != null) return typed(['i32.const', VAL_TO_PTR[valIR.ptrKind]], 'i32')
-  const known = valType != null ? VAL_TO_PTR[valType] : undefined
-  if (known != null) return ['i32.const', known]
-  return ['i32.wrap_i64', ['i64.and',
-    ['i64.shr_u', ['i64.reinterpret_f64', valIR], ['i64.const', 47]],
-    ['i64.const', 0xF]]]
-}
 
 // SELF-HOST CONTRACT: f64 slot BITS travel as canonical '0x'+16-hex STRINGS.
 // A BigInt crossing a function return / array element / object slot is

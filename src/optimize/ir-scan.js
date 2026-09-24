@@ -1,26 +1,10 @@
 /**
- * Generic IR feature probes — "does this subtree contain opcode/shape X".
- * Both linear-scan a WAT-as-array subtree without assuming a tree (optimizer
- * nodes may share large subgraphs via CSE), and are consumed by several
- * otherwise-unrelated pass families (locals, globals), so they live here
- * rather than inside any one of them.
+ * Generic IR feature probe — "does this subtree contain opcode X". It scans a
+ * WAT-as-array subtree without assuming a tree (optimizer nodes may share large
+ * subgraphs via CSE) and serves several otherwise-unrelated pass families.
  *
  * @module optimize/ir-scan
  */
-import { walkAst } from '../ast.js'
-
-export const containsV128 = node => {
-  let found = false
-  walkAst(node, { enter: n => {
-    if (found || !Array.isArray(n)) return false
-    const op = n[0]
-    if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { found = true; return false }
-  } })
-  return found
-}
-
-// IR is usually a tree but optimizer nodes may share large subgraphs. Keep
-// feature probes linear rather than recursively revisiting a shared DAG.
 export function hasIROp(roots, opcode) {
   const stack = Array.isArray(roots) ? [...roots] : [roots], seen = new Set()
   while (stack.length) {

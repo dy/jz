@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET, ACCESSOR_SET, collectAssignedNames, collectParamName, collectParamNames, extractParams, classifyParam, PARAM_DEFAULT, isBlockBody, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned, takeScratchMap, releaseScratchMap } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -291,7 +291,7 @@ const missClass = (op, left, k) => {
 const missGuards = (t, out = []) => {
   if (typeof t === 'string') out.push(t)
   else if (Array.isArray(t) && t[0] === '&&') { missGuards(t[1], out); missGuards(t[2], out) }
-  else if (Array.isArray(t) && t.length === 3 && _CMP_OPS.has(t[0]))
+  else if (Array.isArray(t) && t.length === 3 && COMPARE_OPS.has(t[0]))
     for (let i = 1; i <= 2; i++) if (typeof t[i] === 'string' && isNumLit(t[3 - i]) && missClass(t[0], i === 1, t[3 - i][1]) === 2) out.push(t[i])
   return out
 }
@@ -318,7 +318,6 @@ export function resetBindingUsesCache() { getFactStore().bindingUses = new WeakM
 export function invalidateBindingUsesCache(body) { getFactStore().bindingUses.delete(body) }
 /** Every node's memoized assigned names: an in-place rewrite stales each ancestor of the rewritten node. */
 export function resetMutationNamesCache() { getFactStore().mutationNames = new WeakMap() }
-const _CMP_OPS = new Set(['==', '!=', '===', '!==', '<', '>', '<=', '>='])
 const _isNullishLit = (e) =>
   e === 'null' || e === 'undefined' ||
   (Array.isArray(e) && e[0] == null && (e[1] === null || e[1] === undefined))
@@ -504,7 +503,7 @@ export function scanBindingUses(body, trackNames) {
       }
       return
     }
-    if (_CMP_OPS.has(op) && node.length === 3) {
+    if (COMPARE_OPS.has(op) && node.length === 3) {
       for (let i = 1; i <= 2; i++) {
         const side = node[i]
         const other = node[3 - i]
@@ -598,15 +597,6 @@ const FLAT_ARRAY_MAX = 8
 // SRoA representation — same problem (a self-referential write hard-
 // poisoning a provable kind), same fix shape, different storage.
 const SELF_PRESERVING_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
-// Local twin of program-facts.js's effectiveWriteValue (program-facts.js
-// imports FROM this module — importing back would cycle). Small and pure;
-// not worth threading through a shared module for one caller each side.
-const _effectiveWriteValue = (op, lhs, rhs) => {
-  if (op === '=') return rhs
-  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
-  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
-  return [op.slice(0, -1), lhs, rhs]
-}
 
 /** Which of `written`'s keys on binding `name` are safely still described by
  *  the literal initializer's kind — see SELF_PRESERVING_OPS above. */
@@ -648,7 +638,7 @@ function selfPreservingWrittenKeys(body, name, written) {
       // desugars it to a plain '=' before analyze runs), effectiveWriteValue
       // handles that shape too if that ever changes.
       const key = keyOf(n[1])
-      if (key != null && written.has(key)) observe(key, preserves(_effectiveWriteValue(op, n[1], n[2]), key))
+      if (key != null && written.has(key)) observe(key, preserves(effectiveWriteValue(op, n[1], n[2]), key))
     }
   } })
   const out = new Set()
@@ -656,12 +646,10 @@ function selfPreservingWrittenKeys(body, name, written) {
   return out
 }
 
-// Per-binding classification shared by scanFlatObjects and scanObjectArrayFacts
-// (walk-count design A1, .work/archive/walk-count-design.md §5 item 1) — the exact
-// per-candidate logic scanFlatObjects always ran, factored out so the fused
-// scan can run it inline inside one scanBindingUses(body) loop instead of a
-// second one. Returns the `{names, values, written, selfPreserving}` entry,
-// or null when `name` doesn't dissolve.
+// Flat-object (SRoA) classification of one binding, run inside
+// scanObjectArrayFacts' single scanBindingUses(body) loop. Returns the
+// `{names, values, written, selfPreserving}` entry, or null when `name`
+// doesn't dissolve.
 function flatObjectCandidate(name, s, body) {
   if (s[BINDING_USE_DECLS] !== 1 || !Array.isArray(s[BINDING_USE_INIT])) return null
   // Candidate aggregate: an object literal `{…}` (string keys) or a small array
@@ -734,15 +722,6 @@ function flatObjectCandidate(name, s, body) {
   return { names, values, written, selfPreserving }
 }
 
-export function scanFlatObjects(body) {
-  const cand = new Map()                 // name → {names, values}
-  for (const [name, s] of scanBindingUses(body)) {
-    const entry = flatObjectCandidate(name, s, body)
-    if (entry) cand.set(name, entry)
-  }
-  return cand
-}
-
 /**
  * No-copy slice scan — which `let/const t = s.slice(...)` bindings can be a
  * VIEW (a SLICE_BIT pointer straight into `s`'s buffer) instead of a fresh
@@ -776,17 +755,9 @@ const _isSliceCall = (n) =>
   Array.isArray(n) && n[0] === '()' && Array.isArray(n[1])
   && n[1][0] === '.' && n[1][2] === 'slice'
 
-// Per-binding classification shared by scanSliceViews and scanObjectArrayFacts
-// (walk-count design A1) — factored out for the same reason as
-// flatObjectCandidate above.
+// Slice-view classification of one binding, run inside scanObjectArrayFacts.
 function sliceViewCandidate(s) {
   return s[BINDING_USE_DECLS] === 1 && _isSliceCall(s[BINDING_USE_INIT]) && s[BINDING_USE_USES].every(u => _SLICE_VIEW_OK.has(u[BINDING_USE_KIND]))
-}
-
-export function scanSliceViews(body) {
-  const views = new Set()
-  for (const [name, s] of scanBindingUses(body)) if (sliceViewCandidate(s)) views.add(name)
-  return views
 }
 
 /**
@@ -874,7 +845,7 @@ export function restViewAliases(body, rest) {
   return names
 }
 
-// Per-binding classification shared by scanNeverGrown and scanObjectArrayFacts
+// Per-binding classification shared by neverGrownCandidate and scanObjectArrayFacts
 // (walk-count design A1) — factored out for the same reason as
 // flatObjectCandidate above.
 const freshArrayInit = (s) => s[BINDING_USE_DECLS] === 1 && Array.isArray(s[BINDING_USE_INIT])
@@ -901,12 +872,6 @@ function neverGrownCandidate(s) {
  * would relocate behind this function's copy.
  */
 const ownCurrentCandidate = (s) => freshArrayInit(s) && arrayUsesSafe(s, true)
-
-export function scanNeverGrown(body) {
-  const out = new Set()
-  for (const [name, s] of scanBindingUses(body)) if (neverGrownCandidate(s)) out.add(name)
-  return out
-}
 
 /** Classify object and array storage from one cached binding-use census.
  * Array policies inspect each binding's uses, never rescan the whole body. */
@@ -1097,8 +1062,6 @@ const escapeInRangeI32 = (node) => {
   return r != null && r[0] >= -2147483648 && r[1] <= 2147483647
 }
 
-const CMP_OPS_SET = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!=='])
-
 // Names appearing as a DIRECT operand of a comparison anywhere in `body` —
 // the canonical loop-counter shape (`i < n`). These already carry their OWN
 // separate, deliberately-scoped soundness tolerance ("sound for n ≤ 2³¹",
@@ -1134,7 +1097,7 @@ function collectComparedNames(body, crossClosure) {
   let names = null
   const enter = (node) => {
     if (node[0] === '=>') { if (crossClosure) walkAst(node[2], { enter }); return false }
-    if (CMP_OPS_SET.has(node[0])) {
+    if (COMPARE_OPS.has(node[0])) {
       if (typeof node[1] === 'string') (names ||= new Set()).add(node[1])
       if (typeof node[2] === 'string') (names ||= new Set()).add(node[2])
     }
@@ -1274,27 +1237,6 @@ export function collectBareEscapes(body, locals, crossClosure) {
 // Every write must belong to a proven region; repeated outer iterations must
 // initialize the accumulator again, and peeled copies join their bounds.
 
-/** Every bare-name MUTATE_OPS write target inside `root` (any depth, any
- *  shape) — candidates for the co-induction scan below. Over-inclusive by
- *  design (a name from a nested/conditional/shadowed write is filtered out
- *  downstream by collectStepRange/writesOutsideLoop, not here). Mirrors
- *  isReassigned's own 'let'/'const' special-case: a declarator's `=` binds
- *  the name, it doesn't write it. */
-function collectMutatedNames(root, out = new Set()) {
-  if (!Array.isArray(root)) return out
-  const op = root[0]
-  if (MUTATE_OPS.has(op) && typeof root[1] === 'string') out.add(root[1])
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < root.length; i++) {
-      const d = root[i]
-      if (Array.isArray(d) && d[0] === '=' && d[2] != null) collectMutatedNames(d[2], out)
-    }
-    return out
-  }
-  for (let i = 1; i < root.length; i++) collectMutatedNames(root[i], out)
-  return out
-}
-
 /** Any write outside the proved loop bodies invalidates their shared hull.
  *  Declarations initialize the region and are checked separately. */
 function writesOutsideLoop(root, exclude, name) {
@@ -1432,7 +1374,9 @@ export function stampCoInductionRanges(body, readPresent, typedLens) {
       const counterRange = counterName ? forCounterRange(init, cond, step, counterName, rangeOf) : null
       if (counterRange && counterRange.step > 0 && !isReassigned(loopBody, counterName) && !closureWrites(body, counterName)) {
         const trips = Math.floor((counterRange[1] - counterRange[0]) / counterRange.step) + 1
-        if (trips > 0) for (const name of collectMutatedNames(loopBody)) {
+        // Every write target in the body is a candidate; nested, conditional and
+        // shadowed writes are filtered by collectStepRange/writesOutsideLoop below.
+        if (trips > 0) for (const name of collectAssignedNames(loopBody, new Set())) {
           if (name === counterName || repOf(name)?.range || closureWrites(body, name)) continue
           const initExpr = findOuterDeclInit(regions[regions.length - 1], loopBody, name)
           if (initExpr == null) continue

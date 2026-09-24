@@ -47,8 +47,7 @@ export const TOMB_NAN = '0x7FF87FFFFFFFFFFF'
  *  where boolean identity is observed (typeof/String/JSON/host boundary); in
  *  branch/arithmetic position booleans stay raw i32/f64 0/1. The atomId encodes
  *  the truth value in its low bit (4=false, 5=true), so `aux & 1` recovers 0/1
- *  and `4 | bit` boxes it — see boolBoxIR / unboxBoolIR. */
-export const BOOL_ATOM_BASE = 4
+ *  and a select of the two atoms boxes it — see boolBoxIR / unboxBoolIR. */
 
 export const FALSE_NAN = atomNanHex(4)
 
@@ -60,9 +59,9 @@ export const NULL_WAT = `(f64.const nan:${NULL_NAN})`
 
 export const UNDEF_WAT = `(f64.const nan:${UNDEF_NAN})`
 
-export const NULL_IR = ['f64.const', `nan:${NULL_NAN}`]
+const NULL_IR = ['f64.const', `nan:${NULL_NAN}`]
 
-export const UNDEF_IR = ['f64.const', `nan:${UNDEF_NAN}`]
+const UNDEF_IR = ['f64.const', `nan:${UNDEF_NAN}`]
 
 export const FALSE_IR = ['f64.const', `nan:${FALSE_NAN}`]
 
@@ -83,15 +82,15 @@ export const nullExpr = () => typed(NULL_IR.slice(), 'f64')
 
 export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
 
-/** Materialize the boxed-boolean carrier from a 0/1-valued expression. The atom
- *  is `BOOL_ATOM_BASE | bit`, so boxing is one `i32.or` then an ATOM mkptr; when
- *  the input folds to a constant 0/1 we emit the `f64.const nan:` literal directly.
- *  Used only at observation/escape sites — never in branch or arithmetic position. */
+/** Materialize the boxed-boolean carrier from a 0/1-valued expression: a select
+ *  of the two atom literals, or the literal itself when the input folds to a
+ *  constant. Used only at observation/escape sites — never in branch or
+ *  arithmetic position. */
 // Sign+exponent mask isolating "negative NaN or -Infinity"; read only after
 // an f64.eq(v,v) self-check has failed (so -Infinity is excluded, leaving
 // negative NaN). Pointers and atoms are emitted sign-clear (nanPrefixMaskHex,
 // layout.js), so a sign-bit-set NaN can only be a genuine float NaN.
-export const NEG_NAN_MASK = 0xFFF0000000000000n
+const NEG_NAN_MASK = 0xFFF0000000000000n
 
 /** The NaN payload `get` (an f64 IR that failed `f64.eq(v, v)`) is the number
  *  NaN, not a box: the canonical box prefix (tag=ATOM aux=0, the one payload
@@ -291,7 +290,6 @@ export function truthyIR(e) {
   return typed(['call', '$__is_truthy', asI64(e)], 'i32')
 }
 
-export const toBoolFromEmitted = truthyIR
 
 // Shared peephole for the NaN-box sentinel checks. When the operand's bits are
 // statically known — an unboxed pointer (never an atom → 0), a numeric `f64.const`

@@ -4,7 +4,7 @@
  * @module compile/emit/method-dispatch
  */
 
-import { positionArgs } from '../../bridge.js'
+import { positionArgs, storedValue } from '../../bridge.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
 import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
@@ -13,15 +13,15 @@ import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, allocPtr, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, carrierF64, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
-import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
-import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
+import { representationProgramHasBigint } from '../representation-plan.js'
 import { buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable } from './call-args.js'
-import { emit, emitIdentitySafe } from './dispatch.js'
+import { emit } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { copyReceiverFacts, stringOps } from './shared.js'
 
@@ -41,28 +41,6 @@ const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
 // It must fall through to dynamic dispatch, mirroring COLLECTION_METHODS' arity guard.
 const STR_INDEX_METHODS = new Set(['charCodeAt', 'charAt'])
 
-// THE represented-carrier chokepoint (research.md §Carrier invariant), same
-// definition as bridge.js's exported storedValue — duplicated here (not
-// imported) because emit.js already owns `emit`/`emitIdentitySafe` directly;
-// going through bridge.js would round-trip via ctx.bridge for no reason.
-// Boxed-value slots emit.js constructs directly need the FULL carrierF64
-// treatment `argIR` deliberately skips (coerceArg applies its own
-// valTypeOf===BOOL carrierF64 wrap on top of argIR's result — layering
-// carrierF64 here too would be a second, redundant application; harmless
-// since carrierF64 is idempotent on an already-boxed atom, but this file
-// keeps the two helpers distinct so each call site's contract stays legible).
-export const storedValue = (node) => {
-  if (hasAmbiguousBoolMerge(node)) return emitIdentitySafe(node)
-  const emitted = emit(node)
-  if (valTypeOf(node) === VAL.BOOL) return carrierF64(node, emitted)
-  const action = representationStorageWriteAction(ctx, node)
-  if (bigintStrict() && action === REP_EDGE_BOX)
-    bigintEraseErr('collection', typeof node === 'string' ? node : 'this expression')
-  return action === REP_EDGE_REJECT
-    ? carrierF64(node, emitted)
-    : asF64(applyBigintRepresentationAction(emitted, node, action))
-}
-
 // Leading method-call strategies (chain positions 1–4). Each is *context-free* —
 // it depends only on the parsed call, not on the receiver-type analysis (`vt` /
 // `callMethod`) that emitMethodCall computes below — so they factor out into an
@@ -70,7 +48,7 @@ export const storedValue = (node) => {
 // fall through to the next. (Positions 5–12 thread shared mid-function state and
 // stay inline.) New context-free strategies just push onto LEADING_STRATEGIES.
 
-// 1. SRoA flat object: `o.method(args)` — scanFlatObjects dissolved `o` into
+// 1. SRoA flat object: `o.method(args)` — flatObjectCandidate dissolved `o` into
 // `o#i` field locals and deleted `$o`, so the method closure lives in the field
 // local, not a heap slot. Read it directly and dispatch. Without this, every
 // path below loads from `local.get $o`, which no longer exists (watr then reports
@@ -256,7 +234,8 @@ const LEADING_STRATEGIES = [tryFlatObjectMethod, tryConcatBufCharCodeAt, tryChar
 
 // 5. Boxed object: delegate method to inner value (slot 0)
 function tryBoxedDelegate({ obj, method, callMethod }) {
-  if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
+  if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj) && !ctx.summary?.memberMayBeOwn(method)
+      && !ctx.schema.list[ctx.schema.idOf(obj)]?.includes(method)) {
     const innerVt = repOf(obj)?.val
     const innerEmitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
     if (innerEmitter) {

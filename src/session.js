@@ -237,7 +237,7 @@ export function targetProfileFor(host) {
  * @property {object} error      source location carried through emit for err() messages
  * @property {object} transform  compile-time options + derived cfg + injected services
  * @property {object} abi        shared carrier registry (src/abi/index.js)
- * @property {object} bridge     emit/flat/wat dispatch bound at reset()
+ * @property {object} bridge     emit/bool/idx/spread hooks bound at reset()
  * @property {object} features   frozen FeaturePlan (SESSION+PROGRAM+ANALYSIS strata)
  * @property {object} linkDemand DEMAND stratum (emission-produced reachability facts)
  * @property {object} plans      pre-emission frozen-fact WeakMaps: functions, closures, loweringLinks

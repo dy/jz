@@ -176,6 +176,18 @@ test('SIMD butterfly - index temporaries and contiguous twiddles vectorize, bit-
   is((w.match(/v128\.store/g) || []).length, 4, 're/im at a and b store as pairs')
 })
 
+test('secondary counter ranges reject additional step writes', () => {
+  const src = `let a=new Float64Array([1,2,3,4]);
+    export function f(n){let s=0;for(let i=0,k=0;i<4;i++,k++,k*=2){if(i>=n)break;s+=a[k]}return s}`
+  for (const optimize of [2, 'speed']) {
+    const f = jz(src, { optimize }).exports.f
+    is(f(0), 0, 'zero body reads')
+    is(f(1), 1, 'first counter value')
+    is(f(2), 4, 'second counter value is 2')
+    ok(Number.isNaN(f(4)), 'out-of-bounds read at k=6 stays checked')
+  }
+})
+
 test('SIMD gather - a secondary counter strides a read, bit-exact across strides', () => {
   // `k += s` beside `j++`: the read of src[k] gathers lane by lane; its range (k0 + t·s over
   // the trip count) also proves the read in bounds, so no checked twin is emitted.

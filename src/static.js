@@ -2,13 +2,12 @@
  * Compile-time static evaluation — literals, property keys, schema ids.
  * @module static
  */
-import { I32_MIN, I32_MAX, isBrand, isReassigned } from './ast.js'
+import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
 
 // A loop guard's relational operators.
-const RELATIONAL_OPS = new Set(['<', '<=', '>', '>='])
 
 // Compile-time ToInt32 must stay exact when this compiler runs as Wasm too:
 // its runtime bitwise conversion saturates outside i64, so reduce large inputs.
@@ -81,20 +80,26 @@ export function constNumExpr(node, resolve) {
   if (node.length !== 3) return null
   const y = constNumExpr(node[2], resolve)
   if (y == null) return null
+  if (op === '**') return x ** y
+  const r = numBinOp(op, x, y)
+  return r === undefined ? null : r
+}
+
+/** A Number-only binary operator over two Numbers (bitwise ops through ToInt32);
+ *  undefined for any other op. `**` is excluded: jz folds it bit-exact to its own pow. */
+export function numBinOp(op, x, y) {
   switch (op) {
     case '+': return x + y
     case '-': return x - y
     case '*': return x * y
     case '/': return x / y
     case '%': return x % y
-    case '**': return x ** y
     case '&': return int32(x) & int32(y)
     case '|': return int32(x) | int32(y)
     case '^': return int32(x) ^ int32(y)
     case '<<': return int32(x) << int32(y)
     case '>>': return int32(x) >> int32(y)
     case '>>>': return int32(x) >>> int32(y)
-    default: return null
   }
 }
 
@@ -400,7 +405,7 @@ const pureIntLiteral = (e) => {
 // counter, not a bare shift of it — nameShift alone can't see through the
 // `j = 3*i` decl-hop. Pure (no repOf/ctx.func — see pureIntLiteral above),
 // safe to call from narrow.js's whole-program plan-time walk.
-export function linearIndexOf(expr) {
+function linearIndexOf(expr) {
   if (typeof expr === 'string') return { name: expr, scale: 1, shift: 0 }
   if (!Array.isArray(expr) || expr.length !== 3) return null
   if (expr[0] === '*') {

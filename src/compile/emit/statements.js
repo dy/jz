@@ -15,7 +15,7 @@ import { isTerminator } from '../../type.js'
 import { withFinallyStack, withTryState } from '../flow-state.js'
 import { representationProgramHasBigint, representationReturnAction } from '../representation-plan.js'
 import { emit, emitBlockBody, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
-import { storedValue } from './method-dispatch.js'
+import { storedValue } from '../../bridge.js'
 
 
 const BIGINT_THROWING_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', 'u+',

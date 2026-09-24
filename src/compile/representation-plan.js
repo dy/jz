@@ -15,13 +15,9 @@
  * `from '../representation-plan.js'`) needs to move.
  */
 export {
-  BIGINT_REP_NONE,
   BIGINT_REP_RAW,
   BIGINT_REP_BOXED,
-  BIGINT_REP_TOP,
   BIGINT_REP_CLOSED,
-  BIGINT_DEMAND_RAW_OK,
-  BIGINT_DEMAND_TAG_REQUIRED,
   REP_EDGE_KEEP,
   REP_EDGE_BOX,
   REP_EDGE_UNBOX,
@@ -30,10 +26,7 @@ export {
   REP_EDGE_TAG_BOX,
   JOIN_OPS,
   STORAGE_READ_METHODS,
-  bigintRepBits,
-  bigintRepIsClosed,
   callContractOf,
-  contractRep,
 } from './representation-plan/common.js'
 
 export { solveRepresentationBoundaries } from './representation-plan/boundaries.js'
@@ -42,7 +35,6 @@ export { mintRepresentationPlan } from './representation-plan/body-data.js'
 
 export {
   representationPlanOf,
-  representationBoundaryOf,
   representationParamRep,
   representationResultRep,
   representationBindingRep,

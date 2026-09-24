@@ -13,10 +13,10 @@
  * @module optimize/devirt
  */
 import { LAYOUT, ctx, declGlobal } from '../ctx.js'
-import { nextLocalId, cloneIR, isPureIR } from '../ir.js'
+import { findBodyStart, nextLocalId, cloneIR, isPureIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, i64Hex } from '../../layout.js'
-import { inlinePureCallExpr } from './vectorize.js'
+import { inlinePureCallExpr } from './vectorize/inline-pure.js'
 
 const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
 const OBJECT_TAG_MASK = i64Hex(BigInt(OBJECT_SCHEMA_HI_MASK) ^ (BigInt(LAYOUT.AUX_MASK) << BigInt(LAYOUT.AUX_SHIFT)))
@@ -362,9 +362,7 @@ export function devirtSchemaReads(fn) {
   walkDSR(fn)
   if (DBG_DSR && String(fn[1]).includes('measure')) console.error('[dsr]', fn[1], 'schemas:', schemas.length, 'tagged seen:', seen)
   if (newDecls.length) {
-    let at = typeof fn[1] === 'string' ? 2 : 1
-    while (at < fn.length && Array.isArray(fn[at]) &&
-      (fn[at][0] === 'export' || fn[at][0] === 'type' || fn[at][0] === 'param' || fn[at][0] === 'result' || fn[at][0] === 'local')) at++
+    const at = findBodyStart(fn)
     // sid-cache computations go right after the decls, before the first body
     // statement — stable receivers are never-written names (params), so their
     // value at body start equals their value at every read
@@ -659,9 +657,7 @@ export function devirtConstFnArrayCalls(fn, cfg) {
   }
   walkAst(fn, { exit: (n, parent, idx) => { if (parent && n[0] === 'call_indirect' && n.dvArr) rewrite(parent, idx) } })
   if (newDecls.length) {
-    let at = typeof fn[1] === 'string' ? 2 : 1
-    while (at < fn.length && Array.isArray(fn[at]) &&
-      (fn[at][0] === 'export' || fn[at][0] === 'type' || fn[at][0] === 'param' || fn[at][0] === 'result' || fn[at][0] === 'local')) at++
+    const at = findBodyStart(fn)
     fn.splice(at, 0, ...newDecls)
   }
 }

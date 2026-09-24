@@ -120,19 +120,3 @@ export const attachTimers = (inst) => {
     if (hadTimers && remaining <= 0) clearInterval(id)
   }, 1)
 }
-
-/**
- * Compile and instantiate a jz WASI module.
- * @param {BufferSource} wasm
- * @param {object} [opts] - Options passed to wasi()
- * @returns {WebAssembly.Instance}
- */
-export function instantiate(wasm, opts = {}) {
-  const imports = wasi(opts)
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
-  imports._setMemory(inst.exports.memory)
-  // WASI reactor convention: module init lives in `_initialize` (not a wasm start
-  // section — WASI calls there would fire before memory is wired above).
-  inst.exports._initialize?.()
-  return inst
-}

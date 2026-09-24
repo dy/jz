@@ -23,8 +23,12 @@ const EMPTY_MAPS = []
  *  lowering that must agree with it both end here. */
 export const summaryTypedCtor = (ctx, expr) => ctx.summary?.at(ctx.func.current).typedCtorOfExpr(expr) ?? null
 
-export function typedStorageNameCtor(ctx, name, localNames) {
-  if (ctx.func?.localTypedElemsOverlay?.has?.(name)) return ctx.func.localTypedElemsOverlay.get(name) ?? null
+/** A name's typed constructor from the ambient fact channels, in priority order:
+ *  the transient overlay (unless `overlay` is false), the function's typed-element
+ *  map, its local rep, then — for a non-local, non-dynamically-written name — the
+ *  module global's. */
+export function typedStorageNameCtor(ctx, name, localNames, overlay = true) {
+  if (overlay && ctx.func?.localTypedElemsOverlay?.has?.(name)) return ctx.func.localTypedElemsOverlay.get(name) ?? null
   if (ctx.func?.typedElem?.has?.(name)) return ctx.func.typedElem.get(name) ?? null
   const localRep = ctx.func?.localReps?.get?.(name)
   if (localRep?.typedCtor) return localRep.typedCtor
@@ -68,16 +72,7 @@ export function typedStorageCtorFromContext(ctx, expr, options) {
       if (options.resolveName) return options.resolveName(a) ?? null
       for (const map of maps) if (map?.has?.(a)) return map.get(a) ?? null
       if (!ambientNames) return null
-      if (options.transientNames !== false && ctx.func?.localTypedElemsOverlay?.has?.(a))
-        return ctx.func.localTypedElemsOverlay.get(a) ?? null
-      if (ctx.func?.typedElem?.has?.(a)) return ctx.func.typedElem.get(a) ?? null
-      const localRep = ctx.func?.localReps?.get?.(a)
-      const isLocal = options.localNames?.has?.(a) || ctx.func?.locals?.has?.(a) ||
-        ctx.func?.current?.params?.some?.(p => p?.name === a)
-      const global = !isLocal && !ctx.types?.dynWriteVars?.has?.(a)
-        ? ctx.scope?.globalTypedElem?.get?.(a) ?? null : null
-      if (localRep?.typedCtor) return localRep.typedCtor
-      return global
+      return typedStorageNameCtor(ctx, a, options.localNames, options.transientNames !== false)
     }
     if (kind === TYPED_SOURCE_CALL) {
       if (options.calls === false || typeof a !== 'string') return null

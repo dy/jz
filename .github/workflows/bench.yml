@@ -40,10 +40,6 @@ jobs:
         with:
           node-version: 22
       - run: npm install
-      # Zig native reference rows (cases with a .zig baseline).
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.13.0
       # Extra "Run as JS" runtimes (Deno, Bun). bench.mjs gates every target on
       # `available`, so a missing tool just drops its row — additive, never fails.
       - uses: denoland/setup-deno@v2
@@ -79,6 +75,10 @@ jobs:
       # TinyGo (the lean go→wasm rival — a separate row from go-wasm's stock
       # toolchain). Match PLAN's pinned release and smoke-build wasip1 so a
       # Go-version mismatch fails here instead of removing a required rival.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
       - name: install tinygo
         run: |
           curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.42.0/tinygo_0.42.0_amd64.deb
@@ -111,11 +111,19 @@ jobs:
           echo "PORF_BIN=$HOME/.local/bin/porf" >> "$GITHUB_ENV"
       - name: expose toolchains on PATH
         run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: install Perry 0.5.1520
+        run: |
+          npm install --global @perryts/perry@0.5.1520
+          echo "PERRY_BIN=$(command -v perry)" >> "$GITHUB_ENV"
+          echo "PERRY_NO_UPDATE_CHECK=1" >> "$GITHUB_ENV"
+          echo "PERRY_UPDATE_MODE=off" >> "$GITHUB_ENV"
+          perry --version
       - name: versions
         run: |
           node --version
           asc --version || true
           "$PORF_BIN" --version
+          "$PERRY_BIN" --version
           wasm-opt --version || true
       - run: npm run test:bench
       # ── native-lane smoke gate (audit-#12 step 4) ──────────────────────────
@@ -178,7 +186,7 @@ jobs:
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,jz,jz-wasmtime,jz-w2c,wat,numpy --json || exit 1
+          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,jz,jz-wasmtime,jz-w2c,wat,numpy --json || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           # PER-MACHINE datasets: bench/results.json is the REFERENCE-machine

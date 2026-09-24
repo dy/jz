@@ -175,7 +175,7 @@ export function hoistVars(node, names) {
   return out
 }
 
-export function hoistPattern(node, names) {
+function hoistPattern(node, names) {
   if (node == null || !Array.isArray(node)) return node
   const op = node[0]
   if (op === '=') return ['=', hoistPattern(node[1], names), hoistVars(node[2], names)]

@@ -21,7 +21,7 @@ import { beginSession } from '../src/session.js'
 import { assemble, linkAssembled, tailFacts } from '../src/compile/index.js'
 
 import {
-  emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
+  emit, emitter, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
 } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
 import { T } from '../src/ir/tape.js'
@@ -61,7 +61,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   // injections remain here.
   beginSession({
     emitter, globals: GLOBALS,
-    hooks: { emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
+    hooks: { emit, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
     optimize: optJSON ? JSON.parse(optJSON) : false,
     strict: !!strict, host: host || undefined, alloc: build?.alloc,
   })

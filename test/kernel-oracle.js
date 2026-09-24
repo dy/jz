@@ -401,7 +401,7 @@ export let f = (x) => callAdd(x)`,
   // is its own `let t = s.slice(...)` declaration read back only via
   // `t.length` (a non-escaping local) — the documented trigger for
   // __str_slice_view (SLICE_BIT, no-copy) lowering (src/compile/analyze-
-  // scans.js scanSliceViews requires the initializer to be a DIRECT
+  // scans.js sliceViewCandidate requires the initializer to be a DIRECT
   // `.slice()` call — a ternary-selected initializer does NOT qualify,
   // verified while authoring this row: the ternary form the branches replace
   // never emitted __str_slice_view at all). Confirmed via `compile(...,
@@ -433,7 +433,7 @@ export let f = (x) => callAdd(x)`,
   // Copying-path sibling of the row above: `t` is stored into an escaping
   // field (an object property read back AFTER the storing call returns)
   // instead of read as a synchronous non-escaping local — analyze-scans.js's
-  // scanSliceViews explicitly disqualifies this shape ("stored into a heap
+  // sliceViewCandidate explicitly disqualifies this shape ("stored into a heap
   // object" is a documented escaping use), forcing the ordinary copying
   // __str_slice (fresh `__alloc` + an explicit i32 length header written at
   // offset-4, per module/string.js's heapLenExpr) rather than the SLICE_BIT

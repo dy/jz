@@ -15,7 +15,7 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, T
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
-import { ACCESSOR_GET, isBrand } from '../src/ast.js'
+import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
 import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
 import { copyReceiverFacts } from '../src/compile/emit/shared.js'
 import { restViewLength } from '../src/compile/rest-view.js'
@@ -23,7 +23,7 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
-import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
+import { ptrOffsetFwdWat, deletedMaskWat, HIDDEN_PROPERTY_SEQ } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
@@ -868,7 +868,8 @@ export default (ctx) => {
       (if (i32.and
             (i64.ne (i64.load (local.get $slot)) (i64.const 0))
             ;; skip healed zombie entries (durable-slot heal: key = TOMB sentinel)
-            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
+            ${ctx.linkDemand.hiddenMembers ? `(i32.and (i32.ne (i32.load offset=4 (local.get $slot)) (i32.const ${HIDDEN_PROPERTY_SEQ}))` : ''}
+            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))${ctx.linkDemand.hiddenMembers ? ')' : ''})
         (then
           ${propKeys ? `(local.set $rank (i64.or (i64.const 0x100000000) (i64.shr_u (i64.load (local.get $slot)) (i64.const 32))))
           ${indexRank()}` : ''}
@@ -2167,7 +2168,7 @@ export default (ctx) => {
     // fresh empty object, and prototype reflection (`getOwnPropertyNames(C.prototype)`)
     // sees nothing to touch
     if (prop === 'prototype' && (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE) return emit(['{}'])
-    // SRoA flat object: `o.prop` → `local.get $o#i` (analyze.js scanFlatObjects).
+    // SRoA flat object: `o.prop` → `local.get $o#i` (analyze.js flatObjectCandidate).
     const flatR = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
     if (flatR) {
       const fi = flatR.names.indexOf(prop)
@@ -2515,7 +2516,7 @@ export default (ctx) => {
   // f64 0/1 but `typeof` must still report "boolean". None of these ops can
   // produce a non-boolean, so the recognizer never false-positives. The `()`
   // arm also unwraps parenthesized expressions (`typeof (a < b)`).
-  const BOOL_RESULT_OPS = new Set(['!', '<', '<=', '>', '>=', '==', '!=', '===', '!=='])
+  const BOOL_RESULT_OPS = new Set(['!', ...COMPARE_OPS])
   const isBoolExpr = (n) => Array.isArray(n) && (
     BOOL_RESULT_OPS.has(n[0]) ||
     (n[0] === '()' && (n[1] === 'Boolean' || isBoolExpr(n[1]))))

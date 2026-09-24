@@ -39,7 +39,7 @@ export function assertValKindConsistent(paramReps) {
         throw new Error(`possibleKinds/val consistency: ${fname} param ${k} val=${r.val} missing from possibleKinds=${r.possibleKinds ? [...r.possibleKinds].join(',') : 'undefined'}`)
 }
 
-export function buildCallerCtx() {
+function buildCallerCtx() {
   const callerCtx = new Map()
   callerCtx.set(null, { callerLocals: ctx.scope.globalTypes })
   for (const func of ctx.funcs.list) {

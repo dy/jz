@@ -53,6 +53,9 @@ export const ATOM = { NULL: 1, UNDEF: 2, FALSE: 4, TRUE: 5 }
  *  tests membership in one shl+and, replacing a 4-way tag-equality OR. */
 export const FORWARDING_MASK = (1 << PTR.ARRAY) | (1 << PTR.HASH) | (1 << PTR.SET) | (1 << PTR.MAP)
 
+// A hidden property has no enumeration rank. Keep the shared entry width intact.
+export const HIDDEN_PROPERTY_SEQ = 0xffffffff
+
 // BigInt views of the NaN-box fields — the carrier is 64-bit, JS bit-ops are 32-bit.
 const TAG_SHIFT = BigInt(LAYOUT.TAG_SHIFT), TAG_MASK = BigInt(LAYOUT.TAG_MASK)
 const AUX_SHIFT = BigInt(LAYOUT.AUX_SHIFT), AUX_MASK = BigInt(LAYOUT.AUX_MASK)
@@ -217,7 +220,7 @@ export const ATOM_HI = {
 }
 
 /** OOB / canonical quiet-NaN f64 literal for WAT and IR (`nan:0x7FF8…`). */
-export const oobNanLiteral = () => `nan:${nanPrefixHex()}`
+const oobNanLiteral = () => `nan:${nanPrefixHex()}`
 export const oobNanIR = () => ['f64.const', oobNanLiteral()]
 
 /** Heap forwarding-pointer follow (WAT fragment).
@@ -280,7 +283,7 @@ export const ptrOffsetFwdWat = () =>
  *  (`__dyn_get_t_hm`), enumeration (Object.keys, for-in) and `__obj_clone`;
  *  written by `__dyn_del` and `__dyn_set`. Both dialects of the runtime read
  *  it through the builders below. */
-export const DELETED_STICKY_BIT = 31
+const DELETED_STICKY_BIT = 31
 
 /** WAT: the mask of the OBJECT whose payload is at the local `off`. */
 export const deletedMaskWat = (off = '$off') =>

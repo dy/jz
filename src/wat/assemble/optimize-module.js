@@ -98,7 +98,7 @@ export function optimizeModule(sec, profiler) {
   }
   t('optimizeFuncs', () => {
     const writes = cfg?.promoteGlobals !== false ? globalWrites() : null
-    for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, null, writes)
+    for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, writes)
   })
   // Per-iteration arena rewinds go in once the vectorizer has matched its loop
   // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.

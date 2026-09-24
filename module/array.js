@@ -883,7 +883,7 @@ export default (ctx) => {
     const litKey = isLiteralStr(idx) ? idx[1]
       : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
       : null
-    // SRoA flat object/array: `o['k']` / `a[2]` → `local.get $o#i` (scanFlatObjects).
+    // SRoA flat object/array: `o['k']` / `a[2]` → `local.get $o#i` (flatObjectCandidate).
     // A bare integer index resolves its slot key here (not via `litKey`, which stays
     // null for arrays so the heap-array / schema paths below are untouched).
     if (typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
@@ -1103,11 +1103,11 @@ export default (ctx) => {
         return typed(arrayFast(() => undefExpr()), 'f64')
       }
       // Base offset of the array's data region. A binding proven never relocated
-      // (scanNeverGrown — a fresh array literal whose every use is a pure read, so no
+      // (neverGrownCandidate — a fresh array literal whose every use is a pure read, so no
       // grow op can ever run) skips the realloc-forwarding follow: its base is the raw
       // post-header offset `wrap(reinterpret(ptr) & OFFSET_MASK)`, no __ptr_offset call.
       // Memory-safe ONLY under that proof — a relocated array read through this stale
-      // base would corrupt memory (see scanNeverGrown's default-deny rationale).
+      // base would corrupt memory (see neverGrownCandidate's default-deny rationale).
       // An own-name-current binding (scanObjectArrayFacts: every grow
       // runs through this name and writes the pointer back) is never stale
       // either, so its reads take the raw base too; its header may relocate
