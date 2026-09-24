@@ -66,9 +66,10 @@ import { frameRoots } from '../../function.js'
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
 
-// Callees that read their arguments and receivers only. Mirrors the summary's
-// PURE_BUILTINS (src/summary/index.js) plus the numeric/string globals whose
-// results are fresh values or scalars. `math.` is the prepared spelling of `Math.`.
+// Callees that read their arguments and receivers only, apart from a callback
+// CALLBACK_ARGS names. Mirrors the summary's PURE_BUILTINS (src/summary/index.js)
+// plus the numeric/string globals whose results are fresh values or scalars.
+// `math.` is the prepared spelling of `Math.`.
 const PURE_CALLEES = /^(Object\.(keys|values|entries|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries)|JSON\.(stringify|parse)|Array\.(isArray|of|from)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse)$/
 // Callees whose result is a scalar: no allocation.
 const SCALAR_CALLEES = /^([Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now)$/
@@ -103,6 +104,9 @@ const SCALAR_METHODS = new Set(['indexOf', 'lastIndexOf', 'includes', 'charCodeA
 // Receiver methods that run a callback synchronously over the receiver and
 // retain nothing: the callback body is part of this frame.
 const CALLBACK_METHODS = new Set(['forEach', 'map', 'filter', 'reduce', 'reduceRight', 'some', 'every', 'find', 'findIndex', 'findLast', 'findLastIndex', 'flatMap', 'sort', 'toSorted', 'replace', 'replaceAll'])
+// Pure callees that call an argument back before they return, by its position:
+// `Array.from(src, mapFn)` runs mapFn in this frame, as `map` does.
+const CALLBACK_ARGS = new Map([['Array.from', 1]])
 
 // Receiver methods that write the receiver in place without changing its
 // storage: a write into outer storage, never a growth.
@@ -219,7 +223,7 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * loop's condition, step and body), `declRoots` the nodes whose declarations
  * belong to the scope (the body), `params` the names bound by the function.
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
- * run synchronously and for local arrows called from this scope.
+ * and CALLBACK_ARGS run synchronously and for local arrows called from this scope.
  */
 function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   // A parameter the export boundary types (narrow/param-abi.js `boundaryTyped`)
@@ -254,9 +258,11 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     if (op === 'let' || op === 'const' || op === 'var') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
-        if (isName(d)) note(d, undefined, nested, true)
-        else if (isArr(d) && d[0] === '=' && isName(d[1])) note(d[1], d[2], nested, true)
-        else if (isArr(d) && d[0] === '=') for (const nm of patternNames(d[1])) note(nm, null, nested, true)
+        if (isName(d)) { note(d, undefined, nested, true); continue }
+        if (!isArr(d) || d[0] !== '=') continue
+        if (isName(d[1])) note(d[1], d[2], nested, true)
+        else for (const nm of patternNames(d[1])) note(nm, null, nested, true)
+        scanDecls(d[2], nested)   // the initializer, and the functions it makes (`const f = () => { x = … }`)
       }
       return
     }
@@ -312,20 +318,39 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     if (mayCarryFreshHeap(view, val)) unsafe('heap value into ' + (isName(recv) ? recv : '<expr>'))
   }
   const scanArrow = (arrow) => { if (!scanned.has(arrow)) { scanned.add(arrow); walkExpr(arrow[arrow.length - 1]) } }
+  // The arrow a name holds wherever it is called: bound once in this scope,
+  // never rebound by a nested function, no parameter.
+  const localArrow = (name) => isName(name) && arrows.has(name) && !writtenNested.has(name) && !params.has(name)
+  // A callback runs in this frame: a function literal or a local arrow is
+  // walked in place; any other value the summary cannot prove a scalar may be
+  // a closure the census cannot see (true: the call is unknown).
+  const callback = (a, what) => {
+    if (isFunctionNode(a)) scanArrow(a)
+    else if (localArrow(a)) scanArrow(arrows.get(a))
+    else if ((isArr(a) || isName(a)) && !scalarKind(view, a)) { unknownCall('callback value for ' + what); return true }
+    return false
+  }
+  // A pure callee allocates unless its result is a scalar, and runs the
+  // callback CALLBACK_ARGS names.
+  const pure = (name, args) => {
+    if (!SCALAR_CALLEES.test(name)) allocates()
+    const i = CALLBACK_ARGS.get(name), a = i == null ? undefined : argList(args)[i]
+    if (a !== undefined) callback(a, name)
+  }
   const call = (callee, args) => {
     if (isName(callee)) {
       const c = ctorOf(callee)
       if (c !== null) { allocates(); if (knownFunc(c)) out.callees.add(c); else if (!FRESH_CTORS.test(c)) unknownCall('call ' + callee); return }
       if (knownFunc(callee)) { out.callees.add(callee); return }
-      if (arrows.has(callee) && !writtenNested.has(callee) && !params.has(callee)) { scanArrow(arrows.get(callee)); return }
-      if (PURE_CALLEES.test(callee)) { if (!SCALAR_CALLEES.test(callee)) allocates(); return }
+      if (localArrow(callee)) { scanArrow(arrows.get(callee)); return }
+      if (PURE_CALLEES.test(callee)) return pure(callee, args)
       if (FRESH_CTORS.test(callee)) { allocates(); return }   // a constructor called plainly (`throw TypeError(m)`): fresh storage, no user code
       return unknownCall('call ' + callee)
     }
     if (isArr(callee) && callee[0] === '.' && isName(callee[2])) {
       const [, recv, method] = callee
       const key = isName(recv) ? `${recv}.${method}` : null
-      if (key && PURE_CALLEES.test(key)) { if (!SCALAR_CALLEES.test(key)) allocates(); return }
+      if (key && PURE_CALLEES.test(key)) return pure(key, args)
       if (key && /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./.test(key) || method === 'call' || method === 'apply' || method === 'bind') return unknownCall('call ' + (key ?? method))
       const resolved = resolveMember(recv, method)
       if (resolved) { out.callees.add(resolved.name); return }
@@ -336,9 +361,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       const hasClosureArg = argList(args).some(isFunctionNode)
       if (CALLBACK_METHODS.has(method)) {
         allocates()
-        for (const a of argList(args)) if (isFunctionNode(a)) scanArrow(a)
-        else if (isName(a) && arrows.has(a)) scanArrow(arrows.get(a))
-        else if (isArr(a) || isName(a)) { if (!scalarKind(view, a)) return unknownCall('callback value for ' + method) }   // a closure value we cannot see
+        for (const a of argList(args)) if (callback(a, method)) return
         if (method === 'sort') store(recv, null, false)
         return
       }

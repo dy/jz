@@ -1319,7 +1319,10 @@ body; `frameNode` as one statement list), and an arrow keeps its defaults in
 its parameter list. A default runs only where its argument is missing, so the
 summary treats its writes as conditional. A store into a fresh local aggregate, a binding
 declared in the body whose every write is a literal or a `new`, is a store into
-fresh memory. The arena rewind (`src/optimize/arena-rewind.js`) restores the
+fresh memory. A nested function's writes count wherever it is made, a
+declaration's initializer included. A callback a builtin runs (an array
+method's, `Array.from`'s map function) is walked as part of the frame; a
+callback name resolves to its arrow only while no nested function rebinds it. The arena rewind (`src/optimize/arena-rewind.js`) restores the
 heap pointer at return for any function with a scalar non-pointer result whose
 frame is not `arenaUnsafe`, parameters included; the link pass adds what the
 source cannot show: a `global.set` of anything but the heap pointers, the error

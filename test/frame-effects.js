@@ -64,6 +64,17 @@ test('frame effects: arrays a parameter default pushes into the caller keep thei
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.run(6), oracle(src).run(6), `O${optimize}`)
 })
 
+test('frame effects: a local a closure made in a declaration rebinds is no fresh local', () => {
+  // the census stopped at `const alias = …` and took `buf` for fresh storage: the
+  // rewind freed the pushed pair, and g's arrays overwrote it (NaN at O2)
+  const src = `const keep = []
+    export function f(n) { let buf = []; const alias = () => { buf = keep; return () => 0 }; alias(); buf.push([n, n + 1]); return keep.length }
+    export function g(m) { const z = []; for (let i = 0; i < m; i++) z.push([i * 100, i * 100 + 1]); let s = 0; for (const p of z) s += p[0]; return keep[0][0] * 10 + keep[0][1] + s }`
+  const js = oracle(src); js.f(3)
+  for (const optimize of levels(0, 2, 3)) { const m = jz(src, { optimize }).exports; m.f(3); is(m.g(8), js.g(8), `O${optimize}`) }
+  ok(/^escape: shared cell buf/.test(whyNot(src)), 'the census names the cell the closure rebinds')
+})
+
 // --- The widening: parameters, numbers into outer storage, fresh local containers.
 
 test('frame effects: a function with parameters rewinds when its allocations stay in the frame', () => {
@@ -207,6 +218,29 @@ test('frame effects: a cached typed-array load survives a call to a read-only ca
   is(loads('h'), 2, 'a callee that writes a typed array forces a reload')
   const m = jz(mk('h'))
   is(m.exports.f(0, 2), 0 + 0 + 1, 'the reloaded value is the written one')
+})
+
+test('frame effects: a cached load survives a callback that stores nothing and not one that may store', () => {
+  if (onKernel()) return
+  const mk = (body) => `const a = new Float64Array(8)
+    const cbs = [(v) => { a[0] = v + 1; return v }]
+    function h(k) { ${body}; return k <= 0 ? 0 : h(k - 1) }
+    export function f(i, k) { const x = a[i]; const y = h(k); const z = a[i]; return x + y + z }`
+  const loads = (src) => (bodyOf(compile(src, { wat: true, ...TAPE }), 'f').match(/f64\.load/g) || []).length
+  const swap = 'let cb = (v) => v; const swap = () => { cb = (v) => { a[0] = v + 1; return v } }; swap()'
+  is(loads(mk('Array.from([k], (v) => v + 1)')), 1, 'a map function that stores nothing keeps the load')
+  for (const [what, body] of [
+    // taken for a builtin that reads its arguments only
+    ['an Array.from map function', 'Array.from([k], (v) => { a[0] = v + 1; return v })'],
+    ['a map function the census cannot see', 'Array.from([k], cbs[0])'],
+    // the census walked the arrow `cb` is declared with, not the one swap stores
+    ['a rebound callback', swap + '; [k].forEach(cb)'],
+    ['a rebound call', swap + '; cb(k)'],
+  ]) {
+    const src = mk(body)
+    is(loads(src), 2, `${what}: the second a[i] reloads`)
+    for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(0, 2), oracle(src).f(0, 2), `${what} O${optimize}`)
+  }
 })
 
 // The census names what a member reaches instead of declaring it unknown: an
