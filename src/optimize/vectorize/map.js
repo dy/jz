@@ -1,9 +1,10 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, affineIvCoeff, hasNestedLoopOrCall } from './addr-model.js'
-import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
+import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, laneAccess, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, affineIvCoeff, hasNestedLoopOrCall, indexDefs } from './addr-model.js'
+import { aliasGuards } from './alias.js'
+import { isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
-import { liftCtx, liftFail, liftStmt, peelNarrowConv } from './lift.js'
+import { laneStep, liftCtx, liftFail, liftStmt, peelNarrowConv } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdLoop } from './scaffold.js'
 
@@ -425,7 +426,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
 export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   if (!bl) return null
   const { aliasVersion = true } = opts
-  const { incVar, bound, boundLocal, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced } = bl
+  const { incVar, bound, boundLocal, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced, ivs = [] } = bl
   if (blHasGlobalSet) return null
   if (!boundLocal && !isI32Const(bound)) return null
 
@@ -433,7 +434,25 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   if (body.some(hasNestedLoopOrCall)) return null
 
   // i32-domain affine proof only: no toroidal wrap, no float-derived index (stencil-specific).
-  const ivCoeff = affineIvCoeff(incVar, writes)
+  // An index temporary (`const a = i + j`) stands for its definition.
+  const defs = indexDefs(body, fnLocals, bl.outsideReads)
+  const ivCoeff = affineIvCoeff(incVar, writes, defs)
+  // A secondary counter (`k += step` beside `j++`) moves by its step per iteration: an
+  // index affine in it GATHERS, lane L reading the element at k + L·step. Its own solver
+  // counts the exit counter as varying, so an index is affine in one counter or the other.
+  const ivWrites = new Set(writes).add(incVar)
+  const ivCoeffs = ivs.map(iv => [iv, affineIvCoeff(iv.name, ivWrites, defs)])
+  const gathers = new Map()   // load node → the secondary counter its lanes follow
+  const gatherOf = (addr) => {
+    let tee = false
+    walkAst(addr, { enter: c => { if (c[0] === 'local.tee') tee = true } })
+    if (tee) return null
+    for (const [iv, coeff] of ivCoeffs) {
+      const m = matchStrideAddr(addr, stride, writes, new Map(), new Map(), coeff)
+      if (m) return { iv, ...m }
+    }
+    return null
+  }
 
   // Address match: `base + (IDX << K)` (either operand order), IDX affine coefficient 1,
   // K matching the site's own element stride; tee-CSE resolved via addrTees/offTees.
@@ -451,8 +470,11 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
       if (laneType == null) { laneType = lt; stride = LANE_INFO[lt].stride }
       else if (lt !== laneType) return false
       const m = matchAddr(addr, stride)
-      if (!m) return false
-      sites.push({ kind: 'load', base: m.base, idx: m.idx, memBytes })
+      if (m) { sites.push({ kind: 'load', base: m.base, idx: m.idx, memBytes }); return true }
+      const g = gatherOf(addr)
+      if (!g) return false
+      gathers.set(n, g.iv)
+      sites.push({ kind: 'gather', base: g.base, idx: g.idx, memBytes })
       return true
     }
     if (STORE_OPS[op]) {
@@ -474,77 +496,15 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     return true
   }
   for (const s of body) if (!scan(s, null, -1)) return null
-  if (!laneType || !sites.some(s => s.kind === 'store') || !sites.some(s => s.kind === 'load')) return null
+  if (!laneType || !sites.some(s => s.kind === 'store') || !sites.some(s => s.kind !== 'store')) return null
+  // A gathered lane reads memory no store of the body reaches: its base is never stored.
+  for (const g of sites) if (g.kind === 'gather' && sites.some(s => s.kind === 'store' && exprEq(normTee(s.base), normTee(g.base)))) return null
 
-  // Same-array dependence gate: every access to a WRITTEN base must touch the SAME element
-  // (idx + memarg) as every OTHER access to that same base — else SIMD reads stale/future data
-  // a scalar iteration wouldn't (verbatim from tryStencil's own alias proof). A mismatch is no
-  // longer an unconditional decline — see the header doc's "RUNTIME ALIAS VERSIONING" note: each
-  // mismatched pair resolves one of three ways —
-  //   1. the element delta constant-folds (both sides built only from the IV/consts/+/-/*, no
-  //      OTHER local/global) to a COMPILE-TIME number: |delta| ≥ lanes ⇒ provably disjoint
-  //      already, accepted for free (no guard, no clone — same zero-cost path a real elemKey
-  //      MATCH gets); |delta| < lanes ⇒ provably NOT disjoint (a genuine in-place recurrence,
-  //      e.g. `a[j]=a[j-1]+a[j]`) — declines exactly as before, a runtime check could never help.
-  //   2. the delta depends on something else (an `off` param etc.) — genuinely runtime-unknown —
-  //      version it (`aliasGuards`, non-null).
-  //   3. unrepresentable (non-stride-aligned memarg) — declines exactly as before.
-  const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
-  const lanesForGuard = LANE_INFO[laneType].lanes
-  // Fold an idx expression at a FIXED, arbitrary IV value (0) — sound because every idx here
-  // already passed ivCoeff's coefficient-EXACTLY-{0,1} proof, so two same-coefficient sides
-  // differ by a value independent of which IV value is substituted (see header doc). Returns
-  // null (not a compile-time number) the moment it hits any local/global OTHER than the IV.
-  const foldAtIv0 = (n) => {
-    if (isI32Const(n)) return +n[1]
-    if (isLocalGet(n)) return n[1] === incVar ? 0 : null
-    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return foldAtIv0(n[2])
-    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub' || n[0] === 'i32.mul') && n.length === 3) {
-      const a = foldAtIv0(n[1]), b = foldAtIv0(n[2])
-      if (a == null || b == null) return null
-      return n[0] === 'i32.add' ? a + b : n[0] === 'i32.sub' ? a - b : a * b
-    }
-    return null
-  }
-  let aliasGuards = null
-  {
-    const guards = [], seenPairs = new Set()
-    let sawMismatch = false, unversionable = false, bodyTooBig = null   // lazy: only sized once actually needed
-    for (let i = 0; i < sites.length; i++) {
-      const st = sites[i]
-      if (st.kind !== 'store') continue
-      for (let j = 0; j < sites.length; j++) {
-        if (i === j) continue
-        const s = sites[j]
-        if (!exprEq(normTee(s.base), normTee(st.base)) || elemKey(s) === elemKey(st)) continue
-        const pk = i < j ? `${i}|${j}` : `${j}|${i}`
-        if (seenPairs.has(pk)) continue
-        seenPairs.add(pk)
-        if ((st.memBytes - s.memBytes) % stride !== 0) { sawMismatch = true; unversionable = true; continue }
-        const constDelta = (s.memBytes - st.memBytes) / stride
-        const foldedA = foldAtIv0(s.idx), foldedB = foldAtIv0(st.idx)
-        if (foldedA != null && foldedB != null) {
-          // Fully compile-time: resolve now, never touches `aliasVersion`/size gates — a
-          // provably-disjoint constant offset costs NOTHING (no guard, no clone), matching the
-          // zero-cost path every ordinary elemKey MATCH already gets.
-          if (Math.abs(foldedA - foldedB + constDelta) >= lanesForGuard) continue
-          sawMismatch = true; unversionable = true; continue
-        }
-        sawMismatch = true
-        if (bodyTooBig == null) bodyTooBig = body.reduce((n, stmt) => n + gmNodeCount(stmt), 0) > ALIAS_VERSION_MAX_BODY_NODES
-        if (!aliasVersion || bodyTooBig) { unversionable = true; continue }
-        let delta = ['i32.sub', cloneNode(s.idx), cloneNode(st.idx)]
-        if (constDelta !== 0) delta = ['i32.add', delta, ['i32.const', String(constDelta)]]
-        guards.push(['i32.or',
-          ['i32.le_s', delta, ['i32.const', String(-lanesForGuard)]],
-          ['i32.ge_s', delta, ['i32.const', String(lanesForGuard)]]])
-      }
-    }
-    if (sawMismatch) {
-      if (unversionable) return null
-      aliasGuards = guards
-    }
-  }
+  // Same-array dependence gate (alias.js): a constant element distance decides now, an
+  // invariant one versions the loop behind hoisted checks (the header doc's "RUNTIME ALIAS
+  // VERSIONING" note).
+  const guards = aliasGuards(sites, stride, LANE_INFO[laneType].lanes, { defs, varying: ivWrites, version: aliasVersion })
+  if (!guards) return null
 
   // A scalar local whose every write is address/offset-shaped (an addrTees/offTees entry, or
   // matches the SAME address grammar directly) is index arithmetic, not lane data — kept scalar
@@ -574,10 +534,15 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   // no special-casing needed here) already lifts that shape to `i32x4.add` correctly. A local
   // whose value liftStmt/liftExprV genuinely can't lift under this lane type fails closed
   // (`ctx.fail`, checked below) — never a silent miscompile, same safety net tryVectorize relies on.
+  // A secondary counter, or an index temporary that moves with a counter, is index
+  // arithmetic too: its lane-0 value addresses the vector, and as lane data it fails closed.
+  const movesWithCounter = (name) => defs.has(name) &&
+    (ivCoeff(['local.get', name]) === 1 || ivCoeffs.some(([, coeff]) => coeff(['local.get', name]) === 1))
   const localKind = new Map()
   for (const name of blReferenced) {
     if (name === incVar) continue
     const ty = fnLocals.get(name)
+    if (ivs.some(iv => iv.name === name) || movesWithCounter(name)) { localKind.set(name, 'addr'); continue }
     if (ty === 'i32' && (addrTees.has(name) || offTees.has(name) || _isAddrLocalGM(name))) { localKind.set(name, 'addr'); continue }
     if (writes.has(name)) {
       const access = laneAccess(body, name, bl.outsideReads)
@@ -588,6 +553,8 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
 
   const newLanedLocals = new Map(), extraLocals = []
   const ctx = liftCtx(laneType, incVar, localKind, freshIdRef, fnLocals, newLanedLocals, extraLocals)
+  ctx.gathers = gathers
+  ctx.indexDefs = defs
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -597,9 +564,9 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   if (!lifted.length) return null
   // Cost model (Part 2 — see the header doc right before tryGeneralMap): decline
   // when the vector step costs at least as much per lane as the scalar iteration it replaces.
-  // `aliasGuards` (computed above) is non-null only for the versioned path; its own `.length` is
+  // `guards` (computed above) is non-empty only for the versioned path; its own `.length` is
   // the guard-clause count the wrapper below actually ANDs together, so it's the right count here.
-  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, aliasGuards ? aliasGuards.length : 0))
+  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, guards.length))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   const id = freshIdRef.next++
@@ -610,21 +577,15 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     ['i32.add', ['local.get', incVar],
       ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', mask]]]]
   const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
+    ...ivs.map(({ name, step }) => ['local.set', name, ['i32.add', ['local.get', name], laneStep(step, lanes)]]),
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])
-  // Runtime alias versioning (see header doc): when `aliasGuards` is non-null, the SIMD path
-  // (unchanged) runs only behind a hoisted disjointness check; the else-branch is a FRESH clone
-  // of the original loop — `bl.blockNode` itself stays reserved for the tail-after-SIMD use
-  // above, so the fallback needs its own independent copy, not a second reference to the same
-  // node. `preamble` (pure & loop-invariant, established by every recognizer in this file) stays
-  // a single shared prefix ahead of the branch — safe for the alias-fallback path too, since the
-  // untouched clone of `bl.blockNode` re-derives the same values internally regardless.
-  const simdPath = [boundSetup, simdBlock, bl.blockNode]
-  const guardedPath = aliasGuards
-    ? [['if', aliasGuards.reduce((a, g) => a == null ? g : ['i32.and', a, g], null),
-        ['then', ...simdPath],
-        ['else', cloneNode(bl.blockNode)]]]
-    : simdPath
-  const wrapper = ['block', ...preamble.map(cloneNode), ...guardedPath]
+  // Runtime alias versioning (see header doc): with `guards`, the SIMD strip runs only
+  // behind the hoisted disjointness check. The kept scalar loop is the fallback as it is the
+  // tail: a skipped strip leaves the counters at their entry values, so it runs every iteration.
+  const simdPath = guards.length
+    ? [['if', guards.reduce((a, g) => ['i32.and', a, g]), ['then', boundSetup, simdBlock]]]
+    : [boundSetup, simdBlock]
+  const wrapper = ['block', ...preamble.map(cloneNode), ...simdPath, bl.blockNode]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
   return { wrapper, newLocalDecls }
 }

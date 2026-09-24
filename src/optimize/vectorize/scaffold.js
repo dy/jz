@@ -1,7 +1,7 @@
 
 import { DBG_INVARIANTS } from '../../debug.js'
 import { walkAst } from '../../ast.js'
-import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isLocalGet, matchExitBrIf, matchInc1, matchIncN } from './addr-model.js'
+import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchInc1, matchIncN } from './addr-model.js'
 import { isArr } from './node-utils.js'
 
 // ---- Recognize a (block (loop)) pair --------------------------------------
@@ -34,8 +34,8 @@ import { isArr } from './node-utils.js'
  *   a non-`$__li` preamble, an impure value, or any array content AFTER the loop
  *   bails. When false, ANY non-loop array content in the block bails.
  *
- * Three opt-ins below cover recognizers whose acceptance genuinely differs — see each for
- * its exact contract: `opts.multiInc` (tryRampMap), `opts.envelope: 'loose'`
+ * Four opt-ins below cover recognizers whose acceptance genuinely differs; see each for
+ * its exact contract: `opts.multiInc` (tryRampMap), `opts.ivRun` (tryGeneralMap), `opts.envelope: 'loose'`
  * (tryBlurMultiPixel/tryChannelReduce), `opts.envelope: 'pixelIV'` (matchOuterPixelLoop).
  */
 // A transparent block — no label (first child isn't a `$label` string) and no result — is
@@ -231,6 +231,38 @@ export function matchBlockLoop(blockNode, opts = {}) {
     const boundLocal = isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string' ? bound[1] : null
     const body = loopNode.slice(3, bodyEnd + 1)
     return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incVar, exitInfo, bound, boundLocal, body, preamble, increments, ...bodyFacts(body, incVar) }
+  }
+
+  // ivRun (tryGeneralMap): the loop ends in a run of counter steps, `j++, k += step`:
+  // the exit counter by 1, every other counter by a constant or a local the loop never
+  // writes. `ivs` lists those secondary counters as { name, step }; the body stops before
+  // the run, and `writes` counts them, so a recognizer that ignores `ivs` never reads one
+  // as loop-invariant.
+  if (opts.ivRun) {
+    const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
+    if (!exitInfo) return null
+    let runStart = endIdx
+    const run = []
+    while (runStart - 1 >= 3) {
+      const st = loopNode[runStart - 1]
+      if (!isArr(st) || st[0] !== 'local.set' || st.length !== 3 || !isArr(st[2]) || st[2][0] !== 'i32.add' ||
+          !isLocalGet(st[2][1], st[1]) || !(isI32Const(st[2][2]) || isLocalGet(st[2][2]))) break
+      run.unshift({ name: st[1], step: st[2][2] })
+      runStart--
+    }
+    const incVar = exitInfo.ind
+    const exit = run.filter(x => x.name === incVar)
+    if (exit.length !== 1 || constNum(exit[0].step) !== 1 || new Set(run.map(x => x.name)).size !== run.length) return null
+    const body = loopNode.slice(3, runStart)
+    const facts = bodyFacts(body, incVar)
+    const ivs = run.filter(x => x.name !== incVar)
+    for (const { name, step } of ivs) {
+      if (isLocalGet(step) && (facts.writes.has(step[1]) || run.some(x => x.name === step[1]))) return null
+      facts.writes.add(name)
+    }
+    const bound = exitInfo.bound
+    const boundLocal = isLocalGet(bound) && typeof bound[1] === 'string' ? bound[1] : null
+    return { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx: runStart, incVar, exitInfo, bound, boundLocal, body, preamble, ivs, ...facts }
   }
 
   const incIdx = endIdx - 1

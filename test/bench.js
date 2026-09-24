@@ -408,7 +408,7 @@ const WASM_TODO = {
   // tokenizer: WON. Param string decomposition makes both SSO/heap arms
   // trap-safe, then unswitches the representation once outside each leaf scan;
   // five repeated frontiers put jz at 43–48µs vs AS 51–55µs.
-  // fft: tryButterfly strips the dual-IV radix-2 inner loop 2-wide: adjacent
+  // fft: the general map strips the dual-counter radix-2 inner loop 2-wide: adjacent
   // re/im a/b pairs as v128, strided twiddles as scalar-pair+combine, rotation lanes with no
   // reassociation/fusion ⇒ checksum-identical (the parity contract held through SIMD).
   // 8% over scalar, ahead of rust-wasm; provenance rode the same recognizer for -32%.

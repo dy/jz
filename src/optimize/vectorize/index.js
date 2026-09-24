@@ -51,7 +51,6 @@ import { warn, ctx } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import { constNum, isI32Const } from './addr-model.js'
 import { tryChannelReduce } from './blur-channel.js'
-import { tryButterfly } from './butterfly.js'
 import { tryDivergentEscapeVectorize } from './divergent-escape.js'
 import { hoistReductionInvariantsIn, slpPairsIn } from './dot-slp.js'
 import { vecState } from './lift.js'
@@ -262,6 +261,13 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       let blLoose, blLooseComputed = false
       const getBlLoose = () => blLooseComputed ? blLoose
         : (blLooseComputed = true, blLoose = matchBlockLoop(node, { envelope: 'loose' }))
+      // The counter-run variant (secondary counters `k += step` beside the exit one), for
+      // the general map, which gathers through them; the plain scaffold when it declines.
+      const getBlRun = () => {
+        const run = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true, ivRun: true })
+        if (run) run.outsideReads = outsideReads
+        return run ?? bl
+      }
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
@@ -271,8 +277,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP)
         ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
-        ?? tryButterfly(node, fnLocals, freshIdRef)
-        ?? tryGeneralMap(node, fnLocals, freshIdRef, bl, { aliasVersion })
+        ?? tryGeneralMap(node, fnLocals, freshIdRef, getBlRun(), { aliasVersion })
         ?? tryGeneralStencil(node, fnLocals, freshIdRef, stencil, bl, { aliasVersion })
         ?? tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.

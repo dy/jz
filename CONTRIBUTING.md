@@ -496,6 +496,9 @@ its three outer ones, 97 to 75 ms. Both are differential against the same
 program with the pass off in `test/value-number.js` and `test/schedule.js`.
 The occurrence census is an upper bound: a capture that receives no dominating
 reuse is restored to its original expression, without retaining a local.
+Helper expansion comes after both: `$__ptr_offset` stays a call through every
+pass (LICM hoists it, unswitch and devirt recognize it, value numbering shares
+a repeated one), and its inline fast path is lowering, the last step.
 
 Argument lowering and result packing are independent: ordinary, rest and spread
 calls share multi-value materialization. Tail calls require the complete result
@@ -1544,7 +1547,9 @@ Discipline (non-negotiable — these run in the default `speed` build that ships
 
 Coverage is not exhausted but is diminishing-returns vs reach work (see `.work/audit.md` §9): i32x4 cellular
 automata (game-of-life/ising/rule30) and lyapunov's carried-recurrence outer-strip remain feasible;
-gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scatter, so route them to scalar.
+data-dependent gathers and scatters (dla/sand/voronoi) are not: WASM-SIMD has neither, so they stay
+scalar. A read strided by a secondary counter (`k += step`) gathers lane by lane in the general map
+when the cost model finds enough work per element (the radix-2 butterfly's twiddles).
 
 ## Principles
 

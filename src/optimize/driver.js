@@ -2,9 +2,9 @@
  * The pass driver: `optimizeFunc` runs every per-function IR optimization on
  * one func node, in the fixed order the passes' cross-comments document
  * (structural hoists before the fused peephole walk, LICM before and after
- * fusedRewrite, vectorize before the late ptr_offset inliner, devirt before
- * the final loop-rotation/bool-canon/local-sort cleanup). Each pass lives in
- * its own family module; this file only sequences them.
+ * fusedRewrite, devirt before value numbering and scheduling, and the helper
+ * expansion last). Each pass lives in its own family module; this file only
+ * sequences them.
  *
  * @module optimize/driver
  */
@@ -128,18 +128,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // iteration in hot dot/sum-style reduction loops.
     foldV128Memargs(fn)
   }
-  // Speed-tier only, and deliberately LATE (after unswitchTypedParamLoop/
-  // vectorizeLaneLocal above, not bundled into fusedRewrite's earlier walk):
-  // unswitchTypedParamLoop's polymorphic-store recognizer pattern-matches the
-  // RAW `(call $__ptr_offset …)` shape inside the typed-array fallback store to
-  // prove a Float64Array param loop is safe to unswitch + SIMD-lift — running
-  // this inline first (it used to live in fusedRewrite) erased that shape and
-  // silently starved the unswitch of its match (a whole scalar→SIMD loop lift
-  // lost to save a handful of call frames — measured on the DSP self-map flagship
-  // shape, test/unswitch-typed-param.js). Running here, after that pass has had
-  // its pick, inlines whatever `$__ptr_offset` calls remain — still the large
-  // majority of sites.
-  if (cfg && cfg.inlinePtrOffsetFast === true) inlinePtrOffsetFastPass(fn)
   // Preserve source-unrolled SSA scratch before propagation sinks its single
   // definition into a local.tee. The transform is gated while it matures; when
   // enabled, its moved invariants ride the normal LICM pass once more below.
@@ -157,6 +145,10 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // then the statements in order of the work that depends on them (optimize/schedule.js).
   if (!cfg || cfg.valueNumber !== false) valueNumber(fn, cfg?._pureCallees ?? null)
   if (!cfg || cfg.scheduleStatements !== false) scheduleStatements(fn, cfg?._pureCallees ?? null)
+  // Helper calls are the form every pass above reasons about: LICM hoists an invariant
+  // `$__ptr_offset`, unswitch and devirt recognize it, value numbering shares a repeated one.
+  // Its inline fast path is lowering (speed tier), so it runs last.
+  if (cfg && cfg.inlinePtrOffsetFast === true) inlinePtrOffsetFastPass(fn)
   // The fold, loop rotation, the condition chains and the boolean
   // canonicalization follow on the tape (src/link).
   // An optimizer pass that emits a malformed local — the class that otherwise dies

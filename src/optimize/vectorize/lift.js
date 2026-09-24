@@ -1,4 +1,5 @@
 import { registerResetHook } from '../../ctx.js'
+import { cloneNode } from '../../ast.js'
 import { hasBranchOrReturn, hasSideEffect, isI32Const, matchMirrorAddr } from './addr-model.js'
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
@@ -60,6 +61,27 @@ export const liftCtx = (laneType, incVar, localKind, freshIdRef, fnLocals = null
   aosPixelStride = 1, pureFuncMap = null, constLocals = null, rampVar = null, widenLoads = false) =>
   ({ laneType, incVar, rampVar, rampTemp: null, widenLoads, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef,
     fail: false, failReason: null, aosPixelStride, pureFuncMap, inlineDepth: 0, constLocals })
+
+// A counter's advance over `lanes` iterations of `step` (a constant or an invariant local).
+export const laneStep = (step, lanes) => isI32Const(step) ? ['i32.const', Number(step[1]) * lanes]
+  : lanes === 1 ? cloneNode(step) : ['i32.mul', cloneNode(step), ['i32.const', lanes]]
+
+// A load whose index follows a secondary counter (`k += step`): lane L reads the element at
+// k + L·step, one scalar load per lane, packed into the vector in lane order. An index
+// temporary on the way (`t = k + 1`) holds lane 0's value, so lane L reads its definition.
+function gatherLanes(load, { name, step }, info, defs) {
+  const shape = info.splat.slice(0, info.splat.indexOf('.'))
+  const at = (L) => {
+    const lane = (n) => !isArr(n) ? n
+      : n[0] === 'local.get' && n[1] === name ? ['i32.add', ['local.get', name], laneStep(step, L)]
+      : n[0] === 'local.get' && defs?.has(n[1]) ? lane(defs.get(n[1]))
+      : n.map(lane)
+    return L ? lane(load) : cloneNode(load)
+  }
+  let v = [info.splat, at(0)]
+  for (let L = 1; L < info.lanes; L++) v = [`${shape}.replace_lane`, L, v, at(L)]
+  return v
+}
 
 // Mark a lift bail and record its reason. First-write-wins: the innermost failing op
 // sets ctx.failReason; outer frames see ctx.fail already set and return without
@@ -405,6 +427,8 @@ export function liftExprV(expr, ctx) {
   // Loads → v128.load (preserving address, including any local.tee).
   if (LOAD_OPS[op]) {
     if (LOAD_OPS[op] !== ctx.laneType) return liftFail(ctx, `${op}: load type ≠ lane type ${ctx.laneType}`)
+    const gather = ctx.gathers?.get(expr)
+    if (gather) return gatherLanes(expr, gather, info, ctx.indexDefs)
     // AoS de-interleave: consecutive elements are DIFFERENT channels, so a plain v128.load
     // would mix channels — gather the same channel of pixels i, i+1 into the f64x2 instead.
     if (ctx.aosPixelStride > 1) return aosGather(expr, ctx)

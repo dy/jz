@@ -5,7 +5,7 @@ import { isArr } from './node-utils.js'
 // ---- Cost model (.work/archive/vectorizer-generality-design.md's final follow-up seam, Part 2): a
 // profitability gate for the GENERAL base layers ONLY (tryGeneralMap/
 // tryGeneralStencil/tryGeneralReduce below) — every idiom FUSER above (tryDivergentEscapeVectorize,
-// tryBlurMultiPixel, tryButterfly, …) keeps its own separately-tuned, always-fire behavior
+// tryBlurMultiPixel, …) keeps its own separately-tuned, always-fire behavior
 // unchanged; this gate never runs for them. Today the three general recognizers vectorize
 // UNCONDITIONALLY the instant their affine/dependence proof succeeds — sound, but blind to
 // whether the SIMD prologue/epilogue/blend overhead is actually worth paying for a given body.
@@ -49,7 +49,7 @@ import { isArr } from './node-utils.js'
 // TOWARD the blend-specific weight (which only penalizes if-conversion codegen). A full corpus
 // sweep against the test suite is the decisive calibration signal — not either number in isolation.
 const COST_WEIGHT = { load: 1, store: 1, bitselect: 5, div: 8, div_s: 8, div_u: 8, rem_s: 8, rem_u: 8 }
-const _COST_ARITH_RE = /^(add|sub|mul|and|or|xor|shl|shr|eqz|eq|ne|lt|gt|le|ge|min|max|neg|abs|sqrt|floor|ceil|trunc|nearest|convert|extend|narrow|wrap|promote|demote|splat|clz|ctz|popcnt|copysign|reinterpret|pmin|pmax)/
+const _COST_ARITH_RE = /^(add|sub|mul|and|or|xor|shl|shr|eqz|eq|ne|lt|gt|le|ge|min|max|neg|abs|sqrt|floor|ceil|trunc|nearest|convert|extend|narrow|wrap|promote|demote|splat|replace_lane|clz|ctz|popcnt|copysign|reinterpret|pmin|pmax)/
 function opCostWeight(op) {
   if (typeof op !== 'string') return 0
   const suffix = op.includes('.') ? op.slice(op.lastIndexOf('.') + 1) : op
@@ -120,8 +120,7 @@ export function isProfitable(body, lifted, lanes, guardCount = 0) {
 
 // ---- General MAP base layer (.work/archive/vectorizer-generality-design.md §2-3 step 3, MAP slice) --
 //
-// BASE LAYER: runs LAST in the dispatch chain (after every idiom recognizer above, including
-// tryButterfly) — it exists to catch dependence-free elementwise loops whose address arithmetic
+// BASE LAYER: runs LAST in the dispatch chain (after every idiom recognizer above): it exists to catch dependence-free elementwise loops whose address arithmetic
 // isn't one of the specific WAT shapes tryVectorize/tryMemCopyFill/tryRampMap/tryToneMap/
 // tryStencil hand-match, not to compete with them for the specimens they already own (first-
 // match-wins dispatch order is unchanged, so every existing corpus hit is untouched).
@@ -135,10 +134,16 @@ export function isProfitable(body, lifted, lanes, guardCount = 0) {
 // is ambiguously either address/index scalar OR i8/i16/i32 LANE data (both share WAT storage
 // type 'i32'); this pass resolves that ambiguity the same way tryVectorize's own `_isAddressLocal`
 // does (ported below as `_isAddrLocalGM`, parametrized on THIS pass's own `matchAddr`).
+// An index temporary (`const a = i + j, b = a + half`: one top-level definition before any
+// read) stands for its definition (addr-model.js indexDefs), and a loop ending in a run of
+// counter steps (`j++, k += step`, scaffold.js ivRun) takes its secondary counters too: an
+// index affine in one gathers, lane L reading the element at k + L·step (lift.js gatherLanes),
+// and the strip advances it by lanes·step.
 //
 // Dependence proof: no loop-carried scalar (tryVectorize/tryStencil's own "first access of a
 // written local must not be a read" rule, reused verbatim), plus tryStencil's own same-array
-// alias gate — every access to a WRITTEN base must hit the SAME element (`elemKey`); a mismatch
+// alias gate (alias.js): every access to a WRITTEN base must hit the same element or one at
+// least `lanes` away, the distance being the difference of the two linear indices; a closer one
 // (e.g. `a[i] = a[i-1] + a[i]`, a genuine recurrence) is a real cross-iteration dependency.
 // Distinct bases (different arrays) are assumed non-aliasing — the same baseline convention
 // tryVectorize/tryStencil already rely on (tryStencil's own doc, "the SAME assumption the plain
@@ -169,15 +174,12 @@ export function isProfitable(body, lifted, lanes, guardCount = 0) {
 // initiative (base-provenance analysis: which locals are provably fresh/non-escaping vs.
 // caller-supplied) that this pass does not attempt.
 //
-// When every mismatch reduces to that shape, the loop is VERSIONED: the SIMD body (this whole
+// When every mismatch reduces to that shape, the loop is VERSIONED: the SIMD strip (this whole
 // pass's normal codegen, unchanged) runs behind a hoisted, loop-invariant disjointness guard
-// (`i32.or(D ≤ −lanes, D ≥ lanes)`, ANDed across every mismatched pair); the ELSE branch is a
-// fresh CLONE of `bl.blockNode` — the UNTOUCHED original scalar loop, byte-identical store order,
-// used nowhere else in the wrapper (the existing SIMD-prefix tail keeps its own separate use of
-// the same node). Declines (returns null, exactly as before — zero behavior change) when: the op
-// isn't enabled (`aliasVersion` opt), the body is too large to duplicate a second time
-// (`ALIAS_VERSION_MAX_BODY_NODES` — reused, not invented, see its own doc), or a mismatch's
-// element delta isn't expressible as an integer (a non-stride-aligned `offset=N` memarg, which
+// (`i32.or(D ≤ −lanes, D ≥ lanes)`, ANDed across every mismatched pair). A failed guard skips
+// the strip, and the kept scalar loop, which is also the strip's tail, runs every iteration: no
+// second copy of the loop. Declines (returns null) when the op isn't enabled (`aliasVersion`
+// opt), or a mismatch's element delta isn't expressible as an integer (a non-stride-aligned `offset=N` memarg, which
 // `matchOffset`/`matchAddr`'s own grammar has never produced in practice but isn't proven
 // impossible) — the same conservative "no partial credit" posture every gate in this file uses.
 //
@@ -204,16 +206,3 @@ export function isProfitable(body, lifted, lanes, guardCount = 0) {
 // versioning (needs a base-provenance analysis this pass doesn't have — see the versioning note
 // above).
 
-// Loop-versioning body-size gate (layer 3): a genuine SAME-BASE dependence that IS runtime-
-// disjoint gets a versioned wrapper — SIMD body + a second, full clone of the scalar loop as the
-// alias fallback — instead of an unconditional decline. That second clone is real code-size cost
-// this pass didn't pay before, so it's capped exactly like `optimize/recurse.js`'s own
-// body-duplicating transform (accumulator-fusion recursion unrolling) caps ITS clone: same
-// number, same rationale ("a small body"), reused verbatim rather than inventing a new threshold.
-export const ALIAS_VERSION_MAX_BODY_NODES = 110
-export const gmNodeCount = (n) => {
-  if (!isArr(n)) return 1
-  let c = 1
-  for (let i = 1; i < n.length; i++) c += gmNodeCount(n[i])
-  return c
-}

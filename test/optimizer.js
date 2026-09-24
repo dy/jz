@@ -2092,6 +2092,40 @@ test('fractional recurrence proofs require a reset on every nested-loop entry', 
   }
 })
 
+test('a comma step in statement position emits one write per counter', () => {
+  // `j++, k += 2` computes no value: two plain writes, not a value block whose value is
+  // dropped (the stack form that hid the counters from the loop scaffolds).
+  const src = `export let f = (a, n) => { let s = 0; for (let j = 0, k = 0; j < n; j++, k += 2) s += a[k] + j; return s }`
+  if (!onKernel() && !belowOpt(2)) {
+    const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
+    is(/\(drop\s*\(i32\.sub\s*\(local\.tee/.test(wat), false, 'no dropped postfix value')
+    is(/\(block\s*\(result i32\)\s*\(drop/.test(wat), false, 'no value block around the step')
+  }
+  const js = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) is(run(src, { optimize }).f([1, 2, 3, 4, 5, 6, 7], 3), js([1, 2, 3, 4, 5, 6, 7], 3), `O${optimize}`)
+})
+
+test('fractional recurrence bounds read the counter hull: strided steps and guard-bounded trip counts', () => {
+  // One derivation of the counter's facts (the emitter's, on the lowering link) bounds any
+  // counted loop whose hull is known: a step of 2, a runtime bound a guard caps.
+  const sources = [
+    `export function f(flag){let p=1,s=0;for(let k=0;k<1000;k+=2){s+=p|0;p+=0.75}return [s,p,flag?(p|0):9]}`,
+    `export function f(flag,n){if(n>5000||n<0)return [0];let p=1,s=0;for(let k=0;k<n;k++){s+=p|0;p+=0.75}return [s,p,flag?(p|0):9]}`,
+  ]
+  for (const src of sources) {
+    const js = oracle(src).f
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const f = run(src, { optimize }).f
+      for (const [flag, n] of [[0, 0], [1, 4999], [0, 17], [1, 5000], [0, -1]]) is(f(flag, n), js(flag, n), `O${optimize}, flag=${flag}, n=${n}`)
+    }
+    if (!onKernel() && !belowOpt(2)) {
+      const wat = compile(src, { wat: true, optimize: { level: 2, watr: false, wideAccumulator: false } })
+      const guards = count(findFunc(parseWat(wat), '$f'), n => n[0] === 'f64.ne' && n[2]?.[0] === 'f64.const' && n[2][1] === 'inf')
+      is(guards, 0, 'the counted recurrence drops its infinity guards')
+    }
+  }
+})
+
 test('fractional recurrence proofs reject unknown entries, multiple writes and skipped counter steps', () => {
   const sources = [
     `export function f(p){let s=0;for(let i=0;i<5;i++){s+=p|0;p+=0.25}return [s,p]}`,

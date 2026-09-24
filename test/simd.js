@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url'
 import { belowOpt, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { run, wat, oracle, funcWat } from './util.js'
+import parseWat from 'watr/parse'
+import encodeWat from 'watr/compile'
+import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -85,18 +88,16 @@ test('SIMD f64x2 - rounding ops (floor/ceil/trunc) lift, bit-exact at edges', ()
   ok(/f64x2\.floor/.test(w) && /f64x2\.ceil/.test(w) && /f64x2\.trunc/.test(w), 'expected f64x2 rounding ops')
 })
 
-// === Radix-2 butterfly (tryButterfly) — the Cooley-Tukey inner loop ===
-// Dual-IV scaffold (j carries the exit test, k walks the twiddles by STEP): the shape no
-// generic lane lift takes. Lanes j/j+1 pair every re/im a/b access adjacently, the twiddle
-// pair loads scalar+combines, and the rotation lanes with no reassociation and no fusion —
-// BIT-EXACT by construction (the cross-engine checksum contract). Odd tails and half<2
-// fall through to the kept scalar loop.
+// === Radix-2 butterflies — the general map over counters, index temporaries and gathers ===
+// The Cooley-Tukey inner loop is no special shape: `j` exits, `k += step` walks the twiddles
+// (a secondary counter: its reads gather, lane L at k + L·step), `a = i + j, b = a + half` are
+// index temporaries, and the in-place a/b update is a same-array pair `half` elements apart,
+// versioned behind one hoisted `|half| ≥ 2` check. Lanes compute the exact scalar sequence (no
+// reassociation, no fusion), so the result is bit-identical; half < 2 and odd tails run scalar.
 
 test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
-  // The kernel takes typed-array PARAMS (the bench structure): unswitchTypedParamLoop
-  // proves the bounds away and the body reaches the recognizer as the canonical
-  // 17-statement butterfly. N arrives as a param too — a literal N constant-folds
-  // half/step and the tiny-FFT unroller takes the loop apart first.
+  // The kernel takes typed-array PARAMS (the bench structure); N arrives as a param too — a
+  // literal N constant-folds half/step and the tiny-FFT unroller takes the loop apart first.
   const src = `let fft = (re, im, wre, wim, n) => {
     for (let len = 2; len <= n; len <<= 1) {
       const half = len >> 1
@@ -128,41 +129,109 @@ test('SIMD butterfly - radix-2 FFT inner loop strips 2-wide, bit-exact', () => {
     return h
   }`
   const von = runVec(src, SIMD_OPT).main, voff = runVec(src, NOVEC).main
-  for (const n of [2, 4, 8, 64]) {  // n=2 → half=1: tail-only, strip never enters
-    is(von(n), voff(n), `butterfly N=${n} bit-exact`)
-  }
+  for (const n of [2, 4, 8, 64]) is(von(n), voff(n), `butterfly N=${n} bit-exact`)  // n=2: half=1, the check fails
   const w = wat(src, SIMD_OPT)
-  // RECOVERED 2026-08-03 (audit-P1-2 residual B follow-up, root-caused via direct WAT/IR
-  // instrumentation, not guesswork). tryButterfly's exact 17-statement scaffold was declining
-  // not because of a CSE/scheduling shape change (an earlier session's WAT-TEXT-PRINTER
-  // misread — the pretty-printed .wat cosmetically folds a dead computed-and-dropped value,
-  // same trap as wrapIntIR's own false lead) but because the loop counter `j`'s comma-step
-  // dual-IV header (`for (let j=0,k=0; j<half; j++,k+=step)`) lost c8700daa's loop-counter
-  // RANGE-PROOF lever two ways: (1) forCounterRange (emit.js) required a single-declarator
-  // init, bailing on the two-declarator `let j=0,k=0`; (2) this loop ALSO triggers Root-F's
-  // typed-bounds guard (it indexes re/im/wre/wim), whose fast/checked arms both re-emit the
-  // loop via `emitter['for'](null, cond, step, body)` — init nulled since the real init
-  // already ran once before the guard branch — so forCounterRange(null, …) proved nothing in
-  // EITHER arm even once (1) was fixed. Without j's own range, the comma-step's DROPPED
-  // postfix-value expression (`(++j) - 1`, unused but still typed) fell to the f64
-  // round-trip, breaking tryButterfly's literal `i32.sub` match on the increment block.
-  // Fixed at the root, three general (non-butterfly-specific) static.js/emit.js levers:
-  //   - forCounterRange finds `name`'s own declarator among several, and unwraps a
-  //     comma-step to find `name`'s own mutation among several step expressions;
-  //   - Root-F's guard computes the counter's [lo,hi] hull ONCE from the real init still in
-  //     scope, and threads it via withRefinements into BOTH re-emitted arms — sound
-  //     unconditionally (unlike the bound-name magnitude lever, which needs the guard to
-  //     have passed);
-  //   - intExprRange (static.js) gained cases for the signed `>>` operator (only its
-  //     unsigned `>>>` sibling existed — needed for `half = len >> 1`'s bound) and for
-  //     `++`/`--` as an expression VALUE (operand's range ± 1 — needed to resolve the
-  //     comma-step's own dropped post-increment expression).
-  ok(/__bf\d+_/.test(w), 'butterfly strip fires (tryButterfly matched the 17-statement scaffold)')
-  const v128Ops = w.match(/f64x2\.\w+|v128\.\w+/g) || []
-  is(v128Ops.length, 22,
-    'butterfly strip: exact v128/f64x2 op count (2 twiddle replace_lane + 2 splat, 4 v128.load, ' +
-    '4 v128.store, 4 f64x2.mul, 3 f64x2.sub, 3 f64x2.add — ONE wrapper, no duplicate match)')
-  ok(/f64x2\.mul/.test(w) && /v128\.load/.test(w) && /v128\.store/.test(w), 'rotation lanes + paired loads/stores')
+  const count = (re) => (w.match(re) || []).length
+  is(count(/f64x2\.replace_lane/g), 2, 'the two twiddle reads gather through k (k, k + step)')
+  is(count(/v128\.store/g), 4, 're/im at a and b store as pairs')
+  is(count(/f64x2\.mul/g), 4, 'the rotation lanes')
+  is(count(/i32\.ge_s \(local\.get \$\w+\) \(i32\.const 2\)/g), 1, 'one hoisted |half| >= 2 check covers every a/b pair')
+})
+
+test('SIMD butterfly - index temporaries and contiguous twiddles vectorize, bit-exact', () => {
+  // The fftplan shape: twiddles at ti + j (no second counter). Only the index temporaries
+  // stand between it and the general map.
+  const src = `const transform = (re, im, twRe, twIm, n) => {
+    let ti = 0
+    for (let len = 2; len <= n; len <<= 1) {
+      const half = len >> 1
+      for (let i = 0; i < n; i += len) {
+        for (let j = 0; j < half; j++) {
+          const wr = twRe[ti + j], wi = twIm[ti + j]
+          const a = i + j, b = a + half
+          const xr = re[b], xi = im[b]
+          const tr = wr * xr - wi * xi
+          const t2 = wr * xi + wi * xr
+          re[b] = re[a] - tr
+          im[b] = im[a] - t2
+          re[a] = re[a] + tr
+          im[a] = im[a] + t2
+        }
+      }
+      ti += half
+    }
+  }
+  export let main = (nn) => {
+    const N = nn | 0
+    const re = new Float64Array(N), im = new Float64Array(N), twRe = new Float64Array(N), twIm = new Float64Array(N)
+    for (let i = 0; i < N; i++) { re[i] = Math.sin(i * 2.3) * 5; im[i] = Math.cos(i * 1.1); twRe[i] = Math.cos(i * 0.7); twIm[i] = -Math.sin(i * 0.7) }
+    transform(re, im, twRe, twIm, N)
+    let h = 0
+    for (let i = 0; i < N; i++) { const u = (re[i] * 1e6) | 0, v = (im[i] * 1e6) | 0; h = ((h ^ u) * 16777619 + v) | 0 }
+    return h
+  }`
+  const von = runVec(src, SIMD_OPT).main, voff = runVec(src, NOVEC).main
+  for (const n of [2, 4, 8, 64]) is(von(n), voff(n), `N=${n} bit-exact`)
+  const w = wat(src, SIMD_OPT)
+  is((w.match(/v128\.store/g) || []).length, 4, 're/im at a and b store as pairs')
+})
+
+test('SIMD gather - a secondary counter strides a read, bit-exact across strides', () => {
+  // `k += s` beside `j++`: the read of src[k] gathers lane by lane; its range (k0 + t·s over
+  // the trip count) also proves the read in bounds, so no checked twin is emitted.
+  const src = `const src = new Float64Array(4096), acc = new Float64Array(512), out = new Float64Array(512)
+  export let main = (ss) => {
+    const s = (ss & 7) + 1
+    for (let i = 0; i < 4096; i++) src[i] = Math.cos(i * 0.37)
+    for (let i = 0; i < 512; i++) acc[i] = Math.sin(i * 0.11)
+    for (let j = 0, k = 0; j < 512; j++, k += s) {
+      const x = src[k], a = acc[j]
+      out[j] = (x * 2.5 + a) * (a - 0.5) + x * x * 0.25 - a * 3
+    }
+    let h = 0
+    for (let i = 0; i < 512; i++) h = (h * 31 + ((out[i] * 1e6) | 0)) | 0
+    return h
+  }`
+  const von = runVec(src, SIMD_OPT).main, voff = runVec(src, NOVEC).main
+  for (const s of [0, 1, 2, 3, 7, 12]) is(von(s), voff(s), `stride ${(s & 7) + 1} bit-exact`)
+  const w = wat(src, SIMD_OPT)
+  is((w.match(/f64x2\.replace_lane/g) || []).length, 1, 'src[k] gathers two lanes')
+  is((w.match(/i32\.lt_u/g) || []).length, 0, 'no checked read: the counter range bounds k')
+  is((w.match(/\(loop/g) || []).length, 5, 'two fills, the strip and its scalar tail, the hash: no versioned twin')
+})
+
+test('SIMD gather - a lane reads through an index temporary at its own counter value', () => {
+  // `t = k + 1` holds lane 0's index; lane L reads t's definition at k + L·step. Driven on IR:
+  // from source such a temporary's own range is not yet proven, so its read stays checked.
+  if (onKernel()) return   // drives the host vectorizer on its own IR
+  compile('export let f = () => 1')   // a compile session for the vectorizer's context
+  const src = `(module (memory 1)
+    (func $f (export "f") (param $s i32) (param $n i32) (result f64)
+      (local $i i32) (local $j i32) (local $k i32) (local $t i32) (local $x f64) (local $acc f64) (local $src i32) (local $out i32)
+      (local.set $src (i32.const 0)) (local.set $out (i32.const 32768))
+      (block $b0 (loop $l0 (br_if $b0 (i32.eqz (i32.lt_s (local.get $i) (i32.const 4096))))
+        (f64.store (i32.add (local.get $src) (i32.shl (local.get $i) (i32.const 3))) (f64.convert_i32_s (i32.mul (local.get $i) (i32.const 7))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l0)))
+      (block $brk (loop $lp (br_if $brk (i32.eqz (i32.lt_s (local.get $j) (local.get $n))))
+        (local.set $t (i32.add (local.get $k) (i32.const 1)))
+        (local.set $x (f64.load (i32.add (local.get $src) (i32.shl (local.get $t) (i32.const 3)))))
+        (f64.store (i32.add (local.get $out) (i32.shl (local.get $j) (i32.const 3)))
+          (f64.add (f64.mul (f64.add (f64.mul (local.get $x) (f64.const 2.5)) (f64.const 1)) (f64.sub (local.get $x) (f64.const 0.5))) (f64.mul (local.get $x) (local.get $x))))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (local.set $k (i32.add (local.get $k) (local.get $s)))
+        (br $lp)))
+      (local.set $i (i32.const 0))
+      (block $b2 (loop $l2 (br_if $b2 (i32.eqz (i32.lt_s (local.get $i) (local.get $n))))
+        (local.set $acc (f64.add (f64.mul (local.get $acc) (f64.const 1.5)) (f64.load (i32.add (local.get $out) (i32.shl (local.get $i) (i32.const 3))))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l2)))
+      (local.get $acc)))`
+  const instantiate = (ast) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+  const scalar = instantiate(parseWat(src))
+  const ast = parseWat(src)
+  vectorizeLaneLocal(ast.find(n => Array.isArray(n) && n[0] === 'func'), {})
+  is((JSON.stringify(ast).match(/replace_lane/g) || []).length, 1, 'src[t] gathers two lanes')
+  const lifted = instantiate(ast)
+  for (const s of [1, 2, 3, 5]) for (const n of [0, 1, 7, 64, 101]) is(lifted(s, n), scalar(s, n), `stride ${s}, n=${n}`)
 })
 
 // === AoS (array-of-structs) de-interleave — interleaved-channel loops `base[P*i + c]` ===
@@ -3456,14 +3525,10 @@ test('SIMD alias-version i8 - byte-stride same-array runtime-offset shift versio
   // window to straddle 16 bytes) — the i32/i16 tests above already cover a straddling sweep.
 })
 
-// Negative/safety: the versioning transform duplicates the loop body a SECOND time (the alias
-// fallback, on top of the pre-existing SIMD-prefix tail every recognizer already pays) — gated on
-// `ALIAS_VERSION_MAX_BODY_NODES` (110, the SAME cap `optimize/recurse.js`'s own body-duplicating
-// transform uses, not a new number). A body over that cap must NOT version even though the
-// mismatch is genuinely runtime-unknown — it stays fully scalar (no SIMD at all for that loop),
-// same as an ordinary decline, and the result must still be correct (the size refusal is a
-// missed optimization, never a correctness gap).
-test('SIMD alias-version safety - oversized body refuses versioning (size heuristic), stays correct', () => {
+// Versioning adds no copy of the loop: a failed disjointness guard skips the SIMD strip and the
+// kept scalar loop, the strip's tail, runs every iteration. So a large body versions like a small
+// one, stays exact on both sides of the guard, and emits its scalar loop once.
+test('SIMD alias-version - a large body versions without a second copy of its loop, exact', () => {
   let pad = ''
   for (let n = 0; n < 22; n++) pad += `    c[i] = ((c[i] + ${n + 1}) ^ (a[i] << ${n % 5})) & 0x7fffffff\n`
   const src = `export let main = (kIn) => {
@@ -3477,7 +3542,10 @@ ${pad}    }
     return h
   }`
   for (let k = 0; k <= 15; k++)
-    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} result unaffected by vectorizer (oversized body declines cleanly)`)
+    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'the large body vectorizes behind its guard')
+  is((w.match(/\(loop/g) || []).length, 4, 'the fill, the strip and its scalar tail, the hash: the loop is not copied')
 })
 
 // ---- General REDUCTION base layer (tryGeneralReduce) — .work/archive/vectorizer-generality-design.md ----

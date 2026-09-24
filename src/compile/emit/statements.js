@@ -93,6 +93,9 @@ export const statementOps = {
   ';': (...args) => emitBlockBody(['{}', [';', ...args]]),
   '{': (...args) => args.map(emit).filter(x => x != null),
   ',': (...args) => {
+    // In statement position the sequence has no value: each element is a statement
+    // (`j++, k += step` is two writes, not a value block whose value is dropped).
+    if (ctx.func._expect === 'void') return args.flatMap(a => emitVoid(a))
     const results = args.map(emit).filter(x => x != null)
     if (results.length === 0) return null
     if (results.length === 1) return results[0]

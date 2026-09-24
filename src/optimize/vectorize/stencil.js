@@ -1,6 +1,7 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { constNum, laneAccess, isI32Const, isLocalGet, matchStrideAddr, hasNestedLoopOrCall } from './addr-model.js'
-import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
+import { constNum, laneAccess, isI32Const, isLocalGet, matchStrideAddr, hasNestedLoopOrCall, indexDefs } from './addr-model.js'
+import { aliasGuards } from './alias.js'
+import { isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
 import { liftCtx, liftFail, liftStmt } from './lift.js'
@@ -399,77 +400,13 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
   for (const s of body) if (!scan(s, null, -1)) return null
   if (!laneType || !sites.some(s => s.kind === 'store') || !sites.some(s => s.kind === 'load')) return null
 
-  // ---- In-place / loop-carried gate: three-way resolution — the SAME shape as
-  // tryGeneralMap's own (layer 3), with ONE adaptation this pass needs and tryGeneralMap
-  // doesn't: tryGeneralMap's `foldAtIv0` folds each side INDEPENDENTLY to a raw number,
-  // requiring every non-IV term to already be a compile-time literal — sound there because
-  // tryGeneralMap has no derived-IV concept, every address is IV-or-literal. This pass's
-  // addresses routinely route through a DERIVED local (`c = rc + x`, single-assignment,
-  // `ivCoeff===1`) whose own row-base term (`rc`) is a genuine RUNTIME value, not a literal —
-  // folding each side independently then fails even on a textbook adjacent-column hazard
-  // (`a[c] = a[c-1] ^ a[c]`): a compile-time-PROVABLY-unsafe delta (|D|=1) would be mis-classified
-  // as "runtime-unknown" and VERSIONED instead of declined — correct at runtime (the guard is
-  // always false, so results stay bit-exact) but dead SIMD code emitted for nothing, exactly the
-  // kind of regression layer 3's own "compile-time-foldable, unsafe" branch exists to catch.
-  // Fix: fold the DELTA symbolically instead of each side alone — peel ONE literal additive/subtractive term off
-  // the top of each side and compare what remains via `exprEq` (the same side-effect-free
-  // structural-equality primitive `elemKey`'s own base comparison already relies on); when
-  // the remainders match structurally, the two sides differ by EXACTLY the peeled literals
-  // regardless of what the (possibly-symbolic, e.g. `rc`) remainder equals at runtime — sound
-  // because `exprEq` only accepts genuine structural identity, never a heuristic guess.
-  // Returns null (unresolvable, falls through to the runtime-unknown/version path — the same
-  // conservative "return null when unsure" tryGeneralMap's own foldAtIv0 already uses) for
-  // any pair whose remainders aren't provably identical, including a MIXED pair (one side
-  // routed through a derived local, the other through something structurally different) —
-  // never a false "safe", only ever a missed free-fold (falls to versioning/decline instead).
-  const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
-  const lanesForGuard = LANE_INFO[laneType].lanes
-  const peelConst = (n) => {
-    n = normTee(n)
-    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3 && isI32Const(n[2]))
-      return { rest: n[1], k: n[0] === 'i32.add' ? +n[2][1] : -(+n[2][1]) }
-    return { rest: n, k: 0 }
-  }
-  const foldDeltaExpr = (a, b) => {
-    const pa = peelConst(a), pb = peelConst(b)
-    return exprEq(normTee(pa.rest), normTee(pb.rest)) ? pa.k - pb.k : null
-  }
-  let aliasGuards = null
-  {
-    const guards = [], seenPairs = new Set()
-    let sawMismatch = false, unversionable = false, bodyTooBig = null
-    for (let i = 0; i < sites.length; i++) {
-      const st = sites[i]
-      if (st.kind !== 'store') continue
-      for (let j = 0; j < sites.length; j++) {
-        if (i === j) continue
-        const s = sites[j]
-        if (!exprEq(normTee(s.base), normTee(st.base)) || elemKey(s) === elemKey(st)) continue
-        const pk = i < j ? `${i}|${j}` : `${j}|${i}`
-        if (seenPairs.has(pk)) continue
-        seenPairs.add(pk)
-        if ((st.memBytes - s.memBytes) % stride !== 0) { sawMismatch = true; unversionable = true; continue }
-        const constDelta = (s.memBytes - st.memBytes) / stride
-        const foldedDelta = foldDeltaExpr(s.idx, st.idx)
-        if (foldedDelta != null) {
-          if (Math.abs(foldedDelta + constDelta) >= lanesForGuard) continue
-          sawMismatch = true; unversionable = true; continue
-        }
-        sawMismatch = true
-        if (bodyTooBig == null) bodyTooBig = body.reduce((n, stmt) => n + gmNodeCount(stmt), 0) > ALIAS_VERSION_MAX_BODY_NODES
-        if (!aliasVersion || bodyTooBig) { unversionable = true; continue }
-        let delta = ['i32.sub', cloneNode(s.idx), cloneNode(st.idx)]
-        if (constDelta !== 0) delta = ['i32.add', delta, ['i32.const', String(constDelta)]]
-        guards.push(['i32.or',
-          ['i32.le_s', delta, ['i32.const', String(-lanesForGuard)]],
-          ['i32.ge_s', delta, ['i32.const', String(lanesForGuard)]]])
-      }
-    }
-    if (sawMismatch) {
-      if (unversionable) return null
-      aliasGuards = guards
-    }
-  }
+  // ---- In-place / loop-carried gate (alias.js), as tryGeneralMap's: a constant element
+  // distance decides now, an invariant one versions the loop behind hoisted checks. Index
+  // temporaries (`c = rc + x`) stand for their definitions, so a site through one and a site
+  // spelled inline compare by value. ----
+  const guards = aliasGuards(sites, stride, LANE_INFO[laneType].lanes,
+    { defs: indexDefs(body, fnLocals, bl.outsideReads), varying: new Set(writes).add(incVar), version: aliasVersion })
+  if (!guards) return null
 
   // ---- Local classification (generalized: tryGeneralMap's address/lane disambiguation,
   // adapted to this pass's own broader matchAddr/ivCoeff — an i32-typed local is 'addr' when
@@ -511,12 +448,12 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
   }
   if (!lifted.length) return null
   // Cost model (Part 2 — see the shared header doc before tryGeneralMap). Same
-  // check, same reused arrays; `aliasGuards.length` is the guard-clause count when versioned.
-  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, aliasGuards ? aliasGuards.length : 0))
+  // check, same reused arrays; `guards.length` is the guard-clause count when versioned.
+  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, guards.length))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   // ---- Codegen: tryStencil's own proven neighbourhood-gather wrapper, verbatim, plus
-  // layer-3's versioning wrap when aliasGuards is non-null (see header doc). ----
+  // layer-3's versioning wrap when `guards` is non-empty (see header doc). ----
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
   const info = LANE_INFO[laneType], lanes = info.lanes
@@ -529,13 +466,11 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
     ? [['if', ['i32.lt_s', ['local.get', incVar], cloneNode(bound)],
         ['then', ...body.map(cloneNode), cloneNode(bl.loopNode[bl.incIdx])]]]
     : []
-  const simdPath = [...peelStmts, boundSetup, simdBlock, bl.blockNode]
-  const guardedPath = aliasGuards
-    ? [['if', aliasGuards.reduce((a, g) => a == null ? g : ['i32.and', a, g], null),
-        ['then', ...simdPath],
-        ['else', cloneNode(bl.blockNode)]]]
-    : simdPath
-  const wrapper = ['block', ...preamble.map(cloneNode), ...guardedPath]
+  // A failed alias guard skips the peel and the strip; the kept scalar loop then runs every iteration.
+  const simdPath = guards.length
+    ? [['if', guards.reduce((a, g) => ['i32.and', a, g]), ['then', ...peelStmts, boundSetup, simdBlock]]]
+    : [...peelStmts, boundSetup, simdBlock]
+  const wrapper = ['block', ...preamble.map(cloneNode), ...simdPath, bl.blockNode]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
   return { wrapper, newLocalDecls }
 }

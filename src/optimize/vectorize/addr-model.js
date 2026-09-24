@@ -266,10 +266,11 @@ function isInvariantBase(b, writes) {
 }
 
 /** Affine-in-IV coefficient solver, i32 domain: 0 (loop-invariant), 1 (stride-1 — the IV,
- * or it ± a loop-invariant term, nested arbitrarily deep), or null (unprovable). */
-export const affineIvCoeff = (incVar, writes) => {
+ * or it ± a loop-invariant term, nested arbitrarily deep), or null (unprovable). `defs`
+ * resolves a body temporary to the value its one definition gives it (indexDefs). */
+export const affineIvCoeff = (incVar, writes, defs = null) => {
   const coeff = (n) => {
-    if (isLocalGet(n)) return n[1] === incVar ? 1 : writes.has(n[1]) ? null : 0
+    if (isLocalGet(n)) return n[1] === incVar ? 1 : defs?.has(n[1]) ? coeff(defs.get(n[1])) : writes.has(n[1]) ? null : 0
     if (isI32Const(n)) return 0
     if (isArr(n) && n[0] === 'global.get') return 0
     if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
@@ -285,6 +286,25 @@ export const affineIvCoeff = (incVar, writes) => {
   }
   return coeff
 }
+
+/** The body's index temporaries: an i32 local the body defines once, at its top level,
+ *  before any read, and the continuation never reads (`const a = i + j, b = a + half`).
+ *  Each iteration it holds exactly its definition's value, so an address through it is
+ *  the definition's address. name → the defining value. */
+export function indexDefs(body, fnLocals, outsideReads) {
+  const defs = new Map(), count = new Map()
+  for (const s of body) collectWriteCounts(s, count)
+  for (const s of body) {
+    if (!isArr(s) || s[0] !== 'local.set' || s.length !== 3 || typeof s[1] !== 'string') continue
+    const name = s[1]
+    if (fnLocals.get(name) !== 'i32' || count.get(name) !== 1 || outsideReads?.has(name)) continue
+    if (laneAccess(body, name) === 'write') defs.set(name, s[2])
+  }
+  return defs
+}
+const collectWriteCounts = (node, out) => walkAst(node, { enter: n => {
+  if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') out.set(n[1], (out.get(n[1]) || 0) + 1)
+} })
 
 /** Resolve one `(IDX << K)` offset operand — tee-CSE via `offTees`, `ivCoeff(IDX)
  * === 1` proving the affine coefficient; a bare coefficient-1 affine offset with
