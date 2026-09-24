@@ -383,7 +383,16 @@ export default (ctx) => {
   // describes (the runtime enumerations below): an array's, a typed array's
   // and a string's indices, as keys (mode 0), values (1) or [key, value]
   // entries (2); a DataView and any other kind have none.
-  deps({ __idx_enum: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'] })
+  deps({ __idx_enum: ['__ptr_type', '__ptr_aux', '__ptr_offset', '__len', '__str_len', '__to_str', '__typed_idx', '__str_idx', '__alloc_hdr', '__mkptr'],
+    __idx_values: ['__idx_enum', '__ptr_type', '__ptr_offset'] })
+  // The payload of an index-keyed receiver's values (__idx_enum mode 1), 0 for any other kind.
+  ctx.core.stdlib['__idx_values'] = `(func $__idx_values (param $v i64) (result i32)
+    (local $t i32)
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (result i32) (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.TYPED})) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))))
+      (then (call $__ptr_offset (i64.reinterpret_f64 (call $__idx_enum (local.get $v) (i32.const 1)))))
+      (else (i32.const 0))))`
   ctx.core.stdlib['__idx_enum'] = `(func $__idx_enum (param $v i64) (param $mode i32) (result f64)
     (local $t i32) (local $n i32) (local $i i32) (local $base i32) (local $out i32) (local $pair i32) (local $k f64) (local $e f64)
     (local.set $t (call $__ptr_type (local.get $v)))
@@ -480,6 +489,22 @@ export default (ctx) => {
       }
       if (!ctx.types.anyDelete && typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
         return typed(['i32.const', 1], 'i32')
+    }
+    // A string's own properties are its indices and its length, where `in`
+    // on a primitive answers nothing.
+    if (stringValType(obj)) {
+      ctx.module.include('collection')
+      ctx.module.include('string')
+      inc('__str_arr_idx', '__str_length', '__is_str_key', '__to_str', '__str_eq')
+      const s = temp('hos'), k = tempI64('hok'), i = tempI32('hoi')
+      return typed(['block', ['result', 'i32'],
+        ['local.set', `$${s}`, asF64(emit(obj))],
+        ['local.set', `$${k}`, asI64(emit(key))],
+        ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${k}`]]], ['then', ['local.set', `$${k}`, ['call', '$__to_str', ['local.get', `$${k}`]]]]],
+        ['local.set', `$${i}`, ['call', '$__str_arr_idx', ['local.get', `$${k}`]]],
+        ['i32.or',
+          ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], ['i32.const', 0]], ['i32.lt_s', ['local.get', `$${i}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
+          ['call', '$__str_eq', ['local.get', `$${k}`], asI64(emit(['str', 'length']))]]], 'i32')
     }
     // This fallback is emitted as an `in` AST node; own the operator module
     // even when no source-level `in` triggered prepare-time autoload.
@@ -923,7 +948,7 @@ function emitObjectAssignDynamic(target, sources) {
   ctx.module.include('collection')
   inc('__dyn_set', '__dyn_get_any', '__ptr_offset', '__len')
   const t = temp('oat'), s = temp('oas'), sBase = tempI32('oasb')
-  const keys = temp('oak'), keysBase = tempI32('oakb'), len = tempI32('oan')
+  const keys = temp('oak'), keysBase = tempI32('oakb'), valsBase = tempI32('oavb'), len = tempI32('oan')
   const i = tempI32('oai'), key = temp('oakey')
   const id = freshId(ctx)
   const setKey = (keyBits, valBits) =>
@@ -944,14 +969,14 @@ function emitObjectAssignDynamic(target, sources) {
     body.push(
       ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'oak')],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${valsBase}`, idxValuesBase(s)],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$oabrk${id}_${si}`, ['loop', `$oaloop${id}_${si}`,
         ['br_if', `$oabrk${id}_${si}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
         ['local.set', `$${key}`, ['f64.load',
           ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]],
-          ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]),
+        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key)),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$oaloop${id}_${si}`]]])
   }
@@ -1308,7 +1333,7 @@ function emitDynamicSpread(props) {
   ctx.module.include('collection')
   inc('__hash_new', '__hash_set_local', '__dyn_get_any', '__ptr_offset', '__len')
   const t = temp('dst'), s = temp('dss'), sBase = tempI32('dssb')
-  const keys = temp('dsk'), keysBase = tempI32('dskb'), len = tempI32('dsn')
+  const keys = temp('dsk'), keysBase = tempI32('dskb'), valsBase = tempI32('dsvb'), len = tempI32('dsn')
   const i = tempI32('dsi'), key = temp('dskey')
   const id = freshId(ctx)
   // The store may rehash and return a new pointer, so thread it back into $t;
@@ -1358,14 +1383,14 @@ function emitDynamicSpread(props) {
     body.push(
       ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'dsk')],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${valsBase}`, idxValuesBase(s)],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$dsbrk${id}_${pi}`, ['loop', `$dsloop${id}_${pi}`,
         ['br_if', `$dsbrk${id}_${pi}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
         ['local.set', `$${key}`, ['f64.load',
           ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
-        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]],
-          ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]),
+        setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, valsBase, i, key)),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$dsloop${id}_${pi}`]]])
   }
@@ -1592,6 +1617,18 @@ function emitRuntimeValues(obj) {
         ['then', objectValuesFromTemp(t)],
         ['else', idxEnum(t, 1)]]]]], 'f64')
 }
+
+// A copy's source values beside its runtime keys (__idx_values): an array's,
+// a typed array's or a string's by position, whose index the generic property
+// read misses or misreads; for any other kind, each key's value (__dyn_get_any).
+const idxValuesBase = (s) => {
+  ctx.module.include('string')
+  inc('__idx_values')
+  return ['call', '$__idx_values', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]
+}
+const copiedValue = (s, valsBase, i, key) => ['if', ['result', 'i64'], ['local.get', `$${valsBase}`],
+  ['then', ['i64.load', ['i32.add', ['local.get', `$${valsBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+  ['else', ['call', '$__dyn_get_any', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${key}`]]]]]
 
 function emitRuntimeEntries(obj) {
   inc('__ptr_type')

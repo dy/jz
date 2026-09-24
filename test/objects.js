@@ -382,6 +382,18 @@ export const f = (k) => { const v = pick(k); const ta = new Float64Array([1.5, 2
     for (const k of [0, 1, 2, 3]) for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.f(k), oracle(src(e)).f(k), `${e} k=${k} O${optimize}`)
 })
 
+// A copy read each value by its key through the generic property read, which
+// missed a string's index (undefined) and read a typed array's as NaN: a
+// spread or Object.assign of either copied no value. It takes an index-keyed
+// source's values by position. A string owns its indices and its length.
+test('a spread, Object.assign and hasOwn see a string\'s and a typed array\'s indices', () => {
+  const src = (e) => `const pick = (k) => k ? new Uint8Array([5, 6]) : 'ab'
+export const f = (k) => { const v = pick(k), key = String(k - k); const s = 'ab', ta = new Int16Array([-1, 2]); return JSON.stringify(${e}) }`
+  for (const e of ['{ ...v, z: 1 }', 'Object.assign({}, v)', '[{ ...s }, { ...ta }, Object.assign({}, s, ta)]',
+    '[Object.hasOwn(s, key), s.hasOwnProperty("length"), Object.hasOwn(s, "2"), Object.hasOwn(s, 1), Object.hasOwn(s, "01")]'])
+    for (const k of [0, 1]) for (const optimize of levels(0, 2, 3)) is(jz(src(e), { optimize }).exports.f(k), oracle(src(e)).f(k), `${e} k=${k} O${optimize}`)
+})
+
 test('Object.assign primitive targets reject without ToObject boxing', () => {
   throws(() => compile(`export let f = () => Object.assign('a')`), /primitive targets require ToObject boxing/)
   is(run(`export let f = () => Object.assign({}, { a: 1 }).a`).f(), 1)
