@@ -67,6 +67,24 @@ test('literal accessors: Object.assign stores through a setter and reads a gette
   ['a setter alone copies undefined', `export const run = () => { const t = { a: 0 }; Object.assign(t, { set s(v) {} }); return JSON.stringify([Object.keys(t), 's' in t, String(t.s)]) }`],
 ]))
 
+// A getter or setter is a call: a typed element load cached before it read
+// the value from before its store (load CSE, analyze/frame-effects.js runsAccessor).
+test('literal accessors: a load after one reads what it stored', () => {
+  const O = `{ buf: buf, get g() { this.buf[0] = 9; return 1 }, set s(v) { this.buf[0] = v } }`
+  const inBody = (between) => `const g = (buf, o, k) => { const a = buf[0]; ${between}; const b = buf[0]; return a * 100 + b }
+export const run = (k) => { const buf = new Float64Array(2); buf[0] = 1; const o = ${O}; return g(buf, o, k) }`
+  const acrossCall = (h) => `const h = ${h}
+const g = (buf, o, k) => { const a = buf[0]; const v = h(o, k); const b = buf[0]; return a * 100 + b }
+export const run = (k) => { const buf = new Float64Array(2); buf[0] = 1; const o = ${O}; return g(buf, o, k) }`
+  agree([
+    ['a member read', inBody('const v = o.g'), ['g']], ['a member store', inBody('o.s = 7'), ['g']],
+    ['a computed read', inBody('const v = o[k]'), ['g']], ['a computed store', inBody('o[k] = 7'), ['s']],
+    ['a spread', inBody('const v = { ...o }'), ['g']],
+    ['across a call', acrossCall('(o, k) => o[k]'), ['g']], ['across a member read', acrossCall('(o, k) => o.g'), ['g']],
+    ['across a spread', acrossCall('(o, k) => ({ ...o }).g'), ['g']], ['across a store', acrossCall('(o, k) => { o.s = 7; return 0 }'), ['g']],
+  ])
+})
+
 test('literal accessors: a computed key reaches them', () => agree([
   // `o[k]` read undefined and `o[k] = v` stored beside the setter
   ['read', `export const run = (k) => { const o = { a: 1, get g() { return 7 } }; return String(o[k]) }`, ['g']],

@@ -1244,7 +1244,10 @@ host decodes such an object through it (`jz:views` lists the layouts). After a
 `delete` of an accessor, a read or store of its name through a binding takes
 the dynamic path. The table and every runtime path that reads it exist only
 when code the program lowers builds such a literal (`viewsOn`, settled after
-the plan). Getters and setters run through one prepared
+the plan). A getter or setter runs user code at a member read or store, a
+computed key, a spread and the builtins that list values: the frame census
+counts each as a call, and load CSE keeps a body's loads across one
+(`runsAccessor`, `src/compile/analyze/frame-effects.js`). Getters and setters run through one prepared
 function (`src/compile/emit/accessor-call.js`), a value's `toJSON` through
 another (`src/compile/emit/to-json.js`, only in a program that names JSON), an
 own property shadowing its class's method. `why: true` and any

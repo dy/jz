@@ -62,6 +62,8 @@ import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, isFunctionNode } from '../../as
 import { K, tagOf, hasTag } from '../../summary/kind.js'
 import { ctx } from '../../ctx.js'
 import { frameRoots } from '../../function.js'
+import { viewsOn } from '../../../module/schema.js'
+import { TO_JSON } from '../emit/to-json.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
@@ -71,6 +73,11 @@ const isName = (x) => typeof x === 'string'
 // plus the numeric/string globals whose results are fresh values or scalars.
 // `math.` is the prepared spelling of `Math.`.
 const PURE_CALLEES = /^(Object\.(keys|values|entries|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries)|JSON\.(stringify|parse)|Array\.(isArray|of|from)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse)$/
+// Pure callees that read a literal's getters (module/schema.js viewsOn) while
+// they list its properties; JSON.stringify also calls toJSON (emit/to-json.js).
+const ENUMERATING = /^(Object\.(values|entries)|JSON\.stringify|structuredClone)$/
+const runsGetters = (name) => viewsOn() && ENUMERATING.test(name) || name === 'JSON.stringify' && !!ctx.funcs.runtimeRoots?.has(TO_JSON)
+
 // Callees whose result is a scalar: no allocation.
 const SCALAR_CALLEES = /^([Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now)$/
 
@@ -144,6 +151,28 @@ function mayCarryFreshHeap(view, e) {
   if (e.length === 1) return false        // undefined
   if (op === 'typeof' || op === '!' || op === 'void') return false
   return !scalarKind(view, e)
+}
+
+/** Whether evaluating `node` itself may run an object literal's getter or
+ *  setter, in a program whose lowered code builds one (module/schema.js
+ *  viewsOn): a member read or store of an accessor's name, a computed key, or
+ *  a spread, over a receiver the summary does not prove holds no object. */
+export function runsAccessor(view, node) {
+  if (!isArr(node) || !viewsOn()) return false
+  const op = node[0]
+  if (op === '.' || op === '?.') return ctx.transform.literalAccessorNames.has(node[2]) && mayHoldObject(view, node[1])
+  if (op === '[]' || op === '?.[]') return node.length === 3 && mayHoldObject(view, node[1])
+  if (op === '{}') return node.some((p, i) => i > 0 && isArr(p) && (p[0] === '...' ? mayHoldObject(view, p[1])
+    : p[0] === ',' && p.some((q, j) => j > 0 && isArr(q) && q[0] === '...' && mayHoldObject(view, q[1]))))
+  return false
+}
+
+/** The summary does not prove the expression holds no object. */
+function mayHoldObject(view, e) {
+  if (!view) return true
+  let k
+  try { k = view.kindOfExpr(e) } catch { return true }
+  return k == null || tagOf(k) === K.ANY || tagOf(k) === K.NONE || hasTag(k, K.OBJECT)
 }
 
 /** The summary proves the expression a scalar (number, boolean, nullish). */
@@ -230,7 +259,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   // is a typed array the summary, built before the narrowing, still holds as
   // any value: element stores into it are numbers into fixed storage.
   const typedRecv = (recv) => typedReceiver(view, recv) || (isName(recv) && typedParams.has(recv))
-  const out = { writesOuter: false, arenaUnsafe: false, allocates: false, callsUnknown: false, why: null, callees: new Set() }
+  const out = { writesOuter: false, arenaUnsafe: false, allocates: false, callsUnknown: false, runsAccessor: false, why: null, callees: new Set() }
 
   // 1. Fresh locals: declared here, every write a fresh initializer, no write
   //    from any nested function. Arrows bound to a const are scanned inline
@@ -333,6 +362,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   // A pure callee allocates unless its result is a scalar, and runs the
   // callback CALLBACK_ARGS names.
   const pure = (name, args) => {
+    if (runsGetters(name)) return unknownCall('accessor ' + name)
     if (!SCALAR_CALLEES.test(name)) allocates()
     const i = CALLBACK_ARGS.get(name), a = i == null ? undefined : argList(args)[i]
     if (a !== undefined) callback(a, name)
@@ -438,6 +468,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       return
     }
     if (op === '.') { const fns = accessorFunctions(n[2], n[1], n[2] + ACCESSOR_GET); if (fns === null) unsafe('accessor ' + n[2]); else reaches(fns) }
+    if (runsAccessor(view, n)) { out.runsAccessor = true; unknownCall('accessor') }
     if (op === 'for' && isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) allocates()   // an iterator record, key strings
     for (let i = 1; i < n.length; i++) walkExpr(n[i])
   }
@@ -465,7 +496,7 @@ function frameEffectsOf(func) {
   const body = func.body
   // the function's own view (keyed by its signature, as the emitter's), not the module's
   const view = ctx.summary?.at(func.sig ?? func.body)
-  if (body == null) return { writesOuter: true, arenaUnsafe: true, allocates: true, callsUnknown: true, why: 'no body', callees: new Set(), loops: [] }
+  if (body == null) return { writesOuter: true, arenaUnsafe: true, allocates: true, callsUnknown: true, runsAccessor: false, why: 'no body', callees: new Set(), loops: [] }
   const params = new Set(), typedParams = new Set()
   for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
@@ -501,7 +532,7 @@ export function transitiveFrameEffects(funcs) {
   const own = new Map()
   for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f))
   const facts = new Map()
-  for (const [name, o] of own) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, callsUnknown: o.callsUnknown, allocates: o.allocates, why: o.why, callees: new Set(o.callees), loops: new Set() })
+  for (const [name, o] of own) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates, why: o.why, callees: new Set(o.callees), loops: new Set() })
   for (let changed = true; changed;) {
     changed = false
     for (const [name, o] of own) {

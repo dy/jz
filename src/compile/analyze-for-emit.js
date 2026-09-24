@@ -32,6 +32,7 @@ import { carryElements } from './carry-elements.js'
 import { arraySliceViews } from './array-view.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
 import { frameNode } from '../function.js'
+import { viewsOn } from '../../module/schema.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
@@ -245,8 +246,11 @@ export function analyzeFuncForEmit(func, programFacts) {
   // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
   // The pass mutates the body in place; a shared load binds a new local, so a
   // body-facts entry cached before it (a plan-time walk) no longer lists the
-  // body's locals: drop it (the seam doc above invalidateLocalsCache).
-  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem)
+  // body's locals: drop it (the seam doc above invalidateLocalsCache). A body
+  // that may run an object literal's accessor keeps its loads: the accessor may
+  // store the element (analyze/frame-effects.js runsAccessor; a closure has no
+  // census of its own).
+  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem) && !(func.frame ? func.frame.runsAccessor : viewsOn())
       && cseLoads(body, n => ctx.func.typedElem.has(n), freshCseName, n => valTypeOf(n) === VAL.NUMBER,
         n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false) > 0)
     invalidateLocalsCache(body)
