@@ -1068,6 +1068,37 @@ test('dyn-keys: numeric key on an unknown-type OBJECT receiver resolves through 
 // compiler already owns the complete key set: compare the dynamic key against
 // that schema directly. This removes the dynamic-property runtime rather than
 // growing it. Escaped/aliased or open shapes retain the conservative path.
+// a string's index through a receiver of unknown kind: the generic property
+// read ended a string's lookup at `length`, so `pick(k)['0']` was undefined
+test('dyn-keys: an index key reads a string, a runtime length key an array', () => {
+  const pick = `const pick = (k) => k ? 'ab' : { 0: 'z', 1: 'y' }`
+  for (const [name, body] of [['runtime key', '(k, key) => pick(k)[key]'], ['literal key', "(k) => pick(k)['1'] + pick(k)['0']"],
+    ['proven string key', "(k, n) => pick(k)[String(n)]"]]) {
+    const src = `${pick}
+export const run = ${body}`, want = oracle(src).run
+    for (const optimize of levels(0, 2, 3)) {
+      const got = jz(src, { optimize }).exports.run
+      for (const args of [[1, '0'], [1, '1'], [1, 'length'], [1, '2'], [0, '0'], [0, '1'], [1, 0], [0, 1]])
+        is(got(...args), want(...args), `${name} ${args} O${optimize}`)
+    }
+  }
+  // keys the in-place digit test reads both ways: packed (short ASCII) and
+  // heap (long, non-ASCII, a slice), canonical or not
+  const edges = `const pick = (k) => k ? 'abcdefghijkl' : { 0: 'z', 1: 'y' }
+    const keys = ['01', '', 'é', 'abcdefgh', '-0', '1.0', ' 1', '11', '12']
+    export const run = (k, i) => [pick(k)[keys[i]], pick(k)[('éé' + i).slice(2)]]`
+  const edgeWant = oracle(edges).run
+  for (const optimize of levels(0, 2, 3)) for (const k of [0, 1]) for (let i = 0; i < 9; i++)
+    is(jz(edges, { optimize }).exports.run(k, i), edgeWant(k, i), `edge key ${k} ${i} O${optimize}`)
+  // a runtime 'length' key read an array's as undefined and absent (a typed
+  // array's answered)
+  const src = `const keys = ['length', '1', 'x']
+    export const run = (k, i) => { const a = k ? new Float64Array(3) : [5, 6]; return [a[keys[i]], keys[i] in a] }`
+  const want = oracle(src).run
+  for (const optimize of levels(0, 2, 3)) for (const k of [0, 1]) for (const i of [0, 1, 2])
+    is(jz(src, { optimize }).exports.run(k, i), want(k, i), `length key ${k} ${i} O${optimize}`)
+})
+
 test('in: a closed schema answers dynamic membership structurally, without __dyn_get', () => {
   const src = `export let f = (k) => {
     let o = { nil: null, undef: undefined, errorClasses: null, '1': undefined, undefined: null }

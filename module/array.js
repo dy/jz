@@ -925,6 +925,10 @@ export default (ctx) => {
       setLinkDemand('typedarray')
       setLinkDemand('typedRuntime')
     }
+    // A canonical index key names the index (`o["1"]` is `o[1]`): on a receiver
+    // of unknown kind it takes the index dispatch, where an array's, a typed
+    // array's and a string's element answer and an object's property "1" does.
+    if (vt == null && isLiteralStr(idx) && isArrayIndexKey(litKey)) return ctx.core.emit['[]'](arr, [null, Number(litKey)], node)
     // Literal keys on other receiver kinds share dot access's schema and host
     // dispatch. ARRAY/TYPED/STRING keep their own string-key semantics below.
     if (litKey != null && vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING)

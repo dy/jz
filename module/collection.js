@@ -293,7 +293,7 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: () => [...viewDeps('__view_get'), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => [...viewDeps('__view_get'), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), '__schema_slot_h', '__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_str'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
@@ -1688,6 +1688,13 @@ export default (ctx) => {
   const dynGetBody = (name, missNan, sidecarGet) => {
     const presence = missNan !== UNDEF_NAN
     const miss = `(i64.const ${missNan})`
+    // Whether the key's first code unit is a digit, read in place: an
+    // identifier key skips the canonical index parse.
+    const digitLead = `(i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+              (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
+              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10))`
+    // A string's canonical index key reads its code unit ('ab'['1']).
+    const strIndex = !presence && ctx.core.stdlib['__str_idx']
     const fallback = ctx.linkDemand.typedProperties ? `(if (result i64)
       (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
       (then (call $__typed_prop_get (local.get $obj) (local.get $key) (local.get $h) ${miss}))
@@ -1724,7 +1731,13 @@ export default (ctx) => {
     ;; 1.38M reads/run, every one a guaranteed miss) made this the largest
     ;; single dyn sink after the array-index fix.
     (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-      (then (return ${miss})))
+      (then${strIndex ? `
+        (if ${digitLead}
+          (then
+            (local.set $idx (call $__str_arr_idx (local.get $key)))
+            (if (i32.lt_u (local.get $idx) (call $__str_length (local.get $obj)))
+              (then (return (i64.reinterpret_f64 (call $__str_idx (local.get $obj) (local.get $idx))))))))` : ''}
+        (return ${miss})))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${buildObjectSchemaArm(presence)}
     ${ctx.linkDemand.typedProperties ? `(if (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
@@ -1758,6 +1771,12 @@ export default (ctx) => {
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))
+        ;; A runtime 'length' key reads the length, as the STRING arm above
+        ;; (a constant one never gets here: the site reads it as \`.length\`).
+        (if (i32.and (i32.eq (local.get $h) (i32.const ${strHashLiteral('length')})) (i32.ge_u (local.get $off) (i32.const 16)))
+          (then
+            (if (call $__str_eq (local.get $key) (i64.const ${LENGTH_SSO_I64}))
+              (then (return ${presence ? '(i64.const 0)' : '(i64.reinterpret_f64 (f64.convert_i32_u (i32.load (i32.sub (local.get $off) (i32.const 8)))))'})))))
         ;; Canonical-index string key ('1' ≡ 1, JS array-index semantics) →
         ;; ELEMENT, not sidecar. This is the single string-keyed net covering
         ;; every read entry (dot, expr slow path, any, prehashed const keys):
@@ -1765,10 +1784,7 @@ export default (ctx) => {
         ;; hold them and an in-range miss is definitively undefined.
         ;; Inline first-char digit reject: identifier keys ('loc', 'length' —
         ;; the kernel-hot shape on array AST nodes) skip the parse call.
-        (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
-              (i32.lt_u (i32.sub (if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
-              (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
-              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK})))))) (i32.const 48)) (i32.const 10)))
+        (if (i32.and (i32.ge_u (local.get $off) (i32.const 16)) ${digitLead})
           (then
             (local.set $idx (call $__str_arr_idx (local.get $key)))
             (if (i32.ge_s (local.get $idx) (i32.const 0))
