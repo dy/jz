@@ -31,7 +31,7 @@ import { ASSIGN_OPS, walkAst, isReassigned } from '../ast.js'
 import { NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS } from '../kind-traits.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND } from './analyze-scans.js'
 import { unitIncVar } from './loop-model.js'
-import { counterInit } from '../static.js'
+import { counterInit, intExprRange } from '../static.js'
 
 /** The storage class a receiver oracle reports for storage that never holds typed elements. */
 export const UNTYPED = 'untyped'
@@ -66,11 +66,12 @@ const CONTROL = new Set(['for', 'while', 'do', 'if', 'loop', 'block', 'switch', 
   'br', 'br_if', 'br_table', 'return', 'continue', 'break', 'throw', 'unreachable'])
 const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
 const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])
+const stableBinding = b => b && !b[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)
 
 /** Stable definitions from the binding census; positive bounds belong only to the guarded body. */
 export function indexFacts(body) {
   const bindings = scanBindingUses(body), def = new Map(), positive = new Map()
-  const stable = name => bindings.has(name) && !bindings.get(name)[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)
+  const stable = name => stableBinding(bindings.get(name))
   for (const [name, b] of bindings) if (b[BINDING_USE_DECLS] === 1 && stable(name)) {
     const rhs = b[BINDING_USE_INIT], names = new Set()
     idxVars(rhs, names)
@@ -90,7 +91,7 @@ export function indexFacts(body) {
         guards.set(loopBody, cond[2])
     }
   }, exit: n => { if (guards.has(n)) active = stack.pop() } })
-  return { def, positive }
+  return { def, positive, bindings }
 }
 
 const cval = (e) => typeof e === 'number' ? e : (isArr(e) && e[0] == null ? e[1] : null)
@@ -100,6 +101,15 @@ const isPositive = (e, F, scope) => {
   if (isName(e)) return F.positive.get(scope)?.has(e) === true
   if (isArr(e) && (e[0] === '+' || e[0] === '*') && e.length === 3) return isPositive(e[1], F, scope) && isPositive(e[2], F, scope)
   return false
+}
+
+// Positive alone does not separate word indices: a displacement of 2^32
+// wraps onto the same element. Reuse the shared integer range proof.
+const positiveWordOffset = (off, F, scope) => {
+  const binding = isName(off) ? F.bindings.get(off) : null
+  if (isName(off) && (binding?.[BINDING_USE_DECLS] !== 1 || !stableBinding(binding))) return false
+  const range = intExprRange(binding ? binding[BINDING_USE_INIT] : off)
+  return range && range[1] < 0x100000000 && (range[0] > 0 || isPositive(off, F, scope))
 }
 
 const asBasePlus = (e, F) => {
@@ -113,9 +123,9 @@ export function provablyDiffer(idx, idx2, F, scope) {
   const ka = idxKey(idx), kb = idxKey(idx2)
   if (ka === kb) return false
   const va = cval(idx), vb = cval(idx2)
-  if (va != null && vb != null) return va !== vb
-  const bp2 = asBasePlus(idx2, F); if (bp2 && idxKey(bp2.base) === ka && isPositive(bp2.off, F, scope)) return true
-  const bp1 = asBasePlus(idx, F);  if (bp1 && idxKey(bp1.base) === kb && isPositive(bp1.off, F, scope)) return true
+  if (va != null && vb != null) return Number.isInteger(va) && Number.isInteger(vb) && (va | 0) !== (vb | 0)
+  const bp2 = asBasePlus(idx2, F); if (bp2 && idxKey(bp2.base) === ka && positiveWordOffset(bp2.off, F, scope)) return true
+  const bp1 = asBasePlus(idx, F);  if (bp1 && idxKey(bp1.base) === kb && positiveWordOffset(bp1.off, F, scope)) return true
   return false
 }
 

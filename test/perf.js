@@ -877,6 +877,8 @@ test('codegen: load-CSE preserves expression order and scoped index proofs', () 
     ['zero-trip guard does not dominate', `for(let j=0;j<n;j++)a[2]=j;let i=0,b=i+n;let x=a[i];a[b]=7;let y=a[i];return x+y`, 8],
     ['reassigned alias', `for(let j=0;j<2;j++){let i=0,b=i+1;b=i;let x=a[i];a[b]=7;let y=a[i];return x+y}`, 8],
     ['changed alias base', `let i=0,b=i+1;i=1;let x=a[i];a[b]=7;let y=a[i];return x+y`, 9],
+    ['word-index wrap', `const bound=4294967296;for(let j=0;j<bound;j++){let i=0,b=i+bound;let x=a[i];a[b]=7;return x+a[i]}`, 8],
+    ['unbounded word displacement', `const bound=n+4294967296;for(let j=0;j<bound;j++){let i=0,b=i+bound;let x=a[i];a[b]=7;return x+a[i]}`, 8],
   ]
   for (const [name, body, expected] of cases) for (const optimize of [2, 'speed']) {
     const src = `let a=new Float64Array([1,2,3]);function g(n){a[0]=5;return n>0?g(n-1):0}export function f(n){${body}}`
