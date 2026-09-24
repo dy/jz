@@ -355,6 +355,22 @@ test('Regression: Object.assign with unknown-schema source preserves target alia
   is(f('{"x":4,"y":7}'), 471)
 })
 
+// A copy into the dictionary it makes (a spread of an unknown source, which
+// Object.assign onto a literal reduces to; Object.fromEntries) stores through
+// the dictionary's own upsert. The generic one reached an array's element
+// store, whose module such a program never loads: "__arr_set_idx_ptr was
+// requested but never registered".
+test('a copy into a fresh dictionary needs no other kind\'s store', () => {
+  for (const [name, src, args] of [
+    ['assign', `const mk = (k) => k ? { a: 1, b: 'x' } : { c: 2 }
+export const f = (k) => JSON.stringify(Object.assign({}, mk(k), mk(0)))`, [1]],
+    ['a Date source', `export const f = () => JSON.stringify(Object.assign({}, new Date(0)))`, []],
+    ['spread', `const mk = (k) => k ? { a: 1, b: 'x' } : { c: 2 }
+export const f = (k) => JSON.stringify({ ...mk(k), z: 3, ...mk(0) })`, [1]],
+    ['fromEntries', `export const f = (k) => JSON.stringify(Object.fromEntries([['a', 1], [k, 2]]))`, ['b']],
+  ]) for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(...args), oracle(src).f(...args), `${name} O${optimize}`)
+})
+
 test('Object.assign primitive targets reject without ToObject boxing', () => {
   throws(() => compile(`export let f = () => Object.assign('a')`), /primitive targets require ToObject boxing/)
   is(run(`export let f = () => Object.assign({}, { a: 1 }).a`).f(), 1)

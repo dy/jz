@@ -763,7 +763,7 @@ export default (ctx) => {
     }
     const nullishThrow = requireCoercible(arr)
     if (nullishThrow) return nullishThrow
-    inc('__hash_new', '__hash_set', '__is_str_key', '__to_str')
+    inc('__hash_new', '__hash_set_local', '__is_str_key', '__to_str')
     inc('__str_hash', '__str_eq')
     const va = asF64(emit(arr))
     const t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
@@ -783,8 +783,8 @@ export default (ctx) => {
         ['local.set', `$${key}`, ['i64.load', ['local.get', `$${pair}`]]],
         ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${key}`]]],
           ['then', ['local.set', `$${key}`, ['call', '$__to_str', ['local.get', `$${key}`]]]]],
-        // hash_set(result, key, pair[1])
-        ['local.set', `$${t}`, ['f64.reinterpret_i64', ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
+        // the result is the HASH made above: its store needs no other kind's arm
+        ['local.set', `$${t}`, ['f64.reinterpret_i64', ['call', '$__hash_set_local', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
           ['local.get', `$${key}`],
           ['i64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]]],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
@@ -1266,15 +1266,16 @@ function emitObjectSpread(props, _target = takeLiteralTarget()) {
 // emitObjectAssignDynamic but seeds an empty HASH instead of an existing target.
 function emitDynamicSpread(props) {
   ctx.module.include('collection')
-  inc('__hash_new', '__hash_set', '__dyn_get_any', '__ptr_offset', '__len')
+  inc('__hash_new', '__hash_set_local', '__dyn_get_any', '__ptr_offset', '__len')
   const t = temp('dst'), s = temp('dss'), sBase = tempI32('dssb')
   const keys = temp('dsk'), keysBase = tempI32('dskb'), len = tempI32('dsn')
   const i = tempI32('dsi'), key = temp('dskey')
   const id = freshId(ctx)
-  // `__hash_set` may rehash and return a new pointer, so thread it back into $t.
+  // The store may rehash and return a new pointer, so thread it back into $t;
+  // $t is the HASH made below, so it needs no other kind's arm.
   const setKey = (keyBits, valBits) =>
     ['local.set', `$${t}`, ['f64.reinterpret_i64',
-      ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]]
+      ['call', '$__hash_set_local', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]]
   const body = [['local.set', `$${t}`, ['call', '$__hash_new']]]
 
   for (let pi = 0; pi < props.length; pi++) {
