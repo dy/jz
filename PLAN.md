@@ -120,6 +120,20 @@ Architecture
   enumeration view (`layoutView`), which reads it through its getter once;
   JSON.stringify calls a value's toJSON, its own or its class's, with the key
   (CONTRIBUTING has the forms).
+- A layout slot marked hidden (`ctx.schema.hidden`) reads, writes and calls
+  as before, but the enumeration view drops it: an Error's `message` and
+  `name` and a closure-lowered class's methods and accessors are not listed,
+  copied or serialized, as in JS. A program with neither pays nothing.
+- A host object that matches no layout stays a host reference: `in`, keys,
+  values, entries, for-in, spread, Object.assign and JSON.stringify go through
+  the host, so the caller sees the module's writes (README states it).
+- A runtime key reads a string's index and an array's `length` in the
+  lookup chain's string and array arms, which ended at `length` and at the
+  indices; a first-character digit test read in place keeps an identifier
+  key off the index parse. A canonical index literal takes the index dispatch.
+- An array hole is an `undefined` element: `[1, , 3]` lists `"1"`. The
+  divergence is in the README; a hole would need an element value apart
+  from undefined, tested on every read.
 - An array pattern over a value the summary proves an array reads by index
   (a plan sweep): the protocol's cursor record and its pool are module state
   no rewound frame may touch, and the protocol cost a call per element.
@@ -333,23 +347,17 @@ Dependencies
    glyfparse/C-Wasm 1.418×, SDF/C-Wasm 1.420×, noise/Rust-Wasm 1.148×,
    wordcount/C-Wasm 1.011×, watr/V8 1.546× and Jessie/V8 0.988×.
 
-4. **Closure-lowered class members.** A class kept as closures (declared in a
-   function, under a base the module cannot see, or an expression with
-   statics) puts its methods and accessors on each instance as slots, so
-   `Object.keys` and for-in list them (`m`, `g__get`) where JS lists neither:
-   they are prototype members. Mark the instance literal's member slots so the
-   enumeration view (`layoutView`) hides them.
+4. **Derived closure-lowered class members.** A derived class kept as
+   closures (declared in a function, or over a base the module cannot see)
+   adds its methods and accessors to the base instance as dynamic properties,
+   so `Object.keys` and for-in list them (`n`), where JS lists neither. The
+   property hash has no per-entry flag to hide an entry; adding one changes
+   the entry layout Map and Set share. A non-derived class already hides them.
 
-5. **Index keys and host objects.** A computed read over a receiver of
-   unknown kind misses a string's index (`pick(k)['0']` where `pick` may
-   return `'ab'`): the generic property read ends a string's lookup at
-   `length`. An array hole enumerates as an index holding undefined
-   (`Object.keys([7, , 8])` lists `"1"`). A host object that matches no
-   layout enters as a host reference: its properties read, but `in`,
-   `Object.keys`, for-in, spread and `JSON.stringify` see nothing (`null`),
-   where the README says objects are copied in. An Error lists `message` and
-   `name` by the decision recorded in `test/errors.js`; the enumeration view
-   now hides a slot at no cost, so reconsider it with item 4.
+5. **Built-in properties by a runtime key.** A Map's or Set's `size` and a
+   function's `length` read through a runtime key (`m[k]`, k `'size'`) are
+   undefined; a string's index and an array's length already answer there.
+   Each needs its arm in the lookup chain, a function's `length` its arity.
 
 6. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
    defers native release work until JZ v1 and requires verification from its
@@ -360,7 +368,7 @@ Dependencies
    on next setup; active restart needs the component-handler interface.
    Events and wider layouts remain refused.
 
-6. **Proof and independent review.** Reachable dynamic calls can still make
+7. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation and work proofs unknown. Empirical block checks prove
    neither allocation freedom for all inputs nor callback deadlines. Reuse
    entry-range facts for useful bounds; a full-i32 domain proves no deadline.

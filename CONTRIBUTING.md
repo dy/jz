@@ -1246,9 +1246,18 @@ slots (`__view_find`, `__view_get`, `__view_set`, `__view_del`) and the data
 copy a spread or a clone makes (`__view_data`), which the module exports: the
 host decodes such an object through it (`jz:views` lists the layouts). After a
 `delete` of an accessor, a read or store of its name through a binding takes
-the dynamic path. The table and every runtime path that reads it exist only
-when code the program lowers builds such a literal (`viewsOn`, settled after
-the plan). A getter or setter runs user code at a member read or store, a
+the dynamic path. A slot the layout
+marks hidden (`ctx.schema.hidden`: an Error's `message` and `name`, a
+closure-lowered class's members, named by the brand on its instance literal)
+drops out of the view but keeps its slot, so reads, stores and calls go
+straight to it and `in` still finds it (`ownKeys`). The table and every
+runtime path that reads it exist only when code the program lowers builds
+such a literal (`viewsOn`, settled after the plan); the enumeration walkers,
+JSON's walker and the copies also read it for a hidden layout
+(`enumViewsOn`), and the accessor kernels do not. A host reference
+(`PTR.EXTERNAL`) is listed and serialized by the host (`__ext_enum`,
+`__ext_json`), imported only when a host object can reach the module
+(`demandHostReceiver`). A getter or setter runs user code at a member read or store, a
 computed key, a spread and the builtins that list values: the frame census
 counts each as a call, and load CSE keeps a body's loads across one
 (`runsAccessor`, `src/compile/analyze/frame-effects.js`). Getters and setters run through one prepared

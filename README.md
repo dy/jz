@@ -111,6 +111,7 @@ Where behaviour differs from JS:
 
 - **No GC.** Heap values live until `memory.reset()`. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
 - **BigInt is 64-bit.** It wraps past its range and has no `**`.
+- **No holes.** `[1, , 3]` and a write past the end fill the gap with `undefined` elements: `1 in a`, `Object.keys` and `forEach` see them.
 - **32-bit element indices.** Use finite integer array indices. Numeric index expressions can truncate to i32; `a[NaN]` can read `a[0]` instead of `undefined`.
 - **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}`, `d` and `v` flags are unsupported.
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
