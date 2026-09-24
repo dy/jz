@@ -401,7 +401,7 @@ The prior gate evidence below describes its own tree, not this candidate.
   accidentally exporting a void command entry; brittle SIMD instruction-count
   assertions (pixel parity remains); a built-in conformance case that now passes.
 - Watr's scheduler moved a result-producing call out of its folded value
-  position. JZ pins the tested public watr commit `ba449f2` until a release carries
+  position. JZ pins the tested public watr commit `a5d1d51` until a release carries
   it. Both EventTarget speed-tier reproducers pass with this dependency.
 - Runtime method dispatch now requires the correct receiver family. NaN and
   BigInt no longer enter array helpers via optional calls; missing methods skip
@@ -412,6 +412,13 @@ The prior gate evidence below describes its own tree, not this candidate.
   the self-hosted optimizer normalize numeric NaN payloads instead of treating
   them as object tags. Module-initializer array construction passes again;
   null, undefined, finite numbers and signed NaN payloads have regressions.
+- WAT output shares the binary pipeline's checkpoints. Watr prints fragments
+  once per node: the 1.2 MB crPow WAT output is byte-identical, with printer
+  allocations reduced from 2.81 GB to 107 MB. This does not reduce the earlier
+  optimizer peak (1.69 GB in that case).
+- The follow-up opt0 failures were inherited Object methods rejected by the
+  new receiver-family guard. Registered Object methods now retain their generic
+  receiver contract; string own-property checks use their string emitter.
 - Still open in the Wasm-hosted suite: nested array-pattern scalarization,
   named-regex replacement, typed output
   buffer inference, and a lone-CR parser rejection. Use the kernel test target,
@@ -421,6 +428,12 @@ The prior gate evidence below describes its own tree, not this candidate.
   Committed benchmark and memory evidence is stale; the repaired manual
   `bench-probe` workflow retains actual measurements as an artifact and fails
   when the runner produces none. It does not regenerate the release corpus.
+
+The CI probe at `c58ef1f` (Linux x64 EPYC, Node 24, five paired runs) measured
+JZ/V8 median time ratios: watr 0.8905, Jessie 0.7705, webaudio 1.4907, sdf
+0.9432, noise 0.6075, crc32 1.0204, sort 1.0477, glyfparse 0.6920. Every
+checksum matched. This is a diagnostic subset, not the complete release dataset.
+Watr/Jessie process RSS was 154380/111584 KiB against V8's 96988/100196 KiB.
 
 ## Gate evidence, September 23
 

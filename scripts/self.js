@@ -239,7 +239,7 @@ const stageMarks = { time(name, fn) { const out = fn(); recordPhase(name); retur
  * @param {string} [optJSON] - optimize config as JSON (level / alias / per-pass object)
  * @returns {Uint8Array} compiled wasm bytes
  */
-export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
+function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
   const heapMark = __heap_mark()
   setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
   const ast = front(source, strict, sourceType)
@@ -259,21 +259,12 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host, 
   markStage(STAGE_OPTIMIZE)
   const checkpointed = __heap_large(heapMark) ? checkpoint(optimized) : optimized
   markStage(STAGE_CHECKPOINT)
-  return watrCompile(checkpointed)
+  return checkpointed
 }
 
-/**
- * WAT-text variant of the self-compile pipeline: source → WAT string (watr/print of the
- * same `compileAst(prepare(ast))` tree compileSelf encodes to bytes). Lets the
- * `JZ_TEST_TARGET=jz.wasm` leg satisfy white-box `compile(src,{wat:true}).match(...)`
- * codegen-shape assertions — the self-compile produces the same WAT IR as native, so the
- * shape checks validate self-compile codegen instead of failing as a feature gap. No
- * watr-level WAT optimization runs (matches optimize:false), mirroring native
- * `compile({wat:true, optimize:false})`.
- * @param {string} source - JS source
- * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
- * @returns {string} WAT text
- */
+export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
+  return watrCompile(compileModule(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON))
+}
 
 /**
  * Compile-time advisories variant: runs the same pipeline with the advisory sink
@@ -293,9 +284,10 @@ export function compileWarnings(source, strict, optJSON, modulesJSON, host, sour
   return JSON.stringify(sink.entries)
 }
 
+// Both output formats consume the same optimized, checkpointed module. Text
+// output must release dead analysis allocations before the printer grows strings.
 export function compileWat(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
-  setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
-  return watrPrint(optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize))
+  return watrPrint(compileModule(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON))
 }
 
 /**

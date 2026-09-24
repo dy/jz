@@ -16,7 +16,7 @@ import test from 'tst'
 import { ok, is, throws } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
 import { readMarks, phaseDeltas } from '../scripts/kernel-marks.mjs'
-import jz from '../index.js'   // native compiler — the correctness reference for the kernel's output
+import jz, { compile } from '../index.js'   // native compiler — the correctness reference for the kernel's output
 import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B } from './_optimizer-kernels.js'
 import { selfBytes } from './_self-build.js'
 
@@ -480,7 +480,7 @@ test('self-compile: heap marks on empty work, an early failure, the other entry 
   s.exports.compileWat(s.memory.String(src), 0, s.memory.String('2'))
   const wat = readMarks(s)
   is(wat.phases.map(p => p.name).join(' '), whole.phases.map(p => p.name).join(' '), 'compileWat records the compile phases afresh')
-  is(wat.heapEmit, 0, 'compileWat marks no stage: it prints the IR')
+  ok(wat.heapEmit > 0 && wat.heapCheckpoint > 0, 'both output formats share the stages and checkpoint')
   s.exports.compileWarnings(s.memory.String(src), 0, s.memory.String('2'))
   is(readMarks(s).phasesDone, whole.phasesDone, 'compileWarnings the same')
   s.exports.compileDiag(s.memory.String(src), 0, s.memory.String('2'))
@@ -505,4 +505,21 @@ test('kernel marks: the reader reports the phases past the record capacity, not 
   const m = readMarks(fake)
   is(m.phases.length, 256); is(m.phasesDropped, 44); is(m.phases[255].name, 'p255'); is(m.phasesDone, 300)
   is(phaseDeltas(m).reduce((t, d) => t + d.bytes, 0), 255)
+})
+
+
+test('self-compile: WAT output shares checkpoints and bounds wide-node printer allocation', () => {
+  const s = instantiate(selfBytes(), {memory: 8192})
+  const source = 'export let f = x => x ** 2.4'
+  const options = {crPow: true}
+  const expected = compile(source, {wat: true, optimize: options})
+  for (const code of [source, source, 'export let f = () => 7', '']) {
+    s.exports._clear()
+    const out = s.memory.read(s.exports.compileWat(s.memory.String(code), 0, s.memory.String(JSON.stringify(options))))
+    const marks = readMarks(s)
+    ok(out === (code === source ? expected : compile(code, {wat: true, optimize: options})), 'native and kernel WAT are identical')
+    ok(marks.heapCheckpoint > 0, 'the printer consumes the checkpointed module')
+    const allocated = (s.exports.__heap.value >>> 0) - marks.heapCheckpoint
+    ok(allocated < 256 * 1024 * 1024, `printer allocation ${allocated} bytes stays below 256 MiB`)
+  }
 })

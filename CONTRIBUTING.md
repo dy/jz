@@ -12,10 +12,12 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr revision `ba449f2`
+escape decoding and the async-member parse fixes) and watr revision `a5d1d51`
 (on 5.11.3). This pin includes the scheduler fix that keeps result-producing
 calls at the end of folded blocks; effect purity alone does not prove a
-statement has no result. Return to a published version once it carries the fix.
+statement has no result. The WAT printer joins fragments once per node so wide
+functions do not repeatedly copy their growing text. Both kernel output formats
+share compilation, optimization and heap checkpoints before encoding or printing. Return to a published version once it carries the fix.
 The dependency also
 carries the two optimizer rules jz's speed rows rely on: the mixed-sign
 truncation-of-convert fold under a non-negative operand (base64's decode
