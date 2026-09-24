@@ -116,10 +116,11 @@ const LEVEL_PRESETS = Object.freeze({
     arrayViews: false,        // an array slice view keeps the ordinary slice beside its range copy — speed-for-size
     versionTypedBounds: false,// typed-bounds loop versioning duplicates every proven nest (guarded fast arm + checked twin, ×1.5-3 on small kernels) — the branchless checked reads alone are the size-tier lowering; speed-only trade
     wideAccumulator: false,   // i64-carried accumulator versions the loop (guarded fast clone + the f64 original) — speed-only
-    sourceInlineDup: false,   // a looped kernel with several call sites stays one function; splicing it per site is ×sites bytes (resample's pass ×2) — speed-only trade
+    sourceInlineDup: false,   // shared/exported source bodies stay outlined; single-use internal bodies still inline
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
     leanRuntime: true,        // `__str_eq`/`__str_hash` link their plain byte walks (the hot/cold split, the 4-byte chunking and the per-probe hash fast arms are speed-for-size)
 
+    inlineToNum: false,      // unknown conversions share __to_num; the per-site number fast path trades bytes for speed
     boolConvertToSelect: false,  // adds a const + op per site — speed-only latency trade
     inlinePtrOffsetFast: false,  // ~15 ops/site vs. one call — speed-only trade
     unswitchStringRepLoop: false, // duplicates the scan loop for SSO/heap — speed-only

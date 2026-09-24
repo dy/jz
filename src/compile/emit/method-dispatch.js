@@ -9,11 +9,11 @@ import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '.
 import { K, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../../summary/index.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
-import { T, cloneNode, isLeaf, isReassigned } from '../../ast.js'
+import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
@@ -439,11 +439,11 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
     // Finite numbers have no tag. Boxed primitives are selected below before
     // any heap-backed builtin can read their payload as an object header.
-    const numEmitter = ctx.core.emit[`.number:${method}`]
     const view = ctx.summary?.at(ctx.func.current), receiverKind = view?.kindOfExpr(obj)
     // A union has no single valType, but its tag set still excludes families.
     // Do not emit the typed-array machinery for an Array|String receiver.
     const mayBe = kind => !receiverKind || hasTag(receiverKind, kind)
+    const numEmitter = mayBe(K.NUMBER) && ctx.core.emit[`.number:${method}`]
     const mayBeUndef = view?.mayBeNullishExpr(obj) !== false
     // A runtime tag must select the builtin's receiver family. Other objects
     // use a property call; primitive payloads must never reach an array helper.
@@ -467,13 +467,24 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
       || method === 'toString' || method === 'valueOf')
     let generic
     if (genEmitter) {
-      const builtin = materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter))
-      const tags = COLLECTION_METHODS.has(method) ? [PTR.MAP, PTR.SET]
-        : ['forEach', 'keys', 'values', 'entries'].includes(method) ? [PTR.ARRAY, PTR.MAP, PTR.SET] : [PTR.ARRAY]
-      const accepts = tags.map(tag => ['i32.eq', ['local.get', `$${tt}`], ['i32.const', tag]])
-        .reduce((a, b) => ['i32.or', a, b])
-      const inherited = objectMethod ? builtin
-        : typed(['if', ['result', 'f64'], accepts, ['then', builtin], ['else', missing]], 'f64')
+      const families = COLLECTION_METHODS.has(method) ? [[PTR.MAP, K.MAP, VAL.MAP], [PTR.SET, K.SET, VAL.SET]]
+        : ['forEach', 'keys', 'values', 'entries'].includes(method) ? [[PTR.ARRAY, K.ARRAY, VAL.ARRAY], [PTR.MAP, K.MAP, VAL.MAP], [PTR.SET, K.SET, VAL.SET]] : [[PTR.ARRAY, K.ARRAY, VAL.ARRAY]]
+      const tags = [], specific = []
+      for (const [tag, kind, val] of families) {
+        if (!mayBe(kind)) continue
+        const emitter = ctx.core.emit[`.${val}:${method}`] ?? genEmitter
+        if (emitter === genEmitter) tags.push(tag)
+        else specific.push([tag, materializeBuiltinResult(val, callMethod(t, emitter))])
+      }
+      let inherited = missing
+      if (objectMethod || tags.length) {
+        const builtin = materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter))
+        const accepts = tags.map(tag => ['i32.eq', ['local.get', `$${tt}`], ['i32.const', tag]])
+          .reduce((a, b) => ['i32.or', a, b], ['i32.const', 0])
+        inherited = objectMethod ? builtin
+          : typed(['if', ['result', 'f64'], accepts, ['then', builtin], ['else', missing]], 'f64')
+      }
+      inherited = dispatchByPtrType(tt, specific, inherited)
       // One override probe serves both builtin and plain-object receivers.
       // No probe is needed when the summary proves this name is never stored.
       generic = canShadowProbe && ownMethodPossible
@@ -488,7 +499,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // A boxed BigInt receiver (`x.toString(16)` on a carrier the program
     // could not kind) takes the `.bigint:` emitter; `t` holds the box, so the
     // emitter's readI64 unboxes it (ir/bigint.js isTaggedLocal).
-    const bigintEmitter = representationProgramHasBigint(ctx) && ctx.core.emit[`.bigint:${method}`]
+    const bigintEmitter = mayBe(K.BIGINT) && representationProgramHasBigint(ctx) && ctx.core.emit[`.bigint:${method}`]
     if (bigintEmitter) {
       (ctx.func.taggedLocals ??= new Set()).add(t)
       cases.push([PTR.BIGINT, materializeBuiltinResult(VAL.BIGINT, callMethod(t, bigintEmitter))])
@@ -498,23 +509,23 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     // below (the ptr-type local this fork uses for its own STRING/TYPED
     // dispatch), so pass it through instead of paying for a second
     // `$__ptr_type` call.
-    const fallback = dateAuxFallback(t, method, callMethod, generic, tt)
+    const fallback = mayBe(K.DATE) ? dateAuxFallback(t, method, callMethod, generic, tt) : generic
     const primitive = numEmitter ? asF64(callMethod(t, numEmitter)) : objectMethod ? generic : missing
-    cases.push([PTR.ATOM, primitive])
-    if (!bigintEmitter) cases.push([PTR.BIGINT, objectMethod ? generic : missing])
+    if (mayBe(K.NUMBER) || mayBe(K.BOOL) || mayBeUndef) cases.push([PTR.ATOM, primitive])
+    if (!bigintEmitter && mayBe(K.BIGINT)) cases.push([PTR.BIGINT, objectMethod ? generic : missing])
     let boxed = dispatchByPtrType(tt, cases, fallback)
     if (mayBeUndef) boxed = typed(['if', ['result', 'f64'],
       isNullish(typed(['local.get', `$${t}`], 'f64')),
       ['then', throwTypeErrorIR('read')], ['else', boxed]], 'f64')
     // Each mutually exclusive use owns its IR, including shared callback setup.
-    return cloneNode(block64(
+    const tagged = block64(
+      ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], boxed)
+    return typed(cloneIR(block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
-      ['if', ['result', 'f64'],
+      mayBe(K.NUMBER) ? ['if', ['result', 'f64'],
         ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
         ['then', primitive],
-        ['else', block64(
-          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-          boxed)]]))
+        ['else', tagged]] : tagged)), 'f64')
   }
 }
 

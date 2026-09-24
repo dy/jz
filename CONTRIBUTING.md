@@ -129,6 +129,9 @@ Joining numeric typed-array constructors retains their Number element domain,
 not a guessed storage width. The private proof never crosses the summary query
 boundary as a concrete aux; BigInt, DataView and unknown inputs widen normally.
 Solver and query views share typed-element and typed-method transfer rules.
+An unresolved index can still read an array element or named property. The
+solver may defer its transfer while the index has no evidence; a public query
+must retain those possible values instead of proving the read absent.
 
 Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy
@@ -1049,7 +1052,14 @@ Table reuse invalidates enumeration keys before clearing its contents. Host
 durable-state healing have one owner; JS-only memory retains its fallback.
 
 The size preset keeps indirect function-table calls instead of adding speculative
-direct arms alongside their fallback. The speed preset retains that expansion.
+direct arms alongside their fallback. It also keeps shared/exported source bodies
+outlined and calls the shared dynamic length and numeric-conversion helpers.
+Single-use internal bodies can still inline. The speed preset retains those
+expansions. Numeric uses alone do not make a coercion pure: an internal
+parameter may carry an object whose valueOf runs at every use, or a BigInt
+that throws only when the use executes. The old per-parameter coercion hoist
+is removed; numeric proofs and the export boundary contract eliminate known
+Number conversions before ordinary IR optimization.
 
 ### Body-fact freshness
 

@@ -71,7 +71,9 @@ export function summaryQueries(facts, internal = false) {
   const anyPropOf = arr => { const c = cell(paramOf(arr)); let k = join(elemOf(arr), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = join(k, pk); return k }
   // A keyed dictionary's entry by name: the solver's hashPropOf.
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
-  const entryOf = (arr, ik) => { const t = tagOf(ik); return paramOf(arr) === UNKNOWN ? ANY : t === K.NUMBER ? elemOf(arr) : t === K.STRING ? anyPropOf(arr) : t === K.NONE ? K.NONE : join(elemOf(arr), anyPropOf(arr)) }
+  // Solver bottom means an index has no evidence, not that an emitted read is
+  // absent. Unlike the solver's pending transfer, a query must retain entries.
+  const entryOf = (arr, ik) => { const t = tagOf(ik); return paramOf(arr) === UNKNOWN ? ANY : t === K.NUMBER ? elemOf(arr) : anyPropOf(arr) }
   const classMember = (recv, name) => { const sid = layoutOf(recv); return sid !== UNKNOWN ? methods.get(sid)?.get(name) ?? null : null }
   // A property's accessor and binder names, built once per property.
   const getterNames = new Map(), binderNames = new Map()

@@ -452,8 +452,32 @@ The prior gate evidence below describes its own tree, not this candidate.
   depths through nested blocks (`br 2` becomes an invalid label after the full
   rewrite sequence). The local-slot pass now conservatively leaves numeric
   targets alone. JZ's named-label output does not exercise that separate issue.
-- The watr size backstop is 322948 B against its 320000 B cap. No byte, speed
-  or memory cap was relaxed.
+- The size-tier follow-up measures watr at 312146 B against its unchanged
+  320000 B cap, down from 323672 B at the start. Unknown lengths and numeric
+  conversions share their runtime helpers; source inlining retains shared and
+  exported bodies. The speed preset keeps its fast paths.
+- Full CI on `a9ac1240` exposed a regression from its IR-copy change: 63
+  self-host failures, mostly invalid i32-to-f64 conversions. The emitted union
+  dispatch now uses the existing IR cloner and explicitly retains its f64
+  result. An AST clone's generic metadata enumeration is the wrong contract
+  here. Native opt3 and WASI each found one SIMD pin: the immutable-length
+  proof excluded parameters. It now uses the shared local-or-parameter query.
+  The default leg also found an outdated checkpoint assertion: WAT now shares
+  the binary pipeline's stage marks and rewind. The updated test checks the
+  rewind, executes the printed WAT and verifies diagnostics reset the marks.
+  These fixes are awaiting the next complete CI run.
+- The size tests also exposed an older unsafe parameter-coercion hoist:
+  numeric uses do not prove valueOf pure, or license conversion before a
+  zero-trip loop. Removing that hoist fixes repeated effects and throwing
+  order while numeric export performance pins remain green.
+- The union dispatcher selects the registered Map/Set handlers for shared
+  method names and omits families excluded by the summary. Mixed collection
+  forEach calls now return the same values as JS. No cap was relaxed.
+  The first rerun passed 75 of 77 selected self-host cases. Its two remaining
+  exceptions exposed a query treating an unresolved index as proof of an absent
+  array element. Queries now retain possible element and named-property kinds;
+  the solver still defers pending transfers. The regression includes both empty
+  and populated arrays and verifies queries do not mutate solver state.
   Committed benchmark and memory evidence is stale; the repaired manual
   `bench-probe` workflow retains actual measurements as an artifact and fails
   when the runner produces none. It does not regenerate the release corpus.

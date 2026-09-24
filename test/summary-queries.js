@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import { summarize, K, kind, join, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
+import { summarize, K, kind, join, hasTag, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
 import { VAL } from '../src/reps.js'
 import { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
@@ -13,6 +13,24 @@ import { oracle } from './util.js'
 const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
 const reduce = (callback, initial) => ['()', ['.', typed, 'reduce'], [',', callback, initial]]
+
+test('summary queries: an unresolved array index retains possible element and named-property kinds', () => {
+  for (const values of [[], [['[', lit('x')]]]) {
+    const read = ['[]', 'rows', 'key']
+    const summary = summarize([';',
+      ['const', ['=', 'rows', ['[', ...values]]],
+      ['=', ['.', 'rows', 'note'], lit('named')]], {
+      funcs: [{ name: 'pick', sig: { params: [{ name: 'key' }] }, body: read }],
+      schemas: [], brandOf: () => null, imports: new Map(), exported: () => false,
+    })
+    const view = summary.at('pick'), k = view.kindOfExpr(read)
+    is(view.kindOf('key'), K.NONE, 'the uncalled parameter has no incoming evidence')
+    is(hasTag(k, K.ARRAY), values.length > 0, 'possible elements survive an unresolved key')
+    is(hasTag(k, K.STRING), true, 'the key can name a side property')
+    is(hasTag(k, K.ABSENT), true, 'the key can also miss')
+    is(view.kindOf('key'), K.NONE, 'queries do not mutate the solver')
+  }
+})
 
 test('summary fields: empty and sparse schema tables retain independent readers', () => {
   const schemas = [['x'], [], ['unused'], ['data']]

@@ -1304,6 +1304,8 @@ export default (ctx) => {
     inc('__length.value')
     setLinkDemand('typedarray')
     ctx.runtime.throws = true
+    if (ctx.transform.optimize?.leanRuntime)
+      return typed(['call', '$__length.value', ['i64.reinterpret_f64', va]], 'f64')
     // The array arm inline ahead of the dispatcher (an AST node under a
     // walker is the receiver at nearly every unresolved `.length`): the tag
     // test, one forwarding hop, the header word. Everything else dispatches.

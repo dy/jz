@@ -577,13 +577,10 @@ test('codegen: ping-pong typed-array ternary select reads via direct load', () =
   is(exports.step(8), 1, 'sum reads the seeded buffer through the ternary select')
 })
 
-test('codegen: loop-invariant exported-param coercion hoists out of the loop', () => {
-  // An exported numeric param arrives as a NaN-box, so each arithmetic use emits
-  // `__to_num(p)`. When the param is never reassigned and used only numerically,
-  // the coercion is loop-invariant and must hoist to one entry rebind — not run
-  // per iteration. Regression for the de Jong attractor (4 coercions/iter ×
-  // millions): 0.98× → 1.19× over V8. Self-gating: only fires when the body
-  // already loads __to_num (here, via the global typed-array assign in `setup`).
+test('codegen: numeric export parameters need no in-loop coercion', () => {
+  // The numeric export contract converts parameters at the boundary. Their
+  // uses need no ToNumber calls, including when another function links the
+  // generic helper. This must not depend on the removed, unsafe parameter hoist.
   const src = `
     let buf
     export let setup = (n) => { buf = new Float64Array(n); let i = 0; while (i < n) { buf[i] = i * 0.5 - 3.0; i = i + 1 } return n }

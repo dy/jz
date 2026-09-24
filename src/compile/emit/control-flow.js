@@ -11,7 +11,7 @@ import {
 isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
-  asF64, asI32, freshId, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
+  asF64, asI32, freshId, isBoundName, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { constIntExpr, intExprRange, intLiteralValue } from '../../static.js'
@@ -314,7 +314,7 @@ const immutableLenBound = (node, body, step) => {
     node = node[1]
   if (!(Array.isArray(node) && node[0] === '.' && node[2] === 'length' && typeof node[1] === 'string')) return false
   const vt = lookupValType(node[1])
-  return (vt === VAL.TYPED || vt === VAL.STRING) && ctx.func.locals.has(node[1]) && !ctx.func.boxed?.has(node[1]) &&
+  return (vt === VAL.TYPED || vt === VAL.STRING) && isBoundName(node[1]) && !ctx.func.boxed?.has(node[1]) &&
     !isReassigned(body, node[1]) && !isReassigned(step, node[1])
 }
 

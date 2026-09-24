@@ -1606,6 +1606,19 @@ test('sourceInline: value return folding keeps fallthrough scope and nested exit
   }
 })
 
+test('size tier: shared scalar helpers remain outlined', () => {
+  const src = `function mix(x) { const y=x*x+3*x+7; return y*y-y+2 }
+    export function f(x) { return mix(x)+mix(x+1)+mix(x+2) }`
+  for (const optimize of levels('size', 2, 3)) {
+    const { f } = run(src, { optimize }), ref = oracle(src).f
+    for (const x of [0, 0, -1, 2, 0.5]) is(f(x), ref(x))
+    if (optimize === 'size' && !onKernel()) {
+      const wat = compile(src, { wat:true, optimize:{level:'size', watr:false} })
+      ok(/\(call \$mix\b/.test(wat), 'shared body survives source lowering')
+    }
+  }
+})
+
 test('sourceInline: small loop helpers inline across several speed-tier sites', () => {
   const src = `function count(n) { let sum = 0; while (n > 0) { sum += n; n-- }; return sum }
     function total(n) { const a = count(n); const b = count(n + 1); const c = count(n + 2); return a + b + c }

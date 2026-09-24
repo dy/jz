@@ -240,3 +240,16 @@ test('method receiver: union families omit unreachable typed dispatch', () => {
     export function f(k){return cut(k?new Uint8Array([1,2,3]):[4,5,6])}` ).exports
   is(Array.from(f(1)), [2,3]); is(f(0), [5,6])
 })
+
+test('method receiver: union collection callbacks use their registered family', () => {
+  const src = `function sum(x){let s=0;x.forEach(v=>{s+=v});return s}
+    function text(x){return x.toString()}
+    export function f(k){return sum(k===0?[1,2]:k===1?new Uint8Array([3,4]):
+      k===2?new Set([5,6]):new Map([[0,7],[1,8]]))}
+    export function str(k){return text(k?'abc':[1,2])}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f, str } = jz(src, { optimize }).exports
+    for (const k of [0, 1, 1, 2, 3, 0]) is(f(k), [3,7,11,15][k])
+    is(str(0), '1,2'); is(str(1), 'abc')
+  }
+})

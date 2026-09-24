@@ -314,20 +314,16 @@ differ by their heap alone), native rows just the binary, `porf` compiles
 in-process each run (its deployment shape). Under `--paired` the recorded
 value is the cross-round median.
 
-**Where jz lands vs MoonBit** (`moonbit`/`moonrun` — a wasm-first-language
-rival with a real GC, the fairest no-engine-baseline memory comparison since
-both run as standalone wasm binaries rather than hosted in node/V8):
-jz-wasmtime beats-or-matches moonrun's peak RSS on 40/43 comparable cases
-(median delta −864 KB, jz leaner) — the bump allocator's small fixed engine
-floor (13.7 MB vs moonrun's 12.2 MB) plus demand-driven geometric growth
-undercuts a GC'd runtime's baseline on most kernels. Three residual losses —
-`strbuild` (+7.8 MB), `json` (+1.3 MB), `immutable` (+1.1 MB) — are the
-no-GC arena's own signature, not a defaults bug: this harness runs each
-case's 26 iterations in one process without calling `__clear`/
-`memory.reset()` between them, so a case that allocates per-iteration
-accumulates garbage a GC would have reclaimed. Production callers hit the
-same tradeoff if they skip `memory.reset()` between independent batches (see
-the root README's "How does memory work?").
+**Memory comparison with MoonBit.** The committed `memcheck-results.csv`
+is from August 6 and predates the current compiler. It records jz-wasmtime
+at or below moonrun's peak RSS on 1 of 43 cases, so it does not establish
+memory leadership. The former 40/43 claim described an earlier snapshot.
+Regenerate with `node bench/bench.mjs --cases=<case> --targets=jz-wasmtime,moonbit --json=<output>`
+on the reference machine, keeping compiler and runtime
+versions with the results. These runtimes have different baseline costs;
+report process RSS separately from JZ's live linear memory and allocation volume.
+The arena can retain allocations between independent batches until the caller
+uses `memory.reset()`; a GC runtime can reclaim them during the run.
 
 Runtime command overrides:
 
