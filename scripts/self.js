@@ -76,7 +76,12 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
   if (build) {
     configureDiagnostics(build)
-    if (build.imports) ctx.module.hostImports = build.imports
+    if (build.imports) {
+      ctx.module.hostImports = build.imports
+      for (const mod of Object.values(build.imports))
+        for (const name of Object.keys(mod))
+          if (typeof mod[name] === 'string') mod[name] = Number(mod[name])
+    }
     if (build.externalImports) setLinkDemand('external')
     if (typeof build.memory === 'number') ctx.memory.pages = build.memory
     if (build.compactCollections) ctx.transform.compactCollections = true

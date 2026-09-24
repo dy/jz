@@ -103,7 +103,10 @@ loop guard. Every counter proof rejects additional writes in the loop step.
 Method effects require a proven receiver and no own override, not just a name
 matching a built-in. Runtime method dispatch checks the receiver family too:
 boxed primitives never reach array helpers, and an optional missing method
-skips its arguments. Array searches capture the search value before iteration,
+skips its arguments. Kernel host imports carry signatures and numeric constants,
+not function implementations. Their JSON transport uses numeric text to preserve
+signed zero, NaN and infinities; presence checks accept zero-valued bindings.
+Array searches capture the search value before iteration,
 even when empty. Shared diagnostic configuration serves both compiler hosts. Local shape facts are seeded before representation plans
 freeze, including closure bodies. Body-fact queries for another body use a scratch
 representation overlay; they must not write facts into the active frame.

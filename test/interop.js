@@ -576,3 +576,17 @@ test('interop: a rejected module leaves the memory it would share untouched', ()
   is(one.exports.rq(o), 'a longer static string')
   is(JSON.stringify(memory.read(o)), '{"p":1,"q":"a longer static string"}')
 })
+
+test('interop: numeric host imports preserve zero, NaN, infinities and hidden constants', () => {
+  for (const head of ["import { value } from 'env'", "import { named as value } from 'env'", "import value from 'env'"]) {
+    const source = `${head}; export let f = () => value`
+    for (const value of [0, -0, NaN, Infinity, -Infinity, 7, 7, 0]) {
+      const env = Object.defineProperties({}, {value: {value}, named: {value}, default: {value}})
+      const f = jz(source, {imports: {env}}).exports.f
+      is(Object.is(f(), value), true, `constant ${String(value)}`)
+      is(Object.is(f(), value), true, 'repeated call')
+    }
+    throws(() => jz(source, {imports: {env: {}}}), /not declared/, 'missing remains an error')
+  }
+  is(jz('export let f = () => 7', {imports: {}}).exports.f(), 7, 'empty imports after numeric modules')
+})

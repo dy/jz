@@ -53,6 +53,12 @@ const callHandler = (handler, node) => {
   }
 }
 
+// Zero and NaN are valid numeric imports, despite being falsy.
+const hasHostImport = (mod, name) => {
+  const spec = ctx.module.hostImports?.[mod]?.[name]
+  return typeof spec === 'number' || !!spec
+}
+
 export function prep(node) {
   if (Array.isArray(node) && node[0] === 'this') { ctx.closure.receiver = true; return node }
   if (Array.isArray(node)) includeForOp(node[0])
@@ -587,7 +593,7 @@ const handlers = {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
-          if (spec) {
+          if (hasHostImport(mod, name)) {
             addHostImport(mod, name, alias, spec)
           } else {
             builtinItems.push(item)
@@ -672,7 +678,7 @@ const handlers = {
     if (hostMod) {
       if (typeof specifiers === 'string') {
         const spec = hostMod.default
-        if (!spec) err(`'default' not declared in host module '${mod}'; add it to { imports: { '${mod}': { default: ... } } }`)
+        if (!hasHostImport(mod, 'default')) err(`'default' not declared in host module '${mod}'; add it to { imports: { '${mod}': { default: ... } } }`)
         addHostImport(mod, 'default', specifiers, spec)
         return null
       }
@@ -684,7 +690,7 @@ const handlers = {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
-          if (!spec) err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
+          if (!hasHostImport(mod, name)) err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
           addHostImport(mod, name, alias, spec)
         }
       }
@@ -2491,7 +2497,7 @@ function resolveCallee(callee, args) {
       includeModule(obj); return `${obj}.${prop}`
     }
     const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
-    if (key && ctx.module.hostImports?.[obj]?.[prop]) {
+    if (key && hasHostImport(obj, prop)) {
       const spec = ctx.module.hostImports[obj][prop]
       const alias = `${obj}$${prop}`
       addHostImport(obj, prop, alias, spec)
@@ -2646,7 +2652,7 @@ export function programModuleAsts(ast) {
  *  null for a host import, a built-in module, a missing export or a module not
  *  prepared yet (the lowering then declines). */
 export function importedBinding(spec, name) {
-  if (name == null || ctx.module.hostImports?.[spec]?.[name]) return null
+  if (name == null || hasHostImport(spec, name)) return null
   return ctx.module.resolvedModules.get(spec)?.exports.get(name) ?? null
 }
 

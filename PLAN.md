@@ -422,9 +422,12 @@ The prior gate evidence below describes its own tree, not this candidate.
 - Watr's slot allocator now keeps implicit zeros when a nested branch bypasses
   a first assignment. This fixes O1 negative regex lookahead and the kernel's
   lone-CR parser rejection. Host import signatures also cross the kernel ABI;
-  implementations remain in the host, including external-object results.
-- Latest local validation: 71 self-compile tests and 10 performance-ratchet tests
-  pass. The remaining seven previously failing self-host tests still fail in
+  implementations remain in the host, including external-object results. Numeric
+  constants retain signed zero, NaN and infinities across JSON transport; native
+  and kernel imports accept zero-valued named/default bindings.
+- Validation at `64221145`: 71 self-compile tests and 10 performance-ratchet
+  tests pass. The numeric-import review follow-up passes 143 affected native
+  tests and three focused kernel tests, plus import lint and public types. The remaining seven previously failing self-host tests still fail in
   focused runs; full CI is pending. GitHub API rate limiting currently blocks
   status reads. No claim of a green release is justified.
 - Still open in the Wasm-hosted suite: nested array-pattern scalarization,

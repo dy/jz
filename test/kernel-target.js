@@ -93,15 +93,31 @@ const modulesJSONFor = (self, opts) =>
 // opts.host ('wasi' | 'js') → plain string over the ABI; 0 = native undefined default.
 const hostFor = (self, opts) => opts.host ? self.memory.String(opts.host) : 0
 const sourceTypeFor = (self, opts) => opts.sourceType ? self.memory.String(opts.sourceType) : 0
-const buildJSONFor = (self, opts) => !opts.imports && opts.alloc == null && typeof opts.memory !== 'number' && !opts.whyNotRewind && !opts.whyNotSimd ? 0 : self.memory.String(JSON.stringify({
-  alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
-  whyNotRewind: !!opts.whyNotRewind, whyNotSimd: !!opts.whyNotSimd,
-  // Only import signatures cross the compiler ABI. Implementations stay with
-  // the host that instantiates the produced module; they are never serialized.
-  imports: opts.imports,
-  externalImports: !!opts.imports && Object.values(opts.imports).some(mod =>
-    Object.values(mod || {}).some(spec => typeof spec === 'function')),
-}, (key, value) => typeof value === 'function' ? {params: value.length} : value))
+const buildJSONFor = (self, opts) => {
+  if (!opts.imports && opts.alloc == null && typeof opts.memory !== 'number' && !opts.whyNotRewind && !opts.whyNotSimd) return 0
+  let imports, externalImports = false
+  if (opts.imports) {
+    imports = Object.create(null)
+    for (const [mod, members] of Object.entries(opts.imports)) {
+      const specs = Object.create(null)
+      // Constants may be non-enumerable (Math.PI). Numeric text preserves
+      // infinities, NaN and signed zero through the JSON ABI.
+      for (const name of Object.getOwnPropertyNames(members || {})) {
+        const value = members[name]
+        specs[name] = typeof value === 'function' ? {params: value.length}
+          : typeof value === 'number' ? (Object.is(value, -0) ? '-0' : String(value)) : value
+        if (typeof value === 'function') externalImports = true
+      }
+      imports[mod] = specs
+    }
+  }
+  // Implementations stay in the host; only signatures and constants travel.
+  return self.memory.String(JSON.stringify({
+    alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
+    whyNotRewind: !!opts.whyNotRewind, whyNotSimd: !!opts.whyNotSimd,
+    imports, externalImports,
+  }))
+}
 
 const optJSONFor = (self, opts) => {
   if (opts.optimize === false || opts.optimize === 0) return 0
