@@ -326,7 +326,17 @@ Dependencies
    glyfparse/C-Wasm 1.418×, SDF/C-Wasm 1.420×, noise/Rust-Wasm 1.148×,
    wordcount/C-Wasm 1.011×, watr/V8 1.546× and Jessie/V8 0.988×.
 
-4. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
+4. **Builtins over accessors and `toJSON`.** At every level, `Object.values`,
+   `Object.entries`, `JSON.stringify` and `Object.assign` do not run a
+   literal's getter: `Object.values({ a: 1, get g() { return 7 } })` gives
+   `[1, null]`, `Object.entries` exposes the slot as `g__get`, `JSON.stringify`
+   omits it and `Object.assign` leaves it undefined. Spread copies the getter
+   itself, so it runs at each later read instead of once at the spread.
+   `JSON.stringify` ignores a class's `toJSON` (`{}` for `{"v":1}`); a
+   literal's is rejected at compile time. Each should read the value as JS
+   does, or reject the program.
+
+5. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
    defers native release work until JZ v1 and requires verification from its
    installed tarball. The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Use
@@ -335,7 +345,7 @@ Dependencies
    on next setup; active restart needs the component-handler interface.
    Events and wider layouts remain refused.
 
-5. **Proof and independent review.** Reachable dynamic calls can still make
+6. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation and work proofs unknown. Empirical block checks prove
    neither allocation freedom for all inputs nor callback deadlines. Reuse
    entry-range facts for useful bounds; a full-i32 domain proves no deadline.
