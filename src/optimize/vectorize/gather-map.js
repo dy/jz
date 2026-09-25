@@ -42,19 +42,35 @@ export function tryGatherMap(bl, fnLocals, freshIdRef, distinct) {
   // trap in scalar arithmetic, or write the exit counter. Unknown effects
   // decline. Memory accesses must name a different proven-owned parameter.
   let safe = true, loads = 0
+  const addresses = new Map()
   const scalar = n => {
     const op = n[0]
     if (op === 'local.get' || op === 'local.set' || op === 'local.tee') {
       if (vectorWrites.has(n[1]) || op !== 'local.get' && (n[1] === incVar || distinct.has(n[1]))) safe = false
     } else if (LOAD_OPS[op]) {
-      const a = n[n.length - 1]
+      let a = n[n.length - 1]
+      if (a?.[0] === 'local.tee') a = a[2]
+      if (isLocalGet(a) && addresses.has(a[1])) a = addresses.get(a[1])
       if (a?.[0] !== 'i32.add' || !isLocalGet(a[1]) ||
           !distinct.has(a[1][1]) || a[1][1] === addr.base[1] || writes.has(a[1][1])) safe = false
       loads++
     } else if (!['block', 'result', 'if', 'then', 'else', 'select', 'drop'].includes(op) &&
         !/^(?:i32|i64|f32|f64)\.(?:const|add|sub|mul|and|or|xor|shl|shr_s|shr_u|eqz|eq|ne|lt_s|lt_u|gt_s|gt_u|le_s|le_u|ge_s|ge_u|lt|gt|le|ge|neg|abs|sqrt|min|max|ceil|floor|trunc|nearest|copysign|convert_i32_s|convert_i32_u|promote_f32|demote_f64|trunc_sat_f64_s|trunc_sat_f64_u|wrap_i64|extend_i32_s|extend_i32_u|reinterpret_i64|reinterpret_f64)$/.test(op)) safe = false
   }
-  for (const s of [...prefix, ...tail]) walkAst(s, { enter: scalar })
+  for (const s of [...prefix, ...tail]) {
+    // An unconditional load can define a shared address for later reads.
+    // Every other write invalidates it; branch-local definitions never enter
+    // this map. The scalar statements still execute in their original order.
+    const changed = new Set()
+    collectWrites(s, changed)
+    for (const name of changed) addresses.delete(name)
+    walkAst(s, { enter: scalar })
+    const value = s[0] === 'local.set' ? s[2] : null
+    const a = value && LOAD_OPS[value[0]] ? value[value.length - 1] : null
+    if (a?.[0] === 'local.tee' && a[2]?.[0] === 'i32.add' &&
+        isLocalGet(a[2][1]) && distinct.has(a[2][1][1]) && !writes.has(a[2][1][1]))
+      addresses.set(a[1], a[2])
+  }
   if (!safe || !loads) return null
 
   const inputs = new Set(), localKind = new Map()

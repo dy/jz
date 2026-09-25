@@ -125,9 +125,24 @@ Review also found that rounding a SIMD bound near INT_MIN could wrap an empty
 range into work. The shared map/ramp/reduction/stencil/gather bound now
 preserves signed entry guards and complete read spans. The native and
 self-hosted gather regressions cover nonzero entries and negative limits.
-All 62 corpus checksums and 234 SIMD tests (6355 assertions) pass. This
+All 62 corpus checksums and 234 SIMD tests (6675 assertions) pass. This
 follow-up leaves resample at 3492 speed bytes and moves SDF to 3215 bytes;
-its final CI repeat is pending.
+the [boundary repeat](https://github.com/dy/jz/actions/runs/36190901654) wins
+all sixteen pairs against every measured rival (JZ/JSC medians 0.9660 for
+resample and 0.8892 for SDF). The [final repeat at b3f8f69](https://github.com/dy/jz/actions/runs/36191369808)
+on EPYC 7763 is weaker: resample wins 13/16 JSC pairs, median 0.9779,
+range 0.9019–1.0403; SDF wins 11/16, median 0.9678, range 0.9034–1.0636.
+Neither row is closed by these measurements. The c2ab346 core suite passes
+4813 tests / 127075 assertions; b3f8f69 conformance, opt0, opt3 and fuzz are green.
+
+The next resample candidate bounds constant fractional recurrences on an exact
+binary grid, then propagates only their truncated integer hulls. No addition
+is reassociated. Proven reads keep the gather SIMD path through unconditional
+shared-address caches, which are invalidated by writes. Speed size falls
+3492 → 2290 bytes; size mode stays 1315 bytes. SDF stays 3215 / 2015 bytes.
+All 62 corpus checksums, 236 SIMD tests / 6862 assertions, 62 performance tests /
+1267 assertions and 78 fresh self-compile tests / 2763 assertions pass.
+The full suite and paired CI evidence remain required for this candidate.
 
 Keep the published snapshot unchanged until the tree passes its gates and
 quiet measurements support a refresh.

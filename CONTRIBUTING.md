@@ -90,6 +90,10 @@ a pure Float64 arithmetic suffix into two lanes. Scalar recurrences execute in
 their original order, including each rounded phase addition. This requires
 distinct, unwritten owned parameters; aliases, views, observable suffix locals
 and unprofitable packing retain scalar code. The original loop handles odd tails.
+Unconditional address caches retain that ownership proof until overwritten.
+Constant fractional recurrences use outward-rounded binary-grid bounds to prove
+their truncated indices. The accumulator keeps every original floating addition;
+unknown writes or a missing reset on a nested-loop entry decline the proof.
 Vector maps, gathers, ramps, reductions and stencils share the span-bound
 calculation. Empty signed ranges remain empty even beside INT_MIN; widening
 loads require their complete read span before subtracting extra lanes.

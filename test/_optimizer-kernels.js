@@ -48,3 +48,9 @@ export function probe(count, start, step, pick) {
   const phase = gather(a, b, count & 31, +start, +step)
   return pick < 0 ? phase : b[pick & 31]
 }`
+
+// Fixed fractional motion has a finite hull, but every addition still rounds.
+export const BOUNDED_GATHER_KERNEL = GATHER_MAP_KERNEL
+  .replace('function gather(a, b, n, phase, step) {',
+    'const STEP = 0.3103103103103103; function gather(a, b, n) { let phase = 1.0;')
+  .replace('phase += step', 'phase += STEP')

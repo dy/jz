@@ -927,6 +927,39 @@ test('codegen: mutable integer hulls include every writer and preserve missing v
   }
 })
 
+test('codegen: fractional index hulls preserve rounding and require every write', () => {
+  const read = 'const j=p|0;s+=a[j]+a[j+1];'
+  const loop = (start, step) => `let p=${start},s=0;for(let i=0;i<(n&31);i++){${read}${step}}return [p,s]`
+  const cases = [
+    ['positive', loop('1', 'p+=STEP;')],
+    ['negative', loop('11', 'p-=STEP;')],
+    ['tiny', loop('1', 'p+=Number.MIN_VALUE;')],
+    ['signed zero', loop('-0', 'p+=-0;')],
+    ['upper boundary', loop('2147483646.75', 'p+=0.75;')],
+    ['lower boundary', loop('-2147483647.75', 'p-=0.75;')],
+    ['NaN', loop('NaN', 'p+=STEP;')],
+    ['infinity', loop('Infinity', 'p+=STEP;')],
+    ['unknown step', loop('1', 'p+=n;')],
+    ['multiple steps', loop('1', 'p+=STEP;p-=0.15;p++;')],
+    ['conditional steps', loop('1', 'if(i&1)p+=STEP;else p+=1.5;')],
+    ['continue', loop('1', 'if(i&1)continue;p+=STEP;')],
+    ['closure writes', `let p=1,s=0;const change=()=>{p=100};for(let i=0;i<(n&31);i++){${read}p+=STEP;if(i===1)change()}return[p,s]`],
+    ['header write', `let p=1,s=0;for(let i=0;i<(n&31);i++,p+=n){${read}p+=STEP;}return[p,s]`],
+    ['nested without reset', `let p=1,s=0;for(let r=0;r<(n&7);r++)for(let i=0;i<16;i++){${read}p+=STEP}return[p,s]`],
+    ['nested reset', `let s=0;for(let r=0;r<(n&7);r++){let p=1;for(let i=0;i<16;i++){${read}p+=STEP}}return[0,s]`],
+    ['shadowed constant', `const STEP=1.5;${loop('1', 'p+=STEP;')}`],
+  ]
+  for (const [name, body] of cases) {
+    const src = `const STEP=0.3103103103103103;export function f(n){const a=new Float64Array(16);for(let i=0;i<16;i++)a[i]=(i-3)*0.125;${body}}`
+    const native = oracle(src).f
+    for (const optimize of [0, 2, 'speed', 'size']) {
+      const f = jz(src, { optimize }).exports.f
+      for (const n of [0, 1, 2, 3, 15, 30, 31, 31, 2, 0])
+        is(f(n), native(n), `${name}, O${optimize}, n=${n}`)
+    }
+  }
+})
+
 test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => {
   // The typed-array i32-read narrowing must NOT apply to Uint32Array, whose element can
   // exceed signed-i32 range: `U[0] + 1` at 2^32-1 is 4294967296, not a wrapped 0. exprType

@@ -7,7 +7,7 @@ import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET,
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
-  constIntExpr, guardCounterName, forCounterRange, typedCtorRawOf,
+  constIntExpr, constNumExpr, guardCounterName, forCounterRange, typedCtorRawOf,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { maxAdvanceBudget } from '../type/canonical-bounds.js'
@@ -1318,12 +1318,12 @@ function findOuterDeclInit(root, exclude, name) {
 /** Per-iteration motion: P/N bound all positive/negative steps, including
  *  intermediate values. D is the exact net step, or null for a bounded varying
  *  step. Nested loops, resets, shadows and differing conditional arms reject. */
-function collectStepRange(node, name, rangeOf) {
+function collectStepRange(node, name, rangeOf, unit = 1) {
   if (!Array.isArray(node)) return { P: 0, N: 0, D: 0 }
   const op = node[0]
   if (MUTATE_OPS.has(op) && node[1] === name) {
-    if (op === '++') return { P: 1, N: 0, D: 1 }
-    if (op === '--') return { P: 0, N: 1, D: -1 }
+    if (op === '++') return { P: unit, N: 0, D: unit }
+    if (op === '--') return { P: 0, N: unit, D: -unit }
     if (op === '+=' || op === '-=') {
       const r = rangeOf(node[2])
       if (!r) return null
@@ -1339,7 +1339,7 @@ function collectStepRange(node, name, rangeOf) {
       if (d === name) return null                                     // bare uninitialized shadow decl
       if (Array.isArray(d) && d[1] === name) return null               // shadow — a fresh `name` rebinds here
       if (Array.isArray(d) && d[0] === '=') {
-        const s = collectStepRange(d[2], name, rangeOf)
+        const s = collectStepRange(d[2], name, rangeOf, unit)
         if (s == null) return null
         P += s.P; N += s.N; D = D == null || s.D == null ? null : D + s.D
       }
@@ -1347,10 +1347,10 @@ function collectStepRange(node, name, rangeOf) {
     return { P, N, D }
   }
   if (op === 'if' || op === '?:') {
-    const c = collectStepRange(node[1], name, rangeOf)
+    const c = collectStepRange(node[1], name, rangeOf, unit)
     if (c == null || c.P || c.N) return null   // a write to `name` inside the CONDITION itself — reject, too exotic
-    const t = collectStepRange(node[2], name, rangeOf)
-    const e = node.length > 3 && node[3] !== undefined ? collectStepRange(node[3], name, rangeOf) : { P: 0, N: 0, D: 0 }
+    const t = collectStepRange(node[2], name, rangeOf, unit)
+    const e = node.length > 3 && node[3] !== undefined ? collectStepRange(node[3], name, rangeOf, unit) : { P: 0, N: 0, D: 0 }
     if (t == null || e == null) return null
     if (t.D !== e.D || t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
     return t
@@ -1360,7 +1360,7 @@ function collectStepRange(node, name, rangeOf) {
     return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0, D: 0 }
   let P = 0, N = 0, D = 0
   for (let i = 1; i < node.length; i++) {
-    const s = collectStepRange(node[i], name, rangeOf)
+    const s = collectStepRange(node[i], name, rangeOf, unit)
     if (s == null) return null
     P += s.P; N += s.N; D = D == null || s.D == null ? null : D + s.D
   }
@@ -1370,9 +1370,40 @@ function collectStepRange(node, name, rangeOf) {
 // A name written inside any closure of `body` can change at any call.
 const closureWrites = (body, name) => some(body, n => n[0] === '=>' && isReassigned(n, name))
 
+// Enclose repeated floating additions on an exact binary grid. Rounded
+// additions are monotone; integral grid endpoints plus outward-rounded steps
+// stay exact while their scaled magnitude fits the safe integer range. This
+// bounds the recurrence without replacing it with start + count * step.
+function fractionalLoopRange(body, name, init, trips) {
+  const literal = n => constNumExpr(n, key => ctx.scope.constNums?.get(key) ?? null)
+  const start = literal(init)
+  if (!Number.isFinite(start) || !Number.isSafeInteger(trips)) return null
+  const enclose = scale => {
+    const step = collectStepRange(body, name, n => {
+      const v = literal(n)
+      return Number.isFinite(v) ? [Math.floor(v * scale), Math.ceil(v * scale)] : null
+    }, scale)
+    if (!step) return null
+    const down = trips * step.N, up = trips * step.P
+    const lo = Math.floor(start * scale) - down, hi = Math.ceil(start * scale) + up
+    return [down, up, lo, hi].every(Number.isSafeInteger) ? [lo / scale, hi / scale] : null
+  }
+  const coarse = enclose(1)
+  if (!coarse) return null
+  let scale = 1
+  const magnitude = Math.max(1, Math.abs(coarse[0]), Math.abs(coarse[1]))
+  while (scale < 0x100000000 && magnitude * scale < 2 ** 50) scale *= 2
+  return enclose(scale)
+}
+
 export function stampBodyRanges(body, readPresent, typedLens) {
+  const fractional = new Map()
   const rangeOf = n => {
     if (Array.isArray(n) && typeof n[1] === 'string') {
+      if (n[0] === '|' && constIntExpr(n[2]) === 0) {
+        const r = fractional.get(n[1])
+        if (r && r[0] >= -2147483648 && r[1] <= 2147483647) return r.map(Math.trunc)
+      }
       if (n[0] === '.' && n[2] === 'length') {
         const len = typedLens?.get(n[1]) ?? repOf(n[1])?.arrayLen
         if (len != null) return [len, len]
@@ -1395,14 +1426,15 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     if (!defs.has(name)) defs.set(name, [])
     defs.get(name).push(rhs)
   }
-  const record = (name, loopBody, range) => {
+  const record = (name, loopBody, range, float = false) => {
     if (!Number.isFinite(range[0]) || !Number.isFinite(range[1])) return
     const prev = proofs.get(name)
     if (prev) {
       prev.range[0] = Math.min(prev.range[0], range[0])
       prev.range[1] = Math.max(prev.range[1], range[1])
       prev.loops.add(loopBody)
-    } else proofs.set(name, { range, loops: new Set([loopBody]) })
+      prev.float ||= float
+    } else proofs.set(name, { range, loops: new Set([loopBody]), float })
   }
   // A reduction inside an outer loop needs an initializer in that iteration.
   // Peeled regions may reuse binding names; join their independently proved
@@ -1437,8 +1469,12 @@ export function stampBodyRanges(body, readPresent, typedLens) {
           const initExpr = findOuterDeclInit(regions[regions.length - 1], loopBody, name)
           if (initExpr == null) continue
           const initRange = intExprRange(initExpr)
-          if (!initRange) continue
           const delta = collectStepRange(loopBody, name, rangeOf)
+          if (!initRange || delta == null) {
+            const range = fractionalLoopRange(loopBody, name, initExpr, trips)
+            if (range) { record(name, loopBody, range, true); continue }
+          }
+          if (!initRange) continue
           if (delta == null) {
             const adv = maxAdvanceBudget(loopBody, name, { constInt: constIntExpr, evRange: intExprRange, closureWrites: EMPTY_SCAN_SET, MUTATE_OPS })
             if (adv != null && adv > 0) record(name, loopBody, [initRange[0], initRange[1] + trips * adv])
@@ -1455,7 +1491,10 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     if (loops.has(node[0])) regions.push(node[node[0] === 'for' ? 4 : node[0] === 'while' ? 2 : node[0] === 'do' ? 1 : 3])
   }, exit: node => { if (loops.has(node[0])) regions.pop() } })
   for (const [name, proof] of proofs)
-    if (!writesOutsideLoop(body, proof.loops, name)) updateRep(name, { range: proof.range })
+    if (!writesOutsideLoop(body, proof.loops, name)) {
+      if (proof.float) fractional.set(name, proof.range)
+      else updateRep(name, { range: proof.range })
+    }
   // A mutable scalar retains a closed hull only when EVERY write has one.
   // Missing reads, uninitialized declarations, steps and closure writes
   // disqualify it. Unknown dependencies defer; cycles never seed themselves.

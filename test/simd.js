@@ -9,8 +9,9 @@ import { run, wat, oracle, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
-import { simdBound } from '../src/optimize/vectorize/scaffold.js'
-import { GATHER_MAP_KERNEL as GATHER_MAP } from './_optimizer-kernels.js'
+import { simdBound, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
+import { tryGatherMap } from '../src/optimize/vectorize/gather-map.js'
+import { GATHER_MAP_KERNEL as GATHER_MAP, BOUNDED_GATHER_KERNEL } from './_optimizer-kernels.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -91,6 +92,64 @@ test('SIMD gather map: aliases, views, live-out arithmetic and cheap suffixes ke
       is(compiled(n, 0.25, 0.5, pick), native(n, 0.25, 0.5, pick), `declined ${index}: count ${n}, pick ${pick}`)
     if (!onKernel()) ok(!compile(src, { optimize: GATHER_OPT, wat: true }).includes('f64x2.replace_lane'),
       `declined ${index}: no gathered vector strip`)
+  }
+})
+
+test('SIMD gather map: bounded fractional motion keeps shared-address gathers vectorized', () => {
+  for (const length of [16, 16, 0, 1, 8, 16]) {
+    const src = BOUNDED_GATHER_KERNEL.replace('Float64Array(16)', `Float64Array(${length})`)
+    const native = oracle(src).probe, compiled = runVec(src, { optimize: GATHER_OPT }).probe
+    for (const n of [0, 1, 2, 3, 7, 30, 31]) for (const pick of [-1, 0, Math.max(0, n - 1), n])
+      is(compiled(n, 0, 0, pick), native(n, 0, 0, pick), `bounded length ${length}, count ${n}, pick ${pick}`)
+    if (!onKernel() && length === 16) {
+      const w = compile(src, { optimize: GATHER_OPT, wat: true })
+      ok(w.includes('f64x2.replace_lane'), 'shared unchecked addresses retain the SIMD suffix')
+      const f = funcWat(w, 'probe')
+      ok(f && !f.includes('f64.const nan'), 'the complete fractional hull proves every input read')
+    }
+  }
+})
+
+test('SIMD gather map: shared addresses require an unconditional definition and no overwrite', () => {
+  if (onKernel()) return // Exercise the host recognizer's IR contract directly.
+  const address = '(local.tee $p (i32.add (local.get $a) (i32.shl (local.get $j) (i32.const 3))))'
+  for (const [first, middle, accepted] of [
+    [`(f64.load ${address})`, '', true],
+    [`(f64.load ${address})`, '(local.set $p (local.get $b))', false],
+    [`(f64.load ${address})`, '(if (local.get $skip) (then (local.set $p (local.get $b))))', false],
+    [`(if (result f64) (local.get $skip) (then (f64.load ${address})) (else (f64.load (local.get $a))))`, '', false],
+  ]) {
+    const tree = parseWat(`(module (memory (export "memory") 1)
+      (func $f (export "f") (param $a i32) (param $b i32) (param $n i32) (param $skip i32)
+        (local $i i32) (local $j i32) (local $p i32) (local $x f64) (local $y f64)
+        (block $done (loop $loop
+          (br_if $done (i32.eqz (i32.lt_s (local.get $i) (local.get $n))))
+          (local.set $j (i32.and (local.get $i) (i32.const 7)))
+          (local.set $x ${first}) ${middle}
+          (local.set $y (f64.load offset=8 (local.get $p)))
+          (f64.store (i32.add (local.get $b) (i32.shl (local.get $i) (i32.const 3)))
+            (f64.add (f64.mul (f64.add (f64.mul (local.get $x) (local.get $y)) (local.get $x))
+              (f64.sub (local.get $y) (local.get $x))) (f64.mul (local.get $x) (local.get $x))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $loop)))))`)
+    const fn = tree.find(n => n[0] === 'func'), block = fn.at(-1)
+    const original = encodeWat(tree)
+    const locals = new Map(fn.filter(n => n[0] === 'local' || n[0] === 'param').map(n => [n[1], n[2]]))
+    const plan = tryGatherMap(matchBlockLoop(block), locals, { next: 0 }, new Set(['$a', '$b']))
+    is(!!plan, accepted, `shared address ${middle || first}`)
+    if (!plan) continue
+    fn.splice(fn.length - 1, 1, ...plan.newLocalDecls, plan.wrapper)
+    const optimized = encodeWat(tree)
+    const before = new WebAssembly.Instance(new WebAssembly.Module(original)).exports
+    const after = new WebAssembly.Instance(new WebAssembly.Module(optimized)).exports
+    for (const count of [0, 1, 2, 3, 15, 16, 16, 1, 0]) {
+      for (const e of [before, after]) {
+        const m = new Float64Array(e.memory.buffer)
+        m.fill(-9); for (let i = 0; i < 9; i++) m[4 + i] = (i - 4) * 0.125
+        e.f(32, 256, count, 0)
+      }
+      is([...new Float64Array(after.memory.buffer, 256, 17)], [...new Float64Array(before.memory.buffer, 256, 17)],
+        `count ${count}: lane results and untouched tail match`)
+    }
   }
 })
 
