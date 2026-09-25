@@ -187,6 +187,26 @@ test('link: functions order by call count, runtime ties by name, user functions 
   is(out[1][0], 'memory'); is(out.at(-1)[0], 'elem', 'the functions stay between memory and elem')
 })
 
+test('link: equal-count runtime and user functions have a transitive order', () => {
+  // A runtime/user tie cannot compare equal while two runtime names compare
+  // unequal: insertion sort and V8's sort need not agree on that comparator.
+  for (const input of [
+    ['$__z', '$user2', '$__a', '$user1'],
+    ['$user2', '$__z', '$user1', '$__a'],
+    ['$__a', '$user2', '$__z', '$user1'],
+    ['$user2', '$user1', '$__z', '$__a'],
+  ]) {
+    for (const count of [0, 1]) {
+      const m = ['module', ...input.map(n => ['func', n, ['nop']])]
+      const calls = new Map(input.map(n => [n, count]))
+      const [out] = onTape(m, root => orderFuncs(root, calls))
+      is(names(out).join(' '), '$__a $__z $user2 $user1', input.join(' '))
+      const [again] = onTape(out, root => orderFuncs(root, calls))
+      ok(same(out, again), 'ordering again is unchanged')
+    }
+  }
+})
+
 test('link: the throw runtime goes when nothing can catch; a catch anywhere keeps it', () => {
   const m = ['module', ['tag', '$__jz_err', ['param', 'f64']],
     ['func', '$f', ['global.set', '$__jz_last_err_bits', ['i64.const', 7]], ['throw', '$__jz_err', ['f64.const', 1]]]]
