@@ -5,7 +5,7 @@
 // runtime's ABI or in a closure's prologue is a leak the self-compile pays
 // on its own hot paths (a query view, a dynamic method call).
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { levels } from './_matrix.js'
 
@@ -21,6 +21,24 @@ export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0;
   return out
 }
 const zero = (out, what) => { for (const level in out) is(out[level], 0, `${what} allocates ${out[level]} bytes per call at O${level}`) }
+
+test('allocation: private string builders grow linearly', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { bytes, build } = jz(`
+      export function bytes(n) {
+        const h = __heap_mark(); let s = '';
+        for (let i = 0; i < n; i++) s += 'ab';
+        return __heap_mark() - h + (s.length === n * 2 ? 0 : 1000000)
+      }
+      export function build(n) { let s = ''; for (let i = 0; i < n; i++) s += 'ab'; return s }
+    `, { optimize }).exports
+    is(bytes(0), 0, `empty builder O${optimize}`)
+    for (const n of [100, 100, 1000]) {
+      ok(bytes(n) <= n * 4 + 32, `O${optimize}, ${n} appends stay within output bytes plus one header`)
+      is(build(n), 'ab'.repeat(n), `terminal return O${optimize}, n=${n}`)
+    }
+  }
+})
 
 test('allocation: closed destructuring records are reused', () => {
   zero(measure(`const a = [3, 5]

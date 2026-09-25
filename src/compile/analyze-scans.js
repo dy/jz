@@ -228,6 +228,10 @@ export const BINDING_USE_STORE = 1 // BARE RHS only: discarded assignment's dest
 // comparison answers undefined and zero alike, the step runs only where a
 // test excluded both (checked integer reads, analyze/body-facts.js).
 export const BINDING_USE_MISS = 9
+// A discarded append consumes its own binding; the result is not published.
+export const BINDING_USE_SELF = 10
+const SELF_WRITE = [USE.REASSIGN], SELF_READ = [USE.CONCAT]
+SELF_WRITE[BINDING_USE_SELF] = SELF_READ[BINDING_USE_SELF] = true
 const SIMPLE_USE = Array.from({ length: 15 }, (_, kind) => [kind])
 // The interned records below are read-only and hold primitives alone, so
 // equal ones are shared as well: a member read or write is one record per
@@ -429,6 +433,15 @@ export function scanBindingUses(body, trackNames) {
     // === precise classification (outside any closure) ===
     if (ASSIGN_OPS.has(op)) {
       if (guardedStep(node[1], (op === '+=' || op === '-=') && isNumLit(node[2]))) { use(node[1], USE.REASSIGN, GUARDED_STEP); return }
+      const rhs = node[2], name = node[1]
+      if (discarded && typeof name === 'string' && (op === '+=' || op === '=' && Array.isArray(rhs) &&
+          (rhs[0] === '+' && rhs[1] === name || rhs[0] === 'str' && rhs[1] === ''))) {
+        use(name, USE.REASSIGN, SELF_WRITE)
+        if (op === '=') {
+          if (rhs[0] === '+') { use(name, USE.CONCAT, SELF_READ); val(rhs[2]) }
+        } else val(rhs)
+        return
+      }
       assignTarget(node[1], op !== '=')
       if (op === '=' && discarded && typeof node[2] === 'string' && node[1]?.[0] === '[]') {
         use(node[2], USE.BARE, [USE.BARE, node[1]])
@@ -558,6 +571,28 @@ export function scanBindingUses(body, trackNames) {
   // nothing at module scope) — WeakMap keys must be objects.
   if (!trackNames && body != null && typeof body === 'object') bindingUses.set(body, summary)
   return summary
+}
+
+/** A local empty-string builder whose old value cannot survive an append.
+ *  Consume the shared use census; no second body walk or ownership metadata.
+ *  Only a sole terminal return may publish the result (a return through a
+ *  finally clause could keep the old value alive while appending again). */
+export function privateStringBuilder(body, name) {
+  const binding = scanBindingUses(body).get(name)
+  const init = binding?.[BINDING_USE_INIT]
+  if (!binding || binding[BINDING_USE_DECLS] !== 1 || init?.[0] !== 'str' || init[1] !== '') return false
+  let tail = body
+  while (tail?.[0] === ';' || isBlockBody(tail)) tail = tail.at(-1)
+  let returns = 0
+  for (const u of binding[BINDING_USE_USES]) {
+    const k = u[BINDING_USE_KIND]
+    if ((k === USE.REASSIGN || k === USE.CONCAT) && u[BINDING_USE_SELF]) continue
+    if (k === USE.MEMBER_R && u[BINDING_USE_KEY] === 'length' && !u[BINDING_USE_COMPUTED]) continue
+    if (k === USE.COMPARE || k === USE.BOOL_TEST || k === USE.WORD) continue
+    if (k === USE.RETURN && ++returns === 1 && tail?.[0] === 'return' && tail[1] === name) continue
+    return false
+  }
+  return true
 }
 
 /**

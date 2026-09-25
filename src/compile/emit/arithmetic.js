@@ -346,13 +346,10 @@ export const arithmeticOps = {
     if ((vtA == null && mayBeString(a)) || (vtB == null && mayBeString(b))) ctx.module.include('string')
     if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
       const tA = temp('add'), tB = temp('add')
-      // Fully-untyped `+`: the string arm is a runtime-guarded cold path that the engine reaches
-      // only if BOTH operands are strings at runtime, so it keeps the bump-extend `__str_concat`
-      // (its body stays out-of-line — folding it to the smaller _fresh twin would inline this
-      // never-numeric branch into every hot integer loop). The demonstrated `t = s + "lit"` mutation
-      // is a TYPED concat (handled by concatRaw above); a both-untyped self-mutation stays the
-      // documented rare-aliasing tradeoff. Self-accumulation is still safe to extend.
-      inc('__str_concat', '__is_str_key')
+      // Runtime string tests establish the value kind, not ownership. Apply
+      // the same private-builder proof as the statically typed concat path.
+      const concatFn = selfAccum ? '__str_concat' : '__str_concat_fresh'
+      inc(concatFn, '__is_str_key')
       // A known BOOL side enters as its atom: concat renders "true", the
       // numeric arm converts it, and neither sees a raw 0/1 carrier.
       const dyn = (vt) => vt == null || vt === VAL.BOOL
@@ -360,7 +357,7 @@ export const arithmeticOps = {
       const eB = dyn(vtB) ? storedValue(b) : null
       const checkA = eA ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, eA]]] : null
       const checkB = eB ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, eB]]] : null
-      const concat = ['call', '$__str_concat', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
+      const concat = ['call', '$' + concatFn, ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
       // Numeric arm: an UNKNOWN operand may still be a non-string NaN-box (a
       // boolean atom, null, undefined, an object) whose `+` is not its raw
       // bits. The self-compare guards the hot path (every non-NaN f64 IS its

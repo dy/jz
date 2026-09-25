@@ -67,7 +67,7 @@ export default (ctx) => {
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __to_prim_dflt: ['__ptr_type', '__to_str'],
     __cmp: ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num'],
-    __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat',
+    __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat_fresh',
       ...(representationProgramHasBigint(ctx) ? ['__box_bigint', '__ptr_offset'] : [])],
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
     __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
@@ -534,7 +534,7 @@ export default (ctx) => {
     (if (call $__is_object (local.get $b))
       (then (local.set $b (call $__to_prim_dflt (local.get $b)))))
     (if (i32.or (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
-      (then (return (call $__str_concat (local.get $a) (local.get $b)))))
+      (then (return (call $__str_concat_fresh (local.get $a) (local.get $b)))))
     ${representationProgramHasBigint(ctx) ? `
     (local.set $ab (i32.and
       (f64.ne (f64.reinterpret_i64 (local.get $a)) (f64.reinterpret_i64 (local.get $a)))

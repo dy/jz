@@ -168,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 from npm and watr `d0f421a` (on 5.11.3); 5.11.3 carries the two
+- subscript ^10.8.0 from npm and watr `efdd444` (on 5.11.3); 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -357,14 +357,21 @@ Dependencies
    1040 allocated bytes and its allocation/alias tests passed, but neither
    library's RSS gap closed. Watr's ordinary-tier timings regressed in four
    of five alternating pairs; fully optimized pairs were near parity. The
-   trial is not retained. A corresponding string-growth trial is also rejected:
-   self-assignment alone does not prove the old string has no retained aliases
-   (`snapshots.push(s); s += 'ab'`). That alias defect also reproduces with the
-   existing default allocator, so string ownership needs a sound census proof
-   before broadening in-place growth.
+   trial is not retained. String aliasing is fixed through the binding-use
+   census: only private builders may grow in place; typed and dynamic addition
+   preserve retained operands. Across all five tiers, alias regressions and
+   linear-allocation pins pass. A second raw-ABI growth trial after this fix
+   leaves both libraries at 64 MB linear memory with no consistent speed gain,
+   so it is also rejected.
 
-   Watr retains 64 KB code buffers between assemblies; use its lifetime
-   evidence before changing allocation policy. Its run ends at 153 MB RSS:
+   Watr's code buffer now starts at 4 KB, using its existing geometric growth
+   instead of reserving 64 KB for every assembly. The unchanged workload drops
+   from 64 to 32 MiB linear memory and from 154656 to 116432 KiB median peak
+   RSS across five alternating local rounds. Checksums match; four of five
+   timing pairs improve, but loaded-machine timing is diagnostic. The existing
+   exact framing tests now cover both sides of the 4 KB boundary; watr's full
+   suite passes (353 core, 268 spec, 22 skips).
+   Before this reduction its run ended at 153 MB RSS:
    a 50.6 MB host baseline, a 59 MB heap peak in 64 MB of linear memory, and
    about 39 MB of V8's own, the same without tier-up. The bench loop cannot
    rewind: `assemble` calls `Uint8Array.from`, which the frame census does
@@ -532,6 +539,20 @@ Watr's full suite passes (353 core tests, 268 spec tests; 22 skips). The JZ
 integration regression passes all four requested tiers (36 assertions), the
 other 284 optimizer tests pass, and all ten perf ratchets pass. The updated
 pin retains watr's 312146-byte size. Full CI must confirm this follow-up.
+
+CI at `2f485a20` passes the default/opt0/opt3/WASI matrix, fuzz, both test262
+suites, all 71 self-compile round trips and the full Wasm-hosted suite. The
+subsequent recursive compiler-graph check traps after `emitFuncs`; this is
+still a release blocker. A local trace confirms allocation overflow at
+4294967256 bytes, with 4066072528 bytes already allocated after named-function
+emission. Three summary builds consume roughly 0.5 GB each. Bench again passes 252/253 with the same committed
+alpha native row failure. No timing or memory leadership claim is closed by
+these functional results.
+
+The string ownership fix passes 584 affected tests (10820 assertions), the
+five-tier alias/allocation sweep (987 assertions) and all ten instruction
+ratchets. Watr's size before the smaller dependency buffer is 311541 bytes,
+605 bytes smaller. Full CI must validate this follow-up.
 
 ## Gate evidence, September 23
 

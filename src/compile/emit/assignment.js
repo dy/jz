@@ -6,7 +6,7 @@
 
 import { ctx, err, inc } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
+  applyBigintRepresentationAction, asF64, boxBigInt, f64rem, fromI64, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
@@ -19,6 +19,7 @@ import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
 import { emit, emitIdentitySafe, rejectAmbiguousBoolIdentity, boolTaggedBinding, boolCarrier, toBool } from './dispatch.js'
 import { emitArrayViewDef } from '../array-view.js'
+import { privateStringBuilder } from '../analyze-scans.js'
 import { isSideEffectFree } from './shared.js'
 import {
   addBoundedFaithful, addFitsI32, addRangeFitsI32, mulBoundedFaithful, mulFitsI32, mulRangeFitsI32, subRangeFitsI32,
@@ -230,10 +231,10 @@ export const assignmentOps = {
     const tagged = boolTaggedBinding(name)
     if (isNullishLit(val)) (ctx.func.maybeNullish ??= new Set()).add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'
-    // Self-accumulation `x = x + …` (incl. desugared `x += …`): the new value REPLACES x, so x's
-    // old buffer is dead — the one context where a string concat may bump-EXTEND it in place. The
-    // `+` handler reads this flag for its immediate concat; nested operands clear it (not the target).
-    const selfAccum = Array.isArray(val) && val[0] === '+' && val[1] === name
+    // Replacing the binding does not kill aliases of its old string. The use
+    // census must prove a private builder before concat can extend its buffer.
+    const selfAccum = Array.isArray(val) && val[0] === '+' && val[1] === name &&
+      !isGlobal(name) && !ctx.func.atModuleScope && privateStringBuilder(ctx.func.body, name)
     // Compiler-synthesized decl-destructure array-literal temp (prepare/index.js
     // prepDecl, ctx.schema.arrayVars — kind.js's own doc comment on that map:
     // "tmp is a compiler-synthesized, single-write, non-escaping carrier that

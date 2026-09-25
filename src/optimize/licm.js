@@ -45,7 +45,7 @@ const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux',
 // only loop-body producer is the in-place replace-store's re-boxed result, which
 // otherwise pinned the loop's `__ptr_offset(arr)` base resolution in-body (the
 // immutable-update kernel paid the full forwarding+bounds dance per iteration).
-const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num', '$__to_str', '$__str_length', '$__mkptr', '$__str_idx'])
+const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__str_concat_fresh', '$__to_num', '$__to_str', '$__str_length', '$__mkptr', '$__str_idx'])
 
 // __str_idx may allocate a non-ASCII UTF-16 unit: it is non-mutating but not
 // safe to speculate before a zero-trip loop (allocation can trap).

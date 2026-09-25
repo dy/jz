@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr revision `d0f421a`
+escape decoding and the async-member parse fixes) and watr revision `efdd444`
 (on 5.11.3). This pin includes the scheduler fix that keeps result-producing
 calls at the end of folded blocks; effect purity alone does not prove a
 statement has no result. The WAT printer joins fragments once per node so wide
@@ -969,6 +969,12 @@ cache or allocation. Size mode retains the single content-comparison loop.
 Array read-only/current-pointer policies and multi-site push counts reuse the
 binding-use census. It distinguishes property reads from member calls, preserving
 indexed access, optional calls, writes, aliases and captures as separate evidence.
+String self-appends consume that same census: only a local empty-string builder
+with no retained aliases may extend its buffer. A self-assignment alone proves
+nothing about ownership. Discarded appends and empty resets preserve it; a sole
+terminal return can publish the result. Captures, stores, borrowed replacements
+and observed assignment results retain fresh-copy concatenation, as does generic
+addition after ToPrimitive. Private builders keep linear allocation.
 The existing fixed-builder length proof also publishes reserved capacity into local
 ValueReps. Allocation converts that logical count using the settled record layout;
 push still updates visible length and returns its current value. Fixed builders

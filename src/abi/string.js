@@ -447,7 +447,7 @@ export const sso = {
      *  bogus array concat. A non-builtin name routes through dynamic property
      *  dispatch (load the closure slot, call it) correctly. */
     // `ext` (default false) opts into the bump-EXTEND fast path — sound only when emit
-    // proves `a` is dead-after (a self-accumulation `x = x + …`). Otherwise the _fresh twin
+    // proves `a` is a private builder consumed by this append. Otherwise the _fresh twin
     // alloc+copies, never mutating the live `a` operand. (See __str_concat in module/string.js.)
     cat: (aF64, bF64, ctx, ext = false) => {
       const fn = ext ? '__str_concat' : '__str_concat_fresh'
