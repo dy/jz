@@ -3,7 +3,7 @@
  * @module jzify/hoist-vars
  */
 
-import { JZ_BLOCK_OPS } from '../src/ast.js'
+import { JZ_BLOCK_OPS, rewriteChildren } from '../src/ast.js'
 
 // A `'[]'`-tagged node is ambiguous pre-prepare(): an array literal/destructure
 // pattern (`[a, b]` → `['[]', commaSeqOrSingleElem]`, length ≤ 2 — empty `[]`
@@ -28,13 +28,13 @@ export function hoistVars(node, names) {
     const inner = new Set()
     let body = hoistVars(node[3], inner)
     if (inner.size) body = prependDecls(body, inner)
-    return [op, node[1], node[2], body]
+    return body === node[3] ? node : [op, node[1], node[2], body]
   }
   if (op === '=>') {
     const inner = new Set()
     let body = hoistVars(node[2], inner)
     if (inner.size) body = prependDecls(body, inner)
-    return ['=>', node[1], body]
+    return body === node[2] ? node : ['=>', node[1], body]
   }
   if (op === 'in' || op === 'of') {
     let lhs = node[1]
@@ -51,7 +51,8 @@ export function hoistVars(node, names) {
     return [op, lhs, hoistVars(node[2], names)]
   }
   if (op === ':' && typeof node[1] === 'string') {
-    return [':', node[1], hoistVars(node[2], names)]
+    const value = hoistVars(node[2], names)
+    return value === node[2] ? node : [':', node[1], value]
   }
   if (op === '=' && Array.isArray(node[1]) && node[1][0] === 'var' && typeof node[1][1] === 'string' && node[1].length === 2) {
     names.add(node[1][1])
@@ -169,10 +170,7 @@ export function hoistVars(node, names) {
     const stayed = Array.isArray(t) && JZ_BLOCK_OPS.has(t[0])
     return ['{}', stayed ? t : [';', t]]
   }
-  const out = new Array(node.length)
-  out[0] = op
-  for (let i = 1; i < node.length; i++) out[i] = hoistVars(node[i], names)
-  return out
+  return rewriteChildren(node, hoistVars, names)
 }
 
 function hoistPattern(node, names) {

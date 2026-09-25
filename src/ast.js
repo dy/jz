@@ -6,6 +6,17 @@
  * @module ast
  */
 
+/** Rebuild only the spine above changed children; unchanged nodes keep their identity. */
+export const rewriteChildren = (node, visit, state) => {
+  let out = null
+  for (let i = 1; i < node.length; i++) {
+    const child = visit(node[i], state)
+    if (child !== node[i] && !out) out = node.slice(0, i)
+    if (out) out.push(child)
+  }
+  return out || node
+}
+
 /** Template placeholder in prepared AST (prepare.js). */
 export const T = '\uE000'
 

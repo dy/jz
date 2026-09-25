@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, walkAst, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
+  some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -144,7 +144,7 @@ const rewriteScalarArrayUses = (node, arrays) => {
     }
     return out || node
   }
-  return rewriteChangedChildren(node, rewriteScalarArrayUses, arrays)
+  return rewriteChildren(node, rewriteScalarArrayUses, arrays)
 }
 
 const safeScalarObjectUse = (node, name, keys, statement = false) => {
@@ -195,7 +195,7 @@ const rewriteScalarObjectUses = (node, objects) => {
     const fields = objects.get(node[1])
     return key != null ? (fields.get(key) ?? [, undefined]) : node
   }
-  return rewriteChangedChildren(node, rewriteScalarObjectUses, objects)
+  return rewriteChildren(node, rewriteScalarObjectUses, objects)
 }
 
 const typedArraySlotIndex = (node, len) => {
@@ -330,20 +330,6 @@ const hasScalarTypedArrayRead = (node, name) => {
   return false
 }
 
-// Rebuild an AST node only after a child actually changes. The former four
-// scalarizers each allocated a throwaway copy for every visited node even on
-// their overwhelmingly common no-op path; a self-host bump arena could never
-// recover those copies between passes.
-const rewriteChangedChildren = (node, visit, state) => {
-  let out = null
-  for (let i = 1; i < node.length; i++) {
-    const child = visit(node[i], state)
-    if (child !== node[i] && !out) out = node.slice(0, i)
-    if (out) out.push(child)
-  }
-  return out || node
-}
-
 const scalarizeTypedArrayLiteralSeq = (seq) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
@@ -431,7 +417,7 @@ function scalarizeTypedArrayLiterals(node) {
   if (!Array.isArray(node)) return node
   if (node[0] === '=>') return node
   if (node[0] === ';') return scalarizeTypedArrayLiteralSeq(node)
-  return rewriteChangedChildren(node, scalarizeTypedArrayLiterals)
+  return rewriteChildren(node, scalarizeTypedArrayLiterals)
 }
 
 const containsTypedArrayAccess = (body, names) => some(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
@@ -492,7 +478,7 @@ const unrollTypedArrayLoops = (node, names) => {
       return out
     }
   }
-  return rewriteChangedChildren(node, unrollTypedArrayLoops, names)
+  return rewriteChildren(node, unrollTypedArrayLoops, names)
 }
 
 const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
@@ -771,7 +757,7 @@ function scalarizeObjectLiterals(node) {
     return body === node[2] ? node : [node[0], node[1], body]
   }
   if (node[0] === ';') return scalarizeObjectLiteralSeq(node)
-  return rewriteChangedChildren(node, scalarizeObjectLiterals)
+  return rewriteChildren(node, scalarizeObjectLiterals)
 }
 
 // === Whole-program constant fold of module-scope aggregate literals ===
@@ -967,7 +953,7 @@ function scalarizeArrayLiterals(node) {
     return body === node[2] ? node : [node[0], node[1], body]
   }
   if (node[0] === ';') return scalarizeArrayLiteralSeq(node)
-  return rewriteChangedChildren(node, scalarizeArrayLiterals)
+  return rewriteChildren(node, scalarizeArrayLiterals)
 }
 
 export const scalarizeFunctionArrayLiterals = () => {

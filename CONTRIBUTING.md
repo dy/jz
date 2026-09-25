@@ -1106,9 +1106,9 @@ summary's full inputs, so a rewrite that bypasses the seams fails there.
 Signature checking does not authorize stale overlay reads. New passes use these
 existing seams; they must not add another cache or rely on ambient facts staying
 unchanged accidentally.
-Literal folding preserves unchanged subtrees and function bodies. The shared
-copy-on-change walker avoids allocating an AST copy merely to discover that
-nothing changed, including during module-wide aggregate replacement.
+Literal folding and front-end lowering share `rewriteChildren` in `ast.js`.
+It preserves unchanged subtrees and function bodies instead of allocating an
+AST copy merely to discover that nothing changed.
 
 Historical `.work/` citations below refer to retired evidence, recoverable using
 [.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.

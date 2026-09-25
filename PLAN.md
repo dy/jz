@@ -371,17 +371,24 @@ Dependencies
    145 MB, with identical text. Subscript's full suite passes (377 tests,
    7 skips); long quoted/template/escaped literals also pass through the
    rebuilt kernel, including A → A → B reuse. This restores recursive
-   front-half memory to 602 MB, but the complete recursive compile still
-   reaches 4 GiB during emission. Its repeated summaries remain the next
-   allocation target; the scratch-set reuse trial did not materially reduce
-   them and was removed.
+   front-half memory to 602 MB; shared copy-on-change front-end walks reduce
+   it further to 566 MB. Carrier-only changes now retain the semantic
+   summary; forwarding-only majority-kind clones are skipped using the binding
+   census. Recursive compilation needs two summary solves instead of three.
+   Literal folding also preserves unchanged subtrees. Together these remove
+   about 590 MB before closure emission, which now completes at 4.178 GB;
+   startup emission still exceeds 4 GiB. The recursive gate remains open.
+   The scratch-set trial and optional transitive-callee-table idea did not
+   explain enough allocation and were not retained.
 
-   Five paired CI rounds at `fa69c39` confirm watr's peak reduction to
-   121060 KiB (V8 77184); Jessie measures 111488 KiB (V8 100456).
-   Both memory gaps remain. JZ/V8 runtime medians are watr 1.011×,
-   Jessie 0.717×, webaudio 1.396×, sort 1.047×, CRC32 1.007×,
-   SDF 0.961× and noise 0.624×. Every checksum matches; these diagnostic
-   rows do not replace the required full reference dataset.
+   Seven paired CI rounds at `7ea32282` measure watr's peak at 122692 KiB
+   (V8 76724), Jessie at 111608 KiB (V8 99896), and webaudio at 98572 KiB
+   (V8 79544). These memory gaps remain. JZ/V8 runtime medians are watr
+   1.259×, Jessie 0.769×, webaudio 1.449×, sort 1.049×, CRC32 1.020×,
+   SDF 0.947× and noise 0.605×. Every checksum matches. Watr's paired
+   timings vary widely; these diagnostic rows do not establish its speed
+   parity or replace the required full reference dataset. Its size-tier
+   output is 311549 bytes, below the unchanged 320000-byte cap.
 
    Watr's code buffer now starts at 4 KB, using its existing geometric growth
    instead of reserving 64 KB for every assembly. The unchanged workload drops

@@ -4,7 +4,7 @@
  */
 
 import {
-  handlerArgs, JZ_BLOCK_OPS, bindingOf, cloneNode, nodeEqual, descriptorProps,
+  handlerArgs, rewriteChildren, JZ_BLOCK_OPS, bindingOf, cloneNode, nodeEqual, descriptorProps,
   literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, extractParams,
 } from '../src/ast.js'
 
@@ -285,7 +285,7 @@ function replaceStaticExportReads(node, rewrites) {
 export function canonicalizeObjectIdioms(node) {
   if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
 
-  const out = node.map((part, i) => i === 0 ? part : canonicalizeObjectIdioms(part))
+  const out = rewriteChildren(node, canonicalizeObjectIdioms)
 
   const toStringCall = objectPrototypeToStringCall(out)
   if (toStringCall) return ['()', '__object_toString', toStringCall.obj]

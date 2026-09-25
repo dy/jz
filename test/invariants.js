@@ -26,6 +26,9 @@ import { representationStorageWriteAction } from '../src/compile/representation-
 import { buildProgramIndex } from '../src/compile/program-index.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
+import { rewriteChildren } from '../src/ast.js'
+import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
+import { hoistVars } from '../jzify/hoist-vars.js'
 import { foldStaticConstAggregates } from '../src/compile/plan/literals.js'
 
 // === Helper: compile with WAT output for structural inspection ===
@@ -1259,4 +1262,27 @@ test('invariant: aggregate folding preserves untouched subtrees and bodies', () 
     is(foldStaticConstAggregates(ast), false, 'a repeated pass has no work')
     ok(untouched.body === oldBody, 'the repeated pass keeps the body too')
   }
+})
+
+
+test('invariant: front-end rewrites copy only changed paths', () => {
+  const empty = [';'], stable = ['+', 'n', [null, 1]]
+  ok(rewriteChildren(empty, () => { throw Error('no child') }) === empty)
+  const fn = ['function', 'f', ['()', 'n'], stable]
+  for (const tree of [stable, fn, ['=>', 'n', stable]]) {
+    ok(hoistVars(tree, new Set()) === tree, 'no var, no tree copy')
+    ok(canonicalizeObjectIdioms(tree) === tree, 'no object idiom, no tree copy')
+  }
+  const call = ['()', ['.', ['.', ['.', 'Object', 'prototype'], 'toString'], 'call'], 'x']
+  const tree = [';', stable, call], before = JSON.stringify(tree)
+  const out = canonicalizeObjectIdioms(tree)
+  is(JSON.stringify(out[2]), JSON.stringify(['()', '__object_toString', 'x']))
+  ok(out[1] === stable, 'the unchanged sibling survives an actual rewrite')
+  is(JSON.stringify(tree), before, 'the original tree is not mutated')
+  ok(canonicalizeObjectIdioms(out) === out, 'a repeated canonicalization has no work')
+  const names = new Set(), value = [null, 3]
+  const assignment = hoistVars(['var', ['=', 'x', value]], names)
+  ok(names.has('x'), 'hoisting still records the declaration')
+  is(JSON.stringify(assignment), JSON.stringify(['=', 'x', value]))
+  ok(hoistVars(assignment, new Set()) === assignment, 'a repeated hoist has no work')
 })
