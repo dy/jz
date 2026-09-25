@@ -26,6 +26,7 @@ import { representationStorageWriteAction } from '../src/compile/representation-
 import { buildProgramIndex } from '../src/compile/program-index.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
+import { foldStaticConstAggregates } from '../src/compile/plan/literals.js'
 
 // === Helper: compile with WAT output for structural inspection ===
 
@@ -1231,4 +1232,31 @@ test('debug lifecycle: real compiles retain semantics across shape changes and e
   `], { env: { ...process.env, JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 30000 })
   is(child.status, 0, child.stderr)
   is(JSON.parse(child.stdout), [...Array(3).fill([0,0,0,3,4,4,4,5]).flat(),0], 'A → A → different shapes → closures → error → A, every tier')
+})
+
+
+test('invariant: aggregate folding preserves untouched subtrees and bodies', () => {
+  if (onKernel()) return
+  for (const [literal, read, value] of [
+    [['['], ['.', 'table', 'length'], 0],
+    [['[', [null, 7]], ['[]', 'table', [null, 0]], 7],
+    [['{}', [':', 'x', [null, 9]]], ['.', 'table', 'x'], 9],
+  ]) {
+    reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+    const stable = ['[', [null, 3], [null, 4]]
+    const original = ['return', ['[', read, stable]]
+    const before = JSON.stringify(original)
+    const changed = { name: 'changed', sig: { params: [] }, body: original }
+    const untouched = { name: 'untouched', sig: { params: [] }, body: ['return', stable] }
+    const oldBody = untouched.body
+    ctx.funcs.list.push(changed, untouched)
+    const ast = [';', ['const', ['=', 'table', literal]]]
+    ok(foldStaticConstAggregates(ast), 'the static aggregate is folded')
+    is(changed.body[1][1][1], value, 'the field or length becomes its scalar')
+    ok(changed.body[1][2] === stable, 'an unchanged sibling keeps its identity')
+    ok(untouched.body === oldBody, 'an unrelated function keeps its body')
+    is(JSON.stringify(original), before, 'rewriting never mutates the input body')
+    is(foldStaticConstAggregates(ast), false, 'a repeated pass has no work')
+    ok(untouched.body === oldBody, 'the repeated pass keeps the body too')
+  }
 })
