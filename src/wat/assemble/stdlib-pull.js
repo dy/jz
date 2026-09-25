@@ -21,7 +21,7 @@ import { installHelperCounters, instrumentHelperCounter } from '../../helper-cou
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
 // are parsed only when absent from the assembled module. Generated templates
 // have no user source locations to retain.
-const parseTemplate = src => parseWat(src, { locations: false })
+const parseTemplate = src => parseWat(src, { loc: false })
 
 /**
  * Stdlib funcs actually reachable from the emitted program. Seeds from real

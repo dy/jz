@@ -28,7 +28,7 @@ export function optimizeModule(sec, profiler) {
   const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, fn) : (_, fn) => fn()
   const cfg = ctx.transform.optimize
   if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
-    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat))))
+    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false }))))
   // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with
   // both disabled across the bench + examples corpora AND the self-compile kernel at
   // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)

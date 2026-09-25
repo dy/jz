@@ -31,7 +31,7 @@ import { frameNode } from '../function.js'
  */
 export function emitFunc(func, functionPlan, programFacts) {
   // Raw WAT functions (e.g., _alloc, _clear from memory module)
-  if (func.raw) return parseWat(func.raw)
+  if (func.raw) return parseWat(func.raw, { loc: false })
 
   const { name, body, exported, sig } = func
   const multi = sig.results.length > 1

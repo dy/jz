@@ -15,11 +15,11 @@ For coordinated changes in sibling `jz`, `watr` and `subscript` checkouts,
 test their main branches together with
 `npm install --no-save --package-lock=false --ignore-scripts ../watr ../subscript`.
 This selects the local libraries without changing the published dependency ranges.
-The parser allocation regressions require the source-span and optional-location
-changes on those library checkouts until they are released.
+The parser allocation regressions require source-span parsing in subscript and
+watr's `loc: false` option.
 
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr 5.11.6, which
+escape decoding and the async-member parse fixes) and watr 5.11.8, which
 carries the two optimizer rules jz's speed rows rely on: the mixed-sign
 truncation-of-convert fold under a non-negative operand (base64's decode
 loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).
@@ -163,7 +163,7 @@ must retain those possible values instead of proving the read absent.
 
 Runtime helper templates own their freshly parsed IR. Each demanded helper is
 realized once; late helpers are added only when absent, so there is no parsed
-template cache or clone pass. Generated helpers use `locations: false` to avoid
+template cache or clone pass. Generated helpers use `loc: false` to avoid
 named-property sidecars on every WAT node; public parsing retains source offsets,
 and syntax errors retain offsets in both modes. WAT tokens retain source spans until committed,
 avoiding quadratic copying of names, quoted strings and comments.

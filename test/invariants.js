@@ -37,9 +37,9 @@ test('invariant: WAT token parsing uses source-sized storage', () => {
   const parser = readFileSync(new URL(import.meta.resolve('watr/parse')), 'utf8')
   const util = readFileSync(new URL('../node_modules/watr/src/util.js', import.meta.url), 'utf8')
   const source = `import parse from './parse.js'; export default function tokenize(s) { return parse(s) }
-    export function generated(s) { return parse(s, { locations: false }) }
+    export function generated(s) { return parse(s, { loc: false }) }
     export function locations(s, keep) {
-      const a = keep ? parse(s) : parse(s, { locations: false }); return [a.loc, a[1].loc]
+      const a = keep ? parse(s) : parse(s, { loc: false }); return [a.loc, a[1].loc]
     }`
   const text = 'a😀'.repeat(4000)
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
