@@ -24,13 +24,17 @@ on that commit. The committed-evidence claims gate remains red.
 The next memory candidate reduces the speed-tier array reserve from 16 to 4
 elements. The allocation sweep passes 16 tests / 1439 assertions, self-compile
 passes 76 / 2496, and all 62 non-self-host benchmark checksums match the control.
-Its full local matrix is running; its release speed and RSS evidence is pending.
+Fresh functional, sequence and recursive attestation passes; conformance is
+green in CI. The full Wasm-hosted CI suite passes 3825 tests / 105423 assertions,
+and differential fuzz passes all 5000 seeds. Its full local matrix is running.
+[Reference CI for 695a8b6b](https://github.com/dy/jz/actions/runs/36179691942)
+is measuring release speed and RSS; the older run remains a baseline diagnostic.
 
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
 | Dependency | Official npm watr 5.11.8 and subscript 10.8.1, pinned by lockfile integrity; both installed as registry directories, not sibling links. | Keep the registry artifacts through final verification. |
 | Correctness | Full local core passes 4805 tests / 125310 assertions. Registry self-compile passes 76 / 2496. WAT token storage passes 125 assertions across tiers; printer allocation fell from 2850519192 to 128312744 bytes. CI at bd3147fb passes all four matrix legs, fuzz and both conformance jobs. Forwarding `_compactCollections` through the test adapter clears the remaining Wasm-hosted allocation failure: the full local suite passes 3824 / 105287, kernel allocation 15 / 570 and two formerly skipped layout tests 2 / 45. Harness regressions pass 7 / 66, Porffor recovery 1 / 54 and merge 23 / 186. | Cleared in CI at 53257033: all four matrix legs, fuzz and self-compile pass. |
-| Recursive bootstrap | Fresh registry kernel 19842756 bytes, SHA-256 prefix 6fa46110c977, is attested to graph 17b53f92d19d. Functional, reuse-sequence and recursive gates are green, certified true. Recursive output is 19299633 bytes; final heap 1201128480 bytes. | Correctness attestation renewed. The compiler reserves 4 GiB for the checkpoint lane; heap headroom does not certify RSS parity. |
+| Recursive bootstrap | Fresh registry kernel at 695a8b6b is 19842756 bytes, SHA-256 prefix 8d78c5ae91e0, attested to graph fee31f8c34c5. Functional, reuse-sequence and recursive gates are green, certified true. Recursive output is 19299633 bytes; final heap 1201128480 bytes. | Correctness attestation renewed. The compiler reserves 4 GiB for the checkpoint lane; heap headroom does not certify RSS parity. |
 | Conformance | Final-tree runs pass: language 3195 passes, 4045 correct rejections, zero unexpected failures, two documented ordering exceptions; builtins 880 passes, zero unexpected failures, 43 expected failures. | Cleared for the supported subsets; these do not establish full test262 coverage. |
 | Build/package | Browser assets and all 81 examples build; types pass. Package dry run includes both JS bundles and excludes the compiler Wasm. | Repeated after the function-order fix; cleared for this tree. |
 | Size | All 59 speed and size checksums match after the linker-order fix; all binary sizes are unchanged. Current size binaries are smaller than the stored parity-valid AssemblyScript artifacts on all 50 comparable cases (geomean 0.779×), including all eight old recorded losses. | Refresh pinned reference evidence; the private size comparison does not update the public snapshot. |
@@ -82,6 +86,17 @@ checks native-identical bytes at O1/O2 through A → A → B → A compiles. The
 size or checksum changes.
 
 ## Performance priorities
+
+The cancelled [partial reference run at 84f5cb6](https://github.com/dy/jz/actions/runs/36171204130)
+retains six-pair diagnostics. Synth leads Bun and JSC at 0.847× runtime;
+delayline leads them at 0.741× / 0.717× but trails Rust-Wasm at 1.072×.
+Resample trails V8 / Deno / JSC at 1.140× / 1.186× / 1.222×.
+SDF trails Deno / JSC / Rust-Wasm at 1.129× / 1.309× / 1.331×.
+These are real optimization targets, beyond the stale committed snapshot.
+The run predates the native-adapter repair and did not finish the corpus, so
+it cannot certify release claims. All nine priority binaries are unchanged
+by the current array-reserve candidate; await the complete repaired run for
+the remaining cases and final gate verdicts.
 
 **Active focus, September 24:** resample, sdf, spmv, synth, vm, colorlog,
 crc32, delayline and dict. Recontest all nine against both Bun and the
@@ -465,6 +480,11 @@ Dependencies
    unchanged CI gates. All 62 non-self-host workload checksums match the old
    reserve; 56 binaries are byte-identical, including all nine priority cases.
    Entity, gainclass, Jessie, watr, Web Audio and wordcount change; none grows.
+   Sixteen further alternating pairs per changed case, in normal and
+   forced-optimized V8, give watr 0.816 / 0.951 and Web Audio 1.014 / 1.014;
+   the other four medians stay between 0.956 and 1.006. Watr peak RSS falls
+   6.8–7.2 MB. This loaded-host check contains large outliers, and Web Audio's
+   small slowdown remains a reference-CI question rather than a dismissed loss.
    Self-compile passes 76 tests / 2496 assertions. The allocation regression
    covers empty and zero-work builders, growth across 4 and 16 elements,
    retained aliases, exact undefined holes and A → A → B → A construction.
@@ -492,6 +512,14 @@ Dependencies
    Jessie, watr and Web Audio each have a strict JZ/V8 RSS floor.
    RSS provenance covers both JZ and V8 even without timing measurements;
    explicit invalid row stamps cannot borrow fresh snapshot metadata.
+
+   Ordinary CI publication now compares the measured input tree with main,
+   excluding the workflow's ignored documentation and generated evidence paths.
+   A plan update during measurement no longer discards a valid snapshot without
+   triggering a replacement run. Source, dependency, kernel and workflow changes,
+   deleted inputs and rewritten history still prevent stale publication.
+   The full tooling suite passes 24 tests / 206 assertions, including 20 direct
+   assertions against the workflow's guard in an isolated Git repository.
 
    The superseded reference run 36155865964 exposed two harness failures:
    a failed self-build was retried at its 600-second limit in every paired

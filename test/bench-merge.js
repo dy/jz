@@ -8,7 +8,7 @@
 //
 // Standalone runner: `node test/bench-merge.js`.
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -61,6 +61,49 @@ const freshAnchoredCopy = () => {
   writeFileSync(scratch, JSON.stringify(seed))
   return scratch
 }
+
+test('bench publication: documentation preserves evidence; changed inputs and history do not', () => {
+  const workflow = readFileSync(join(ROOT, '.github/workflows/bench.yml'), 'utf8')
+  const guard = workflow.match(/^            if ! git merge-base[\s\S]*?^            fi\n/m)?.[0]
+  ok(guard, 'exercise the publication guard used by CI')
+  const cwd = mkdtempSync(join(scratchDir, 'publish-'))
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  git('init', '-q')
+  git('config', 'user.name', 'Bench test')
+  git('config', 'user.email', 'bench@example.invalid')
+  const commit = (file, value) => {
+    mkdirSync(dirname(join(cwd, file)), { recursive: true })
+    writeFileSync(join(cwd, file), value)
+    git('add', '--', file)
+    git('commit', '-qm', file)
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    return git('rev-parse', 'HEAD')
+  }
+  const measured = commit('src/compiler.js', 'original')
+  const allowed = (sha = measured) => execFileSync('bash', ['-c', guard + '\nprintf "publish allowed\\n"'], {
+    cwd, encoding: 'utf8', env: { ...process.env, GITHUB_SHA: sha },
+  }).includes('publish allowed')
+  ok(allowed(), 'an unchanged source tip can publish')
+  for (const file of ['PLAN.md', 'bench/README.md', 'bench/bench.svg', 'bench/index.html', '.work/probe.js', 'LICENSE', 'bench/results.json', 'bench/results-ci.json']) {
+    commit(file, 'updated')
+    ok(allowed(), `${file} does not invalidate the measured inputs`)
+  }
+  for (const file of ['src/compiler.js', 'package-lock.json', 'bench/kernel/kernel.js', '.github/workflows/bench.yml']) {
+    const before = git('rev-parse', 'HEAD')
+    const current = commit(file, 'changed')
+    ok(!allowed(before), `${file} prevents the older snapshot from publishing`)
+    ok(allowed(current), 'a fresh measurement can publish')
+  }
+  const beforeDelete = git('rev-parse', 'HEAD')
+  git('rm', '--', 'bench/kernel/kernel.js')
+  git('commit', '-qm', 'remove kernel')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  ok(!allowed(beforeDelete), 'removing a benchmark input also invalidates the snapshot')
+  const current = git('rev-parse', 'HEAD')
+  const other = git('commit-tree', 'HEAD^{tree}', '-m', 'unrelated history, identical files')
+  git('update-ref', 'refs/remotes/origin/main', other)
+  ok(!allowed(current), 'identical files cannot bypass the ancestry check')
+})
 
 // ── --merge: byte-preservation + provenance ─────────────────────────────────
 test('bench --merge: unmeasured case is byte-preserved', () => {

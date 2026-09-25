@@ -245,16 +245,18 @@ jobs:
           git diff --cached --quiet || git commit -m 'bench: refresh results-ci.json (runner dataset) [skip ci]'
           # Overlapping runs refresh the same generated dataset. `-X theirs`
           # (in rebase terms: the commit being replayed, i.e. OUR snapshot) auto-
-          # resolves. Retry covers a push landing mid-rebase. STALE GUARD: the
-          # dataset measured $GITHUB_SHA — if main's newest SOURCE commit (skip
-          # generated snapshot commits) has moved past it, a late-finishing run
-          # would overwrite fresher evidence with older; skip and let the newer
-          # push's own bench run publish.
+          # resolves. Retry covers a push landing mid-rebase. Skip publication
+          # if benchmark inputs changed; documentation and generated snapshots
+          # do not invalidate measurements or trigger a replacement bench run.
+          # Match the workflow's ignored paths, and reject rewritten history.
           for i in 1 2 3; do
             git fetch origin main
-            latest_src=$(git log origin/main --format='%H %s' -n 50 | grep -v 'bench: refresh' | head -1 | cut -d' ' -f1)
-            if [ -n "$latest_src" ] && [ "$latest_src" != "$GITHUB_SHA" ]; then
-              echo "stale snapshot: measured $GITHUB_SHA, main source tip is $latest_src — skipping publish"
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+               ! git diff --quiet "$GITHUB_SHA" origin/main -- . \
+                 ':(glob,exclude)**/*.md' ':(glob,exclude)**/*.svg' ':(glob,exclude)**/*.html' \
+                 ':(exclude).work/**' ':(exclude)LICENSE' \
+                 ':(exclude)bench/results.json' ':(exclude)bench/results-ci.json'; then
+              echo "stale snapshot: benchmark inputs or history changed since $GITHUB_SHA — skipping publish"
               exit 0
             fi
             git push && exit 0
