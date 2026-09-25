@@ -19,7 +19,7 @@
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { createFunction } from '../function.js'
-import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
+import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
 import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
@@ -2569,29 +2569,31 @@ function defFunc(name, node) {
 // Multi-value threshold: ≤8 elements = tuple (multi-value return), >8 = memory array
 const MAX_MULTI = 8
 
+/** Fixed tuple arity, including conditionals whose every arm has that arity. */
+function returnArity(value) {
+  if (!Array.isArray(value)) return 1
+  if (value[0] === '[' && value.length > 2 && !value.some(e => Array.isArray(e) && e[0] === '...'))
+    return value.length - 1
+  if (value[0] === '?:') {
+    const n = returnArity(value[2])
+    if (n > 1 && n === returnArity(value[3])) return n
+  }
+  return 1
+}
+
 /** Collect return value arities from block AST. */
 function collectReturns(node, out) {
   if (!Array.isArray(node)) return
-  if (node[0] === 'return') {
-    const val = node[1]
-    // Array return: count elements, but only if no spreads (spreads → runtime array, not multi-value)
-    if (Array.isArray(val) && val[0] === '[' && val.length > 2 && !val.some(e => Array.isArray(e) && e[0] === '...'))
-      out.push(val.length - 1)
-    else out.push(1)
-    return
-  }
+  if (node[0] === 'return') { out.push(returnArity(node[1])); return }
   for (let i = 1; i < node.length; i++) collectReturns(node[i], out)
 }
 
 /** Detect return arity from function body. */
 function detectResults(body) {
-  // Expression body: [e1, e2, ...] → multi-return if ≤ threshold and no spreads
-  if (Array.isArray(body) && body[0] === '[' && body.length > 2 && !body.some(e => Array.isArray(e) && e[0] === '...')) {
-    const n = body.length - 1
-    if (n <= MAX_MULTI) return Array(n).fill('f64')
-  }
-  // Block body: scan return statements
-  if (Array.isArray(body) && body[0] === '{}') {
+  const arity = returnArity(body)
+  if (arity > 1 && arity <= MAX_MULTI) return Array(arity).fill('f64')
+  // Falling through produces undefined, which needs the ordinary value ABI.
+  if (Array.isArray(body) && body[0] === '{}' && alwaysReturns(body)) {
     const rets = []
     collectReturns(body, rets)
     if (rets.length) {

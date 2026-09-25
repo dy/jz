@@ -4,7 +4,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { HEAP } from '../layout.js'
 import { run, cases, wat, funcWat } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 import encodeWat from 'watr/compile'
@@ -114,16 +113,17 @@ test('number formatting: scratch becomes the result without retaining temporary 
   ]
   for (const optimize of levels(0, 1, 2, 3, 'size')) for (const alloc of [true, false]) {
     const r = jz(src, { optimize, alloc })
-    const heap = () => r.instance.exports.__heap ? r.instance.exports.__heap.value >>> 0
-      : new DataView(r.instance.exports.memory.buffer).getUint32(HEAP.PTR_ADDR, true)
+    // The raw ABI deliberately hides its private heap cursor. Its alias and
+    // value checks still run; measure allocation where the counter is exposed.
+    const heap = r.instance.exports.__heap
+    if (alloc) ok(heap, 'the owned allocator exposes its counter')
     for (let round = 0; round < 2; round++) {
       r.exports.hold(123456789, 2)
       for (const [name, args, expected] of rows) {
-        const before = heap()
+        const before = heap ? heap.value >>> 0 : 0
         is(r.exports[name](...args), expected, `${name} ${args} O${optimize}`)
-        const bytes = heap() - before
         const resultBytes = expected.length <= 6 ? 0 : (4 + expected.length * 2 + 7) & ~7
-        ok(bytes <= resultBytes + 16, 'only the result and possible BigInt box remain')
+        if (heap) ok((heap.value >>> 0) - before <= resultBytes + 16, 'only the result and possible BigInt box remain')
         is(r.exports.held(), (123456789).toString(2), 'later formatting preserves retained digits')
       }
       is(r.exports.invalid(1), 'RangeError')

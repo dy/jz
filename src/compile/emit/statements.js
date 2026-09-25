@@ -234,6 +234,10 @@ export const statementOps = {
   },
 
   'return': expr => {
+    // Equal-width conditional tuples use the same lane return as literal
+    // tuples. Branch first so only the selected elements and finalizers run.
+    if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '?:')
+      return emitVoid(['if', expr[1], ['return', expr[2]], ['return', expr[3]]])
     const finalizers = emitFinalizers()
     const finalizerBlock = () => [['block', ...finalizers]]
     if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '[') {

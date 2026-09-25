@@ -13,7 +13,7 @@ import {
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { installFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
-import { emit, emitBlockBody, emitIdentitySafe, toBool } from './emit.js'
+import { emit, emitBlockBody, emitIdentitySafe, emitVoid, toBool } from './emit.js'
 import { emitCharDecompPrologue } from '../abi/string.js'
 import { representationReturnAction } from './representation-plan.js'
 import { recordParamClosureDefault, recordDirectReturnClosure } from './dyn-closure-tables.js'
@@ -321,11 +321,11 @@ export function emitFunc(func, functionPlan, programFacts) {
       : sig.results.length === 1 && sig.results[0] === 'f64' ? [undefExpr()]
       : sig.results.map(t => [`${t}.const`, 0])
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...cursorUnboxInits, ...stmts, ...fallthrough)
-  } else if (multi && body[0] === '[') {
-    const values = body.slice(1).map(e => asF64(emit(e)))
+  } else if (multi) {
+    const values = emitVoid(['return', body])
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
-    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values)
+    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values, ['unreachable'])
   } else {
     // Top-level twin of emitFunc's 'return'-statement mixedAtomReturn admission
     // and emitClosureBody's expression-body site: a non-block arrow body

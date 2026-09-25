@@ -6,6 +6,21 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Current state, September 25
+
+The recursive self-host memory blocker is closed at `6e41b9e3`:
+20 kernel parity cases, the recursive child-compiler check, 2328 affected
+Wasm-hosted assertions, and 204 affected native tests pass. Watr is 311188
+bytes against its 320000-byte cap. String ownership regressions remain covered.
+Its full self-compile workflow and conformance CI pass; the native default
+leg and benchmark are still running. Claims rejects stale benchmark evidence.
+The completed seven-round probe confirms
+the remaining library-memory gaps and WebAudio, sort, CRC32 and SDF speed
+losses on its x64 host; Watr timing varies widely between pairs.
+Remaining release blockers are the measured speed and library-memory gaps
+and fresh reference evidence. The earlier recursive-failure readings below
+are history, superseded by the successful gate in item 2.
+
 ## Decisions
 
 Architecture
@@ -456,15 +471,42 @@ Dependencies
    owned heaps. Short decimal formatting retains 0 bytes instead of 192;
    a 13-character decimal result retains 32 instead of 224, and a 27-digit
    binary result retains 64 instead of 424. Shared heaps retain the copy.
-   The all-tier ownership tests pass 3704 assertions, including retained
-   aliases, repeat calls, reset, errors and concurrent-capable shared memory.
+   The all-tier ownership tests pass 3109 assertions, including retained
+   aliases, repeat calls, reset, errors, and shared and imported memories.
    WASI checks pass 1508 assertions and the instruction ratchet stays 10/10.
    Watr stays below its cap at 311188 bytes (+30). The rebuilt kernel passes
    20/20 parity cases and 2328 affected Wasm-hosted assertions. The broader
    affected suites pass 204 tests / 30345 assertions. A 10000-string retained
    output probe allocates 495408 bytes instead of 2417520, with every string
-   checked; timing is too variable to claim a speed ratio. Recursive memory
-   measurement and full CI remain pending.
+   checked; timing is too variable to claim a speed ratio. The recursive gate
+   now passes: it emits a valid 19435173-byte compiler, which compiles and runs
+   the follow-up program to 19. Helper parsing falls from 4.222 GB to 3.713 GB;
+   optimization completes at 3.890 GB. The existing checkpoint then reclaims
+   compiler working state, and the finished heap cursor is 1.253 GB. The gate's
+   64 MiB post-compile headroom requirement passes without changing its cap.
+   The seven-round CI probe at `6e41b9e3` passes every checksum on Intel
+   Xeon 8573C / Node 24.21. JZ/V8 time medians are Watr 1.294 (range
+   0.829–1.620), Jessie 0.738, WebAudio 1.503, sort 1.031, CRC32 1.250,
+   SDF 1.206 and noise 0.600. Watr/Jessie/WebAudio peak RSS remains
+   123180/111476/97196 KiB versus V8's 76516/100984/79532 KiB. The
+   recursive blocker is closed, including the complete self-compile CI
+   workflow on that revision; the library gaps remain. Conformance, fuzz,
+   opt0, opt3 and WASI also pass. Native default and benchmark are pending;
+   claims rejects stale reference evidence.
+
+   Conditional same-width tuples now share the existing multiple-result ABI
+   with literal tuples. This removes temporary array allocation in any such
+   producer, including WebAudio's automation event helper. Blocks require the
+   shared return-path proof, fixing the earlier literal-tuple fallthrough
+   that returned zero lanes instead of undefined. The affected suites pass
+   273 tests / 1420 assertions, plus 161 WASI and 231 Wasm-hosted assertions.
+   All 20 kernel parity cases, recursive child compilation and the unchanged
+   instruction ratchet pass. The compiler kernel is 790 bytes smaller and
+   WebAudio's named speed build is 248 bytes smaller; Watr stays at 311188.
+   Local paired timings are too variable to claim a speed gain.
+   Allocation assertions now use only an exposed heap global; the raw ABI
+   deliberately hides it, so those runs retain value and alias checks without
+   treating an unrelated memory word as a counter.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

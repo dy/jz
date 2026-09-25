@@ -70,6 +70,10 @@ bounds prove that the original address addition cannot wrap.
 Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
+Equal-width literal tuples in every arm of a conditional use the existing
+multiple-result ABI. Expression and statement returns share element boxing
+and finalizer emission. A block must pass the shared return-path proof before
+selecting multiple results; a possible fallthrough needs to carry undefined.
 Source inlining gives mutated parameters private local storage and captures
 their arguments in call order; substitution must never write a caller's binding.
 Small loop helpers enter exported loops only after their callees have expanded,
