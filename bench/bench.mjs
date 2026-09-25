@@ -18,6 +18,10 @@ const LIB = join(BENCH_DIR, '_lib')
 const BUILD = process.env.JZ_BENCH_BUILD_DIR || join(tmpdir(), 'jz-bench')
 const WEB_DIR = process.env.JZ_BENCH_WEB_DIR || join(BENCH_DIR, 'web')
 const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2c'
+// Source checkouts keep wasm-rt.h beside the runtime; installed WABT packages
+// put public headers under <prefix>/include and sources under share/wabt/wasm2c.
+const WABT_INCLUDE_DIR = process.env.WABT_INCLUDE_DIR || (existsSync(join(WABT_W2C_DIR, 'wasm-rt.h'))
+  ? WABT_W2C_DIR : resolve(WABT_W2C_DIR, '../../../include'))
 // wasm2c lowers v128/SIMD ops through the SIMDe header set (`#include <simde/wasm/simd128.h>`),
 // vendored in wabt's third_party. Without it on the include path, every SIMD-emitting
 // jz case fails to compile to native. Derive it from WABT_W2C_DIR; override via SIMDE_DIR.
@@ -42,9 +46,8 @@ const W2C_CFLAGS = [
 // w2c2/build/w2c2). Structurally NARROWER than wasm2c: w2c2 implements only
 // Core Wasm 1.0 + threads/bulk-memory/sign-ext/nontrapping-float — no SIMD
 // proposal at all (confirmed empirically, not just from its feature list: it
-// hard-fails "unsupported opcode unknown (0xFD)" on every jz case whose loops
-// vectorize to v128). Every corpus case that fails to translate under w2c2
-// does so for exactly this reason — see bench/README's native-lane section.
+// hard-fails "unsupported opcode unknown (0xFD)" on vectorized cases). It also
+// rejects multi-value function results. These remain recorded build failures.
 const W2C2_DIR = process.env.W2C2_DIR || '/Users/div/projects/w2c2/w2c2'
 const W2C2_BIN = process.env.W2C2_BIN || join(W2C2_DIR, 'build', 'w2c2')
 // Shared zig timing/print helper (the zig sibling of _lib/bench.h). zig 0.16
@@ -472,9 +475,8 @@ const compileJz = c => {
 // extension), but by different rules — wasm2c hex-escapes non-alnum bytes
 // into the identifier (a `-w2c` suffix leaked in as literal `0x2D...` and
 // broke the `w2c_<mod>_*` symbol names the host shim below assumes), while
-// w2c2 strips non-alnum outright. Keeping the basename plain alnum makes both
-// translators agree on one identifier — `noTailIdent` below — so w2cHost and
-// w2c2Host can share the same derivation.
+// older w2c2 strips non-alnum outright. Current w2c2 adds length prefixes and
+// escapes; its host reads the generated header to select the matching ABI.
 const w2cWasmPath = c => join(caseBuild(c), `${c.id}nt.wasm`)
 const noTailIdent = c => cIdent(c.id) + 'nt'
 const compileJzW2c = c => {
@@ -758,13 +760,19 @@ int main(void) {
 // w2c2 (turbolent/w2c2) twin of the wasm2c host above — same WASI shim shape
 // (fd_write for console.log, clock_time_get for performance.now), different
 // runtime API: no wasm-rt.h module struct — w2c2 links host imports as plain
-// C functions named `<module>__<name>` (double underscore — "wasi_snapshot_
-// preview1" has none to sanitize, so it maps straight across), and every
+// C functions, using legacy or length-prefixed names from its header. Every
 // trap (OOB, div-by-zero, unreachable, …) funnels through one required
 // `trap(Trap)` — w2c2's own test harness (futex/test.c) aborts there; this
 // host does the same instead of silently returning.
-const w2c2Host = (c, hFile) => {
-  const mod = noTailIdent(c)
+const w2c2Host = (hFile, header) => {
+  const mod = header.match(/\btypedef struct (\w+)Instance\b/)?.[1]
+  if (!mod) throw Error('unrecognized w2c2 instance declaration')
+  const modern = header.includes(`${mod}Export6_memory(`)
+  const instance = modern ? 'wasmModuleInstance*' : 'void*'
+  const memory = modern ? `${mod}Export6_memory` : `${mod}_memory`
+  const main = modern ? `${mod}Export4_main` : `${mod}_main`
+  const fdWrite = modern ? 'i22_wasiX5FsnapshotX5Fpreview18_fdX5Fwrite' : 'wasi_snapshot_preview1__fd_write'
+  const clockTime = modern ? 'i22_wasiX5FsnapshotX5Fpreview114_clockX5FtimeX5Fget' : 'wasi_snapshot_preview1__clock_time_get'
   return `#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -772,8 +780,8 @@ const w2c2Host = (c, hFile) => {
 #include "w2c2_base.h"
 #include "${hFile}"
 
-U32 wasi_snapshot_preview1__fd_write(void* inst, U32 fd, U32 iovs_ptr, U32 iovs_len, U32 nwritten_ptr) {
-  uint8_t* mem = (uint8_t*)${mod}_memory((${mod}Instance*)inst)->data;
+U32 ${fdWrite}(${instance} inst, U32 fd, U32 iovs_ptr, U32 iovs_len, U32 nwritten_ptr) {
+  uint8_t* mem = (uint8_t*)${memory}((${mod}Instance*)inst)->data;
   U32 total = 0;
   for (U32 i = 0; i < iovs_len; i++) {
     U32 buf_ptr, buf_len;
@@ -786,9 +794,9 @@ U32 wasi_snapshot_preview1__fd_write(void* inst, U32 fd, U32 iovs_ptr, U32 iovs_
   return 0;
 }
 
-U32 wasi_snapshot_preview1__clock_time_get(void* inst, U32 clock_id, U64 precision, U32 time_ptr) {
+U32 ${clockTime}(${instance} inst, U32 clock_id, U64 precision, U32 time_ptr) {
   (void)clock_id; (void)precision;
-  uint8_t* mem = (uint8_t*)${mod}_memory((${mod}Instance*)inst)->data;
+  uint8_t* mem = (uint8_t*)${memory}((${mod}Instance*)inst)->data;
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
@@ -804,7 +812,7 @@ void trap(Trap t) {
 int main(void) {
   ${mod}Instance inst;
   ${mod}Instantiate(&inst, NULL);
-  ${mod}_main(&inst);
+  ${main}(&inst);
   ${mod}FreeInstance(&inst);
   return 0;
 }
@@ -1088,7 +1096,7 @@ const targets = {
       execFileSync('wasm2c', [w2cWasmPath(c), '-o', cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
       writeFileSync(cFile, execFileSync('awk', ['-f', W2C_POSTPROCESS, cFile], { cwd: BENCH_DIR }))
       writeFileSync(host, w2cHost(c, hFile))
-      execFileSync('clang', [...W2C_CFLAGS, ...macSysrootArgs, `-I${WABT_W2C_DIR}`, ...(existsSync(SIMDE_DIR) ? [`-I${SIMDE_DIR}`] : []), host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('clang', [...W2C_CFLAGS, ...macSysrootArgs, `-I${WABT_W2C_DIR}`, `-I${WABT_INCLUDE_DIR}`, ...(existsSync(SIMDE_DIR) ? [`-I${SIMDE_DIR}`] : []), host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-lm', '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [w2cBinPath(c)]),
   },
   // w2c2 twin of jz-w2c (audit-#12 step 2): same --no-tail-call wasm input
@@ -1106,15 +1114,12 @@ const targets = {
     bin: w2c2BinPath,
     run: c => tryRun('jz-w2c2', c, () => {
       compileJzW2c(c)
-      const ident = noTailIdent(c)
-      const wasm2 = join(caseBuild(c), `${ident}.wasm`)
-      copyFileSync(w2cWasmPath(c), wasm2)
       const cFile = join(caseBuild(c), `${c.id}-w2c2.c`)
       const hFile = `${c.id}-w2c2.h`
       const host = join(caseBuild(c), `${c.id}-w2c2-host.c`)
-      execFileSync(W2C2_BIN, [wasm2, cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
-      writeFileSync(host, w2c2Host(c, hFile))
-      execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${W2C2_DIR}`, host, cFile, '-o', w2c2BinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync(W2C2_BIN, [w2cWasmPath(c), cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
+      writeFileSync(host, w2c2Host(hFile, readFileSync(join(caseBuild(c), hFile), 'utf8')))
+      execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${W2C2_DIR}`, host, cFile, '-lm', '-o', w2c2BinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [w2c2BinPath(c)]),
   },
   jawsm: {

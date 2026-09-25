@@ -216,8 +216,11 @@ measurements but receive no relative bar.
 `jz-w2c` lowers JZ Wasm through `wasm2c` and `clang -O3` for the native comparison.
 It uses `--no-tail-call` because wasm2c rejects `return_call` combined with
 multi-value results. `jz-wasmtime` keeps tail calls. A second translator,
-`jz-w2c2`, remains a CI smoke check rather than a published row because w2c2 has
-no SIMD support.
+`jz-w2c2`, remains a CI smoke check rather than a published row because w2c2
+supports neither SIMD nor multi-value returns. Both translators check recursive
+and string kernels; WABT additionally checks the multi-value tokenizer kernel.
+The adapter accepts source and installed WABT layouts and reads w2c2's generated
+header to match its symbol naming. CI pins the tested w2c2 revision.
 
 ### Parity classes
 
@@ -312,7 +315,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `c-wasm` | C → `wasm32-wasi` via clang/LLVM (`zig cc -target wasm32-wasi -O3` — zig supplies the wasi-libc that plain clang lacks; no emcc/wasi-sdk install), run in node's V8 |
 | `jz-wasmtime` | JZ output on wasmtime |
 | `jz-w2c` | JZ Wasm translated by wabt `wasm2c`, then clang `-O3`; built with `--no-tail-call` as described above |
-| `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only (no SIMD support, so it self-gates out of any vectorized case); set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
+| `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only; unsupported SIMD and multi-value cases record build failures. Set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 4 at the 2026-09-05 refresh; a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
 | `scriptc` | scriptc (vercel-labs, npm `scriptc`): TS/JS AOT-compiled to a **static** native binary (TypeScript-checker typing + LLVM; constructs outside its LLVM tier fall back to its C emitter, still static). `scriptc build <case>-flat.js -o <bin>`, then the binary is measured. Its `--dynamic` island (embedded quickjs-ng) is never passed: the lane measures the engine-less shipping artifact, and a case its static tier can't swallow records an honest fail. Set `SCRIPTC_BIN` to override |
