@@ -77,6 +77,84 @@ syncBuiltinESMExports()
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 
+test('paired benchmarks: a failed lane stops immediately without dropping siblings or later cases', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'jz paired failures '))
+  try {
+    const hook = join(scratch, 'runner.mjs'), json = join(scratch, 'results.json'), counts = join(scratch, 'counts.json')
+    writeFileSync(hook, `import cp from 'node:child_process'
+import { writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const spawn = cp.spawnSync, counts = {}
+cp.spawnSync = (cmd, args, opts) => {
+  if (cmd === '/usr/bin/time') return { status: 1 }
+  const v8 = args.some(a => a.endsWith('/run-v8.mjs')), shell = cmd === 'fixture-jsc'
+  if (v8 || shell) {
+    const name = args.at(-1).includes('alpha') ? 'alpha' : 'mat4', key = (v8 ? 'v8/' : 'jsc/') + name
+    counts[key] = (counts[key] || 0) + 1
+    writeFileSync(${JSON.stringify(counts)}, JSON.stringify(counts))
+    if (key === 'v8/alpha' && counts[key] === Number(process.env.JZ_TEST_FAIL_AT))
+      return { status: 1, stderr: 'intentional lane failure' }
+    return { status: 0, stdout: 'median_us=10 checksum=' + (name === 'alpha' ? 633180752 : 2929747182) + ' samples=1 stages=1 runs=1', stderr: '' }
+  }
+  return spawn(cmd, args, opts)
+}
+syncBuiltinESMExports()
+`)
+    for (const failAt of [2, 3]) {
+      execFileSync(process.execPath, ['--import', hook, fileURLToPath(new URL('../bench/bench.mjs', import.meta.url)),
+        '--cases=alpha,mat4', '--targets=v8,jsc', '--paired=2', `--json=${json}`], {
+        encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, JSC_BIN: 'fixture-jsc', JZ_TEST_FAIL_AT: String(failAt),
+          JZ_BENCH_BUILD_DIR: join(scratch, 'build'), JZ_BENCH_WEB_DIR: join(scratch, 'web') },
+      })
+      const { cases } = JSON.parse(readFileSync(json, 'utf8'))
+      is(JSON.parse(readFileSync(counts, 'utf8')), { 'v8/alpha': failAt, 'jsc/alpha': 5, 'v8/mat4': 5, 'jsc/mat4': 5 })
+      is(cases.alpha.targets.v8.status, 'fail', 'either counted position retains a failure')
+      is(cases.alpha.targets.v8.medianUs, undefined, 'incomplete observations cannot establish a timing')
+      is(cases.alpha.paired, undefined, 'a failed lane has no paired ratio')
+      is(cases.alpha.targets.jsc.parity, 'ok', 'the other lane still completes')
+      is(cases.mat4.targets.v8.parity, 'ok', 'failure does not leak into the next case')
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+})
+
+test('JS benchmark runners: module and bundled self-compiler entries have native heap adapters', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'jz native self bench '))
+  try {
+    const hook = join(scratch, 'shell.mjs'), json = join(scratch, 'results.json'), builds = join(scratch, 'builds')
+    // Execute the shell bundle in a fresh Node process: no installed JSC or
+    // globals from the test process can hide a missing runtime adapter.
+    writeFileSync(hook, `import cp from 'node:child_process'
+import { appendFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const spawn = cp.spawnSync
+cp.spawnSync = (cmd, args, opts) => {
+  if (cmd === '/usr/bin/time') return { status: 1 }
+  if (args.some(a => a.endsWith('/compile-jz-self.mjs'))) {
+    appendFileSync(${JSON.stringify(builds)}, 'build\\n')
+    return { status: 1, stderr: 'intentional self-build failure' }
+  }
+  return cmd === 'fixture-jsc' ? spawn(process.execPath, args, opts) : spawn(cmd, args, opts)
+}
+syncBuiltinESMExports()
+`)
+    const out = execFileSync(process.execPath, ['--import', hook, fileURLToPath(new URL('../bench/bench.mjs', import.meta.url)),
+      '--cases=jz', '--targets=jz,v8,jsc', '--paired=1', `--json=${json}`], {
+      encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, JSC_BIN: 'fixture-jsc',
+        JZ_BENCH_BUILD_DIR: join(scratch, 'build'), JZ_BENCH_WEB_DIR: join(scratch, 'web') },
+    })
+    const { jz, v8, jsc } = JSON.parse(readFileSync(json, 'utf8')).cases.jz.targets
+    is(readFileSync(builds, 'utf8'), 'build\n', 'a failed build is attempted once across warm and counted rounds')
+    is(jz.status, 'fail', 'the build failure remains visible beside successful siblings')
+    is(v8.status, undefined, JSON.stringify(v8))
+    is(jsc.status, undefined, JSON.stringify(jsc))
+    const checksums = [...out.matchAll(/\[paired\]\s+(?:v8|jsc)\b[^\n]*\bcs=(\d+)/g)].map(m => Number(m[1]))
+    is(checksums.length, 2, 'both runners completed and hashed the repeated compilations')
+    is(checksums[0], checksums[1], 'bundled and module runners compile the same bytes')
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+})
+
 test('reference evidence: CI paths retain corpus, memory and native release gates', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'jz reference gates '))
   try {

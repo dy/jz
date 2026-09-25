@@ -11,23 +11,24 @@ that shaped the tree, the work left before release and the latest gate reading.
 **V1 is not ready to tag.** Published watr 5.11.8 and subscript 10.8.1 are
 installed from the registry and locked. Local dependency links had hidden the
 CI parser-location and allocation failures. The supported `loc: false` option
-and published literal/printer allocation fixes pass their focused regressions;
-the full suite is running again against registry packages. Fresh release
+and published literal/printer allocation fixes pass their regressions. The full
+self-compile suite and fresh functional, sequence and recursive attestation
+pass. The full core suite is running again after benchmark harness repairs. Fresh release
 performance evidence and the Jessie/watr memory gaps remain open; no release
 cap was relaxed. The strict reference CI run is still measuring.
 
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
 | Dependency | Official npm watr 5.11.8 and subscript 10.8.1, pinned by lockfile integrity; both installed as registry directories, not sibling links. | Keep the registry artifacts through final verification. |
-| Correctness | CI at 14e357b3 failed one parser-location invariant in each matrix leg and two self-compile allocation tests. Registry-package regressions now pass: WAT tokens 125 assertions across tiers; long literals and wide-node printing 24 assertions. Printer allocation fell from 2850519192 to 128312744 bytes. | Finish the full registry-package suite, push the dependency fixes and require green matrix/self-compile CI. |
-| Recursive bootstrap | The prior graph passed functional, sequence and recursive gates. Its recursive compiler is 18903703 bytes and executes its probe to 19. Final heap: 1174270400 bytes; headroom: 3120696896 bytes. | Renew the attestation after the shared WAT checkpoint change. The compiler reserves 4 GiB for the checkpoint lane; heap headroom does not certify RSS parity. |
+| Correctness | Registry self-compile passes 76 tests / 2496 assertions. WAT token storage passes 125 assertions across tiers; printer allocation fell from 2850519192 to 128312744 bytes. CI at bd3147fb passes opt0, opt3, WASI, fuzz and both conformance jobs; default and the Wasm-hosted full suite are still running. Harness regressions pass 7 tests / 66 assertions plus Porffor recovery 1 / 54. | Finish the full core rerun and require green matrix/self-compile CI after the harness repair. |
+| Recursive bootstrap | Fresh registry kernel 19842756 bytes, SHA-256 prefix 6fa46110c977, is attested to graph 17b53f92d19d. Functional, reuse-sequence and recursive gates are green, certified true. Recursive output is 19299633 bytes; final heap 1201128480 bytes. | Correctness attestation renewed. The compiler reserves 4 GiB for the checkpoint lane; heap headroom does not certify RSS parity. |
 | Conformance | Final-tree runs pass: language 3195 passes, 4045 correct rejections, zero unexpected failures, two documented ordering exceptions; builtins 880 passes, zero unexpected failures, 43 expected failures. | Cleared for the supported subsets; these do not establish full test262 coverage. |
 | Build/package | Browser assets and all 81 examples build; types pass. Package dry run includes both JS bundles and excludes the compiler Wasm. | Repeated after the function-order fix; cleared for this tree. |
 | Size | All 59 speed and size checksums match after the linker-order fix; all binary sizes are unchanged. Current size binaries are smaller than the stored parity-valid AssemblyScript artifacts on all 50 comparable cases (geomean 0.779×), including all eight old recorded losses. | Refresh pinned reference evidence; the private size comparison does not update the public snapshot. |
-| Performance claims | CI at 14e357b3 has 15 failed claims against stale committed evidence. The snapshot carries 14738.81 MB swap, above the 4096 MB limit. Reference run 36155865964 is measuring that commit; dependency updates will need a fresh run. The ordinary bench timing flake is fixed: 23 merge tests / 187 assertions pass with controlled anchor timings; carried-verdict fixtures also pass independently. | Run `bench` with `reference=true` against the final committed compiler; close every strict failure in the retained artifact before release. |
+| Performance claims | CI at 14e357b3 has 15 failed claims against stale committed evidence. The snapshot carries 14738.81 MB swap, above the 4096 MB limit. Superseded reference run 36155865964 was cancelled and its logs retained; the repaired harness needs a fresh reference run. The ordinary bench timing flake is fixed: 23 merge tests / 186 assertions pass with controlled anchor timings. | Run `bench` with `reference=true` against the final committed compiler; close every strict failure in the retained artifact before release. |
 | Rival coverage | Entity checksum 1275530752 matches JZ, Node, native C, Go-Wasm, Zig and Porffor. Go/Zig resample match 1711808418. TinyGo 0.42.0 with Go 1.26.0 passes all 45 comparable cases. Native Go/Porffor resample FMA variants are independently verified. | Refresh all 45 rows for each rival on the reference machine. |
 | Web Audio | Fresh JZ and Node runs match checksum 2866527759; the stored mismatch is stale. | Refresh reference evidence. |
-| Memory | Latest paired diagnostic readings: Jessie 106.7 MiB vs V8 98.7 MiB; watr 150.0 MiB vs V8 75.1 MiB. The allocation reductions have not closed those gaps. | The CI reference gate now requires each allocation-heavy case to use no more peak RSS than V8. Fix any measured loss before release. |
+| Memory | Registry-package paired diagnostics: Jessie 106.4 MiB vs V8 95.3 MiB; watr 116.8 MiB vs V8 70.5 MiB. The allocation reductions have not closed those gaps. | The CI reference gate requires each allocation-heavy case to use no more peak RSS than V8. Fix any measured loss before release. |
 
 The recursive build now fits through general allocation reductions: diagnostic
 work only when requested, reused interval maps and summary views, no copied AST
@@ -411,8 +412,8 @@ Dependencies
    70.3 MB versus V8's 70.6 MB on the earlier paired tree: per-sample arena
    rewind keeps one render's 87 MB allocation volume to 9 MB retained.
 
-   Paired diagnostic readings after the formatter/allocation work are Jessie
-   106.7 MiB vs V8 98.7 MiB and watr 150.0 MiB vs V8 75.1 MiB. Both gaps
+   Paired diagnostic readings with registry watr 5.11.8 and subscript 10.8.1 are
+   Jessie 106.4 MiB vs V8 95.3 MiB and watr 116.8 MiB vs V8 70.5 MiB. Both gaps
    remain open. The measurements below record the earlier allocation work.
    Exact nonempty-literal capacity reduced Jessie's paired peak
    177.4 → 163.0 MB with unchanged checksum and median runtime; two-slot
@@ -459,6 +460,14 @@ Dependencies
    Jessie, watr and Web Audio each have a strict JZ/V8 RSS floor.
    RSS provenance covers both JZ and V8 even without timing measurements;
    explicit invalid row stamps cannot borrow fresh snapshot metadata.
+
+   The superseded reference run 36155865964 exposed two harness failures:
+   a failed self-build was retried at its 600-second limit in every paired
+   position, and JS runners lacked the self-compiler's native heap adapters.
+   Failed builds now stop that lane; counted runtime failures also stop it,
+   while a transient warm runtime failure may still recover. Other lanes and
+   later cases continue. Module and bundled JS runners use the same zero-mark,
+   no-checkpoint adapter already used by the self-compile performance gate.
 
    Latest benchmark CI run 36109730855 failed only the stored alpha wasm2c
    ratio (3.52× against a 3.5× cap). Native reference checks now live with the

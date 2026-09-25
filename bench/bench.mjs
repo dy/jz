@@ -398,7 +398,10 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
           statSync(stamp).mtimeMs > Math.max(maxSrcMtime(c), BENCH_HARNESS_MTIME, cacheInputMtime) &&
           readFileSync(stamp, 'utf8') === (identity || '')
       } catch { fresh = false }
-      if (!fresh) { prep(); if (cacheable) writeFileSync(stamp, identity || '') }
+      if (!fresh) {
+        try { prep() } catch (e) { return { id, error: e.message, buildFailed: true } }
+        if (cacheable) writeFileSync(stamp, identity || '')
+      }
       pairedBuilt.add(key)
     }
     const parsed = runProc(argv, runOpts)
@@ -682,7 +685,9 @@ if (typeof TextEncoder === 'undefined') {
     body += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   }
   // Native compilers with their own Web globals need no shell polyfills.
-  const contents = (nativeGlobals ? '' : out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '')) + body
+  const heapShim = /\b__heap_(?:mark|large)\b/.test(body)
+    ? 'var __heap_mark = () => 0, __heap_large = () => false\n' : ''
+  const contents = (nativeGlobals ? '' : out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '')) + heapShim + body
   if (!existsSync(path) || readFileSync(path, 'utf8') !== contents) writeFileSync(path, contents)
   flatInputs.add(path)
   return path
@@ -1387,7 +1392,10 @@ for (const cid of selectedCases) {
     pairedBuilt.clear()
     for (const tid of avail) {
       const r = targets[tid].run(c)
-      if (r.error) console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}; retrying in counted rounds`)
+      if (r.error) {
+        if (r.buildFailed) recordFailure(tid, r.error)
+        console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}${r.buildFailed ? '' : '; retrying in counted rounds'}`)
+      }
     }
     for (let round = 0; round < PAIRED; round++) {
       // ABBA: forward then reverse within the round; per-target round value =
@@ -1395,6 +1403,9 @@ for (const cid of selectedCases) {
       const seq = [...avail, ...[...avail].reverse()]
       const acc = new Map()
       for (const tid of seq) {
+        // A failed lane cannot supply a complete paired result. Preserve its
+        // error and continue the other lanes instead of repeating long builds.
+        if (failures.some(f => f.id === tid)) continue
         const r = targets[tid].run(c)
         if (r.error) { recordFailure(tid, r.error); continue }
         if (!positiveTiming(r)) { recordFailure(tid, `counted run returned invalid median_us=${r.medianUs}`); continue }
