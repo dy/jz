@@ -2,9 +2,11 @@
 // (Number()/parseFloat/unary +/String()), and template-literal interpolation.
 // String-method tests (charAt/charCodeAt/at/search/match) live in strings.js.
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
+import jz from '../index.js'
+import { HEAP } from '../layout.js'
 import { run, cases, wat, funcWat } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, onKernel } from './_matrix.js'
 import encodeWat from 'watr/compile'
 
 // === toString ===
@@ -87,6 +89,70 @@ test('Number: radix digits and sign survive reversal', () => {
     for (const radix of [2, 8, 16, 36])
       for (const n of [0, 1, -1, 17, -255, 1024, 2147483647, -2147483648, 4294967295, 1.5, -15.5])
         is(f(n, radix), n.toString(radix), `O${optimize}: ${n} in base ${radix}`)
+  }
+})
+
+test('number formatting: scratch becomes the result without retaining temporary storage', () => {
+  const src = `
+    export function dec(n) { return n.toString() }
+    export function int(n) { return String(n|0) }
+    export function radix(n, r) { return n.toString(r) }
+    export function big(n, r) { return BigInt(n).toString(r) }
+    let saved = ''
+    export function hold(n, r) { saved = n.toString(r) }
+    export function held() { return saved }
+    export function invalid(r) { try { return (17).toString(r) } catch (e) { return e.name } }
+  `
+  const rows = [
+    ...[0, -0, 42, 42, 999999, 1000000, -2147483648, 0.125, 1.23456789,
+      Number.MIN_VALUE, Number.MAX_VALUE, NaN, Infinity, -Infinity].map(n => ['dec', [n], String(n)]),
+    ...[0, 42, 999999, 1000000, -2147483648, 2147483647].map(n => ['int', [n], String(n)]),
+    ...[2, 8, 16, 36].flatMap(r => [0, -1, 123456789, -2147483648, 1.5, -15.5]
+      .map(n => ['radix', [n, r], n.toString(r)])),
+    ...[2, 10, 16, 36].flatMap(r => [0, 42, -2147483648, -(2 ** 63)]
+      .map(n => ['big', [n, r], BigInt(n).toString(r)]))
+  ]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const alloc of [true, false]) {
+    const r = jz(src, { optimize, alloc })
+    const heap = () => r.instance.exports.__heap ? r.instance.exports.__heap.value >>> 0
+      : new DataView(r.instance.exports.memory.buffer).getUint32(HEAP.PTR_ADDR, true)
+    for (let round = 0; round < 2; round++) {
+      r.exports.hold(123456789, 2)
+      for (const [name, args, expected] of rows) {
+        const before = heap()
+        is(r.exports[name](...args), expected, `${name} ${args} O${optimize}`)
+        const bytes = heap() - before
+        const resultBytes = expected.length <= 6 ? 0 : (4 + expected.length * 2 + 7) & ~7
+        ok(bytes <= resultBytes + 16, 'only the result and possible BigInt box remain')
+        is(r.exports.held(), (123456789).toString(2), 'later formatting preserves retained digits')
+      }
+      is(r.exports.invalid(1), 'RangeError')
+      is(r.exports.invalid(37), 'RangeError')
+      is(r.exports.radix(17, 2), '10001', 'formatting still works after a rejected radix')
+      if (alloc) r.instance.exports._clear()
+    }
+  }
+})
+
+test('number formatting: shared memories retain independent results across instances', () => {
+  if (onKernel()) return // Host memory wiring is outside the single-source kernel API.
+  for (const shared of [false, true]) {
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 128, shared })
+    const src = `let saved = ''; export function hold(n, r) { saved = n.toString(r) }
+      export function held() { return saved }
+      export function dec(n) { return n.toString() }
+      export function big(n) { return BigInt(n).toString(2) }`
+    const a = jz(src, { memory, sharedMemory: shared }), b = jz(src, { memory, sharedMemory: shared })
+    a.exports.hold(123456789, 2)
+    b.exports.hold(-123456789, 16)
+    for (const n of [0, 0, 123456789.125, Number.MIN_VALUE, -42]) {
+      is(a.exports.dec(n), String(n))
+      is(b.exports.dec(n), String(n))
+      is(a.exports.held(), (123456789).toString(2))
+      is(b.exports.held(), (-123456789).toString(16))
+    }
+    is(a.exports.big(-2147483648), (-2147483648n).toString(2))
+    is(b.exports.held(), (-123456789).toString(16))
   }
 })
 

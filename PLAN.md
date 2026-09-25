@@ -452,6 +452,19 @@ Dependencies
    passes 20/20 parity cases and 217 affected Wasm-hosted assertions; Watr
    stays at 311158 bytes. Recursion reaches peephole optimization but still
    exhausts 4 GiB (helper parsing finishes at 4.222 GB).
+   Number formatting now reuses its private digit scratch for the result on
+   owned heaps. Short decimal formatting retains 0 bytes instead of 192;
+   a 13-character decimal result retains 32 instead of 224, and a 27-digit
+   binary result retains 64 instead of 424. Shared heaps retain the copy.
+   The all-tier ownership tests pass 3704 assertions, including retained
+   aliases, repeat calls, reset, errors and concurrent-capable shared memory.
+   WASI checks pass 1508 assertions and the instruction ratchet stays 10/10.
+   Watr stays below its cap at 311188 bytes (+30). The rebuilt kernel passes
+   20/20 parity cases and 2328 affected Wasm-hosted assertions. The broader
+   affected suites pass 204 tests / 30345 assertions. A 10000-string retained
+   output probe allocates 495408 bytes instead of 2417520, with every string
+   checked; timing is too variable to claim a speed ratio. Recursive memory
+   measurement and full CI remain pending.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

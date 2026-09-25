@@ -387,7 +387,14 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
         (local.get $mant52))))`
 
 export default (ctx) => {
+  // These formatters allocate one private scratch region and call no user code.
+  // Owned heaps reserve the string header before the digits, so the finished
+  // string can replace that region. Shared heaps keep the ordinary copy.
+  const scratchString = ctx.memory.shared ? '__mkstr' : '__scratch_str'
+  const allocDigits = bytes => ctx.memory.shared ? `(call $__alloc (i32.const ${bytes}))`
+    : `(i32.add (call $__alloc (i32.const ${bytes + 4})) (i32.const 4))`
   deps({
+    __scratch_str: ['__mkstr'],
     __mkstr: ['__alloc'],
     // own edge: __static_str's body calls $__mkstr — without it the helper
     // rides the self-compile-unreliable auto-scan (test/self-compile-includes.js)
@@ -400,18 +407,18 @@ export default (ctx) => {
     __fmt_fixed: ['__ftoa', '__alloc', '__dec_scaled', '__mkstr'],
     __fmt_exp: ['__ftoa', '__alloc', '__dec_sig', '__dec_to_f64', '__fmt_exp_tail', '__mkstr'],
     __fmt_prec: ['__ftoa', '__alloc', '__dec_sig', '__fmt_exp_tail', '__mkstr'],
-    __ftoa_shortest: ['__mkstr', '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
+    __ftoa_shortest: [scratchString, '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
     __ryu_pow5: ['__umul128'],
     __dec_to_f64: ['__ryu_pow5', '__umul128', '__pow10'],
     __ryu_mulshift: ['__umul128'],
     __ryu_mulhi: [],
     __umul128: ['__ryu_mulhi'],
     __ryu_pow5div: [],
-    __i32_to_str: ['__itoa_s', '__mkstr'],
+    __i32_to_str: ['__itoa_s', scratchString],
     __itoa_s: ['__itoa'],
     __ilen: [],
-    __radix_str: ['__mkstr'],
-    __num_radix: ['__ftoa', '__mkstr'],
+    __radix_str: [scratchString],
+    __num_radix: ['__ftoa', scratchString],
     __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux', '__is_object'],
     __number: ['__to_num', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
@@ -499,8 +506,8 @@ export default (ctx) => {
   // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
   ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
     (local $buf i32)
-    (local.set $buf (call $__alloc (i32.const 24)))
-    (call $__mkstr (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))`
+    (local.set $buf ${allocDigits(24)})
+    (call $${scratchString} (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))`
 
   // __radix_str(val: i64, radix: i32) → f64 (NaN-boxed string)
   // Signed integer → radix string for BigInt.prototype.toString(radix). Digits go
@@ -509,10 +516,10 @@ export default (ctx) => {
   ctx.core.stdlib['__radix_str'] = `(func $__radix_str (param $val i64) (param $radix i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32) (local $mag i64) (local $r i64)
     (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32)
-    (local.set $buf (call $__alloc (i32.const 144)))
+    (local.set $buf ${allocDigits(144)})
     (local.set $r (i64.extend_i32_s (local.get $radix)))
     (if (i64.eqz (local.get $val))
-      (then (i32.store16 (local.get $buf) (i32.const 48)) (return (call $__mkstr (local.get $buf) (i32.const 1)))))
+      (then (i32.store16 (local.get $buf) (i32.const 48)) (return (call $${scratchString} (local.get $buf) (i32.const 1)))))
     (local.set $mag (local.get $val))
     (if (i64.lt_s (local.get $val) (i64.const 0))
       (then (local.set $neg (i32.const 1)) (local.set $mag (i64.sub (i64.const 0) (local.get $val)))))
@@ -528,7 +535,7 @@ export default (ctx) => {
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
     (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
     ${reverseUnitsWat()}
-    (call $__mkstr (local.get $buf) (local.get $pos)))`
+    (call $${scratchString} (local.get $buf) (local.get $pos)))`
 
   // __num_radix(val: f64, radix: i32) → f64 (NaN-boxed string)
   // Number.prototype.toString(radix) for radix != 10. Non-finite values defer to
@@ -543,12 +550,12 @@ export default (ctx) => {
   // ensureThrowRuntime via stdlib scan, so callers do not need to flag throws.
   ctx.core.stdlib['__num_radix'] = `(func $__num_radix (param $val f64) (param $radix i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32) (local $iv i64) (local $r i64) (local $rf f64)
-    (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32) (local $rv f64)
+    (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32)
     (if (i32.or (i32.lt_s (local.get $radix) (i32.const 2)) (i32.gt_s (local.get $radix) (i32.const 36)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.NUMBER_RADIX)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.NUMBER_RADIX)}))))
     (if (i32.or (f64.ne (local.get $val) (local.get $val)) (f64.eq (f64.abs (local.get $val)) (f64.const inf)))
       (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
-    (local.set $buf (call $__alloc (i32.const 360)))
+    (local.set $buf ${allocDigits(360)})
     (local.set $r (i64.extend_i32_s (local.get $radix)))
     (local.set $rf (f64.convert_i32_s (local.get $radix)))
     (if (f64.lt (local.get $val) (f64.const 0))
@@ -585,14 +592,14 @@ export default (ctx) => {
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (local.set $fn (i32.add (local.get $fn) (i32.const 1)))
           (br $fl)))))
-    ${!ctx.memory.shared ? `
-    ;; When __mkstr packed an SSO result it allocated nothing, so the digit scratch
-    ;; ($buf, at heap top) is dead — reclaim it so a heap-top accumulator stays on
-    ;; top and \`s += n.toString(r)\` bump-extends instead of reallocating (O(n)).
-    (local.set $rv (call $__mkstr (local.get $buf) (local.get $pos)))
-    (if (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $rv)) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT}))
-      (then (global.set $__heap (local.get $buf))))
-    (local.get $rv)` : `(call $__mkstr (local.get $buf) (local.get $pos))`})`
+    (call $${scratchString} (local.get $buf) (local.get $pos)))`
+
+  // The caller's digit buffer is the only live value in its scratch region.
+  // Rewind before __mkstr: SSO keeps nothing, a heap string reuses the reserved
+  // header and copies its digits onto themselves. No input aliases this buffer.
+  ctx.core.stdlib['__scratch_str'] = `(func $__scratch_str (param $buf i32) (param $len i32) (result f64)
+    (global.set $__heap (i32.sub (local.get $buf) (i32.const 4)))
+    (call $__mkstr (local.get $buf) (local.get $len)))`
 
   // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string.
   // Hot (~60M calls in watr self-compile via __ftoa). bulk memory.copy is ~10× faster than
@@ -1187,12 +1194,12 @@ export default (ctx) => {
     (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
     (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
     (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
-    (local.set $buf (call $__alloc (i32.const 192)))
+    (local.set $buf ${allocDigits(192)})
     (local.set $scr (i32.add (local.get $buf) (i32.const 64)))
     (if (f64.eq (local.get $val) (f64.const 0))
       (then
         (i32.store16 (local.get $buf) (i32.const 48))
-        (return (call $__mkstr (local.get $buf) (i32.const 1)))))
+        (return (call $${scratchString} (local.get $buf) (i32.const 1)))))
     (local.set $bits (i64.reinterpret_f64 (local.get $val)))
     (if (i64.lt_s (local.get $bits) (i64.const 0))
       (then
@@ -1411,7 +1418,7 @@ export default (ctx) => {
             (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
             (local.set $pos (i32.add (local.get $pos)
               (call $__itoa (local.get $n) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))))))))))))
-    (call $__mkstr (local.get $buf) (local.get $pos)))`
+    (call $${scratchString} (local.get $buf) (local.get $pos)))`
 
 
   // === Number constants ===

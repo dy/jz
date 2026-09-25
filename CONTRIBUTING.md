@@ -158,6 +158,11 @@ reads leave after the existing assignment census. Fixed layout masks are
 formatted once and reused as immutable strings; every mutable IR node stays
 fresh. Variable i64 literals format each unsigned word as eight hex digits,
 with bounded string storage and no general radix-conversion scratch.
+Number formatters own one private digit buffer and call no user code while
+filling it. On owned heaps that buffer reserves its eventual string header;
+finishing rewinds the region before packing SSO or reusing the digit storage.
+Only the result survives. Shared heaps keep the copy, since another instance
+may allocate concurrently. Formatting must preserve previously returned strings.
 Dense schema dispatch shares one arm per field offset. Scoped read memos walk
 their region directly and copy only nonempty incoming maps. An empty inline
 cache starts with an impossible high-word sentinel: its low bits are nonzero,
