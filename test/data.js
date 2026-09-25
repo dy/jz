@@ -55,8 +55,7 @@ test('Map copy allocates one table for a dense source', () => {
     export function init() { for (let i = 0; i < 32; i++) source.set(i, i + 1) }
     export function clone() { copy = new Map(source); return copy.size }
     export function get(i) { return copy.get(i) }`
-  // The kernel ABI does not expose the private compact-layout build option.
-  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of onKernel() ? [false] : [false, true]) {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
     const r = jz(src, { optimize, _compactCollections })
     r.exports.init()
     for (let i = 0; i < 2; i++) {
@@ -1574,10 +1573,6 @@ test('Map/Set: receiver laundered through an identity call keeps its pointer ide
 })
 
 test('self-compile compact collections: entry hash replaces the redundant probe lane', () => {
-  // `_compactCollections` is an artifact-build option, not a user-facing output
-  // mode. The kernel target cannot forward it through the wasm ABI; that leg is
-  // covered by kernel-oracle/self-compile after building the compact artifact.
-  if (onKernel()) return
   const src = `export let f = () => {
     let m = new Map(), s = new Set(), o = {}
     for (let i = 0; i < 40; i++) { m.set('k' + i, i); s.add(i); o['p' + i] = i }

@@ -94,7 +94,7 @@ const modulesJSONFor = (self, opts) =>
 const hostFor = (self, opts) => opts.host ? self.memory.String(opts.host) : 0
 const sourceTypeFor = (self, opts) => opts.sourceType ? self.memory.String(opts.sourceType) : 0
 const buildJSONFor = (self, opts) => {
-  if (!opts.imports && opts.alloc == null && typeof opts.memory !== 'number' && !opts.whyNotRewind && !opts.whyNotSimd) return 0
+  if (!opts.imports && opts.alloc == null && typeof opts.memory !== 'number' && opts._compactCollections == null && !opts.whyNotRewind && !opts.whyNotSimd) return 0
   let imports, externalImports = false
   if (opts.imports) {
     imports = Object.create(null)
@@ -114,6 +114,7 @@ const buildJSONFor = (self, opts) => {
   // Implementations stay in the host; only signatures and constants travel.
   return self.memory.String(JSON.stringify({
     alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
+    compactCollections: opts._compactCollections,
     whyNotRewind: !!opts.whyNotRewind, whyNotSimd: !!opts.whyNotSimd,
     imports, externalImports,
   }))
