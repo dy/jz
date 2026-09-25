@@ -2,8 +2,8 @@
  * Stdlib module bridge — `module/*` imports from here, not `src/compile/emit.js`.
  *
  * Emit impls bind on `ctx.bridge` at reset(). Registration: `wat(name, body)`
- * for WAT stdlib, `reg(name, deps, fn)` for emit, or `reg(name, { deps, wat, emit })`
- * to co-register both. `method`/`call` remain sugar for simple `$stdlib` calls.
+ * for WAT stdlib and `reg(name, deps, fn)` for emit.
+ * `method`/`call` remain sugar for simple `$stdlib` calls.
  *
  * @module bridge
  */
@@ -172,26 +172,9 @@ export const wat = (name, body, depNames = []) => {
   if (depNames.length) deps({ [name]: depNames })
 }
 
-/** Emit handler; optionally co-register WAT when `depsOrOpts.wat` is set.
- *  reg(name, deps, fn) — emit only
- *  reg(name, { deps, wat, emit }) — WAT key inferred from first `__…` dep
- *  reg(name, { watKey, deps, wat, emit }) — explicit WAT key when deps differ */
-export const reg = (name, depsOrOpts, maybeFn) => {
-  if (typeof depsOrOpts === 'object' && depsOrOpts !== null && !Array.isArray(depsOrOpts)) {
-    const o = depsOrOpts
-    const depsList = o.deps ?? []
-    if (o.wat) {
-      const watKey = o.watKey ?? depsList.find(d => d.startsWith('__')) ?? name
-      wat(watKey, o.wat, o.watDeps ?? [])
-    }
-    if (o.emit) {
-      const h = emitter(depsList, o.emit)
-      registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue, name, 'reg', h)
-      return h
-    }
-    return
-  }
-  const h = emitter(depsOrOpts, maybeFn)
+/** Emit handler with explicit WAT dependencies. Register its WAT with wat(). */
+export const reg = (name, depNames, fn) => {
+  const h = emitter(depNames, fn)
   registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue, name, 'reg', h)
   return h
 }
