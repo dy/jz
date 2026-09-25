@@ -1094,6 +1094,9 @@ without changing the semantic program revision. Physical carrier changes use
 this eviction; summary result contracts read their ABI from live signatures.
 Semantic input changes, such as an export's `boundaryTyped` contract, use
 `invalidateBodies` to invalidate both the body facts and the summary.
+Majority-kind specialization requires a use that can benefit from the pinned
+kind. A parameter only forwarded to unchanged user callees does not justify
+a clone or another summary solve; the existing binding-use census proves this.
 Every rewriting seam, and every plan sweep that reports a change, also advances
 one program revision. The summary is keyed by it and by the contents of the
 registries beside the program (schemas, functions, globals, binding schemas),

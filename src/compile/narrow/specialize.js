@@ -20,6 +20,8 @@ import { joinKinds } from '../../param-reps.js'
 import { materializeVariant } from '../variant.js'
 import { assertValKindConsistent } from './caller-ctx.js'
 import { isExported } from '../func-exports.js'
+import { frameNode } from '../../function.js'
+import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_CALLEE } from '../analyze-scans.js'
 
 // A call-site argument's kind is the summary's, read in the caller's scope
 // (src/summary): the typed constructor it holds under every assignment, its value kind.
@@ -223,6 +225,7 @@ export function specializeValKindDichotomy(programFacts) {
     // COMBO across all bimorphic positions, not per position).
     const pins = []            // { k, domKind }
     const perPosKinds = []     // parallel to pins: siteKinds vector for that position
+    let uses
     for (let k = 0; k < func.sig.params.length; k++) {
       const r = reps.get(k)
       if (!r || r.val !== null) continue           // only genuinely poisoned (kind-vs-kind disagreement)
@@ -252,6 +255,12 @@ export function specializeValKindDichotomy(programFacts) {
       // ptrKind/type ABI switch (applyPointerParamAbi/bimorphic's job), which this
       // pass deliberately never touches; leave TYPED dichotomies to that pass.
       if (domKind === VAL.TYPED) continue
+      // Forwarding to unchanged user callees consumes the same ABI in either
+      // body. A clone buys nothing there. Builtins, receiver operations, returns
+      // and other uses can consume the pinned kind; keep those candidates.
+      uses ||= scanBindingUses(frameNode(func), new Set(func.sig.params.map(p => p.name)))
+      const reads = uses.get(p.name)?.[BINDING_USE_USES]
+      if (!reads?.some(u => u[BINDING_USE_KIND] !== USE.CALL_ARG || !ctx.funcs.map.get(u[BINDING_USE_CALLEE])?.body)) continue
 
       pins.push({ k, domKind })
       perPosKinds.push(siteKinds)

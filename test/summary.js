@@ -895,10 +895,11 @@ test('summary: rebuilt only when the program changed', () => {
   // a summary built at the current revision is reused. JZ_DEBUG_INVARIANTS checks each reuse
   // against the summary's inputs.
   if (onKernel()) return   // the kernel keeps no profile
-  const builds = (src) => { const profile = {}; compile(src, { profile }); return profile.entries.filter(e => e.name === 'summary').length }
+  const builds = (src, optimize = 2) => { const profile = {}; compile(src, { profile, optimize }); return profile.entries.filter(e => e.name === 'summary').length }
   is(builds('export let f = (x) => x * 2'), 1, 'a program the plan leaves alone is summarized once')
-  ok(builds('const g = (a) => a + 1; export let f = (x) => { let s = 0; for (let i = 0; i < x; i++) s += g(i); return s }') > 1,
-    'a program the plan rewrites is summarized again')
+  const src = 'const g = (a) => a + 1; export let f = (x) => { let s = 0; for (let i = 0; i < x; i++) s += g(i); return s }'
+  is(builds(src, 0), 1, 'without source inlining, the semantic program is unchanged')
+  ok(builds(src, 2) > 1, 'a program the plan rewrites is summarized again')
 })
 
 
@@ -921,5 +922,28 @@ test('summary: carrier narrowing reuses semantics; typed ingress invalidates the
     else is(tagOf(kindOf('f', 'a')), K.TYPED, 'new boundary contract reaches the summary')
     const expected = oracle(src).f
     for (const arg of args) is(f(arg), expected(arg), `case ${i}: ${arg}`)
+  }
+})
+
+
+test('specialization: forwarding alone does not earn a kind clone', () => {
+  const options = { optimize: { level: 2, inlineFns: false, sourceInline: false } }
+  for (const [body, result, specialized] of [
+    ['keep(x)', 'out.length', false],
+    ['return Array.isArray(x)', 's', true],
+    ['return x.length', 's', true],
+  ]) {
+    const src = `let out
+      function keep(x) { out = x }
+      function forward(x) { ${body} }
+      export function f(n) {
+        let s = 0
+        ${Array.from({ length: 9 }, (_, i) => `s += forward([n + ${i}]) || 0`).join(';')}
+        s += forward({ length: 2 }) || 0
+        return ${result}
+      }`
+    const f = jz(src, options).exports.f, expected = oracle(src).f
+    if (!onKernel()) is(ctx.funcs.list.some(f => f.name.startsWith('forward$')), specialized, body)
+    for (const n of [0, 3, 3, -1]) is(f(n), expected(n), body)
   }
 })
