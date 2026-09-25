@@ -96,6 +96,8 @@ test('multi profile: block single return', () => {
 test('multi: conditional tuple arms share the existing multiple-result ABI', () => {
   const src = `export const pair = n => n > 0 ? [n, 1] : n < 0 ? [-n, -1] : [0, 0]
     export function mixed(n) { return n ? [false, 7n, 'yes', -0] : [true, -9n, 'no', undefined] }
+    export const mixedExpr = n => n ? [false, 7n, 'yes', -0] : [true, -9n, 'no', undefined]
+    export const literalExpr = () => [false, 7n, 'yes', -0, undefined]
     export const limit = n => n ? [1,2,3,4,5,6,7,8] : [8,7,6,5,4,3,2,1]
     export function indirect(n) { const f = pair; return f.call(null, n) }
     export function retained(n) { const a = pair(n), b = pair(n); a[0] = 99; return [a[0], b[0], a !== b] }
@@ -106,9 +108,11 @@ test('multi: conditional tuple arms share the existing multiple-result ABI', () 
   ok(!/__alloc_hdr|__arr_new/.test(body), 'the tuple producer allocates no array')
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const ex = run(src, { optimize })
-    for (const n of [0, 0, 1, -2, 0]) for (const name of ['pair', 'mixed', 'limit', 'indirect', 'retained', 'consumed'])
+    for (const n of [0, 0, 1, -2, 0]) for (const name of ['pair', 'mixed', 'mixedExpr', 'literalExpr', 'limit', 'indirect', 'retained', 'consumed'])
       is(ex[name](n), host[name](n), `${name}(${n}) O${optimize}`)
     ok(Object.is(ex.mixed(1)[3], -0), 'negative zero survives the element carrier')
+    ok(Object.is(ex.mixedExpr(1)[3], -0), 'conditional expression keeps negative zero')
+    ok(Object.is(ex.literalExpr()[3], -0), 'literal expression keeps negative zero')
   }
 })
 
