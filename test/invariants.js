@@ -37,11 +37,27 @@ test('invariant: WAT token parsing uses source-sized storage', () => {
   const parser = readFileSync(new URL(import.meta.resolve('watr/parse')), 'utf8')
   const util = readFileSync(new URL('../node_modules/watr/src/util.js', import.meta.url), 'utf8')
   const source = `import parse from './parse.js'; export default function tokenize(s) { return parse(s) }
-    export function locations(s) { const a = parse(s); return [a.loc, a[1].loc] }`
+    export function generated(s) { return parse(s, { locations: false }) }
+    export function locations(s, keep) {
+      const a = keep ? parse(s) : parse(s, { locations: false }); return [a.loc, a[1].loc]
+    }`
   const text = 'a😀'.repeat(4000)
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const r = instantiate(compile(source, { optimize, modules: { './parse.js': parser, './util.js': util } }))
-    is(r.exports.locations(' (x (y))'), [1, 4], 'named source offsets survive inside the compiled parser')
+    is(r.exports.locations(' (x (y))', true), [1, 4], 'named source offsets survive inside the compiled parser')
+    is(r.exports.locations(' (x (y))', false), [undefined, undefined], 'generated WAT omits node offsets')
+    const generated = '(module ' + '(func (result i32) (i32.const 3))'.repeat(100) + ')'
+    const allocations = []
+    for (const fn of [r.exports.default, r.exports.generated]) {
+      const input = r.memory.String(generated), before = r.instance.exports.__heap.value >>> 0
+      const output = fn(input)
+      allocations.push((r.instance.exports.__heap.value >>> 0) - before)
+      const tree = r.memory.read(output)
+      is(tree.length, 101)
+      is(tree[100], ['func', ['result', 'i32'], ['i32.const', '3']])
+      r.instance.exports._clear()
+    }
+    ok(allocations[1] < allocations[0] * .7, 'generated trees avoid source-location sidecars')
     for (const token of ['', text, text, `"${text}"`, `$"${text}"`, `(;${text};)`, `;;${text}\n`, 'other', '']) {
       const input = r.memory.String(token), before = r.instance.exports.__heap.value >>> 0
       const output = r.exports.default(input)

@@ -90,7 +90,7 @@
   "license": "MIT",
   "dependencies": {
     "subscript": "git+https://github.com/dy/subscript.git#b0e3a65b74e03108dfc5b7d2c9d04fd41ddf18df",
-    "watr": "git+https://github.com/dy/watr.git#b08bad27e3edf8729adcb0fd98b46c47467f8ce0"
+    "watr": "https://codeload.github.com/dy/watr/tar.gz/0dc48ac7c0197624e37b55105fbf49425fecfead"
   },
   "keywords": [
     "javascript",

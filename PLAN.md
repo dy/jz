@@ -168,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript `b0e3a65` (on 10.8.0, bulk literal decoding) and watr `b08bad2` (on 5.11.3); 5.11.3 carries the two
+- subscript `b0e3a65` (on 10.8.0, bulk literal decoding) and watr `0dc48ac` (on 5.11.3); 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -417,8 +417,14 @@ Dependencies
    suffixes, lookarounds and multiline anchors; 684 targeted assertions pass
    across all five tiers. All 84 regex tests and 10 loop-cost checks pass,
    as do 414 targeted Wasm-hosted assertions and 20 kernel parity cases.
-   Watr's size build falls another 150 bytes to 311026. The recursive
-   compiler measurement and full CI for these final changes are pending.
+   Watr's size build falls another 150 bytes to 311026. Recursive compilation
+   still overflows during helper parsing after startup reaches 4.188 GB.
+   Generated helpers now omit WAT node locations; public parsing keeps them.
+   A 1000-function parser probe allocates 193 KB instead of 409 KB. All-tier
+   parser and helper-reuse checks pass 185 assertions with 28/28 sampled output
+   rows byte-identical. Watr passes 356 core, 31 propagation and 268 spec tests
+   on both JS and Wasm backends. Recursive measurement and full JZ CI remain
+   pending for this last change.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

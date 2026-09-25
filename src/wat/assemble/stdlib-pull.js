@@ -19,7 +19,9 @@ import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
-// are parsed only when absent from the assembled module.
+// are parsed only when absent from the assembled module. Generated templates
+// have no user source locations to retain.
+const parseTemplate = src => parseWat(src, { locations: false })
 
 /**
  * Stdlib funcs actually reachable from the emitted program. Seeds from real
@@ -94,7 +96,7 @@ export function appendLateStdlib(moduleArr, pushTarget = moduleArr) {
     for (const ref of refs) {
       const name = ref.slice(1)
       if (have.has(ref) || !LATE_VEC_HELPERS.has(name) || stdlib[name] == null) continue
-      const node = parseWat(typeof stdlib[name] === 'function' ? stdlib[name]() : stdlib[name])
+      const node = parseTemplate(typeof stdlib[name] === 'function' ? stdlib[name]() : stdlib[name])
       const body = node[0] === 'module' ? node[1] : node
       pushTarget.push(body)
       // Keep the scan array in sync so the fixpoint can resolve a mirror that itself
@@ -478,7 +480,7 @@ export function pullStdlib(sec) {
         : max ? ['memory', pages, max] : ['memory', pages]])
     else sec.memory.push(max ? ['memory', ['export', '"memory"'], pages, max] : ['memory', ['export', '"memory"'], pages])
     if (needsAlloc && ctx.transform.alloc !== false && ctx.core._allocRawFuncs)
-      sec.funcs.push(...ctx.core._allocRawFuncs.map(parseWat))
+      sec.funcs.push(...ctx.core._allocRawFuncs.map(parseTemplate))
   }
 
   const stdlibStr = (name) => {
@@ -488,14 +490,14 @@ export function pullStdlib(sec) {
   ctx.core.extImports ??= new Set()
   for (const name of Object.keys(ctx.core.stdlib)) {
     if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
-      const parsed = parseWat(stdlibStr(name))
+      const parsed = parseTemplate(stdlibStr(name))
       sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
       ctx.core.extImports.add(name)
       ctx.core.includes.delete(name)
     }
   }
   for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) err(`internal: stdlib '${n}' was requested but never registered (this is a jz bug — feature pulled in something it can't deliver)`)
-  sec.stdlib.push(...[...ctx.core.includes].map(n => instrumentHelperCounter(n, parseWat(stdlibStr(n)))))
+  sec.stdlib.push(...[...ctx.core.includes].map(n => instrumentHelperCounter(n, parseTemplate(stdlibStr(n)))))
 }
 
 export function syncImports(sec) {

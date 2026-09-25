@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on subscript revision `b0e3a65` (on 10.8.0, with
-shared span decoding for strings and templates) and watr revision `b08bad2`
+shared span decoding for strings and templates) and watr revision `0dc48ac`
 (on 5.11.3). This pin includes the scheduler fix that keeps result-producing
 calls at the end of folded blocks; effect purity alone does not prove a
 statement has no result. The WAT printer joins fragments once per node so wide
@@ -146,7 +146,9 @@ must retain those possible values instead of proving the read absent.
 
 Runtime helper templates own their freshly parsed IR. Each demanded helper is
 realized once; late helpers are added only when absent, so there is no parsed
-template cache or clone pass. WAT tokens retain source spans until committed,
+template cache or clone pass. Generated helpers use `locations: false` to avoid
+named-property sidecars on every WAT node; public parsing retains source offsets,
+and syntax errors retain offsets in both modes. WAT tokens retain source spans until committed,
 avoiding quadratic copying of names, quoted strings and comments.
 Helper-reference scans collect whole names without unused regex capture records.
 Runtime helper templates may emit string literals. Shared string-pool setup
