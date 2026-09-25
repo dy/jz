@@ -1558,9 +1558,9 @@ for (const cid of selectedCases) {
 // each the best-rival for at least one claims case (test/bench-claims.js
 // CLAIM_RIVALS) — c-wasm's toolchain (zig cc → wasm32-wasi, no libc, static
 // memory layout, no GC) and AS's asc -O3 output are both structurally
-// low-variance builds, and mat4/fft/synth are themselves tight, allocation-
-// free numeric kernels — low noise on both the toolchain and workload side,
-// so a drift here is machine-state drift, not run-to-run jitter.
+// low-variance builds, and mat4/fft/synth are tight, allocation-free numeric
+// kernels. Shared-runner noise can still exceed the tolerance; a failed
+// anchor means the stored timing cannot be certified by this invocation.
 const ANCHORS = [
   { case: 'mat4', target: 'c-wasm' },
   { case: 'fft', target: 'c-wasm' },

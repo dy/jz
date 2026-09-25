@@ -17,9 +17,11 @@ test their main branches together with
 This selects the local libraries without changing the published dependency ranges.
 The parser allocation regressions require source-span parsing in subscript and
 watr's `loc: false` option.
+Before release verification, use `npm ci` to replace local links with the locked
+registry packages so local tests exercise the same dependencies as CI.
 
-`package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr 5.11.8, which
+`package.json` depends on the published subscript 10.8.1 (linear-storage literal
+decoding, surrogate-pair escapes and async-member parse fixes) and watr 5.11.8, which
 carries the two optimizer rules jz's speed rows rely on: the mixed-sign
 truncation-of-convert fold under a non-negative operand (base64's decode
 loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).

@@ -2,7 +2,7 @@
 // bench/bench.mjs's `--merge` and `--verify-anchors` flags. This file tests
 // the TOOLING, not the corpus — every probe is scoped to one cheap case
 // (`--cases=mat4 --targets=jz`, plus the 3 fixed anchor rows --verify-anchors
-// itself re-measures) so the whole file runs in seconds, not minutes. Every
+// itself re-measures). Every
 // probe writes into a scratch copy of bench/results.json — the committed file
 // is read-only here, never touched.
 //
@@ -28,13 +28,39 @@ const freshCopy = () => {
   copyFileSync(REFERENCE, p)
   return p
 }
-const run = args => execFileSync('node', [BENCH, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-const runExpectFail = args => {
-  try { execFileSync('node', [BENCH, ...args], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); return { status: 0, out: '' } }
+// Keep real builds, execution and checksums; control only the three anchor
+// timings. Consecutive real samples can drift beyond 10% on a shared runner.
+// This hook exists only in the test subprocess and never writes public evidence.
+const timingHook = join(scratchDir, 'anchor-timing.mjs')
+writeFileSync(timingHook, String.raw`import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const spawn = cp.spawnSync
+cp.spawnSync = (cmd, args, opts) => {
+  const result = spawn(cmd, args, opts)
+  if (result.status === 0 && args.some(a => /\/(?:mat4\.c|fft\.c|synth\.as)\.wasm$/.test(a)))
+    result.stdout = result.stdout.replace(/median_us=\d+/, 'median_us=' + process.env.JZ_TEST_ANCHOR_US)
+  return result
+}
+syncBuiltinESMExports()
+`)
+const run = (args, medianUs = 1000) => execFileSync(process.execPath, ['--import', timingHook, BENCH, ...args], {
+  cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+  env: { ...process.env, JZ_TEST_ANCHOR_US: String(medianUs) },
+})
+const runExpectFail = (args, medianUs) => {
+  try { return { status: 0, out: run(args, medianUs) } }
   catch (e) { return { status: e.status, out: `${e.stdout || ''}${e.stderr || ''}` } }
 }
 
 const reference = JSON.parse(readFileSync(REFERENCE, 'utf8'))
+const freshAnchoredCopy = () => {
+  const scratch = freshCopy(), seed = JSON.parse(readFileSync(scratch, 'utf8'))
+  seed.meta.anchors = { pass: true,
+    pairs: [{ case: 'mat4', target: 'c-wasm', storedUs: 1000, freshUs: 1000, ratio: 1, pass: true }],
+    ratios: { 'c-wasm×mat4': 1 } }
+  writeFileSync(scratch, JSON.stringify(seed))
+  return scratch
+}
 
 // ── --merge: byte-preservation + provenance ─────────────────────────────────
 test('bench --merge: unmeasured case is byte-preserved', () => {
@@ -124,23 +150,14 @@ test('bench: without --merge, a full --json run is schema-identical to the pre-m
 })
 
 // ── --verify-anchors: pass path ─────────────────────────────────────────────
-// Comparing against the COMMITTED reference (captured at some earlier moment,
-// possibly under different machine load) makes a hard pass/fail assertion on
-// live timing inherently a little flaky at the 1.10× tolerance edge — that
-// edge sensitivity is the point of the mechanism, not a test bug. So: measure
-// the anchor rivals for real ONCE into a scratch baseline, then immediately
-// re-measure via --verify-anchors against that just-written baseline — two
-// live samples moments apart, same machine state, which is what "pass path"
-// actually means to prove (the mechanism agrees with itself), decoupled from
-// however much the committed reference happens to have drifted since it was
-// recorded.
+// Build the baseline through the real CLI using controlled anchor timings.
 const freshAnchorBaseline = () => {
   const scratch = freshCopy()
   run(['--cases=mat4,fft,synth', '--targets=c-wasm,as', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   return scratch
 }
 
-test('bench --verify-anchors: passes and certifies stored evidence on an unperturbed machine', () => {
+test('bench --verify-anchors: equal timings certify stored evidence', () => {
   const scratch = freshAnchorBaseline()
   const out = run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--verify-anchors'])
   ok(/\[anchors\] PASS/.test(out), `expected anchors PASS in output:\n${out.slice(-1500)}`)
@@ -148,7 +165,28 @@ test('bench --verify-anchors: passes and certifies stored evidence on an unpertu
   ok(merged.meta.anchors?.pass === true, `meta.anchors.pass not true: ${JSON.stringify(merged.meta.anchors)}`)
   ok(merged.meta.anchors.pairs.length === 3, `expected the default 3 anchor pairs, got ${merged.meta.anchors.pairs.length}`)
   for (const p of merged.meta.anchors.pairs)
-    ok(p.pass === true && p.ratio <= 1.10, `anchor ${p.target}×${p.case} did not pass: ratio ${p.ratio}`)
+    ok(p.pass === true && p.storedUs === 1000 && p.freshUs === 1000 && p.ratio === 1,
+      `anchor ${p.target}×${p.case} did not use the controlled timing: ${JSON.stringify(p)}`)
+})
+
+test('bench --verify-anchors: accepts the 10% boundary and rejects drift in either direction or zero timing', () => {
+  const baseline = freshAnchorBaseline()
+  for (const [medianUs, pass] of [[1100, true], [1101, false], [910, true], [909, false], [0, false]]) {
+    const scratch = freshCopy()
+    copyFileSync(baseline, scratch)
+    const before = readFileSync(scratch, 'utf8')
+    const { status, out } = runExpectFail([
+      '--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--verify-anchors=1',
+    ], medianUs)
+    ok(pass ? status === 0 : status != null && status !== 0, `${medianUs} µs: ${out.slice(-1500)}`)
+    if (pass) {
+      const pair = JSON.parse(readFileSync(scratch, 'utf8')).meta.anchors.pairs[0]
+      ok(pair.pass && pair.freshUs === medianUs, 'the accepted verdict records this invocation')
+    } else {
+      ok(/refusing to write partial evidence/.test(out), 'failed timing refuses the merge')
+      ok(readFileSync(scratch, 'utf8') === before, 'rejection preserves every byte')
+    }
+  }
 })
 
 test('bench --verify-anchors=1: takes the first N of the seed list', () => {
@@ -246,12 +284,8 @@ test('bench --merge: REJECT path — partial merge with no anchors verdict at al
 })
 
 test('bench --merge: REJECT path — a carried prior PASS anchors verdict does NOT satisfy the guard (audit-#14 item 8: same-invocation only)', () => {
-  // freshCopy() starts from the committed reference, whose meta.anchors.pass
-  // is true (a real --verify-anchors run backs it) — but that verdict was
-  // measured under a DIFFERENT machine state than the one this merge would
-  // record. A bare --merge with no --verify-anchors of its own must refuse.
-  const scratch = freshCopy()
-  ok(reference.meta.anchors?.pass === true, 'setup: the committed reference must carry a passing anchors verdict for this pin to mean anything')
+  // A prior verdict cannot certify the machine state of this invocation.
+  const scratch = freshAnchoredCopy()
   const before = readFileSync(scratch, 'utf8')
   const { status, out } = runExpectFail(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge'])
   ok(status !== 0 && status != null, `expected nonzero exit when only a carried verdict backs a partial merge, got ${status}`)
@@ -260,7 +294,7 @@ test('bench --merge: REJECT path — a carried prior PASS anchors verdict does N
 })
 
 test('bench --merge --allow-unanchored: a carried verdict rides through stamped carried:true (record kept, guard-inert)', () => {
-  const scratch = freshCopy()
+  const scratch = freshAnchoredCopy()
   run(['--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge', '--allow-unanchored'])
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(merged.meta.anchors?.pass === true, 'the carried verdict itself should ride through unchanged')

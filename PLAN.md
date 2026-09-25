@@ -8,23 +8,23 @@ that shaped the tree, the work left before release and the latest gate reading.
 
 ## Release status, September 25
 
-**V1 is not ready to tag.** Published watr 5.11.6 is installed and locked.
-The earlier compiler graph passed recursive self-compilation and the full
-core, opt0, opt3 and WASI matrix. The subsequent shared WAT checkpoint path
-passes the current full core suite and checkpoint tests; the remaining matrix
-and kernel attestation need renewal. Fresh release performance evidence and
-the Jessie/watr memory gaps remain open; no release cap was relaxed.
-Reference evidence can now be measured and strictly checked in CI.
+**V1 is not ready to tag.** Published watr 5.11.8 and subscript 10.8.1 are
+installed from the registry and locked. Local dependency links had hidden the
+CI parser-location and allocation failures. The supported `loc: false` option
+and published literal/printer allocation fixes pass their focused regressions;
+the full suite is running again against registry packages. Fresh release
+performance evidence and the Jessie/watr memory gaps remain open; no release
+cap was relaxed. The strict reference CI run is still measuring.
 
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
-| Dependency | Official npm watr 5.11.6, pinned by lockfile integrity; no local dependency override. | Keep the registry artifact through final verification. |
-| Correctness | Current full core passes 4803 tests / 125292 assertions, with no TODOs. Release-evidence tests pass 5 / 48; checkpoint tests pass 9 / 112. The matrix has advanced to opt0. Prior matrix: opt0 4552 / 96884, opt3 4552 / 97349, WASI 4605 / 110058; self-compile 74 / 2472. | Finish the remaining matrix and renew self-compile verification. The former rest-spread TODO passes execution checks across O0–O3, WASI, and the Wasm-hosted compiler. |
+| Dependency | Official npm watr 5.11.8 and subscript 10.8.1, pinned by lockfile integrity; both installed as registry directories, not sibling links. | Keep the registry artifacts through final verification. |
+| Correctness | CI at 14e357b3 failed one parser-location invariant in each matrix leg and two self-compile allocation tests. Registry-package regressions now pass: WAT tokens 125 assertions across tiers; long literals and wide-node printing 24 assertions. Printer allocation fell from 2850519192 to 128312744 bytes. | Finish the full registry-package suite, push the dependency fixes and require green matrix/self-compile CI. |
 | Recursive bootstrap | The prior graph passed functional, sequence and recursive gates. Its recursive compiler is 18903703 bytes and executes its probe to 19. Final heap: 1174270400 bytes; headroom: 3120696896 bytes. | Renew the attestation after the shared WAT checkpoint change. The compiler reserves 4 GiB for the checkpoint lane; heap headroom does not certify RSS parity. |
 | Conformance | Final-tree runs pass: language 3195 passes, 4045 correct rejections, zero unexpected failures, two documented ordering exceptions; builtins 880 passes, zero unexpected failures, 43 expected failures. | Cleared for the supported subsets; these do not establish full test262 coverage. |
 | Build/package | Browser assets and all 81 examples build; types pass. Package dry run includes both JS bundles and excludes the compiler Wasm. | Repeated after the function-order fix; cleared for this tree. |
 | Size | All 59 speed and size checksums match after the linker-order fix; all binary sizes are unchanged. Current size binaries are smaller than the stored parity-valid AssemblyScript artifacts on all 50 comparable cases (geomean 0.779×), including all eight old recorded losses. | Refresh pinned reference evidence; the private size comparison does not update the public snapshot. |
-| Performance claims | Last stored-evidence run: 7 pass, 16 fail, including uncommitted compiler inputs. The 58 JZ rows, rival coverage and memory evidence still need renewal; the snapshot carries 14738.81 MB swap, above the 4096 MB limit. | Run `bench` with `reference=true` against the committed compiler; close every strict failure in the retained artifact before release. |
+| Performance claims | CI at 14e357b3 has 15 failed claims against stale committed evidence. The snapshot carries 14738.81 MB swap, above the 4096 MB limit. Reference run 36155865964 is measuring that commit; dependency updates will need a fresh run. The ordinary bench timing flake is fixed: 23 merge tests / 187 assertions pass with controlled anchor timings; carried-verdict fixtures also pass independently. | Run `bench` with `reference=true` against the final committed compiler; close every strict failure in the retained artifact before release. |
 | Rival coverage | Entity checksum 1275530752 matches JZ, Node, native C, Go-Wasm, Zig and Porffor. Go/Zig resample match 1711808418. TinyGo 0.42.0 with Go 1.26.0 passes all 45 comparable cases. Native Go/Porffor resample FMA variants are independently verified. | Refresh all 45 rows for each rival on the reference machine. |
 | Web Audio | Fresh JZ and Node runs match checksum 2866527759; the stored mismatch is stale. | Refresh reference evidence. |
 | Memory | Latest paired diagnostic readings: Jessie 106.7 MiB vs V8 98.7 MiB; watr 150.0 MiB vs V8 75.1 MiB. The allocation reductions have not closed those gaps. | The CI reference gate now requires each allocation-heavy case to use no more peak RSS than V8. Fix any measured loss before release. |
@@ -266,7 +266,7 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 and watr ^5.11.6 from npm; watr carries the two
+- subscript ^10.8.1 and watr ^5.11.8 from npm; watr carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install includes those rules and the lazy-select/partial-operand fixes.
