@@ -37,6 +37,7 @@ jobs:
           version: 0.16.0
       - run: rustup target add wasm32-wasip1
       - run: npm install --no-save assemblyscript@~0.27.0 binaryen
+      - run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - name: machine
         run: |
           grep -m1 "model name" /proc/cpuinfo || true
