@@ -325,8 +325,9 @@ test('self-compile: checked gather maps pack lanes and preserve scalar tails acr
 
 test('self-compile: fractional bounds and shared gather addresses survive compiler reuse', () => {
   const s = getSelf(), options = s.memory.String(JSON.stringify({ level: 'speed', sourceInline: false }))
-  for (const length of [16, 16, 0, 8, 16]) {
-    const src = BOUNDED_GATHER_KERNEL.replace('Float64Array(16)', `Float64Array(${length})`)
+  for (const [length, advance] of [[16, 0], [16, 0], [16, 20], [0, 0], [8, 0], [16, 0]]) {
+    let src = BOUNDED_GATHER_KERNEL.replace('Float64Array(16)', `Float64Array(${length})`)
+    if (advance) src = src.replace('let phase = 1.0;', `let phase = 1.0; for(let k=0;k<${advance};k++)phase+=STEP;`)
     const input = s.memory.String(src)
     const w = s.memory.read(s.exports.compileWat(input, 0, options))
     if (length === 16) ok(w.includes('f64x2.replace_lane'), 'proved gathers still vectorize in the kernel')

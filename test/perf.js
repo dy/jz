@@ -947,6 +947,8 @@ test('codegen: fractional index hulls preserve rounding and require every write'
     ['header write', `let p=1,s=0;for(let i=0;i<(n&31);i++,p+=n){${read}p+=STEP;}return[p,s]`],
     ['nested without reset', `let p=1,s=0;for(let r=0;r<(n&7);r++)for(let i=0;i<16;i++){${read}p+=STEP}return[p,s]`],
     ['nested reset', `let s=0;for(let r=0;r<(n&7);r++){let p=1;for(let i=0;i<16;i++){${read}p+=STEP}}return[0,s]`],
+    ['consecutive fractional loops', `let p=1,s=0;for(let i=0;i<20;i++)p+=STEP;for(let i=0;i<(n&31);i++){${read}p+=STEP}return[p,s]`],
+    ['consecutive integer loops', `let p=1,s=0;for(let i=0;i<12;i++)p++;for(let i=0;i<(n&7);i++){${read}p++}return[p,s]`],
     ['shadowed constant', `const STEP=1.5;${loop('1', 'p+=STEP;')}`],
   ]
   for (const [name, body] of cases) {

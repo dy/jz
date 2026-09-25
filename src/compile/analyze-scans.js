@@ -1426,15 +1426,20 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     if (!defs.has(name)) defs.set(name, [])
     defs.get(name).push(rhs)
   }
-  const record = (name, loopBody, range, float = false) => {
+  const record = (name, loopBody, init, range, float = false) => {
     if (!Number.isFinite(range[0]) || !Number.isFinite(range[1])) return
     const prev = proofs.get(name)
     if (prev) {
+      // Two sequential loops can share a declaration but not its entry
+      // value: the first loop already advanced it. Distinct declarations in
+      // peeled regions reset independently; one shared initializer does not.
+      if (prev.starts.has(init) && !prev.loops.has(loopBody)) prev.ambiguous = true
+      prev.starts.add(init)
       prev.range[0] = Math.min(prev.range[0], range[0])
       prev.range[1] = Math.max(prev.range[1], range[1])
       prev.loops.add(loopBody)
       prev.float ||= float
-    } else proofs.set(name, { range, loops: new Set([loopBody]), float })
+    } else proofs.set(name, { range, loops: new Set([loopBody]), starts: new Set([init]), float, ambiguous: false })
   }
   // A reduction inside an outer loop needs an initializer in that iteration.
   // Peeled regions may reuse binding names; join their independently proved
@@ -1472,26 +1477,26 @@ export function stampBodyRanges(body, readPresent, typedLens) {
           const delta = collectStepRange(loopBody, name, rangeOf)
           if (!initRange || delta == null) {
             const range = fractionalLoopRange(loopBody, name, initExpr, trips)
-            if (range) { record(name, loopBody, range, true); continue }
+            if (range) { record(name, loopBody, initExpr, range, true); continue }
           }
           if (!initRange) continue
           if (delta == null) {
             const adv = maxAdvanceBudget(loopBody, name, { constInt: constIntExpr, evRange: intExprRange, closureWrites: EMPTY_SCAN_SET, MUTATE_OPS })
-            if (adv != null && adv > 0) record(name, loopBody, [initRange[0], initRange[1] + trips * adv])
+            if (adv != null && adv > 0) record(name, loopBody, initExpr, [initRange[0], initRange[1] + trips * adv])
             continue
           }
           const { P, N, D } = delta
           const lastStart = D * (trips - 1)
           const lo = D == null ? initRange[0] - trips * N : Math.min(initRange[0], initRange[0] + lastStart) - N
           const hi = D == null ? initRange[1] + trips * P : Math.max(initRange[1], initRange[1] + lastStart) + P
-          record(name, loopBody, [lo, hi])
+          record(name, loopBody, initExpr, [lo, hi])
         }
       }
     }
     if (loops.has(node[0])) regions.push(node[node[0] === 'for' ? 4 : node[0] === 'while' ? 2 : node[0] === 'do' ? 1 : 3])
   }, exit: node => { if (loops.has(node[0])) regions.pop() } })
   for (const [name, proof] of proofs)
-    if (!writesOutsideLoop(body, proof.loops, name)) {
+    if (!proof.ambiguous && !writesOutsideLoop(body, proof.loops, name)) {
       if (proof.float) fractional.set(name, proof.range)
       else updateRep(name, { range: proof.range })
     }

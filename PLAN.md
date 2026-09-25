@@ -142,7 +142,18 @@ shared-address caches, which are invalidated by writes. Speed size falls
 3492 → 2290 bytes; size mode stays 1315 bytes. SDF stays 3215 / 2015 bytes.
 All 62 corpus checksums, 236 SIMD tests / 6862 assertions, 62 performance tests /
 1267 assertions and 78 fresh self-compile tests / 2763 assertions pass.
-The full suite and paired CI evidence remain required for this candidate.
+The [twenty-round CI probe](https://github.com/dy/jz/actions/runs/36193695518)
+on EPYC 9V74 wins every pair against every measured rival. Resample/JSC is
+0.9566 (range 0.9540–0.9577), SDF/JSC 0.8896 (0.8841–0.9124).
+This does not erase the weaker EPYC 7763 repeat above.
+
+Review also found a shared accumulator-proof bug: consecutive loops could
+reuse one declaration as if it reset the accumulator before each loop. Both
+integer and fractional indices then incorrectly dropped bounds checks.
+The proof now requires independent initializers before joining loop hulls.
+Direct regressions cover both forms; all 62 corpus checksums and binary sizes
+are unchanged. The expanded performance sweep passes 62 tests / 1347 assertions.
+The full suite and final CI checks remain required for this correction.
 
 Keep the published snapshot unchanged until the tree passes its gates and
 quiet measurements support a refresh.
