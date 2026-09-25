@@ -152,7 +152,10 @@ smaller initial storage uses the existing alias and named-property forwarding.
 Named-property sidecars start with two slots at every tier and grow on demand;
 the speed tier's array reserve does not apply to those sparse property tables.
 Collection growth uses `collectionStride` for the entry and optional hash lane;
-a boolean selecting the lane is not its byte width. Dictionary slot updates
+a boolean selecting the lane is not its byte width. A shallow Map copy reuses
+the probe layout when its capacity fits the rebuild budget, copying entries and
+the hash lane into independent storage. Own-property sidecars are excluded;
+sparse tables still rebuild. Dictionary slot updates
 receive keys already normalized to strings. The host decoder follows forwarding
 for arrays and collections and reads collection entries in their stored insertion
 order, excluding tombstones.

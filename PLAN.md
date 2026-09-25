@@ -386,6 +386,14 @@ Dependencies
    still exceeds 4 GiB. All 20 kernel parity and nine reuse/error sequence
    cases pass; 28 representative outputs at O1/O2/O3/size remain byte-identical
    after the interval and deduplication changes. The recursive gate is open.
+   Shallow Map copies now retain the existing probe layout when it costs no
+   more than rebuilding. A 32-entry copy allocates 1808 B instead of 3728 B
+   (compact layout 1552 B instead of 3216 B); sparse sources still rebuild.
+   This saves another 23 MB before assembly, which now starts at 4.188 GB.
+   The recursive compile still overflows while parsing runtime templates.
+   The data suite passes 213 tests, all-tier reset checks pass 210 assertions,
+   the affected Wasm-hosted checks pass 276 assertions, kernel parity passes
+   20/20 and the instruction ratchet passes 10/10. Full CI remains required.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

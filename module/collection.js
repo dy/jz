@@ -1069,7 +1069,7 @@ export default (ctx) => {
   // writes 0, leaving no tombstones — matches the rehash loop's own occupancy test).
   ctx.core.stdlib['__map_from'] = `(func $__map_from (param $src i64) (result f64)
     (local $map i64) (local $t i32) (local $off i32) (local $cap i32)
-    (local $i i32) (local $n i32) (local $slot i32) (local $entry i64) (local $newcap i32) (local $ord i32)
+    (local $i i32) (local $n i32) (local $slot i32) (local $entry i64) (local $newcap i32) (local $ord i32) (local $dst i32)
     (local.set $t (call $__ptr_type (local.get $src)))
     (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
       (then
@@ -1081,6 +1081,14 @@ export default (ctx) => {
     (local.set $newcap (i32.shl (i32.const 1)
       (i32.sub (i32.const 32) (i32.clz
         (i32.sub (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const ${initCap})) (i32.const 1))))))
+    ;; A shallow Map copy can retain its probe layout and insertion ranks.
+    ;; Copy only the entries and hash lane; own properties belong to the source.
+    ;; Sparse sources still rebuild below instead of retaining excess capacity.
+    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (i32.le_u (local.get $cap) (local.get $newcap)))
+      (then
+        (local.set $dst (call $__alloc_hdr_n (local.get $n) (local.get $cap) (i32.const ${MAP_ENTRY + lane})))
+        (memory.copy (local.get $dst) (local.get $off) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY + lane})))
+        (return (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0) (local.get $dst)))))
     (local.set $map (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${MAP_ENTRY + lane})))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))

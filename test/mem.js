@@ -755,6 +755,36 @@ test('fused Map updates clear ephemeral keys and values across reset', () => {
   }
 })
 
+test('Map copies retain only live durable entries across reset and arena reuse', () => {
+  const src = `
+    const source = new Map([['seed', [7]]])
+    export function update(n) {
+      for (let i = 0; i < n; i++) source.set('key' + i, [i])
+      for (let i = 1; i < n; i += 2) source.delete('key' + i)
+      return snapshot()
+    }
+    export function snapshot() {
+      const copy = new Map(source)
+      let count = 0, sum = 0
+      for (const [k, v] of copy) { count++; sum += v[0] }
+      return copy.size + ':' + count + ':' + sum
+    }
+    export let churn = n => new Float64Array(n).length
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
+    const { exports: e } = jz(src, { optimize, _compactCollections })
+    for (const n of [0, 1, 7, 64, 64, 0, 7]) {
+      const count = Math.ceil(n / 2)
+      const expected = `${count + 1}:${count + 1}:${7 + count * (count - 1)}`
+      is(e.update(n), expected, `n=${n}: forwarded source with deleted entries`)
+      is(e.snapshot(), expected, 'another copy of the same source')
+      e._clear(); e.churn(1024)
+      is(e.snapshot(), '1:1:7', 'reset removes ephemeral entries before copying')
+      e._clear()
+    }
+  }
+})
+
 test('durable slot log reuses repeated writes and cancelled entries before _clear', () => {
   const source = `
     const cache = new Map([['seed', [7]]])

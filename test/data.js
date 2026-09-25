@@ -7,6 +7,68 @@ import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle } from './util.js'
 
+test('Map copy preserves order, independent mutations, sparse sources and forwarding', () => {
+  const src = `export function f(n, sparse) {
+    const source = new Map(), alias = source
+    for (let i = 0; i < n; i++) source.set(i, i + 1)
+    if (sparse) for (let i = 1; i < n; i++) alias.delete(i)
+    source.extra = 17
+    const copy = new Map(alias), again = new Map(copy)
+    copy.delete(0); copy.set(0, -1)
+    source.set(-1, 99)
+    for (let i = n; i < n + 70; i++) copy.set(i, i + 1)
+    copy.delete(n + 2); copy.set(n + 2, 500)
+    let out = (copy.extra === undefined) + ':' + source.size + ':' + again.size + ':'
+    for (const [k, v] of copy) out += k + '=' + v + ','
+    for (const [k, v] of again) out += k + '=' + v + ','
+    return out + ':' + source.get(0) + ':' + again.has(-1)
+  }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
+    const f = jz(src, { optimize, _compactCollections }).exports.f
+    for (const n of [0, 1, 6, 7, 16, 32, 64, 64, 0, 7]) for (const sparse of [false, true])
+      is(f(n, sparse), js(n, sparse), `O${optimize}, compact=${_compactCollections}, n=${n}, sparse=${sparse}`)
+  }
+})
+
+test('Map copy shares key and value identity without sharing its table', () => {
+  const src = `export function f() {
+    const key = {}, value = { n: 3 }, source = new Map()
+    const keys = [key, NaN, -0, undefined, null, false, '長い key', 7n]
+    for (const k of keys) source.set(k, value)
+    const copy = new Map(source)
+    value.n = 9
+    copy.delete(key); copy.set(key, { n: 12 })
+    source.delete(NaN)
+    let out = source.size + ':' + copy.size + ':' + source.get(key).n + ':'
+    for (const k of keys) out += copy.get(k).n + ','
+    return out
+  }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
+    const f = jz(src, { optimize, _compactCollections }).exports.f
+    for (let i = 0; i < 2; i++) is(f(), oracle(src).f(), `O${optimize}, compact=${_compactCollections}, call=${i}`)
+  }
+})
+
+test('Map copy allocates one table for a dense source', () => {
+  const src = `let source = new Map(), copy
+    export function init() { for (let i = 0; i < 32; i++) source.set(i, i + 1) }
+    export function clone() { copy = new Map(source); return copy.size }
+    export function get(i) { return copy.get(i) }`
+  // The kernel ABI does not expose the private compact-layout build option.
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of onKernel() ? [false] : [false, true]) {
+    const r = jz(src, { optimize, _compactCollections })
+    r.exports.init()
+    for (let i = 0; i < 2; i++) {
+      const before = r.instance.exports.__heap.value >>> 0
+      is(r.exports.clone(), 32)
+      ok((r.instance.exports.__heap.value >>> 0) - before <= 16 + 64 * (_compactCollections ? 24 : 28),
+        `O${optimize}, compact=${_compactCollections}: no ordering buffer or enlarged table`)
+      is(r.exports.get(31), 32)
+    }
+  }
+})
+
 test('Map updates use one probe and preserve growth, aliases and insertion order', () => {
   const src = `export function f(n) {
     const m = new Map(), alias = m
