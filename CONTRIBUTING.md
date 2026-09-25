@@ -82,7 +82,9 @@ Typed-width loop versions accept stable local receivers as well as parameters.
 They validate the complete Float32/Float64 carrier, snapshot fixed storage and
 retain bounds checks, f32 rounding and the original assignment value. Numeric
 store proofs permit direct writes; coercing values and other element types keep
-their existing helpers. A second stable numeric read receiver can cache its
+their existing helpers. The raw typed readers, writers and data-address
+helper decode fixed storage directly; only relocatable collections need the
+generic forwarding decoder. A second stable numeric read receiver can cache its
 base, length and element width, sharing one load dispatcher per output version.
 This covers integer, floating and clamped storage; nullish and BigInt receivers
 retain the original single-receiver loop. Float16 reuses the already-demanded

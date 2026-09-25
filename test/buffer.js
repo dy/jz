@@ -1021,3 +1021,29 @@ test('typed array constructor: ToIndex on primitives, iterable and array-like so
     is(m.internal(), [2, 2, 2, 1], `O${optimize}: an internal call's argument kinds`)
   }
 })
+
+// Typed storage is fixed: these helpers need only the box offset and the
+// optional view descriptor, never the relocation walk used by growing arrays.
+test('typed helpers decode fixed storage directly across widths and views', () => {
+  const src = `function mutate(a, n) { a.reverse(); a.copyWithin(1, 0, n); a.fill(n, 1, 2); a[0] = n }
+    export function run(kind, n) {
+      const a = kind === 0 ? new Float32Array([9, 0.1, -0, 3.5, 300, 9])
+        : kind === 1 ? new Uint8Array([9, 1, 2, 3, 255, 9])
+        : new Float64Array([9, 0.1, -0, 3.5, 300, 9])
+      const view = a.subarray(1, 1 + n)
+      mutate(view, n)
+      return Array.from(a)
+    }`
+  const host = oracle(src)
+  const text = jz.compile(src, { wat: true, optimize: 0 })
+  for (const name of ['__typed_get_idx', '__typed_set_idx']) {
+    const body = funcWat(text, name)
+    ok(body.includes('i32.wrap_i64'), `${name} decodes the stable offset`)
+    ok(!body.includes('$__ptr_offset'), `${name} needs no relocation lookup`)
+  }
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { exports } = jz(src, { optimize })
+    for (const kind of [0, 1, 2]) for (const n of [0, 1, 4, 4, 0])
+      is(exports.run(kind, n), host.run(kind, n), `width ${kind}, view length ${n}, O${optimize}`)
+  }
+})

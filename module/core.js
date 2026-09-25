@@ -74,7 +74,7 @@ export default (ctx) => {
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
-    __typed_data: ['__ptr_offset', '__ptr_aux'],
+    __typed_data: ['__ptr_aux'],
     __typed_idx: () => ['__is_nullish', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_idx_tagged: ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
     __box_bigint: ['__alloc', '__mkptr'],
@@ -968,7 +968,7 @@ export default (ctx) => {
   // Real data address for any TYPED ptr: owned → offset, view → [offset+4].
   ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr i64) (result i32)
     (local $off i32)
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (i32.wrap_i64 (local.get $ptr)))
     (if (result i32) (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8))
       (then (i32.load (i32.add (local.get $off) (i32.const 4))))
       (else (local.get $off))))`

@@ -80,10 +80,10 @@ export default (ctx) => {
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_prop_get: ['__len', '__byte_length', '__byte_offset', '__ptr_aux', '__str_eq', '__mkptr'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
-    __typed_set_idx: () => ['__ptr_aux', '__ptr_offset', '__ptr_type', '__to_int32',
+    __typed_set_idx: () => ['__ptr_aux', '__ptr_type', '__to_int32',
       ...(ctx.linkDemand.f16 ? ['__f64_to_f16'] : []), ...(ctx.linkDemand.clamped ? ['__u8_clamp'] : [])],
     __typed_set_idx_tagged: () => ['__typed_set_idx', '__is_nullish', '__ptr_aux', '__ptr_type', '__ptr_offset', '__len', ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : [])],
-    __typed_get_idx: () => ['__ptr_aux', '__ptr_offset', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
+    __typed_get_idx: () => ['__ptr_aux', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_elem_arg: ['__ptr_aux', '__box_bigint'],
     // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
     // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
@@ -1218,7 +1218,8 @@ export default (ctx) => {
     ? ['i32.load', ['i32.add', typedBase(objIR), ['i32.const', 4]]]
     : typedBase(objIR)
 
-  // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride.
+  // A typed receiver never relocates: decode its offset directly, then use
+  // aux for element width and view indirection in both raw readers and writers.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.
   ctx.core.stdlib['__typed_set_idx'] = () => `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32) (local $vb i64)
@@ -1227,7 +1228,7 @@ export default (ctx) => {
       (then
         (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_WRITE)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.DATAVIEW_INDEX_WRITE)}))))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (i32.wrap_i64 (local.get $ptr)))
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $et (i32.and (local.get $aux) (i32.const 7)))
@@ -1348,7 +1349,7 @@ export default (ctx) => {
   ctx.core.stdlib['__typed_get_idx'] = () => `(func $__typed_get_idx (param $ptr i64) (param $i i32) (result f64)
     (local $off i32) (local $aux i32) (local $et i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (i32.wrap_i64 (local.get $ptr)))
     (if (i32.and (local.get $aux) (i32.const 8))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $et (i32.and (local.get $aux) (i32.const 7)))
