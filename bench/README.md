@@ -213,8 +213,10 @@ The per-case view is one speed-sorted list. Substrate glyphs distinguish
 Wasm, JavaScript, and native rows. Wrong or unclassified results keep their
 measurements but receive no relative bar.
 
-`jz-w2c` lowers JZ Wasm through `wasm2c` and `clang -O3` for the native comparison.
-It uses `--no-tail-call` because wasm2c rejects `return_call` combined with
+JZ compiles and self-compiles through **watr**; WABT is not a package or compiler
+dependency. The native comparison uses WABT's `wasm2c`: `jz-w2c` lowers JZ Wasm
+to C, then runs `clang -O3`. CI installs WABT to check that comparison.
+The `jz-w2c` build uses `--no-tail-call` because wasm2c rejects `return_call` combined with
 multi-value results. `jz-wasmtime` keeps tail calls. A second translator,
 `jz-w2c2`, remains a CI smoke check rather than a published row because w2c2
 supports neither SIMD nor multi-value returns. Both translators check recursive
