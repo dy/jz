@@ -13,15 +13,16 @@ installed from the registry and locked. Local dependency links had hidden the
 CI parser-location and allocation failures. The supported `loc: false` option
 and published literal/printer allocation fixes pass their regressions. The full
 self-compile suite and fresh functional, sequence and recursive attestation
-pass. The full Wasm-hosted suite now passes 3824 tests / 105287 assertions;
-the full core suite is running again after benchmark harness repairs. Fresh release
+pass. The full core suite passes 4805 tests / 125310 assertions, and the full
+Wasm-hosted suite passes 3824 tests / 105287 assertions. Fresh release
 performance evidence and the Jessie/watr memory gaps remain open; no release
-cap was relaxed. The strict reference CI run is still measuring.
+cap was relaxed. The [strict reference CI run](https://github.com/dy/jz/actions/runs/36173446401)
+uses the repaired native adapters at 53257033; its evidence is pending.
 
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
 | Dependency | Official npm watr 5.11.8 and subscript 10.8.1, pinned by lockfile integrity; both installed as registry directories, not sibling links. | Keep the registry artifacts through final verification. |
-| Correctness | Registry self-compile passes 76 tests / 2496 assertions. WAT token storage passes 125 assertions across tiers; printer allocation fell from 2850519192 to 128312744 bytes. CI at bd3147fb passes all four matrix legs, fuzz and both conformance jobs. Forwarding `_compactCollections` through the test adapter clears the remaining Wasm-hosted allocation failure: the full local suite passes 3824 / 105287, kernel allocation 15 / 570 and two formerly skipped layout tests 2 / 45. Harness regressions pass 7 / 66, Porffor recovery 1 / 54 and merge 23 / 186. | Finish the full core rerun and require green self-compile CI after the adapter repair. |
+| Correctness | Full local core passes 4805 tests / 125310 assertions. Registry self-compile passes 76 / 2496. WAT token storage passes 125 assertions across tiers; printer allocation fell from 2850519192 to 128312744 bytes. CI at bd3147fb passes all four matrix legs, fuzz and both conformance jobs. Forwarding `_compactCollections` through the test adapter clears the remaining Wasm-hosted allocation failure: the full local suite passes 3824 / 105287, kernel allocation 15 / 570 and two formerly skipped layout tests 2 / 45. Harness regressions pass 7 / 66, Porffor recovery 1 / 54 and merge 23 / 186. | Require green self-compile and matrix CI on the pushed fixes. |
 | Recursive bootstrap | Fresh registry kernel 19842756 bytes, SHA-256 prefix 6fa46110c977, is attested to graph 17b53f92d19d. Functional, reuse-sequence and recursive gates are green, certified true. Recursive output is 19299633 bytes; final heap 1201128480 bytes. | Correctness attestation renewed. The compiler reserves 4 GiB for the checkpoint lane; heap headroom does not certify RSS parity. |
 | Conformance | Final-tree runs pass: language 3195 passes, 4045 correct rejections, zero unexpected failures, two documented ordering exceptions; builtins 880 passes, zero unexpected failures, 43 expected failures. | Cleared for the supported subsets; these do not establish full test262 coverage. |
 | Build/package | Browser assets and all 81 examples build; types pass. Package dry run includes both JS bundles and excludes the compiler Wasm. | Repeated after the function-order fix; cleared for this tree. |
