@@ -55,6 +55,7 @@ import { tryDivergentEscapeVectorize } from './divergent-escape.js'
 import { hoistReductionInvariantsIn, slpPairsIn } from './dot-slp.js'
 import { vecState } from './lift.js'
 import { tryGeneralMap, tryVectorize } from './map.js'
+import { tryGatherMap } from './gather-map.js'
 import { tryMemCopyFill } from './memcpy.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
 import { matchOuterPixelLoop } from './outer-scaffold.js'
@@ -117,6 +118,12 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // Canonicalize the `if COND (then (br L))` break idiom to `br_if L COND` (watr's brif shape),
   // so the loop-scan recognizers see the branch form they were tuned against.
   canonicalizeIfBr(fn)
+
+  // A distinct parameter retains its allocation identity only while unwritten.
+  const distinctParams = fn.distinctParams ? new Set(fn.distinctParams) : null
+  if (distinctParams) walkAst(fn, { enter: n => {
+    if (n[0] === 'local.set' || n[0] === 'local.tee') distinctParams.delete(n[1])
+  } })
 
   // Build local-name → wasm-type map.
   const fnLocals = new Map()
@@ -280,6 +287,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryGeneralMap(node, fnLocals, freshIdRef, getBlRun(), { aliasVersion })
         ?? tryGeneralStencil(node, fnLocals, freshIdRef, stencil, bl, { aliasVersion })
         ?? tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)
+        ?? tryGatherMap(bl, fnLocals, freshIdRef, distinctParams)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
@@ -338,4 +346,3 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   }
   return simdFired
 }
-

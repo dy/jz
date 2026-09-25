@@ -85,6 +85,11 @@ and finalizer emission. A block must pass the shared return-path proof before
 selecting multiple results; a possible fallthrough needs to carry undefined.
 Source inlining gives mutated parameters private local storage and captures
 their arguments in call order; substitution must never write a caller's binding.
+Gather maps can retain scalar address generation and checked reads while lifting
+a pure Float64 arithmetic suffix into two lanes. Scalar recurrences execute in
+their original order, including each rounded phase addition. This requires
+distinct, unwritten owned parameters; aliases, views, observable suffix locals
+and unprofitable packing retain scalar code. The original loop handles odd tails.
 Small loop helpers enter exported loops only after their callees have expanded,
 so the size budget includes the work being moved out of a tierable function.
 Typed-width loop versions accept stable local receivers as well as parameters.

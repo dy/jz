@@ -883,6 +883,20 @@ test('codegen: load-CSE preserves expression order and scoped index proofs', () 
   }
 })
 
+test('codegen: shared integer gathers do not acquire an artificial undefined initializer', () => {
+  const src = `const a=new Int32Array([1,2,3,0]),b=new Float64Array([5,7,11,13]);
+    export function f(n){let s=0;for(let i=0;i<n;i++)s+=b[a[i]]+a[i]*a[i];return s}`
+  for (const optimize of [2, 'speed']) {
+    const f = jz(src, { optimize }).exports.f
+    for (const n of [0, 1, 4, 5, 4, 0])
+      is(f(n), n > 4 ? NaN : n === 0 ? 0 : n === 1 ? 8 : 50, `O${optimize}: ${n} reads`)
+  }
+  if (onKernel()) return
+  const w = compile(src.replace('i<n', 'i<4'), { optimize: 'speed', wat: true })
+  ok(!w.includes('i64.trunc_sat_f64_s'), 'present integer gather indices keep their i32 representation')
+  ok(!w.includes('nan:0x7FF8000100000000'), 'numeric scratch introduces no null coercions')
+})
+
 test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => {
   // The typed-array i32-read narrowing must NOT apply to Uint32Array, whose element can
   // exceed signed-i32 range: `U[0] + 1` at 2^32-1 is 4294967296, not a wrapped 0. exprType

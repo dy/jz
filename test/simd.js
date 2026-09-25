@@ -20,6 +20,62 @@ const runVec = (code, opts) => jz(code, opts).exports
 const hasV128 = (w) =>
   /v128\.load|v128\.store|i32x4\.|i64x2\.|f32x4\.|f64x2\.|v128\.(and|or|xor)/.test(w)
 
+const GATHER_MAP = `function gather(a, b, n, phase, step) {
+  for (let i = 0; i < n; i++) {
+    const j = phase | 0, t = phase - j, x = a[j], y = a[j + 1]
+    b[i] = ((x * 0.5 + y * 1.5) * t + (x - y) * 2.5) * t
+      + (y - x * 0.5) * t + x * x - y * y
+    phase += step
+  }
+  return phase
+}
+export function probe(count, start, step, pick) {
+  const a = new Float64Array(16), b = new Float64Array(32)
+  for (let i = 0; i < a.length; i++) a[i] = (i - 4) * 0.125
+  const phase = gather(a, b, count & 31, +start, +step)
+  return pick < 0 ? phase : b[pick & 31]
+}`
+const GATHER_OPT = { level: 'speed', sourceInline: false }
+
+test('SIMD gather map: checked reads and floating recurrences retain exact lane order and tails', () => {
+  // Same compilation twice, a different source shape, then the first again.
+  // Counts straddle each pair boundary; picks include untouched output slots.
+  for (const length of [16, 16, 1, 0, 16]) {
+    const src = GATHER_MAP.replace('Float64Array(16)', `Float64Array(${length})`)
+    const native = oracle(src).probe, compiled = runVec(src, { optimize: GATHER_OPT }).probe
+    for (const n of [0, 1, 2, 3, 7, 31])
+      for (const [start, step] of [[0.1, 0.1], [1, 0.7317314443021355], [14, -0.75],
+        [-1, 0.5], [-0, -0], [15, 1], [NaN, 1], [Infinity, 0], [2 ** 32, 0.1]])
+        for (const pick of [-1, 0, Math.max(0, n - 1), n])
+          is(compiled(n, start, step, pick), native(n, start, step, pick),
+            `length ${length}, count ${n}, start ${start}, step ${step}, pick ${pick}`)
+  }
+  if (onKernel()) return
+  const w = compile(GATHER_MAP, { optimize: GATHER_OPT, wat: true })
+  ok(w.includes('f64x2.replace_lane'), 'scalar gathered values are packed into two lanes')
+  ok(w.includes('f64x2.mul'), 'the arithmetic suffix uses SIMD')
+  ok(w.includes('f64.load') && w.includes('i32.lt_u'), 'checked scalar gathers remain')
+})
+
+test('SIMD gather map: aliases, views, live-out arithmetic and cheap suffixes keep the scalar path', () => {
+  const sources = [
+    GATHER_MAP.replace('b = new Float64Array(32)', 'b = a'),
+    GATHER_MAP.replace('b = new Float64Array(32)', 'b = a.subarray(1)'),
+    GATHER_MAP.replace('b = new Float64Array(32)', 'b = new Float64Array(a.buffer)'),
+    GATHER_MAP.replace('for (let i = 0; i < n; i++)', 'let last = 0; for (let i = 0; i < n; i++)')
+      .replace('b[i] = ', 'b[i] = last = ').replace('return phase\n}', 'return last\n}'),
+    GATHER_MAP.replace(/b\[i\] = [\s\S]*?y \* y/, 'b[i] = x * 2'),
+    GATHER_MAP.replace('for (let i = 0; i < n; i++)', 'a = b; for (let i = 0; i < n; i++)'),
+  ]
+  for (const [index, src] of sources.entries()) {
+    const native = oracle(src).probe, compiled = runVec(src, { optimize: GATHER_OPT }).probe
+    for (const n of [0, 1, 2, 3, 7, 15]) for (const pick of [-1, 0, n - 1, n])
+      is(compiled(n, 0.25, 0.5, pick), native(n, 0.25, 0.5, pick), `declined ${index}: count ${n}, pick ${pick}`)
+    if (!onKernel()) ok(!compile(src, { optimize: GATHER_OPT, wat: true }).includes('f64x2.replace_lane'),
+      `declined ${index}: no gathered vector strip`)
+  }
+})
+
 // === Array.from ===
 
 test('Array.from - shallow copy', () => {

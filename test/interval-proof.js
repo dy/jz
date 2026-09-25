@@ -12,6 +12,27 @@ import { typedIdxProven } from '../src/type/loop-versioning.js'
 import { ctx } from '../src/ctx.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 
+test('interval proof: assignment-valued indices retain bounds and execute mutations once', () => {
+  for (const initial of [0, 0, 3, 4, -1]) {
+    const first = ['[]', 'a', ['=', 'x', ['++', 'i']]], next = ['[]', 'a', 'x']
+    const body = [';', ['let', ['=', 'i', initial]], first, next]
+    const proven = new Set(), ranges = new Map()
+    scanIntervalIdx(body, proven, name => name === 'a' ? 4 : null, ranges)
+    is(proven.has(first), initial >= -1 && initial < 3, `assignment result from ${initial}`)
+    is(proven.has(next), initial >= -1 && initial < 3, `subsequent binding from ${initial}`)
+  }
+  const src = `export function f(start) {
+    const a=new Int32Array([7,11,13,17]); let i=start|0,x=0;
+    const first=a[x=++i],next=a[x]; return [first,next,i,x]
+  }`
+  const native = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f
+    for (const start of [-2, -1, 0, 2, 3, 4, 2147483647])
+      is(f(start), native(start), `O${optimize}: assignment index after ${start}`)
+  }
+})
+
 test('interval proof: existing bounds do not trigger a whole-body interval scan', () => {
   if (onKernel()) return
   for (const length of [1, 4, 4, 0, 1]) {

@@ -168,6 +168,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       visit(e)
       return env.get(x) ?? null
     }
+    // An assignment expression yields the value just written. Load-CSE puts
+    // its first cached read here, including inside a dependent gather index.
+    if (op === '=' && e.length === 3 && typeof x === 'string') {
+      visit(e)
+      return env.get(x) ?? null
+    }
     if (e.length === 2 && (op === '-' || op === 'u-')) { const v = ev(x); return ipOk(v) && v ? [-v[1], -v[0]] : null }
     if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
       visit(x)

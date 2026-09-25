@@ -1,5 +1,5 @@
 name: bench-probe
-# Diagnostic, manual-only: repeated jz-vs-V8 medians for selected cases on the
+# Diagnostic, manual-only: repeated paired medians for selected cases on the
 # CI runner. Separates shared-runner noise from systematic x86/µarch gaps when
 # a case's lead differs from the reference M4 numbers (wordcount/immutable/
 # shapes flipped to losses on the 07-14 EPYC snapshot while dispatch/strbuild
@@ -15,6 +15,9 @@ on:
       repeats:
         description: alternating rounds
         default: '5'
+      targets:
+        description: comma-separated targets
+        default: jz,v8,bun,jsc,c-wasm,rust-wasm,as
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -24,6 +27,16 @@ jobs:
         with:
           node-version: 24
       - run: npm install
+      - uses: oven-sh/setup-bun@v2
+      - name: install JavaScriptCore
+        run: |
+          npx --yes jsvu --engines=javascriptcore --os=linux64
+          echo "$HOME/.jsvu/bin" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: rustup target add wasm32-wasip1
+      - run: npm install --no-save assemblyscript@~0.27.0 binaryen
       - name: machine
         run: |
           grep -m1 "model name" /proc/cpuinfo || true
@@ -32,8 +45,9 @@ jobs:
         env:
           CASES: ${{ inputs.cases }}
           REPEATS: ${{ inputs.repeats }}
+          TARGETS: ${{ inputs.targets }}
         run: |
-          node bench/bench.mjs --cases="$CASES" --targets=jz,v8 --paired="$REPEATS" --json="$RUNNER_TEMP/probe.json"
+          node bench/bench.mjs --cases="$CASES" --targets="$TARGETS" --paired="$REPEATS" --json="$RUNNER_TEMP/probe.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

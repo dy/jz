@@ -257,7 +257,10 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
       const cached = allNumeric ? ['u+', read] : read, temp = freshName(cached)
       // Declare storage before the statement, but evaluate the load exactly at
       // its first occurrence, after preceding operands and their effects.
-      inserts.push({ at: e.firstStmt, binding: allNumeric ? ['let', ['=', temp, [null, 0]]] : ['let', temp] })
+      // The first load dominates every use; the initializer is unobservable.
+      // A numeric zero avoids introducing an artificial absent value into
+      // otherwise numeric storage. A checked load still preserves its miss.
+      inserts.push({ at: e.firstStmt, binding: allNumeric || isNumeric(read) ? ['let', ['=', temp, [null, 0]]] : ['let', temp] })
       for (let i = 0; i < e.occ.length; i++) {
         const o = e.occ[i]
         const value = i ? temp : ['=', temp, cached]
