@@ -308,17 +308,18 @@ test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late st
 
 test('self-compile: checked gather maps pack lanes and preserve scalar tails across reuse', () => {
   const s = getSelf(), options = s.memory.String(JSON.stringify({ level: 'speed', sourceInline: false }))
-  for (const length of [16, 16, 0, 16]) {
-    const src = GATHER_MAP_KERNEL.replace('Float64Array(16)', `Float64Array(${length})`)
+  for (const [length, first] of [[16, 0], [16, 0], [0, 0], [16, 1], [16, 0]]) {
+    let src = GATHER_MAP_KERNEL.replace('Float64Array(16)', `Float64Array(${length})`)
+    if (first) src = src.replace('let i = 0; i < n', 'let i = 1; i < n').replace('count & 31', 'Math.min(count | 0, 31)')
     const input = s.memory.String(src)
     const wat = s.memory.read(s.exports.compileWat(input, 0, options))
     if (length) ok(wat.includes('f64x2.replace_lane'), 'the wasm-hosted compiler runs the gather lift')
     const bytes = s.memory.read(s.exports.default(input, 0, options)).slice()
     const actual = instantiate(bytes).exports.probe
     const expected = jz(src, { optimize: 'speed' }).exports.probe
-    for (const n of [0, 1, 2, 3, 7, 31]) for (const pick of [-1, 0, n - 1, n])
+    for (const n of [-2147483648, 0, 1, 2, 3, 7, 31]) for (const pick of [-1, 0, n - 1, n])
       is(actual(n, 0.1, 0.7317314443021355, pick), expected(n, 0.1, 0.7317314443021355, pick),
-        `length ${length}, count ${n}, pick ${pick}`)
+        `length ${length}, entry ${first}, count ${n}, pick ${pick}`)
   }
 })
 

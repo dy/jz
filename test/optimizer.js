@@ -4021,7 +4021,7 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
   // `op` is declared BEFORE the loop, stepped only by a body literal (`op += 4`),
   // guarded by a SHIFTED loop bound (`i + 3 <= N`) — the exact base64 encode/decode
   // shape f95b56bc/efe34b1c/d6460bce/c8700daa all named as "no existing slot in any
-  // current channel". analyze-scans.js's stampCoInductionRanges proves op's whole-
+  // current channel". analyze-scans.js's stampBodyRanges proves op's whole-
   // function range from the loop's own trip count (static.js's forCounterRange,
   // generalized to a shifted guard) and durably stamps it via updateRep — so Pass D's
   // bare-escape check (the `return op` at the end) sees a real hull instead of

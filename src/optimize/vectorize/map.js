@@ -6,7 +6,7 @@ import { normTee } from './idioms.js'
 import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
 import { laneStep, liftCtx, liftFail, liftStmt, peelNarrowConv } from './lift.js'
 import { isArr } from './node-utils.js'
-import { simdLoop } from './scaffold.js'
+import { simdLoop, simdBound } from './scaffold.js'
 
 /**
  * Try to vectorize the inner loop. Returns the replacement node array
@@ -372,7 +372,6 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
 
   const info = LANE_INFO[laneType]
   const lanes = info.lanes
-  const mask = -lanes  // bit pattern ~(lanes-1) in i32 two's complement
 
   // Build SIMD prefix block.
   const boundExpr = boundLocal
@@ -386,9 +385,7 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   // (symmetric fills start past the DC bin) would run its last vector step at
   // k = bound−1 and overrun one lane past the bound. iv holds the entry value
   // here (the setup precedes the SIMD block).
-  const boundSetup = ['local.set', simdBoundName,
-    ['i32.add', ['local.get', incVar],
-      ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', mask]]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes)]
 
   // A flag's lane shadow starts as the scalar's splat (its lift keeps lanes the
   // condition spares); after the loop the scalar takes the constant when any
@@ -571,11 +568,9 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
 
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`
-  const info = LANE_INFO[laneType], lanes = info.lanes, mask = -lanes
+  const info = LANE_INFO[laneType], lanes = info.lanes
   const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
-  const boundSetup = ['local.set', simdBoundName,
-    ['i32.add', ['local.get', incVar],
-      ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', mask]]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes)]
   const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
     ...ivs.map(({ name, step }) => ['local.set', name, ['i32.add', ['local.get', name], laneStep(step, lanes)]]),
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])

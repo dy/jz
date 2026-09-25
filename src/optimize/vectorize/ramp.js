@@ -3,7 +3,7 @@ import { constNum, laneAccess, isI32Const, isLocalGet, matchLaneAddr } from './a
 import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftStmt } from './lift.js'
 import { isArr } from './node-utils.js'
-import { matchBlockLoop, simdLoop } from './scaffold.js'
+import { matchBlockLoop, simdLoop, simdBound } from './scaffold.js'
 
 // ---- Byte-map recognizer (ramp + widening loads) ---------------------------
 //
@@ -328,9 +328,7 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
 
   const simdBlock = simdLoop(id, ivName, simdBoundName, [...lifted, ...scaledIncs])
   // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
-  const boundSetup = ['local.set', simdBoundName,
-    ['i32.add', ['local.get', ivName],
-      ['i32.and', ['i32.sub', boundExpr, ['local.get', ivName]], ['i32.const', -LANES]]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(ivName, boundExpr, LANES)]
   const wrapper = ['block', boundSetup, simdBlock, blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],

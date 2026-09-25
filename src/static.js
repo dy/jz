@@ -331,7 +331,7 @@ export function typedValueExprRange(n) {
 // Lives here (not emit.js) since forCounterRange has exactly ONE dependency —
 // intExprRange/constIntExpr, both already leaf-level in this file — and BOTH
 // an emit-time consumer (emit.js's ctx.func.refinements channel) and an
-// ANALYZE-TIME consumer (analyze-scans.js's stampCoInductionRanges, INDUCTION-
+// ANALYZE-TIME consumer (analyze-scans.js's stampBodyRanges, INDUCTION-
 // VARIABLE FACT project) need the identical proof: the whole point of "the
 // canonical range evaluator... shared" (intExprRange's own doc, above).
 //

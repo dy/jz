@@ -3,6 +3,7 @@ import { constNum, laneAccess, isI32Const, isLocalGet } from './addr-model.js'
 import { LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { liftCtx, liftFail } from './lift.js'
 import { isArr } from './node-utils.js'
+import { simdBound } from './scaffold.js'
 
 // ---- Mixed-lane tone-map (tryToneMap, experimental) ------------------------
 //
@@ -390,8 +391,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // A widening narrow load reads more elements than its lane pair (u8: 4 bytes for 2 lanes), so shrink
   // the SIMD bound by that over-read — the widest load stays in-bounds and the scalar tail finishes the
   // remainder. (A negative bound from a tiny array just leaves the whole loop scalar — safe.)
-  const boundExprAdj = overread > 0 ? ['i32.sub', boundExpr, ['i32.const', overread]] : boundExpr
-  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExprAdj, ['i32.const', -LANES]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, LANES, overread)]
   const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],

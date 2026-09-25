@@ -90,6 +90,9 @@ a pure Float64 arithmetic suffix into two lanes. Scalar recurrences execute in
 their original order, including each rounded phase addition. This requires
 distinct, unwritten owned parameters; aliases, views, observable suffix locals
 and unprofitable packing retain scalar code. The original loop handles odd tails.
+Vector maps, gathers, ramps, reductions and stencils share the span-bound
+calculation. Empty signed ranges remain empty even beside INT_MIN; widening
+loads require their complete read span before subtracting extra lanes.
 Small loop helpers enter exported loops only after their callees have expanded,
 so the size budget includes the work being moved out of a tierable function.
 Typed-width loop versions accept stable local receivers as well as parameters.

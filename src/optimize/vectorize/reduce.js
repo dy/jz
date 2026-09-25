@@ -5,7 +5,7 @@ import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from
 import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
 import { liftCtx, liftExprV, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
-import { simdLoop } from './scaffold.js'
+import { simdLoop, simdBound } from './scaffold.js'
 
 // ---- Reduction recognizer -------------------------------------------------
 //
@@ -403,13 +403,13 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
            ['select', canonC, ['local.get', accName],
              [`${laneType}.ne`, ['local.get', accName], ['local.get', accName]]]]]
   }
-  // Overshoot-safe SIMD bound: stop while a full `lanes`-wide load stays in
+  // Span-aligned SIMD bound: stop while a full `lanes`-wide load stays in
   // range, for ANY induction start (the min/max idiom seeds m=a[0] and starts
   // at i=1, which `& ~(lanes-1)` masking would run one lane past the end). For
   // a lane-aligned start this yields the same iteration set as masking; the
   // scalar tail (original `i<bound` guard) cleans up regardless.
   // A full N·lanes-wide step (all N accumulators) must stay in range.
-  const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes * NACC - 1]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, lanes * NACC)]
 
   // Narrow-widened entries seed the vector acc with a LANE-domain neutral (e.g.
   // 0 for u8-max) — only neutral once real lanes fold in. Guard the whole SIMD
@@ -525,9 +525,7 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
       ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]],
       ['br', simdLoop]]]
   // span-aligned (same entry≠0 hazard as tryVectorize's bound — see there)
-  const boundSetup = ['local.set', simdBoundName,
-    ['i32.add', ['local.get', incVar],
-      ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', -2]]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, boundExpr, 2)]
   const wrapper = ['block', boundSetup, simdBlock, bl.blockNode]
   return { wrapper, newLocalDecls: [['local', simdBoundName, 'i32'], ...newLocalDecls] }
 }

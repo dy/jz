@@ -6,7 +6,7 @@ import { normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, STORE_OPS, floatLane } from './lane-tables.js'
 import { liftCtx, liftFail, liftStmt } from './lift.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
-import { simdLoop } from './scaffold.js'
+import { simdLoop, simdBound } from './scaffold.js'
 
 // A stencil's bound is re-evaluated for the SIMD guard, so it must be a PURE loop-invariant
 // i32 expression (const / unwritten local / global / +,-,* thereof).
@@ -300,13 +300,13 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   const info = LANE_INFO[laneType], lanes = info.lanes
   const boundExpr = cloneNode(bound)   // cloned: also lives in the scalar-tail exit guard
   // Overshoot-safe bound: a full lanes-wide chunk [x,x+lanes) must stay < bound for
-  // ANY start x (stencils start at 1). `bound-(lanes-1)` — NOT `& ~(lanes-1)`, which
+  // ANY start x (stencils start at 1). Align the span; masking the bound alone
   // overshoots for a non-multiple start. SIMD reads ⊆ scalar reads ⇒ no new OOB.
   // A toroidal-wrap stencil additionally PEELS both boundary columns scalar: cap the SIMD at
-  // `min(bound, …rightWrapBoundaries) - (lanes-1)` so no chunk reaches a right-wrap column x=B,
+  // `min(bound, …rightWrapBoundaries)` so no chunk reaches a right-wrap column x=B,
   // and run x=0 scalar below (where the left wrap fires) so the SIMD starts in the wrap-free interior.
   const simdCap = peel.rightBs.reduce((acc, b) => ['select', cloneNode(b), acc, ['i32.lt_s', cloneNode(b), acc]], boundExpr)
-  const boundSetup = ['local.set', simdBoundName, ['i32.sub', simdCap, ['i32.const', lanes - 1]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, simdCap, lanes)]
   const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])
   // Left-boundary peel for a wrap stencil: run the original scalar body once for x=0 (where the wrap
@@ -459,7 +459,7 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
   const info = LANE_INFO[laneType], lanes = info.lanes
   const boundExpr = cloneNode(bound)
   const simdCap = peel.rightBs.reduce((acc, b) => ['select', cloneNode(b), acc, ['i32.lt_s', cloneNode(b), acc]], boundExpr)
-  const boundSetup = ['local.set', simdBoundName, ['i32.sub', simdCap, ['i32.const', lanes - 1]]]
+  const boundSetup = ['local.set', simdBoundName, simdBound(incVar, simdCap, lanes)]
   const simdBlock = simdLoop(id, incVar, simdBoundName, [...lifted,
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]]])
   const peelStmts = peel.needed

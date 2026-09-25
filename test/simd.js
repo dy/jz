@@ -9,6 +9,7 @@ import { run, wat, oracle, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
+import { simdBound } from '../src/optimize/vectorize/scaffold.js'
 import { GATHER_MAP_KERNEL as GATHER_MAP } from './_optimizer-kernels.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -22,6 +23,37 @@ const hasV128 = (w) =>
   /v128\.load|v128\.store|i32x4\.|i64x2\.|f32x4\.|f64x2\.|v128\.(and|or|xor)/.test(w)
 
 const GATHER_OPT = { level: 'speed', sourceInline: false }
+
+test('SIMD strip bounds: signed limits preserve empty ranges and complete lane groups', () => {
+  for (const lanes of [2, 4, 8, 16]) for (const overread of [0, 2]) {
+    const points = [-2147483648, -2147483647, -2147483633, -1, 0, 1, 3, 31, 2147483646, 2147483647]
+    for (const literal of [null, ...points]) {
+      const mod = encodeWat(['module', ['func', '$bound', ['export', '"bound"'],
+        ['param', '$i', 'i32'], ['param', '$n', 'i32'], ['result', 'i32'],
+        simdBound('$i', literal === null ? ['local.get', '$n'] : ['i32.const', literal], lanes, overread)]])
+      const bound = new WebAssembly.Instance(new WebAssembly.Module(mod)).exports.bound
+      for (const start of points) for (const end of literal === null ? points : [literal]) {
+        const groups = Math.max(0, Math.floor((end - start - overread) / lanes))
+        const limit = bound(start, end)
+        if (groups) is(limit, start + groups * lanes, `${lanes}+${overread}: ${start}..${end}`)
+        else ok(limit <= start, `${lanes}+${overread}: empty strip ${start}..${end}`)
+      }
+    }
+  }
+})
+
+test('SIMD gather map: nonzero entries and INT_MIN limits retain zero work', () => {
+  for (const first of [0, 1, 3]) {
+    const src = GATHER_MAP.replace('let i = 0; i < n', `let i = ${first}; i < n`)
+      .replace('count & 31', 'Math.min(count | 0, 31)')
+    const native = oracle(src).probe, compiled = runVec(src, { optimize: GATHER_OPT }).probe
+    for (const n of [-2147483648, -2147483647, -1, 0, 1, 2, 3, 4, 7, 31])
+      for (const pick of [-1, 0, 1, 2, 3, 30, 31])
+        is(compiled(n, 0.1, 0.1, pick), native(n, 0.1, 0.1, pick), `entry ${first}, count ${n}, pick ${pick}`)
+    if (!onKernel()) ok(compile(src, { optimize: GATHER_OPT, wat: true }).includes('f64x2.replace_lane'),
+      'the boundary check exercises vectorized gathers')
+  }
+})
 
 test('SIMD gather map: checked reads and floating recurrences retain exact lane order and tails', () => {
   // Same compilation twice, a different source shape, then the first again.

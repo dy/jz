@@ -1,6 +1,6 @@
 
 import { DBG_INVARIANTS } from '../../debug.js'
-import { walkAst } from '../../ast.js'
+import { cloneNode, walkAst } from '../../ast.js'
 import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchInc1, matchIncN } from './addr-model.js'
 import { isArr } from './node-utils.js'
 
@@ -56,6 +56,22 @@ export const simdLoop = (id, iv, bound, body) => ['block', `$__simd_brk${id}`,
     ['br_if', `$__simd_brk${id}`, ['i32.eqz', ['i32.lt_s', ['local.get', iv], ['local.get', bound]]]],
     ...body,
     ['br', `$__simd_loop${id}`]]]
+
+// Align the span from its actual entry, preserving empty signed ranges.
+// Rounding a bound near INT_MIN downward can wrap above the entry. An
+// over-reading load also requires its complete span before subtracting it.
+export function simdBound(iv, bound, lanes, overread = 0) {
+  const start = () => ['local.get', iv]
+  const span = () => ['i32.sub', cloneNode(bound), start()]
+  const end = ['i32.add', start(), ['i32.and',
+    overread ? ['i32.sub', span(), ['i32.const', overread]] : span(), ['i32.const', -lanes]]]
+  if (isI32Const(bound) && constNum(bound) >= -0x80000000 + lanes + overread - 1) return end
+  const entered = ['i32.lt_s', start(), cloneNode(bound)]
+  return ['select', end, start(), overread
+    ? ['i32.and', entered, ['i32.ge_u', span(), ['i32.const', lanes + overread]]]
+    : entered]
+}
+
 export function normalizeTransparentBlocks(node) {
   if (!isArr(node)) return
   for (let i = 1; i < node.length; i++) normalizeTransparentBlocks(node[i])

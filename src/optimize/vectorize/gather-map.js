@@ -7,7 +7,7 @@ import { collectWrites, isI32Const, isLocalGet, laneAccess, matchLaneAddr } from
 import { isProfitable } from './cost-model.js'
 import { LANE_PURE, LOAD_OPS } from './lane-tables.js'
 import { liftCtx, liftStmt } from './lift.js'
-import { simdLoop } from './scaffold.js'
+import { simdLoop, simdBound } from './scaffold.js'
 
 export function tryGatherMap(bl, fnLocals, freshIdRef, distinct) {
   if (!bl || !distinct?.size || bl.hasGlobalSet) return null
@@ -88,8 +88,7 @@ export function tryGatherMap(bl, fnLocals, freshIdRef, distinct) {
   packed.push(...lifted)
   if (!isProfitable(body, packed, 2)) return null
   const id = freshIdRef.next++, limit = `$__simd_bound${id}`
-  const boundSetup = ['local.set', limit, ['i32.add', ['local.get', incVar],
-    ['i32.and', ['i32.sub', cloneNode(bound), ['local.get', incVar]], ['i32.const', -2]]]]
+  const boundSetup = ['local.set', limit, simdBound(incVar, bound, 2)]
   const strip = simdLoop(id, incVar, limit, [...packed,
     ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', 2]]]])
   return {
