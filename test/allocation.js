@@ -40,6 +40,25 @@ test('allocation: private string builders grow linearly', () => {
   }
 })
 
+test('allocation: copied concat results do not retain builder storage', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { run } = jz(`export function run(n) {
+      const h = __heap_mark(); let s = '';
+      for (let i = 0; i < n; i++) s += 'abcdefgh';
+      const copy = s + '!';
+      for (let i = 0; i < 8; i++) s += 'z';
+      return [__heap_mark() - h, s.length, copy.length, copy.charCodeAt(copy.length - 1)]
+    }`, { optimize }).exports
+    for (const n of [0, 100, 100, 1000]) {
+      const [bytes, len, copied, end] = run(n)
+      // Size mode merges the mutable/fresh helpers when both are needed.
+      // Every tier preserves text; O0–O3 also keep linear builder allocation.
+      if (optimize !== 'size') ok(bytes < n * 64 + 1024, `O${optimize}: copies and appends use linear storage`)
+      is([len, copied, end], [n * 8 + 8, n * 8 + 1, 33], `O${optimize}: the copied result stays unchanged`)
+    }
+  }
+})
+
 test('allocation: closed destructuring records are reused', () => {
   zero(measure(`const a = [3, 5]
     export function read(a) { const [x, y] = a; return x + y }

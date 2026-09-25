@@ -427,6 +427,22 @@ test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-acc
 // point starts from zero, and a failed call leaves the marks of the phases that
 // finished. test/kernel-marks.js drives the recorder on its own for the
 // allocation, overflow and rewind claims.
+test('self-compile: long literal decoding uses linear storage and preserves text', () => {
+  const s = getSelf(), long = 'λ🙂'.repeat(4000)
+  const cases = [['""', ''], [JSON.stringify(long), long],
+    [JSON.stringify(long), long], ['`' + long + '`', long],
+    ['"' + '\\u0061'.repeat(2000) + '"', 'a'.repeat(2000)], ['"other"', 'other']]
+  for (const [literal, expected] of cases) {
+    const source = `export function main(){return ${literal}}`
+    const before = s.instance.exports.__heap.value >>> 0
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    is(instantiate(bytes).exports.main(), expected, 'the decoded literal preserves every UTF-16 code unit')
+    ok(readMarks(s).heapFront - before < 2 * 1024 * 1024 + source.length * 16,
+      'literal decoding adds source-sized storage, not every growing prefix')
+  }
+})
+
 test('self-compile: heap marks name their phases, reset per call, and stay readable after a failed compile', () => {
   const s = getSelf()
   const src = 'let inc = x => x + 1; export let main = () => inc(10)'

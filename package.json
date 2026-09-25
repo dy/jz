@@ -89,7 +89,7 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.8.0",
+    "subscript": "git+https://github.com/dy/subscript.git#b0e3a65b74e03108dfc5b7d2c9d04fd41ddf18df",
     "watr": "git+https://github.com/dy/watr.git#efdd444517ed8b60ae673c43a4ea19add0cceaec"
   },
   "keywords": [

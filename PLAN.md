@@ -168,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 from npm and watr `efdd444` (on 5.11.3); 5.11.3 carries the two
+- subscript `b0e3a65` (on 10.8.0, bulk literal decoding) and watr `efdd444` (on 5.11.3); 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -363,6 +363,25 @@ Dependencies
    linear-allocation pins pass. A second raw-ABI growth trial after this fix
    leaves both libraries at 64 MB linear memory with no consistent speed gain,
    so it is also rejected.
+
+   Safe string concatenation exposed quadratic decoding in Subscript's
+   character-at-a-time lexer. Its shared span scanner now copies ordinary
+   text in bulk and joins decoded escapes once. A 12000-unit literal in the
+   self-hosted compiler takes 0.91 MB of front-half allocation instead of
+   145 MB, with identical text. Subscript's full suite passes (377 tests,
+   7 skips); long quoted/template/escaped literals also pass through the
+   rebuilt kernel, including A → A → B reuse. This restores recursive
+   front-half memory to 602 MB, but the complete recursive compile still
+   reaches 4 GiB during emission. Its repeated summaries remain the next
+   allocation target; the scratch-set reuse trial did not materially reduce
+   them and was removed.
+
+   Five paired CI rounds at `fa69c39` confirm watr's peak reduction to
+   121060 KiB (V8 77184); Jessie measures 111488 KiB (V8 100456).
+   Both memory gaps remain. JZ/V8 runtime medians are watr 1.011×,
+   Jessie 0.717×, webaudio 1.396×, sort 1.047×, CRC32 1.007×,
+   SDF 0.961× and noise 0.624×. Every checksum matches; these diagnostic
+   rows do not replace the required full reference dataset.
 
    Watr's code buffer now starts at 4 KB, using its existing geometric growth
    instead of reserving 64 KB for every assembly. The unchanged workload drops

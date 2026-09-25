@@ -11,8 +11,8 @@ node bench/bench.mjs  # run benchmarks
 
 ### Shared watr optimizer
 
-`package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr revision `efdd444`
+`package.json` depends on subscript revision `b0e3a65` (on 10.8.0, with
+shared span decoding for strings and templates) and watr revision `efdd444`
 (on 5.11.3). This pin includes the scheduler fix that keeps result-producing
 calls at the end of folded blocks; effect purity alone does not prove a
 statement has no result. The WAT printer joins fragments once per node so wide
@@ -24,6 +24,11 @@ truncation-of-convert fold under a non-negative operand (base64's decode
 loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).
 It also lifts a first operand's block prefix without crossing an earlier
 evaluation, closing the watr size backstop. A clean install includes these rules.
+Literal decoding copies uninterrupted source spans and joins decoded escapes
+once. Per-character concatenation is quadratic with immutable flat strings;
+the self-host gate checks long quoted, template and escaped literals against
+both exact text and an allocation bound. Return Subscript to a published
+version once it contains this fix.
 
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,

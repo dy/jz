@@ -230,8 +230,8 @@ export const BINDING_USE_STORE = 1 // BARE RHS only: discarded assignment's dest
 export const BINDING_USE_MISS = 9
 // A discarded append consumes its own binding; the result is not published.
 export const BINDING_USE_SELF = 10
-const SELF_WRITE = [USE.REASSIGN], SELF_READ = [USE.CONCAT]
-SELF_WRITE[BINDING_USE_SELF] = SELF_READ[BINDING_USE_SELF] = true
+const SELF_WRITE = [USE.REASSIGN]
+SELF_WRITE[BINDING_USE_SELF] = true
 const SIMPLE_USE = Array.from({ length: 15 }, (_, kind) => [kind])
 // The interned records below are read-only and hold primitives alone, so
 // equal ones are shared as well: a member read or write is one record per
@@ -438,7 +438,7 @@ export function scanBindingUses(body, trackNames) {
           (rhs[0] === '+' && rhs[1] === name || rhs[0] === 'str' && rhs[1] === ''))) {
         use(name, USE.REASSIGN, SELF_WRITE)
         if (op === '=') {
-          if (rhs[0] === '+') { use(name, USE.CONCAT, SELF_READ); val(rhs[2]) }
+          if (rhs[0] === '+') { use(name, USE.CONCAT); val(rhs[2]) }
         } else val(rhs)
         return
       }
@@ -586,7 +586,10 @@ export function privateStringBuilder(body, name) {
   let returns = 0
   for (const u of binding[BINDING_USE_USES]) {
     const k = u[BINDING_USE_KIND]
-    if ((k === USE.REASSIGN || k === USE.CONCAT) && u[BINDING_USE_SELF]) continue
+    if (k === USE.REASSIGN && u[BINDING_USE_SELF]) continue
+    // An ordinary concat copies its operands; retaining its result retains
+    // no reference to this builder. Observed writes still fail above.
+    if (k === USE.CONCAT) continue
     if (k === USE.MEMBER_R && u[BINDING_USE_KEY] === 'length' && !u[BINDING_USE_COMPUTED]) continue
     if (k === USE.COMPARE || k === USE.BOOL_TEST || k === USE.WORD) continue
     if (k === USE.RETURN && ++returns === 1 && tail?.[0] === 'return' && tail[1] === name) continue
