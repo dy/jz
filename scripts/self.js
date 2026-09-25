@@ -41,16 +41,10 @@ function optimizeTail(module, cfg, facts = tailFacts(cfg)) {
 // string, or per-pass object via resolveOptimize), falsy → optimize off.
 // Every public compile entry also accepts sourceType as its final ABI argument.
 //
-// clearDollar/clearStdlibParseCache: unlike resetProgramFactsCache (a WeakMap +
-// generation counter — stale entries just go unreachable), DOLLAR and
-// stdlibParseCache are plain Maps whose keys AND values are built fresh each
-// compile. Natively that's inert extra retention across repeated compile() calls
-// (real GC heap). In-kernel the arena is a bump allocator that `_clear` rewinds
-// between compiles (warm-instance reuse, see bench-self-compile.mjs JZ_BENCH_WARM) —
-// a post-`_clear` allocation can overwrite a dangling entry's bytes, so any entry
-// surviving a `_clear` is a correctness bug (wrong bytes read back), not just
-// waste. Must run every compile (not just after the first `_clear`) since it's
-// cheap and callers may `_clear` in any pattern.
+// beginSession resets the fact store and DOLLAR's backing Map each compile.
+// In-kernel these objects live in the bump arena: an entry retained across
+// _clear could otherwise point into reused storage.
+
 function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   resetMarks()
   const build = buildJSON ? JSON.parse(buildJSON) : null

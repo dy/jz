@@ -345,24 +345,8 @@ export function resolveIncludes(realize = true) {
 /**
  * Fact-store storage — see src/session.js's DEPS table for the full
  * per-slice contract (what each slice caches, what invalidates it).
- * Storage lives HERE rather than in session.js to avoid a module cycle:
- * program-facts.js / analyze.js / analyze-scans.js each read their slice, and
- * analyze.js is itself imported by wat/assemble.js, which session.js imports
- * (clearStdlibParseCache) — routing the accessor through session.js would
- * close analyze.js -> session.js -> wat/assemble.js -> analyze.js (jz's own
- * self-compile module resolver rejects import cycles outright, so this isn't
- * just a style question — it breaks `npm run build`). ctx.js is the one leaf
- * every one of those already depends on with nothing importing back, so
- * ownership of WHERE the store lives sits here.
- *
- * CompileSession field, not a second singleton (Slice B, .work/archive/compile-
- * session-design.md §1.1/§3): used to be its OWN module-scope `_factStore`
- * binding, sibling to `ctx` in lifecycle (reset()'s own resetFactStore()
- * call) but not a field of it — the one piece of compile-lifetime state that
- * lived outside `ctx`. Now built by `reset()` below as `ctx.facts`, same as
- * every other subtree; `getFactStore()` is an ALIAS (`() => ctx.facts`), same
- * return value, same identity per-session, zero call-site rewrite at any of
- * the 51 `getFactStore()` call sites.
+ * Analysis readers share this ctx-owned store without depending on session
+ * setup. reset() replaces it alongside the other per-compilation state.
  */
 function createFactStore() {
   return {

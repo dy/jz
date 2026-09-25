@@ -4,7 +4,7 @@
  * reset, error-source binding, warnings sink, and options normalization
  * (resolveOptimize → optFlags). Host (index.js setupCtx) and self-compile kernel
  * (scripts/self.js setupSelf) both call THIS for the shared core, so the two
- * setups cannot drift again (they had: the kernel cleared DOLLAR/stdlib caches
+ * setups cannot drift again (they had: the kernel cleared DOLLAR
  * natively left to GC, native reset name-uids the kernel initially missed —
  * both directions of drift are documented in each file's history).
  *
@@ -18,7 +18,6 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
 import { ctx, reset, initWarnings, optFlagsOf, warn } from './ctx.js'
 import { clearDollar } from './ir.js'
-import { clearStdlibParseCache } from './wat/assemble.js'
 import { resolveOptimize } from './optimize/index.js'
 import { resetNameUids } from 'watr/optimize'
 
@@ -261,16 +260,13 @@ export function targetProfileFor(host) {
  */
 export function beginSession({ emitter, globals, hooks, source, optimize, warnings, strict, host, alloc }) {
   reset(emitter, globals, hooks)
-  // Explicit-lifecycle caches — EVERY one, on BOTH pipelines. DOLLAR and the
-  // stdlib parse cache are plain Maps rebuilt each compile: in-kernel a stale
-  // entry can alias post-_clear arena bytes (correctness), natively it is
-  // retention; clearing uniformly costs nothing and removes the asymmetry.
+  // DOLLAR's backing table is arena-owned in the kernel; replace it before
+  // another compile can read entries invalidated by _clear.
   // Fact-store slices (programFacts/bodyFacts/bindingUses — see the factStore
   // doc above): a fresh store IS the reset — `ctx.facts`, built as part of
   // `reset()`'s own construction (Slice B, .work/archive/compile-session-design.md
   // §3) — no separate resetFactStore() call needed here any more.
   clearDollar()
-  clearStdlibParseCache()
   // watr's generated-name counters (inline/outline/…): per-compile, else warm
   // recompiles emit history-dependent WAT text (__inl5 → __inl15).
   resetNameUids()

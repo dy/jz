@@ -168,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript `b0e3a65` (on 10.8.0, bulk literal decoding) and watr `efdd444` (on 5.11.3); 5.11.3 carries the two
+- subscript `b0e3a65` (on 10.8.0, bulk literal decoding) and watr `6ca0d5d` (on 5.11.3); 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -394,6 +394,16 @@ Dependencies
    The data suite passes 213 tests, all-tier reset checks pass 210 assertions,
    the affected Wasm-hosted checks pass 276 assertions, kernel parity passes
    20/20 and the instruction ratchet passes 10/10. Full CI remains required.
+   Runtime templates now own their parsed IR directly: the old cache was
+   cleared every compile yet still cloned each helper. Removing it preserves
+   all 28 output comparisons and 20 kernel parity rows. Watr's token parser
+   now slices completed source spans instead of concatenating each character.
+   A 12000-unit token allocates 24 KB instead of 144 MB; its compiled parser
+   shrinks by 2538 bytes. Quoted, ordinary and comment tokens share this path.
+   All-tier allocation checks pass 90 assertions, 20000 differential boundary
+   cases match (including errors and locations), and Watr's full suite passes:
+   355 core, 31 propagation, 268 spec, 22 skips. Recursive and CI measurements
+   of this dependency revision are still pending.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

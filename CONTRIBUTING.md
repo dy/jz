@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on subscript revision `b0e3a65` (on 10.8.0, with
-shared span decoding for strings and templates) and watr revision `efdd444`
+shared span decoding for strings and templates) and watr revision `6ca0d5d`
 (on 5.11.3). This pin includes the scheduler fix that keeps result-producing
 calls at the end of folded blocks; effect purity alone does not prove a
 statement has no result. The WAT printer joins fragments once per node so wide
@@ -141,6 +141,10 @@ An unresolved index can still read an array element or named property. The
 solver may defer its transfer while the index has no evidence; a public query
 must retain those possible values instead of proving the read absent.
 
+Runtime helper templates own their freshly parsed IR. Each demanded helper is
+realized once; late helpers are added only when absent, so there is no parsed
+template cache or clone pass. WAT tokens retain source spans until committed,
+avoiding quadratic copying of names, quoted strings and comments.
 Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy
 length can omit constants that the linked helpers read.

@@ -1,7 +1,5 @@
 /**
- * Stdlib template realization — the parse-cache (parse once per distinct
- * resolved WAT string, hand out clones), reachability over the actually-
- * compiled output, the late f64x2-vectorizer stdlib top-up, and the main
+ * Stdlib template realization, reachability over the compiled output, the late f64x2-vectorizer stdlib top-up, and the main
  * pull-stdlib-and-decide-memory/allocator phase that rides on all three.
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
@@ -19,29 +17,8 @@ import { dataAlign, dataPush, dataLen, strPoolLen } from '../../static-data.js'
 import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 
-// Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
-// `parseWat` of the same string always yields the same tree. Parsing is the
-// dominant cost when a program pulls heavy stdlib (Math pow/sqrt, JSON, regex):
-// it re-tokenizes ~KB of text every compile. Parse once per distinct resolved
-// string, then hand out a deep clone (downstream passes mutate nodes in place).
-// Module-level on purpose: the cache persists across compile() calls.
-let stdlibParseCache = new Map()  // resolved WAT string → pristine parsed tree
-const cloneTemplate = (node) => {
-  if (!Array.isArray(node)) return node
-  const copy = node.map(cloneTemplate)
-  if (node.loc != null) copy.loc = node.loc
-  return copy
-}
-const parseTemplate = (str) => {
-  let tmpl = stdlibParseCache.get(str)
-  if (tmpl === undefined) stdlibParseCache.set(str, tmpl = parseWat(str))
-  return cloneTemplate(tmpl)
-}
-// Self-compile-only: see clearDollar (src/ir.js) — same dangling-arena-pointer hazard,
-// and the same fix: swap in a fresh Map, don't just `.clear()` the old one (its
-// backing table is itself an arena allocation `_clear` invalidates). Must run every
-// compile in a warm-instance loop (see scripts/self.js setupSelf).
-export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
+// Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
+// are parsed only when absent from the assembled module.
 
 /**
  * Stdlib funcs actually reachable from the emitted program. Seeds from real
@@ -116,7 +93,7 @@ export function appendLateStdlib(moduleArr, pushTarget = moduleArr) {
     for (const ref of refs) {
       const name = ref.slice(1)
       if (have.has(ref) || !LATE_VEC_HELPERS.has(name) || stdlib[name] == null) continue
-      const node = parseTemplate(typeof stdlib[name] === 'function' ? stdlib[name]() : stdlib[name])
+      const node = parseWat(typeof stdlib[name] === 'function' ? stdlib[name]() : stdlib[name])
       const body = node[0] === 'module' ? node[1] : node
       pushTarget.push(body)
       // Keep the scan array in sync so the fixpoint can resolve a mirror that itself
@@ -307,10 +284,10 @@ export function pullStdlib(sec) {
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))
         }
         for (const fn of sec.funcs) walkAst(fn, { enter: scanSet })
-        // stdlib bodies are still WAT text here (parseTemplate runs later) — scan textually.
+        // stdlib bodies are still WAT text here (parseWat runs later) — scan textually.
         // Helpers write registry globals too: collection's __seq, json's __jbuf/__jstack….
         // Thunked templates expand ONCE by contract (expansion-time ctx reads) — memoize
-        // the expansion back into the registry so the later parseTemplate pass reuses this
+        // the expansion back into the registry so the later parseWat pass reuses this
         // exact string instead of expanding a second time.
         for (const name of ctx.core.includes) {
           let src = ctx.core.stdlib[name]
@@ -500,7 +477,7 @@ export function pullStdlib(sec) {
         : max ? ['memory', pages, max] : ['memory', pages]])
     else sec.memory.push(max ? ['memory', ['export', '"memory"'], pages, max] : ['memory', ['export', '"memory"'], pages])
     if (needsAlloc && ctx.transform.alloc !== false && ctx.core._allocRawFuncs)
-      sec.funcs.push(...ctx.core._allocRawFuncs.map(parseTemplate))
+      sec.funcs.push(...ctx.core._allocRawFuncs.map(parseWat))
   }
 
   const stdlibStr = (name) => {
@@ -510,14 +487,14 @@ export function pullStdlib(sec) {
   ctx.core.extImports ??= new Set()
   for (const name of Object.keys(ctx.core.stdlib)) {
     if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
-      const parsed = parseTemplate(stdlibStr(name))
+      const parsed = parseWat(stdlibStr(name))
       sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
       ctx.core.extImports.add(name)
       ctx.core.includes.delete(name)
     }
   }
   for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) err(`internal: stdlib '${n}' was requested but never registered (this is a jz bug — feature pulled in something it can't deliver)`)
-  sec.stdlib.push(...[...ctx.core.includes].map(n => instrumentHelperCounter(n, parseTemplate(stdlibStr(n)))))
+  sec.stdlib.push(...[...ctx.core.includes].map(n => instrumentHelperCounter(n, parseWat(stdlibStr(n)))))
 }
 
 export function syncImports(sec) {

@@ -59,8 +59,8 @@ import { declareLocal, freshEmitId } from '../compile/active-function.js'
  *  load-order laziness ONLY. Deliberately NOT memoized: a module-level memo of a
  *  runtime-BUILT string dangles across the self-compile kernel's `_clear()` arena
  *  rewind (warm compile #2 interpolated the stale pointer's garbage bytes into
- *  `(i64.const …)` → watr "Bad int") — the same dangling-cache class as DOLLAR /
- *  stdlibParseCache (see scripts/self.js setupSelf). Recomputing is a few ops at
+ *  `(i64.const …)` → watr "Bad int") — the same dangling-cache class as DOLLAR
+ *  (see scripts/self.js setupSelf). Recomputing is a few ops at
  *  emit time; correctness over a micro-memo. */
 const ssoBitI64 = () => ssoBitI64Hex()
 

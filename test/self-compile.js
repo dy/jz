@@ -290,9 +290,8 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
 // Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,
 // and pin byte-parity against a fresh instance compiling the same programs. Exercises
 // the caches that used to dangle across a warm `_clear` (all now reset/copy-on-tag
-// per compile): DOLLAR + stdlibParseCache (src/ir.js, src/wat/assemble.js — swap in a
-// fresh Map, not `.clear()`, since the old backing table is itself an arena
-// allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
+// per compile): DOLLAR (src/ir.js, with a new Map because the old backing
+// table is itself an arena allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
 // program-facts}.js — same fresh-instance-not-clear fix), the runtime __dyn_props /
 // __dyn_get_cache_off / __dyn_get_cache_props globals (module/core.js __clear, reset
 // alongside __heap), NULL_IR's missing `.slice()` before `typed()` (src/ir.js —

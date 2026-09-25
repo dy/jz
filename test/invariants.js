@@ -14,6 +14,7 @@ import { spawnSync } from 'node:child_process'
 import { join, relative } from 'path'
 import jz, { compile } from '../index.js'
 import { compile as compileWat } from 'watr'
+import { instantiate } from '../interop.js'
 import { ctx, reset } from '../src/ctx.js'
 import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
@@ -27,10 +28,49 @@ import { buildProgramIndex } from '../src/compile/program-index.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
 import { rewriteChildren } from '../src/ast.js'
+
 import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
 import { hoistVars } from '../jzify/hoist-vars.js'
 import { foldStaticConstAggregates } from '../src/compile/plan/literals.js'
 
+test('invariant: WAT token parsing uses source-sized storage', () => {
+  const source = readFileSync(new URL(import.meta.resolve('watr/parse')), 'utf8')
+  const util = readFileSync(new URL('../node_modules/watr/src/util.js', import.meta.url), 'utf8')
+  const text = 'a😀'.repeat(4000)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const r = instantiate(compile(source, { optimize, modules: { './util.js': util } }))
+    for (const token of ['', text, text, `"${text}"`, `$"${text}"`, `(;${text};)`, `;;${text}\n`, 'other', '']) {
+      const input = r.memory.String(token), before = r.instance.exports.__heap.value >>> 0
+      const output = r.exports.default(input)
+      const allocated = (r.instance.exports.__heap.value >>> 0) - before
+      is(JSON.stringify(r.memory.read(output)), JSON.stringify(token || []), 'tokens retain exact UTF-16 source text')
+      ok(allocated < 4096 + token.length * 8, 'a token allocates no growing prefixes')
+      r.instance.exports._clear()
+    }
+  }
+})
+
+test('invariant: runtime helper IR belongs to each compilation', () => {
+  const a = `export let getValue = () => JSON.stringify(JSON.parse('{"a":[1,2,3],"b":"x"}'))`
+  const b = `export let getValue = () => JSON.stringify({ different: [null, false, 9] })`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const coldA = compile(a, { optimize }), coldB = compile(b, { optimize })
+    for (const [src, cold, expected] of [
+      [a, coldA, '{"a":[1,2,3],"b":"x"}'],
+      [a, coldA, '{"a":[1,2,3],"b":"x"}'],
+      [b, coldB, '{"different":[null,false,9]}'],
+      [a, coldA, '{"a":[1,2,3],"b":"x"}'],
+    ]) {
+      const bytes = compile(src, { optimize })
+      ok(Buffer.from(bytes).equals(Buffer.from(cold)), `O${optimize}: repeated compilation retains exact bytes`)
+      is(instantiate(bytes).exports.getValue(), expected, 'the retained helper bodies execute')
+    }
+    ok(WebAssembly.validate(compile('', { optimize })), 'an empty compile needs no helper cache')
+    throws(() => compile('export let getValue = (', { optimize }))
+    ok(Buffer.from(compile(a, { optimize })).equals(Buffer.from(coldA)), 'an error leaves no template state')
+    is(instantiate(coldB).exports.getValue(), '{"different":[null,false,9]}', 'earlier output remains valid')
+  }
+})
 // === Helper: compile with WAT output for structural inspection ===
 
 test('invariant: shared power generator reconstructs every decimal entry exactly', () => {
