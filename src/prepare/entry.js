@@ -94,7 +94,7 @@ export default function prepare(node) {
   // omitting the direct call crashes the SELF-COMPILED kernel ("memory access out
   // of bounds" on the very first compile) even though native + full battery +
   // JZ_DEBUG_INVARIANTS pass byte-identically without it. module/regex.js's and
-  // optimize/vectorize.js's equivalent hooks, registered the same way, do NOT
+  // optimize/vectorize/'s equivalent hooks, registered the same way, do NOT
   // have this requirement — the dependency is specific to this working set, via
   // some closure reachable only indirectly through RESET_HOOKS; the exact
   // mechanism is not otherwise documented. resetPrepState() is idempotent and

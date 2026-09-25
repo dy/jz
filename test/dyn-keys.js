@@ -11,6 +11,19 @@ import { oracle, funcWat } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 
+test('runtime keys read collection size after growth, deletion and clearing', () => {
+  for (const ctor of ['Map', 'Set']) for (const optimize of [0, 2, 'speed']) {
+    const put = ctor === 'Map' ? 'm.set(i,i)' : 'm.add(i)'
+    const src = `export function f(k,n){const m=new ${ctor}();const empty=m[k];for(let i=0;i<n;i++)${put};
+      const grown=m[k];m.delete(0);const removed=m[k];const present=k in m;m.clear();return empty+':'+grown+':'+removed+':'+m[k]+':'+present}`
+    const f = jz(src, { optimize }).exports.f
+    is(f('size', 0), '0:0:0:0:true', `${ctor} empty`)
+    is(f('size', 40), '0:40:39:0:true', `${ctor} forwarded storage`)
+    is(f('missing', 1), 'undefined:undefined:undefined:undefined:false', 'missing key')
+    is(f('size', 1), '0:1:0:0:true', 'repeated instance')
+  }
+})
+
 test('property dispatch preserves key effects, misses and array relocation', () => {
   const src = `export function f(mode,kind){
     const a=[3,5],d={};d['0']=7;const o=mode?d:a;o.label='owned';let calls=0;

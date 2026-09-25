@@ -6,7 +6,7 @@
 
 import { OPTF, ctx } from '../../ctx.js'
 import {
-  applyBigintRepresentationAction, asF64, bigintEraseErr, bigintStrict, block64, boolBoxIR, flat, isLit, isNullish, litVal, resolveValType, temp, tempI32, toBoolFromEmitted, truthyIR, typed, undefExpr,
+  applyBigintRepresentationAction, asF64, bigintEraseErr, bigintStrict, block64, boolBoxIR, flat, isLit, isNullish, litVal, resolveValType, temp, tempI32, truthyIR, typed, undefExpr,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType } from '../../reps.js'
@@ -173,7 +173,7 @@ function combineFusedAnd(gateNode, fusedIR) {
   const numA = isNumArm(vg, gateNode)
   const teed = typed(['local.tee', `$${t}`, canonArm(asF64(vg), numA, true)], 'f64')
   if (numA) teed.valKind = VAL.NUMBER
-  return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
+  return typed(['if', ['result', 'f64'], truthyIR(teed),
     ['then', canonArm(asF64(fusedIR), true, numA)],
     ['else', ['local.get', `$${t}`]]], 'f64')
 }
@@ -193,7 +193,7 @@ function combineFusedOr(gateNode, fusedIR) {
   const numA = isNumArm(vg, gateNode)
   const teed = typed(['local.tee', `$${t}`, asF64(vg)], 'f64')
   if (numA) teed.valKind = VAL.NUMBER
-  return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
+  return typed(['if', ['result', 'f64'], truthyIR(teed),
     ['then', ['local.get', `$${t}`]],
     ['else', canonArm(asF64(fusedIR), true, numA)]], 'f64')
 }
@@ -233,7 +233,7 @@ export const logicalOps = {
       if (action === REP_EDGE_REJECT) return emit(arm)
       return taggedArm(arm, applyBigintRepresentationAction(emit(arm), arm, action))
     }
-    const cond = toBoolFromEmitted(ca)
+    const cond = truthyIR(ca)
     // Flow-sensitive refinement: each arm sees narrowing consistent with `a` being truthy / falsy.
     const thenRefs = extractRefinements(a, new Map(), true)
     const elseRefs = extractRefinements(a, new Map(), false)
@@ -390,7 +390,7 @@ export const logicalOps = {
       const faBoxed = taggedArm(a, applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0))
       const fb0 = taggedArm(b, applyBigintRepresentationAction(vb0, b, repB0))
       return typed(['f64.reinterpret_i64',
-        ['if', ['result', 'i64'], toBoolFromEmitted(teed0),
+        ['if', ['result', 'i64'], truthyIR(teed0),
           ['then', ['i64.reinterpret_f64', fb0]],
           ['else', ['i64.reinterpret_f64', faBoxed]]]], 'f64')
     }
@@ -444,7 +444,7 @@ export const logicalOps = {
         const fb0 = emitRight()
         const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
         return typed(['if', ['result', 'f64'],
-          toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64')),
+          truthyIR(typed(['local.tee', `$${t}`, fa], 'f64')),
           ['then', fb],
           ['else', ['local.get', `$${t}`]]], 'f64')
       }
@@ -494,7 +494,7 @@ export const logicalOps = {
     // A numeric left arm tests truthiness NaN-by-value (not __is_truthy, which mis-reads
     // x86's sign-set NaN as truthy) — tag it so truthyIR takes that path.
     if (numA) teed.valKind = VAL.NUMBER
-    return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
+    return typed(['if', ['result', 'f64'], truthyIR(teed),
       ['then', canonArm(asF64(vb), numB, numA)],
       ['else', ['local.get', `$${t}`]]], 'f64')
   },
@@ -516,7 +516,7 @@ export const logicalOps = {
       const faBoxed = taggedArm(a, applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0))
       const fb0 = taggedArm(b, applyBigintRepresentationAction(vb0, b, repB0))
       return typed(['f64.reinterpret_i64',
-        ['if', ['result', 'i64'], toBoolFromEmitted(teed0),
+        ['if', ['result', 'i64'], truthyIR(teed0),
           ['then', ['i64.reinterpret_f64', faBoxed]],
           ['else', ['i64.reinterpret_f64', fb0]]]], 'f64')
     }
@@ -547,7 +547,7 @@ export const logicalOps = {
         const fb0 = emitRight()
         const fb = vtB === VAL.BOOL ? boolBoxIR(fb0) : asF64(fb0)
         return typed(['if', ['result', 'f64'],
-          toBoolFromEmitted(typed(['local.tee', `$${t}`, fa], 'f64')),
+          truthyIR(typed(['local.tee', `$${t}`, fa], 'f64')),
           ['then', ['local.get', `$${t}`]],
           ['else', fb]], 'f64')
       }
@@ -595,7 +595,7 @@ export const logicalOps = {
     // as a numeric NaN.
     const teed = typed(['local.tee', `$${t}`, asF64(fa)], 'f64')
     if (numA) teed.valKind = VAL.NUMBER   // numeric left arm: NaN-safe truthiness (see `&&`)
-    return typed(['if', ['result', 'f64'], toBoolFromEmitted(teed),
+    return typed(['if', ['result', 'f64'], truthyIR(teed),
       ['then', ['local.get', `$${t}`]],
       ['else', canonArm(asF64(vb), numB, numA)]], 'f64')
   },

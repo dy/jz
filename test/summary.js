@@ -731,6 +731,22 @@ test('summary: tuples expose nested objects and callables to host effects', () =
   is(tagOf(ctx.summary.resultOf('read')), K.ANY, 'a retained nested array can be changed between calls')
 })
 
+test('summary: cyclic host graphs retain nested arrays and callables', () => {
+  const src = `function identity(v) { return v }
+    const state = { items: [1], call: identity, next: null }
+    state.next = state
+    export function get() { return state }
+    export function read() { return state.next.items[0] }
+    export function seed() { return identity(2) }`
+  for (const code of ['', src, src, 'export function scalar() { return 1 }', src]) {
+    summarize(code)
+    if (code !== src) continue
+    ok(ctx.summary.hostSchema(sidOf(['items', 'call', 'next'])), 'the cyclic record is host-visible')
+    ok(ctx.summary.escaped.has('identity'), 'its callable accepts host arguments')
+    is(tagOf(ctx.summary.resultOf('read')), K.ANY, 'its retained array admits host element writes')
+  }
+})
+
 test('summary: a decided condition prunes its dead arm; a nullish receiver read throws', () => {
   // `x === undefined` on a binding that is never nullish walks only the live
   // arm, so a defaulted destructuring keeps the argument's shape. A read
@@ -895,8 +911,55 @@ test('summary: rebuilt only when the program changed', () => {
   // a summary built at the current revision is reused. JZ_DEBUG_INVARIANTS checks each reuse
   // against the summary's inputs.
   if (onKernel()) return   // the kernel keeps no profile
-  const builds = (src) => { const profile = {}; compile(src, { profile }); return profile.entries.filter(e => e.name === 'summary').length }
+  const builds = (src, optimize = 2) => { const profile = {}; compile(src, { profile, optimize }); return profile.entries.filter(e => e.name === 'summary').length }
   is(builds('export let f = (x) => x * 2'), 1, 'a program the plan leaves alone is summarized once')
-  ok(builds('const g = (a) => a + 1; export let f = (x) => { let s = 0; for (let i = 0; i < x; i++) s += g(i); return s }') > 1,
-    'a program the plan rewrites is summarized again')
+  const src = 'const g = (a) => a + 1; export let f = (x) => { let s = 0; for (let i = 0; i < x; i++) s += g(i); return s }'
+  is(builds(src, 0), 1, 'without source inlining, the semantic program is unchanged')
+  ok(builds(src, 2) > 1, 'a program the plan rewrites is summarized again')
+})
+
+
+test('summary: carrier narrowing reuses semantics; typed ingress invalidates them', () => {
+  if (onKernel()) return   // the kernel keeps no phase profile
+  const cases = [
+    ['export function f(x) { return (x + 1) | 0 }', 1, 'f', 'i32', [0, 2147483647, -1]],
+    ['function make(n) { return new Float64Array(n) } export function f(n) { return make(n).length }',
+      1, 'make', 'ptr', [0, 3, 0]],
+    ['export function f(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }',
+      2, 'f', null, [[], [1.5, -2, 8], []]],
+  ]
+  // Reuse a compile session in A → A → B order, then come back to A. A carrier
+  // changes no kind; a typed export contract changes the incoming JS values.
+  for (const i of [0, 0, 1, 2, 0]) {
+    const [src, count, callee, carrier, args] = cases[i], profile = {}
+    const f = jz(src, { optimize: { level: 2, inlineFns: false }, profile }).exports.f
+    is(profile.entries.filter(e => e.name === 'summary').length, count, `case ${i}: semantic builds`)
+    if (carrier) is(ctx.summary.resultContract(callee).carrier, carrier, 'reused contract sees the narrowed ABI')
+    else is(tagOf(kindOf('f', 'a')), K.TYPED, 'new boundary contract reaches the summary')
+    const expected = oracle(src).f
+    for (const arg of args) is(f(arg), expected(arg), `case ${i}: ${arg}`)
+  }
+})
+
+
+test('specialization: forwarding alone does not earn a kind clone', () => {
+  const options = { optimize: { level: 2, inlineFns: false, sourceInline: false } }
+  for (const [body, result, specialized] of [
+    ['keep(x)', 'out.length', false],
+    ['return Array.isArray(x)', 's', true],
+    ['return x.length', 's', true],
+  ]) {
+    const src = `let out
+      function keep(x) { out = x }
+      function forward(x) { ${body} }
+      export function f(n) {
+        let s = 0
+        ${Array.from({ length: 9 }, (_, i) => `s += forward([n + ${i}]) || 0`).join(';')}
+        s += forward({ length: 2 }) || 0
+        return ${result}
+      }`
+    const f = jz(src, options).exports.f, expected = oracle(src).f
+    if (!onKernel()) is(ctx.funcs.list.some(f => f.name.startsWith('forward$')), specialized, body)
+    for (const n of [0, 3, 3, -1]) is(f(n), expected(n), body)
+  }
 })

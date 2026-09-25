@@ -262,6 +262,20 @@ test('warnings: shape-lost names the first cause an object shape is lost by', ()
   ok(/\{a\}/.test(ws[0].message) && /joined with an unknown value/.test(ws[0].why) && ws[0].fn === 'f', `${ws[0].message} in ${ws[0].fn}`)
 })
 
+test('warnings: shape-loss diagnostics leave emitted code unchanged across compilations', () => {
+  const joined = 'export let f = (x) => { const o = { a: 1 }; const p = x || o; return p.a }'
+  const hosted = 'const o = { items: [1], call: x => x, next: null }; o.next = o; export const f = () => o'
+  for (const code of ['', joined, joined, 'export let f = () => 3', hosted, hosted, joined]) {
+    const quiet = compile(code)
+    const warnings = { entries: [] }
+    is(compile(code, { warnings }), quiet, 'enabling advisories preserves the complete module')
+    const losses = warnings.entries.filter(e => e.code === 'shape-lost')
+    is(losses.length, code === joined || code === hosted ? 1 : 0, 'each compile owns its diagnostic state')
+    if (code === joined) is(losses[0].why, 'joined with an unknown value')
+    if (code === hosted) is(losses[0].why, 'handed to the host', 'cyclic references keep the root cause')
+  }
+})
+
 test('warnings: the summary keeps shapes through the forms it models', () => {
   const lost = (src) => warningsFor(src).filter(e => e.code === 'shape-lost').map(e => e.message)
   // a static method's argument through the lifted function; Object.defineProperty as the store it lowers to

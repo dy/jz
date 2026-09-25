@@ -4,7 +4,7 @@
  * reset, error-source binding, warnings sink, and options normalization
  * (resolveOptimize → optFlags). Host (index.js setupCtx) and self-compile kernel
  * (scripts/self.js setupSelf) both call THIS for the shared core, so the two
- * setups cannot drift again (they had: the kernel cleared DOLLAR/stdlib caches
+ * setups cannot drift again (they had: the kernel cleared DOLLAR
  * natively left to GC, native reset name-uids the kernel initially missed —
  * both directions of drift are documented in each file's history).
  *
@@ -16,9 +16,8 @@
  * @module src/session
  */
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
-import { ctx, reset, initWarnings, optFlagsOf } from './ctx.js'
+import { ctx, reset, initWarnings, optFlagsOf, warn } from './ctx.js'
 import { clearDollar } from './ir.js'
-import { clearStdlibParseCache } from './wat/assemble.js'
 import { resolveOptimize } from './optimize/index.js'
 import { resetNameUids } from 'watr/optimize'
 
@@ -147,7 +146,7 @@ export function targetProfileFor(host) {
  *                                read, not a separate invalidation path.
  *   revision                     the program revision: advanced by every
  *                                rewriting seam (setFuncBody, invalidateRewrittenBody,
- *                                invalidateBodies, invalidateAllBodyFacts,
+ *                                invalidateBodies,
  *                                invalidateProgramFactsCache). The summary is rebuilt
  *                                only when it moved (compile/index.js summarizeProgram);
  *                                JZ_DEBUG_INVARIANTS checks each reuse against its inputs.
@@ -161,9 +160,10 @@ export function targetProfileFor(host) {
  *                                this body fresh" into one call;
  *                                setFuncBody(func, node) fuses "rewrite this
  *                                body's AST" with dropping its cache entry;
- *                                invalidateBodies(bodies) /
- *                                invalidateAllBodyFacts() name the
- *                                phase-boundary bulk flush. The raw
+ *                                clearBodyFacts(bodies?) evicts derived facts
+ *                                without advancing the semantic revision;
+ *                                invalidateBodies(bodies) also invalidates
+ *                                the summary for changed semantic inputs. The raw
  *                                invalidateLocalsCache(body) primitive still
  *                                exists (the four seam functions are built on
  *                                it) but has NO direct pass-author call site:
@@ -237,7 +237,7 @@ export function targetProfileFor(host) {
  * @property {object} error      source location carried through emit for err() messages
  * @property {object} transform  compile-time options + derived cfg + injected services
  * @property {object} abi        shared carrier registry (src/abi/index.js)
- * @property {object} bridge     emit/flat/wat dispatch bound at reset()
+ * @property {object} bridge     emit/bool/idx/spread hooks bound at reset()
  * @property {object} features   frozen FeaturePlan (SESSION+PROGRAM+ANALYSIS strata)
  * @property {object} linkDemand DEMAND stratum (emission-produced reachability facts)
  * @property {object} plans      pre-emission frozen-fact WeakMaps: functions, closures, loweringLinks
@@ -260,16 +260,13 @@ export function targetProfileFor(host) {
  */
 export function beginSession({ emitter, globals, hooks, source, optimize, warnings, strict, host, alloc }) {
   reset(emitter, globals, hooks)
-  // Explicit-lifecycle caches — EVERY one, on BOTH pipelines. DOLLAR and the
-  // stdlib parse cache are plain Maps rebuilt each compile: in-kernel a stale
-  // entry can alias post-_clear arena bytes (correctness), natively it is
-  // retention; clearing uniformly costs nothing and removes the asymmetry.
+  // DOLLAR's backing table is arena-owned in the kernel; replace it before
+  // another compile can read entries invalidated by _clear.
   // Fact-store slices (programFacts/bodyFacts/bindingUses — see the factStore
   // doc above): a fresh store IS the reset — `ctx.facts`, built as part of
   // `reset()`'s own construction (Slice B, .work/archive/compile-session-design.md
   // §3) — no separate resetFactStore() call needed here any more.
   clearDollar()
-  clearStdlibParseCache()
   // watr's generated-name counters (inline/outline/…): per-compile, else warm
   // recompiles emit history-dependent WAT text (__inl5 → __inl15).
   resetNameUids()
@@ -283,4 +280,13 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   ctx.transform.optFlags = optFlagsOf(ctx.transform.optimize)
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-reset')
   return ctx.transform.optimize
+}
+
+
+/** Shared diagnostic policy for the native and Wasm compiler entry points. */
+export function configureDiagnostics({ whyNotSimd, whyNotRewind }) {
+  if (whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
+  if (typeof whyNotRewind === 'function') ctx.transform.whyNotRewind = whyNotRewind
+  else if (whyNotRewind) ctx.transform.whyNotRewind = (name, reason) =>
+    warn('rewind-why-not', `${name}: ${reason}`, { fn: name.slice(1), reason })
 }

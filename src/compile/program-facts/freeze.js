@@ -71,7 +71,7 @@
  *  state where it's present. Any OTHER top-level key appearing on
  *  `programFacts` is an undocumented producer that bypassed this file's own
  *  contract. */
-export const FACT_KEYS = new Set([
+const FACT_KEYS = new Set([
   'dynVars', 'dynWriteVars', 'anyDyn', 'propMap', 'addressTakenNames', 'callSites',
   'computedCallSites', 'memberCallSites', 'memberDispatchSites', 'memberValueReads',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',

@@ -3,11 +3,11 @@
  * @module jzify/arguments
  */
 
-import { collectParamNames, paramList } from '../src/ast.js'
+import { collectParamNames, extractParams } from '../src/ast.js'
 import { hasArrayPattern } from '../src/iterator-pattern.js'
 import { isDestructurePat } from './hoist-vars.js'
 
-export function usesArguments(node) {
+function usesArguments(node) {
   if (node === 'arguments') return true
   if (!Array.isArray(node)) return false
   // Nested function OR generator bodies own their own `arguments` — a
@@ -39,7 +39,7 @@ function paramsBindArguments(params) {
     if (p[0] === ':') return bound(p[2])
     return false
   }
-  return paramList(params).some(bound)
+  return extractParams(params).some(bound)
 }
 
 function bindsArguments(body) {
@@ -134,7 +134,7 @@ function prependParamDecls(decl, body) {
 // Keep array-pattern arguments positional. Patterns and defaults initialize in
 // order inside the body (or in a generator's factory), without a rest array.
 function lowerPatterns(params, temp) {
-  const raw = paramList(params)
+  const raw = extractParams(params)
   if (!raw.some(hasArrayPattern)) return [params, []]
   const prefix = [], bound = collectParamNames(raw), args = []
   for (const p of raw) {
@@ -158,7 +158,7 @@ export function createArgumentsLowering(names) {
     // LAST slot; earlier slots are still ABI positions but are unreachable by
     // name. Rename only those earlier duplicates to fresh ignored bindings so
     // WAT never receives duplicate `$param` declarations at O0.
-    const simple = paramList(params)
+    const simple = extractParams(params)
     if (simple.length > 1 && simple.every(p => typeof p === 'string')) {
       const seen = new Set(), next = simple.slice()
       let changed = false
@@ -184,12 +184,12 @@ export function createArgumentsLowering(names) {
     if (bindsArguments(body)) body = stripArgumentsVarDecl(body)
     const lowered = lowerPatterns(params, names.genTemp), init = lowered[1]
     params = lowered[0]
-    const paramsNeedLowering = paramList(params).some(isDestructurePat)
+    const paramsNeedLowering = extractParams(params).some(isDestructurePat)
     const usesArgsObj = usesArguments(params) || usesArguments(body) || init.some(usesArguments)
     if (!paramsNeedLowering && !usesArgsObj) return finish(params, body, init)
     const name = names.arg()
     const decls = []
-    for (const [idx, param] of paramList(params).entries()) {
+    for (const [idx, param] of extractParams(params).entries()) {
       if (Array.isArray(param) && param[0] === '...') {
         decls.push(['=', param[1], ['()', ['.', name, 'slice'], [null, idx]]])
         continue

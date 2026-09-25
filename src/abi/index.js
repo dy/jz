@@ -4,10 +4,10 @@
  * @module src/abi
  */
 
-import nanboxF64 from './number.js'
-import sso, { jsstring } from './string.js'
-import tagged, { packedI32 } from './object.js'
-import taggedLinear, { structInline } from './array.js'
+import { nanboxF64 } from './number.js'
+import { sso } from './string.js'
+import { tagged, packedI32 } from './object.js'
+import { taggedLinear, structInline } from './array.js'
 
 /** Shared across compilations. The string emitter selects its optional
  * externref carrier directly; the other families have fixed defaults. */
@@ -18,4 +18,4 @@ export default Object.freeze({
   array: taggedLinear,
 })
 
-export { nanboxF64, sso, jsstring, tagged, packedI32, taggedLinear, structInline }
+export { nanboxF64, packedI32, structInline }

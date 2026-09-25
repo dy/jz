@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO } from './err-codes.js'
 
 // UTF-8 codecs for Wasm metadata. String values use lossless UTF-16 marshalling.
@@ -152,7 +152,8 @@ const hi32 = (b) => Number((b >> 32n) & MASK32)
 // GENUINE box always has sign=0 (ptrBits/encodePtrHi never set bit 63), so
 // this tightening never rejects a real box — it only excludes negative bit
 // patterns no legitimate box can ever produce.
-const isBox = (b) => (hi32(b) & 0xFFF80000) === 0x7FF80000
+const BOX_HI = LAYOUT.NAN_PREFIX << 16, BOX_HI_MASK = BOX_HI | 0x80000000
+const isBox = (b) => (hi32(b) & BOX_HI_MASK) === BOX_HI
 // i64 bits for a wrapVal result (BigInt box, or number → its f64 bits): memory staging + i64 params.
 const bits = (v) => typeof v === 'bigint' ? v : f64ToI64(v)
 
@@ -699,7 +700,8 @@ export const memory = (src) => {
     if (t === 6) {  // OBJECT
       // An object literal's accessor reads through its getter: the module
       // copies such an object's data into a dictionary, decoded below.
-      if (mem.views?.has(a) && mem.viewData) return mem.read(mem.viewData(p))
+      // Error transport reads its stored message before constructing the host Error.
+      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a)) return mem.read(mem.viewData(p))
       const keys = mem.schemas[a]
       if (!keys) return p
       const obj = {}
@@ -717,7 +719,7 @@ export const memory = (src) => {
       for (let i = 0; i < cap; i++) {
         const slot = off + i * stride, hash = m.getBigUint64(slot, true)
         // Match __coll_order: a durable-heap tombstone is not a live key.
-        if (hash && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
+        if (hash && (t !== 7 || Number(hash >> 32n) !== HIDDEN_PROPERTY_SEQ) && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
           slots.push([Number(hash >> 32n), slot])
       }
       slots.sort((a, b) => a[0] - b[0])

@@ -1,5 +1,5 @@
 // heat.go — 2-D heat diffusion (explicit-Euler 5-point Laplacian). Bit-identical to
-// heat.js. On arm64 Go auto-fuses `c + K*lap` to FMADDD (no flag to disable); the
+// heat.js. On arm64 Go auto-fuses `c + K*lap` to FMADDD; the
 // field then rounds differently in the last ulp → reported as `fma` parity, not DIFF.
 package main
 

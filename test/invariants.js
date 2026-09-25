@@ -14,11 +14,12 @@ import { spawnSync } from 'node:child_process'
 import { join, relative } from 'path'
 import jz, { compile } from '../index.js'
 import { compile as compileWat } from 'watr'
+import { instantiate } from '../interop.js'
 import { ctx, reset } from '../src/ctx.js'
 import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
-import { analyzeBody, reanalyzeBody, setFuncBody, invalidateAllBodyFacts } from '../src/compile/analyze.js'
-import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
+import { analyzeBody, reanalyzeBody, setFuncBody, clearBodyFacts } from '../src/compile/analyze.js'
+import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run, wat } from './util.js'
 import { onKernel, levels } from './_matrix.js'
@@ -26,7 +27,69 @@ import { representationStorageWriteAction } from '../src/compile/representation-
 import { buildProgramIndex } from '../src/compile/program-index.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
+import { rewriteChildren } from '../src/ast.js'
 
+import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
+import { hoistVars } from '../jzify/hoist-vars.js'
+import { foldStaticConstAggregates } from '../src/compile/plan/literals.js'
+
+test('invariant: WAT token parsing uses source-sized storage', () => {
+  const parser = readFileSync(new URL(import.meta.resolve('watr/parse')), 'utf8')
+  const util = readFileSync(new URL('../node_modules/watr/src/util.js', import.meta.url), 'utf8')
+  const source = `import parse from './parse.js'; export default function tokenize(s) { return parse(s) }
+    export function generated(s) { return parse(s, { locations: false }) }
+    export function locations(s, keep) {
+      const a = keep ? parse(s) : parse(s, { locations: false }); return [a.loc, a[1].loc]
+    }`
+  const text = 'a😀'.repeat(4000)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const r = instantiate(compile(source, { optimize, modules: { './parse.js': parser, './util.js': util } }))
+    is(r.exports.locations(' (x (y))', true), [1, 4], 'named source offsets survive inside the compiled parser')
+    is(r.exports.locations(' (x (y))', false), [undefined, undefined], 'generated WAT omits node offsets')
+    const generated = '(module ' + '(func (result i32) (i32.const 3))'.repeat(100) + ')'
+    const allocations = []
+    for (const fn of [r.exports.default, r.exports.generated]) {
+      const input = r.memory.String(generated), before = r.instance.exports.__heap.value >>> 0
+      const output = fn(input)
+      allocations.push((r.instance.exports.__heap.value >>> 0) - before)
+      const tree = r.memory.read(output)
+      is(tree.length, 101)
+      is(tree[100], ['func', ['result', 'i32'], ['i32.const', '3']])
+      r.instance.exports._clear()
+    }
+    ok(allocations[1] < allocations[0] * .7, 'generated trees avoid source-location sidecars')
+    for (const token of ['', text, text, `"${text}"`, `$"${text}"`, `(;${text};)`, `;;${text}\n`, 'other', '']) {
+      const input = r.memory.String(token), before = r.instance.exports.__heap.value >>> 0
+      const output = r.exports.default(input)
+      const allocated = (r.instance.exports.__heap.value >>> 0) - before
+      is(JSON.stringify(r.memory.read(output)), JSON.stringify(token || []), 'tokens retain exact UTF-16 source text')
+      ok(allocated < 4096 + token.length * 8, 'a token allocates no growing prefixes')
+      r.instance.exports._clear()
+    }
+  }
+})
+
+test('invariant: runtime helper IR belongs to each compilation', () => {
+  const a = `export let getValue = () => JSON.stringify(JSON.parse('{"a":[1,2,3],"b":"x"}'))`
+  const b = `export let getValue = () => JSON.stringify({ different: [null, false, 9] })`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const coldA = compile(a, { optimize }), coldB = compile(b, { optimize })
+    for (const [src, cold, expected] of [
+      [a, coldA, '{"a":[1,2,3],"b":"x"}'],
+      [a, coldA, '{"a":[1,2,3],"b":"x"}'],
+      [b, coldB, '{"different":[null,false,9]}'],
+      [a, coldA, '{"a":[1,2,3],"b":"x"}'],
+    ]) {
+      const bytes = compile(src, { optimize })
+      ok(Buffer.from(bytes).equals(Buffer.from(cold)), `O${optimize}: repeated compilation retains exact bytes`)
+      is(instantiate(bytes).exports.getValue(), expected, 'the retained helper bodies execute')
+    }
+    ok(WebAssembly.validate(compile('', { optimize })), 'an empty compile needs no helper cache')
+    throws(() => compile('export let getValue = (', { optimize }))
+    ok(Buffer.from(compile(a, { optimize })).equals(Buffer.from(coldA)), 'an error leaves no template state')
+    is(instantiate(coldB).exports.getValue(), '{"different":[null,false,9]}', 'earlier output remains valid')
+  }
+})
 // === Helper: compile with WAT output for structural inspection ===
 
 test('invariant: shared power generator reconstructs every decimal entry exactly', () => {
@@ -82,13 +145,13 @@ test('invariant: shared power generator reconstructs every decimal entry exactly
 
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
   if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-compile leg
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('const X = 10; export let f = () => X')
   ok(ctx.scope.consts?.has('X'), 'const X should be tracked in ctx.scope.consts')
 })
 
 test('invariant: let does not appear in ctx.scope.consts', () => {
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('let x = 10; export let f = () => x')
   ok(!ctx.scope.consts?.has('x'), 'let x should NOT be in ctx.scope.consts')
 })
@@ -183,7 +246,7 @@ test('invariant: division always produces f64 result', () => {
 
 test('invariant: a signature retype invalidates a cached body on its next read', () => {
   if (onKernel()) return
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
   const func = ctx.funcs.map.get('f'), prior = ctx.func.current
   ctx.func.current = func.sig
@@ -200,7 +263,7 @@ test('invariant: a signature retype invalidates a cached body on its next read',
 
 test('invariant: explicit body mutation seams refresh cached facts', () => {
   if (onKernel()) return
-  reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
+  reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
   compile('export let f = (a) => a + 1')
   const func = ctx.funcs.map.get('f')
   ctx.func.current = func.sig
@@ -224,7 +287,7 @@ test('invariant: global fact invalidation includes anonymous body roots', () => 
   const anonymous = parse('let x = 1; x + 2')
   const before = analyzeBody(anonymous)
   ok(analyzeBody(anonymous) === before, 'anonymous root has a cached observation')
-  invalidateAllBodyFacts()
+  clearBodyFacts()
   ok(analyzeBody(anonymous) !== before, 'phase invalidation drops anonymous observations too')
 })
 
@@ -260,12 +323,12 @@ const ROOT = join(import.meta.dirname, '..')
 const COMPILE_FAMILY_OWNERS = [
   ['func-exports.js', ['isExported', 'exportNamesOf']],
   ['func-entry.js', ['enterFunc', 'emitPreboxedLocalInits']],
-  ['param-numeric.js', ['NUM_BIN_OPS', 'REL_OPS', 'isStrLiteral', 'paramAllUsesNumeric', 'STRING_RECV_METHODS', 'paramNeverString', 'paramValueOnly']],
+  ['param-numeric.js', ['NUM_BIN_OPS', 'isStrLiteral', 'paramAllUsesNumeric', 'STRING_RECV_METHODS', 'paramNeverString', 'paramValueOnly']],
   ['throw-runtime.js', ['ensureThrowRuntime']],
   ['intern-table.js', ['buildInternTable']],
   ['func-inspect.js', ['repView', 'captureFuncInspect']],
   ['boundary-wrap.js', ['isBoundaryWrapped', 'synthesizeBoundaryWrappers']],
-  ['coercion-hoist.js', ['hoistInvariantParamCoercions', 'hoistUnionCursorUnbox']],
+  ['coercion-hoist.js', ['hoistUnionCursorUnbox']],
   ['analyze-for-emit.js', ['freshCseName', 'analyzeFuncForEmit', 'seedLocalIntConsts']],
   ['emit-func.js', ['emitFunc']],
   ['closure-emit.js', ['normalizeClosureBody', 'closureSig', 'enterClosureFrame', 'seedClosureFrame', 'analyzeClosureBodyForEmit', 'emitClosureBody']],
@@ -389,6 +452,41 @@ test('architecture: typed emitters consume TypedStoragePlan, not live ctor maps'
       violations.push(rel)
   }
   is(violations.join(','), '', 'emit-time ctor decisions must route through TypedStoragePlan')
+})
+
+test('layout: fixed masks are formatted once across repeated calls and resets', async () => {
+  const names = ['nanPrefixHex', 'nanPrefixMaskHex', 'ssoBitI64Hex', 'sliceBitI64Hex', 'hcacheBitI64Hex']
+  const layout = await import('../layout.js')
+  const expected = names.map(name => layout[name]())
+  const source = `import { ${names.join(',')} } from './layout.js';
+    export function mask(i) { ${names.map((name, i) => `if (i === ${i}) return ${name}();`).join('')} }`
+  const modules = { './layout.js': readFileSync(new URL('../layout.js', import.meta.url), 'utf8') }
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const r = instantiate(compile(source, { modules, optimize }))
+    for (let round = 0; round < 3; round++) {
+      const before = r.instance.exports.__heap.value >>> 0
+      for (const i of [0, 0, 1, 2, 3, 4, 0]) is(r.exports.mask(i), expected[i])
+      is(r.instance.exports.__heap.value >>> 0, before, 'fixed mask reads allocate nothing')
+      r.instance.exports._clear()
+    }
+  }
+})
+
+test('layout: fixed-width hex formatting needs no general radix scratch', () => {
+  const source = `import { i64Hex } from './layout.js';
+    export function hex(hi, lo) { return i64Hex((BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0)) }`
+  const modules = { './layout.js': readFileSync(new URL('../layout.js', import.meta.url), 'utf8') }
+  const words = [0, 1, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const r = instantiate(compile(source, { modules, optimize }))
+    for (const hi of words) for (const lo of words) {
+      const before = r.instance.exports.__heap.value >>> 0
+      const expected = '0x' + ((BigInt(hi) << 32n) | BigInt(lo)).toString(16).toUpperCase().padStart(16, '0')
+      is(r.exports.hex(hi, lo), expected)
+      ok((r.instance.exports.__heap.value >>> 0) - before < 512, 'fixed-width formatting has bounded scratch')
+      r.instance.exports._clear()
+    }
+  }
 })
 
 test('layout: i64Hex is self-compile-safe across the full 64-bit range', async () => {
@@ -572,6 +670,10 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
     const nanF = mk('c3', ['f64.const', NaN])
     const nulF = mk('c4', ['f64.const', null])
     is(run([nanF, nulF]), '$c3', 'NaN/null slots share the JSON-null equivalence class')
+    is(run([NaN, null, undefined, Infinity, -Infinity].map((n, i) => mk(`sentinel${i}`, ['f64.const', n]))),
+      '$sentinel0', 'every JSON-null sentinel shares one equivalence class')
+    is(run([mk('bool', ['f64.const', false]), mk('zero', ['f64.const', 0])]),
+      '$bool,$zero', 'boolean and numeric leaves stay distinct')
     // different local correspondence order must NOT dedup
     const ord1 = ['func', '$c5', ['param', '$p', 'f64'], ['param', '$q', 'f64'], ['result', 'f64'], ['f64.sub', ['local.get', '$p'], ['local.get', '$q']]]
     const ord2 = ['func', '$c6', ['param', '$p', 'f64'], ['param', '$q', 'f64'], ['result', 'f64'], ['f64.sub', ['local.get', '$q'], ['local.get', '$p']]]
@@ -580,6 +682,37 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
     const k1 = mk('c7', ['f64.const', 2])
     const k2 = mk('c8', ['f64.const', 3])
     is(run([k1, k2]), '$c7,$c8', 'distinct constants stay distinct')
+    const numbers = [0, -0, Number.MIN_VALUE, -Number.MIN_VALUE, 0.5, 0.5000000000000001,
+      2 ** 32, 2 ** 32 + 1, Number.MAX_SAFE_INTEGER, Number.MAX_VALUE]
+    for (const values of [numbers, numbers, [3, 2, 3], numbers]) {
+      const funcs = values.flatMap((n, i) => [mk(`n${i}`, ['f64.const', n]), mk(`copy${i}`, ['f64.const', n])])
+      const seen = new Set()
+      const expected = values.flatMap((n, i) => seen.has(n) ? [] : (seen.add(n), [`$n${i}`])).join(',')
+      is(run(funcs), expected, 'numeric hashes preserve signed zero, fractions, full-width integers and finite extremes')
+    }
+    is(run([]), '', 'an empty closure set stays empty')
+    is(run([mk('only', ['f64.const', -0])]), '$only', 'a singleton needs no hash')
+    is(run([]), '', 'empty input')
+    is(run([['func', '$empty']]), '$empty', 'one empty body')
+    is(run([['func', '$empty1'], ['func', '$empty2']]), '$empty1', 'empty bodies share one group')
+    const local = (name, p, q, last = p) => ['func', `$${name}`,
+      ['param', p, 'i32'], ['local', q, 'i32'], ['result', 'i32'],
+      ['local.set', q, ['local.get', p]], ['i32.sub', ['local.get', q], ['local.get', last]]]
+    is(run([local('a', '$p', '$q'), local('b', '$x', '$y'), local('c', '$z', '$w')]),
+      '$a', 'several comparisons reuse the canonical numbering')
+    is(ctx.closure.table.join(','), 'a,a,a', 'every duplicate table entry redirects')
+    is(run([local('a', '$p', '$q'), local('different', '$x', '$y', '$y')]),
+      '$a,$different', 'a different repeated local stays distinct on the next invocation')
+    for (const value of [0, -0, 0.1, -0.1, Number.MIN_VALUE, Number.MAX_VALUE, 2 ** 32, 2 ** 53])
+      is(run([mk('n1', ['f64.const', value]), mk('n2', ['f64.const', value])]), '$n1', `same numeric bits: ${value}`)
+    is(run([mk('z1', ['f64.const', 0]), mk('z2', ['f64.const', -0])]), '$z1', 'zero signs retain the existing grouping')
+    is(run([mk('lo', ['f64.const', 0.1]), mk('hi', ['f64.const', 0.10000000000000002])]), '$lo,$hi', 'adjacent doubles stay distinct')
+    const call = ['call', '$b'], untouched = ['call', '$elsewhere']
+    is(run([mk('a', ['f64.const', 1]), mk('b', ['f64.const', 1]), mk('use', ['f64.add', call, untouched])]),
+      '$a,$use', 'a direct caller survives duplicate removal')
+    is(call[1], '$a', 'the redirect retains the WAT name prefix')
+    is(untouched[1], '$elsewhere', 'unrelated names retain their identity')
+    is(ctx.closure.table.join(','), 'a,a,use', 'table names keep their bare-name contract')
   } finally { ctx.closure.table = savedTable }
 })
 
@@ -1176,7 +1309,7 @@ test('invariant: in-process inspection preserves the selected execution compiler
 
 // Exercise developer diagnostics independently of the compiler's debug setting.
 test('debug lifecycle: repeated sessions, drift and failed-session recovery', () => {
-  const bridge = Object.fromEntries(['emit','flat','body','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
+  const bridge = Object.fromEntries(['emit','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
   const fresh = () => ({
     core: { includes: new Set(), emit: {} }, module: {}, scope: {},
     funcs: { list: [], names: new Set(), map: new Map(), multiProp: new Map() },
@@ -1216,15 +1349,69 @@ test('debug lifecycle: real compiles retain semantics across shape changes and e
     import jz from ${JSON.stringify(entry)}
     const sources = [
       'export function f(){return 0}',
+      'export let f = (p0) => { let unused = 0; return 0; }',
       'export function f(){let p={x:1,y:2};p={x:3};return p.x}',
-      'export function f(){let p={x:1,y:2};p={x:3};p.y=4;return p.y}'
+      'export function f(){let p={x:1,y:2};p={x:3};p.y=4;return p.y}',
+      'export function f(){class B {x=3;m(){return this.x}} class D extends B {n(){return this.x+1}} const d=new D();return d.n()}',
+      'export function f(){const o={x:5};const g=()=>{const p=o;return p.x};return g()}'
     ]
     const values = []
-    for (const i of [0,0,1,2]) values.push(jz(sources[i]).exports.f())
+    for (const optimize of [0,2,3])
+      for (const i of [0,0,1,2,3,4,4,5]) values.push(jz(sources[i], { optimize }).exports.f())
     try { jz('export function f( {') } catch {}
     values.push(jz(sources[0]).exports.f())
     console.log(JSON.stringify(values))
   `], { env: { ...process.env, JZ_DEBUG_INVARIANTS: '1' }, encoding: 'utf8', timeout: 30000 })
   is(child.status, 0, child.stderr)
-  is(JSON.parse(child.stdout), [0,0,3,4,0], 'A → A → different shapes → error → A')
+  is(JSON.parse(child.stdout), [...Array(3).fill([0,0,0,3,4,4,4,5]).flat(),0], 'A → A → different shapes → closures → error → A, every tier')
+})
+
+
+test('invariant: aggregate folding preserves untouched subtrees and bodies', () => {
+  if (onKernel()) return
+  for (const [literal, read, value] of [
+    [['['], ['.', 'table', 'length'], 0],
+    [['[', [null, 7]], ['[]', 'table', [null, 0]], 7],
+    [['{}', [':', 'x', [null, 9]]], ['.', 'table', 'x'], 9],
+  ]) {
+    reset(emitter, GLOBALS, { emit, bool, idx, spread, emitIdentitySafe })
+    const stable = ['[', [null, 3], [null, 4]]
+    const original = ['return', ['[', read, stable]]
+    const before = JSON.stringify(original)
+    const changed = { name: 'changed', sig: { params: [] }, body: original }
+    const untouched = { name: 'untouched', sig: { params: [] }, body: ['return', stable] }
+    const oldBody = untouched.body
+    ctx.funcs.list.push(changed, untouched)
+    const ast = [';', ['const', ['=', 'table', literal]]]
+    ok(foldStaticConstAggregates(ast), 'the static aggregate is folded')
+    is(changed.body[1][1][1], value, 'the field or length becomes its scalar')
+    ok(changed.body[1][2] === stable, 'an unchanged sibling keeps its identity')
+    ok(untouched.body === oldBody, 'an unrelated function keeps its body')
+    is(JSON.stringify(original), before, 'rewriting never mutates the input body')
+    is(foldStaticConstAggregates(ast), false, 'a repeated pass has no work')
+    ok(untouched.body === oldBody, 'the repeated pass keeps the body too')
+  }
+})
+
+
+test('invariant: front-end rewrites copy only changed paths', () => {
+  const empty = [';'], stable = ['+', 'n', [null, 1]]
+  ok(rewriteChildren(empty, () => { throw Error('no child') }) === empty)
+  const fn = ['function', 'f', ['()', 'n'], stable]
+  for (const tree of [stable, fn, ['=>', 'n', stable]]) {
+    ok(hoistVars(tree, new Set()) === tree, 'no var, no tree copy')
+    ok(canonicalizeObjectIdioms(tree) === tree, 'no object idiom, no tree copy')
+  }
+  const call = ['()', ['.', ['.', ['.', 'Object', 'prototype'], 'toString'], 'call'], 'x']
+  const tree = [';', stable, call], before = JSON.stringify(tree)
+  const out = canonicalizeObjectIdioms(tree)
+  is(JSON.stringify(out[2]), JSON.stringify(['()', '__object_toString', 'x']))
+  ok(out[1] === stable, 'the unchanged sibling survives an actual rewrite')
+  is(JSON.stringify(tree), before, 'the original tree is not mutated')
+  ok(canonicalizeObjectIdioms(out) === out, 'a repeated canonicalization has no work')
+  const names = new Set(), value = [null, 3]
+  const assignment = hoistVars(['var', ['=', 'x', value]], names)
+  ok(names.has('x'), 'hoisting still records the declaration')
+  is(JSON.stringify(assignment), JSON.stringify(['=', 'x', value]))
+  ok(hoistVars(assignment, new Set()) === assignment, 'a repeated hoist has no work')
 })

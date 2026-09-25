@@ -8,7 +8,7 @@
 //
 // Standalone runner: `node test/bench-merge.js`.
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -21,6 +21,7 @@ const REFERENCE = join(ROOT, 'bench/results.json')
 const HEAD_SHA = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()
 
 const scratchDir = mkdtempSync(join(tmpdir(), 'jz-bench-merge-'))
+process.on('exit', () => rmSync(scratchDir, { recursive: true, force: true }))
 let scratchN = 0
 const freshCopy = () => {
   const p = join(scratchDir, `results-${scratchN++}.json`)
@@ -94,6 +95,23 @@ test('bench --merge: parity is scored against the stored reference checksum, not
   const merged = JSON.parse(readFileSync(scratch, 'utf8'))
   ok(merged.cases.mat4.ref === reference.cases.mat4.ref,
     `merged mat4.ref ${merged.cases.mat4.ref} != stored ${reference.cases.mat4.ref} — a lone re-measured row must not out-vote the established reference checksum`)
+})
+
+test('bench: a new case uses its pinned oracle without replacing an existing reference', () => {
+  const scratch = freshCopy()
+  const seed = JSON.parse(readFileSync(scratch, 'utf8'))
+  seed.cases.entity = { ref: null, targets: {} }
+  writeFileSync(scratch, JSON.stringify(seed))
+  run(['--cases=entity', '--targets=v8', `--json=${scratch}`])
+  const measured = JSON.parse(readFileSync(scratch, 'utf8'))
+  ok(measured.cases.entity.ref === 1275530752, 'entity uses the independently verified checksum')
+  ok(measured.cases.entity.targets.v8.parity === 'ok', 'a fresh row is classified against that oracle')
+
+  measured.cases.entity.ref = 0
+  writeFileSync(scratch, JSON.stringify(measured))
+  run(['--cases=entity', '--targets=v8', `--json=${scratch}`])
+  const changed = JSON.parse(readFileSync(scratch, 'utf8')).cases.entity
+  ok(changed.ref === 0 && changed.targets.v8.parity === 'DIFF', 'a stored reference is never replaced by the fallback or the latest result')
 })
 
 test('bench: without --merge, a full --json run is schema-identical to the pre-merge shape (no measuredAt/partial/anchors)', () => {

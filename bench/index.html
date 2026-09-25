@@ -66,13 +66,17 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
 /* ~.4s dwell before a tip appears — hovering across the chart no longer flickers a bubble on
    every row; it hides instantly on leave (delay only on the show). */
 [data-tip]:hover::after, [data-tip]:focus-visible::after,
-[data-tip]:hover::before, [data-tip]:focus-visible::before {
+.row[data-tip]:focus-within::after,
+[data-tip]:hover::before, [data-tip]:focus-visible::before,
+.row[data-tip]:focus-within::before {
   opacity: 1; visibility: visible; transform: translateY(0); transition-delay: .4s; }
 
 /* intro */
 .intro { display: flex; flex-direction: column; gap: 22px; margin-top: 42px; }
 .introtop { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
 .intro h1 { font-size: clamp(26px, 4.4vw, 40px); font-weight: 700; letter-spacing: -.02em; line-height: 1.08; }
+.machines { display: flex; gap: 18px; font-size: 13px; }
+.machines a[aria-current] { font-weight: 700; text-decoration: none; }
 button {
   font-family: var(--sans); font-size: 12px; background: var(--paper); color: var(--ink);
   border: 1px solid var(--ink); border-radius: 0; padding: 6px 14px; cursor: pointer;
@@ -150,7 +154,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .chips button .n { margin-left: 5px; opacity: .55; font-variant-numeric: tabular-nums; }
 h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-numeric: tabular-nums; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 40px 38px; }
-.card h3 { position: relative; font-size: 13px; font-weight: 700; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.card { display: grid; grid-template-columns: 110px minmax(24px, 1fr) max-content; column-gap: 14px; align-content: start; }
+.card h3 { grid-column: 1 / -1; position: relative; font-size: 13px; font-weight: 700; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 14px; }
 .card h3 .fam { font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--mid); }
 .card h3 .fam[data-tip] { position: static; text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
 .card h3 .size { font-family: var(--mono); font-weight: 400; font-size: 10.5px; color: var(--mid); }
@@ -161,14 +166,14 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 .card h3 .play .ico { display: block; }
 .card h3 .actions { margin-left: auto; display: inline-flex; align-items: baseline; padding-left: 18px; }   /* repl/src right-aligned in each card */
 .card h3 .play:hover { background: none; color: var(--ink); }
-.card .row { grid-template-columns: 110px 1fr 186px; font-size: 11.5px; padding: 2.5px 0; }   /* val fits "12.19 ms · 50.9 MB · 1.1 kB" */
-.card .val { white-space: normal; text-align: right; }
+.card .row { grid-column: 1 / -1; grid-template-columns: subgrid; font-size: 11.5px; padding: 2.5px 0; }
+.card .val { text-align: right; }
 .card .bar { height: 12px; }
 
 @media (max-width: 640px) {
   .masthead, main { padding-inline: 20px; }   /* halve the side inset on phones */
-  .row, .card .row, #geomean .row { grid-template-columns: 1fr max-content; gap: 0 10px; }
-  .row .lab, .card .row .lab { grid-column: 1 / -1; text-align: left; }
+  .row, .card, #geomean .row { grid-template-columns: minmax(0, 1fr) minmax(24px, 1fr) max-content; gap: 0 8px; }
+  .row .lab, .card .row .lab { text-align: left; }
   .row .val { font-size: 10.5px; }
   #geomean .val .m, #geomean .mh { width: 52px; }
   .cards { grid-template-columns: minmax(0, 1fr); }
@@ -205,6 +210,10 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
       <span id="globalstat"></span>
     </div>
   </div>
+  <nav class="machines" aria-label="Benchmark machine">
+    <a id="machine-reference" href="./">Reference</a>
+    <a id="machine-ci" href="?machine=ci">CI runner</a>
+  </nav>
   <div id="strip" hidden></div>
 </div>
 
@@ -247,7 +256,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
     <div class="legal">
       <p class="about">JZ compiles JavaScript to WebAssembly<br>for audio, graphics, simulations and compute</p>
       <span class="credit">made with <a href="https://github.com/dy/watr">watr</a> and <a href="https://github.com/dy/subscript">jessie</a></span>
-      <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a> <span class="dot">·</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
+      <span class="lic"><a href="https://github.com/dy/jz/blob/main/LICENSE">MIT</a><span class="dot">,</span> <a href="https://github.com/krishnized/license/" aria-label="krishnized license"><span class="om">ॐ</span></a></span>
     </div>
   </div>
 </footer>
@@ -257,6 +266,9 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <script type="module">
 import { benchmarkRatio, headlineStats, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
+const machine = new URLSearchParams(location.search).get('machine') === 'ci' ? 'ci' : 'reference'
+const snapshot = machine === 'ci' ? 'results-ci.json' : 'results.json'
+$('machine-' + machine).setAttribute('aria-current', 'page')
 
 // ── targets: band = substrate class (JS / WASM / Native) ─────────────────────
 // The corpus groups by class. Per case it's one intermixed list sorted by
@@ -301,6 +313,7 @@ const TARGETS = {
   shermes: { label: 'Static Hermes', band: 'native', hatch: true },
   'porf-native': { label: 'Porffor', sub: 'native', band: 'native', hatch: true },
   scriptc: { label: 'scriptc', sub: 'native', band: 'native', hatch: true },
+  perry: { label: 'Perry', sub: 'native', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
 // One-line engine descriptions — surfaced as the per-row label tooltip so the chart
@@ -333,6 +346,7 @@ const DESC = {
   shermes: 'Static Hermes – JavaScript ahead-of-time compiled to a native binary.',
   'porf-native': 'Porffor’s `porf native` – JS AOT-compiled through its C backend into a standalone native binary (its shipping artifact).',
   scriptc: 'scriptc (vercel-labs) – TS/JS AOT-compiled to a static native binary via the TypeScript checker + LLVM; no embedded engine (its --dynamic island is never used here).',
+  perry: 'Perry – JavaScript compiled through LLVM to a native executable with its runtime and garbage collector.',
   numpy: 'NumPy – vectorized C kernels driven from Python.',
 }
 // Per-target source file — each row links to the exact implementation it measured, so you
@@ -342,7 +356,7 @@ const REPO = 'https://github.com/dy/jz/blob/main/bench'
 // limitation to fix, so the row links to a search of that project's issues for the error (find the
 // existing report, or file one from there). jz's own targets point back at jz.
 const REPOS = {
-  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', perry: 'PerryTS/perry', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
   graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
@@ -350,7 +364,7 @@ const REPOS = {
 }
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
-  'porf-native': '.js', scriptc: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
+  'porf-native': '.js', scriptc: '.js', perry: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
   as: '.as.ts', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',
@@ -424,20 +438,20 @@ const FAMILY = {
   watr: 'lab', jessie: 'lab', jz: 'lab',
   colorconv: 'lab', colorlch: 'lab', colorlog: 'lab', colorpq: 'lab',
 }
-const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', bytebeat: 'i32 · audio',
-  mat4: 'simd · f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot · simd',
-  tokenizer: 'string scan', callback: 'closure · alloc', aos: 'layout · alloc',
-  mandelbrot: 'f64 · branch', json: 'parse', sort: 'i32 · calls', crc32: 'i32 · lut',
-  blur: 'rgba · stencil', matmul: 'gemm · f64', heat: 'stencil · f64',
-  wav: 'pcm · i16', nbody: 'n-body · f64', lorenz: 'ode · f64', particle: 'soa · f64',
-  spmv: 'sparse · gather', conv2d: 'conv · i8', qoi: 'codec · scalar', raytrace: 'render · sqrt',
-  noise: 'perlin · gather', alpha: 'blend · i32', base64: 'codec · lut', lz: 'lz · match',
-  levenshtein: 'dp · min', hash: 'murmur · i32', sieve: 'scatter · i32', radixsort: 'radix · scatter',
-  dict: 'hash · probe', nqueens: 'recursion · bitmask', vm: 'dispatch · i32',
-  hashjoin: 'join · probe', dispatch: 'calls · megamorphic', shapes: 'shapes · megamorphic',
-  colorconv: 'oklab · cbrt', colorlch: 'oklch · polar', colorlog: 'logc4 · exp2', colorpq: 'jzazbz · pow',
-  watr: 'compiler · self', jessie: 'parser · self', jz: 'selfhost · compiler',
-  strbuild: 'concat · alloc', wordcount: 'keys · dict-mode', immutable: 'alloc · gc' }
+const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebeat: 'i32, audio',
+  mat4: 'simd, f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot, simd',
+  tokenizer: 'string scan', callback: 'closure, alloc', aos: 'layout, alloc',
+  mandelbrot: 'f64, branch', json: 'parse', sort: 'i32, calls', crc32: 'i32, lut',
+  blur: 'rgba, stencil', matmul: 'gemm, f64', heat: 'stencil, f64',
+  wav: 'pcm, i16', nbody: 'n-body, f64', lorenz: 'ode, f64', particle: 'soa, f64',
+  spmv: 'sparse, gather', conv2d: 'conv, i8', qoi: 'codec, scalar', raytrace: 'render, sqrt',
+  noise: 'perlin, gather', alpha: 'blend, i32', base64: 'codec, lut', lz: 'lz, match',
+  levenshtein: 'dp, min', hash: 'murmur, i32', sieve: 'scatter, i32', radixsort: 'radix, scatter',
+  dict: 'hash, probe', nqueens: 'recursion, bitmask', vm: 'dispatch, i32',
+  hashjoin: 'join, probe', dispatch: 'calls, megamorphic', shapes: 'shapes, megamorphic',
+  colorconv: 'oklab, cbrt', colorlch: 'oklch, polar', colorlog: 'logc4, exp2', colorpq: 'jzazbz, pow',
+  watr: 'compiler, self', jessie: 'parser, self', jz: 'selfhost, compiler',
+  strbuild: 'concat, alloc', wordcount: 'keys, dict-mode', immutable: 'alloc, gc' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade – every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -716,9 +730,9 @@ const cardRows = c => {
   const anchor = Math.min(...ranked.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
   const base = anchor < Infinity ? anchor : ranked[0]?.medianUs || 1
   const lab = r => stripClassSub(r.label, r.sub)
-  // row value = the measured facts, plain: time · peak RSS · artifact bytes
+  // row value = the measured facts, plain: time, peak RSS, artifact bytes
   // (each only when measured — the bar already carries the relative story)
-  const vals = r => [fmtMs(r.medianUs), fmtMem(r.memKb), fmtB(r.bytes)].filter(Boolean).join(' · ')
+  const vals = r => [fmtMs(r.medianUs), fmtMem(r.memKb), fmtB(r.bytes)].filter(Boolean).join(', ')
   // When a native binary is many× faster than the wasm/JS anchor, that gap is a WebAssembly ISA
   // ceiling — 128-bit SIMD, no wide (byte) or carry-less multiply — not a jz codegen miss. The
   // note explains the outsized bar (so it stays a "why", not a repeat of the number):
@@ -808,12 +822,12 @@ $('cards').addEventListener('click', async e => {
   } catch {}
 })
 
-// ── outro: reference machine + pointer to the repo ───────────────────────────
+// ── outro: selected machine + pointer to the repo ────────────────────────────
 const renderMeta = () => {
   const m = DATA.meta
   $('outro').innerHTML =
-    `Reference: ${esc(m.host.cpu)} · ${esc(m.date)} · <a href="https://github.com/dy/jz/commit/${esc(m.commit)}"><code>${esc(m.commit)}</code></a> · ` +
-    `<a href="results.json"><code>results.json</code></a>.`
+    `${machine === 'ci' ? 'CI runner' : 'Reference'}: ${esc(m.host.cpu)}, ${esc(m.date)}, <a href="https://github.com/dy/jz/commit/${esc(m.commit)}"><code>${esc(m.commit)}</code></a>, ` +
+    `<a href="${snapshot}"><code>${snapshot}</code></a>.`
 }
 
 // ── live runner ──────────────────────────────────────────────────────────────
@@ -891,7 +905,7 @@ const b64url = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).re
 
 // ── boot ─────────────────────────────────────────────────────────────────────
 try {
-  DATA = await fetch('./results.json').then(r => { if (!r.ok) throw 0; return r.json() })
+  DATA = await fetch('./' + snapshot).then(r => { if (!r.ok) throw 0; return r.json() })
   const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c }))
   // CORPUS = aggregate cases: jz actually RAN (a {status:'fail'} jz entry carries
   // no median, so it must not seed the geomeans) and not LAB — the jz-internal
@@ -902,7 +916,9 @@ try {
   CASES = CORPUS.concat(all.filter(c => LAB.has(c.id) || !jzRan(c)))
   renderMeta(); renderChips(); renderAll()
 } catch {
-  $('geomean').innerHTML = '<p class="dim">No <code>results.json</code> yet – run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'
+  $('geomean').innerHTML = `<p class="dim">Could not load <a href="${snapshot}">${snapshot}</a>.</p>`
+  $('outro').textContent = ''
+  $('runAll').disabled = true
 }
 </script>
 <script type="module" src="../assets/version.js"></script>

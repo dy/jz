@@ -571,3 +571,38 @@ test('ToPrimitive: equality specializations preserve every primitive conversion 
     return values[k] == '7'
   }`, [0, 1, 2, 3, 0])
 })
+
+
+test('size tier: shared coercion and length preserve values, forwarding and effects', () => {
+  check(`
+    let reads=0
+    function read(x) { return [x.length, +x.length, reads] }
+    function number(x) { return [+x, x*2, x-1] }
+    export function f(k) {
+      reads=0
+      const a=[], alias=a
+      for(let i=0;i<40;i++) a.push(i)
+      const xs=[alias,'abc',new Uint8Array(5),{get length(){reads++;return '7'}},
+        new Map(),null,undefined,3,new DataView(new ArrayBuffer(8))]
+      let length
+      try { length=read(xs[k]) } catch(e) { length=e.name }
+      const ns=['7',true,null,undefined,NaN,-0,{valueOf(){reads++;return 4}},Infinity,-Infinity]
+      return [length,number(ns[k]),reads]
+    }
+  `, [0,0,1,2,3,4,5,6,7,8,0])
+})
+
+
+test('ToNumber: numeric parameter uses do not move conversions before execution', () => {
+  check(`
+    let trace=''
+    function sum(x,n){let s=0;for(let i=0;i<n;i++)s+=+x;return s}
+    export function f(k){
+      trace=''
+      let count=0
+      const x={valueOf(){trace+='v';if(++count===2)throw 7;return 2}}
+      try { return [sum(k===3?1n:x,k===0||k===3?0:k),trace] }
+      catch(e){ return [e===7?'seven':e.name,trace] }
+    }
+  `, [0,0,1,2,3,0,2])
+})

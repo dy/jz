@@ -19,8 +19,8 @@
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { createFunction } from '../function.js'
-import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
-import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
+import { MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, isBrand, refsName, walkAst } from '../ast.js'
+import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
@@ -31,7 +31,7 @@ import { hasFunc, isFuncValueLocal, isUnresolvableBareIdent, renameFunc, shadows
 import { STD_HOST_EXPORTS } from '../std/index.js'
 import { MUTATING_ARRAY_METHODS, alwaysFalsy, alwaysTruthy, dropDeadPostfix, foldConstIf, stringValue, stripBoolNot, truncateUnreachable } from './const-fold.js'
 import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternItems, substPattern } from './destructure.js'
-import { boundSafeCalls, mintLocal, scanReassignedTopLevel, writesReceiver } from './ident-purity.js'
+import { mintLocal, scanReassignedTopLevel } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, inferAssignSchema, objLiteralSid } from './schema.js'
@@ -51,6 +51,12 @@ const callHandler = (handler, node) => {
     case 5: return handler(node[1], node[2], node[3], node[4])
     default: return handler(...node.slice(1))
   }
+}
+
+// Zero and NaN are valid numeric imports, despite being falsy.
+const hasHostImport = (mod, name) => {
+  const spec = ctx.module.hostImports?.[mod]?.[name]
+  return typeof spec === 'number' || !!spec
 }
 
 export function prep(node) {
@@ -587,7 +593,7 @@ const handlers = {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
-          if (spec) {
+          if (hasHostImport(mod, name)) {
             addHostImport(mod, name, alias, spec)
           } else {
             builtinItems.push(item)
@@ -672,7 +678,7 @@ const handlers = {
     if (hostMod) {
       if (typeof specifiers === 'string') {
         const spec = hostMod.default
-        if (!spec) err(`'default' not declared in host module '${mod}'; add it to { imports: { '${mod}': { default: ... } } }`)
+        if (!hasHostImport(mod, 'default')) err(`'default' not declared in host module '${mod}'; add it to { imports: { '${mod}': { default: ... } } }`)
         addHostImport(mod, 'default', specifiers, spec)
         return null
       }
@@ -684,7 +690,7 @@ const handlers = {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
-          if (!spec) err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
+          if (!hasHostImport(mod, name)) err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
           addHostImport(mod, name, alias, spec)
         }
       }
@@ -1346,25 +1352,9 @@ const handlers = {
         const lenExpr = cond[0] === '<' || cond[0] === '<=' ? cond[2] : cond[1]
         if (Array.isArray(lenExpr) && lenExpr[0] === '.' &&
             (lenExpr[2] === 'length' || lenExpr[2] === 'size' || lenExpr[2] === 'byteLength')) {
-          const recv = lenExpr[1]
           const bound = ['|', lenExpr, [, 0]]
-          const lengthStable = typeof recv === 'string' &&
-            boundSafeCalls(body) && boundSafeCalls(step) && !writesReceiver(body, recv) && !writesReceiver(step, recv)
-          if (lengthStable) {
-            // Body can't change the bound → snapshot it once into an i32 local. Keeps
-            // the counter `i` i32 through compare + `i++` (no per-iteration f64 round
-            // trip) and gives the vectorizer the hoisted trip count it matches on.
-            const lenVar = `${T}len${freshPrepareId()}`
-            const lenDecl = ['let', ['=', lenVar, bound]]
-            init = init ? [';', init, lenDecl] : lenDecl
-            if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], lenVar]
-            else cond = [cond[0], lenVar, cond[2]]
-          } else {
-            // Body may grow/shrink the array (push/pop, or alias mutation through a
-            // call) → re-read every iteration, as JS does. Still `| 0` for an i32 bound.
-            if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], bound]
-            else cond = [cond[0], bound, cond[2]]
-          }
+          if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], bound]
+          else cond = [cond[0], bound, cond[2]]
         }
       }
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? dropDeadPostfix(prepStatement(step)) : null, dropDeadPostfix(prepStatement(body))]
@@ -1503,15 +1493,9 @@ const handlers = {
     const isFuncValueRecv = obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey) || isPromiseHelperPropRecv
     if (isFuncValueRecv && (prop === 'caller' || prop === 'callee'))
       err('`.caller`/`.callee` are prohibited: deprecated function stack introspection — jz has no equivalent; pass what you need as an explicit argument instead')
-    // `.length`/`.name` on a function VALUE is real ECMAScript function-object
-    // reflection (own data properties every Function instance carries) — jz
-    // compiles a closure/named function straight to a WASM func with no
-    // metadata object behind it, so there is nothing to read. Confirmed live
-    // as a silent wrong value, not a reject: `((a,b)=>a+b).length` and a
-    // named `function f(a,b){}`'s `f.length` both read plain `undefined`
-    // instead of `2`. Same class, same remedy as `.caller`/`.callee` just
-    // above — reject rather than guess.
-    if (isFuncValueRecv && (prop === 'length' || prop === 'name'))
+    // User functions expose source arity through the closure table. Names and
+    // native-helper reflection have no corresponding metadata.
+    if (isFuncValueRecv && (prop === 'name' || prop === 'length' && isPromiseHelperPropRecv))
       err(`.${prop} is not supported on a function value — jz compiles closures/named functions straight to WASM funcs with no reflectable metadata object; jz has no general function-object reflection`)
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
@@ -1801,7 +1785,7 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
         (fn, arg) => ['()', exports.get(fn), arg]))
       return
     }
-    includeForArrayPattern()
+    includeForArrayAccess()
     const items = patternItems(pattern[1])
     for (let j = 0; j < items.length; j++) {
       const item = items[j]
@@ -2042,8 +2026,7 @@ function prepDecl(op, ...inits) {
     let [, name, init] = i
     // `const alias = fn` whose RHS is a bare identifier naming a known function
     // is a compile-time function alias — the ES `export { fn as alias }` written
-    // in declaration form (a recurring kernel idiom: paramList = extractParams,
-    // toBoolFromEmitted = truthyIR …). Resolve `alias` straight to the function
+    // in declaration form (`const alias = fn`). Resolve `alias` straight to the function
     // so calls compile to a direct call and the export table re-exports the same
     // mangled func. Otherwise it would box a closure into a module global that a
     // cross-module callee resolves to the bare, unmangled name → "not in scope".
@@ -2498,7 +2481,7 @@ function resolveCallee(callee, args) {
       includeModule(obj); return `${obj}.${prop}`
     }
     const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
-    if (key && ctx.module.hostImports?.[obj]?.[prop]) {
+    if (key && hasHostImport(obj, prop)) {
       const spec = ctx.module.hostImports[obj][prop]
       const alias = `${obj}$${prop}`
       addHostImport(obj, prop, alias, spec)
@@ -2586,29 +2569,31 @@ function defFunc(name, node) {
 // Multi-value threshold: ≤8 elements = tuple (multi-value return), >8 = memory array
 const MAX_MULTI = 8
 
+/** Fixed tuple arity, including conditionals whose every arm has that arity. */
+function returnArity(value) {
+  if (!Array.isArray(value)) return 1
+  if (value[0] === '[' && value.length > 2 && !value.some(e => Array.isArray(e) && e[0] === '...'))
+    return value.length - 1
+  if (value[0] === '?:') {
+    const n = returnArity(value[2])
+    if (n > 1 && n === returnArity(value[3])) return n
+  }
+  return 1
+}
+
 /** Collect return value arities from block AST. */
 function collectReturns(node, out) {
   if (!Array.isArray(node)) return
-  if (node[0] === 'return') {
-    const val = node[1]
-    // Array return: count elements, but only if no spreads (spreads → runtime array, not multi-value)
-    if (Array.isArray(val) && val[0] === '[' && val.length > 2 && !val.some(e => Array.isArray(e) && e[0] === '...'))
-      out.push(val.length - 1)
-    else out.push(1)
-    return
-  }
+  if (node[0] === 'return') { out.push(returnArity(node[1])); return }
   for (let i = 1; i < node.length; i++) collectReturns(node[i], out)
 }
 
 /** Detect return arity from function body. */
 function detectResults(body) {
-  // Expression body: [e1, e2, ...] → multi-return if ≤ threshold and no spreads
-  if (Array.isArray(body) && body[0] === '[' && body.length > 2 && !body.some(e => Array.isArray(e) && e[0] === '...')) {
-    const n = body.length - 1
-    if (n <= MAX_MULTI) return Array(n).fill('f64')
-  }
-  // Block body: scan return statements
-  if (Array.isArray(body) && body[0] === '{}') {
+  const arity = returnArity(body)
+  if (arity > 1 && arity <= MAX_MULTI) return Array(arity).fill('f64')
+  // Falling through produces undefined, which needs the ordinary value ABI.
+  if (Array.isArray(body) && body[0] === '{}' && alwaysReturns(body)) {
     const rets = []
     collectReturns(body, rets)
     if (rets.length) {
@@ -2653,7 +2638,7 @@ export function programModuleAsts(ast) {
  *  null for a host import, a built-in module, a missing export or a module not
  *  prepared yet (the lowering then declines). */
 export function importedBinding(spec, name) {
-  if (name == null || ctx.module.hostImports?.[spec]?.[name]) return null
+  if (name == null || hasHostImport(spec, name)) return null
   return ctx.module.resolvedModules.get(spec)?.exports.get(name) ?? null
 }
 

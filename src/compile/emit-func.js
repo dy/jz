@@ -13,13 +13,13 @@ import {
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { installFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
-import { emit, emitBlockBody, emitIdentitySafe, toBool } from './emit.js'
+import { emit, emitBlockBody, emitIdentitySafe, emitVoid, toBool } from './emit.js'
 import { emitCharDecompPrologue } from '../abi/string.js'
 import { representationReturnAction } from './representation-plan.js'
 import { recordParamClosureDefault, recordDirectReturnClosure } from './dyn-closure-tables.js'
 import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './func-entry.js'
 import { isBoundaryWrapped } from './boundary-wrap.js'
-import { hoistInvariantParamCoercions, hoistUnionCursorUnbox } from './coercion-hoist.js'
+import { hoistUnionCursorUnbox } from './coercion-hoist.js'
 import { isExported } from './func-exports.js'
 import { frameNode } from '../function.js'
 
@@ -307,8 +307,6 @@ export function emitFunc(func, functionPlan, programFacts) {
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
   if (block) {
     const stmts = emitBlockBody(body)
-    // Hoist loop-invariant `__to_num(param)` coercions to a single entry rebind.
-    const numCoerceInits = hoistInvariantParamCoercions(stmts, func)
     const cursorUnboxInits = hoistUnionCursorUnbox(stmts, func)
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
@@ -322,12 +320,12 @@ export function emitFunc(func, functionPlan, programFacts) {
     const fallthrough = endsWithReturn ? []
       : sig.results.length === 1 && sig.results[0] === 'f64' ? [undefExpr()]
       : sig.results.map(t => [`${t}.const`, 0])
-    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...numCoerceInits, ...cursorUnboxInits, ...stmts, ...fallthrough)
-  } else if (multi && body[0] === '[') {
-    const values = body.slice(1).map(e => asF64(emit(e)))
+    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...cursorUnboxInits, ...stmts, ...fallthrough)
+  } else if (multi) {
+    const values = emitVoid(['return', body])
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
-    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values)
+    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values, ['unreachable'])
   } else {
     // Top-level twin of emitFunc's 'return'-statement mixedAtomReturn admission
     // and emitClosureBody's expression-body site: a non-block arrow body

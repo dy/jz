@@ -15,7 +15,7 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, T
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
-import { ACCESSOR_GET, isBrand } from '../src/ast.js'
+import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
 import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
 import { copyReceiverFacts } from '../src/compile/emit/shared.js'
 import { restViewLength } from '../src/compile/rest-view.js'
@@ -23,7 +23,7 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
-import { ptrOffsetFwdWat, deletedMaskWat } from '../layout.js'
+import { ptrOffsetFwdWat, deletedMaskWat, HIDDEN_PROPERTY_SEQ } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
@@ -67,14 +67,14 @@ export default (ctx) => {
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __to_prim_dflt: ['__ptr_type', '__to_str'],
     __cmp: ['__is_object', '__ptr_type', '__ptr_aux', '__to_prim_dflt', '__is_str_key', '__str_cmp', '__to_num'],
-    __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat',
+    __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat_fresh',
       ...(representationProgramHasBigint(ctx) ? ['__box_bigint', '__ptr_offset'] : [])],
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
     __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
-    __typed_data: ['__ptr_offset', '__ptr_aux'],
+    __typed_data: ['__ptr_aux'],
     __typed_idx: () => ['__is_nullish', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_idx_tagged: ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
     __box_bigint: ['__alloc', '__mkptr'],
@@ -126,17 +126,19 @@ export default (ctx) => {
     __heap_mark: [],
     __heap_large: [],
     __park_begin: ['__memgrow'],
-    __park_write_u8: [],
-    __park_write_u32: [],
-    __park_write_f64: [],
-    __park_write_i64: [],
-    __park_write_str: ['__str_length', '__str_copy'],
+    __park_room: [],
+    __park_take: [],
+    __park_write_u8: ['__park_room'],
+    __park_write_u32: ['__park_room'],
+    __park_write_f64: ['__park_room'],
+    __park_write_i64: ['__park_room'],
+    __park_write_str: ['__park_room', '__str_length', '__str_copy'],
     __park_finish: [],
-    __park_read_u8: [],
-    __park_read_u32: [],
-    __park_read_f64: [],
-    __park_read_i64: [],
-    __park_read_str: ['__alloc', '__mkptr', '__sso_norm'],
+    __park_read_u8: ['__park_take'],
+    __park_read_u32: ['__park_take'],
+    __park_read_f64: ['__park_take'],
+    __park_read_i64: ['__park_take'],
+    __park_read_str: ['__park_take', '__alloc', '__mkptr', '__sso_norm'],
     __park_rewind: ['__clear'],
   })
 
@@ -534,7 +536,7 @@ export default (ctx) => {
     (if (call $__is_object (local.get $b))
       (then (local.set $b (call $__to_prim_dflt (local.get $b)))))
     (if (i32.or (call $__is_str_key (local.get $a)) (call $__is_str_key (local.get $b)))
-      (then (return (call $__str_concat (local.get $a) (local.get $b)))))
+      (then (return (call $__str_concat_fresh (local.get $a) (local.get $b)))))
     ${representationProgramHasBigint(ctx) ? `
     (local.set $ab (i32.and
       (f64.ne (f64.reinterpret_i64 (local.get $a)) (f64.reinterpret_i64 (local.get $a)))
@@ -743,61 +745,99 @@ export default (ctx) => {
       (global.set $__park_base (local.get $base))
       (global.set $__park_cursor (local.get $base))
       (f64.const nan:${UNDEF_NAN}))`
+    // Check before touching the lane: a wrapped cursor can overwrite the
+    // static data and diagnostic records long before __park_finish runs.
+    ctx.core.stdlib['__park_room'] = `(func $__park_room (param $bytes i64)
+      (if (i32.or (i32.eqz (global.get $__park_base))
+        (i32.gt_u (global.get $__heap) (global.get $__park_base)))
+        (then (unreachable)))
+      (if (i32.or
+        (i32.lt_u (global.get $__park_cursor) (global.get $__park_base))
+        (i64.gt_u (i64.add (i64.extend_i32_u (global.get $__park_cursor)) (local.get $bytes))
+          (i64.const ${PARK_END >>> 0})))
+        (then (unreachable))))`
+    ctx.core.stdlib['__park_take'] = `(func $__park_take (param $bytes i64) (result i32)
+      (local $p i32) (local $end i64)
+      (local.set $p (global.get $__park_read))
+      (if (i32.gt_u (global.get $__heap) (local.get $p)) (then (unreachable)))
+      (local.set $end (i64.add (i64.extend_i32_u (local.get $p)) (local.get $bytes)))
+      (if (i32.or
+        (i32.lt_u (local.get $p) (global.get $__park_base))
+        (i64.gt_u (local.get $end) (i64.extend_i32_u (global.get $__park_cursor))))
+        (then (unreachable)))
+      (global.set $__park_read (i32.wrap_i64 (local.get $end)))
+      (local.get $p))`
     ctx.core.stdlib['__park_write_u8'] = `(func $__park_write_u8 (param $v i32) (result f64)
+      (call $__park_room (i64.const 1))
       (i32.store8 (global.get $__park_cursor) (local.get $v))
       (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 1)))
       (f64.const nan:${UNDEF_NAN}))`
+    // Unsigned LEB128: tree lengths, intern indexes and most integer payloads
+    // use one or two bytes. Reserve the complete encoding before its first store.
     ctx.core.stdlib['__park_write_u32'] = `(func $__park_write_u32 (param $v i32) (result f64)
-      (i32.store (global.get $__park_cursor) (local.get $v))
-      (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 4)))
+      (local $n i32)
+      (local.set $n (i32.div_u (i32.add (i32.sub (i32.const 32) (i32.clz (local.get $v))) (i32.const 6)) (i32.const 7)))
+      (call $__park_room (i64.extend_i32_u (select (local.get $n) (i32.const 1) (local.get $n))))
+      (loop $write
+        (i32.store8 (global.get $__park_cursor)
+          (i32.or (i32.and (local.get $v) (i32.const 127))
+            (select (i32.const 128) (i32.const 0) (i32.gt_u (local.get $v) (i32.const 127)))))
+        (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 1)))
+        (local.set $v (i32.shr_u (local.get $v) (i32.const 7)))
+        (br_if $write (local.get $v)))
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_write_f64'] = `(func $__park_write_f64 (param $v f64) (result f64)
+      (call $__park_room (i64.const 8))
       (f64.store (global.get $__park_cursor) (local.get $v))
       (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 8)))
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_write_i64'] = `(func $__park_write_i64 (param $v i64) (result f64)
+      (call $__park_room (i64.const 8))
       (i64.store (global.get $__park_cursor) (local.get $v))
       (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 8)))
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_write_str'] = `(func $__park_write_str (param $s i64) (result f64)
       (local $len i32) (local $dst i32)
       (local.set $len (call $__str_length (local.get $s)))
+      (call $__park_room (i64.add (i64.const 4)
+        (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 1))))
       (local.set $dst (i32.add (global.get $__park_cursor) (i32.const 4)))
       (i32.store (global.get $__park_cursor) (local.get $len))
       (call $__str_copy (local.get $s) (local.get $dst) (local.get $len))
       (global.set $__park_cursor (i32.add (local.get $dst) (i32.shl (local.get $len) (i32.const 1))))
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_finish'] = `(func $__park_finish (result f64)
+      (if (i32.gt_u (global.get $__heap) (global.get $__park_base)) (then (unreachable)))
       (if (i32.or
             (i32.lt_u (global.get $__park_cursor) (global.get $__park_base))
             (i32.gt_u (global.get $__park_cursor) (i32.const ${PARK_END})))
         (then (unreachable)))
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_read_u8'] = `(func $__park_read_u8 (result i32)
-      (local $p i32)
-      (local.set $p (global.get $__park_read))
-      (global.set $__park_read (i32.add (local.get $p) (i32.const 1)))
-      (i32.load8_u (local.get $p)))`
+      (i32.load8_u (call $__park_take (i64.const 1))))`
     ctx.core.stdlib['__park_read_u32'] = `(func $__park_read_u32 (result i32)
-      (local $p i32)
-      (local.set $p (global.get $__park_read))
-      (global.set $__park_read (i32.add (local.get $p) (i32.const 4)))
-      (i32.load (local.get $p)))`
+      (local $v i32) (local $b i32) (local $shift i32)
+      (loop $read
+        (local.set $b (i32.load8_u (call $__park_take (i64.const 1))))
+        (if (i32.and (i32.eq (local.get $shift) (i32.const 28)) (i32.gt_u (local.get $b) (i32.const 15)))
+          (then (unreachable)))
+        (local.set $v (i32.or (local.get $v)
+          (i32.shl (i32.and (local.get $b) (i32.const 127)) (local.get $shift))))
+        (local.set $shift (i32.add (local.get $shift) (i32.const 7)))
+        (br_if $read (i32.and (local.get $b) (i32.const 128))))
+      (local.get $v))`
     ctx.core.stdlib['__park_read_f64'] = `(func $__park_read_f64 (result f64)
-      (local $p i32)
-      (local.set $p (global.get $__park_read))
-      (global.set $__park_read (i32.add (local.get $p) (i32.const 8)))
-      (f64.load (local.get $p)))`
+      (f64.load (call $__park_take (i64.const 8))))`
     ctx.core.stdlib['__park_read_i64'] = `(func $__park_read_i64 (result i64)
-      (local $p i32)
-      (local.set $p (global.get $__park_read))
-      (global.set $__park_read (i32.add (local.get $p) (i32.const 8)))
-      (i64.load (local.get $p)))`
+      (i64.load (call $__park_take (i64.const 8))))`
     ctx.core.stdlib['__park_read_str'] = `(func $__park_read_str (result f64)
       (local $len i32) (local $src i32) (local $ptr i32)
-      (local.set $len (i32.load (global.get $__park_read)))
-      (local.set $src (i32.add (global.get $__park_read) (i32.const 4)))
-      (global.set $__park_read (i32.add (local.get $src) (i32.shl (local.get $len) (i32.const 1))))
+      (local.set $len (i32.load (call $__park_take (i64.const 4))))
+      (local.set $src (call $__park_take (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 1))))
+      (if (i64.gt_u
+        (i64.add (i64.extend_i32_u (global.get $__heap))
+          (i64.add (i64.const 8) (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 1))))
+        (i64.extend_i32_u (local.get $src))) (then (unreachable)))
       (local.set $ptr (call $__alloc (i32.add (i32.shl (local.get $len) (i32.const 1)) (i32.const 8))))
       (i32.store (local.get $ptr) (i32.const 0))
       (i32.store offset=4 (local.get $ptr) (local.get $len))
@@ -806,10 +846,12 @@ export default (ctx) => {
       (call $__sso_norm
         (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $ptr))))`
     ctx.core.stdlib['__park_rewind'] = `(func $__park_rewind (result f64)
-      (local $base i32)
+      (local $base i32) (local $end i32)
       (local.set $base (global.get $__park_base))
+      (local.set $end (global.get $__park_cursor))
       (call $__clear)
       (global.set $__park_base (local.get $base))
+      (global.set $__park_cursor (local.get $end))
       (global.set $__heap_end (i32.sub (local.get $base) (i32.const 8)))
       (global.set $__heap_end64 (i64.extend_i32_u (i32.sub (local.get $base) (i32.const 8))))
       (global.set $__park_read (local.get $base))
@@ -868,7 +910,8 @@ export default (ctx) => {
       (if (i32.and
             (i64.ne (i64.load (local.get $slot)) (i64.const 0))
             ;; skip healed zombie entries (durable-slot heal: key = TOMB sentinel)
-            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN})))
+            ${ctx.linkDemand.hiddenMembers ? `(i32.and (i32.ne (i32.load offset=4 (local.get $slot)) (i32.const ${HIDDEN_PROPERTY_SEQ}))` : ''}
+            (i64.ne (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.const ${TOMB_NAN}))${ctx.linkDemand.hiddenMembers ? ')' : ''})
         (then
           ${propKeys ? `(local.set $rank (i64.or (i64.const 0x100000000) (i64.shr_u (i64.load (local.get $slot)) (i64.const 32))))
           ${indexRank()}` : ''}
@@ -967,7 +1010,7 @@ export default (ctx) => {
   // Real data address for any TYPED ptr: owned → offset, view → [offset+4].
   ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr i64) (result i32)
     (local $off i32)
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (i32.wrap_i64 (local.get $ptr)))
     (if (result i32) (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8))
       (then (i32.load (i32.add (local.get $off) (i32.const 4))))
       (else (local.get $off))))`
@@ -1303,6 +1346,8 @@ export default (ctx) => {
     inc('__length.value')
     setLinkDemand('typedarray')
     ctx.runtime.throws = true
+    if (ctx.transform.optimize?.leanRuntime)
+      return typed(['call', '$__length.value', ['i64.reinterpret_f64', va]], 'f64')
     // The array arm inline ahead of the dispatcher (an AST node under a
     // walker is the receiver at nearly every unresolved `.length`): the tag
     // test, one forwarding hop, the header word. Everything else dispatches.
@@ -2167,7 +2212,7 @@ export default (ctx) => {
     // fresh empty object, and prototype reflection (`getOwnPropertyNames(C.prototype)`)
     // sees nothing to touch
     if (prop === 'prototype' && (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE) return emit(['{}'])
-    // SRoA flat object: `o.prop` → `local.get $o#i` (analyze.js scanFlatObjects).
+    // SRoA flat object: `o.prop` → `local.get $o#i` (analyze.js flatObjectCandidate).
     const flatR = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
     if (flatR) {
       const fi = flatR.names.indexOf(prop)
@@ -2364,10 +2409,10 @@ export default (ctx) => {
   // the dispatched access) but must evaluate once. Rep-seeding for the temp,
   // when the receiver's value-type drives downstream dispatch, lives inside
   // the useFn callback so it runs before the consumer IR consults reps.
-  const evalOnce = (value, useFn) => {
+  const evalOnce = (value, useFn, otherwise = undefExpr()) => {
     const t = temp()
     const va = asF64(emit(value))
-    return optionalGuard(t, va, useFn(t))
+    return optionalGuard(t, va, useFn(t), otherwise)
   }
 
   // Optional chaining: obj?.prop → undefined if obj is nullish, else obj.prop.
@@ -2450,14 +2495,14 @@ export default (ctx) => {
     if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && typeof callee[2] === 'string') {
       const base = ctx.scope.chain[callee[1]] || callee[1]
       if (ctx.funcs.names.has(`${base}$${callee[2]}`) && !ctx.funcs.multiProp.has(`${base}.${callee[2]}`)) {
-        const callArgs = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+        const callArgs = args.length === 0 ? null : [',', ...args]
         return asF64(ctx.core.emit['()'](callee, callArgs))
       }
     }
     // Method-reference callee: `recv.m(...)` or `recv?.m(...)` form. Methods are
-    // statically registered emitters and aren't real closure values, so route them
-    // as a direct method call. The outer optional short-circuits when the receiver
-    // is nullish — the method itself is statically known to exist.
+    // registered emitters rather than closure values. Keep the optional-call
+    // policy through method dispatch: registration alone does not prove that
+    // this receiver has the method.
     if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
       const method = callee[2]
       if (ctx.core.emit[`.${method}`]) {
@@ -2469,12 +2514,11 @@ export default (ctx) => {
           // Re-enter the full `()` method dispatch (runtime string/array dispatch,
           // charCodeAt, schema, …) rather than the bare generic `.${method}` emitter
           // — that emitter is the *array* `includes`/`indexOf`/… and would mis-run on
-          // a string receiver. Mirrors `?.[]`'s re-entry into `[]`. The method is
-          // statically known to exist, so the inner optional is moot; `t` is already
-          // nullish-guarded by evalOnce. Args re-bundle into the `()` arg slot.
-          const callArgs = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
-          return asF64(ctx.core.emit['()'](['.', t, method], callArgs))
-        })
+          // a string receiver. The runtime dispatcher must preserve a missing
+          // method's short circuit. Keep a comma expression as one argument.
+          const callArgs = args.length === 0 ? null : [',', ...args]
+          return asF64(ctx.core.emit['()'](['.', t, method], callArgs, null, true))
+        }, callee[0] === '.' ? throwTypeErrorIR('read') : undefExpr())
       }
     }
     if (!ctx.closure.call) err('`fn?.()` optional call on a closure value needs jz\'s closure-call runtime, which this program never linked in — call a closure unconditionally at least once elsewhere in the file')
@@ -2515,7 +2559,7 @@ export default (ctx) => {
   // f64 0/1 but `typeof` must still report "boolean". None of these ops can
   // produce a non-boolean, so the recognizer never false-positives. The `()`
   // arm also unwraps parenthesized expressions (`typeof (a < b)`).
-  const BOOL_RESULT_OPS = new Set(['!', '<', '<=', '>', '>=', '==', '!=', '===', '!=='])
+  const BOOL_RESULT_OPS = new Set(['!', ...COMPARE_OPS])
   const isBoolExpr = (n) => Array.isArray(n) && (
     BOOL_RESULT_OPS.has(n[0]) ||
     (n[0] === '()' && (n[1] === 'Boolean' || isBoolExpr(n[1]))))

@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, levels } from './_matrix.js'
 
 const cases = {
 identity: `const o={v:3,m(){'use strict';return this}}; const m=o.m; return [o.m()===o,m()===undefined,m.call(null)===null,m.call(false)===false,m.call(0)===0,m.call()===undefined,m.apply()===undefined]`,
@@ -123,4 +123,133 @@ test('method receiver: proven closure calls keep argument order without a receiv
     const value=box.f.call((n=n*10+1),(n=n*10+2));return [value,n]`
   for (const strict of [false, true])
     is(jz(`export const f=()=>{${body}}`, {strict}).exports.f(), [24,12])
+})
+
+
+test('method receiver: optional builtin calls prove the receiver family before arguments', () => {
+  const src = `export function f(k) {
+    let n = 0
+    const values = [NaN, 1n, false, 0, null, undefined, 'ban', ['ban'], [],
+      new Uint8Array([1]), {}, {indexOf(x) {return x === 'ban' ? 42 : -1}}]
+    const value = values[k]?.indexOf?.((n++, 'ban'))
+    return [value, n]
+  }`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 2, 3]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [0, 0, 6, 7, 8, 9, 10, 11, 4, 5, 1, 2, 3, 6])
+      is(f(k), native(k), `O${optimize}, receiver ${k}`)
+  }
+})
+
+test('method receiver: nonoptional missing builtins evaluate arguments then throw', () => {
+  const src = `export function f(k) {
+    let n = 0
+    const values = [NaN, 1n, false, 0, {}, 'ban', ['ban']]
+    try {return [values[k].indexOf((n++, 'ban')), n]}
+    catch(e) {return [e.name, n]}
+  }`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of [0, 2, 3]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [0, 0, 1, 2, 3, 4, 5, 6, 0]) is(f(k), native(k), `O${optimize}, receiver ${k}`)
+  }
+})
+
+test('method receiver: search arguments run once before length and position conversion', () => {
+  for (const method of ['indexOf', 'lastIndexOf', 'includes']) {
+    const src = `export function f(n) {
+      let count = 0
+      const a = []
+      for (let i = 0; i < n; i++) a.push(i)
+      const from = {valueOf() {return count}}
+      const found = a.${method}((count++, 2), from)
+      return [found, count]
+    }`
+    const native = new Function(src.replace('export ', '') + ';return f')()
+    const { f } = jz(src).exports
+    for (const n of [0, 0, 1, 4, 0]) is(f(n), native(n), `${method}, length ${n}`)
+  }
+})
+
+
+test('method receiver: optional call does not make its property read optional', () => {
+  for (const call of ["values[k].indexOf((n++, 'a'))", "values[k].indexOf?.((n++, 'a'))"]) {
+    const src = `export function f(k) {
+      let n = 0
+      const values = [null, undefined, NaN, 'a']
+      try {return [${call}, n]} catch(e) {return [e.name, n]}
+    }`
+    const native = new Function(src.replace('export ', '') + ';return f')()
+    for (const optimize of [0, 2, 3]) {
+      const { f } = jz(src, { optimize }).exports
+      for (const k of [0, 0, 1, 2, 3, 0]) is(f(k), native(k), `O${optimize}, receiver ${k}`)
+    }
+  }
+})
+
+
+test('method receiver: inherited object methods accept erased receiver families', () => {
+  const src = `const values = [{}, JSON.parse('{"x":1}'), 'ab', [3], 7, NaN, true, 1n]
+    export function f(i, key) {return values[i].hasOwnProperty(key)}`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  const f = jz(src).exports.f
+  for (const i of [0, 0, 1, 2, 3, 4, 5, 6, 7, 0])
+    for (const key of ['x', '0', 'length', 'missing', 'toString'])
+      is(f(i, key), native(i, key), `receiver ${i}, key ${key}`)
+})
+
+
+test('method receiver: host-import signatures retain external object results', () => {
+  if (onWasi()) return
+  const source = `import { make, offset } from 'env'
+    export function f(n) {const o = make(n); return o.value + offset}`
+  const imports = {env: {make: n => ({value: n * 2}), offset: 3}}
+  const f = jz(source, {imports}).exports.f
+  for (const n of [0, 0, 7, -1, 0]) is(f(n), n * 2 + 3)
+})
+
+
+test('method receiver: union dispatch preserves block callback kinds and evaluation order', () => {
+  const src = `let calls=0,log='';
+    function pick(k){log+='r';return k===0?null:k===1?'aa':
+      {replace(pattern,fn){log+='o';return fn('z')}}}
+    export function f(k){calls=0;log='';
+      const result=pick(k)?.replace((log+='p','a'),m=>{calls++;log+='c';return m+'!'});
+      return [result,calls,log]}`
+  const js = new Function(src.replace('export ', '') + ';return f')()
+  const regex = `function rewrite(s){return s.replace(/(?<first>a)/,'[$<first>]')}
+    export function f(k){return rewrite(k?'ab':[])}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [0, 1, 1, 2, 0]) is(f(k), js(k), `${optimize}: ${k}`)
+    is(jz(regex, { optimize }).exports.f(1), '[a]b')
+  }
+})
+
+test('method receiver: union families omit unreachable typed dispatch', () => {
+  const src = `function cut(s){return s.slice(1)}
+    export function f(k){return cut(k?'abc':[1,2,3])}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [1, 1, 0, 1, 0]) is(f(k), k ? 'bc' : [2,3])
+    const wat = compile(src, { optimize, wat:true })
+    ok(!wat.includes('(func $__typed_slice'), 'Array|String does not emit typed slicing')
+  }
+  const { f } = jz(`function cut(s){return s.slice(1)}
+    export function f(k){return cut(k?new Uint8Array([1,2,3]):[4,5,6])}` ).exports
+  is(Array.from(f(1)), [2,3]); is(f(0), [5,6])
+})
+
+test('method receiver: union collection callbacks use their registered family', () => {
+  const src = `function sum(x){let s=0;x.forEach(v=>{s+=v});return s}
+    function text(x){return x.toString()}
+    export function f(k){return sum(k===0?[1,2]:k===1?new Uint8Array([3,4]):
+      k===2?new Set([5,6]):new Map([[0,7],[1,8]]))}
+    export function str(k){return text(k?'abc':[1,2])}`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f, str } = jz(src, { optimize }).exports
+    for (const k of [0, 1, 1, 2, 3, 0]) is(f(k), [3,7,11,15][k])
+    is(str(0), '1,2'); is(str(1), 'abc')
+  }
 })

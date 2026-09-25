@@ -755,6 +755,36 @@ test('fused Map updates clear ephemeral keys and values across reset', () => {
   }
 })
 
+test('Map copies retain only live durable entries across reset and arena reuse', () => {
+  const src = `
+    const source = new Map([['seed', [7]]])
+    export function update(n) {
+      for (let i = 0; i < n; i++) source.set('key' + i, [i])
+      for (let i = 1; i < n; i += 2) source.delete('key' + i)
+      return snapshot()
+    }
+    export function snapshot() {
+      const copy = new Map(source)
+      let count = 0, sum = 0
+      for (const [k, v] of copy) { count++; sum += v[0] }
+      return copy.size + ':' + count + ':' + sum
+    }
+    export let churn = n => new Float64Array(n).length
+  `
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
+    const { exports: e } = jz(src, { optimize, _compactCollections })
+    for (const n of [0, 1, 7, 64, 64, 0, 7]) {
+      const count = Math.ceil(n / 2)
+      const expected = `${count + 1}:${count + 1}:${7 + count * (count - 1)}`
+      is(e.update(n), expected, `n=${n}: forwarded source with deleted entries`)
+      is(e.snapshot(), expected, 'another copy of the same source')
+      e._clear(); e.churn(1024)
+      is(e.snapshot(), '1:1:7', 'reset removes ephemeral entries before copying')
+      e._clear()
+    }
+  }
+})
+
 test('durable slot log reuses repeated writes and cancelled entries before _clear', () => {
   const source = `
     const cache = new Map([['seed', [7]]])
@@ -1362,4 +1392,113 @@ test('arena: a loop keeping a block in a parameter does not rewind', () => {
   const wat = compile(src, { optimize: 'speed', wat: true })
   is(loopRestores(wat), 0, 'no per-iteration restore')
   is(jz(src, { optimize: 'speed' }).exports.last(null, null, 5), 3, 'the block of the iteration before the last keeps its values')
+})
+
+// These compiler-only streams live at the top of wasm32 memory. Moving the
+// exported bump pointer reserves address space without filling a 4 GiB heap.
+test('checkpoint lane: every write checks its full width before the wasm32 boundary', () => {
+  if (onWasi() || onKernel()) return
+  const END = 0xfffffff0, GAP = 64 * 1024 * 1024
+  const source = `
+    export let begin = () => __park_begin()
+    export let finish = () => __park_finish()
+    export let rewind = () => __park_rewind()
+    export let byte = x => __park_write_u8(x)
+    export let word = x => __park_write_u32(x)
+    export let float = x => __park_write_f64(x)
+    export let integer = () => __park_write_i64(123n)
+    export let string = s => __park_write_str(s)
+    export let readByte = () => __park_read_u8()
+    export let readWord = () => __park_read_u32()
+    export let readFloat = () => __park_read_f64()
+    export let readInteger = () => __park_read_i64()
+    export let readString = () => __park_read_str()`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const empty = jz(`export let begin = () => __park_begin()
+      export let finish = () => __park_finish()
+      export let rewind = () => __park_rewind()
+      export let read = () => __park_read_u8()`, { optimize, memory: 65536 }).exports
+    for (let i = 0; i < 2; i++) {
+      empty.begin(); empty.finish(); empty.rewind()
+      throws(() => empty.read(), /unreachable/, 'an empty-only module owns a reset mark without an allocating helper')
+    }
+    const k = jz(source, { optimize, memory: 65536 })
+    const raw = k.instance.exports, ex = k.exports
+    const initialHeap = raw.__heap.value
+    const start = () => { raw.__heap.value = END - 8 - GAP; ex.begin() }
+    throws(() => ex.byte(0), /unreachable/, 'a writer requires an initialized lane')
+    start(); raw.__heap.value = END - 7
+    throws(() => ex.byte(0), /unreachable/, 'serializer allocation cannot silently collide with its lane')
+    throws(() => ex.finish(), /unreachable/, 'finish also rejects a collision after the last write')
+    start(); ex.byte(7); ex.finish(); ex.rewind(); raw.__heap.value = END - 7
+    throws(() => ex.readByte(), /unreachable/, 'a reader detects allocation into unread bytes')
+    raw.__heap.value = initialHeap
+    const near = k.memory.String('ab')
+    start(); raw.string(near); ex.finish(); ex.rewind(); raw.__heap.value = END - 8
+    throws(() => ex.readString(), /unreachable/, 'string output cannot overwrite its unread input')
+    for (const [write, read, width, value] of [
+      ['byte', 'readByte', 1, 37], ['word', 'readWord', 2, 12345],
+      ['float', 'readFloat', 8, -12.5], ['integer', 'readInteger', 8, 123n],
+    ]) {
+      const put = () => write === 'integer' ? ex.integer() : ex[write](value)
+      start()
+      for (let i = 0; i < 8 / width; i++) put()
+      const low = new Uint8Array(raw.memory.buffer, 0, 256).slice()
+      const tail = new Uint8Array(raw.memory.buffer, END - 8, 24).slice()
+      throws(put, /unreachable/, `${write}: one whole value past the end`)
+      is(new Uint8Array(raw.memory.buffer, 0, 256), low, 'a failed write cannot wrap into static data')
+      is(new Uint8Array(raw.memory.buffer, END - 8, 24), tail, 'a failed write changes no lane byte')
+      ex.finish(); ex.rewind()
+      for (let i = 0; i < 8 / width; i++) is(read === 'readInteger' ? raw[read]() : ex[read](), value, `${read}: exact boundary round trip`)
+      throws(() => ex[read](), /unreachable/, `${read}: the finished stream is its bound`)
+      start()
+      for (let i = 0; i < 7; i++) ex.byte(i)
+      if (width > 1) {
+        const partial = new Uint8Array(raw.memory.buffer, END - 8, 24).slice()
+        throws(put, /unreachable/, `${write}: a split before the final byte is rejected`)
+        is(new Uint8Array(raw.memory.buffer, END - 8, 24), partial, 'a rejected partial write changes no lane byte')
+        ex.byte(37); ex.finish(); ex.rewind()
+        is(Array.from({ length: 8 }, () => ex.readByte()), [0, 1, 2, 3, 4, 5, 6, 37], 'the rejected write preserves the cursor for a final-byte write')
+      }
+    }
+    for (const value of [0, 1, 127, 128, 16383, 16384, 2097151, 2097152, 268435455, 268435456, 0x7fffffff, 0x80000000, 0xffffffff]) {
+      const width = Math.max(1, Math.ceil((32 - Math.clz32(value)) / 7))
+      start()
+      for (let i = width; i < 8; i++) ex.byte(0)
+      ex.word(value)
+      throws(() => ex.byte(0), /unreachable/, 'variable-length integer ends exactly at the boundary')
+      ex.finish(); ex.rewind()
+      for (let i = width; i < 8; i++) ex.readByte()
+      is(ex.readWord() >>> 0, value, 'all five integer widths preserve every unsigned bit')
+      throws(() => ex.readByte(), /unreachable/, 'variable-length reader consumes exactly its encoded bytes')
+    }
+    for (const bytes of [[128], [128, 128], [128, 128, 128], [128, 128, 128, 128], [128, 128, 128, 128, 16], [128, 128, 128, 128, 128]]) {
+      start(); for (const b of bytes) ex.byte(b); ex.finish(); ex.rewind()
+      throws(() => ex.readWord(), /unreachable/, 'truncated and overflowing integer encodings trap')
+    }
+    for (const read of ['readFloat', 'readInteger']) {
+      start(); for (let i = 0; i < 7; i++) ex.byte(i); ex.finish(); ex.rewind()
+      throws(() => ex[read](), /unreachable/, `${read}: a missing final byte is rejected`)
+      is(ex.readByte(), 0, 'a rejected fixed-width read preserves the cursor')
+    }
+    // Empty → empty, A → A → different B, with a failed oversized write
+    // between begin and each successful string. Rewind retains the stream end.
+    for (const text of ['', '', 'ab', 'ab', 'π']) {
+      raw.__heap.value = initialHeap
+      const oversized = k.memory.String('too long'), p = k.memory.String(text)
+      start()
+      throws(() => raw.string(oversized), /unreachable/, 'string size is checked before its length header is written')
+      raw.string(p); ex.finish(); ex.rewind()
+      is(ex.readString(), text, 'the complete string survives failed write → valid write → rewind')
+      throws(() => ex.readString(), /unreachable/, 'string reader rejects a missing length header')
+    }
+    start(); ex.finish(); ex.rewind()
+    throws(() => ex.readByte(), /unreachable/, 'zero-work checkpoint has no readable byte')
+    start(); for (const b of [0, 0, 0, 128]) ex.byte(b); ex.finish(); ex.rewind()
+    throws(() => ex.readString(), /unreachable/, 'UTF-16 byte length is checked before a 32-bit shift could wrap')
+    for (const bytes of [[2, 0, 0, 0, 97], [2, 0, 0, 0, 97, 0, 98]]) {
+      start(); for (const b of bytes) ex.byte(b); ex.finish(); ex.rewind()
+      throws(() => ex.readString(), /unreachable/, 'a complete header followed by a partial character cannot read past the stream')
+    }
+  }
 })

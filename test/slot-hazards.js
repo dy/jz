@@ -250,7 +250,7 @@ const init = () => {
 export let main = () => step(init())`
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const stepBody = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
-  ok(/\(local \$x i32\)/.test(stepBody), 'ternary local x declared i32')
+  ok(stepBody && !/\(local \S+ f64\)/.test(stepBody), 'all kernel locals stay integral after local-slot reuse')
   const loop = stepBody.slice(stepBody.indexOf('(loop'))
   ok(/i32\.load/.test(loop), 'packed cells: slot reads are bare i32.load')
   ok(!/trunc_sat/.test(loop), 'no f64→i32 conversion left in the kernel loop')

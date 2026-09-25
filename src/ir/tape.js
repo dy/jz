@@ -19,9 +19,10 @@
  * @module ir/tape
  */
 
-export const OP_STR = -1, OP_NUM = -2, OP_BIG = -3, OP_NULL = -4, OP_UNDEF = -5, OP_BOOL = -6, OP_BYTES = -7
+export const OP_STR = -1, OP_NUM = -2
+const OP_BIG = -3, OP_NULL = -4, OP_UNDEF = -5, OP_BOOL = -6, OP_BYTES = -7
 /** A `[null, …]` node: the reserved intern id of the empty name. */
-export const OP_NULLHEAD = 0
+const OP_NULLHEAD = 0
 export const NONE = -1
 
 const INIT = 1 << 12
@@ -97,15 +98,8 @@ export const sym = (id) => { const a = node(OP_STR); T.sym[a] = id; return a }
 export const num = (v) => { const id = node(OP_NUM); T.imm[id] = v; return id }
 /** A byte blob (a custom section's payload), one atom. */
 export const bytes = (b) => { const id = node(OP_BYTES); T.imm[id] = T.blobs.length; T.blobs.push(b); return id }
-export const isStr = (id, s) => T.op[id] === OP_STR && T.syms[T.sym[id]] === s
 /** The text of the string atom at `id`, or null. */
 export const text = (id) => id !== NONE && T.op[id] === OP_STR ? T.syms[T.sym[id]] : null
-/** The i-th child of `id`, or NONE. */
-export function child(id, i) {
-  let c = T.a[id]
-  while (i-- > 0 && c !== NONE) c = T.next[c]
-  return c
-}
 /** Unlink the child `old` of `parent`. */
 export function remove(parent, old) {
   if (T.a[parent] === old) { T.a[parent] = T.next[old]; return }

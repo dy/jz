@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 
 // ============================================
 // SPREAD IN ARRAY LITERALS
@@ -724,22 +724,30 @@ test('spread: multi-prop unknown-schema spread is HASH — no ambient-schema slo
   ok(/\$__hash_get|\$__dyn_get/.test(wat), 'spread result read uses the HASH/dyn path, not a raw schema slot')
 })
 
-// Rest-param spread through a function-typed parameter compiles when the callee
-// has a concrete call site somewhere in the module graph (specialization), but
-// an export-only higher-order function — `fn` never bound to a concrete
-// function — routes through emitUnknownCalleeCall, which rejects the spread:
-// "Spread (...) can only be used in function/method calls or array literals".
-// Rest params and spread-in-calls are each documented subset. Live instance:
-// window-function/util.js generate/apply/enbw/scallopLoss/cola
-// (`fn(i, N, ...params)`) — blocks compiling any module importing that file.
-// Flip `test.todo` → `test` when fixed.
-test.todo('spread: rest-param spread through export-only unknown callee', () => {
-  const wasm = compile(`export let generate = (fn, N, ...params) => {
+test('spread: rest-param spread through export-only unknown callee', () => {
+  const src = `export let generate = (fn, N, ...params) => {
     let w = new Float64Array(N)
     for (let i = 0; i < N; i++) w[i] = fn(i, N, ...params)
     return w
-  }`)
-  ok(wasm.length > 0)
+  }
+  export let invoke = (fn, ...params) => fn(...params)`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    // No internal caller supplies a known closure: this stays an open call.
+    const ex = run(src, { optimize })
+    is(Array.from(ex.generate(null, 0)), [], `O${optimize}: zero work never calls null`)
+    let name
+    try { ex.generate(null, 1) } catch (e) { name = e.name }
+    is(name, 'TypeError', `O${optimize}: a non-callable fails when reached`)
+    if (onWasi()) continue // Host callbacks belong to the JS boundary.
+    const js = oracle(src)
+    const a = (i, n, scale = 1, bias = 0) => i * scale + n + bias
+    const b = (i, n, ...rest) => rest.reduce((sum, x) => sum + x, i - n)
+    for (const args of [[a, 1], [a, 3, 2, 5], [a, 3, 2, 5], [b, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9], [a, 0]])
+      is(Array.from(ex.generate(...args)), Array.from(js.generate(...args)), `O${optimize}: repeated and changed callbacks retain argument order`)
+    const collect = (...args) => args.map(x => String(x)).join('|')
+    for (const args of [[], [1], [false, null, undefined, 'text', 5, 6, 7, 8, 9], []])
+      is(ex.invoke(collect, ...args), js.invoke(collect, ...args), `O${optimize}: empty, short and spilled argument lists`)
+  }
 })
 
 test('unshift: multi-arg inserts in argument order, returns new length', () => {

@@ -34,13 +34,6 @@ export function makeMapOverlay(base, own) {
 
 export const isMapOverlay = value => value?.mapOverlay === true
 
-/** Detach a writable view without cloning its stable program-wide base. */
-export function cloneMapView(view) {
-  if (!view) return null
-  if (isMapOverlay(view)) return makeMapOverlay(view.base, new Map(view.own))
-  return new Map(view)
-}
-
 /** Non-empty check; overlap may over-count, but every caller asks only truthiness. */
 export function mapOrOverlaySize(view) {
   if (!view) return 0

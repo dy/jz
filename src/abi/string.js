@@ -59,8 +59,8 @@ import { declareLocal, freshEmitId } from '../compile/active-function.js'
  *  load-order laziness ONLY. Deliberately NOT memoized: a module-level memo of a
  *  runtime-BUILT string dangles across the self-compile kernel's `_clear()` arena
  *  rewind (warm compile #2 interpolated the stale pointer's garbage bytes into
- *  `(i64.const …)` → watr "Bad int") — the same dangling-cache class as DOLLAR /
- *  stdlibParseCache (see scripts/self.js setupSelf). Recomputing is a few ops at
+ *  `(i64.const …)` → watr "Bad int") — the same dangling-cache class as DOLLAR
+ *  (see scripts/self.js setupSelf). Recomputing is a few ops at
  *  emit time; correctness over a micro-memo. */
 const ssoBitI64 = () => ssoBitI64Hex()
 
@@ -447,7 +447,7 @@ export const sso = {
      *  bogus array concat. A non-builtin name routes through dynamic property
      *  dispatch (load the closure slot, call it) correctly. */
     // `ext` (default false) opts into the bump-EXTEND fast path — sound only when emit
-    // proves `a` is dead-after (a self-accumulation `x = x + …`). Otherwise the _fresh twin
+    // proves `a` is a private builder consumed by this append. Otherwise the _fresh twin
     // alloc+copies, never mutating the live `a` operand. (See __str_concat in module/string.js.)
     cat: (aF64, bF64, ctx, ext = false) => {
       const fn = ext ? '__str_concat' : '__str_concat_fresh'
@@ -523,8 +523,3 @@ export const JSS_IMPORT_SIGS = {
   length:       { params: ['externref'],            result: 'i32' },
   charCodeAt:   { params: ['externref', 'i32'],     result: 'i32' },
 }
-
-// Default carrier — picked when narrower has no stronger evidence. Reached
-// via `ctx.abi.string` (which the default-bundle in `src/abi/index.js` binds
-// to this export).
-export default sso

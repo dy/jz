@@ -65,7 +65,7 @@ import {
   valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
 } from './kind.js'
-export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, kindOfVal, valsOf, core } from './kind.js'
+export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
 // Builtins that read their arguments and never write a field of them; any
 // other unresolved callee may store into an object it receives.
@@ -267,9 +267,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Why a shape is being lost, for the advisory (`onLose`): the outermost
   // cause of a cascade names the root.
   let losing = null, site = null   // the statement being walked names the site of a loss
-  const losingAs = (why, f) => { if (losing) return f(); losing = why; try { return f() } finally { losing = null } }
+  const losingAs = (why, f, value, state) => { if (losing) return f(value, state); losing = why; try { return f(value, state) } finally { losing = null } }
   const TAG_NAME = Object.fromEntries(Object.entries(K).map(([name, tag]) => [tag, name.toLowerCase()]))
-  const lose = (k, other = null) => { if (paramOf(k) !== UNKNOWN) losingAs(other === null || tagOf(other) === K.ANY ? 'joined with an unknown value' : `joined with a ${TAG_NAME[tagOf(other)]} value`, () => escape(k)) }
+  const lose = (k, other = null) => {
+    if (paramOf(k) === UNKNOWN) return
+    // Joins run throughout the fixpoint; only an advisory needs their reason.
+    if (!onLose || losing) { escape(k); return }
+    losingAs(other === null || tagOf(other) === K.ANY ? 'joined with an unknown value' : `joined with a ${TAG_NAME[tagOf(other)]} value`, escape, k)
+  }
   const slots = (sid) => fields[sid] ??= new Array(schemas[sid].length).fill(K.NONE)
   // A binding some definition of which names BigInt among a bounded set: the
   // member the join to ANY erases (`n = BigInt(n)` on one path of a parameter
@@ -294,7 +299,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', () => escape(k)); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -354,7 +359,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const sideByProp = new Map()   // name → kind stored beside any shape's slots
   const sideOf = (sid, prop) => merge(sideProps.get(sid)?.get(prop) ?? K.NONE, sideWild.get(sid) ?? K.NONE)
   const anySideOf = (sid) => { let k = sideWild.get(sid) ?? K.NONE; for (const pk of sideProps.get(sid)?.values() ?? []) k = merge(k, pk); return k }
-  const sideLost = (sid, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if (lostSchema(sid)) losingAs('stored into an object whose shape is lost', () => escape(k)) }
+  const sideLost = (sid, k) => { if (hostSchemas.has(sid)) { retain(k); escapeToHost(k) } if (lostSchema(sid)) losingAs('stored into an object whose shape is lost', escape, k) }
   const raiseSide = (sid, prop, k) => {
     sideLost(sid, k)
     let m = sideProps.get(sid); if (!m) sideProps.set(sid, m = new Map())
@@ -690,12 +695,17 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // Own properties on builtin receiver families are tracked by family, not as
   // one global name set: `{push: fn}` must not pessimize every real Array#push.
   const builtinOwnProps = new Map()
-  const escapeObject = (k) => losingAs('passed to a call the summary cannot see through', () => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) poisonSchema(sid); if (hasTag(k, K.TYPED)) escapeTypedProps(k); escape(k) })
+  const escapeObjectValue = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) poisonSchema(sid); if (hasTag(k, K.TYPED)) escapeTypedProps(k); escape(k) }
+  const escapeObject = (k) => losingAs('passed to a call the summary cannot see through', escapeObjectValue, k)
   const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   /** A value the host holds (an export's result, an exported global, an import's argument): every closure it reaches may be called with anything. */
-  const escapeToHost = (k, seen = new Set()) => losingAs('handed to the host', () => {
+  const escapeToHost = (k, seen) => {
+    const t = tagOf(k)
+    if (paramOf(k) === UNKNOWN || t !== K.CLOSURE && t !== K.OBJECT && !celled(k)) return
+    losingAs('handed to the host', escapeHostValue, k, seen ?? new Set())
+  }
+  const escapeHostValue = (k, seen) => {
     const t = tagOf(k), p = paramOf(k)
-    if (p === UNKNOWN) return
     if (t === K.CLOSURE) { retain(k); for (const id of membersOf(p)) { if (!hostClosures.has(id)) { hostClosures.add(id); changed = true } escapeId(id) } }
     else if (celled(k)) {
       const c = cell(p)
@@ -724,13 +734,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       for (let i = 0; i < row.length; i++) { retain(row[i]); escapeToHost(row[i], seen) }
       const side = anySideOf(sid); retain(side); escapeToHost(side, seen)
     }
-  })
+  }
   // Returning a fresh local array cannot change its earlier reads. Only a
   // retained alias (or an import, which may mutate during the call) opens its
   // element proof. Walk aggregate edges too; arrays have no host element ABI.
-  const retain = (k, seen = new Set()) => {
+  const retain = (k, seen) => {
     const t = tagOf(k), p = paramOf(k)
-    if (p === UNKNOWN) return
+    if (p === UNKNOWN || t !== K.CLOSURE && t !== K.OBJECT && !celled(k)) return
+    seen ??= new Set()
     if (t === K.CLOSURE) {
       for (const id of membersOf(p)) {
         const body = typeof id === 'string' ? funcByName.get(id).body : closureBodies[id]
@@ -859,7 +870,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     for (let i = s; i < n; i++) k = merge(k, ks[base + i])
     return k
   }
-  const escapeArgs = (base, n) => losingAs('passed to a call the summary cannot see through', () => { for (let i = 0; i < n; i++) escape(ks[base + i]) })
+  const escapeArgValues = (base, n) => { for (let i = 0; i < n; i++) escape(ks[base + i]) }
+  const escapeArgs = (base, n) => losingAs('passed to a call the summary cannot see through', escapeArgValues, base, n)
   /** `callee(k0, …frame)`: the frame's kinds behind a receiver, in a frame of their own. */
   const callWith = (callee, k0, base = 0, n = 0) => {
     const b = sp
@@ -1144,6 +1156,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         return r
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
+      if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
       const f = funcByName.get(callee)
       if (f) {
         bind(callee, paramNamesOf(f), base, n, f.defaults, f.rest || !n || escaped.has(callee) ? null : initContextFor(callee, ks[base]))

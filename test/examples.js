@@ -126,8 +126,8 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
     const base = (jz.compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
-    // RECOVERED (see the watercolor test above for the full root cause / fix).
-    is(sten, 46, `waves frame: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
+    // Keep the recovered SIMD floor; later rewrites may add vector operations.
+    ok(sten >= 46 && sten > base, `waves frame: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
         // the field must outsize the edge sponge (MARGIN 18 a side) or the render crushes to black
@@ -265,9 +265,9 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
     const base = (jz.compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
     const wat = jz.compile(src, { ...OPT, wat: true });
     const sten = (wat.match(/f64x2\./g) || []).length;
-    // RECOVERED (see the watercolor test above for the full root cause / fix).
-    is(sten, 27, `schrodinger stepR/stepI: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
-    if (sten > base) ok(/promote_low_f32x4/.test(wat), 'the f32 potential V widens via f64x2.promote_low_f32x4');
+    // Keep the recovered SIMD floor; later rewrites may add vector operations.
+    ok(sten >= 27 && sten > base, `schrodinger stepR/stepI: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
+    ok(/promote_low_f32x4/.test(wat), 'the f32 potential V widens via f64x2.promote_low_f32x4');
     const run = (opts) => {
         const { exports } = jz(src, opts);
         const px = exports.resize(48, 32);
@@ -477,15 +477,13 @@ let golSrc = fs.readFileSync(new URL('../examples/game-of-life/game-of-life.js',
 // .wasm artifacts are gitignored build output (built by build:examples, AFTER this
 // suite runs), so a disk read fails in CI and from a clean checkout. This tests the
 // real property — each floatbeat lowers to deployable wasm — order-independently.
-test('example: jukebox floatbeats compile to deployable wasm', async () => {
-    for (let i = 0; i < FLOATBEATS.length; i++) {
-        const bytes = jz.compile(moduleSrc(FLOATBEATS[i].body), { optimize: 3 });
-        is(bytes[0], 0x00);
-        is(bytes[1], 0x61);
-        is(bytes[2], 0x73);
-        is(bytes[3], 0x6d);
-        await WebAssembly.compile(bytes);
-    }
+for (const { name, body } of FLOATBEATS) test(`example: jukebox ${name} compiles to deployable wasm`, async () => {
+    const bytes = jz.compile(moduleSrc(body), { optimize: 3 });
+    is(bytes[0], 0x00);
+    is(bytes[1], 0x61);
+    is(bytes[2], 0x73);
+    is(bytes[3], 0x6d);
+    await WebAssembly.compile(bytes);
 });
 
 // V8-parity ratchet. Every jukebox voice compiles faster than V8's JS-JIT of the same

@@ -2,10 +2,54 @@
 // (Number()/parseFloat/unary +/String()), and template-literal interpolation.
 // String-method tests (charAt/charCodeAt/at/search/match) live in strings.js.
 import test from 'tst'
-import { is } from 'tst/assert.js'
-import { run, cases, wat, funcWat } from './util.js'
-import { levels } from './_matrix.js'
+import { is, ok } from 'tst/assert.js'
+import { run, cases, wat, funcWat, oracle } from './util.js'
+import { levels, onWasi, onKernel } from './_matrix.js'
+import jz from '../index.js'
 import encodeWat from 'watr/compile'
+
+test("number formatting: shared modules preserve each other's retained strings", () => {
+  if (onWasi() || onKernel()) return
+  const src = `let saved = []
+    export function save(x) { saved.push(String(x)); return saved.length }
+    export function read() { return saved.join('|') }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const one = jz(src, { optimize, memory: jz.memory() })
+    const two = jz(src, { optimize, memory: one.memory })
+    const a = [], b = []
+    for (const [x, y] of [[0, -0], [999999, 1000000], [12.5, 12.5], [1e21, -1e-7], [7, Number.MAX_VALUE], [7, 0]]) {
+      a.push(String(x)); b.push(String(y))
+      is(one.exports.save(x), a.length)
+      is(two.exports.save(y), b.length)
+      is(one.exports.read(), a.join('|'), "the second module preserves the first module's strings")
+      is(two.exports.read(), b.join('|'), 'both modules keep independent formatting history')
+    }
+  }
+})
+
+test('number formatting: scratch reuse preserves retained strings and error recovery', () => {
+  const src = `let saved = []
+    export function save(x) {
+      const a = [String(x), String(x | 0), BigInt(x | 0).toString(16), x.toString(16)]
+      saved.push(a); return a.join('|')
+    }
+    export function decimal(x) { const s = String(x); saved.push([s]); return s }
+    export function read() { return JSON.stringify(saved) }
+    export function bad(x, radix) { try { return x.toString(radix) } catch (e) { return e.name } }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const ex = run(src, { optimize }), js = oracle(src)
+    is(ex.read(), '[]', 'zero formatting leaves an empty result list')
+    for (const value of [0, -0, 1, 999999, 1000000, -99999, -100000, 12.5, 12.5, 0.125, 12.5]) {
+      is(ex.save(value), js.save(value), 'short, long, repeated and changed values match JS')
+      is(ex.read(), js.read(), 'later scratch reuse leaves every retained result intact')
+    }
+    for (const value of [Number.MIN_VALUE, -Number.MIN_VALUE, Number.MAX_VALUE, 1e-7, 1e21, NaN, Infinity, -Infinity, 0])
+      is(ex.decimal(value), js.decimal(value), 'decimal boundary and non-finite values remain exact')
+    for (const radix of [1, 37, 0]) is(ex.bad(10, radix), 'RangeError', 'invalid radix fails before scratch allocation')
+    is(ex.save(12.5), js.save(12.5), 'formatting resumes after an error')
+    is(ex.read(), js.read(), 'old long strings survive short results, errors and recovery')
+  }
+})
 
 // === toString ===
 
@@ -87,6 +131,71 @@ test('Number: radix digits and sign survive reversal', () => {
     for (const radix of [2, 8, 16, 36])
       for (const n of [0, 1, -1, 17, -255, 1024, 2147483647, -2147483648, 4294967295, 1.5, -15.5])
         is(f(n, radix), n.toString(radix), `O${optimize}: ${n} in base ${radix}`)
+  }
+})
+
+test('number formatting: scratch becomes the result without retaining temporary storage', () => {
+  const src = `
+    export function dec(n) { return n.toString() }
+    export function int(n) { return String(n|0) }
+    export function radix(n, r) { return n.toString(r) }
+    export function big(n, r) { return BigInt(n).toString(r) }
+    let saved = ''
+    export function hold(n, r) { saved = n.toString(r) }
+    export function held() { return saved }
+    export function invalid(r) { try { return (17).toString(r) } catch (e) { return e.name } }
+  `
+  const rows = [
+    ...[0, -0, 42, 42, 999999, 1000000, -2147483648, 0.125, 1.23456789,
+      Number.MIN_VALUE, Number.MAX_VALUE, NaN, Infinity, -Infinity].map(n => ['dec', [n], String(n)]),
+    ...[0, 42, 999999, 1000000, -2147483648, 2147483647].map(n => ['int', [n], String(n)]),
+    ...[2, 8, 16, 36].flatMap(r => [0, -1, 123456789, -2147483648, 1.5, -15.5]
+      .map(n => ['radix', [n, r], n.toString(r)])),
+    ...[2, 10, 16, 36].flatMap(r => [0, 42, -2147483648, -(2 ** 63)]
+      .map(n => ['big', [n, r], BigInt(n).toString(r)]))
+  ]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) for (const alloc of [true, false]) {
+    const r = jz(src, { optimize, alloc })
+    // The raw ABI deliberately hides its private heap cursor. Its alias and
+    // value checks still run; measure allocation where the counter is exposed.
+    const heap = r.instance.exports.__heap
+    if (alloc) ok(heap, 'the owned allocator exposes its counter')
+    for (let round = 0; round < 2; round++) {
+      r.exports.hold(123456789, 2)
+      for (const [name, args, expected] of rows) {
+        const before = heap ? heap.value >>> 0 : 0
+        is(r.exports[name](...args), expected, `${name} ${args} O${optimize}`)
+        const resultBytes = expected.length <= 6 ? 0 : (4 + expected.length * 2 + 7) & ~7
+        if (heap) ok((heap.value >>> 0) - before <= resultBytes + 16, 'only the result and possible BigInt box remain')
+        is(r.exports.held(), (123456789).toString(2), 'later formatting preserves retained digits')
+      }
+      is(r.exports.invalid(1), 'RangeError')
+      is(r.exports.invalid(37), 'RangeError')
+      is(r.exports.radix(17, 2), '10001', 'formatting still works after a rejected radix')
+      if (alloc) r.instance.exports._clear()
+    }
+  }
+})
+
+test('number formatting: shared memories retain independent results across instances', () => {
+  if (onKernel()) return // Host memory wiring is outside the single-source kernel API.
+  for (const shared of [false, true]) {
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 128, shared })
+    const src = `let saved = ''; export function hold(n, r) { saved = n.toString(r) }
+      export function held() { return saved }
+      export function dec(n) { return n.toString() }
+      export function big(n) { return BigInt(n).toString(2) }`
+    const a = jz(src, { memory, sharedMemory: shared }), b = jz(src, { memory, sharedMemory: shared })
+    a.exports.hold(123456789, 2)
+    b.exports.hold(-123456789, 16)
+    for (const n of [0, 0, 123456789.125, Number.MIN_VALUE, -42]) {
+      is(a.exports.dec(n), String(n))
+      is(b.exports.dec(n), String(n))
+      is(a.exports.held(), (123456789).toString(2))
+      is(b.exports.held(), (-123456789).toString(16))
+    }
+    is(a.exports.big(-2147483648), (-2147483648n).toString(2))
+    is(b.exports.held(), (-123456789).toString(16))
   }
 })
 
@@ -340,5 +449,27 @@ test('Number/parseFloat: full decimal exponent range and high-product carries', 
     is(parse(''), NaN, 'empty parseFloat input')
     is(num('invalid'), NaN, 'invalid input')
     is(num('5e-324'), 5e-324, 'minimum subnormal after invalid input')
+  }
+})
+
+test('Number.isNaN retains the numeric proof across a nullable helper result', () => {
+  const src = `function maybe(k) {
+    if (k === 0) return null
+    if (k === -1) return undefined
+    if (k === 2) return 7
+    const b = new ArrayBuffer(8), u = new Uint32Array(b), f = new Float64Array(b)
+    u[1] = k === 3 ? 0xfffa0000 : 0x7ffa0000
+    u[0] = 32
+    return f[0]
+  }
+  export function f(k) {
+    const n = maybe(k), v = n != null ? n : 1
+    const record = {value: Number.isNaN(v) ? NaN : v}
+    return [Number.isNaN(n), Number.isNaN(v), String(record.value)]
+  }`
+  const native = new Function(src.replace('export ', '') + ';return f')()
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = run(src, { optimize })
+    for (const k of [0, 0, -1, 1, 1, 2, 3, 0]) is(f(k), native(k), `O${optimize}, input ${k}`)
   }
 })

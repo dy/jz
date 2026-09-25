@@ -118,14 +118,19 @@ if (flag('--worker')) {
       if (!WebAssembly.validate(bytes)) { error = 'output is not valid wasm'; bytes = null }
     } catch (e) { error = e.message }
     const ms = +(performance.now() - t0).toFixed(1)
-    const m = readMarks(k)
+    let m = { phases: [] }, diagnosticsError = null
+    try { m = readMarks(k) } catch (e) {
+      diagnosticsError = e.message
+      error = (error ? error + '; ' : '') + 'kernel diagnostics: ' + diagnosticsError
+      bytes = null
+    }
     const lastPhase = m.phases.length ? m.phases[m.phases.length - 1].name : null
     return {
       bytes, error, ms, completed: !error, heap: heap(k), memoryBytes: memBytes(k),
-      phasesDone: m.phasesDone, lastPhase,
+      phasesDone: m.phasesDone, lastPhase, phases: m.phases,
       stages: { front: m.heapFront, emit: m.heapEmit, optimize: m.heapOptimize, checkpoint: m.heapCheckpoint },
       // the stage the failure fell in: after the last completed stage mark, or after the last phase compileAst timed
-      failurePhase: error ? (m.heapCheckpoint ? 'encode' : m.heapOptimize ? 'checkpoint' : m.heapEmit ? 'watr' : m.heapFront ? `compileAst after ${lastPhase ?? 'front'}` : 'front') : null,
+      failurePhase: diagnosticsError ? 'diagnostics unavailable' : error ? (m.heapCheckpoint ? 'encode' : m.heapOptimize ? 'checkpoint' : m.heapEmit ? 'watr' : m.heapFront ? `compileAst after ${lastPhase ?? 'front'}` : 'front') : null,
     }
   }
   const results = (bytes, calls) => {
@@ -133,7 +138,7 @@ if (flag('--worker')) {
     return calls.map(([fn, a, expected]) => { let got; try { got = ex[fn](...a) } catch (e) { got = 'throws: ' + e.message } return { call: `${fn}(${a.map(x => JSON.stringify(x)).join(', ')})`, expected, got, ok: Object.is(got, expected) } })
   }
   const result = { gate, cases: [] }
-  const record = (r) => ({ ms: r.ms, completed: r.completed, heap: r.heap, memoryBytes: r.memoryBytes, phasesDone: r.phasesDone, lastPhase: r.lastPhase, stages: r.stages, error: r.error, failurePhase: r.failurePhase })
+  const record = (r) => ({ ms: r.ms, completed: r.completed, heap: r.heap, memoryBytes: r.memoryBytes, phasesDone: r.phasesDone, lastPhase: r.lastPhase, phases: r.phases, stages: r.stages, error: r.error, failurePhase: r.failurePhase })
 
   if (gate === 'functional') {
     const { programs, subgraphs } = corpus(size)
@@ -239,7 +244,7 @@ if (flag('--worker')) {
 
   result.status = deriveStatus(result.cases)
   result.peakRssMiB = +(process.resourceUsage().maxRSS / 1024).toFixed(1)
-  process.stdout.write('\n' + JSON.stringify(result) + '\n')
+  await new Promise(resolve => process.stdout.write('\n' + JSON.stringify(result) + '\n', resolve))
   process.exit(0)
 }
 

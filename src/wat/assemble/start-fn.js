@@ -14,7 +14,7 @@ import { DBG_INVARIANTS, assertCtxInvariants } from '../../debug.js'
  */
 
 import { ctx, inc, resolveIncludes, PTR, declGlobal } from '../../ctx.js'
-import { T, walkAst } from '../../ast.js'
+import { T, walkAst, beginAssignedMemo, endAssignedMemo } from '../../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../../compile/active-function.js'
 import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan, retireFunctionPlan } from '../../compile/function-plan.js'
@@ -23,7 +23,7 @@ import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
 import { mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { staticArrayPtr } from '../../../module/array.js'
-import { enumView, viewsOn, enumViewsOn } from '../../../module/schema.js'
+import { enumView, enumViewsOn } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
 import { dataLen, dataAlign, dataPush, pushStaticSlots } from '../../static-data.js'
 
@@ -336,6 +336,9 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   const outerFrame = enterPreparedFunction(ctx, startPlan)
   try {
   const moduleInits = []
+  let init
+  beginAssignedMemo()
+  try {
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
     ctx.func.repsFrozen = true
     if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
@@ -347,7 +350,8 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // single bare expression cannot leave a value on the start stack.
   ctx.func.repsFrozen = true
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
-  const init = emitVoid(ast)
+  init = emitVoid(ast)
+  } finally { endAssignedMemo() }
   ctx.func.repsFrozen = false
   ctx.func.atModuleScope = false
 
@@ -363,7 +367,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // An object literal's accessor: the host decodes such an object through the
   // data copy the module exports (collection.js __view_data), which reads the
   // schema and view tables.
-  if (viewsOn()) { inc('__view_data'); ctx.runtime.schemaTblConsumed = true }
+  if (viewsOf()) { inc('__view_data'); ctx.runtime.schemaTblConsumed = true }
 
   // Runtime tables serve transitive helpers too (for example hash_set's
   // dynamic object-store fallback), not just the helpers emission called.

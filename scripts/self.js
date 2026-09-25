@@ -14,14 +14,14 @@ import { DBG_INVARIANTS, assertCtxInvariants } from '../src/debug.js'
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, initWarnings } from '../src/ctx.js'
+import { ctx, initWarnings, setLinkDemand } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
-import { beginSession } from '../src/session.js'
+import { beginSession, configureDiagnostics } from '../src/session.js'
 import { assemble, linkAssembled, tailFacts } from '../src/compile/index.js'
 
 import {
-  emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
+  emit, emitter, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
 } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
 import { T } from '../src/ir/tape.js'
@@ -41,16 +41,10 @@ function optimizeTail(module, cfg, facts = tailFacts(cfg)) {
 // string, or per-pass object via resolveOptimize), falsy → optimize off.
 // Every public compile entry also accepts sourceType as its final ABI argument.
 //
-// clearDollar/clearStdlibParseCache: unlike resetProgramFactsCache (a WeakMap +
-// generation counter — stale entries just go unreachable), DOLLAR and
-// stdlibParseCache are plain Maps whose keys AND values are built fresh each
-// compile. Natively that's inert extra retention across repeated compile() calls
-// (real GC heap). In-kernel the arena is a bump allocator that `_clear` rewinds
-// between compiles (warm-instance reuse, see bench-self-compile.mjs JZ_BENCH_WARM) —
-// a post-`_clear` allocation can overwrite a dangling entry's bytes, so any entry
-// surviving a `_clear` is a correctness bug (wrong bytes read back), not just
-// waste. Must run every compile (not just after the first `_clear`) since it's
-// cheap and callers may `_clear` in any pattern.
+// beginSession resets the fact store and DOLLAR's backing Map each compile.
+// In-kernel these objects live in the bump arena: an entry retained across
+// _clear could otherwise point into reused storage.
+
 function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   resetMarks()
   const build = buildJSON ? JSON.parse(buildJSON) : null
@@ -61,7 +55,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   // injections remain here.
   beginSession({
     emitter, globals: GLOBALS,
-    hooks: { emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
+    hooks: { emit, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
     optimize: optJSON ? JSON.parse(optJSON) : false,
     strict: !!strict, host: host || undefined, alloc: build?.alloc,
   })
@@ -75,6 +69,14 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   // own build graph into a later user compile.
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
   if (build) {
+    configureDiagnostics(build)
+    if (build.imports) {
+      ctx.module.hostImports = build.imports
+      for (const mod of Object.values(build.imports))
+        for (const name of Object.keys(mod))
+          if (typeof mod[name] === 'string') mod[name] = Number(mod[name])
+    }
+    if (build.externalImports) setLinkDemand('external')
     if (typeof build.memory === 'number') ctx.memory.pages = build.memory
     if (build.compactCollections) ctx.transform.compactCollections = true
   }
@@ -238,7 +240,7 @@ const stageMarks = { time(name, fn) { const out = fn(); recordPhase(name); retur
  * @param {string} [optJSON] - optimize config as JSON (level / alias / per-pass object)
  * @returns {Uint8Array} compiled wasm bytes
  */
-export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
+function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
   const heapMark = __heap_mark()
   setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
   const ast = front(source, strict, sourceType)
@@ -258,21 +260,12 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host, 
   markStage(STAGE_OPTIMIZE)
   const checkpointed = __heap_large(heapMark) ? checkpoint(optimized) : optimized
   markStage(STAGE_CHECKPOINT)
-  return watrCompile(checkpointed)
+  return checkpointed
 }
 
-/**
- * WAT-text variant of the self-compile pipeline: source → WAT string (watr/print of the
- * same `compileAst(prepare(ast))` tree compileSelf encodes to bytes). Lets the
- * `JZ_TEST_TARGET=jz.wasm` leg satisfy white-box `compile(src,{wat:true}).match(...)`
- * codegen-shape assertions — the self-compile produces the same WAT IR as native, so the
- * shape checks validate self-compile codegen instead of failing as a feature gap. No
- * watr-level WAT optimization runs (matches optimize:false), mirroring native
- * `compile({wat:true, optimize:false})`.
- * @param {string} source - JS source
- * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
- * @returns {string} WAT text
- */
+export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
+  return watrCompile(compileModule(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON))
+}
 
 /**
  * Compile-time advisories variant: runs the same pipeline with the advisory sink
@@ -292,9 +285,10 @@ export function compileWarnings(source, strict, optJSON, modulesJSON, host, sour
   return JSON.stringify(sink.entries)
 }
 
+// Both output formats consume the same optimized, checkpointed module. Text
+// output must release dead analysis allocations before the printer grows strings.
 export function compileWat(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
-  setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
-  return watrPrint(optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize))
+  return watrPrint(compileModule(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON))
 }
 
 /**

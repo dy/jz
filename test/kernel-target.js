@@ -93,9 +93,31 @@ const modulesJSONFor = (self, opts) =>
 // opts.host ('wasi' | 'js') → plain string over the ABI; 0 = native undefined default.
 const hostFor = (self, opts) => opts.host ? self.memory.String(opts.host) : 0
 const sourceTypeFor = (self, opts) => opts.sourceType ? self.memory.String(opts.sourceType) : 0
-const buildJSONFor = (self, opts) => opts.alloc == null && typeof opts.memory !== 'number' ? 0 : self.memory.String(JSON.stringify({
-  alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
-}))
+const buildJSONFor = (self, opts) => {
+  if (!opts.imports && opts.alloc == null && typeof opts.memory !== 'number' && !opts.whyNotRewind && !opts.whyNotSimd) return 0
+  let imports, externalImports = false
+  if (opts.imports) {
+    imports = Object.create(null)
+    for (const [mod, members] of Object.entries(opts.imports)) {
+      const specs = Object.create(null)
+      // Constants may be non-enumerable (Math.PI). Numeric text preserves
+      // infinities, NaN and signed zero through the JSON ABI.
+      for (const name of Object.getOwnPropertyNames(members || {})) {
+        const value = members[name]
+        specs[name] = typeof value === 'function' ? {params: value.length}
+          : typeof value === 'number' ? (Object.is(value, -0) ? '-0' : String(value)) : value
+        if (typeof value === 'function') externalImports = true
+      }
+      imports[mod] = specs
+    }
+  }
+  // Implementations stay in the host; only signatures and constants travel.
+  return self.memory.String(JSON.stringify({
+    alloc: opts.alloc, memory: typeof opts.memory === 'number' ? opts.memory : undefined,
+    whyNotRewind: !!opts.whyNotRewind, whyNotSimd: !!opts.whyNotSimd,
+    imports, externalImports,
+  }))
+}
 
 const optJSONFor = (self, opts) => {
   if (opts.optimize === false || opts.optimize === 0) return 0
@@ -112,11 +134,17 @@ export const compileViaKernel = (code, opts = {}) => {
   // collected entries as JSON, which we splice into the caller's `warnings` sink.
   // Done on its own fresh instance, then we fall through to produce the bytes/WAT
   // (jz() compiles AND instantiates while reading advisories off the result).
-  if (opts.warnings) {
+  if (opts.warnings || typeof opts.whyNotRewind === 'function') {
     const w = instantiate(getSelfModule(), { memory: 8192 })
     const entries = JSON.parse(w.memory.read(w.exports.compileWarnings(w.memory.String(code), opts.strict ? 1 : 0, optJSONFor(w, opts), modulesJSONFor(w, opts), hostFor(w, opts), sourceTypeFor(w, opts), buildJSONFor(w, opts))))
-    opts.warnings.entries ||= []
-    opts.warnings.entries.push(...entries)
+    if (opts.warnings) {
+      opts.warnings.entries ||= []
+      opts.warnings.entries.push(...entries)
+      for (const entry of entries) opts.warnings.onWarning?.(entry)
+    }
+    if (typeof opts.whyNotRewind === 'function')
+      for (const entry of entries) if (entry.code === 'rewind-why-not') opts.whyNotRewind('$' + entry.fn, entry.reason)
+    reclaim()
   }
   const self = instantiate(getSelfModule(), { memory: 8192 })
   // `--wat` IS supported on this leg via the wasm's `compileWat` export: same

@@ -60,6 +60,7 @@ const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 // scriptc (vercel-labs) — TS/JS → native AOT (TypeScript-checker typing + LLVM,
 // C fallback lane; no engine unless --dynamic). npm: `npm i -g scriptc`.
 const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
+const PERRY_BIN = process.env.PERRY_BIN || 'perry'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
@@ -309,7 +310,7 @@ const parseLine = stdout => {
   return { medianUs: +m[1], checksum: (+m[2]) >>> 0, samples: +m[3], stages: +m[4], runs: +m[5] }
 }
 
-// Peak memory per run: every measured invocation is wrapped in /usr/bin/time
+// Peak memory per run: unbounded invocations are wrapped in /usr/bin/time
 // (BSD `-l` on darwin reports maxrss in BYTES, GNU `-v` on linux in KB), parsed
 // off stderr — the child's stdout metric line is untouched and the wrapper adds
 // no measurable overhead (it just reads the child's rusage). The number is peak
@@ -317,8 +318,11 @@ const parseLine = stdout => {
 // the case actually costs, the same footprint a deploy sees. No wrapper on the
 // host (CI images without GNU time) → memKb stays null and the page shows no
 // memory for those rows.
-const TIME_BIN = existsSync('/usr/bin/time') ? '/usr/bin/time' : null
 const TIME_ARGS = process.platform === 'darwin' ? ['-l'] : ['-v']
+// Restricted hosts can expose time(1) but deny its resource queries. Probe
+// the wrapper itself before letting its failure invalidate a correct program.
+const TIME_BIN = existsSync('/usr/bin/time') && spawnSync('/usr/bin/time',
+  [...TIME_ARGS, process.execPath, '-e', ''], { stdio: 'ignore' }).status === 0 ? '/usr/bin/time' : null
 const parseMaxRss = stderr => {
   let m = stderr.match(/(\d+)\s+maximum resident set size/)         // BSD (darwin): bytes
   if (m) return Math.round(+m[1] / 1024)
@@ -328,21 +332,20 @@ const parseMaxRss = stderr => {
 const positiveTiming = row => row?.medianUs > 0 && Number.isFinite(row.medianUs)
 
 const runProc = (argv, opts = {}) => {
-  // Caveat for future opts.timeout users: with the wrapper, a timeout kill hits
-  // time(1), which does not forward signals — the bench child would orphan and
-  // keep burning CPU under later rows. No lane passes a timeout today; if one
-  // must, run it unwrapped (memKb null) rather than risk a hot orphan.
-  const wrapped = TIME_BIN ? [TIME_BIN, ...TIME_ARGS, ...argv] : argv
+  // time(1) does not forward timeout signals. Kill bounded lanes directly,
+  // even when the executable handles or ignores SIGTERM.
+  const timed = TIME_BIN && !opts.timeout
+  const wrapped = timed ? [TIME_BIN, ...TIME_ARGS, ...argv] : argv
   const r = spawnSync(wrapped[0], wrapped.slice(1), {
     cwd: BENCH_DIR,
     encoding: 'utf8',
-    ...(opts.timeout ? { timeout: opts.timeout } : {}),
+    ...(opts.timeout ? { timeout: opts.timeout, killSignal: 'SIGKILL' } : {}),
   })
   if (r.error?.code === 'ETIMEDOUT') return { error: `timeout after ${opts.timeout}ms` }
   if (r.status !== 0) return { error: `exit ${r.status}: ${(r.stderr || r.stdout || r.signal || '').trim().slice(0, 240)}` }
   const parsed = parseLine(r.stdout)
   if (!parsed) return { error: `unparseable stdout: ${(r.stdout || r.stderr || '').trim().slice(0, 240)}` }
-  parsed.memKb = TIME_BIN && r.stderr ? parseMaxRss(r.stderr) : null
+  parsed.memKb = timed && r.stderr ? parseMaxRss(r.stderr) : null
   return parsed
 }
 
@@ -386,6 +389,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       const stamp = join(caseBuild(c), `.prep-${id}`)
       const identity = id === 'porf-native' ? porfIdentity() : ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
+        id !== 'perry' &&
         !(id === 'porf-native' && _porfCheckoutDirty)
       const artifact = targets[id]?.bin?.(c)
       let fresh = false
@@ -413,6 +417,8 @@ const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const porfFlatPath = c => join(caseBuild(c), `${c.id}-porf-flat.js`)
+const nativeFlatPath = c => join(caseBuild(c), `${c.id}-native-flat.js`)
+const perryBinPath = c => join(caseBuild(c), `${c.id}-perry`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
 const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
@@ -582,8 +588,8 @@ const compileJzSelfIsolated = c => {
 }
 
 const flatInputs = new Set()
-const writeFlat = (c, { nativePerformance = false } = {}) => {
-  const path = nativePerformance ? porfFlatPath(c) : flatPath(c)
+const writeFlat = (c, { nativePerformance = false, nativeGlobals = false } = {}) => {
+  const path = nativeGlobals ? nativeFlatPath(c) : nativePerformance ? porfFlatPath(c) : flatPath(c)
   if (flatInputs.has(path)) return path
   mkdirSync(caseBuild(c), { recursive: true })
   let out = `const __benchGlobal = typeof globalThis !== 'undefined' ? globalThis : this
@@ -675,15 +681,16 @@ if (typeof TextEncoder === 'undefined') {
   } else {
     body += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   }
-  const contents = out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '') + body
+  // Native compilers with their own Web globals need no shell polyfills.
+  const contents = (nativeGlobals ? '' : out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '')) + body
   if (!existsSync(path) || readFileSync(path, 'utf8') !== contents) writeFileSync(path, contents)
   flatInputs.add(path)
   return path
 }
-const runFlat = (id, c, argv, prep = null, options) => {
+const runFlat = (id, c, argv, prep = null, { timeout, ...options } = {}) => {
   const src = writeFlat(c, options)
   return tryRun(id, c, prep ? () => prep(src) : null, argv(src),
-    prep ? { cacheInputMtime: statSync(src).mtimeMs } : {})
+    { ...(prep ? { cacheInputMtime: statSync(src).mtimeMs } : {}), ...(timeout && { timeout }) })
 }
 // esbuild is a devDependency used only by the flat-file writer for module-graph
 // cases — loaded lazily so plain corpus runs never touch it.
@@ -970,6 +977,17 @@ const targets = {
       execFileSync(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env })
     }),
   },
+  perry: {
+    name: 'Perry → native (LLVM)',
+    available: () => has(PERRY_BIN),
+    bin: perryBinPath,
+    run: c => runFlat('perry', c, () => [perryBinPath(c)], src => {
+      execFileSync(PERRY_BIN, ['compile', src, '-o', perryBinPath(c), '--fp-contract', 'off', '--cache-dir', join(BUILD, 'perry-cache')], {
+        cwd: caseBuild(c), stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
+        env: { ...process.env, PERRY_NO_UPDATE_CHECK: '1', PERRY_UPDATE_MODE: 'off' },
+      })
+    }, { nativeGlobals: true, timeout: 60_000 }),
+  },
   graaljs: {
     name: 'GraalJS',
     available: () => !!graalJsBin(),
@@ -1167,6 +1185,7 @@ const TARGET_CMDS = {
   graaljs: 'graaljs <case>-flat.js',
   'porf-native': 'porf native <case>-porf-flat.js -o <case>-porfnat  (AOT via C, cc -flto) → run binary',
   scriptc: 'scriptc build <case>-flat.js -o <case>-scriptc  (static AOT: TS-checker typing + LLVM, no engine) → run binary',
+  perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
@@ -1263,12 +1282,13 @@ if (process.exitCode) process.exit(process.exitCode)
 for (const id of selectedTargets) if (!targets[id]) { console.error(`unknown target: ${id}`); process.exit(2) }
 for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case: ${id}`); process.exit(2) }
 
-// Stored evidence, loaded once up front (cheap — one small JSON read):
+// Stored evidence, loaded before any write:
 //   PREV   — the file already at JSON_PATH, if any. --merge's own scope: it
 //            only activates "when results.json already exists at the target
 //            path" (design Piece 1). Also the first parity authority below;
 //            every refresh scores against an established reference checksum,
 //            never a majority vote over the rows this run happens to touch.
+//   CANONICAL — committed checksums also fill holes in an older failed snapshot.
 //   ANCHOR_BASE — PREV if present, else the canonical committed
 //            bench/results.json — --verify-anchors' drift baseline (design
 //            Piece 2: "the fresh results.json at HEAD is the anchor
@@ -1279,7 +1299,8 @@ const loadJson = p => { try { return JSON.parse(readFileSync(p, 'utf8')) } catch
 const CANONICAL_RESULTS = join(BENCH_DIR, 'results.json')
 const JSON_EXISTS = !!(JSON_PATH && existsSync(JSON_PATH))
 const PREV = JSON_EXISTS ? loadJson(JSON_PATH) : null
-const ANCHOR_BASE = PREV || (existsSync(CANONICAL_RESULTS) ? loadJson(CANONICAL_RESULTS) : null)
+const CANONICAL = loadJson(CANONICAL_RESULTS)
+const ANCHOR_BASE = PREV || CANONICAL
 
 // --merge shrink-guard (audit-#12 item 4): an agent's naive `--merge` once
 // silently degraded to a plain full-file overwrite when PREV failed to load
@@ -1310,7 +1331,12 @@ const grid = {}
 const FMA_CHECKSUMS = {
   biquad: 3650557234, fft: 4196606268, synth: 1018085448,
   nbody: 587496398, lorenz: 1903597547, raytrace: 2776628753,
+  // Native Go and Porffor arm64; disabling only FMA restores 1711808418 in both.
+  resample: [3397518485, 3638658781],
 }
+// New cases need an independent oracle before their first measured snapshot.
+// entity agrees across native C, Node, JZ, Go-Wasm and Porffor (2026-09-24).
+const REFERENCE_CHECKSUMS = { entity: 1275530752 }
 // The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
 // (Rust/Go/C/Zig compiled to wasm, AssemblyScript — all run in node's V8,
 // apples-to-apples with jz), V8 (plain JS), and Porffor (the 2026 rewrite:
@@ -1328,12 +1354,15 @@ const SVG_TARGETS = [
   { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
   { id: 'porf-native', label: 'Porffor', sub: 'JS → C, AOT' },
+  { id: 'perry', label: 'Perry', sub: 'JS → LLVM, AOT' },
   { id: 'v8', label: 'V8', sub: 'Node (JS)' },
   { id: 'nat', label: 'native C', sub: 'clang -O3, ref' },
 ]
 
 for (const cid of selectedCases) {
   const c = caseById[cid]
+  // A failed measurement cannot erase its oracle or make a later result its own reference.
+  const refCs = PREV?.cases?.[cid]?.ref ?? CANONICAL?.cases?.[cid]?.ref ?? REFERENCE_CHECKSUMS[cid] ?? null
   console.log(`\n# ${c.name} (${c.id})`)
   const results = []
   // Targets that were AVAILABLE (toolchain present + source exists) but failed to
@@ -1378,7 +1407,12 @@ for (const cid of selectedCases) {
           recordFailure(tid, `counted run checksums differ: ${rs.map(r => r.checksum).join(', ')}`)
           continue
         }
-        m.set(tid, { ...rs[0], medianUs: Math.round(rs.reduce((s, r) => s + r.medianUs, 0) / rs.length) })
+        m.set(tid, { ...rs[0],
+          medianUs: Math.round(rs.reduce((s, r) => s + r.medianUs, 0) / rs.length),
+          // RSS uses both positions too; a missing measurement stays missing.
+          memKb: rs.every(r => Number.isFinite(r.memKb) && r.memKb > 0)
+            ? rs.reduce((s, r) => s + r.memKb, 0) / rs.length : null,
+        })
       }
       rounds.push(m)
     }
@@ -1394,8 +1428,8 @@ for (const cid of selectedCases) {
       if (!rs.length) continue
       const med = [...rs].sort((a, b) => a.medianUs - b.medianUs)[rs.length >> 1]
       // memory: cross-round median (peak RSS is stable run-to-run; median kills a stray outlier)
-      const mems = rs.map(r => r.memKb).filter(x => x != null).sort((a, b) => a - b)
-      if (mems.length) med.memKb = mems[mems.length >> 1]
+      const mems = rs.map(r => r.memKb)
+      med.memKb = mems.every(x => x != null) ? mems.sort((a, b) => a - b)[mems.length >> 1] : null
       console.log(`[paired] ${tid.padEnd(targetIdWidth)} rounds ${rs.map(r => r.medianUs).join(' ')} µs → median ${med.medianUs} µs  cs=${med.checksum}`)
       results.push(med)
     }
@@ -1431,7 +1465,7 @@ for (const cid of selectedCases) {
   // making the page and provenance lie about what this run just observed.
   if (!results.length) {
     if (JSON_PATH && failures.length) jsonOut.cases[c.id] = {
-      name: c.name,
+      name: c.name, ref: refCs,
       targets: Object.fromEntries(failures.map(f => [f.id, { status: 'fail', reason: f.reason }])),
     }
     continue
@@ -1452,16 +1486,15 @@ for (const cid of selectedCases) {
   }
 
   for (const r of results) r.bytes = sizeOf(r.id)
-  // Known FMA-fusion parity classes (Go's arm64 backend force-fuses a*b+c to
-  // FMADDD — no flag to disable it — so its recurrence/butterfly rounding differs
-  // by the last ulp; still IEEE-correct, same algorithm). One alternate checksum
-  // per case, measured on arm64.
+  // Known FMA-fusion parity classes (Go's arm64 backend fuses a*b+c to
+  // FMADDD by default, so its recurrence/butterfly rounding differs
+  // by the last ulp; still IEEE-correct, same algorithm). Each alternative is
+  // independently verified; different backends can fuse different operations.
   const fmaCs = FMA_CHECKSUMS[c.id]
 
   // A checksum becomes evidence only against an established reference. Full
   // refreshes retain the prior canonical answer just like partial merges; a
   // new case with no reference stays unclassified until its oracle is pinned.
-  const refCs = PREV?.cases?.[cid]?.ref ?? ANCHOR_BASE?.cases?.[cid]?.ref ?? null
   const parityOf = checksum => classifyBenchmarkChecksum(checksum, refCs, fmaCs)
   const correctResults = results.filter(r => {
     const parity = parityOf(r.checksum)
@@ -1575,7 +1608,8 @@ if (VERIFY_ANCHORS) {
       continue
     }
     const ref = ANCHOR_BASE.cases[cid]?.ref
-    if (!positiveTiming(r) || ref == null || (r.checksum !== ref && r.checksum !== FMA_CHECKSUMS[cid])) {
+    const parity = classifyBenchmarkChecksum(r.checksum, ref, FMA_CHECKSUMS[cid])
+    if (!positiveTiming(r) || ref == null || (parity !== 'ok' && parity !== 'fma')) {
       const reason = !positiveTiming(r) ? `invalid median_us=${r.medianUs}`
         : ref == null ? 'missing checksum reference' : `checksum ${r.checksum} differs from reference ${ref}`
       console.log(`FAIL: ${reason}`)
@@ -1618,7 +1652,7 @@ if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases)) 
     }
     if (!ratios.length) continue
     const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
-    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf-native' ? `native, runs ${ratios.length} / ${geoCases.length}` : t.sub })
+    rows.push({ label: t.label, ratio: geo, sub: ['porf-native', 'perry'].includes(t.id) ? `native, runs ${ratios.length} / ${geoCases.length}` : t.sub })
   }
   if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases, rows)) {
     renderBenchSvg(rows, geoCases.length)
@@ -1689,13 +1723,14 @@ if (JSON_PATH) {
       // Includes checkout HEAD when available; also invalidates the prep cache.
       porffor: has(PORF_BIN) && porfIdentity(),
       scriptc: has(SCRIPTC_BIN) && ver(SCRIPTC_BIN),
+      perry: has(PERRY_BIN) && ver(PERRY_BIN),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
       clang: has('clang') && ver('clang'),
     }).filter(([, v]) => v)),
     invocations: Object.fromEntries([...usedTargets].filter(tid => TARGET_CMDS[tid]).map(tid => [tid, TARGET_CMDS[tid]])),
     // memKb methodology: peak RSS of the whole per-case process (engine + module),
-    // read from the child's rusage via the time(1) wrapper around every measured run.
+    // read from the child's rusage via time(1); bounded runs leave memKb null.
     ...(TIME_BIN && { memory: `peak RSS per process run (${TIME_BIN} ${TIME_ARGS[0]})` }),
     // machineState (audit-#13 hygiene item 2b): captured on every timing write,
     // not gated on --merge/--verify-anchors — swap/uptime/load/powermode are

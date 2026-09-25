@@ -215,7 +215,7 @@ export function callbackArgReps(arr) {
   return [itemRep, idxRep, arrRep]
 }
 
-export function idxF64(i) { return typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64') }
+function idxF64(i) { return typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64') }
 // Skip f64-convert when callback's index param is unused — saves per-iteration conversion.
 export function idxArg(cb, i, slot = 1) {
   return cb.usedParams && !cb.usedParams[slot] ? null : idxF64(i)

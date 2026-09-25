@@ -1,9 +1,8 @@
 /**
- * A function on the tape, as the body passes see it: its declarations and
- * its statements, the statements of a structured node, the effect class of
- * an instruction, and the tallies of its locals. A pass over a function is a
- * loop over statement lists; the interned ops it compares against are looked
- * up once per pass (the tape's symbols reset per compile).
+ * A function on the tape, as the body passes see it: its declarations, its
+ * statements and the effect class of an instruction. A pass over a function
+ * is a loop over statement lists; the interned ops it compares against are
+ * looked up once per pass (the tape's symbols reset per compile).
  *
  * @module optimize/fn
  */
@@ -36,19 +35,6 @@ export function bodyOf(f) {
   return NONE
 }
 
-/** The statements of a structured node: past a block's or loop's label and
- *  types, an `if`'s condition (its arms are `then`/`else` nodes of their own). */
-export function stmtsOf(node) {
-  const op = T.syms[T.op[node]]
-  let c = T.a[node]
-  if (op === 'func') return bodyOf(node)
-  if (op === 'block' || op === 'loop') {
-    while (c !== NONE && (T.op[c] === OP_STR || T.syms[T.op[c]] === 'result' || T.syms[T.op[c]] === 'type' || T.syms[T.op[c]] === 'param')) c = T.next[c]
-    return c
-  }
-  return c   // then, else
-}
-
 /** Effect classes of an instruction. */
 export const FX = { PURE: 0, GET: 1, SET: 2, TEE: 3, GLOBAL_GET: 4, GLOBAL_SET: 5, LOAD: 6, STORE: 7, CALL: 8, CONTROL: 9, TRANSFER: 10 }
 let fxCache = new Int8Array(0), fxSyms = null   // the class per op symbol, for the symbol table it was built on
@@ -79,23 +65,6 @@ export function fxOf(id) {
 /** The name atom of a local instruction (`local.get $x`): its symbol id, or NONE. */
 export const nameOf = (id) => { const c = T.a[id]; return c !== NONE && T.op[c] === OP_STR ? T.sym[c] : NONE }
 
-/** Sets, gets and tees per local symbol over the subtree at `root` (and its siblings when `withSiblings`). */
-export function tallies(root, withSiblings = false) {
-  const sets = new Map(), gets = new Map(), tees = new Map()
-  const count = (map, id) => { const n = nameOf(id); map.set(n, (map.get(n) || 0) + 1) }
-  const stack = [root]
-  if (withSiblings) for (let s = T.next[root]; s !== NONE; s = T.next[s]) stack.push(s)
-  while (stack.length) {
-    const id = stack.pop()
-    const fx = fxOf(id)
-    if (fx === FX.SET) count(sets, id)
-    else if (fx === FX.GET) count(gets, id)
-    else if (fx === FX.TEE) count(tees, id)
-    for (let c = T.a[id]; c !== NONE; c = T.next[c]) stack.push(c)
-  }
-  return { sets, gets, tees }
-}
-
 /** Whether the subtree at `id` holds a v128 instruction. */
 export function hasV128(id) {
   const stack = [id]
@@ -107,16 +76,6 @@ export function hasV128(id) {
   return false
 }
 
-/** Drop the `(local $name ty)` declarations of `names` (symbol ids) from the function `f`. */
-export function dropLocals(f, names) {
-  const LOCAL = intern('local')
-  let prev = T.a[f]
-  for (let c = T.next[prev]; c !== NONE; c = T.next[c]) {
-    if (T.op[c] === LOCAL && names.has(T.sym[T.a[c]])) { T.next[prev] = T.next[c]; continue }
-    prev = c
-  }
-}
-
 /** The number payload of an `i32.const` at `id`, or null. */
 export function i32Const(id) {
   if (id === NONE || T.syms[T.op[id]] !== 'i32.const') return null
@@ -126,27 +85,3 @@ export function i32Const(id) {
   const s = text(v)
   return s === null ? null : Number(s)
 }
-
-/** Whether the statements from `first` (and their siblings) branch to the label symbol `label`
- *  (a `br`, a `br_table`, a `try_table` catch clause), outside a nested block or loop of the same label. */
-export function targetsLabel(first, label) {
-  const BR = intern('br'), BR_IF = intern('br_if'), BR_TABLE = intern('br_table'), BLOCK = intern('block'), LOOP = intern('loop')
-  const CATCH = intern('catch'), CATCH_REF = intern('catch_ref'), CATCH_ALL = intern('catch_all'), CATCH_ALL_REF = intern('catch_all_ref')
-  const second = (n) => T.a[n] === NONE ? NONE : T.next[T.a[n]]
-  const named = (c) => c !== NONE && T.op[c] === OP_STR && T.sym[c] === label
-  const stack = []
-  for (let s = first; s !== NONE; s = T.next[s]) stack.push(s, 0)
-  while (stack.length) {
-    const shadowed = stack.pop(), n = stack.pop(), op = T.op[n]
-    if (op < 0) continue
-    const inner = shadowed || ((op === BLOCK || op === LOOP) && named(T.a[n])) ? 1 : 0
-    if (!shadowed) {
-      if (op === BR || op === BR_IF || op === CATCH_ALL || op === CATCH_ALL_REF) { if (named(T.a[n])) return true }
-      else if (op === CATCH || op === CATCH_REF) { if (named(second(n))) return true }
-      else if (op === BR_TABLE) { for (let c = T.a[n]; c !== NONE && T.op[c] === OP_STR; c = T.next[c]) if (T.sym[c] === label) return true }
-    }
-    for (let c = T.a[n]; c !== NONE; c = T.next[c]) stack.push(c, inner)
-  }
-  return false
-}
-

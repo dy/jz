@@ -9,11 +9,10 @@
 //
 // Checksum parity: on amd64 Go matches the scalar f64 reference.
 // On arm64, Go's SSA backend auto-fuses `a*b + c` to FMADDD (mandatory in
-// ARMv8); there is no flag to disable this short of `-N` which would kill
-// optimization. The cascade then yields a different (but still IEEE-754
-// correctly-rounded) checksum. The bench harness reports this as `fma` parity
-// rather than `DIFF`. Same situation as Rust on arm64 without
-// `-C target-feature=-fma`.
+// ARMv8). With default compiler settings, the cascade yields a different
+// (but still IEEE-754 correctly-rounded) checksum. The bench harness reports
+// this as `fma` parity rather than `DIFF`. Same situation as Rust on arm64
+// without `-C target-feature=-fma`.
 package main
 
 import (

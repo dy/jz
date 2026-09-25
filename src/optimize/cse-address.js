@@ -21,7 +21,8 @@ import { findBodyStart, nextLocalId } from '../ir.js'
  *     a var is alive after the `if` only if alive in BOTH arms with the same region
  *     (so the same tee was reachable on every path).
  *   - `loop` body walks with empty alive (next iteration may re-enter after a write)
- *   - `block` is sequential (br jumps out, never in)
+ *   - structured exits and exception handlers close regions: an exit can
+ *     bypass the first site before reaching a use beyond its block
  *
  * Threshold: a region is committed only when it has ≥2 sites. Singleton regions
  * (one tee with no follow-up gets) are pure cost and skipped.
@@ -59,7 +60,8 @@ export function hoistPtrType(fn) {
  *    - `if`/`else` arms walk independently from the if-entry open set; after
  *      the if, a region is open iff it was open on BOTH arms (same region ref).
  *    - `loop` clears open before AND after — back edges may skip the original tee.
- *    - `block` / func body — sequential walk.
+ *    - a block containing an abrupt exit never exports a cached value;
+ *      exception handlers enter independently of normal completion.
  *
  *  `matchSite(node, parent, pi)` returns `{ key, deps }` for a CSE-able site
  *  (key is a stable string; deps lists locals whose writes invalidate this key)
@@ -75,6 +77,7 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
   const open = new Map()
   // local-name → keys depending on it (so `local.set X` closes all dependent keys).
   const localToKeys = new Map()
+  let exits = 0
 
   const addDep = (name, key) => {
     let s = localToKeys.get(name)
@@ -91,6 +94,8 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
   const walk = (node, parent, pi) => {
     if (!Array.isArray(node)) return
     const op = node[0]
+    if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return' ||
+        op === 'throw' || op === 'rethrow' || op === 'try_table') exits++
 
     const m = matchSite(node, parent, pi)
     if (m) {
@@ -151,7 +156,15 @@ function regionTrackCSE(fn, { matchSite, localPrefix, localType }) {
       return
     }
 
-    if (op === 'loop') {
+    if (op === 'block') {
+      const before = exits
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      if (exits !== before) open.clear()
+      return
+    }
+
+    if (op === 'loop' || op === 'try' || op === 'try_table' ||
+        (typeof op === 'string' && op.startsWith('catch'))) {
       open.clear()
       for (let i = 1; i < node.length; i++) walk(node[i], node, i)
       open.clear()

@@ -6,7 +6,15 @@ name: bench
 # identical builds up to 15× slower, so timing is asserted off-CI where the
 # release discipline runs `npm run test:bench` on stable hardware (test/bench.js
 # okTiming).
+# Manual reference runs additionally enforce every claim against fresh paired
+# measurements and retain the source-pinned dataset and failures as artifacts.
 on:
+  workflow_dispatch:
+    inputs:
+      reference:
+        description: Measure fresh release evidence and enforce speed, size and memory claims
+        type: boolean
+        default: true
   push:
     paths-ignore:
       - '**/*.md'
@@ -30,20 +38,19 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     # The publish step commits bench/results-ci.json back to main;
     # the default GITHUB_TOKEN is read-only and 403s that push without this.
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - run: npm install
-      # Zig native reference rows (cases with a .zig baseline).
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.13.0
+          node-version: ${{ inputs.reference && '24' || '22' }}
+      - run: npm ci
       # Extra "Run as JS" runtimes (Deno, Bun). bench.mjs gates every target on
       # `available`, so a missing tool just drops its row — additive, never fails.
       - uses: denoland/setup-deno@v2
@@ -59,10 +66,9 @@ jobs:
       # NumPy native-reference rows (python3 is preinstalled on ubuntu).
       - name: install numpy
         run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
-      # GNU time provides /usr/bin/time — bench.mjs wraps every measured run in it
-      # to read peak RSS (the memKb column). Non-fatal: absent, memKb stays null.
-      - name: install GNU time
-        run: sudo apt-get install -y time || true
+      # GNU time supplies RSS; SIMDe supplies wasm2c's SIMD headers.
+      - name: install measurement and native headers
+        run: sudo apt-get install -y time libsimde-dev
       # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
       - name: install wasmtime
         run: |
@@ -79,6 +85,10 @@ jobs:
       # TinyGo (the lean go→wasm rival — a separate row from go-wasm's stock
       # toolchain). Match PLAN's pinned release and smoke-build wasip1 so a
       # Go-version mismatch fails here instead of removing a required rival.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
       - name: install tinygo
         run: |
           curl -fsSL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.42.0/tinygo_0.42.0_amd64.deb
@@ -111,34 +121,77 @@ jobs:
           echo "PORF_BIN=$HOME/.local/bin/porf" >> "$GITHUB_ENV"
       - name: expose toolchains on PATH
         run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: install Perry 0.5.1520
+        run: |
+          npm install --global @perryts/perry@0.5.1520
+          echo "PERRY_BIN=$(command -v perry)" >> "$GITHUB_ENV"
+          echo "PERRY_NO_UPDATE_CHECK=1" >> "$GITHUB_ENV"
+          echo "PERRY_UPDATE_MODE=off" >> "$GITHUB_ENV"
+          perry --version
       - name: versions
         run: |
           node --version
           asc --version || true
           "$PORF_BIN" --version
+          "$PERRY_BIN" --version
           wasm-opt --version || true
+      - name: Perry native smoke (checksum-verified)
+        run: |
+          node bench/bench.mjs --targets=perry --cases=alpha --json="$RUNNER_TEMP/perry-smoke.json"
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs'
+          const r = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/perry-smoke.json`, 'utf8'))
+          const row = r.cases.alpha?.targets.perry
+          if (row?.parity !== 'ok' || !(row.medianUs > 0) || !(row.bytes > 0))
+            throw new Error(`Perry smoke failed: ${JSON.stringify(row)}`)
+          JS
+      - name: install wasm2c (wabt prebuilt)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/wabt.tar.gz" https://github.com/WebAssembly/wabt/releases/download/1.0.41/wabt-1.0.41-linux-x64.tar.gz
+          tar xzf "$RUNNER_TEMP/wabt.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP"/wabt-1.0.41/bin/wasm2c --version
+          echo "$RUNNER_TEMP/wabt-1.0.41/bin" >> "$GITHUB_PATH"
+          echo "WABT_W2C_DIR=$RUNNER_TEMP/wabt-1.0.41/share/wabt/wasm2c" >> "$GITHUB_ENV"
       - run: npm run test:bench
+        if: ${{ !inputs.reference }}
+      # Same-machine, alternating paired rounds. The strict claims gate reads
+      # these fresh files; CI does not turn a timing loss into an informational row.
+      - name: measure release reference
+        if: ${{ inputs.reference }}
+        shell: bash
+        run: |
+          node bench/bench.mjs --targets=jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,porf-native,v8,deno,bun,jsc,jz-w2c --paired=6 --json="$RUNNER_TEMP/reference.json" 2>&1 | tee "$RUNNER_TEMP/reference.log"
+      - name: enforce release claims
+        if: ${{ inputs.reference }}
+        shell: bash
+        env:
+          JZ_BENCH_RESULTS: ${{ runner.temp }}/reference.json
+        run: node test/bench-claims.js 2>&1 | tee "$RUNNER_TEMP/claims.log"
+      - name: retain release evidence
+        if: ${{ always() && inputs.reference }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reference-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/reference.json
+            ${{ runner.temp }}/reference.log
+            ${{ runner.temp }}/claims.log
+          if-no-files-found: error
       # ── native-lane smoke gate (audit-#12 step 4) ──────────────────────────
-      # jz-w2c/jz-w2c2 are NOT installed for the main test:bench run above (kept
-      # scoped to this step's own env — the full corpus stays on the reference
-      # machine's toolchain, unchanged runtime/risk for every other CI run).
       # This proves both native translators still (a) build, (b) run, (c) match
       # jz's own checksum on a few representative cases — the regression a
       # translator-side codegen bug (like audit-#12's wasm2c `return_call`
       # opcode-0x12 defect) would trip. nqueens is that exact repro case, kept
       # in the smoke set as a permanent regression guard for it.
-      - name: install wasm2c (wabt prebuilt)
-        run: |
-          curl -sL -o "$RUNNER_TEMP/wabt.tar.gz" https://github.com/WebAssembly/wabt/releases/download/1.0.41/wabt-1.0.41-linux-x64.tar.gz
-          tar xzf "$RUNNER_TEMP/wabt.tar.gz" -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP"/wabt-1.0.41/bin/wasm2c --version
       - name: install w2c2 (build from source — no prebuilt/package exists)
+        if: ${{ !inputs.reference }}
         run: |
           git clone --depth 1 https://github.com/turbolent/w2c2.git "$RUNNER_TEMP/w2c2"
           cmake -B "$RUNNER_TEMP/w2c2/w2c2/build" "$RUNNER_TEMP/w2c2/w2c2"
           cmake --build "$RUNNER_TEMP/w2c2/w2c2/build" --target w2c2 -j
           "$RUNNER_TEMP/w2c2/w2c2/build/w2c2" -h
       - name: native-lane smoke (jz-w2c + jz-w2c2, checksum-verified)
+        if: ${{ !inputs.reference }}
         env:
           WABT_W2C_DIR: ${{ runner.temp }}/wabt-1.0.41/share/wabt/wasm2c
           W2C2_DIR: ${{ runner.temp }}/w2c2/w2c2
@@ -160,40 +213,31 @@ jobs:
             if (bad.length) { console.error("native-lane smoke FAILED:\n" + bad.join("\n")); process.exit(1); }
             console.log("native-lane smoke OK — jz-w2c + jz-w2c2 both build/run/checksum-match on", Object.keys(r.cases).length, "cases");
           '
-      # Refresh the bench-page dataset (results.json + bench.svg). Push-to-main
-      # only; the paths-ignore above keeps the commit from re-triggering this
-      # workflow. The page's live in-browser runner loads bench/web/*.wasm, which
-      # is NOT committed: pages.yml rebuilds it from source at deploy time
-      # (node bench/bench.mjs --emit-web) — same model as dist/ and example wasm.
-      # clang/rustc/go/zig are preinstalled on ubuntu runners, so every
-      # rival builds on the one consistent machine. The headline axis is wasm-in-V8
-      # (c-wasm/rust-wasm/go-wasm/zig-wasm — apples-to-apples with jz); native
-      # C/Rust/Go/Zig stay as a corpus reference band (the aggregate "what you give
-      # up by not rewriting" ceiling). Per case the page splits into a WASM lane and
-      # a Native lane (jz-w2c = jz lowered to native via wasm2c → clang, vs native
-      # toolchains). jz-w2c self-gates on wabt's wasm2c runtime + SIMDe headers
-      # (WABT_W2C_DIR / SIMDE_DIR); absent here, so it skips and the page's Native
-      # lane stays hidden until a wasm2c toolchain is wired into CI. Every target
-      # that runs lands in the dataset; index.html decides which lane shows it.
+      # Refresh the runner dataset on main; pages.yml redeploys on completion.
+      # Every available target is measured on this one machine. Browser-runner
+      # artifacts (bench/web/*.wasm) are rebuilt separately by pages.yml.
       - name: publish bench snapshot
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,jz,jz-wasmtime,jz-w2c,wat,numpy --json || exit 1
+          # Seed the checksum oracle from current reference evidence, not old CI
+          # results. This is a full refresh: all timings below come from this runner.
+          cp bench/results.json bench/results-ci.json
+          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
+          # A missing/failed Perry lane must not silently disappear from the page.
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs'
+          import { timedBenchmarkRow } from './assets/headline.js'
+          const r = JSON.parse(readFileSync('bench/results-ci.json', 'utf8'))
+          if (!timedBenchmarkRow(r.cases.alpha?.targets.perry))
+            throw new Error('Published snapshot is missing a checksum-verified Perry alpha timing')
+          JS
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          # PER-MACHINE datasets: bench/results.json is the REFERENCE-machine
-          # evidence (Apple M4, committed by the release discipline — the strict
-          # fastest-wasm claim and the jz-w2c native lane are scoped to it; this
-          # runner has no wasm2c toolchain and different V8 tiering, so letting
-          # it overwrite the reference file both dropped the native lane and
-          # made the headline numbers machine-dependent). The runner's own
-          # measurement is published as the SECONDARY dataset results-ci.json.
-          mv bench/results.json bench/results-ci.json
-          git checkout -- bench/results.json bench/bench.svg
+          # Keep the reference-machine evidence in results.json. Only the
+          # runner's results-ci.json is committed by this workflow.
           git add bench/results-ci.json
           git diff --cached --quiet || git commit -m 'bench: refresh results-ci.json (runner dataset) [skip ci]'
-          # Two waves pushed minutes apart both refresh the same GENERATED files —
-          # a plain rebase conflicts on the SVG and kills the run. `-X theirs`
+          # Overlapping runs refresh the same generated dataset. `-X theirs`
           # (in rebase terms: the commit being replayed, i.e. OUR snapshot) auto-
           # resolves. Retry covers a push landing mid-rebase. STALE GUARD: the
           # dataset measured $GITHUB_SHA — if main's newest SOURCE commit (skip
@@ -207,6 +251,8 @@ jobs:
               echo "stale snapshot: measured $GITHUB_SHA, main source tip is $latest_src — skipping publish"
               exit 0
             fi
-            git push && break
+            git push && exit 0
             git pull --rebase -X theirs origin main || { git rebase --abort || true; exit 1; }
           done
+          echo 'Could not publish the benchmark snapshot after 3 attempts' >&2
+          exit 1

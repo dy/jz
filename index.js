@@ -13,20 +13,22 @@
  *        track (object-literal schemas via ctx.schema.register)
  *   prepared AST: normalized, with `ctx.funcs.list` / `ctx.module.imports` / `ctx.schema.list`
  *     populated. Arrow bodies carry no type info yet.
- *     ↓  compile — drives per-function emit, interleaves analysis (locals/valTypes/captures/
- *        narrowing fixpoint) with IR generation via the emitter table (src/compile/emit.js).
+ *     ↓  compile (src/compile/index.js) — whole-program summary and plan, then per function:
+ *        analysis (locals/valTypes/captures/narrowing fixpoint) and IR generation via the
+ *        emitter table (src/compile/emit.js).
  *        Writes: `ctx.func.valTypes`/`.locals`, `ctx.types.*`, `ctx.runtime.*`, `ctx.core.includes`.
- *        The emit phase (src/wat/assemble.js optimizeModule) then runs jz's ONLY optimizer pass —
- *        optimizeFunc (src/optimize/index.js): `hoistPtrType` + fused peephole/inline/memarg walk +
- *        auto-vectorization. All lowering, incl. SIMD, happens here — BEFORE watr.
+ *        Module assembly (src/wat/assemble.js optimizeModule) runs jz's own per-function passes
+ *        once — optimizeFunc (src/optimize/driver.js): address CSE, LICM, the fused peephole
+ *        walk, auto-vectorization. All lowering, incl. SIMD, happens here, before watr.
+ *     ↓  link (src/link) — tape passes: loop rotation, folds, arena rewind, treeshake, ordering.
  *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
- *     ↓  watOptimize (opt-out via opts.optimize=false) — the SOLE, FINAL optimizer: CSE, DCE, const
- *        fold, inline, coalesce. Runs ONCE, as a fixpoint. No jz pass touches WAT after it (bar the
- *        stable-global-offset hoist, a phase-2 watr-migration candidate). See .work/evidence.md.
+ *     ↓  watrTail (src/optimize/watr-tail.js; opt-out via opts.optimize=false) — watr's optimizer,
+ *        the sole generic fixpoint (CSE, DCE, const fold, inline, coalesce), run once; then only
+ *        narrow, idempotent jz proof repairs (stable pointer/cell hoists, masked-suffix guards).
  *     ↓  watrPrint (opts.wat=true) → WAT text, or watrCompile → Uint8Array binary
  *
  * # State
- * Single shared `ctx` (src/ctx.js). Reset at compile() entry via `reset(emitter, GLOBALS)`.
+ * Single shared `ctx` (src/ctx.js). Reset per compile by beginSession (src/session.js).
  * Each subkey has a declared lifecycle + ownership — see ctx.js docstring for the table.
  *
  * # Extension
@@ -50,9 +52,9 @@ import watrPrint from "watr/print";
 import { ctx, err, warn, setLinkDemand, flushWarnings } from './src/ctx.js'
 import { GLOBALS } from './src/prepare/index.js'
 import { frontHalf } from './src/front.js'
-import { beginSession } from './src/session.js'
+import { configureDiagnostics, beginSession } from './src/session.js'
 import compile, { tailFacts } from './src/compile/index.js'
-import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
+import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from './src/compile/emit.js'
 import { watrTail } from './src/optimize/watr-tail.js'
 import jzify from './jzify/index.js'
 import {
@@ -453,7 +455,7 @@ const setupCtx = (code, opts) => {
     err(`Invalid host '${opts.host}'. Expected 'js' (default), 'wasi', or 'native'.`)
   }
   beginSession({
-    emitter, globals: GLOBALS, hooks: { emit, flat, body, bool, idx, spread, emitIdentitySafe },
+    emitter, globals: GLOBALS, hooks: { emit, bool, idx, spread, emitIdentitySafe },
     source: code, optimize: opts.optimize, warnings: opts.warnings, strict: opts.strict, host: opts.host, alloc: opts.alloc,
   })
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
@@ -577,17 +579,7 @@ const compilePipeline = (code, opts = {}) => {
     ctx.transform.optimize.slp = false
   }
 
-  // opts.whyNotSimd (CLI --why): emit a `simd-why-not` warning per
-  // canonical loop that the auto-vectorizer declined, naming the blocking op —
-  // a diagnostic to find loops that are "one op away" from SIMD. Rides the
-  // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
-  if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
-  // opts.whyNotRewind (CLI --why): why a function that could rewind
-  // its arena was declined — an escaping allocation, an unsafe callee, a host
-  // import, or no allocation at all (optimize/arena-rewind.js). `true` emits a
-  // `rewind-why-not` warning per function; a function receives (name, reason).
-  if (typeof opts.whyNotRewind === 'function') ctx.transform.whyNotRewind = opts.whyNotRewind
-  else if (opts.whyNotRewind) ctx.transform.whyNotRewind = (name, reason) => warn('rewind-why-not', `${name}: ${reason}`, { fn: name.slice(1) })
+  configureDiagnostics(opts)
 
   // opts.stencil: the neighbour-load stencil vectorizer (a[i±1] / 2-D 5-point).
   // Now default-on at optimize:'speed' (proven bit-exact corpus-wide); the opt is two-way so an

@@ -6,6 +6,68 @@ import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
 import { funcWat, oracle } from './util.js'
+import { scanIntervalIdx } from '../src/type/interval-proof.js'
+import { scanBoundedArrIdx } from '../src/type/canonical-bounds.js'
+import { typedIdxProven } from '../src/type/loop-versioning.js'
+import { ctx } from '../src/ctx.js'
+import { createActiveFunction } from '../src/compile/active-function.js'
+
+test('interval proof: existing bounds do not trigger a whole-body interval scan', () => {
+  if (onKernel()) return
+  for (const length of [1, 4, 4, 0, 1]) {
+    compile('')
+    const prior = ctx.func
+    const idx = ['+', 'i', 0], access = ['[]', 'dst', idx], twin = ['[]', 'dst', idx]
+    const body = [';', ['for', ['let', ['=', 'i', 0]], ['<', 'i', length], ['++', 'i'], access], twin]
+    ctx.func = createActiveFunction({ body })
+    ctx.func.typedLen = new Map([['dst', length]])
+    try {
+      if (length) {
+        is(typedIdxProven('dst', length - 1), true, 'the final valid constant index is proven')
+        is(typedIdxProven('dst', ['&', 'x', length - 1]), true, 'a fitting mask is proven')
+      }
+      ctx.facts.guardProven.add(access)
+      is(typedIdxProven('dst', idx, access), true, 'a guarded occurrence uses its own proof')
+      ok(!ctx.facts.ipProven.has(body), 'existing proofs leave interval analysis unallocated')
+      ctx.facts.guardProven.delete(access)
+      is(typedIdxProven('dst', idx, access), length > 0, 'a compound loop index falls back to occurrence analysis')
+      ok(ctx.facts.ipProven.has(body), 'a missing proof invokes the interval interpreter')
+      is(typedIdxProven('dst', idx, twin), false, 'the out-of-bounds twin cannot borrow the occurrence proof')
+      is(typedIdxProven('dst', -1), false, 'negative indices are rejected')
+      is(typedIdxProven('dst', length), false, 'the final boundary is rejected, including an empty array')
+      is(typedIdxProven(null, 0), false, 'an unknown receiver supplies no proof')
+    } finally { ctx.func = prior }
+  }
+})
+
+test('interval proof: canonical access nodes do not require structural keys', () => {
+  const access = ['[]', 'dst', 'i'], captured = ['[]', 'dst', 'i']
+  for (const start of [0, 0, -1]) {
+    const body = ['for', ['let', ['=', 'i', start]], ['<', 'i', ['.', 'dst', 'length']], ['++', 'i'],
+      [';', access, ['=>', 'x', captured]]]
+    const nodes = new Set()
+    scanBoundedArrIdx(body, null, null, nodes)
+    is([...nodes], start < 0 ? [] : [access], 'only the direct read under a nonnegative induction is proven')
+  }
+  const nodes = new Set()
+  scanBoundedArrIdx([';'], null, null, nodes)
+  is(nodes.size, 0, 'an empty body supplies no proof')
+})
+
+test('interval proof: scalar and missing-access results do not require an access-proof sink', () => {
+  for (const limit of [0, 1, 4, 4, 2, 5]) for (const out of [new Set(), null]) {
+    const access = ['[]', 'dst', 'i']
+    const call = ['()', 'take', 'i'], store = ['=', access, ['+', 'i', 1]]
+    const body = ['for', ['let', ['=', 'i', 0]], ['<', 'i', limit], ['++', 'i'], [';', call, store]]
+    const calls = new Map([[call, undefined]]), stores = new Map([[store, undefined]]), misses = new Map()
+    scanIntervalIdx(body, out, name => name === 'dst' ? 4 : null, null, calls, null, stores, misses)
+    is(calls.get(call), [limit ? [0, limit - 1] : null], `argument hull, limit ${limit}`)
+    is(stores.get(store), limit ? [1, limit] : null, `stored value hull, limit ${limit}`)
+    if (limit > 4) is(misses.get(access), [0, limit - 1, 4], 'the boundary miss retains its complete index hull')
+    else if (limit) ok(!misses.has(access), 'every executed access fits')
+  }
+  scanIntervalIdx([';'], null, () => null, null)
+})
 
 const GUARD = 'x >= 0 && x < 4 && y >= 0 && y < 4 && src[y * 4 + x] === 1'
 const KERNEL = `
@@ -103,6 +165,25 @@ const hasTypedBoundsTemp = wat => /\$[^\s)]*tb[in]\d*/.test(wat)
 // when propagation merges that temp into the index local, by the guard itself:
 // an unsigned compare against the constant length around the store.
 const CHECKED_STORE = /\(i32\.lt_u[\s\S]{0,400}?\(i32\.const \d+\)\s*\)\s*\(then\s*\((?:f32|f64|i32|i64)\.store/
+
+test('interval proof: control-flow joins retain unknown and out-of-bounds paths', () => {
+  for (const branch of [
+    'if (c) i = n; else i = 1',
+    'c ? i = n : i = 1',
+    'c && (i = n)',
+    'c || (i = n)',
+    'while (n-- > 0) { if (c) { i = 6; break } i = 2 }',
+  ]) {
+    const src = `const a = new Int32Array([11, 22, 33, 44]);
+      export function f(c, n) { let i = 0; ${branch}; return a[i] ?? -1 }`
+    const js = oracle(src)
+    for (const optimize of levels(0, 2, 3)) {
+      const wasm = jz(src, { optimize }).exports
+      for (const c of [0, 1, 1, 0]) for (const n of [-1, 0, 1, 3, 4, 8])
+        is(wasm.f(c, n), js.f(c, n), `O${optimize}: ${branch}, c=${c}, n=${n}`)
+    }
+  }
+})
 const userFuncs = wat => wat.split(/(?=\(func )/).filter(f => /^\(func \$(?!__)/.test(f)).join('\n')
 const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || CHECKED_STORE.test(userFuncs(wat))
 

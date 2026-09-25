@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, walkAst, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
+  some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -98,7 +98,7 @@ const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   const op = node[0]
   if (ASSIGN_OPS.has(op) && node[1] === name) return false
   if (isMemberWriteTarget(op, node, name)) return false
-  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (declaresName(node, name)) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   // Element write `name[idx] (op)= v` / `name[idx]++`: an out-of-bounds index
   // grows the array (sparse-array semantics), which the fixed scalar slot set
@@ -118,8 +118,8 @@ const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   return true
 }
 
-const rewriteScalarArrayUses = (node, arrays, parentOp = null) => {
-  if (!Array.isArray(node)) return node
+const rewriteScalarArrayUses = (node, arrays) => {
+  if (!Array.isArray(node) || !arrays.size) return node
   const op = node[0]
   if ((op === '.' || op === '?.') && arrays.has(node[1]) && node[2] === 'length') {
     return [, arrays.get(node[1]).length]
@@ -130,18 +130,21 @@ const rewriteScalarArrayUses = (node, arrays, parentOp = null) => {
     return idx != null && idx >= 0 && idx < elems.length ? elems[idx] : [, undefined]
   }
   if (op === '[') {
-    const out = ['[']
+    let out = null
     for (let i = 1; i < node.length; i++) {
       const item = node[i]
       if (Array.isArray(item) && item[0] === '...' && arrays.has(item[1])) {
+        out ||= node.slice(0, i)
         out.push(...arrays.get(item[1]))
       } else {
-        out.push(rewriteScalarArrayUses(item, arrays, op))
+        const child = rewriteScalarArrayUses(item, arrays)
+        if (child !== item && !out) out = node.slice(0, i)
+        if (out) out.push(child)
       }
     }
-    return out
+    return out || node
   }
-  return node.map((part, i) => i === 0 ? part : rewriteScalarArrayUses(part, arrays, op))
+  return rewriteChildren(node, rewriteScalarArrayUses, arrays)
 }
 
 const safeScalarObjectUse = (node, name, keys, statement = false) => {
@@ -155,7 +158,7 @@ const safeScalarObjectUse = (node, name, keys, statement = false) => {
     return props != null && props.names.length === keys.size && props.names.every(k => keys.has(k))
       && props.values.every(v => safeScalarObjectUse(v, name, keys))
   }
-  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (declaresName(node, name)) return false
   if ((op === '.' || op === '?.') && node[1] === name) return keys.has(node[2])
   if (op === '[]' && node[1] === name) {
     const key = staticPropertyKey(node[2])
@@ -172,7 +175,7 @@ const safeScalarObjectUse = (node, name, keys, statement = false) => {
 }
 
 const rewriteScalarObjectUses = (node, objects) => {
-  if (!Array.isArray(node)) return node
+  if (!Array.isArray(node) || !objects.size) return node
   const op = node[0]
   if (op === '=' && objects.has(node[1])) {
     const props = scalarObjectProps(node[2], false), fields = objects.get(node[1])
@@ -192,7 +195,7 @@ const rewriteScalarObjectUses = (node, objects) => {
     const fields = objects.get(node[1])
     return key != null ? (fields.get(key) ?? [, undefined]) : node
   }
-  return node.map((part, i) => i === 0 ? part : rewriteScalarObjectUses(part, objects))
+  return rewriteChildren(node, rewriteScalarObjectUses, objects)
 }
 
 const typedArraySlotIndex = (node, len) => {
@@ -207,7 +210,7 @@ const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (declaresName(node, name)) return false
   if (isMemberWriteTarget(op, node, name)) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   if (op === '[]' && node[1] === name) return typedArraySlotIndex(node[2], len) != null
@@ -327,20 +330,6 @@ const hasScalarTypedArrayRead = (node, name) => {
   return false
 }
 
-// Rebuild an AST node only after a child actually changes. The former four
-// scalarizers each allocated a throwaway copy for every visited node even on
-// their overwhelmingly common no-op path; a self-host bump arena could never
-// recover those copies between passes.
-const rewriteChangedChildren = (node, visit, state) => {
-  let out = null
-  for (let i = 1; i < node.length; i++) {
-    const child = visit(node[i], state)
-    if (child !== node[i] && !out) out = node.slice(0, i)
-    if (out) out.push(child)
-  }
-  return out || node
-}
-
 const scalarizeTypedArrayLiteralSeq = (seq) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
@@ -428,7 +417,7 @@ function scalarizeTypedArrayLiterals(node) {
   if (!Array.isArray(node)) return node
   if (node[0] === '=>') return node
   if (node[0] === ';') return scalarizeTypedArrayLiteralSeq(node)
-  return rewriteChangedChildren(node, scalarizeTypedArrayLiterals)
+  return rewriteChildren(node, scalarizeTypedArrayLiterals)
 }
 
 const containsTypedArrayAccess = (body, names) => some(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
@@ -489,7 +478,7 @@ const unrollTypedArrayLoops = (node, names) => {
       return out
     }
   }
-  return rewriteChangedChildren(node, unrollTypedArrayLoops, names)
+  return rewriteChildren(node, unrollTypedArrayLoops, names)
 }
 
 const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
@@ -768,7 +757,7 @@ function scalarizeObjectLiterals(node) {
     return body === node[2] ? node : [node[0], node[1], body]
   }
   if (node[0] === ';') return scalarizeObjectLiteralSeq(node)
-  return rewriteChangedChildren(node, scalarizeObjectLiterals)
+  return rewriteChildren(node, scalarizeObjectLiterals)
 }
 
 // === Whole-program constant fold of module-scope aggregate literals ===
@@ -787,6 +776,14 @@ const ASSIGN_OR_UPDATE = (op) => MUTATE_OPS.has(op)
 // lowers it to `let` inside functions), so fold it too — the reassignment guard
 // below keeps a re-bound `var` heap-backed.
 const isDeclOp = (op) => op === 'let' || op === 'const' || op === 'var'
+const declaresName = (node, name) => {
+  if (!isDeclOp(node[0])) return false
+  for (let i = 1; i < node.length; i++) {
+    const d = node[i]
+    if (d === name || (Array.isArray(d) && d[1] === name)) return true
+  }
+  return false
+}
 
 // Reject `delete x`, `delete x.k`, `delete x[k]` — a deletion mutates the aggregate.
 const isDeleteOf = (node, name) =>
@@ -800,7 +797,7 @@ const foldSafeArrayUse = (node, name, len) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (declaresName(node, name)) return false
   if (isDeleteOf(node, name)) return false
   if (ASSIGN_OR_UPDATE(op)) {
     const t = node[1]
@@ -818,7 +815,7 @@ const foldSafeObjectUse = (node, name, keys) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (isDeclOp(op) && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if (declaresName(node, name)) return false
   if (isDeleteOf(node, name)) return false
   if (ASSIGN_OR_UPDATE(op)) {
     const t = node[1]
@@ -950,7 +947,8 @@ export function foldStaticConstAggregates(ast) {
     const rw = shadows
       ? (n) => rewriteScalarObjectUses(rewriteScalarArrayUses(n, new Map([...arr].filter(([k]) => !pn.includes(k)))), new Map([...objects].filter(([k]) => !pn.includes(k))))
       : rewrite
-    setFuncBody(f, rw(f.body))
+    const body = rw(f.body)
+    if (body !== f.body) setFuncBody(f, body)
     if (f.defaults) for (const k of Object.keys(f.defaults)) f.defaults[k] = rw(f.defaults[k])
   }
   return true
@@ -963,7 +961,7 @@ function scalarizeArrayLiterals(node) {
     return body === node[2] ? node : [node[0], node[1], body]
   }
   if (node[0] === ';') return scalarizeArrayLiteralSeq(node)
-  return rewriteChangedChildren(node, scalarizeArrayLiterals)
+  return rewriteChildren(node, scalarizeArrayLiterals)
 }
 
 export const scalarizeFunctionArrayLiterals = () => {

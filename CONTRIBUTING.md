@@ -11,19 +11,42 @@ node bench/bench.mjs  # run benchmarks
 
 ### Shared watr optimizer
 
+For coordinated changes in sibling `jz`, `watr` and `subscript` checkouts,
+test their main branches together with
+`npm install --no-save --package-lock=false --ignore-scripts ../watr ../subscript`.
+This selects the local libraries without changing the published dependency ranges.
+The parser allocation regressions require the source-span and optional-location
+changes on those library checkouts until they are released.
+
 `package.json` depends on the published subscript 10.8.0 (the surrogate-pair
-escape decoding and the async-member parse fixes) and watr 5.11.2, which
+escape decoding and the async-member parse fixes) and watr 5.11.6, which
 carries the two optimizer rules jz's speed rows rely on: the mixed-sign
 truncation-of-convert fold under a non-negative operand (base64's decode
 loop) and `ifset` leaving a branchy condition alone (heapsort's child pick).
 It also lifts a first operand's block prefix without crossing an earlier
 evaluation, closing the watr size backstop. A clean install includes these rules.
+The 5.11.6 follow-up preserves result-producing calls and memory growth at
+sequence boundaries and corrects local-slot lifetimes across nested control flow.
+
+Watr 5.11.5 also defers costly pure local initializers to the
+exclusive value arms that consume them. It runs before local reuse, replacing
+eager selects with typed branches where some path needs none of the work.
+JZ enables this bounded duplication only when its tier waives the size guard;
+default and size builds retain their output. Memory reads, calls, trapping
+operations and intervening input writes keep their evaluation order.
+The shared folded-code guard also detects partially supplied numeric operands,
+so these passes preserve values consumed from the Wasm stack.
 
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
 including level 1: disjoint temporaries share storage instead of inflating
 recursive stack frames. Its lifetime proof preserves implicit zero values,
-conditional writes and loop-carried values. No JZ-specific allocator is needed.
+conditional writes, nested branch exits and loop-carried values. Checked-load
+unclamping also preserves reads before a defining guard: local-slot reuse can
+make the guard overwrite its earlier index. Shared read/write interference
+checks protect this rewrite and branch-to-select conversion. A branch that
+bypasses the first assignment preserves the local's implicit zero; named region
+exits are recorded in the allocator's existing traversal. No JZ-specific allocator is needed.
 Dominating small constants propagate into control flow using
 the existing binding-use census. This pass skips functions mixing numeric
 and named local references, which can alias. The duplicate JZ implementations and cleanup sweep are removed.
@@ -54,6 +77,10 @@ bounds prove that the original address addition cannot wrap.
 Single-use, small-function and wrapper inlining share construction, parameter
 setup, local resets, renaming and returns. Read-only local arguments bypass
 copied parameter storage when argument evaluation cannot write their source.
+Equal-width literal tuples in every arm of a conditional use the existing
+multiple-result ABI. Expression and statement returns share element boxing
+and finalizer emission. A block must pass the shared return-path proof before
+selecting multiple results; a possible fallthrough needs to carry undefined.
 Source inlining gives mutated parameters private local storage and captures
 their arguments in call order; substitution must never write a caller's binding.
 Small loop helpers enter exported loops only after their callees have expanded,
@@ -62,7 +89,9 @@ Typed-width loop versions accept stable local receivers as well as parameters.
 They validate the complete Float32/Float64 carrier, snapshot fixed storage and
 retain bounds checks, f32 rounding and the original assignment value. Numeric
 store proofs permit direct writes; coercing values and other element types keep
-their existing helpers. A second stable numeric read receiver can cache its
+their existing helpers. The raw typed readers, writers and data-address
+helper decode fixed storage directly; only relocatable collections need the
+generic forwarding decoder. A second stable numeric read receiver can cache its
 base, length and element width, sharing one load dispatcher per output version.
 This covers integer, floating and clamped storage; nullish and BigInt receivers
 retain the original single-receiver loop. Float16 reuses the already-demanded
@@ -87,6 +116,40 @@ canonical bits rather than source spellings and skips literals too cheap to pool
 The downstream watr workflow builds and tests with the same current JZ package.
 See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
+Load reuse visits reads and writes in evaluation order. A shared load executes
+at its first occurrence, never before preceding operands; identity-observing
+uses retain undefined, while numeric-only uses normalize it. Index definitions
+come from the binding census and positive bounds apply only inside their strict
+loop guard. Every counter proof rejects additional writes in the loop step.
+Bounds queries use existing constant, mask, loop and occurrence proofs before
+requesting the whole-body interval interpreter. An occurrence proof never
+justifies an unproven twin with the same receiver and index.
+Method effects require a proven receiver and no own override, not just a name
+matching a built-in. Local shape facts are seeded before representation plans
+freeze, including closure bodies.
+Mutable loop bounds stay in the loop until IR memory-effect analysis proves
+invariance. Prepare does not infer method purity from a name. Immutable string
+and typed-array lengths may move when the binding is stable; the shared
+reassignment census includes writes by closures and the loop step.
+Method effects require a proven receiver and no own override, not just a name
+matching a built-in. Runtime method dispatch checks the receiver family too:
+boxed primitives never reach array helpers, and an optional missing method
+skips its arguments. Kernel host imports carry signatures and numeric constants,
+not function implementations. Their JSON transport uses numeric text to preserve
+signed zero, NaN and infinities; presence checks accept zero-valued bindings.
+Shared callback construction retains its source kind for builtin overloads and
+owns separate IR at each branch. A BigInt representation describes the BigInt
+member of a value; call-edge boxing still requires the shared semantic proof.
+Regex alternatives retry the remaining sequence before committing a branch;
+capture boundaries remain inside that continuation.
+Terminal character runs omit retries when only capture-end markers and a
+non-multiline end anchor follow. Returning characters cannot satisfy that
+anchor; other continuations retain backtracking.
+Array searches capture the search value before iteration,
+even when empty. Shared diagnostic configuration serves both compiler hosts. Local shape facts are seeded before representation plans
+freeze, including closure bodies. Body-fact queries for another body use a scratch
+representation overlay; they must not write facts into the active frame.
+
 The summary must distinguish a pending factory result from an unknown value.
 Object mutation models wait for bottom-valued targets and descriptors rather
 than escaping their arguments before the solver has visited the factory.
@@ -94,10 +157,67 @@ Joining numeric typed-array constructors retains their Number element domain,
 not a guessed storage width. The private proof never crosses the summary query
 boundary as a concrete aux; BigInt, DataView and unknown inputs widen normally.
 Solver and query views share typed-element and typed-method transfer rules.
+An unresolved index can still read an array element or named property. The
+solver may defer its transfer while the index has no evidence; a public query
+must retain those possible values instead of proving the read absent.
 
+Runtime helper templates own their freshly parsed IR. Each demanded helper is
+realized once; late helpers are added only when absent, so there is no parsed
+template cache or clone pass. Generated helpers use `locations: false` to avoid
+named-property sidecars on every WAT node; public parsing retains source offsets,
+and syntax errors retain offsets in both modes. WAT tokens retain source spans until committed,
+avoiding quadratic copying of names, quoted strings and comments.
+Helper-reference scans collect whole names without unused regex capture records.
+Schema-read dispatch consumes the registration index of fields and slots; it
+never rebuilds that index per read. The index is read-only to the optimizer,
+and its registration order supplies dispatch labels. Functions with no tagged
+reads leave after the existing assignment census. Fixed layout masks are
+formatted once and reused as immutable strings; every mutable IR node stays
+fresh. Variable i64 literals format each unsigned word as eight hex digits,
+with bounded string storage and no general radix-conversion scratch.
+Number formatters own one private digit buffer and call no user code while
+filling it. On owned heaps that buffer reserves its eventual string header;
+finishing rewinds the region before packing SSO or reusing the digit storage.
+Only the result survives. Shared heaps keep the copy, since another instance
+may allocate concurrently. Formatting must preserve previously returned strings.
+Dense schema dispatch shares one arm per field offset. Scoped read memos walk
+their region directly and copy only nonempty incoming maps. An empty inline
+cache starts with an impossible high-word sentinel: its low bits are nonzero,
+whereas every masked receiver has zero low bits. Numeric zero and subnormals
+must miss before the first object read as well as after a cache fill.
 Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy
 length can omit constants that the linked helpers read.
+
+Shortest decimal, integer and radix formatting release their private scratch
+region for inline short strings, or replace it with the final heap string.
+Shared-memory formatters leave cursor ownership with the shared allocator.
+Closure deduplication hashes finite number bits and shares declaration ordinals
+between hashing and exact comparison, without formatting numbers or copying IR.
+The linker orders functions by descending call count, then runtime before user
+functions at equal counts. Runtime ties use name order; user ties preserve source
+order. Comparing a user function equal to differently ordered runtime functions
+breaks transitivity and makes native/kernel bytes depend on the sorting engine.
+
+Address and tag caches require a dominating initializer. A block containing an
+abrupt exit cannot export a newly cached value; exception handlers enter with
+empty caches. Blocks without exits retain reuse (`test/optimizer.js`).
+
+Compiler checkpoints check each complete write before touching the upper-memory
+lane and bound reads by the recorded stream end, retained across the arena reset.
+Lengths, intern indexes and integer payloads use unsigned LEB128; string headers
+retain their fixed UTF-16 length. Serializer or decoder allocation into unread
+data traps. These helpers are reachable only from checkpoint users.
+
+Captured locals receive their cells independently, before a use that dominates
+all references. Allocation enters a conditional arm only when every reference
+is inside it. Shared cells stay before the branch, and loop capture handling
+keeps ownership of per-iteration cells. A skipped closure branch allocates no
+storage for its captured locals.
+
+Static aggregate probes retain their emitted field/element IR. If any value
+fails the static-data check, runtime construction reuses that IR; it never
+re-emits nested literals or registers their closures twice.
 
 Nonempty array literals reserve their stated length. Empty builders retain the
 speed tier's growth reserve, and proven builder bounds still preallocate enough
@@ -106,10 +226,22 @@ smaller initial storage uses the existing alias and named-property forwarding.
 Named-property sidecars start with two slots at every tier and grow on demand;
 the speed tier's array reserve does not apply to those sparse property tables.
 Collection growth uses `collectionStride` for the entry and optional hash lane;
-a boolean selecting the lane is not its byte width. Dictionary slot updates
+a boolean selecting the lane is not its byte width. A shallow Map copy reuses
+the probe layout when its capacity fits the rebuild budget, copying entries and
+the hash lane into independent storage. Own-property sidecars are excluded;
+sparse tables still rebuild. Dictionary slot updates
 receive keys already normalized to strings. The host decoder follows forwarding
 for arrays and collections and reads collection entries in their stored insertion
 order, excluding tombstones.
+Seeded Maps and Sets round twice the source length up to a power of two,
+then apply the configured minimum as a floor. Copies use the same reserve.
+Derived closure-class members reserve a hidden enumeration rank in the existing
+hash entry. Growth preserves it; an ordinary assignment gives the entry a new
+own rank and invalidates enumeration caches. No collection entry grows.
+Function arity is source arity (before a default or rest parameter), indexed by
+closure table slot independently of body deduplication. Its byte table is linked
+only when a length reader is reachable.
+
 
 Array joining captures length before separator conversion and reads elements
 through the checked, tagged reader. Each conversion runs once, in order; a
@@ -225,6 +357,10 @@ The summary's declaration tables own numeric binding IDs, local to that summary.
 Kind and incoming-argument facts are indexed arrays; solver and read-only queries
 reuse the same IDs. Scope resolution still uses names, but reading a resolved
 binding needs no compound string key or second hash lookup.
+Shape-loss diagnostics reuse the escape function; joins construct their reason
+only when an advisory sink needs it. Disabling advisories preserves all facts.
+Host-escape walks allocate a visited set only for values with reference edges.
+Solver and query views cache immutable singleton identity lists per summary.
 Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
@@ -921,6 +1057,12 @@ cache or allocation. Size mode retains the single content-comparison loop.
 Array read-only/current-pointer policies and multi-site push counts reuse the
 binding-use census. It distinguishes property reads from member calls, preserving
 indexed access, optional calls, writes, aliases and captures as separate evidence.
+String self-appends consume that same census: only a local empty-string builder
+with no retained aliases may extend its buffer. A self-assignment alone proves
+nothing about ownership. Discarded appends and empty resets preserve it; a sole
+terminal return can publish the result. Captures, stores, borrowed replacements
+and observed assignment results retain fresh-copy concatenation, as does generic
+addition after ToPrimitive. Private builders keep linear allocation.
 The existing fixed-builder length proof also publishes reserved capacity into local
 ValueReps. Allocation converts that logical count using the settled record layout;
 push still updates visible length and returns its current value. Fixed builders
@@ -933,6 +1075,8 @@ preserve writes to existing bindings and introduce only private temporary locals
 so changing loop arithmetic does not require rescanning all nested closures.
 
 The interval interpreter also supplies call-argument and typed-store bounds.
+Its branches retain completed environments and share one hull join. Range pairs
+are immutable, so unchanged bounds survive a join without another allocation.
 Compile-time bitwise and integer-store folds share exact ToInt32 conversion;
 large constants reduce modulo 2^32 before the compiler's runtime i64 boundary.
 Runtime typed stores, DataView, Atomics values and UTF-16 unit construction
@@ -954,6 +1098,8 @@ lower envelope's pop `while (s <= z[k]) k--` and scan `while (z[k + 1] < q) k++`
 A loop whose test reads at the cursor becomes `while (G && C′) B′; if (!G)
 while (C) B`, and a block's rest after the statement that steps the cursor
 becomes `if (G) S′ else S`. G tests only the bounds the unproven reads lack.
+Renamed locals retain their original summary kinds through an alias, including
+nullish possibilities; this also covers temporaries introduced by load-CSE.
 Counted loops and computed indexes stay with loop-entry versioning, which
 tests once per entry instead of once per pass. Emitted from one AST, the
 fast copy and checked twin of a loop-entry version share their locals, so a
@@ -1005,7 +1151,14 @@ Table reuse invalidates enumeration keys before clearing its contents. Host
 durable-state healing have one owner; JS-only memory retains its fallback.
 
 The size preset keeps indirect function-table calls instead of adding speculative
-direct arms alongside their fallback. The speed preset retains that expansion.
+direct arms alongside their fallback. It also keeps shared/exported source bodies
+outlined and calls the shared dynamic length and numeric-conversion helpers.
+Single-use internal bodies can still inline. The speed preset retains those
+expansions. Numeric uses alone do not make a coercion pure: an internal
+parameter may carry an object whose valueOf runs at every use, or a BigInt
+that throws only when the use executes. The old per-parameter coercion hoist
+is removed; numeric proofs and the export boundary contract eliminate known
+Number conversions before ordinary IR optimization.
 
 ### Body-fact freshness
 
@@ -1017,11 +1170,18 @@ dependency has an explicit invalidation owner:
 |---|---|---|
 | Function body or specialization AST | `setFuncBody` / `reanalyzeBody` | Source rewrite and specialization passes |
 | Current parameter/result signature | Live fingerprint; explicit seams during solving | `body-facts.js`, `narrow/results.js`, `narrow/param-abi.js` |
-| Function value/type/length overlays and caller facts | `reanalyzeBody`; `invalidateBodies` for affected callers | `narrow/caller-ctx.js`, `narrow/results.js`, `narrow/param-abi.js` |
-| Summary, global types/lengths, schema integer census | `invalidateAllBodyFacts` at publication/phase boundaries | `plan/index.js`, `compile/index.js` |
-| Compile session | New fact store / `resetBodyFactsCache` | `session.js` |
+| Function value/type/length overlays and caller facts | `reanalyzeBody`; `clearBodyFacts` for affected callers | `narrow/caller-ctx.js`, `narrow/results.js`, `narrow/param-abi.js` |
+| Summary, global types/lengths, schema integer census | `clearBodyFacts` at publication/phase boundaries | `plan/index.js`, `compile/index.js` |
+| Compile session | New fact store | `session.js` |
 
-Global invalidation clears the complete cache, including anonymous roots.
+Global eviction clears the complete body cache, including anonymous roots,
+without changing the semantic program revision. Physical carrier changes use
+this eviction; summary result contracts read their ABI from live signatures.
+Semantic input changes, such as an export's `boundaryTyped` contract, use
+`invalidateBodies` to invalidate both the body facts and the summary.
+Majority-kind specialization requires a use that can benefit from the pinned
+kind. A parameter only forwarded to unchanged user callees does not justify
+a clone or another summary solve; the existing binding-use census proves this.
 Every rewriting seam, and every plan sweep that reports a change, also advances
 one program revision. The summary is keyed by it and by the contents of the
 registries beside the program (schemas, functions, globals, binding schemas),
@@ -1031,6 +1191,9 @@ summary's full inputs, so a rewrite that bypasses the seams fails there.
 Signature checking does not authorize stale overlay reads. New passes use these
 existing seams; they must not add another cache or rely on ambient facts staying
 unchanged accidentally.
+Literal folding and front-end lowering share `rewriteChildren` in `ast.js`.
+It preserves unchanged subtrees and function bodies instead of allocating an
+AST copy merely to discover that nothing changed.
 
 Historical `.work/` citations below refer to retired evidence, recoverable using
 [.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.
@@ -1079,7 +1242,7 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
 
 **Folder policy:** one folder per pipeline *stage*, not per arbitrary concern. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.
 
-**Stdlib registration — two dialects, by design:** raw `ctx.core.stdlib[name] = body` / `ctx.core.emit[name] = fn` (or the `bind(name, fn)` sugar) is the DEFAULT for dep-free, arity-irrelevant handlers — the overwhelming majority of the stdlib (~580 sites vs ~35 `reg()` calls; this is real, not legacy-to-migrate). Call `inc('__dep', …)` inline in the handler body for any stdlib kernel it needs. `reg(name, deps, fn)` (→ `emitter()`, `src/ctx.js`) — or `wat(name, body)` for the WAT-kernel half, co-located via `reg(name, { deps, wat, emit })` — is REQUIRED whenever either mechanical property matters:
+**Stdlib registration — two dialects, by design:** raw `ctx.core.stdlib[name] = body` / `ctx.core.emit[name] = fn` (or the `bind(name, fn)` sugar) is the DEFAULT for dep-free, arity-irrelevant handlers — the overwhelming majority of the stdlib (~580 sites vs ~35 `reg()` calls; this is real, not legacy-to-migrate). Call `inc('__dep', …)` inline in the handler body for any stdlib kernel it needs. `reg(name, deps, fn)` (→ `emitter()`, `src/ctx.js`), paired with `wat(name, body)` for any WAT-kernel half, is REQUIRED whenever either mechanical property matters:
   - **deps must be auto-included, not hand-called.** `emitter()`'s wrapper runs `inc(...deps)` before every invocation of `fn`; anything that wraps/aliases the handler (`dual`, `.deps` propagation, a second name bound to the same function) inherits the guarantee for free. A raw handler's `inc()` call lives only in its own body — copy or wrap it and the dep silently drops.
   - **logical arity diverges from `fn.length`.** `emitter()`/`call()`/`method()` set `.argc` explicitly, which `emitArity()`'s fallback (`h?.argc ?? h?.length`) needs whenever a handler is built through a rest-param wrapper or otherwise doesn't report its true arity via `Function.length`. Plain raw handlers work fine on the `.length` fallback *only when the two agree* — that's the common case, hence still the default.
 
@@ -1355,7 +1518,10 @@ declared in the body whose every write is a literal or a `new`, is a store into
 fresh memory. A nested function's writes count wherever it is made, a
 declaration's initializer included. A callback a builtin runs (an array
 method's, `Array.from`'s map function) is walked as part of the frame; a
-callback name resolves to its arrow only while no nested function rebinds it. The arena rewind (`src/optimize/arena-rewind.js`) restores the
+callback name resolves to its arrow only while no nested function rebinds it. In a program that defines
+`toString` or `valueOf`, converting a value the summary cannot prove primitive (an operator's
+operand, a property key, a builtin's argument, a typed element store) is a call to the
+ToPrimitive function it lowers to (`runsConversion`). The arena rewind (`src/optimize/arena-rewind.js`) restores the
 heap pointer at return for any function with a scalar non-pointer result whose
 frame is not `arenaUnsafe`, parameters included; the link pass adds what the
 source cannot show: a `global.set` of anything but the heap pointers, the error
@@ -1368,7 +1534,12 @@ cycle of clean kernels stays safe; allocation counts through callees. The
 durable-heap logs are census-guarded: they record only outer-container
 mutations, which no rewind candidate performs. `whyNotRewind` names the reason
 for every declined candidate. Load CSE (`src/compile/cse-load.js`) keeps a
-cached typed-array load across a call whose callee does not `writesOuter`.
+cached typed-array load across a call whose callee does not `writesOuter`; any other
+call or user conversion invalidates after its operands, which run first. A store keeps
+a cached load only when it cannot reach the element: storage that never holds typed
+elements, or the same element grid (the same binding, or two non-view typed arrays of
+one constructor) at a provably different index. A view or another element type over the
+same buffer shifts or splits the grid, so an index inequality proves nothing there.
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration

@@ -29,10 +29,10 @@ export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 //           committed results. The wasm rivals are the apples-to-apples field;
 //           native C is the speed-of-light reference and Porffor is the native
 //           AOT floor requested by the product contract.
-// SNAPSHOT_N = cases behind these geomeans; it drives BOTH the caption and the
-// Porffor denominator, so the offline render is internally consistent. The live
+// SNAPSHOT_N = cases behind these geomeans; it drives both the caption and the
+// native coverage denominators, so the offline render is consistent. The live
 // bench.mjs run passes its own current count (geoCases.length) instead.
-export const SNAPSHOT_N = 54
+export const SNAPSHOT_N = 55
 export const SNAPSHOT = [
   { label: 'JZ', sub: '-O3', ratio: 1.00 },
   { label: 'native C', sub: 'clang -O3, ref', ratio: 1.04 },
@@ -44,6 +44,8 @@ export const SNAPSHOT = [
   { label: 'MoonBit', sub: 'moonrun → wasm', ratio: 4.39 },
   { label: 'Go', sub: 'gc → wasm', ratio: 4.71 },
   { label: 'Porffor', sub: `native, runs 43 / ${SNAPSHOT_N}`, ratio: 16.56 },
+  // High host swap and older JZ baselines: see bench/README.md for this refresh.
+  { label: 'Perry', sub: `native, 53 / ${SNAPSHOT_N} (provisional)`, ratio: 61.71 },
 ]
 
 // native C (clang -O3, native binary) is the speed-of-light reference. Porffor
@@ -118,7 +120,7 @@ export function benchSvg(rows, cases) {
   }
 
   const caption = `geometric mean on the ${cases ? `${cases}-case benchmark corpus` : 'benchmark corpus'}; lower is faster, JZ = 1.00× baseline`
-  const scope = `Wasm rivals run in V8; Porffor and native C are native targets`
+  const scope = `Wasm rivals run in V8; Porffor, Perry and native C are native targets`
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="color-scheme:light dark" role="img" aria-label="JZ benchmark: ${scope}; ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
 ${rows.map(lane).join('')}
   <text x="${W / 2}" y="${H - 34}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${INK}" fill-opacity="${O.scope}">${scope}</text>

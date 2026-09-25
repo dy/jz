@@ -141,6 +141,7 @@ const OP_MODULES = {
 const TYPED_CTORS =['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
 
 const CALL_MODULES = dict({
+  __hide_member: ['core', 'collection', 'string'],
   ArrayBuffer: ['core', 'typedarray'],
   DataView: ['core', 'typedarray'],
   BigInt64Array: ['core', 'typedarray'],
@@ -215,6 +216,8 @@ const CALL_MODULES = dict({
   '__is_map': ['core', 'collection'],
   '__is_set': ['core', 'collection'],
   '__is_typed': ['core', 'typedarray'],
+  '__park_write_str': ['core', 'string'],
+  '__park_read_str': ['core', 'string'],
 })
 
 const GENERIC_METHOD_MODULES = dict({
@@ -355,10 +358,8 @@ export const includeForStringValue = () => includeMods('core', 'string', 'number
 export const includeForStringOnly = () => includeMods('core', 'string')
 export const includeForArrayLiteral = () => includeMods('core', 'array')
 export const includeForArrayAccess = () => includeMods('core', 'array', 'collection')
-export const includeForArrayPattern = includeForArrayAccess
 export const includeForObjectLiteral = () => includeMods('core', 'object')
 export const includeForObjectPattern = () => includeMods('core', 'object', 'string', 'collection')
-export const includeForKnownKeyIteration = includeForStringOnly
 export const includeForRuntimeKeyIteration = () => includeMods('core', 'string', 'array', 'collection')
 export const includeForTimerRuntime = () => {
   setFeature('timers', true)

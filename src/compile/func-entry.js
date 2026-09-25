@@ -15,6 +15,10 @@ export function seedSummaryShape(name, summary) {
   return true
 }
 
+export function seedSummaryLocals(summary) {
+  for (const name of ctx.func.locals.keys()) seedSummaryShape(name, summary)
+}
+
 // Direct and closure bodies consume the same settled call-site facts. Keep
 // their boxed ABI; this publishes value/layout knowledge, not a new carrier.
 export function seedSummaryParam(name, summary) {
@@ -56,29 +60,52 @@ export function emitPreboxedLocalInits(isSeeded) {
   return inits
 }
 
-const mentionsAny = (n, names) => {
-  if (typeof n === 'string') return names.includes(n)
+const mentions = (n, name) => {
+  if (typeof n === 'string') return n === name
   if (!Array.isArray(n)) return false
-  for (let i = 1; i < n.length; i++) if (mentionsAny(n[i], names)) return true
+  for (let i = 1; i < n.length; i++) if (mentions(n[i], name)) return true
   return false
 }
 
-/**
- * Place the preboxed cells' allocation before the first statement of a block
- * body that mentions one of them (a declaration, a closure capturing it, a
- * read), rather than at entry: a body that returns before its closures exist
- * (a cache hit) then allocates nothing. emitBlockBody emits them there
- * (`ctx.func.preboxAt`); the entry prologue keeps them when no statement
- * mentions one, or for an expression body.
- * @returns the inits the entry prologue still owns
- */
+// Descend only through blocks and a single conditional arm containing EVERY
+// reference. Never move the prologue allocation through a loop; its existing
+// per-iteration capture handling owns backedges. Multiple statements/arms keep
+// their common dominating allocation.
+const preboxPoint = (body, name) => {
+  if (!Array.isArray(body) || body[0] !== '{}' && body[0] !== ';') return null
+  const inner = body[0] === ';' ? body : body[1], list = Array.isArray(inner) && inner[0] === ';'
+  let at = null, single = true
+  for (let i = list ? 1 : 0; i < (list ? inner.length : 1); i++) {
+    const stmt = list ? inner[i] : inner
+    if (!mentions(stmt, name)) continue
+    if (at !== null) { single = false; break }
+    at = stmt
+  }
+  if (single && Array.isArray(at)) {
+    if (at[0] === '{}' || at[0] === ';') return preboxPoint(at, name) || at
+    if (at[0] === 'if' && !mentions(at[1], name)) {
+      const yes = mentions(at[2], name), no = mentions(at[3], name)
+      if (yes !== no) return preboxPoint(at[yes ? 2 : 3], name) || at
+    }
+  }
+  return at
+}
+
+/** Place each cell before its first dominating use, including a conditional
+ * block when no other path references it. Expression bodies retain the entry
+ * allocation. emitBlockBody consumes the per-statement initialization map. */
 export function placePreboxedLocalInits(inits, body) {
-  if (!inits.length || !(Array.isArray(body) && body[0] === '{}')) return inits
-  const inner = body[1]
-  const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
-  const at = stmts.find(s => s != null && typeof s !== 'number' && mentionsAny(s, inits.names))
-  if (at === undefined) return inits
-  ctx.func.preboxAt = at
-  ctx.func.preboxInits = inits
-  return []
+  if (!inits.length) return inits
+  const entry = []
+  for (let i = 0; i < inits.names.length; i++) {
+    const at = preboxPoint(body, inits.names[i])
+    let dest = entry
+    if (at !== null) {
+      const points = ctx.func.preboxInits ??= new Map()
+      dest = points.get(at)
+      if (!dest) points.set(at, dest = [])
+    }
+    dest.push(inits[i * 2], inits[i * 2 + 1])
+  }
+  return entry
 }

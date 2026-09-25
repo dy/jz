@@ -21,7 +21,7 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
-import { ASSIGN_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody } from '../../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, T, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
 import { typedStaticLen, intLevelMap } from '../../type.js'
@@ -192,7 +192,7 @@ const FRACTIONAL_MATH = new Set([
   'pow', 'hypot', 'random', 'fround',
 ])
 const INT_COERCE_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>', '~'])
-const COMPARE_OPS = new Set(['<', '>', '<=', '>=', '==', '===', '!=', '!==', '!', 'in', 'instanceof'])
+const BOOL_RESULT_OPS = new Set([...COMPARE_OPS, '!', 'in', 'instanceof'])
 const FRAC_COMPOUND = new Set(['/=', '**='])
 const INT_COMPOUND = new Set(['&=', '|=', '^=', '<<=', '>>=', '>>>='])
 
@@ -242,7 +242,7 @@ export const inferModuleIntGlobals = (ast) => {
     const op = e[0]
     if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
     if (op === 'nan' || op === '/' || op === '**') return true   // NaN is parse.js's marker, not an integer
-    if (INT_COERCE_OPS.has(op) || COMPARE_OPS.has(op)) return false
+    if (INT_COERCE_OPS.has(op) || BOOL_RESULT_OPS.has(op)) return false
     if (op === '?:') return producesFraction(e[2]) || producesFraction(e[3])
     if (op === '&&' || op === '||' || op === '??') return producesFraction(e[1]) || producesFraction(e[2])
     if (op === '()') {

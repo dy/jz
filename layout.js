@@ -53,6 +53,9 @@ export const ATOM = { NULL: 1, UNDEF: 2, FALSE: 4, TRUE: 5 }
  *  tests membership in one shl+and, replacing a 4-way tag-equality OR. */
 export const FORWARDING_MASK = (1 << PTR.ARRAY) | (1 << PTR.HASH) | (1 << PTR.SET) | (1 << PTR.MAP)
 
+// A hidden property has no enumeration rank. Keep the shared entry width intact.
+export const HIDDEN_PROPERTY_SEQ = 0xffffffff
+
 // BigInt views of the NaN-box fields — the carrier is 64-bit, JS bit-ops are 32-bit.
 const TAG_SHIFT = BigInt(LAYOUT.TAG_SHIFT), TAG_MASK = BigInt(LAYOUT.TAG_MASK)
 const AUX_SHIFT = BigInt(LAYOUT.AUX_SHIFT), AUX_MASK = BigInt(LAYOUT.AUX_MASK)
@@ -67,7 +70,12 @@ const OFFSET_MASK = BigInt(LAYOUT.OFFSET_MASK)
 // nanPrefixMaskHex regression that silently broke every durable-log helper
 // the kernel compiled. `>> 32n` sign-extends on raw bits; the & masks the
 // extension off, so both host and kernel produce the same unsigned halves.
-const _hx8 = (n) => n.toString(16).toUpperCase().padStart(8, '0')
+const HEX_DIGITS = '0123456789ABCDEF'
+const _hx8 = n => {
+  let hex = ''
+  for (let shift = 28; shift >= 0; shift -= 4) hex += HEX_DIGITS[(n >>> shift) & 15]
+  return hex
+}
 export const i64Hex = bits => '0x' + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))
 
 /** Pack (type, aux, offset) into the i64 NaN-box carrier — the single source of
@@ -160,13 +168,15 @@ export const OBJECT_SCHEMA_HI_MASK = '0xFFFFFFFF00000000'
 export const objectSchemaGuardHex = sid => i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid)) << 32n)
 
 /** i64 NaN-prefix OR-mask for WAT `(i64.const …)` templates. */
-export const nanPrefixHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS)
+const _nanPrefixHex = i64Hex(LAYOUT.NAN_PREFIX_BITS)
+export const nanPrefixHex = () => _nanPrefixHex
 
 /** AND-mask isolating the boxed-carrier prefix (sign + exponent + quiet bit):
  *  `(v & nanPrefixMask) == nanPrefix` ⇔ v is a NaN-boxed carrier (any tag/aux/
  *  payload). The mask is the prefix with the SIGN bit forced on — boxes are
  *  emitted sign-clear, so a set sign bit must fail the carrier test. */
-export const nanPrefixMaskHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS | (1n << 63n))
+const _nanPrefixMaskHex = i64Hex(LAYOUT.NAN_PREFIX_BITS | (1n << 63n))
+export const nanPrefixMaskHex = () => _nanPrefixMaskHex
 
 /** Atom sentinel as i64 hex (compiler WAT templates). */
 export const atomNanHex = atomId => i64Hex(LAYOUT.NAN_PREFIX_BITS | (BigInt(atomId) << AUX_SHIFT))
@@ -194,13 +204,16 @@ export const STR_INTERN_BIT = 0x1
 export const STR_HCACHE_BIT = 0x2
 
 /** Pre-shifted STRING SSO aux bit as i64 hex. */
-export const ssoBitI64Hex = () => i64Hex(BigInt(LAYOUT.SSO_BIT) << AUX_SHIFT)
+const _ssoBitI64Hex = i64Hex(BigInt(LAYOUT.SSO_BIT) << AUX_SHIFT)
+export const ssoBitI64Hex = () => _ssoBitI64Hex
 
 /** Pre-shifted STRING slice/view aux bit as i64 hex. */
-export const sliceBitI64Hex = () => i64Hex(BigInt(LAYOUT.SLICE_BIT) << AUX_SHIFT)
+const _sliceBitI64Hex = i64Hex(BigInt(LAYOUT.SLICE_BIT) << AUX_SHIFT)
+export const sliceBitI64Hex = () => _sliceBitI64Hex
 
 /** Pre-shifted STRING hash-cache aux bit as i64 hex. */
-export const hcacheBitI64Hex = () => i64Hex(BigInt(STR_HCACHE_BIT) << AUX_SHIFT)
+const _hcacheBitI64Hex = i64Hex(BigInt(STR_HCACHE_BIT) << AUX_SHIFT)
+export const hcacheBitI64Hex = () => _hcacheBitI64Hex
 
 /** Full i64 NaN-box hex for `(i64.const …)` — ptr type + aux, offset OR'd separately. */
 export const ptrNanHex = (ptrType, aux = 0) => i64Hex(ptrBits(ptrType, aux))
@@ -217,7 +230,7 @@ export const ATOM_HI = {
 }
 
 /** OOB / canonical quiet-NaN f64 literal for WAT and IR (`nan:0x7FF8…`). */
-export const oobNanLiteral = () => `nan:${nanPrefixHex()}`
+const oobNanLiteral = () => `nan:${nanPrefixHex()}`
 export const oobNanIR = () => ['f64.const', oobNanLiteral()]
 
 /** Heap forwarding-pointer follow (WAT fragment).
@@ -280,7 +293,7 @@ export const ptrOffsetFwdWat = () =>
  *  (`__dyn_get_t_hm`), enumeration (Object.keys, for-in) and `__obj_clone`;
  *  written by `__dyn_del` and `__dyn_set`. Both dialects of the runtime read
  *  it through the builders below. */
-export const DELETED_STICKY_BIT = 31
+const DELETED_STICKY_BIT = 31
 
 /** WAT: the mask of the OBJECT whose payload is at the local `off`. */
 export const deletedMaskWat = (off = '$off') =>

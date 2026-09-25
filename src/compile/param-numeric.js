@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { MUTATE_OPS, T, walkAst } from '../ast.js'
+import { EQUALITY_OPS, MUTATE_OPS, RELATIONAL_OPS, T, walkAst } from '../ast.js'
 import { typedCtorRawOf } from '../static.js'
 import { VAL } from '../reps.js'
 import { K, tagOf, paramOf } from '../summary/kind.js'
@@ -51,7 +51,6 @@ const NUM_BIN_OPS = new Set(['*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>
 // is present (emit.js cmpOp). So a bare param compared against a non-string is a
 // pure numeric use, same as NUM_BIN_OPS. A string-literal counterpart (`x < "m"`)
 // signals string intent and is rejected (handled in the walk below).
-const REL_OPS = new Set(['<', '<=', '>', '>='])
 // A string literal/template operand poisons relational numeric inference.
 const isStrLiteral = (n) => Array.isArray(n) && (n[0] === 'str' || n[0] === 'template')
 
@@ -166,12 +165,12 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     // flows to the ternary's consumer; neither a numeric proof nor a reject.
     // Without this the proof rejected the peel's OWN output as a bare use and
     // un-proved the very params the peel had just relied on.
-    if (op === '?:' && Array.isArray(node[1]) && REL_OPS.has(node[1][0]) &&
+    if (op === '?:' && Array.isArray(node[1]) && RELATIONAL_OPS.has(node[1][0]) &&
         ((node[2] === node[1][1] && node[3] === node[1][2]) ||
          (node[2] === node[1][2] && node[3] === node[1][1]))) {
       walk(node[1]); return
     }
-    if (REL_OPS.has(op) && node.length === 3) {
+    if (RELATIONAL_OPS.has(op) && node.length === 3) {
       // Relational proof requires a PROVABLY-NUMERIC PARTNER: `x < 0` or
       // `k <= r` (k init `-r`) force ToNumber on the other side, but JS
       // compares two strings lexicographically — `(p, q) => p < q` proves
@@ -351,8 +350,8 @@ export function paramNeverString(body, name) {
     // A relational compare against a string literal (`x >= "9"`) is string intent,
     // same as concat: JS compares two strings lexicographically, so the param must
     // keep its runtime string/number dispatch.
-    if ((NUM_BIN_OPS.has(op) || REL_OPS.has(op)) && node.length === 3) {
-      if (REL_OPS.has(op) && (isStrLiteral(node[1]) || isStrLiteral(node[2]))) { ok = false; return }
+    if ((NUM_BIN_OPS.has(op) || RELATIONAL_OPS.has(op)) && node.length === 3) {
+      if (RELATIONAL_OPS.has(op) && (isStrLiteral(node[1]) || isStrLiteral(node[2]))) { ok = false; return }
       for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
       return
     }
@@ -365,7 +364,7 @@ export function paramNeverString(body, name) {
     }
     // min/max ternary — same pass-through as paramAllUsesNumeric (clampPeel's
     // synthesized `__pks = min(r,w)` bounds must not read as a string escape).
-    if (op === '?:' && Array.isArray(node[1]) && REL_OPS.has(node[1][0]) &&
+    if (op === '?:' && Array.isArray(node[1]) && RELATIONAL_OPS.has(node[1][0]) &&
         ((node[2] === node[1][1] && node[3] === node[1][2]) ||
          (node[2] === node[1][2] && node[3] === node[1][1]))) {
       walk(node[1]); return
@@ -393,7 +392,6 @@ export function paramNeverString(body, name) {
 // value, so interop boxes EVERY BigInt there as a value: no handle can be
 // passed, and a colliding value crosses as itself. The contract is proved from
 // the body, never guessed from the magnitude of the argument.
-const EQ_OPS = new Set(['===', '!==', '==', '!='])
 const VALUE_CTORS = new Set(['BigInt', 'Number', 'String', 'Boolean'])
 
 /** True iff every use of param `name` in `body` (a function's frame,
@@ -453,7 +451,7 @@ export function paramValueOnly(body, name) {
       return
     }
     if (op === 'typeof' && node.length === 2) { read(node[1]); return }
-    if ((NUM_BIN_OPS.has(op) || REL_OPS.has(op) || EQ_OPS.has(op) || op === '+' || op === '-') && node.length === 3) { read(node[1]); read(node[2]); return }
+    if ((NUM_BIN_OPS.has(op) || RELATIONAL_OPS.has(op) || EQUALITY_OPS.has(op) || op === '+' || op === '-') && node.length === 3) { read(node[1]); read(node[2]); return }
     if ((op === 'u-' || op === 'u+' || op === '~' || op === '!' || op === '-' || op === '+') && node.length === 2) { read(node[1]); return }
     if (op === '()' && VALUE_CTORS.has(node[1]) && node.length === 3) { read(node[2]); return }
     if (op === 'strcat') { for (let i = 1; i < node.length; i++) read(node[i]); return }

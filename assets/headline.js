@@ -20,7 +20,7 @@
 export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq', 'deltae'])
 
 export const classifyBenchmarkChecksum = (checksum, reference, fma) =>
-  fma != null && checksum === fma ? 'fma'
+  (Array.isArray(fma) ? fma.some(value => value != null && checksum === value) : fma != null && checksum === fma) ? 'fma'
     : reference == null ? 'unclassified'
       : checksum === reference ? 'ok' : 'DIFF'
 

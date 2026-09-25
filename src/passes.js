@@ -73,7 +73,7 @@ export const PASS_NAMES = [
   'hoistConstantPool',
   'sourceInline',
   'laneRecords',              // record parameters read field by field become scalar lanes (plan/lanes.js)
-  'sourceInlineDup',          // splice a looped kernel at MORE than one call site (×sites body duplication — speed-for-size)
+  'sourceInlineDup',          // allow source-body duplication across calls or beside an export (speed-for-size)
   'smallConstForUnroll',
   'nestedSmallConstForUnroll',
   'splitScratch',             // SSA-split scalar scratch from unrolled loop copies, then LICM

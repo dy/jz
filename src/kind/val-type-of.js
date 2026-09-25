@@ -258,7 +258,7 @@ VT['[]'] = (args) => {
       return valTypeOf(args[0]) === VAL.OBJECT ? VT['.']([args[0], lit]) : null
   }
   // SRoA flat-array slot read: `a[k]` (static index) where `a` dissolved into
-  // scalar `a#i` locals (scanFlatObjects). A write-once slot's value-type is its
+  // scalar `a#i` locals (flatObjectCandidate). A write-once slot's value-type is its
   // element literal's — same numeric-binding as the `VT['.']` object case, so
   // `a[0] * 2` stays a plain f64 op instead of the polymorphic ToNumber battery.
   // A written slot stays answerable too when every write is self-preserving
@@ -340,7 +340,7 @@ VT['[]'] = (args) => {
 VT['.'] = (args) => {
   if (typeof args[1] !== 'string') return null
   // SRoA flat-object slot read: `p.x` where `p` dissolved into scalar `p#i`
-  // locals (scanFlatObjects). A write-once slot's value-type IS its literal
+  // locals (flatObjectCandidate). A write-once slot's value-type IS its literal
   // initializer's, so bind by it — exactly as a plain `let slot = value` local
   // would. Without this `p.x * 2` looks like "could be anything" and pulls the
   // ToNumber + string-format battery, though it can only be numeric. Computed

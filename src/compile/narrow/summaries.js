@@ -81,7 +81,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       ctx.func.localReps = new Map()
       for (const [name, arrayElemRange] of arrays.elementRanges.get(caller) || [])
         ctx.func.localReps.set(name, { arrayElemRange })
-      scanIntervalIdx(body, new Set(), name => arrays.locals.get(caller)?.get(name) ?? null, null, calls, entry, writes)
+      scanIntervalIdx(body, null, name => arrays.locals.get(caller)?.get(name) ?? null, null, calls, entry, writes)
     } finally { restoreActiveFunction(ctx, prev) }
     stores.set(caller, writes)
     const targets = new Set()

@@ -1102,8 +1102,8 @@ test('indexOf substr: SIMD first-unit memchr is emitted + matches V8 over edge c
   is(e(hay, 'TARGET'), 1); is(e(hay, 'NOPE'), 0)
 })
 
-test('concat: t = s + x must NOT mutate s (bump-extend gated to self-accumulation)', () => {
-  // The heap-top in-place EXTEND is sound only when the result replaces its own lhs (`x = x + …`).
+test('concat: a fresh result preserves its operands and a private builder can grow', () => {
+  // In-place growth requires a private builder, not just self-assignment.
   // A fresh target `t = s + x` over a live, heap-top `s` used to grow s in place (s += 2 bytes/iter).
   const { loop, after, accum, charAppend } = jz(`
     export let loop = (s, n) => { let a = 0; for (let r = 0; r < n; r = r + 1) { let t = s + "_x"; a = (a + t.length) | 0 } return a | 0 }
@@ -1123,6 +1123,64 @@ test('concat: t = s + x must NOT mutate s (bump-extend gated to self-accumulatio
   const freshW = compile(`export let f = (s) => { let t = s + "_x"; return t.length | 0 }`, { wat: true, optimize: { level: 2, watr: false } })
   ok(!/__str_concat_raw_fresh/.test(accumW), 'b = b + "ab" keeps the bump-extend concat (O(N) accumulator)')
   ok(/__str_concat_raw_fresh/.test(freshW), 't = s + "_x" uses the non-mutating fresh concat')
+})
+
+test('concat: retained builder values stay immutable across appends', () => {
+  const src = `
+    export function array(n) {
+      let s = '', out = [];
+      for (let i = 0; i < n; i++) { out.push(s); s += 'ab' }
+      let sum = 0; for (let i = 0; i < out.length; i++) sum += out[i].length;
+      return sum
+    }
+    export function local(n) {
+      let s = ''; for (let i = 0; i < n; i++) s += 'a';
+      const old = s; s += 'xyz'; return [old, s]
+    }
+    export function property(n) {
+      let s = '', o = {old: ''}; for (let i = 0; i < n; i++) s += 'é';
+      o.old = s; s += '𝄞'; return [o.old, s]
+    }
+    export function observed(n) {
+      let s = ''; for (let i = 0; i < n; i++) s += 'a';
+      const old = (s += 'b'); s += 'c'; return [old, s]
+    }
+    export function captured(n) {
+      let s = '', old = ''; const save = () => { old = s };
+      for (let i = 0; i < n; i++) s += 'a'; save(); s += 'b'; return [old, s]
+    }
+    export function finallyReturn(n) {
+      let s = ''; for (let i = 0; i < n; i++) s += 'a';
+      try { return s } finally { s += 'b' }
+    }
+    export function unit(n) {
+      let s = '', old = ''; const chars = 'é𝄞';
+      for (let i = 0; i < n; i++) s += 'a'; old = s;
+      for (let i = 0; i < chars.length; i++) s += chars[i]; return [old, s]
+    }
+    export function borrowed(s) { const old = s; s += 'x'; return [old, s] }
+    export function seeded(input) { let s = ''; s += input; s += 'x'; return [input, s] }
+    let global = '';
+    export function shared(n) {
+      global = ''; for (let i = 0; i < n; i++) global += 'a';
+      const old = global; global += 'b'; return [old, global]
+    }
+    export function dynamic(a, b) { const old = a; const next = a + b; return [old, next] }
+    export function dynamicKinds(n) { return dynamic(n ? 'abcdefgh' + n : 3, n ? 'x' : 4) }
+    export function coercing(a) {
+      const obj = { valueOf: () => a }; const next = obj + 'x'; return [a, next]
+    }
+  `
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(src, { optimize })
+    for (const name of ['array', 'local', 'property', 'observed', 'captured', 'finallyReturn', 'unit', 'shared'])
+      for (const n of [0, 6, 7, 8, 8, 20]) is(wasm[name](n), js[name](n), `${name}, O${optimize}, n=${n}`)
+    for (const s of ['', 'abcdef', 'abcdefg', 'abcdefgh', 'abcdefgh', 'é𝄞é𝄞']) {
+      for (const name of ['borrowed', 'seeded', 'coercing']) is(wasm[name](s), js[name](s), `${name}, O${optimize}, ${s}`)
+    }
+    for (const n of [0, 1, 1, 2]) is(wasm.dynamicKinds(n), js.dynamicKinds(n), `dynamic, O${optimize}, n=${n}`)
+  }
 })
 
 // === SSO hash-mix agreement (__str_hash's SSO branch vs strHashLiteral's compile-time

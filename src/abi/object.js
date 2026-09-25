@@ -23,7 +23,7 @@
  * all — its fields are dissolved into plain WASM locals (`o#0`, `o#1`, …) and
  * `o.prop` compiles to `local.get`. It carries no memory base, so it cannot be
  * expressed as `ops.load(base, i)`; it is a binding-dissolution transform
- * driven by `scanFlatObjects` (src/analyze.js) and the codegen flat hooks
+ * driven by `flatObjectCandidate` (src/compile/analyze-scans.js) and the codegen flat hooks
  * (emitDecl, the `.`/`[]` read & write emitters), not a layout carrier here.
  *
  * @module src/abi/object
@@ -68,7 +68,3 @@ export const tagged = {
     store: (base, i, val) => ['f64.store', addr(base, i), val],
   },
 }
-
-// Default carrier — picked when the narrower has no stronger evidence.
-// Reached via `ctx.abi.object`.
-export default tagged

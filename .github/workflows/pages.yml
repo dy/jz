@@ -16,6 +16,11 @@ on:
       - 'LICENSE'
       - 'test/**'
   workflow_dispatch:
+  # Snapshot commits use GITHUB_TOKEN, which cannot trigger another push workflow.
+  workflow_run:
+    workflows: [bench]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
@@ -29,9 +34,17 @@ concurrency:
 
 jobs:
   build:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Include the snapshot commit made AFTER the measured source commit.
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -46,6 +59,7 @@ jobs:
         run: |
           npm run build:site
           node test/site.js
+          node test/headline.js           # benchmark dataset loading and rendering
           node test/web-smoke.js          # builds all browser bundles with --js-only
           node test/guide.js              # execute the guide's copyable examples
       - name: build example and playable benchmark wasm

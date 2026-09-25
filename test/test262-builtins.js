@@ -906,7 +906,6 @@ const EXPECTED_FAIL_FILES = new Map([
   // pass — that reject fires at compile time regardless of assertion order,
   // so the whole file already classified as skip; no entry needed, pruned.
   ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
-  ['built-ins/JSON/stringify/value-object-abrupt.js', '[REJECT] accessor-dependent JSON.stringify input rejects because accessors are unsupported'],
   ['built-ins/JSON/stringify/value-object-circular.js', '[REJECT] accessor-built circular input rejects because accessors are unsupported'],
   ['built-ins/JSON/stringify/value-symbol.js', '[REJECT] JSON.stringify of Symbol value — out of scope (Symbol usage rejects upstream, confirmed)'],
   // fix/wrong-values-2: String.prototype.indexOf/slice's wrapper-object

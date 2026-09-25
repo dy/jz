@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, headlineStats, timedBenchmarkRow } from '../assets/headline.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, headlineStats, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
@@ -50,6 +50,18 @@ test('headline: benchmark-row validity is exact and positive timing is a separat
   is(timedBenchmarkRow({ parity: 'fma', medianUs: 1 }), true, 'a positive FMA timing is comparable')
   for (const medianUs of [0, -1, Infinity, NaN])
     is(timedBenchmarkRow({ parity: 'ok', medianUs }), false, `${medianUs} is not a comparable timing`)
+})
+
+test('headline: independently verified FMA variants are exact checksum alternatives', () => {
+  const variants = [8, 9]
+  for (const checksum of [8, 8, 9, 10, 8])
+    is(classifyBenchmarkChecksum(checksum, 7, variants), checksum === 10 ? 'DIFF' : 'fma')
+  is(classifyBenchmarkChecksum(0, 7, [0, 8]), 'fma', 'zero is a valid checksum')
+  is(classifyBenchmarkChecksum(7, 7, []), 'ok', 'an empty alternative list preserves the exact reference')
+  is(classifyBenchmarkChecksum(7, null, []), 'unclassified', 'no oracle remains unclassified')
+  is(classifyBenchmarkChecksum(8, null, variants), 'fma', 'an independently pinned FMA checksum is an oracle')
+  for (const checksum of [null, undefined, NaN])
+    is(classifyBenchmarkChecksum(checksum, 7, [null, undefined, NaN]), 'DIFF', 'missing and NaN alternatives are not checksums')
 })
 
 test('headline: a WRONG-result JZ row is excluded from speed, size, memory, and peak', () => {
@@ -135,6 +147,60 @@ test('bench page: invalid rows stay outside corpus and per-case ratio bars', () 
     'an unranked measurement gets no relative bar')
   is(page.includes("r.parity = ref == null ? 'unclassified'"), true,
     'a live run without a reference cannot claim parity')
+})
+
+test('bench page: reference and CI snapshots render Perry independently, with matching provenance', async () => {
+  const html = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
+  const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1].replace(/^import .*$/m, '')
+  const row = medianUs => ({ medianUs, bytes: 10, parity: 'ok' })
+  const snapshot = (cpu, perry) => ({ meta: { host: { cpu }, date: '2026-09-24', commit: 'abc123' },
+    cases: { alpha: C(row(100), { perry: row(perry) }) } })
+  const snapshots = { './results.json': snapshot('Reference CPU', 200), './results-ci.json': snapshot('CI CPU', 700) }
+  const boot = async (search, failure) => {
+    const nodes = {}, fetched = []
+    const document = { getElementById: id => nodes[id] ||= {
+      innerHTML: '', textContent: '', attrs: {},
+      addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v },
+    } }
+    await runInNewContext(`(async () => {${script}\n})()`, {
+      benchmarkRatio, correctBenchmarkRow, headlineStats, timedBenchmarkRow, CLS_ICO, LAB,
+      document, URLSearchParams, location: { search }, navigator: { userAgent: 'test' },
+      fetch: async path => {
+        fetched.push(path)
+        if (failure === 'network') throw new Error('offline')
+        return { ok: failure !== '404', json: async () => failure === 'invalid' ? null : snapshots[path] }
+      },
+    })
+    return { nodes, fetched }
+  }
+  // Navigation reloads the document, so each boot also discards browser-run rows.
+  for (const [search, machine, ratio] of [
+    ['', 'reference', '2.00×'], ['', 'reference', '2.00×'],
+    ['?machine=ci', 'ci', '7.00×'], ['?machine=unknown', 'reference', '2.00×'],
+  ]) {
+    const { nodes, fetched } = await boot(search)
+    const file = machine === 'ci' ? 'results-ci.json' : 'results.json'
+    is(fetched, ['./' + file], 'one machine per page, no cross-machine merge')
+    is(nodes['machine-' + machine].attrs['aria-current'], 'page', 'selected machine is announced')
+    is(nodes.geomean.innerHTML.includes('Perry'), true, 'Perry has a corpus row')
+    is(nodes.geomean.innerHTML.includes(ratio), true, 'ratio comes from the selected machine')
+    is(nodes.cards.innerHTML.includes('Perry'), true, 'Perry has a per-case row')
+    is(nodes.cards.innerHTML.includes(machine === 'ci' ? '700 µs' : '200 µs'), true, 'per-case timing is from the same machine')
+    is(nodes.outro.innerHTML.includes(`href="${file}"`), true, 'raw data link matches the chart')
+    is(nodes.outro.innerHTML.includes(machine === 'ci' ? 'CI runner: CI CPU' : 'Reference: Reference CPU'), true, 'machine provenance matches')
+  }
+  for (const failure of ['404', 'network', 'invalid']) {
+    const { nodes, fetched } = await boot('?machine=ci', failure)
+    is(fetched, ['./results-ci.json'], 'failed CI never falls back to another machine')
+    is(nodes.geomean.innerHTML.includes('Could not load <a href="results-ci.json">'), true, failure + ': identifies failed snapshot')
+    is(nodes.outro.textContent, '', 'no stuck loading caption')
+    is(nodes.runAll.disabled, true, 'no run against missing data')
+  }
+  snapshots['./results-ci.json'].cases = {}
+  const { nodes } = await boot('?machine=ci')
+  is(nodes.casecount.textContent, 0, 'empty CI snapshot has zero cases')
+  is(nodes.cards.innerHTML, '', 'empty CI snapshot fabricates no measurements')
+  is(nodes.geomean.innerHTML.includes('Perry'), false, 'no fabricated Perry aggregate')
 })
 
 test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory sorts last', () => {

@@ -27,7 +27,7 @@ const isAccessorSlot = (name) => name.endsWith(ACCESSOR_GET) || name.endsWith(AC
 
 const classes = () => ctx.transform.classes
 /** The class registered under a schema id, or null. */
-export const classOfSid = (sid) => { const brand = ctx.schema.brandOf?.(sid); return brand ? classes()?.get(brand) ?? null : null }
+const classOfSid = (sid) => { const brand = ctx.schema.brandOf?.(sid); return brand ? classes()?.get(brand) ?? null : null }
 /** Every class with a method `name`, own or inherited, in declaration order. */
 export const classesWith = (name) => classes() ? [...classes().values()].filter(e => e.methods.has(name)) : []
 const sidOf = (entry) => ctx.schema.sidOfBrand(entry.brand)
@@ -206,7 +206,7 @@ export function memberUses() {
 /** `['__own', r, ['str', prop]]`: whether `r` carries an own property `prop` where the
  *  summary admits one stored under that name (the class contract); false
  *  otherwise, folding the probe away. Shared with the ToPrimitive prelude. */
-export function defineOwnProbe() {
+function defineOwnProbe() {
   ctx.core.emit.__own = (r, propLit) => {
     if (!ctx.summary.memberMayBeOwn(propLit[1])) return typed(['i32.const', 0], 'i32')
     inc('__dyn_get_expr', '__ptr_type')
@@ -220,7 +220,7 @@ export function defineOwnProbe() {
 const DISPATCH = CLASS_T + 'dispatch' + CLASS_T
 const dispatcherName = (key, use) => DISPATCH + key + (use === 'call' ? '' : CLASS_T + use)
 /** Whether the function being emitted is a dispatcher (its signature says so): class dispatch is off inside it. */
-export const inDispatcher = () => !!ctx.func?.current?.dispatcher
+const inDispatcher = () => !!ctx.func?.current?.dispatcher
 
 /**
  * Synthesize the dispatchers as prepared functions before the summary runs

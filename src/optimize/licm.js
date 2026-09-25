@@ -14,6 +14,7 @@ import { LAYOUT } from '../ctx.js'
 import { findBodyStart, buildRefcount, nextLocalId } from '../ir.js'
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
+import { pureKernel } from './pure-funcs.js'
 
 /**
  * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot
@@ -44,7 +45,7 @@ const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux',
 // only loop-body producer is the in-place replace-store's re-boxed result, which
 // otherwise pinned the loop's `__ptr_offset(arr)` base resolution in-body (the
 // immutable-update kernel paid the full forwarding+bounds dance per iteration).
-const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__to_num', '$__to_str', '$__str_length', '$__mkptr', '$__str_idx'])
+const NON_MUTATING_CALLS = new Set(['$__is_str_key', '$__str_concat', '$__str_concat_fresh', '$__to_num', '$__to_str', '$__str_length', '$__mkptr', '$__str_idx'])
 
 // __str_idx may allocate a non-ASCII UTF-16 unit: it is non-mutating but not
 // safe to speculate before a zero-trip loop (allocation can trap).
@@ -74,9 +75,7 @@ const READONLY_MEM_CALLS = new Set(['$__typed_idx'])
 // cannot change under the loop (`for (j = 0; j < line.length; j++)` hoists to
 // one call instead of one per character — the strbuild row-scan shape).
 const PURE_CALL_I32 = new Set(['$__str_indexof', '$__str_lastindexof', '$__str_eq', '$__str_eq_cold', '$__is_str_key', '$__str_length'])
-const isPureFnCall = (callee) =>
-  typeof callee === 'string' &&
-  ((callee.startsWith('$math.') && !callee.startsWith('$math.random')) || PURE_CALL_I32.has(callee))
+const isPureFnCall = (callee) => pureKernel(callee) || PURE_CALL_I32.has(callee)
 
 export function hoistInvariantPtrOffset(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return

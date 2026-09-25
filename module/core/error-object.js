@@ -7,10 +7,9 @@
  * @module core/error-object
  */
 import print from 'watr/print'
-import { typed, asF64, temp, tempI32, isUndef, truthyIR, toStrI64, mkPtrIR } from '../../src/ir.js'
+import { typed, asF64, temp, tempI32, isUndef, truthyIR, toStrI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { emit } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
-import { NULL_NAN, UNDEF_NAN } from '../../src/ir/sentinels.js'
 import { VAL } from '../../src/reps.js'
 import { ctx, err, inc, PTR } from '../../src/ctx.js'
 import { dataLen } from '../../src/static-data.js'

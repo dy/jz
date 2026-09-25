@@ -173,7 +173,7 @@ function collectBoundedArrIdx(node, recv, idxVar, set, nodes) {
   walkAst(node, { enter: n => {
     if (n[0] === '=>') return false
     if (n[0] === '[]' && n.length === 3 && n[1] === recv && n[2] === idxVar) {
-      set.add(recv + '\x00' + idxVar)
+      set?.add(recv + '\x00' + idxVar)
       nodes?.add(n)
     }
   } })

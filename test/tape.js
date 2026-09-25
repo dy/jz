@@ -187,6 +187,21 @@ test('link: functions order by call count, runtime ties by name, user functions 
   is(out[1][0], 'memory'); is(out.at(-1)[0], 'elem', 'the functions stay between memory and elem')
 })
 
+test('link: tied runtime and user functions have a transitive order', () => {
+  const inputs = [[], ['$user'], ['$__z', '$user2', '$__a', '$user1'],
+    ['$user2', '$__z', '$user1', '$__a'], ['$__a', '$user2', '$__z', '$user1']]
+  for (const ns of inputs) for (const count of [0, 3]) {
+    const m = ['module', ['memory', 1], ...ns.map(n => ['func', n, ['nop']])]
+    const counts = new Map(ns.map(n => [n, count]))
+    const expected = ns.filter(n => n.startsWith('$__')).sort().concat(ns.filter(n => !n.startsWith('$__'))).join(' ')
+    for (let again = 0; again < 2; again++) {
+      const [out] = onTape(m, root => { orderFuncs(root, counts); orderFuncs(root, counts) })
+      is(names(out).join(' '), expected, `count ${count}, input ${ns}, repeat ${again}`)
+      is(out[1][0], 'memory', 'non-function section stays in place')
+    }
+  }
+})
+
 test('link: the throw runtime goes when nothing can catch; a catch anywhere keeps it', () => {
   const m = ['module', ['tag', '$__jz_err', ['param', 'f64']],
     ['func', '$f', ['global.set', '$__jz_last_err_bits', ['i64.const', 7]], ['throw', '$__jz_err', ['f64.const', 1]]]]

@@ -38,8 +38,8 @@
  */
 
 export {
-  resetBodyFactsCache, analyzeBody, invalidateLocalsCache, reanalyzeBody,
-  setFuncBody, invalidateBodies, invalidateAllBodyFacts,
+  analyzeBody, reanalyzeBody,
+  setFuncBody, invalidateBodies, clearBodyFacts,
 } from './analyze/body-facts.js'
 
 export { analyzeValTypes, analyzeIntCertain } from './analyze/val-types.js'

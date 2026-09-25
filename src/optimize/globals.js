@@ -1,7 +1,6 @@
 /**
  * Global/memory hoisting family: module-wide write-set analyses
- * (collectVolatileGlobals, collectReachableGlobalWrites,
- * collectReachableMemoryWrites) that feed the per-function hoists
+ * (collectReachableGlobalWrites, collectReachableMemoryWrites) that feed the per-function hoists
  * (hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads,
  * guardMaskedVectorSuffix, promoteGlobals) — all built on the shared
  * `globalBaseAliases`/`memGlobal` address-resolution helpers.
@@ -16,36 +15,10 @@ import { hasIROp } from './ir-scan.js'
 import { isMemWrite } from 'watr/optimize'
 
 /**
- * Module-wide scan for "volatile" globals — those mutated (`global.set`) in any
- * function other than `$__start`. Globals written only in `$__start` are
- * init-once: `$__start` runs to completion before any other function, so they
- * are effectively read-only afterwards and stay promotable.
- *
- * promoteGlobals uses this to avoid caching a callee-mutable global into a
- * function-entry local across a call (which would leave the local stale).
- *
- * @param {Array<Array>} funcs - all module function IR nodes
- * @returns {Set<string>} volatile global names (with leading `$`)
- */
-export function collectVolatileGlobals(funcs) {
-  const volatile = new Set()
-  const recordWrite = node => {
-    if (Array.isArray(node) && node[0] === 'global.set' && typeof node[1] === 'string') volatile.add(node[1])
-  }
-  const walkOptions = { enter: recordWrite }
-  for (const fn of funcs) {
-    if (!Array.isArray(fn) || fn[0] !== 'func' || fn[1] === '$__start') continue
-    walkAst(fn, walkOptions)
-  }
-  return volatile
-}
-
-/**
  * Transitive global-write sets per function: name → Set of globals the function
- * writes directly OR through any (transitively) called function. The precise
- * complement to `collectVolatileGlobals`' coarse module-wide set — a global
- * written only by `init` is volatile module-wide, yet perfectly stable inside
- * a function whose call graph never reaches `init`.
+ * writes directly OR through any (transitively) called function: a global
+ * written only by `init` stays stable inside a function whose call graph never
+ * reaches `init`.
  *
  * Unknown callees (imports — absent from the module's func list) write nothing:
  * wasm imports cannot touch module globals. `call_indirect`/`call_ref` targets
@@ -190,7 +163,7 @@ export function collectReachableGlobalWrites(funcs) {
  */
 // Never-forwarding pointee kinds: every PTR tag outside __ptr_offset's
 // forwarding set {ARRAY, HASH, SET, MAP} — same bits ⇒ same offset.
-export const STABLE_PTR_VALS = new Set([VAL.TYPED, VAL.STRING, VAL.OBJECT, VAL.BUFFER, VAL.CLOSURE])
+const STABLE_PTR_VALS = new Set([VAL.TYPED, VAL.STRING, VAL.OBJECT, VAL.BUFFER, VAL.CLOSURE])
 
 /** '$name' set of stable-pointee module globals (hoistGlobalPtrOffset targets). */
 export const stablePtrGlobalNames = () => {
@@ -904,16 +877,15 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites, 
  * the global changes between reads.
  *
  * A within-function read-only check is NOT sufficient: a callee can mutate the
- * global between two reads in this function. `volatileGlobals` (globals written
- * anywhere outside `$__start`) gates that case — a volatile global is not
- * promoted in any function that makes a call. Init-once globals (written only in
- * `$__start`) stay promotable everywhere.
+ * global between two reads in this function. `reachableWrites` (see
+ * collectReachableGlobalWrites) gates that case per call edge; without it,
+ * calls are not checked (unit-test callers only).
  *
  * @param {Array} fn - Function IR (WAT-as-array)
  * @param {Map<string,string>} [globalTypes] - Optional: global name → wasm type ('i32'|'f64'|'i64'|'funcref')
- * @param {Set<string>} [volatileGlobals] - Optional: globals mutated outside `$__start` (see collectVolatileGlobals)
+ * @param [reachableWrites] - collectReachableGlobalWrites result
  */
-export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites) {
+export function promoteGlobals(fn, globalTypes, reachableWrites) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -952,13 +924,10 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites
   const replacements = new Map()
   for (const [gName, count] of getCounts) {
     if (count < 3 || written.has(gName)) continue
-    // Unsound to cache a callee-mutable global across a call in this function.
-    // With reachableWrites the test is exact per call edge (a global written
-    // only by init stays promotable in functions whose call graph never
-    // reaches init); without it, fall back to the coarse module-wide set.
-    if (hasCall && (reachableWrites
-      ? (hasIndirect || [...callees].some(c => reachableWrites.has(c, gName)))
-      : volatileGlobals?.has(gName))) continue
+    // Unsound to cache a callee-mutable global across a call in this function:
+    // the test is exact per call edge (a global written only by init stays
+    // promotable in functions whose call graph never reaches init).
+    if (hasCall && reachableWrites && (hasIndirect || [...callees].some(c => reachableWrites.has(c, gName)))) continue
     // Determine type: use provided map, or infer from context
     const type = globalTypes?.get(gName) || inferTypeFromContext(fn, gName, bodyStart)
     if (!type) continue  // can't determine type, skip

@@ -182,7 +182,7 @@ export function applyBigintRepresentationAction(ir, node, action) {
  *  `maybeUnboxBigInt` for the return edge into a boxed contract
  *  (representation-plan/common.js returnEdgeAction); a raw payload whose
  *  bits spell a NaN is the collision class only a settled carrier closes. */
-export function tagBoxBigInt(f64expr) {
+function tagBoxBigInt(f64expr) {
   const t = temp('tbig')
   return typed(['if', ['result', 'f64'],
     ['f64.ne', ['local.tee', `$${t}`, materializeDeferredBigint(f64expr)], ['local.get', `$${t}`]],
@@ -257,7 +257,7 @@ export const isSchemaSlotBigintPossible = (node) =>
  *  parameter fed from an array element (module/array/callback.js).
  *  RepresentationPlan owns general carriers; this transient marks the
  *  locals no plan names. */
-export const isTaggedLocal = (name) => ctx.func.taggedLocals?.has(name) === true
+const isTaggedLocal = (name) => ctx.func.taggedLocals?.has(name) === true
 
 /** Extract raw i64 bits, unboxing when the plan, the tagged-local fact, or
  *  the schema-slot census says the emitted value is a PTR.BIGINT box. */

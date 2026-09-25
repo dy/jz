@@ -10,7 +10,7 @@
 import { ctx } from '../../ctx.js'
 import { withCurrentFunction, withTypedElems } from '../flow-state.js'
 import { isBlockBody, alwaysReturns, hasBareReturn, returnExprs, walkAst, isReassigned } from '../../ast.js'
-import { analyzeBody, reanalyzeBody, invalidateBodies } from '../analyze.js'
+import { analyzeBody, reanalyzeBody, clearBodyFacts } from '../analyze.js'
 import { exprType, typedStaticLen } from '../../type.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { hasAmbiguousBoolMerge } from '../../kind.js'
@@ -50,7 +50,7 @@ import { K, tagOf, paramOf, isNullable, valOf, valsOf, hasTag, core, UNKNOWN, PR
 const NO_PRESENT_READS = new Set()
 export function narrowI32Results(funcs, paramReps) {
   // The post-parameter pass adds settled lengths to the body's proof inputs.
-  if (paramReps) invalidateBodies(funcs.map(f => f.body))
+  if (paramReps) clearBodyFacts(funcs.map(f => f.body))
   // A return tail's SIGN — 'unsigned' (a uint32 magnitude that needs
   // f64.convert_i32_u at the boundary), 'signed' (ordinary ToInt32 range,
   // f64.convert_i32_s), or null (an unsigned value reaches this tail but the
@@ -365,7 +365,7 @@ export function narrowReturnArrayElemSets(paramReps, addressTaken) {
   let changed = true
   while (changed) {
     changed = false
-    invalidateBodies(targets.map(f => f.body))
+    clearBodyFacts(targets.map(f => f.body))
     for (const func of targets) {
       if (func[field] != null) continue
       const isBlock = isBlockBody(func.body)

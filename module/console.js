@@ -24,7 +24,7 @@
  */
 
 import { typed, asF64, asI64, carrierF64Narrow, mkPtrIR, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
-import { emit, bool, deps, reg, hostImport } from '../src/bridge.js'
+import { emit, bool, deps, reg, wat, hostImport } from '../src/bridge.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
@@ -126,9 +126,7 @@ const setupWasi = (ctx) => {
       (if (result i32) (i32.eq (local.get $type) (i32.const 1))
         (then (i32.const 7)) (else (i32.const 8)))))))`
 
-  reg('readStdin', {
-    deps: ['__read_stdin'],
-    wat: `(func $__read_stdin (result f64)
+  wat('__read_stdin', `(func $__read_stdin (result f64)
     (local $iov i32) (local $nio i32) (local $buf i32) (local $cap i32)
     (local $total i32) (local $n i32) (local $new i32)
     (local.set $iov (call $__alloc (i32.const 8)))
@@ -150,11 +148,10 @@ const setupWasi = (ctx) => {
       (br_if $eof (i32.eqz (local.get $n)))
       (local.set $total (i32.add (local.get $total) (local.get $n)))
       (br $read)))
-    (call $__utf8_decode (local.get $buf) (local.get $total) (i32.const 1)))`,
-    emit: () => {
-      needFdRead()
-      return typed(['call', '$__read_stdin'], 'f64')
-    },
+    (call $__utf8_decode (local.get $buf) (local.get $total) (i32.const 1)))`)
+  reg('readStdin', ['__read_stdin'], () => {
+    needFdRead()
+    return typed(['call', '$__read_stdin'], 'f64')
   })
 
   const makeConsole = (method, fd) => {
@@ -217,28 +214,22 @@ const setupWasi = (ctx) => {
   const needClock = () => hostImport('wasi_snapshot_preview1', 'clock_time_get',
     ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
 
-  reg('Date.now', {
-    deps: ['__time_ms'],
-    wat: () => {
-      // The static pool may start at zero. Give the clock its own eight bytes.
-      dataAlign(8)
-      const off = dataLen()
-      dataPush(new Uint8Array(8))
-      return `(func $__time_ms (param $clock i32) (result f64)
-        (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const ${off})))
-        (f64.div (f64.convert_i64_u (i64.load (i32.const ${off}))) (f64.const 1000000)))`
-    },
-    emit: () => {
-      needClock()
-      return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')
-    },
+  wat('__time_ms', () => {
+    // The static pool may start at zero. Give the clock its own eight bytes.
+    dataAlign(8)
+    const off = dataLen()
+    dataPush(new Uint8Array(8))
+    return `(func $__time_ms (param $clock i32) (result f64)
+      (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const ${off})))
+      (f64.div (f64.convert_i64_u (i64.load (i32.const ${off}))) (f64.const 1000000)))`
   })
-  reg('performance.now', {
-    deps: ['__time_ms'],
-    emit: () => {
-      needClock()
-      return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')
-    },
+  reg('Date.now', ['__time_ms'], () => {
+    needClock()
+    return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')
+  })
+  reg('performance.now', ['__time_ms'], () => {
+    needClock()
+    return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')
   })
   ctx.core.emit['console.now'] = ctx.core.emit['Date.now']
   ctx.core.emit['console.perfNow'] = ctx.core.emit['performance.now']

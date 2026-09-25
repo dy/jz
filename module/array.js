@@ -669,6 +669,7 @@ export default (ctx) => {
 
     if (!hasSpread) {
       const len = elems.length
+      let vals
       // R: Static data segment for arrays of pure-literal elements (own-memory only).
       // Raw f64 bits embedded directly — a constant array becomes a const pointer with no
       // alloc and no per-element store. A static array aliases ONE shared data-segment
@@ -681,7 +682,7 @@ export default (ctx) => {
         // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
         // storedValue: a bool literal folds to its TRUE/FALSE atom const — still
         // static-extractable, and the element keeps boolean identity in the segment.
-        const vals = elems.map(e => emitElem(e))
+        vals = elems.map(e => emitElem(e))
         const slots = vals.map(v => extractF64Bits(v))
         if (slots.every(b => b !== null)) {
           const ptr = staticArrayPtr(slots)
@@ -704,7 +705,7 @@ export default (ctx) => {
       const a = allocArray(len, Math.max(len, minCap, capacity))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
-        body.push(['f64.store', slotAddr(a.local, i), emitElem(elems[i])])
+        body.push(['f64.store', slotAddr(a.local, i), vals ? vals[i] : emitElem(elems[i])])
       body.push(a.ptr)
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
@@ -883,7 +884,7 @@ export default (ctx) => {
     const litKey = isLiteralStr(idx) ? idx[1]
       : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
       : null
-    // SRoA flat object/array: `o['k']` / `a[2]` → `local.get $o#i` (scanFlatObjects).
+    // SRoA flat object/array: `o['k']` / `a[2]` → `local.get $o#i` (flatObjectCandidate).
     // A bare integer index resolves its slot key here (not via `litKey`, which stays
     // null for arrays so the heap-array / schema paths below are untouched).
     if (typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
@@ -1103,11 +1104,11 @@ export default (ctx) => {
         return typed(arrayFast(() => undefExpr()), 'f64')
       }
       // Base offset of the array's data region. A binding proven never relocated
-      // (scanNeverGrown — a fresh array literal whose every use is a pure read, so no
+      // (neverGrownCandidate — a fresh array literal whose every use is a pure read, so no
       // grow op can ever run) skips the realloc-forwarding follow: its base is the raw
       // post-header offset `wrap(reinterpret(ptr) & OFFSET_MASK)`, no __ptr_offset call.
       // Memory-safe ONLY under that proof — a relocated array read through this stale
-      // base would corrupt memory (see scanNeverGrown's default-deny rationale).
+      // base would corrupt memory (see neverGrownCandidate's default-deny rationale).
       // An own-name-current binding (scanObjectArrayFacts: every grow
       // runs through this name and writes the pointer back) is never stale
       // either, so its reads take the raw base too; its header may relocate
@@ -2515,7 +2516,8 @@ export default (ctx) => {
   }
   ctx.core.emit['.indexOf'] = (arr, val, fromIndex) => {
     const recv = hoistArrayValue(arr)
-    const vv = val === undefined ? undefExpr() : storedValue(val)
+    const value = temp('ixv')
+    const vv = typed(['local.get', `$${value}`], 'f64')
     const positions = positionArgs([fromIndex])
     const eq = arrEqIR(val)
     const result = tempI32('ix'), len = tempI32('ixl'), ptr = tempI32('ixp')
@@ -2528,6 +2530,7 @@ export default (ctx) => {
     ], len, ptr, false, ['local.get', `$${from.local}`])
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ['local.set', `$${value}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
       ...positions.setup,
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
@@ -2575,13 +2578,11 @@ export default (ctx) => {
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
-  // Mirror of .indexOf scanning to the highest matching index — no early break, the last hit wins.
-  // Registering it (alongside .string:lastIndexOf) is what lets lastIndexOf leave STRING_ONLY_METHODS:
-  // an untyped receiver now forks string-vs-array at runtime instead of force-narrowing to string
-  // (which returned -1 for every array). fromIndex is unsupported, matching .indexOf's array path.
+  // Capture the search value once, then scan backwards from fromIndex.
   ctx.core.emit['.lastIndexOf'] = (arr, val, fromIndex) => {
     const recv = hoistArrayValue(arr)
-    const vv = val === undefined ? undefExpr() : storedValue(val)
+    const value = temp('lxv')
+    const vv = typed(['local.get', `$${value}`], 'f64')
     const positions = positionArgs([fromIndex])
     const eq = arrEqIR(val)
     const result = tempI32('lx'), len = tempI32('lxl'), ptr = tempI32('lxp')
@@ -2595,6 +2596,7 @@ export default (ctx) => {
     ], len, ptr, true, ['local.get', `$${from.local}`])
     return typed(['block', ['result', 'f64'],
       recv.setup,
+      ['local.set', `$${value}`, asF64(val === undefined ? undefExpr() : storedValue(val))],
       ...positions.setup,
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],

@@ -1,7 +1,6 @@
 /**
- * Stdlib template realization — the parse-cache (parse once per distinct
- * resolved WAT string, hand out clones), reachability over the actually-
- * compiled output, the late f64x2-vectorizer stdlib top-up, and the main
+ * Stdlib template realization, reachability over the compiled output,
+ * the late f64x2-vectorizer stdlib top-up, and the main
  * pull-stdlib-and-decide-memory/allocator phase that rides on all three.
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
@@ -19,38 +18,10 @@ import { dataAlign, dataPush, dataLen, strPoolLen } from '../../static-data.js'
 import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 
-// Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
-// `parseWat` of the same string always yields the same tree. Parsing is the
-// dominant cost when a program pulls heavy stdlib (Math pow/sqrt, JSON, regex):
-// it re-tokenizes ~KB of text every compile. Parse once per distinct resolved
-// string, then hand out a deep clone (downstream passes mutate nodes in place).
-// Module-level on purpose: the cache persists across compile() calls.
-let stdlibParseCache = new Map()  // resolved WAT string → pristine parsed tree
-const cloneTemplate = (node) => {
-  if (!Array.isArray(node)) return node
-  const copy = node.map(cloneTemplate)
-  if (node.loc != null) copy.loc = node.loc
-  return copy
-}
-const parseTemplate = (str) => {
-  let tmpl = stdlibParseCache.get(str)
-  if (tmpl === undefined) stdlibParseCache.set(str, tmpl = parseWat(str))
-  return cloneTemplate(tmpl)
-}
-// Self-compile-only: see clearDollar (src/ir.js) — same dangling-arena-pointer hazard,
-// and the same fix: swap in a fresh Map, don't just `.clear()` the old one (its
-// backing table is itself an arena allocation `_clear` invalidates). Must run every
-// compile in a warm-instance loop (see scripts/self.js setupSelf).
-export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
-// Region-arena EMISSION rounds (re-landing .work/evidence.md §Emission
-// rounds): same non-`ctx` module-scope hazard as DOLLAR (src/ir.js,
-// dollarMap/setDollarMap) — stdlibParseCache lives entirely outside `ctx`,
-// invisible to any ctx.*-based region-round root array. `parseTemplate`
-// fires for every stdlib helper `pullStdlib` realizes, growing this cache's
-// backing Map heavily during that one stage — a pullStdlib-scoped round must
-// root/rebind it exactly like DOLLAR, via this pair.
-export const stdlibParseCacheMap = () => stdlibParseCache
-export const setStdlibParseCacheMap = (m) => { stdlibParseCache = m }
+// Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
+// are parsed only when absent from the assembled module. Generated templates
+// have no user source locations to retain.
+const parseTemplate = src => parseWat(src, { locations: false })
 
 /**
  * Stdlib funcs actually reachable from the emitted program. Seeds from real
@@ -89,7 +60,7 @@ function reachableStdlib(sec) {
     const v = stdlib[stack.pop()]
     let text = ''
     try { text = typeof v === 'function' ? v() : v } catch { text = '' }
-    if (typeof text === 'string') for (const m of text.matchAll(/\$([A-Za-z_][A-Za-z0-9_.]*)/g)) add(m[1])
+    if (typeof text === 'string') for (const ref of text.match(/\$[A-Za-z_][A-Za-z0-9_.]*/g) || []) add(ref.slice(1))
   }
   return reach
 }
@@ -201,7 +172,8 @@ export function pullStdlib(sec) {
   //    discriminates heap tags — an `instanceof`/`typeof x==='object'` whose argument the
   //    host marshals across the boundary). A data segment with no memory is invalid wasm,
   //    so memory can't be gated on allocation alone.
-  const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n']
+  // Explicit rewind (including an empty checkpoint) needs the arena's reset mark.
+  const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n', '__clear']
   const needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
     // shared memory memory.init's the static region into __alloc'd space at start
     !!(ctx.memory.shared && dataLen() > 0)
@@ -316,10 +288,10 @@ export function pullStdlib(sec) {
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))
         }
         for (const fn of sec.funcs) walkAst(fn, { enter: scanSet })
-        // stdlib bodies are still WAT text here (parseTemplate runs later) — scan textually.
+        // stdlib bodies are still WAT text here (parseWat runs later) — scan textually.
         // Helpers write registry globals too: collection's __seq, json's __jbuf/__jstack….
         // Thunked templates expand ONCE by contract (expansion-time ctx reads) — memoize
-        // the expansion back into the registry so the later parseTemplate pass reuses this
+        // the expansion back into the registry so the later parseWat pass reuses this
         // exact string instead of expanding a second time.
         for (const name of ctx.core.includes) {
           let src = ctx.core.stdlib[name]

@@ -1,5 +1,5 @@
 // entity.go — in-place entity update over a slice of structs. Bit-identical to entity.js.
-// On arm64 Go auto-fuses `a + b*c` to FMADDD (no flag to disable); the integration
+// On arm64 Go auto-fuses `a + b*c` to FMADDD; the integration
 // then rounds differently in the last ulp → reported as `fma` parity, not DIFF.
 package main
 

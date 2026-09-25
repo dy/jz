@@ -3,7 +3,7 @@
  * @module jzify/transform
  */
 
-import { JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { rewriteChildren, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../layout.js'
@@ -742,15 +742,7 @@ export function createTransform(opts) {
       }
       if (result != null) return result
     }
-    // A node whose operands the walk leaves as they are is returned as it is:
-    // the rewrite copies the spine above a change alone, not the whole tree.
-    let out = null
-    for (let i = 1; i < node.length; i++) {
-      const child = transform(node[i])
-      if (out === null && child !== node[i]) out = node.slice(0, i)
-      if (out !== null) out.push(child)
-    }
-    return out ?? node
+    return rewriteChildren(node, transform)
   }
 
   return { transform, transformScope, transformParams }

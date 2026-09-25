@@ -85,6 +85,52 @@ test('sentinel guard: the size tier copies nothing', () => {
   is(compile(ENVELOPE, { optimize: 'size', wat: true }), compile(ENVELOPE, { optimize: { level: 'size', sentinelGuards: false }, wat: true }))
 })
 
+test('sentinel guard: copied gather locals retain their numeric kinds and missing values', () => {
+  // Keep the worker shared so load-CSE introduces its temporary before the
+  // guard copies it. Source inlining can otherwise hide the missing kind.
+  const src = ENVELOPE.replace(`edt1d(f, d, v, z, ${N})`,
+    `edt1d(f, d, v, z, ${N}); edt1d(d, f, v, z, ${N})`)
+  const optimize = { level: 'speed', sourceInline: false }
+  if (!onKernel()) {
+    const worker = funcWat(compile(src, { optimize, wat: true }), 'edt1d')
+    ok(worker, 'the shared numeric worker remains present')
+    ok(!/\(call \$(?:__to_num|__add_slow|__typed_idx|__typed_prop_get)\b/.test(worker),
+      'renaming a numeric gather does not introduce generic conversion or property dispatch')
+  }
+  const native = oracle(src).run, wasm = jz(src, { optimize }).exports.run
+  for (let mode = 0; mode < 4; mode++) for (let seed = 1; seed <= 4; seed++)
+    is(wasm(seed, mode), native(seed, mode), `shared worker: mode ${mode}, seed ${seed}`)
+})
+
+test('sentinel guard: copied suffix locals preserve nullish values at cursor boundaries', () => {
+  // Repeat a compilation, change its array shape, then return to the first:
+  // fresh-name summary aliases must belong to this compilation alone.
+  for (const n of [3, 3, 0, 1, 3]) {
+    const src = `export const probe = (start, limit, index, mode) => {
+      const z = new Float64Array(${n}), a = new Float64Array(2)
+      for (let i = 0; i < ${n}; i++) z[i] = i === ${n - 1} ? Infinity : i
+      a[0] = 7; a[1] = 11
+      let k = start | 0
+      try {
+        while (z[k + 1] < limit) k++
+        const value = mode === 1 || mode === 3 ? null : a[index]
+        const stop = z[k]
+        if (mode >= 2) throw value
+        return (value === undefined ? 'u' : value === null ? 'n' : '' + value)
+          + '/' + (stop === undefined ? 'u' : '' + stop) + '/' + k
+      } catch (e) { return 'throw:' + (e === undefined ? 'undefined' : e === null ? 'null' : e) }
+    }`
+    const native = oracle(src).probe
+    const wasm = jz(src, { optimize: { level: 'speed', sourceInline: false } }).exports.probe
+    for (const args of [
+      [0, -1, 0, 0], [0, 0, 0, 0], [0, 2, 1, 0], [0, 2, 2, 0],
+      [0, 2, -1, 0], [0, 2, NaN, 0], [0, 2, 0, 1], [0, NaN, 0, 1],
+      [-2, 2, 1, 0], [-1, 2, 1, 0], [n - 1, 2, 1, 0], [n, 2, 1, 0],
+      [0, 2, 0, 2], [0, 2, 2, 2], [0, 2, 0, 3],
+    ]) is(wasm(...args), native(...args), `length ${n}, probe(${args})`)
+  }
+})
+
 // The forms decline where a copy could not stand for the original: a loop that
 // breaks itself (the slow loop would run after the break), a cursor a closure
 // writes, a cursor the suffix writes. Each still computes the host's result.

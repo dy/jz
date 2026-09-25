@@ -9,7 +9,7 @@
 
 import { ctx } from '../../ctx.js'
 import { withCurrentFunction } from '../flow-state.js'
-import { findMutations, reanalyzeBody, invalidateBodies } from '../analyze.js'
+import { findMutations, reanalyzeBody, clearBodyFacts, invalidateBodies } from '../analyze.js'
 import { intLevelMap } from '../../type.js'
 import { typedElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
@@ -86,7 +86,7 @@ function callerArgSelfConsistentI32(func, k, sites) {
   func.sig.results = savedResults
   // The hypothesis tainted analyzeBody's cache for every touched caller body —
   // invalidate again so the next (real, non-hypothetical) read re-derives clean.
-  invalidateBodies(touched)
+  clearBodyFacts(touched)
   return ok
 }
 
@@ -341,6 +341,7 @@ export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
       if (!use) return
       const rep = ensureParamRep(paramReps, func.name, k)
       rep.val = VAL.TYPED
+      ;(rep.possibleKinds ||= new Set()).add(VAL.TYPED)   // the boundary supplies this kind
       rep.typedCtor = 'new.Float64Array'
       rep.recvArrTyped = true   // the receiver IS typed: no runtime kind probe at reads
       // The pointer narrowing itself waits for applyTypedPointerParamAbi, after

@@ -10,6 +10,7 @@
 import { ctx, getFactStore } from '../../ctx.js'
 import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
+import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, updateRep } from '../../reps.js'
 import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
@@ -29,7 +30,7 @@ import { scanIntervalIdx, invalidateIntervalProof } from '../../type/interval-pr
 import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
 // Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
-// compile's bodies, cleared by resetBodyFactsCache at compile start — so weak
+// compile's bodies, replaced with the fact store at compile start — so weak
 // semantics bought nothing, and in the self-compiled kernel the WeakMap's
 // INVARIANT: this store must hold STRONG refs — a weak/arena-backed store
 // rewound by a warm-instance `_clear` mid-lifecycle makes cache behavior
@@ -37,7 +38,6 @@ import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 // the next reset.
 // Session-owned (audit P1 stage 5) — getFactStore().bodyFacts, NOT a private
 // module-level Map; see src/session.js's factStore DEPS table.
-export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
 
 /**
  * Unified per-body analysis — see module header for slice overview.
@@ -49,8 +49,8 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
  * mutation/phase seam before a dependent read; the fingerprint is not a proof
  * that ambient facts are unchanged. See CONTRIBUTING.md's freshness table.
  * Use reanalyzeBody for a changed overlay, setFuncBody for AST replacement,
- * invalidateBodies for changed callees' dependents, and invalidateAllBodyFacts
- * when program/schema facts settle or the phase changes. Returned maps are
+ * invalidateBodies for semantic input changes, and clearBodyFacts when
+ * representation facts settle or the phase changes. Returned maps are
  * owned by this cache and must not be modified by consumers.
  */
 const EMPTY_BODY_FACT_MAP = new Map()
@@ -85,8 +85,15 @@ export function analyzeBody(body) {
   // The names declared in the body and the arrays whose initial contents it
   // described: two tables keyed by the body's names, dropped at exit.
   const elemOrigin = takeScratchSet()
+  // Program queries also visit bodies without entering their emission frame.
+  // Their chained range facts are scratch state, not facts about the caller.
+  const frame = ctx.func, previous = frame.localReps, scoped = frame.body !== body
+  if (scoped) frame.localReps = makeMapOverlay(previous)
   try { return computeBodyFacts(body, bodyFacts, elemOrigin) }
-  finally { releaseScratchSet(elemOrigin) }
+  finally {
+    if (scoped) frame.localReps = previous
+    releaseScratchSet(elemOrigin)
+  }
 }
 
 function computeBodyFacts(body, bodyFacts, elemOrigin) {
@@ -175,7 +182,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n),
     n => typedLens?.get(n),
     (n, l) => { (typedLens ||= new Map()).set(n, l) },
-    n => typedLens?.delete(n))
+    n => typedLens?.delete(n), body)
 
   // Payload width alone cannot authorize integer storage: a missing read is
   // undefined. Reuse the interval interpreter and canonical-loop recognizer
@@ -186,7 +193,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   const readPresent = e => {
     if (!presentKeys) {
       presentKeys = new Set()
-      scanBoundedArrIdx(body, new Set(), null, presentNodes)
+      scanBoundedArrIdx(body, null, null, presentNodes)
       const lens = n => locals.has(n) ? typedLens?.get(n) ?? null
         : ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null
       const entry = new Map()
@@ -744,7 +751,8 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals) {
  *  tags, never the unknown kind (which carries every tag). */
 export const mixedBoolKind = k => {
   const c = core(k) & ~UNKNOWN
-  return hasTag(c, K.BOOL) && tagOf(c) === K.ANY && c !== (core(kind(K.ANY)) & ~UNKNOWN)
+  return hasTag(c, K.BOOL) && (tagOf(c) === K.ANY || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) &&
+    c !== (core(kind(K.ANY)) & ~UNKNOWN)
 }
 
 /** Drop the cached analyzeBody entry for this body. Used by emitFunc after
@@ -755,51 +763,14 @@ export function invalidateLocalsCache(body) {
   if (body && typeof body === 'object') getFactStore().bodyFacts.delete(body)
 }
 
-/**
- * Solver-owned bodyFacts mutation seam (audit P1 next-slice — see the DEPS
- * table in session.js). The 14 pre-slice call sites across narrow.js/
- * index.js/plan/literals.js/plan/index.js each independently paired a raw
- * invalidateLocalsCache(body) with a later read or write and TRUSTED the
- * author to keep the pairing intact — a dropped half is the "forgotten
- * invalidation ⇒ silent stale-types miscompile" class the DEPS table names.
- * These three functions collapse every such pairing into ONE call so there
- * is no second half left to forget:
- *
- *   reanalyzeBody(body, read?)  — the "mutate ambient state, then read THIS
- *     body's facts under the new state" pattern (hypothesis-probing param/
- *     result narrowing in narrow.js; the params/localReps/typedElem/schema
- *     overlay reseed immediately before an emit-time read in index.js).
- *     Invalidates, then performs the read (default: analyzeBody(body); pass
- *     `read` when the actual analyzeBody call is inside a callee, e.g.
- *     narrow.js's evalTails). The read is unreachable without the
- *     invalidate — there is no way to call this and skip it.
- *
- *   setFuncBody(func, node)     — the "structurally rewrite this function's
- *     AST" pattern (plan/literals.js's loop unrolling / scalarization /
- *     literal promotion). Assigns func.body AND drops any bodyFacts entry
- *     for the new node in one step, covering both a fresh node (no-op
- *     delete, cheap) and an in-place-mutated same-identity node (a real,
- *     otherwise-easy-to-forget delete). Also the reason bindingUses' "no
- *     surgical invalidation" contract (session.js DEPS table) stays honest:
- *     every AST-rewriting pass reaches func.body through here, so a
- *     restructured body is always a NEW object identity by construction,
- *     and scanBindingUses' body-keyed cache naturally misses on it instead
- *     of serving stale binding-use facts for the old shape.
- *
- *   invalidateBodies(bodies) / invalidateAllBodyFacts() — the phase-boundary
- *     bulk flush (many bodies invalidated together, no immediate read):
- *     narrow.js's per-phase sweeps, narrowReturnArrayElems's per-target
- *     sweep, plan/index.js's post-narrowing flush before emit begins. Named
- *     so a new phase boundary reaches for the existing primitive instead of
- *     re-deriving its own `for (const f of ctx.funcs.list) invalidateLocalsCache(f.body)`.
- *
- * An overlay change must use reanalyzeBody before its next dependent read.
- * Program-wide fact changes use invalidateAllBodyFacts, including anonymous
- * bodies that do not have an entry in ctx.funcs.list.
- *
- * Every rewriting seam (setFuncBody, invalidateRewrittenBody, invalidateBodies,
- * invalidateAllBodyFacts) also advances the program revision (ctx.js fact
- * store), which whole-program facts such as the summary are fresh against.
+/** Body-fact freshness has two causes:
+ *  - Representation overlays/signatures changed: reanalyzeBody pairs eviction
+ *    with a read; clearBodyFacts evicts affected bodies, or all anonymous and
+ *    named bodies at a phase boundary. Neither changes the semantic program.
+ *  - The program changed: setFuncBody and invalidateRewrittenBody own AST
+ *    rewrites; invalidateBodies owns changed semantic inputs (e.g. an export's
+ *    boundaryTyped contract). These advance the summary's program revision.
+ *  The summary's result contracts read narrowed carriers from live signatures.
  */
 export function reanalyzeBody(body, read = () => analyzeBody(body)) {
   invalidateLocalsCache(body)
@@ -824,19 +795,15 @@ export function setFuncBody(func, node) {
   invalidateLocalsCache(node)
 }
 
-/** Invalidate a known set of bodies (funcs already filtered by the caller —
- *  e.g. narrowReturnArrayElems's `targets`). See the seam doc above. */
+/** A semantic input changed for these bodies and their summary. */
 export function invalidateBodies(bodies) {
   getFactStore().revision++
-  for (const body of bodies) invalidateLocalsCache(body)
+  clearBodyFacts(bodies)
 }
 
-/** Invalidate the complete bodyFacts store, including anonymous roots — the
- *  phase-boundary flush used when a signature-level fact just settled that
- *  arbitrarily many caller bodies may have read stale (narrowing's own
- *  callerLocals/valTypes lattices, or the final flush before emit begins).
- *  See the seam doc above. */
-export function invalidateAllBodyFacts() {
-  getFactStore().revision++
-  resetBodyFactsCache()
+/** Evict derived representation facts, keeping semantic facts valid. Omit
+ *  bodies to include anonymous roots at a program-wide phase boundary. */
+export function clearBodyFacts(bodies) {
+  if (bodies) for (const body of bodies) invalidateLocalsCache(body)
+  else getFactStore().bodyFacts.clear()
 }

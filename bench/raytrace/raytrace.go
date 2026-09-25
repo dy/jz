@@ -7,7 +7,7 @@
 //
 // Transcendental-free: only +,-,*,/ and sqrt, all IEEE-754 correctly-rounded, so
 // the framebuffer is bit-identical across engines and native targets. Go's arm64
-// backend force-fuses a*b+c → FMADDD (no flag to disable), so its checksum is the
+// backend force-fuses a*b+c → FMADDD, so its checksum is the
 // documented `fma` parity class, like fft/synth/biquad — same algorithm, last-ulp
 // rounding only.
 //

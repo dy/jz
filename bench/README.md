@@ -23,7 +23,36 @@ median_us=<int> checksum=<u32> samples=<int> stages=<int> runs=<int>
 The orchestrator runs selected cases against selected targets and flags checksum
 drift as `DIFF`.
 
+New cases remain `unclassified` until an independently verified checksum is
+pinned in `REFERENCE_CHECKSUMS` in `bench.mjs`. A new measurement never replaces
+an existing reference checksum. Entity's initial oracle is 1275530752, verified
+against native C, Node, JZ, Go-Wasm and Porffor.
+Failed measurements retain their reference; an older snapshot that lost it
+falls back to the canonical checksum before classifying a recovered result.
+
+`FMA_CHECKSUMS` accepts independently verified alternate checksums when a backend
+fuses floating-point operations. Resample has distinct native Go and Porffor
+variants; disabling only FMA restores the strict reference in each control build
+(`go build -gcflags=-d=fmahash=n` and `CC='cc -ffp-contract=off' porf native`).
+Production benchmark flags remain unchanged.
+
 ## Run
+
+For release evidence on CI, dispatch the `bench` workflow with `reference=true`.
+It runs six alternating paired rounds on one runner, then applies the strict
+speed, size, coverage, freshness, native-lowering and allocation-heavy RSS gates to that run.
+The `reference-<commit>` artifact retains the dataset and logs even when a gate
+fails. A completed measurement is not a passing release verdict.
+
+To check the downloaded artifact locally:
+
+```sh
+JZ_BENCH_RESULTS=/path/to/reference.json npm run test:claims
+```
+
+The source checkout and installed dependencies must match the measured commit.
+RSS uses the same snapshot; `JZ_MEMORY_RESULTS` can name a separate complete run.
+Ordinary push/PR benchmark runs keep their informational timing policy.
 
 ```sh
 npm run bench
@@ -216,15 +245,18 @@ Per case the gate distinguishes three verdicts, printed with every run:
 microbench jitter, tolerated but never called a lead), **red** (> 1.05 — a
 rival leads; fails the gate). A "band" row is a statistical tie, not a win.
 
-The speed claim is scoped to the **reference machine** (darwin/arm64, Apple M4
-Max) where the release discipline measures it — `bench/results.json` is that
-evidence. V8's tiering and the microarchitecture move individual rows by 2×
-either way on other hardware: the CI runner (linux/EPYC, 2 shared cores)
-publishes its own measurement as `bench/results-ci.json`, where a handful of
-reference-machine wins currently trail (fft, trace, vm, lz vs C→wasm) — kept
-visible as a secondary dataset, not folded into the claim. On CI, timing
-assertions print informational; checksums, sizes, coverage, and compile success
-stay hard-gated everywhere.
+Performance evidence describes the machine recorded in its metadata. The
+current `bench/results.json` records darwin/arm64, Apple M4 Max. Ordinary CI
+runs publish their separate measurements as `bench/results-ci.json`, visible
+in the [CI runner view](https://jz.js.org/bench/?machine=ci). Their timing checks
+are informational; checksums, sizes, coverage and compilation are hard gates.
+Successful benchmark runs on main trigger a Pages deployment of that snapshot.
+
+A manual `reference=true` run applies the strict release claims on CI as well.
+Its artifact is candidate release evidence only if every claim passes for the
+measured compiler. A failed run remains a list of gaps to fix; neither the host
+change nor the artifact upload waives a cap. Adopting a passing CI reference
+requires retaining its machine metadata with the dataset.
 
 The scope of "every kernel class" is this matrix — each cell names the case that
 pins it. A domain need that has no case is a hole in the guarantee, and the fix
@@ -284,10 +316,40 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 4 at the 2026-09-05 refresh; a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
 | `scriptc` | scriptc (vercel-labs, npm `scriptc`): TS/JS AOT-compiled to a **static** native binary (TypeScript-checker typing + LLVM; constructs outside its LLVM tier fall back to its C emitter, still static). `scriptc build <case>-flat.js -o <bin>`, then the binary is measured. Its `--dynamic` island (embedded quickjs-ng) is never passed: the lane measures the engine-less shipping artifact, and a case its static tier can't swallow records an honest fail. Set `SCRIPTC_BIN` to override |
+| `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
 | `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
+
+Install the pinned Perry compiler with `npm install -g @perryts/perry@0.5.1520`,
+then run `node bench/bench.mjs --targets=perry`. CI uses the same package.
+The native lane uses the package's prebuilt runtime libraries; a source checkout
+can produce smaller feature-pruned runtime builds. Compile attempts have a
+120-second limit, executions a 60-second limit. Bounded executions run directly
+so timeout signals reach the binary; their RSS is unmeasured. Each invocation
+calls Perry again (its own object cache remains enabled), while paired rounds
+reuse the binary. Perry's browser/WASM backend is a separate target and is not
+measured by this native lane.
+
+The 2026-09-24 Perry 0.5.1520 refresh attempted all 63 discovered cases on an
+Apple M4 Max. All three timing anchors passed (1.026×, 1.070×, 1.029× their stored
+times); existing target rows were preserved. Perry passed 55 checksums. Across
+the 53 accepted non-lab cases with JZ evidence, its geometric mean time was
+61.71× JZ's, with no per-case wins. Executables were 14.24–14.32 MiB, including
+the prebuilt runtime. RSS was not measured. The timing comparison is provisional:
+the host reported 14,738.81 MB of swap use (above the claims gate's 4,096 MB
+limit), and the preserved JZ baselines predate current compiler changes. Passing
+anchors does not override either validity check; a release claim needs a fresh
+comparison on a host within the gate's memory limit.
+
+`deltae`, `colorconv`, and `colorlch` returned different checksums; `watr` crashed
+with SIGSEGV; `jessie` exceeded the execution limit; `jz` exceeded the compilation
+limit; `webaudio` reported a `BaseAudioContext` type error. The new `entity` case
+ran but has no stored oracle yet, so it remains unclassified. These rows are
+retained in `results.json` and excluded from performance aggregates. These
+measurements describe the unchanged, unannotated JS corpus and this release's
+native output, not Perry's performance on typed or rewritten programs.
 
 The `size` column reports the artifact size each target measures: the
 compiled native binary for `nat`/`rust`/`go`/`zig`, the produced
@@ -311,29 +373,24 @@ the row from the memory view). One number per lane run, the footprint a deploy
 actually pays: node-hosted rows carry the engine baseline (so same-host rows
 differ by their heap alone), native rows just the binary, `porf` compiles
 in-process each run (its deployment shape). Under `--paired` the recorded
-value is the cross-round median.
+value is the cross-round median of each forward/reverse pair's mean. Both
+positions must carry a valid RSS reading in every counted round. The release
+gate compares Jessie, watr and Web Audio against V8 per case; a win in one
+cannot hide a loss in another.
 
 **Where jz lands vs MoonBit** (`moonbit`/`moonrun` — a wasm-first-language
 rival with a real GC, the fairest no-engine-baseline memory comparison since
 both run as standalone wasm binaries rather than hosted in node/V8):
-jz-wasmtime beats-or-matches moonrun's peak RSS on 40/43 comparable cases
-(median delta −864 KB, jz leaner) — the bump allocator's small fixed engine
-floor (13.7 MB vs moonrun's 12.2 MB) plus demand-driven geometric growth
-undercuts a GC'd runtime's baseline on most kernels. Three residual losses —
-`strbuild` (+7.8 MB), `json` (+1.3 MB), `immutable` (+1.1 MB) — are the
-no-GC arena's own signature, not a defaults bug: this harness runs each
-case's 26 iterations in one process without calling `__clear`/
-`memory.reset()` between them, so a case that allocates per-iteration
-accumulates garbage a GC would have reclaimed. Production callers hit the
-same tradeoff if they skip `memory.reset()` between independent batches (see
-the root README's "How does memory work?").
+the historical [memory snapshot](memcheck-results.csv) is stale. Its latest
+recorded comparison is 1/43 cases at or below moonrun's peak RSS, after an
+earlier 40/43 result. That regression remains unverified on the current tree;
+the earlier result is not a current memory claim. The CI release artifact's
+Node-hosted JZ/V8 comparison does not establish MoonBit parity.
 
 Runtime command overrides:
 
-`watr` is intentionally compiled by JZ with a size-oriented pass config
-(`watr:false`, `smallConstForUnroll:false`): on a large compiler bundle, the
-default WAT-level optimizer and small-loop unroll grow code more than they help.
-This keeps the target measuring the best current JZ artifact for that workload.
+All JZ timings, including `watr`, use the speed tier. The size column uses a
+separate size-tier build from the same source and host imports.
 
 ```sh
 BUN_BIN=/path/to/bun \
@@ -343,7 +400,8 @@ SHERMES_BIN=/path/to/shermes \
 GRAALJS_BIN=/path/to/graaljs \
 PORF_BIN=/path/to/porf \
 SCRIPTC_BIN=/path/to/scriptc \
-node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native,scriptc
+PERRY_BIN=/path/to/perry \
+node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native,scriptc,perry
 ```
 
 ## Reading the numbers (darwin/arm64, M-class)

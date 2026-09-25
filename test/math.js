@@ -611,7 +611,10 @@ test('Number.isNaN: non-census proven-NUMBER argument keeps the bare self-compar
   is(dynMarker.test(plainWat), false, 'plain arithmetic NUMBER: no dynamic tag-discrimination code emitted')
   const censusWat = compile(
     `const m = new Map(); m.set("a", 1); export let f = () => Number.isNaN(m.get("a"))`, { wat: true })
-  is(dynMarker.test(censusWat), true, 'census-sourced NUMBER: dynamic tag-discrimination code IS emitted (the fix)')
+  is(dynMarker.test(censusWat), false, 'nullable NUMBER: excludes absence without rechecking every boxed type')
+  const f = jz(`const m = new Map(); m.set('a', NaN); export let f = k => Number.isNaN(m.get(k))`).exports.f
+  is(f('a'), true)
+  is(f('missing'), false)
 })
 
 // Sibling sweep (.work/archive/todo.md §deletion-sweep Slice 2): isFinite/isInteger/

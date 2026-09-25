@@ -69,7 +69,7 @@ export function buildPureFuncMap(funcs) {
  * buildPureFuncMap records these edits, clones a qualifying candidate, then
  * restores the source before the ordinary per-function pipeline runs.
  */
-export function foldStrDispatchF64(fn, changes) {
+function foldStrDispatchF64(fn, changes) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return

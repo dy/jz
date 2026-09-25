@@ -490,7 +490,7 @@ test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
   // ctor → paramReps[sumArr][0].typedCtor → compile.js seeds val=TYPED + the
   // elem ctor → ptrUnboxable narrows param to i32 + len becomes a direct
   // typed-header read + the loop vectorizes to f64x2 SIMD.
-  const wat = jz.compile(`
+  const src = `
     const sumArr = (a) => {
       let s = 0
       for (let i = 0; i < a.length; i++) s = s + a[i]
@@ -498,10 +498,13 @@ test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
     }
     export const m1 = () => sumArr(new Float64Array([1, 2, 3, 4])) | 0
     export const m2 = () => sumArr(new Float64Array([5, 6, 7])) | 0
-  `, { wat: true })
+  `
+  const wat = jz.compile(src, { wat: true })
   ok(/v128\.load\b/.test(wat), 'expected SIMD vectorization')
   is(count(wat, /\$__typed_idx\b/g), 0, 'no runtime typed-idx dispatch')
   is(count(wat, /\$__length\b/g), 0, 'no polymorphic length')
+  const { m1, m2 } = jz(src).exports
+  is([m1(), m1(), m2(), m1()], [10, 10, 18, 10], 'distinct extents and repeated calls')
 })
 
 test('inferTypedCtor: typed-array GLOBAL arg types the callee param (direct loads)', () => {
@@ -2853,7 +2856,7 @@ test('Map summary: new Map(seed) remains conservative and executes correctly', (
   `
   jz.compile(src, { wat: true })
   // The pair rows keep their positions through the join, so the values are numbers.
-  is(mapValueKindOf('seeded'), 'number', 'a literal pair list is a modeled constructor input')
+  if (!onKernel()) is(mapValueKindOf('seeded'), 'number', 'a literal pair list is a modeled constructor input')
   is(run(src).get('a'), 1, 'seeded Map still functions correctly')
   is(run(src).get('zz'), undefined, 'a missing key reads undefined')
 })

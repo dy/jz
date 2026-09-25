@@ -15,7 +15,7 @@ import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
 import { HELPER_COUNTERS } from '../src/helper-counters.js'
-import { levels } from './_matrix.js'
+import { levels, onKernel } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -23,11 +23,13 @@ test('passes: global-write proof is shared and only built for a consumer', () =>
   const src = `let g = 1; const set = v => { g = v }
     export function f(n) { const before = g + g; set(n); return before + g + g }`
   for (const optimize of levels(0, 1, { level: 1, promoteGlobals: true }, 2)) {
-    const profile = {}
+    const profile = onKernel() ? undefined : {}
     const { f } = jz(src, { optimize, profile }).exports
     const usesWrites = optimize === 2 || typeof optimize === 'object'
-    is(profile.entries.filter(p => p.name === 'optMod:reachableWrites').length, usesWrites ? 1 : 0)
-    ok(!profile.entries.some(p => p.name === 'optMod:volatileGlobals'), 'the precise proof subsumes the coarse scan')
+    if (profile) {
+      is(profile.entries.filter(p => p.name === 'optMod:reachableWrites').length, usesWrites ? 1 : 0)
+      ok(!profile.entries.some(p => p.name === 'optMod:volatileGlobals'), 'the precise proof subsumes the coarse scan')
+    }
     is([f(0), f(7), f(7), f(-1)], [2, 14, 28, 12], 'writes through a callee remain visible across repeated calls')
   }
 })

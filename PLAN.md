@@ -6,6 +6,104 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Release status, September 25
+
+**V1 is not ready to tag.** Published watr 5.11.6 is installed and locked.
+The earlier compiler graph passed recursive self-compilation and the full
+core, opt0, opt3 and WASI matrix. The subsequent shared WAT checkpoint path
+passes the current full core suite and checkpoint tests; the remaining matrix
+and kernel attestation need renewal. Fresh release performance evidence and
+the Jessie/watr memory gaps remain open; no release cap was relaxed.
+Reference evidence can now be measured and strictly checked in CI.
+
+| Gate | Current evidence | Remaining action |
+| --- | --- | --- |
+| Dependency | Official npm watr 5.11.6, pinned by lockfile integrity; no local dependency override. | Keep the registry artifact through final verification. |
+| Correctness | Current full core passes 4803 tests / 125292 assertions, with no TODOs. Release-evidence tests pass 5 / 48; checkpoint tests pass 9 / 112. The matrix has advanced to opt0. Prior matrix: opt0 4552 / 96884, opt3 4552 / 97349, WASI 4605 / 110058; self-compile 74 / 2472. | Finish the remaining matrix and renew self-compile verification. The former rest-spread TODO passes execution checks across O0–O3, WASI, and the Wasm-hosted compiler. |
+| Recursive bootstrap | The prior graph passed functional, sequence and recursive gates. Its recursive compiler is 18903703 bytes and executes its probe to 19. Final heap: 1174270400 bytes; headroom: 3120696896 bytes. | Renew the attestation after the shared WAT checkpoint change. The compiler reserves 4 GiB for the checkpoint lane; heap headroom does not certify RSS parity. |
+| Conformance | Final-tree runs pass: language 3195 passes, 4045 correct rejections, zero unexpected failures, two documented ordering exceptions; builtins 880 passes, zero unexpected failures, 43 expected failures. | Cleared for the supported subsets; these do not establish full test262 coverage. |
+| Build/package | Browser assets and all 81 examples build; types pass. Package dry run includes both JS bundles and excludes the compiler Wasm. | Repeated after the function-order fix; cleared for this tree. |
+| Size | All 59 speed and size checksums match after the linker-order fix; all binary sizes are unchanged. Current size binaries are smaller than the stored parity-valid AssemblyScript artifacts on all 50 comparable cases (geomean 0.779×), including all eight old recorded losses. | Refresh pinned reference evidence; the private size comparison does not update the public snapshot. |
+| Performance claims | Last stored-evidence run: 7 pass, 16 fail, including uncommitted compiler inputs. The 58 JZ rows, rival coverage and memory evidence still need renewal; the snapshot carries 14738.81 MB swap, above the 4096 MB limit. | Run `bench` with `reference=true` against the committed compiler; close every strict failure in the retained artifact before release. |
+| Rival coverage | Entity checksum 1275530752 matches JZ, Node, native C, Go-Wasm, Zig and Porffor. Go/Zig resample match 1711808418. TinyGo 0.42.0 with Go 1.26.0 passes all 45 comparable cases. Native Go/Porffor resample FMA variants are independently verified. | Refresh all 45 rows for each rival on the reference machine. |
+| Web Audio | Fresh JZ and Node runs match checksum 2866527759; the stored mismatch is stale. | Refresh reference evidence. |
+| Memory | Latest paired diagnostic readings: Jessie 106.7 MiB vs V8 98.7 MiB; watr 150.0 MiB vs V8 75.1 MiB. The allocation reductions have not closed those gaps. | The CI reference gate now requires each allocation-heavy case to use no more peak RSS than V8. Fix any measured loss before release. |
+
+The recursive build now fits through general allocation reductions: diagnostic
+work only when requested, reused interval maps and summary views, no copied AST
+declaration tails, one emission after failed static probes, captured cells only
+on paths that use them, and numeric formatting that retains only its result.
+Closure dedup hashes numeric bits and shares canonical declaration ordinals.
+Minimal allocation tests pin the individual shapes; compiler input sources and
+benchmark kernels remain unchanged.
+
+Checkpoint serialization exposed a separate correctness defect: the writer
+could wrap past wasm32's end before its final capacity check, overwriting static
+state and heap diagnostics. Each write now checks its complete extent first;
+reads use the recorded stream end retained across rewind. Integer lengths,
+indexes and payloads use bounded unsigned LEB128. The boundary test covers all
+five widths, empty and repeated checkpoints, truncated headers/payloads,
+overflowing encodings and allocation collisions (456 assertions across O0–O3).
+The final review adds missing-final-byte cases for every multi-byte reader and
+checks that rejected partial writes preserve both bytes and the cursor.
+The expanded memory sweep passes 88 tests / 1742 assertions across O0–O3;
+the subsequent full core run passes 4749 tests / 120287 assertions, with the
+same existing TODO and no compiler changes since the matrix above.
+The worker also waits for its JSON report to drain before exiting, and preserves
+the original compile failure if its diagnostics are damaged.
+
+The full-suite exception failure came from address/tag CSE exporting an
+initializer across an exit that could bypass it. Regions now close at abrupt
+block exits and exception boundaries, while blocks without exits retain reuse.
+A minimal branch kernel returned 88, 0, 0, 88 before the fix and 88 on every
+path after it; both cache families are pinned against unoptimized Wasm. The
+caught typed-store program matches Node through normal, throw and recovery
+calls at every tier. The integer-loop assertion now checks integral locals
+after slot reuse instead of requiring the optimizer to keep a particular name.
+
+Native/kernel parity exposed a non-transitive function-order comparator: a
+user function compared equal to two runtime helpers that compared unequal to
+each other. Tied runtime functions now precede tied user functions, with
+name order within the former and source order within the latter. Direct tape
+tests cover empty, singleton, interleaved and repeated ordering; the self gate
+checks native-identical bytes at O1/O2 through A → A → B → A compiles. The
+59-case speed and size sweep changes eight binaries in each tier, with no
+size or checksum changes.
+
+## Performance priorities
+
+**Active focus, September 24:** resample, sdf, spmv, synth, vm, colorlog,
+crc32, delayline and dict. Recontest all nine against both Bun and the
+standalone JSC shell. The vm/dict/crc32 claim exception remains a
+regression band, not a reason to stop optimizing these cases.
+
+| Case | Current diagnosis and next proof |
+| --- | --- |
+| resample | Four adjacent taps depend on a floating phase. Removing checks via a scratch dyadic enclosure saved bytes but gave 1.015× runtime. Further controls also fail to establish a gain: constant pooling gives 0.977× normally / 1.079× with V8 optimization forced; reading those globals once at function entry gives 1.087× / 1.096×; disabling the two-way unroll gives 1.019× / 1.160× (six pairs each). Keep all out. The engine contest is noisy: JZ/JSC medians 1.118 then 0.959; the latter spans 0.593–2.022. A private WAT-only two-output SIMD experiment preserves the exact phase additions and checksum, with 10-pair after/before medians 0.852 normally and 0.781 with V8 optimization forced; binary 2336 → 2390 bytes. The temporary rewrite assumes even lengths and disjoint buffers and was removed after measurement. Next extend general gather packing with proven alias guards and scalar tails before considering production. |
+| sdf | Sentinel copies lost their locals' summary kinds, introducing generic conversions and property dispatch. Preserve the original kind through the existing alias query, including missing values. Disabling only this fix produces 15746 speed-tier bytes versus 3420; six pairs gave after/before 0.846. The earlier JZ/JSC 1.191 gap becomes 0.998 in the latest noisy four-round contest (0.903–1.161), which does not establish leadership. Next isolate guard placement and dependent gather checks. |
+| spmv | Leads JSC in every round of both contests: earlier JZ/JSC 0.403–0.437, latest 0.421–0.481. Keep the indirect-gather path pinned and confirm on a quiet machine before refreshing the older public loss. |
+| synth | Implemented as lazySelect in published watr 5.11.5: defer costly pure initializers to exclusive value arms before local reuse. Fresh six normal and six forced-optimized pairs both give 0.740× runtime; checksum 41574153 is unchanged. Speed grows 1676 → 2509 bytes; default/size stay unchanged. Of 59 standalone cases, the other 58 are byte-identical with the pass off/on. Four engine rounds favor JZ (JZ/JSC 0.793, JZ/Bun 0.828); an isolated six-round repeat remains favorable on median (0.911 / 0.893) but includes losses, so stable JSC leadership is still unproven. Watr source/Wasm suites and all 71 self-compile tests pass. Review also fixed partial-operand stack handling in the shared guard, with regressions for lazy select, value numbering and scheduling. JZ now depends on published watr ^5.11.6; fresh builds of all 59 cases in both speed and size modes match the verified candidate byte for byte and retain every checksum. |
+| vm | Earlier near parity (JZ/JSC median 0.989; range 0.814–1.018); the latest four rounds lead at 0.863–0.950. The binary is unchanged by lazySelect. Keep dispatch and dependent operand loads under review; these noisy readings do not justify removing the claim exception. |
+| colorlog | Checksum 297103274 still matches the existing exp2 exception in test/bench.js (within 1 ulp of V8, separately checked against a 200-bit reference); the JS engines give 3137122272. Preserve that numerical gate when optimizing the table/polynomial path. The runner correctly excludes this case from checksum-identical paired rankings. |
+| crc32 | The dependent byte/table recurrence still trails JSC (latest paired median 1.401). V8 emits a wrapped 32-bit table-base addition before its load; JSC uses a native base plus scaled index. Adjacent-byte load widening regresses six normal / six forced-optimized pairs to 1.030× / 1.070×; moving the byte mask inside XOR gives 1.018× / 1.002×. Both stay out. A private WAT-only static-data experiment removes that base addition: ten paired after/before medians are 0.873 normally and 0.920 with V8 optimization forced, checksum 304463882 unchanged; binary 1485 → 2514 bytes. The experiment leaves runtime table construction in place and redirects only the fixed corpus reads. Next prove constant initialization and nonescape generally before adopting static placement; the experiment alone is not a compiler transformation. |
+| delayline | Leads JSC in the public snapshot and both private contests (latest four-round median 0.862, every round below 1). Keep masked ring indices and the feedback recurrence as regression controls. |
+| dict | The JSC gap persists: latest four-round median 1.408, isolated six-round repeat 1.350 with every round slower. The earlier slot-cache experiment removed two instructions but regressed ten normal pairs to 1.266× and ten forced-optimized pairs to 1.188×; keep it out. The V8 median moves from 1.200 to 0.748 between the two new contests, so leadership is not certified by these noisy readings. Next inspect branch prediction and address generation; fewer emitted loads alone do not prove faster execution. |
+
+The initial nine-case readings used the unchanged corpus, four alternating
+rounds per target, and the current uncommitted compiler tree. Later controlled
+experiments are identified in the rows above. Large timing drift
+makes them diagnostic only. Reproduce with
+`JSC_BIN=~/.jsvu/bin/javascriptcore node bench/bench.mjs --targets=jz,bun,jsc,v8 --cases=resample,sdf,spmv,synth,vm,colorlog,crc32,delayline,dict --paired=4 --json=/tmp/jz-focus.json`.
+Keep the published snapshot unchanged until the tree passes its gates and
+quiet measurements support a refresh.
+
+Before the release fixes above, the integrated matrix reproduced baseline
+failures (core/opt0/opt3/WASI: 3/3/5/13). The corrected tree now passes all four
+legs with the scheduler-only candidate, plus self-compile and both conformance
+subsets. The complete optimizer candidate separately passes self-compile.
+Watr 5.11.6 is now published and locked; the release-status table above tracks
+the registry-package verification. Private candidate results remain historical.
+
 ## Decisions
 
 Architecture
@@ -131,6 +229,10 @@ Architecture
   lookup chain's string and array arms, which ended at `length` and at the
   indices; a first-character digit test read in place keeps an identifier
   key off the index parse. A canonical index literal takes the index dispatch.
+- Derived closure-class methods use a hidden rank in the existing property hash;
+  growth preserves it and an own assignment restores enumeration. Runtime keys
+  read Map/Set size and source function arity through the shared lookup chain.
+  Function arities stay beside closure table entries after body deduplication.
 - An array hole is an `undefined` element: `[1, , 3]` lists `"1"`. The
   divergence is in the README; a hole would need an element value apart
   from undefined, tested on every read.
@@ -164,10 +266,10 @@ Architecture
 
 Dependencies
 
-- subscript ^10.8.0 and watr ^5.11.2 from npm; 5.11.2 carries the two
+- subscript ^10.8.0 and watr ^5.11.6 from npm; watr carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
-  install reproduces the standings.
+  install includes those rules and the lazy-select/partial-operand fixes.
 - CI runs one self-compile workflow (build, round-trip, the suite through
   `dist/jz.wasm`, the recursive check). The self-compile perf gate is
   `npm run test:self:perf`, a local release step.
@@ -178,6 +280,8 @@ Dependencies
    evidence below, plus webaudio and watr. Caps stay unchanged; benchmark
    sources stay fixed. Paired local measurements on this loaded machine
    are diagnostics, not release evidence.
+
+   The active nine-case work is listed under [Performance priorities](#performance-priorities).
 
    | Remaining class | Evidence and next proof |
    | --- | --- |
@@ -234,14 +338,14 @@ Dependencies
      the gather was not the bound. C-Wasm runs at 0.839 of JZ in the same
      pairs.
    - watr's `conditions` pass now also chains a diamond with a constant arm,
-     the boolean `a && b` / `a || b` (watr, unreleased): each
+     the boolean `a && b` / `a || b` (included in watr 5.11.5): each
      guarded SDF exit becomes one fused compare-and-branch per conjunct, and
      V8's `edt1d` drops 565 → 556 instructions and 11 → 2 `cset`s with the
      checksum unchanged. The shorter code is not faster: paired runs at load
      9 measure SDF 2.8–3.7% slower, with `edt1d` differing only in the
      `cset`s; glyph parsing measures 3% and sort 7% faster, LZ 2% slower,
      trace level. Almost every benchmark binary shrinks, the self-compiled
-     compiler by 14.5 KB. jz picks it up with the next watr release.
+     compiler by 14.5 KB. JZ now receives it from the published dependency.
    - The word-storage census admits a checked integer read whose uses
      answer undefined and zero alike, including a constant step the test's
      true arm guards: glyph parsing's `rep` becomes a word. Sixteen rounds at
@@ -307,7 +411,9 @@ Dependencies
    70.3 MB versus V8's 70.6 MB on the earlier paired tree: per-sample arena
    rewind keeps one render's 87 MB allocation volume to 9 MB retained.
 
-   Jessie and watr remain behind V8's approximately 98 MB and 77 MB peaks.
+   Paired diagnostic readings after the formatter/allocation work are Jessie
+   106.7 MiB vs V8 98.7 MiB and watr 150.0 MiB vs V8 75.1 MiB. Both gaps
+   remain open. The measurements below record the earlier allocation work.
    Exact nonempty-literal capacity reduced Jessie's paired peak
    177.4 → 163.0 MB with unchanged checksum and median runtime; two-slot
    property sidecars saved approximately another 18 MB. Watr's paired peak
@@ -324,42 +430,51 @@ Dependencies
    remains: each level of the recursion copies the list below it into a new
    one, and only the outermost survives. Closing the gap to V8's peak needs
    that copy reused in place or reclaimed. Keep the parser source unchanged.
-   Watr retains 64 KB code buffers between assemblies; use its lifetime
-   evidence before changing allocation policy. Its run ends at 153 MB RSS:
-   a 50.6 MB host baseline, a 59 MB heap peak in 64 MB of linear memory, and
-   about 39 MB of V8's own, the same without tier-up. The bench loop cannot
-   rewind: `assemble` calls `Uint8Array.from`, which the frame census does
-   not know as a fresh allocation, and past it stores its buffer into a
-   module binding, the retained buffer above.
+   A current watr allocation trace counts 58.9 MiB in 300214 allocations;
+   37.2 MiB comes from `makeByteBuf` and the per-assembly 64 KiB code buffer
+   plus 4 KiB scratch buffer. These are local buffers, not module bindings;
+   the bump arena retains their storage. The loop cannot currently rewind:
+   `assemble` reaches unclassified calls and persistent encoder memo tables,
+   as well as module error-source state. Recognizing `Uint8Array.from` alone
+   would not prove that rewind safe. Closing this gap needs lifetime proof
+   for individual temporary buffers, while preserving returned bytes and
+   those persistent roots. Keep the dependency and benchmark input unchanged.
 
 3. **Reproducible speed, size and memory evidence.** `bench/results.json` is
-   stale: timed above the 4096 MB swap-validity cap, 43 comparable
-   Porffor/TinyGo rows against 44 required, and alpha's w2c row no longer
+   stale: timed above the 4096 MB swap-validity cap, only 43 comparable
+   Go-Wasm/Zig-Wasm/Porffor rows and no valid TinyGo rows against the current
+   45-row coverage floor, and alpha's w2c row no longer
    describes the tree. Regenerate through the benchmark runner on quiet
    reference hardware with current compiler and memory-baseline provenance.
    Keep TinyGo 0.42.0 and the same-machine Porffor comparison. Local paired
-   timings and standalone size sweeps do not replace this evidence.
+   timings and standalone size sweeps do not replace this evidence. After the
+   final matrix, this host still reports 19621.44 MiB of swap, above the
+   4096 MiB evidence-validity limit.
 
-   TinyGo now builds all 44 cases locally. Forty-three match committed
-   checksums; entity's 1275530752 matches the separate V8 reference run.
-   The build defect is closed, the committed-evidence gap is not. The latest
+   The manual benchmark workflow now measures six paired rounds on CI and
+   runs `test:claims` against that exact JSON, retaining results and logs even
+   on failure. Linux swap is measured from `/proc/meminfo`. Paired RSS includes
+   both positions and rejects missing readings. The claims gate requires the
+   complete corpus, ancestor commit provenance and valid machine metadata.
+   Jessie, watr and Web Audio each have a strict JZ/V8 RSS floor.
+   RSS provenance covers both JZ and V8 even without timing measurements;
+   explicit invalid row stamps cannot borrow fresh snapshot metadata.
+
+   Latest benchmark CI run 36109730855 failed only the stored alpha wasm2c
+   ratio (3.52× against a 3.5× cap). Native reference checks now live with the
+   other claims, retaining the 20-row coverage, 3.5× per-case and 1.35× geomean
+   caps. The manual run measures wasm2c before checking them, so stale evidence
+   cannot prevent its own refresh. No reviewed-tree reference run has run yet.
+
+   The earlier TinyGo build covered all 44 cases then available. Forty-three
+   match committed checksums; entity's 1275530752 matches the separate V8 reference run.
+   That build defect is closed; the expanded 63-case corpus now requires 45
+   comparable rows, so both coverage and committed evidence still need work. The latest
    focused run still used about 25.5 GB of swap. Its JZ/rival medians were
    glyfparse/C-Wasm 1.418×, SDF/C-Wasm 1.420×, noise/Rust-Wasm 1.148×,
    wordcount/C-Wasm 1.011×, watr/V8 1.546× and Jessie/V8 0.988×.
 
-4. **Derived closure-lowered class members.** A derived class kept as
-   closures (declared in a function, or over a base the module cannot see)
-   adds its methods and accessors to the base instance as dynamic properties,
-   so `Object.keys` and for-in list them (`n`), where JS lists neither. The
-   property hash has no per-entry flag to hide an entry; adding one changes
-   the entry layout Map and Set share. A non-derived class already hides them.
-
-5. **Built-in properties by a runtime key.** A Map's or Set's `size` and a
-   function's `length` read through a runtime key (`m[k]`, k `'size'`) are
-   undefined; a string's index and an array's length already answer there.
-   Each needs its arm in the lookup chain, a function's `length` its arity.
-
-6. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
+4. **VST follow-up after JZ v1.** The audio compiler's current README explicitly
    defers native release work until JZ v1 and requires verification from its
    installed tarball. The builder is JZ/macOS/mono-or-stereo.
    Porffor needs a public state-object adapter and build verification. Use
@@ -368,7 +483,7 @@ Dependencies
    on next setup; active restart needs the component-handler interface.
    Events and wider layouts remain refused.
 
-7. **Proof and independent review.** Reachable dynamic calls can still make
+5. **Proof and independent review.** Reachable dynamic calls can still make
    static allocation and work proofs unknown. Empirical block checks prove
    neither allocation freedom for all inputs nor callback deadlines. Reuse
    entry-range facts for useful bounds; a full-i32 domain proves no deadline.

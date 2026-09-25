@@ -287,6 +287,22 @@ console.log(${JSON.stringify(METRIC)})
     is(merged.cases.alpha.paired['v8/porf-native'], undefined, 'compiler failure removes the stale pair verdict')
     is(merged.cases.alpha.paired['v8/as'].median, 3, 'compiler failure preserves unrelated pair evidence')
     is(merged.cases.alpha.ref, 633180752, 'failure merge preserves the established checksum')
+
+    bench('porf-native', [`--json=${json}`], { JZ_BENCH_REBUILD: '1' })
+    is(JSON.parse(readFileSync(json, 'utf8')).cases.alpha.ref, 633180752,
+      'a failure-only full rewrite also preserves the established checksum')
+    writeFileSync(mode, 'ok')
+    bench('porf-native', [`--json=${json}`], { JZ_BENCH_REBUILD: '1' })
+    is(JSON.parse(readFileSync(json, 'utf8')).cases.alpha.targets['porf-native'].parity, 'ok',
+      'failure followed by recovery retains checksum classification')
+
+    const missing = JSON.parse(readFileSync(json, 'utf8'))
+    missing.cases.alpha.ref = null
+    writeFileSync(json, JSON.stringify(missing))
+    bench('porf-native', [`--json=${json}`])
+    const recovered = JSON.parse(readFileSync(json, 'utf8')).cases.alpha
+    is(recovered.ref, 633180752, 'an older snapshot missing its oracle recovers the canonical reference')
+    is(recovered.targets['porf-native'].parity, 'ok', 'the canonical oracle classifies the recovered row')
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

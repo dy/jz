@@ -256,6 +256,7 @@ JavaScript's bounds checks.
   WASM target. JZ emits WASM first for an inferred typed subset. JZ may not lose
   to Porffor's native artifact on speed or size per case or by geomean.
 - **[scriptc](https://github.com/vercel-labs/scriptc)** also AOT-compiles typed JS/TS without an engine (TS annotations → LLVM), embedding QuickJS only as an opt-in fallback for dynamic code. It is native-first with WASI as a target; JZ is WASM-first, infers types from idiomatic untyped JS, and keeps dynamic fallbacks inside the WASM module.
+- **[Perry](https://perryts.com/)** compiles JS/TS through LLVM to native executables with a linked runtime and garbage collector. Our [benchmarks](bench/README.md) cover its native output on the unchanged JS corpus.
 - **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** produces lean WASM, but is not directly executable JavaScript.
 - **Rust, C, Zig, Go, and MoonBit** compiled to wasm run behind JZ by geomean on
   the corpus: rustc, clang and zig about 2×, Go and MoonBit over 4×. As native

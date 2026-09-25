@@ -57,8 +57,8 @@ import { frameNode, frameRoots } from '../function.js'
 // (non-compound) `V[idx] = RHS` WRITE with a COMPUTED index. Anything else —
 // aliasing (`let b = V`), a call argument, a return, a `.`-property write, a
 // compound/delete element write, mention inside a nested closure, a bare
-// comparison — disqualifies. Default-deny, mirrors scanNeverGrown/
-// scanFlatObjects (analyze-scans.js): any use kind not explicitly allowed here
+// comparison — disqualifies. Default-deny, mirrors neverGrownCandidate/
+// flatObjectCandidate (analyze-scans.js): any use kind not explicitly allowed here
 // poisons the candidate.
 const safeTableUse = (u) =>
   u[BINDING_USE_KIND] === USE.MEMBER_R || u[BINDING_USE_KIND] === USE.MEMBER_CALL ||
@@ -66,6 +66,26 @@ const safeTableUse = (u) =>
 
 const isEmptyArrayLit = (rhs) =>
   Array.isArray(rhs) && ((rhs[0] === '[' && rhs.length === 1) || (rhs[0] === '[]' && rhs.length <= 2))
+
+// Every top-level root: the entry module's `ast` plus one per bundled module
+// (imported files' top-level statements live in ctx.module.moduleInits, not `ast`).
+const topRootsOf = (ast) => [ast, ...(ctx.module.moduleInits || [])]
+
+// Module globals declared exactly once across the top roots whose initializer passes `init`.
+const declaredGlobals = (topRoots, init) => {
+  const out = new Set()
+  for (const root of topRoots)
+    for (const [name, s] of scanBindingUses(root))
+      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && init(s[BINDING_USE_INIT], name)) out.add(name)
+  return out
+}
+
+// Every body a module global can be used from: the top roots, each function body and parameter default.
+const programBodies = (topRoots) => {
+  const bodies = [...topRoots]
+  for (const func of ctx.funcs.list) if (func.body && !func.raw) bodies.push(...frameRoots(func))
+  return bodies
+}
 
 /** Program-wide structural safety pre-scan (source AST, pre-emit). A candidate
  *  is a GLOBAL `let`/`const` declared exactly once, bound to a fresh empty
@@ -76,29 +96,16 @@ const isEmptyArrayLit = (rhs) =>
  *  emit-assign.js's write recorder and emit.js's guarded-dispatch call-site
  *  tagger. */
 export function scanDynClosureTableCandidates(ast) {
-  // Every top-level AST root: the entry module's own `ast`, plus one root per
-  // bundled dependency module — `import`-ed files' top-level statements live
-  // in ctx.module.moduleInits, NOT `ast` (see plan/scope.js), so subscript's
-  // `export let … lookup = [] …` (declared in its own parse.js) is invisible
-  // to a scan of `ast` alone.
-  const topRoots = [ast, ...(ctx.module.moduleInits || [])]
-
-  // Pass 1: declarations only happen at module scope — find every
-  // `let`/`const V = []` global across every top-level root.
-  const candidates = new Set()
-  for (const root of topRoots) {
-    for (const [name, s] of scanBindingUses(root))
-      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && isEmptyArrayLit(s[BINDING_USE_INIT])) candidates.add(name)
-  }
+  const topRoots = topRootsOf(ast)
+  // Pass 1: every `let`/`const V = []` module global.
+  const candidates = declaredGlobals(topRoots, (init, name) => isEmptyArrayLit(init))
   if (!candidates.size) return candidates
 
   // Pass 2: every USE of a candidate, anywhere in the program, must be safe.
   // `trackNames` makes scanBindingUses report on these globals even in bodies
   // that never declare them (the normal case — a global's uses are scattered
   // across every function that touches it, not just its declaring scope).
-  const bodies = [...topRoots]
-  for (const func of ctx.funcs.list) if (func.body && !func.raw) bodies.push(...frameRoots(func))
-  for (const body of bodies) {
+  for (const body of programBodies(topRoots)) {
     const uses = scanBindingUses(body, candidates)
     for (const name of candidates) {
       if (!candidates.has(name)) continue
@@ -165,15 +172,11 @@ function everyUseIsIndexedCall(node, name) {
  *  candidate's own call-expression result kind is the summary's contract of
  *  the closure set the table holds (kind/val-type-of.js VT['()']). */
 export function scanClosureTableLatticeCandidates(ast) {
-  const topRoots = [ast, ...(ctx.module.moduleInits || [])]
-  const candidates = new Set()
-  for (const root of topRoots)
-    for (const [name, s] of scanBindingUses(root))
-      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && ctx.scope.consts?.has(name) && isArrowArrayLit(s[BINDING_USE_INIT])) candidates.add(name)
+  const topRoots = topRootsOf(ast)
+  const candidates = declaredGlobals(topRoots, (init, name) => ctx.scope.consts?.has(name) && isArrowArrayLit(init))
   if (!candidates.size) return candidates
 
-  const bodies = [...topRoots]
-  for (const func of ctx.funcs.list) if (func.body && !func.raw) bodies.push(...frameRoots(func))
+  const bodies = programBodies(topRoots)
   for (const name of candidates)
     if (!bodies.every(b => everyUseIsIndexedCall(b, name))) candidates.delete(name)
   return candidates
@@ -325,17 +328,11 @@ function everyUseIsIndexedCallOrLiteralWrite(node, name, inLoop) {
  *  gate), emit-assign.js (write-site member recorder), and compile/index.js
  *  (the early merge step, right before the first compilePendingClosures). */
 export function scanImperativeClosureTableLatticeCandidates(ast) {
-  const topRoots = [ast, ...(ctx.module.moduleInits || [])]
-  const candidates = new Set()
-  for (const root of topRoots)
-    for (const [name, s] of scanBindingUses(root))
-      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && isEmptyArrayLit(s[BINDING_USE_INIT]) && !isExportedName(name))
-        candidates.add(name)
+  const topRoots = topRootsOf(ast)
+  const candidates = declaredGlobals(topRoots, (init, name) => isEmptyArrayLit(init) && !isExportedName(name))
   if (!candidates.size) return candidates
 
-  const bodies = [...topRoots]
-  for (const func of ctx.funcs.list) if (func.body && !func.raw) bodies.push(...frameRoots(func))
-
+  const bodies = programBodies(topRoots)
   for (const name of candidates)
     if (!bodies.every(b => everyUseIsIndexedCallOrLiteralWrite(b, name, false))) candidates.delete(name)
   if (!candidates.size) return candidates

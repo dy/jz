@@ -8,13 +8,14 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * # Stage contract
  *   IN:  prepared AST (from prepare) + `ctx.funcs.list` with raw bodies.
  *   OUT: WAT IR `['module', ...sections]` ready for watrCompile/watrPrint.
- *   FLOW: orchestrator only. Calls analyze passes per function, then emit(body) via
- *         src/emit.js's dispatch, then optimizeFunc (src/optimize.js) per function,
- *         finally assembles module sections in canonical order.
+ *   FLOW: orchestrator only. Summarizes and plans the program, analyzes each function,
+ *         emits its body via src/compile/emit.js's dispatch, then assembles module sections
+ *         in canonical order (src/wat/assemble.js, which runs optimizeFunc per function) and
+ *         hands them to link.
  *
  * # Core abstraction
  * Emitter table (ctx.core.emit) maps AST ops → WASM IR generators. Base operators defined
- * in `emitter` export (src/emit.js); on reset, ctx.core.emit starts as a flat copy of emitter
+ * in `emitter` export (src/compile/emit.js); on reset, ctx.core.emit starts as a flat copy of emitter
  * and modules add/override entries directly. No prototype chain.
  * emit(node) dispatches: numbers → i32/f64.const, strings → local.get, arrays → ctx.core.emit[op].
  *
@@ -33,9 +34,9 @@ import { ctx, err, PTR, HEAP, getFactStore } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
-import { beginAssignedMemo, endAssignedMemo, layoutView } from '../ast.js'
+import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import {
-  structInlinePass, unionInlinePass, invalidateAllBodyFacts,
+  structInlinePass, unionInlinePass, clearBodyFacts,
 } from './analyze.js'
 import { invalidateBindingUsesCache, resetBindingUsesCache } from './analyze-scans.js'
 import { VAL } from '../reps.js'
@@ -68,7 +69,7 @@ import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
 import { synthesizeToPrimitive } from './emit/to-primitive.js'
 import { synthesizeAccessorCall } from './emit/accessor-call.js'
 import { synthesizeToJSON } from './emit/to-json.js'
-import { settleViews } from '../../module/schema.js'
+import { settleViews, enumView } from '../../module/schema.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { paramValueOnly } from './param-numeric.js'
@@ -133,7 +134,7 @@ function summaryInputs(ast, ids) {
     : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${k}=${data(v[k], d + 1)}`).join(',')}}`
     : JSON.stringify(v) ?? String(v)
   const funcs = ctx.funcs.list.map(f => [f.name, node(f.body), f.closure, f.rest, isExported(f),
-    data({ params: f.sig?.params?.map(p => [p.name, p.rest, p.boundaryTyped]), results: f.sig?.results, ptrKind: f.sig?.ptrKind, ptrAux: f.sig?.ptrAux, unsignedResult: f.sig?.unsignedResult, dispatcher: f.sig?.dispatcher }),
+    data({ params: f.sig?.params?.map(p => [p.name, p.rest, p.boundaryTyped]), dispatcher: f.sig?.dispatcher }),
     Object.entries(f.defaults ?? {}).map(([k, v]) => `${k}=${node(v)}`).join('&')].join('|'))
   return [node(ast), node(ctx.module.moduleInits), ...funcs,
     data(ctx.schema.list), data(ctx.schema.list.map((_, sid) => ctx.schema.brandOf(sid))), data(ctx.schema.vars), data(ctx.schema.poisoned), data(ctx.schema.hidden),
@@ -159,7 +160,7 @@ export function assemble(ast, profiler) {
   // The summary owns semantic facts; ctx also carries mutable lowering state.
   // Rebuild from explicit inputs after source rewrites, never from old facts, and
   // only when they changed. It is keyed by what it reads: the program by its
-  // revision (every rewrite of a body or a signature advances it through a mutation
+  // revision (every body rewrite or semantic input change advances it through a mutation
   // seam: compile/analyze/body-facts.js, plan's sweeps), the registries beside it
   // by content, which is cheap. A summary built under the current key is still the
   // program's; JZ_DEBUG_INVARIANTS checks each reuse against its full inputs.
@@ -378,7 +379,7 @@ export function assemble(ast, profiler) {
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-analyze')
   // FunctionPlans now own every named-function fact needed by emission. Drop
   // the duplicate bodyFacts cache; any genuinely late consumer recomputes.
-  invalidateAllBodyFacts()
+  clearBodyFacts()
   resetBindingUsesCache()
   // isReassigned memo window: emission is a pure projection of the frozen
   // post-analyze AST, so per-subtree assigned-name sets stay valid for the
@@ -891,7 +892,7 @@ export function assemble(ast, profiler) {
     rewindable, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
     report: ctx.transform.whyNotRewind ?? null,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(),
-    viewSids: ctx.schema.list.flatMap((names, sid) => layoutView(names, ctx.transform.literalAccessorNames) ? [sid] : []),
+    viewSids: ctx.schema.list.flatMap((names, sid) => enumView(names) ? [sid] : []),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false,
   } }

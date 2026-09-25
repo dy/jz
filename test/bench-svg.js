@@ -18,7 +18,7 @@ test('bench-svg: caption names the geomean, case count, and execution substrates
   ok(/geometric mean on the 12-case benchmark corpus/.test(svg), 'caption must state geomean + corpus size')
   ok(svg.includes('lower is faster'), 'caption must state the direction')
   ok(/Wasm rivals run in V8/i.test(svg), 'chart names the apples-to-apples wasm field')
-  ok(/Porffor and native C are native targets/i.test(svg), 'native targets are not mislabeled as wasm peers')
+  ok(/Porffor, Perry and native C are native targets/i.test(svg), 'native targets are not mislabeled as wasm peers')
 })
 
 test('bench-svg: missing count degrades to corpus wording, never "undefined"', () => {
@@ -42,7 +42,7 @@ test('bench-svg: snapshot ratios reproduce committed accepted-checksum evidence'
   const targetByLabel = new Map([
     ['JZ', 'jz'], ['native C', 'nat'], ['C', 'c-wasm'], ['Rust', 'rust-wasm'],
     ['AssemblyScript', 'as'], ['Zig', 'zig-wasm'], ['V8', 'v8'], ['Go', 'go-wasm'],
-    ['MoonBit', 'moonbit'], ['Porffor', 'porf-native'],
+    ['MoonBit', 'moonbit'], ['Porffor', 'porf-native'], ['Perry', 'perry'],
   ])
   is(SNAPSHOT.map(r => r.label).sort().join(','), [...targetByLabel.keys()].sort().join(','),
     'offline snapshot includes every chart lane')
@@ -60,7 +60,7 @@ test('bench-svg: snapshot ratios reproduce committed accepted-checksum evidence'
     ok(ratios.length > 0, `${row.label} has accepted-checksum evidence`)
     const geomean = Math.exp(ratios.reduce((sum, ratio) => sum + Math.log(ratio), 0) / ratios.length)
     is(row.ratio, +geomean.toFixed(2), `${row.label} snapshot ratio matches results.json`)
-    if (row.label === 'Porffor') ok(row.sub.includes(`runs ${ratios.length} / ${ids.length}`), 'Porffor coverage label matches evidence')
+    if (['Porffor', 'Perry'].includes(row.label)) ok(row.sub.includes(`${ratios.length} / ${ids.length}`), `${row.label} coverage label matches evidence`)
   }
 })
 
@@ -77,6 +77,11 @@ test('bench-svg: only a complete live run may replace the chart', () => {
     'complete selection permits row aggregation before rows exist')
   is(completeBenchSvgRun(targets, targetIds, cases, cases, rows), true,
     'all selected cases and targets with every non-reference row are complete')
+  const withPerry = [...targets, { id: 'perry', label: 'Perry' }]
+  is(completeBenchSvgRun(withPerry, [...targetIds, 'perry'], cases, cases, rows), false,
+    'a selected Perry lane without accepted timing cannot replace the chart')
+  is(completeBenchSvgRun(withPerry, [...targetIds, 'perry'], cases, cases,
+    [...rows, { label: 'Perry', ratio: 3 }]), true, 'accepted Perry timing completes the chart')
   is(completeBenchSvgRun(targets, ['jz', 'nat'], cases, cases, rows), false,
     'a target-filtered run is incomplete')
   is(completeBenchSvgRun(targets, targetIds, cases, ['a'], rows), false,

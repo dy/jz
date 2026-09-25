@@ -174,12 +174,16 @@ test('checkpoint: a source error, then A; the abrupt path reports its last compl
   is(m.phases[m.phases.length - 1].name, 'publishParameterAbi', 'the last completed phase; emitFuncs did not complete')
   ok(m.heapFront > 0 && m.heapEmit === 0 && m.heapOptimize === 0 && m.heapCheckpoint === 0, 'no stage after the front completed')
   ok(phaseDeltas(m).every(d => d.bytes >= 0))
-  // the entries that do not encode, between checkpointed compiles: each records from zero, none rewinds
+  // WAT shares the checkpointed pipeline; diagnostics record from zero without rewinding.
   const wat = forced.memory.read(forced.exports.compileWat(forced.memory.String(A), 0, OPT(forced)))
   is(wat, normal.memory.read(normal.exports.compileWat(normal.memory.String(A), 0, OPT(normal))), 'compileWat prints the same IR')
-  m = readMarks(forced); ok(m.phasesDone > 0 && m.heapCheckpoint === 0 && m.heapEmit === 0, 'compileWat: phases recorded, no stage marks')
+  m = readMarks(forced)
+  ok(m.phasesDone > 0 && m.heapEmit > 0 && m.heapCheckpoint > 0 && m.heapCheckpoint < m.heapOptimize,
+    'compileWat records the shared stages and rewinds before printing')
+  is(run(watrCompile(wat)), A_OUT, 'printed WAT survives the checkpoint and executes')
   forced.exports.compileWarnings(forced.memory.String(A), 0, OPT(forced))
   is(readMarks(forced).phasesDone, m.phasesDone, 'compileWarnings records the same phases from zero')
+  is(readMarks(forced).heapCheckpoint, 0, 'compileWarnings clears the preceding checkpoint mark')
   forced.exports.compileDiag(forced.memory.String(A), 0, OPT(forced))
   ok(readMarks(forced).phasesDone > 0 && readMarks(forced).phasesDone <= m.phasesDone, 'compileDiag records the front\'s emit phases from zero')
   const again = compileOn(forced, A)

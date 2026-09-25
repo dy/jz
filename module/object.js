@@ -179,10 +179,11 @@ export default (ctx) => {
     // A class instance (brand) is never one shared static instance: each `new` is its own identity.
     // A host-visible literal inside a callable needs fresh storage. Top-level
     // initialization outside loops runs once and can still use static data.
+    let emitted
     if ((!ctx.summary?.hostSchema(schemaId) || (ctx.func.atModuleScope && !ctx.func.stack.length)) && !ctx.types.anyDelete && neverWritten && !shadow && !brand && values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       // Static and runtime construction share the field storage contract:
       // a dynamically readable BigInt cannot become a static raw slot.
-      const emitted = values.map((v, i) => storedFieldValue(v, schemaId, names[i]))
+      emitted = values.map((v, i) => storedFieldValue(v, schemaId, names[i]))
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(v))
       if (slots.every(b => b !== null)) {
@@ -227,7 +228,7 @@ export default (ctx) => {
     // ir.js), so this substitution is a true no-op for the default build
     // regardless of which branch the fact picks.
     const fieldStoredValue = (i) =>
-      storedFieldValue(values[i], schemaId, names[i])
+      emitted ? emitted[i] : storedFieldValue(values[i], schemaId, names[i])
     for (let i = 0; i < values.length; i++)
       body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(i)))
     body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
@@ -479,6 +480,20 @@ export default (ctx) => {
   // ptr-type dispatch + __hash_has for HASH, dyn_props probe for OBJECT).
   // A boolean, as `in` is (kind-traits BOOL_METHODS; the i32 carrier boxes to
   // true/false where identity is observed).
+  const stringHasOwn = (obj, key) => {
+    ctx.module.include('collection')
+    ctx.module.include('string')
+    inc('__str_arr_idx', '__str_length', '__is_str_key', '__to_str', '__str_eq')
+    const s = temp('hos'), k = tempI64('hok'), i = tempI32('hoi')
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${s}`, asF64(emit(obj))],
+      ['local.set', `$${k}`, asI64(emit(key))],
+      ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${k}`]]], ['then', ['local.set', `$${k}`, ['call', '$__to_str', ['local.get', `$${k}`]]]]],
+      ['local.set', `$${i}`, ['call', '$__str_arr_idx', ['local.get', `$${k}`]]],
+      ['i32.or',
+        ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], ['i32.const', 0]], ['i32.lt_s', ['local.get', `$${i}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
+        ['call', '$__str_eq', ['local.get', `$${k}`], asI64(emit(['str', 'length']))]]], 'i32')
+  }
   ctx.core.emit['.hasOwnProperty'] = (obj, key) => {
     const litKey = Array.isArray(key) && key[0] === 'str' ? String(key[1]) : null
     if (litKey != null) {
@@ -491,22 +506,7 @@ export default (ctx) => {
       if (!ctx.types.anyDelete && typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
         return typed(['i32.const', 1], 'i32')
     }
-    // A string's own properties are its indices and its length, where `in`
-    // on a primitive answers nothing.
-    if (stringValType(obj)) {
-      ctx.module.include('collection')
-      ctx.module.include('string')
-      inc('__str_arr_idx', '__str_length', '__is_str_key', '__to_str', '__str_eq')
-      const s = temp('hos'), k = tempI64('hok'), i = tempI32('hoi')
-      return typed(['block', ['result', 'i32'],
-        ['local.set', `$${s}`, asF64(emit(obj))],
-        ['local.set', `$${k}`, asI64(emit(key))],
-        ['if', ['i32.eqz', ['call', '$__is_str_key', ['local.get', `$${k}`]]], ['then', ['local.set', `$${k}`, ['call', '$__to_str', ['local.get', `$${k}`]]]]],
-        ['local.set', `$${i}`, ['call', '$__str_arr_idx', ['local.get', `$${k}`]]],
-        ['i32.or',
-          ['i32.and', ['i32.ge_s', ['local.get', `$${i}`], ['i32.const', 0]], ['i32.lt_s', ['local.get', `$${i}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
-          ['call', '$__str_eq', ['local.get', `$${k}`], asI64(emit(['str', 'length']))]]], 'i32')
-    }
+    if (stringValType(obj)) return stringHasOwn(obj, key)
     // This fallback is emitted as an `in` AST node; own the operator module
     // even when no source-level `in` triggered prepare-time autoload.
     ctx.module.include('collection')
@@ -515,7 +515,7 @@ export default (ctx) => {
   ctx.core.emit[`.${VAL.HASH}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.OBJECT}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.ARRAY}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
-  ctx.core.emit[`.${VAL.STRING}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  ctx.core.emit[`.${VAL.STRING}:hasOwnProperty`] = stringHasOwn
   ctx.core.emit[`.${VAL.CLOSURE}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   // Object.hasOwn(o, k) — ES2022 static equivalent of o.hasOwnProperty(k).
   // Reuses the same own-property emitter; receiver-type variants above apply.
@@ -698,7 +698,7 @@ export default (ctx) => {
     // object; JS gives `{a:1}`).
     if (Array.isArray(target) && target[0] === '{}' && !enumView(literalProps(target).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])))
       return emitObjectSpread([...literalProps(target), ...sources.map(s => ['...', s])])
-    const knownSchema = sourceSchema
+    const knownSchema = resolveSchema
     if (typeof target === 'string') {
       const vt = repOf(target)?.val
       if (vt && vt !== VAL.OBJECT) {
@@ -723,7 +723,7 @@ export default (ctx) => {
         ]
         const sBase = tempI32('sb')
         for (const source of sources) {
-          const sSchema = sourceSchema(source)
+          const sSchema = resolveSchema(source)
           body.push(['local.set', `$${s}`, asF64(emit(source))])
           body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
           for (let si = 0; si < sSchema.length; si++) {
@@ -739,14 +739,14 @@ export default (ctx) => {
       }
     }
     const tSchema = resolveSchema(target)
-    const sourceSchemas = sources.map(copiedSchema)
+    const resolveSchemas = sources.map(copiedSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
     // Existing targets cannot grow their physical schema. Extra source keys
     // must use the property table rather than disappear from a slot-only copy,
     // and a key the target defines as an accessor stores through its setter:
     // both take the computed-key store (an accessor read off a source is its
     // getter's value, module/schema.js enumView).
-    if (enumView(tSchema) || sourceSchemas.some(s => !s || enumKeys(s).some(p => !tSchema.includes(p)))) return emitObjectAssignDynamic(target, sources)
+    if (enumView(tSchema) || resolveSchemas.some(s => !s || enumKeys(s).some(p => !tSchema.includes(p)))) return emitObjectAssignDynamic(target, sources)
     // Extern-write belt: cross-schema slot copies into the TARGET's sid below
     // (plan's hazard scan marks the same target when it resolves it).
     const tSid = typeof target === 'string'
@@ -761,7 +761,7 @@ export default (ctx) => {
       ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i]
-      const sSchema = sourceSchemas[i]
+      const sSchema = resolveSchemas[i]
       body.push(['local.set', `$${s}`, asF64(emit(source))])
       body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
       for (const e of enumEntries(sSchema))
@@ -989,7 +989,7 @@ function emitObjectAssignDynamic(target, sources) {
 // property outside it (an added key the sidecar holds), which the copy reads
 // by its runtime keys.
 const copiedSchema = (src) => {
-  const s = sourceSchema(src)
+  const s = resolveSchema(src)
   return s && !hasOutOfSchemaWrites(src, s) && !mayHaveDynProps(src) ? s : null
 }
 
@@ -1018,25 +1018,6 @@ const hasOutOfSchemaWrites = (obj, schema) => {
   for (const k of w) if (!schema.includes(k)) return true
   return false
 }
-
-// `sourceSchema` is the spread/Object.assign SOURCE-position schema resolver.
-// Error must resolve to the SAME schema — physical `['message','name']`,
-// enumerable — on every enumeration surface: `Object.keys`/`JSON.stringify`
-// and `spread`/`Object.assign` must agree on what enumerates, or the same
-// object answers "does this property enumerate" differently depending only
-// on which builtin asked. DECISION (documented divergence, see .work/archive/todo.md
-// §deletion-sweep): Error is an ordinary object on every enumeration surface
-// — keys/JSON/spread/assign/for-in all see the physical `['message','name']`
-// layout, consistently. This diverges from real JS (whose Error properties
-// are non-enumerable on all four surfaces) but keeps jz's OWN four surfaces
-// mutually consistent, at zero machinery cost: the alternative (full JS
-// fidelity) needs a per-property enumerability flag threaded through every
-// enumeration site — the exact per-property "enumerated" flag the schema-id
-// design (this file, `errorSid`) deliberately avoids carrying. `sourceSchema`
-// is now a plain alias for `resolveSchema` — kept as a distinct name because
-// call sites below document SOURCE-position intent, not because it still
-// special-cases anything.
-const sourceSchema = (obj) => resolveSchema(obj)
 
 // Recognizes a literal `new X(...)`/`X(...)` Error-constructor-call node
 // (the same AST shape emitErrorInstanceof's tier-1 fold and `isErrorSchemaSource`
@@ -1159,7 +1140,7 @@ function spreadSourceSchema(obj) {
   if (typeof obj === 'string') {
     if (ctx.func.current?.params?.some(p => p.name === obj)) return null
   }
-  return sourceSchema(obj)
+  return resolveSchema(obj)
 }
 
 /**

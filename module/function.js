@@ -11,7 +11,7 @@
  */
 
 import { DBG_INVARIANTS } from '../src/debug.js'
-import { typed, asF64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, ptrTypeEq, throwTypeErrorIR } from '../src/ir.js'
+import { typed, asF64, asI64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, ptrTypeEq, throwTypeErrorIR } from '../src/ir.js'
 import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { constNumExpr } from '../src/static.js'
 import { isReassigned } from '../src/ast.js'
@@ -19,7 +19,9 @@ import { findFreeVars } from '../src/compile/analyze.js'
 import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/representation-plan.js'
 import { T } from '../src/ast.js'
 import { lookupValType, repOf } from '../src/reps.js'
-import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from '../src/ctx.js'
+import { functionLength } from '../src/function.js'
+import { dataLen, dataPush } from '../src/static-data.js'
 
 // Republished on ctx.closure below for src/compile/closure-plan.js's
 // mintClosureEnvPlans — a pure function of `body` alone, safely re-derivable
@@ -48,6 +50,7 @@ export default (ctx) => {
   // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64
   if (!ctx.closure.types) ctx.closure.types = new Set()
   if (!ctx.closure.table) ctx.closure.table = []
+  if (!ctx.closure.lengths) ctx.closure.lengths = []
   if (!ctx.closure.bodies) ctx.closure.bodies = []
   // Republished for src/compile/closure-plan.js's mintClosureEnvPlans (Slice 1,
   // .work/archive/closure-plan-design.md) — via ctx.closure rather than a direct
@@ -58,14 +61,31 @@ export default (ctx) => {
 
   ctx.closure.types.add(1) // presence triggers $ftN type emission
 
-  ctx.closure.mint = (name) => {
+  ctx.closure.mint = (name, length) => {
     let idx = ctx.closure.table.indexOf(name)
     if (idx === -1) {
       idx = ctx.closure.table.length
       ctx.closure.table.push(name)
+      ctx.closure.lengths.push(length)
     }
     return idx
   }
+
+  ctx.core.stdlib.__closure_length = () => {
+    if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
+    if (ctx.closure.lengthData == null) {
+      ctx.closure.lengthData = dataLen()
+      dataPush(new Uint8Array(ctx.closure.lengths))
+    }
+    const base = ctx.memory.shared ? `(i32.add (global.get $__staticBase) (i32.const ${ctx.closure.lengthData}))` : `(i32.const ${ctx.closure.lengthData})`
+    return `(func $__closure_length (param $fn i64) (result i32)
+      (i32.load8_u (i32.add ${base}
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $fn) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))))`
+  }
+  registerGetter('.closure:length', fn => {
+    inc('__closure_length')
+    return typed(['call', '$__closure_length', asI64(emit(fn))], 'i32')
+  })
 
   /**
    * Create a closure: compile inner function as closure body, capture outer vars.
@@ -243,7 +263,7 @@ export default (ctx) => {
     }
     ctx.closure.bodies.push(bodyFn)
 
-    const tableIdx = ctx.closure.mint(fnName)
+    const tableIdx = ctx.closure.mint(fnName, functionLength(params, defaults, restParam))
 
     // At call site: allocate env, store captured values, return NaN-boxed pointer.
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch

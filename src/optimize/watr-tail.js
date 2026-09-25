@@ -102,6 +102,9 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // profile — the explicit flag here overrides it in both directions.
   if (typeof watrOpts === 'object' && watrOpts.ifset === undefined)
     watrOpts.ifset = cfg.boolConvertToSelect === true || cfg.watrIfset === true
+  // Deferring costly expressions duplicates their code across exclusive arms.
+  // Enable that growth only where this tier explicitly waives the size guard.
+  if (watrOpts.lazySelect === undefined) watrOpts.lazySelect = cfg.watrGuard === false
   // jz's promise is runtime speed, but watr's OWN profile default leans size — outline/
   // tailmerge/rettail fold repeated sequences into out-of-line calls (measured 1.433→1.316
   // on the self-compile kernel with them off, watr ≥5.2.0). Every speed-tier preset carries
@@ -374,7 +377,7 @@ function encodeDataBytes(bytes) {
  * ranges when neither their owner nor an inlined address survives. Ranges stay
  * at their original addresses, so no pointer rebasing is needed.
  */
-export function stripDeadLateData(module, lazySpans, staticSpan) {
+function stripDeadLateData(module, lazySpans, staticSpan) {
   const spans = []
   if (lazySpans) for (let i = 0; i < lazySpans.length; i++) spans.push(lazySpans[i])
   if (staticSpan) spans.push(staticSpan)

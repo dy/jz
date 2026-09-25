@@ -119,7 +119,7 @@ export function carryElements(body, facts, distinct, reanalyze) {
       const after = [...stmts.slice(j + 1), step, cond]
       if (after.some(x => x != null && (writesNames(x, names) || writesNames(x, new Set([A])) || calls(x)))) continue
       if (after.some(x => x != null && storesIn(x).some(([B, J]) =>
-          B === A ? !provablyDiffer(I, J, F) : !(distinct?.has(A) && distinct?.has(B))))) continue
+          B === A ? !provablyDiffer(I, J, F, stmts) : !(distinct?.has(A) && distinct?.has(B))))) continue
       if (init != null && (writesNames(init, names) || writesNames(init, new Set([A])))) continue
       // the reads before the body's first write of I's names, store or call
       const key = idxKey(A, I), reads = []

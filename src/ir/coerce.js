@@ -24,6 +24,9 @@ import { isPlanTaggedBigint, isPlanRawBigint, materializeDeferredBigint, readI64
 import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
+const TAG_MASK_HEX = i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))
+const STRING_TAG_HEX = i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))
+
 /** ToPrimitive sidecar probe (ES2024 7.1.1): an own `valueOf`/`toString` data
  *  property shadows the builtin. Reads the dynamic-prop sidecar slot keyed by
  *  `nameIR` (an emitted i64 string key) off receiver `objIR`; if it holds a
@@ -48,8 +51,8 @@ export function sidecarOverride(objIR, nameIR, onOverride, onFallback) {
       ['i32.and',
         ['f64.ne', ['local.get', `$${o}`], ['local.get', `$${o}`]],
         ['i64.ne',
-          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['i64.const', i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))]],
-          ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
+          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['i64.const', TAG_MASK_HEX]],
+          ['i64.const', STRING_TAG_HEX]]],
       ['then', ['f64.reinterpret_i64',
         ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], nameIR]]],
       ['else', undefExpr()]]],
@@ -66,8 +69,12 @@ function inheritedObjectString(value) {
   return typed(['block', ['result', 'i64'], ['drop', asF64(value)], inheritedObjectTag()], 'i64')
 }
 
+/** The prepared OrdinaryToPrimitive functions (compile/emit/to-primitive.js), by hint:
+ *  runtime roots only in a program that defines toString or valueOf. */
+export const TO_PRIMITIVE = { string: '__jz_tp_str', number: '__jz_tp_num' }
+
 function objectToPrimitive(v, hint) {
-  const name = hint === 'string' ? '__jz_tp_str' : '__jz_tp_num'
+  const name = hint === 'string' ? TO_PRIMITIVE.string : TO_PRIMITIVE.number
   if (!ctx.funcs.runtimeRoots.has(name)) return inheritedObjectString(v)
   const recv = temp('tpr')
   return typed(['block', ['result', 'i64'], ['local.set', `$${recv}`, asF64(v)],
@@ -139,7 +146,7 @@ export const coerceAtomsToNum = (valIR) => {
  *  (String()/template-literal/`+`-concat), which autoload.js's own MOD_DEPS
  *  already makes depend on 'number' before 'string' loads, so `__static_str`
  *  is always registered by the time this runs. */
-export const coerceNullishToStr = (valIR) => {
+const coerceNullishToStr = (valIR) => {
   inc('__static_str')
   return typed(
     ['if', ['result', 'i64'],

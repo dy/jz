@@ -1,10 +1,11 @@
 /**
  * Release gate for the performance CLAIM (audit P0 2026-07-25): the committed
- * reference dataset (bench/results.json, the M4 reference machine) must be
+ * reference dataset (bench/results.json, or JZ_BENCH_RESULTS from CI) must be
  * CURRENT, COMPLETE, and WINNING before the claim ships. Unlike test/bench.js
  * (which measures THIS machine and treats ratios informationally on CI), this
- * gate reads only committed evidence and hard-fails — wired into
- * `prepublishOnly`, run explicitly via `npm run test:claims`.
+ * gate reads pinned evidence and hard-fails — wired into
+ * `prepublishOnly`, run explicitly via `npm run test:claims`. JZ_MEMORY_RESULTS
+ * can name a complete benchmark JSON snapshot for the same release's RSS gate.
  *
  *   1. FRESH: no compiler-source commit may postdate any JZ row's
  *                 measuredAt (or meta.commit for a full snapshot): a partial
@@ -19,13 +20,14 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
+import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WASM_BAND_TOL = 1.05   // keep in lockstep with test/bench.js
@@ -96,10 +98,28 @@ const SIZE_GEOMEAN_MAX = 1.05
 // change emitted code — and layout.js). Kept as an explicit list because the
 // repo also holds non-codegen trees (tests/site/bench evidence); the watr
 // version is additionally cross-checked against the snapshot's meta below.
-const SOURCE_SCOPE = ['src', 'module', 'jzify', 'index.js', 'interop.js', 'layout.js', 'package.json', 'package-lock.json']
+const SOURCE_SCOPE = ['src', 'module', 'jzify', 'index.js', 'interop.js', 'wasi.js', 'layout.js', 'layout-kinds.js', 'err-codes.js', 'package.json', 'package-lock.json']
 
-const res = JSON.parse(readFileSync(join(ROOT, 'bench/results.json'), 'utf8'))
+const resultsPath = process.env.JZ_BENCH_RESULTS || join(ROOT, 'bench/results.json')
+const res = JSON.parse(readFileSync(resultsPath, 'utf8'))
+const memoryPath = process.env.JZ_MEMORY_RESULTS || resultsPath
+const memorySnapshot = memoryPath === resultsPath ? res : JSON.parse(readFileSync(memoryPath, 'utf8'))
 const cases = res.cases
+
+const staleCompilerCommits = base => {
+  if (typeof base !== 'string' || !/^[0-9a-f]{7,40}$/.test(base)) throw Error(`invalid measured commit: ${base}`)
+  const opts = { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }
+  execFileSync('git', ['merge-base', '--is-ancestor', base, 'HEAD'], opts)
+  return execFileSync('git', ['log', '--oneline', `${base}..HEAD`, '--', ...SOURCE_SCOPE], opts).trim()
+}
+
+test('claims: reference evidence covers the complete benchmark corpus', () => {
+  const expected = readdirSync(join(ROOT, 'bench'), { withFileTypes: true })
+    .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(join(ROOT, 'bench', d.name, `${d.name}.js`)))
+    .map(d => d.name)
+  const missing = expected.filter(name => !cases[name])
+  ok(missing.length === 0, `reference evidence is missing cases: ${missing.join(', ')}`)
+})
 
 const collectJzEvidence = snapshot => {
   const byBase = new Map()
@@ -109,7 +129,7 @@ const collectJzEvidence = snapshot => {
     const row = c.targets?.jz
     if (!timedBenchmarkRow(row)) continue
     evidencedRows++
-    const base = row.measuredAt || (!snapshot.meta?.partial ? snapshot.meta?.commit : null)
+    const base = 'measuredAt' in row ? row.measuredAt : (!snapshot.meta?.partial ? snapshot.meta?.commit : null)
     if (!base) { missing.push(name); continue }
     const names = byBase.get(base)
     if (names) names.push(name)
@@ -136,10 +156,14 @@ test('claims freshness: partial snapshots use each valid JZ row, not the merge c
 
   const full = collectJzEvidence({
     meta: { commit: 'full-run' },
-    cases: { valid: { targets: { jz: { parity: 'ok', medianUs: 1 } } } },
+    cases: {
+      valid: { targets: { jz: { parity: 'ok', medianUs: 1 } } },
+      empty: { targets: { jz: { parity: 'ok', medianUs: 1, measuredAt: '' } } },
+      null: { targets: { jz: { parity: 'ok', medianUs: 1, measuredAt: null } } },
+    },
   })
   is(full.byBase.get('full-run')?.join(','), 'valid', 'full snapshots fall back to meta.commit')
-  is(full.missing.length, 0, 'full snapshot fallback leaves no missing provenance')
+  is(full.missing.join(','), 'empty,null', 'an explicit invalid row stamp never borrows fresh snapshot metadata')
 })
 
 test('claims: compiler inputs are committed before evidence can be fresh', () => {
@@ -150,7 +174,7 @@ test('claims: compiler inputs are committed before evidence can be fresh', () =>
 
 test('claims: reference evidence is fresh (no compiler commits past any JZ row)', () => {
   const metaBase = res.meta?.commit
-  const validMetaBase = typeof metaBase === 'string' && metaBase.length >= 7
+  const validMetaBase = typeof metaBase === 'string' && /^[0-9a-f]{7,40}$/.test(metaBase)
   ok(validMetaBase, validMetaBase ? `results.json meta.commit ${metaBase}` : `results.json meta.commit missing/malformed: ${metaBase}`)
 
   // A partial merge's meta.commit names the write, not every carried JZ run.
@@ -159,14 +183,13 @@ test('claims: reference evidence is fresh (no compiler commits past any JZ row)'
   ok(evidencedRows >= Math.ceil(Object.keys(cases).length * COVERAGE_FLOOR),
     `${evidencedRows} parity-valid JZ rows carry the performance claim`)
   ok(missing.length === 0, missing.length
-    ? `partial reference has ${missing.length} JZ row(s) with no measuredAt provenance: ${missing.slice(0, 12).join(', ')}`
-    : 'every partial JZ evidence row has measuredAt provenance')
+    ? `reference has ${missing.length} JZ row(s) without valid measurement provenance: ${missing.slice(0, 12).join(', ')}`
+    : 'every JZ evidence row has measurement provenance')
 
   const staleGroups = []
   for (const [base, names] of byBase) {
     try {
-      const stale = execFileSync('git', ['log', '--oneline', `${base}..HEAD`, '--', ...SOURCE_SCOPE],
-        { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }).trim()
+      const stale = staleCompilerCommits(base)
       if (stale) staleGroups.push({ base, names, stale, n: stale.split('\n').length })
     } catch (e) {
       ok(false, `freshness check failed to run (bad JZ row measuredAt ${base}?): ${String(e.message).slice(0, 120)}`)
@@ -216,13 +239,10 @@ test('claims: partial (mixed-vintage) evidence requires a passing anchors check 
 // bound so a future regression report can rule out "the machine was
 // swapping" before chasing a phantom code cause.
 const SWAP_SANE_BOUND_MB = 4096
-// audit-#14 item 9: evidence WITHOUT machineState must not read as a green
-// validity pass — while the field is absent the gate is a visible TODO
-// (pending, counts as neither pass nor fail), and becomes a real enforced
-// bound the moment a refresh writes the field. Self-healing: no manual flip.
-;(res.meta?.machineState ? test : test.todo)('VALIDITY: committed evidence carries machineState within the swap-pressure sane bound', () => {
+test('VALIDITY: reference evidence carries machineState within the swap-pressure sane bound', () => {
   const state = res.meta?.machineState
   ok(state, 'committed reference carries no machineState — regenerate bench/results.json via --json/--merge (machine-state capture is unconditional there)')
+  if (!state) return
   ok(state.swapUsedMB == null || state.swapUsedMB < SWAP_SANE_BOUND_MB,
     `committed evidence's machineState.swapUsedMB=${state.swapUsedMB}MB exceeds the ${SWAP_SANE_BOUND_MB}MB sane bound — timing evidence recorded under swap pressure is validity-suspect; re-measure on a quieter (post-reboot) machine`)
 })
@@ -244,27 +264,60 @@ const _liveInvalid = _liveState.swapUsedMB != null && _liveState.swapUsedMB >= S
     `live swapUsedMB=${_liveState.swapUsedMB}MB exceeds the ${SWAP_SANE_BOUND_MB}MB sane bound — timing/memory evidence gathered now is validity-suspect; reboot before measuring`)
 })
 
-// MEMORY freshness — same discipline as the FRESH test above, applied to the
-// separate GOAL-MEMORY evidence file (bench/memcheck-results.csv, the jz-wasmtime
-// vs moonrun peak-RSS comparison). It isn't part of results.json — regenerated on
-// its own cadence — so it carries its own `# commit:` header and needs its own
-// staleness check, or a compiler change could silently invalidate the memory goal
-// while results.json's freshness test stays green.
-test('claims: memory evidence is fresh (no compiler commits past memcheck-results.csv\'s commit)', () => {
-  const csv = readFileSync(join(ROOT, 'bench/memcheck-results.csv'), 'utf8')
-  const m = csv.match(/^#\s*commit:\s*([0-9a-f]{7,40})\s*$/m)
-  ok(m, 'memcheck-results.csv missing a "# commit: <hash>" header — cannot verify freshness')
-  const base = m[1]
-  let stale
-  try {
-    stale = execFileSync('git', ['log', '--oneline', `${base}..HEAD`, '--', ...SOURCE_SCOPE],
-      { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }).trim()
-  } catch (e) {
-    ok(false, `memory freshness check failed to run (bad commit ${base}?): ${String(e.message).slice(0, 120)}`)
-    return
+// Memory uses the same full benchmark snapshot by default. An explicitly
+// supplied memory run must prove its own provenance and machine validity too.
+test('claims: memory evidence is fresh (no compiler commits past its measured commit)', () => {
+  const base = memorySnapshot.meta?.commit
+  const validBase = typeof base === 'string' && /^[0-9a-f]{7,40}$/.test(base)
+  ok(validBase, `${memoryPath}: missing measured commit`)
+  if (!validBase) return
+  ok(!memorySnapshot.meta.partial, 'memory evidence is one complete same-machine run')
+  const nowWatr = JSON.parse(readFileSync(join(ROOT, 'node_modules/watr/package.json'), 'utf8')).version
+  ok(memorySnapshot.meta.versions?.watr === nowWatr, 'memory evidence uses the installed watr')
+  const swap = memorySnapshot.meta.machineState?.swapUsedMB
+  ok(!!memorySnapshot.meta.machineState && (swap == null || swap < SWAP_SANE_BOUND_MB), 'memory evidence carries valid machine state')
+  // RSS is independent of timing. Validate the provenance of both sides of
+  // each memory comparison, including rows with no medianUs measurement.
+  const bases = new Set([base])
+  for (const name of MEMORY_CASES) for (const target of ['jz', 'v8']) {
+    const row = memorySnapshot.cases?.[name]?.targets?.[target]
+    if (row && 'measuredAt' in row) bases.add(row.measuredAt)
   }
-  const n = stale ? stale.split('\n').length : 0
-  ok(n === 0, `memory evidence is STALE: ${n} compiler-source commit(s) postdate memcheck-results.csv's commit ${base} — regenerate bench/memcheck-results.csv at HEAD:\n${stale.split('\n').slice(0, 8).join('\n')}`)
+  for (const measured of bases) {
+    let stale
+    try {
+      stale = staleCompilerCommits(measured)
+    } catch (e) {
+      ok(false, `memory freshness check failed to run (bad commit ${measured}?): ${String(e.message).slice(0, 120)}`)
+      continue
+    }
+    const n = stale ? stale.split('\n').length : 0
+    ok(n === 0, `memory evidence is STALE: ${n} compiler-source commit(s) postdate ${memoryPath}'s commit ${measured}:\n${stale.split('\n').slice(0, 8).join('\n')}`)
+  }
+})
+
+test('claims: allocation-heavy cases use no more peak RSS than V8', () => {
+  const { missing, losses } = memoryFloor(memorySnapshot.cases)
+  ok(missing.length === 0, `missing correct, measured memory rows: ${missing.join(', ')}`)
+  ok(losses.length === 0, `JZ/V8 peak-RSS losses: ${losses.map(([name, ratio]) => `${name} ${ratio.toFixed(3)}×`).join(', ')}`)
+})
+
+// Same native-lowering caps previously checked by test/bench.js against the
+// stored snapshot. Keep reference verdicts together so CI can check a fresh
+// dataset without first requiring the obsolete one to pass.
+const W2C_GEOMEAN_MAX = 1.35, W2C_CASE_MAX = 3.5
+test('claims: jz-w2c native lowering within regression bands', () => {
+  const ratios = []
+  for (const [name, c] of Object.entries(cases)) {
+    const jz = c.targets?.jz, w2c = c.targets?.['jz-w2c']
+    if (timedBenchmarkRow(jz) && timedBenchmarkRow(w2c))
+      ratios.push([name, w2c.medianUs / jz.medianUs])
+  }
+  ok(ratios.length >= 20, `too few jz-w2c rows (${ratios.length}) — native lane missing from the evidence refresh`)
+  for (const [name, x] of ratios)
+    ok(x <= W2C_CASE_MAX, `${name}: w2c/jz ${x.toFixed(2)}× > ${W2C_CASE_MAX}× — native-lowering blowup`)
+  const gm = Math.exp(ratios.reduce((s, [, x]) => s + Math.log(x), 0) / ratios.length)
+  ok(gm <= W2C_GEOMEAN_MAX, `w2c/jz geomean ${gm.toFixed(3)}× > ${W2C_GEOMEAN_MAX}×`)
 })
 
 const parityRows = rival => {

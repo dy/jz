@@ -22,6 +22,8 @@ import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
+import { devirtSchemaReads } from '../src/optimize/devirt.js'
+import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -36,6 +38,63 @@ const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isA
 const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
 const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
 
+test('address CSE: exits and sibling writes end the dominating region', () => {
+  for (const pass of [hoistAddrBase, hoistPtrType]) {
+    const site = pass === hoistAddrBase
+      ? '(i32.add (local.get $x) (i32.shl (local.get $i) (i32.const 3)))'
+      : '(call $__ptr_type (local.get $x))'
+    for (const body of [
+      `(block $out (br_if $out (local.get $skip)) (drop ${site})) ${site}`,
+      `(block $out (try_table (catch_all $out) (if (local.get $skip) (then (throw $err))) (drop ${site}))) ${site}`,
+      `(drop ${site}) (if (local.get $skip) (then (local.set $x (i32.const 7)))
+        (else (drop ${site}) (local.set $x (i32.const 9)) (drop ${site}))) ${site}`,
+    ]) {
+      const ast = parseWat(`(module (tag $err)
+        (func $__ptr_type (param $x i32) (result i32) (local.get $x))
+        (func $f (export "f") (param $x i32) (param $i i32) (param $skip i32) (result i32) ${body}))`)
+      const instantiate = () => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports.f
+      const before = instantiate()
+      pass(findFunc(ast, '$f'))
+      const after = instantiate()
+      for (const skip of [1, 1, 0, 1, 0]) is(after(13, 2, skip), before(13, 2, skip))
+    }
+  }
+})
+
+
+test('address and tag CSE: branch exits and exception handlers cannot reuse skipped initializers', () => {
+  if (onKernel()) return
+  for (const [pass, expr] of [
+    [hoistAddrBase, '(i32.load (i32.add (local.get $base) (i32.shl (local.get $index) (i32.const 3))))'],
+    [hoistPtrType, '(call $__ptr_type (local.get $ptr))'],
+  ]) {
+    const drop = `(drop ${expr})`
+    for (const body of [
+      `${drop} ${expr}`,
+      `(block ${drop}) ${expr}`,
+      `(block $exit (br_if $exit (local.get $skip)) ${drop}) ${expr}`,
+      `(block $exit (try_table (catch $error $exit)
+        (if (local.get $skip) (then (throw $error))) ${drop})) ${expr}`,
+      `(block $exit (loop $again (br_if $exit (local.get $skip)) ${drop})) ${expr}`,
+    ]) {
+      const source = `(module (memory 1) (data (i32.const 88) "%") (tag $error)
+        (func $__ptr_type (param $ptr i64) (result i32) (i32.wrap_i64 (local.get $ptr)))
+        (func $f (export "f") (param $skip i32) (param $base i32) (param $index i32) (param $ptr i64) (result i32)
+          ${body}))`
+      const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(parseWat(source)))).exports.f
+      const tree = parseWat(source), fn = findFunc(tree, '$f')
+      walk(fn, n => { if (n[0] === 'i32.const') n[1] = Number(n[1]) }) // JZ's emitted IR uses numeric constants.
+      pass(fn)
+      const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports.f
+      for (const skip of [0, 1, 1, 0]) {
+        is(after(skip, 64, 3, 37n), before(skip, 64, 3, 37n), 'normal → bypass → bypass → normal preserves the computed value')
+        is(after(skip, 0, 0, 0n), 0, 'zero-valued inputs stay zero')
+      }
+      if (body === `${drop} ${expr}` || body === `(block ${drop}) ${expr}`)
+        ok(JSON.stringify(fn).includes('local.tee'), 'straight-line reuse remains enabled across blocks without exits')
+    }
+  }
+})
 
 test('LICM effects: every memory writer blocks mutable helper reads', () => {
   const writers = [
@@ -207,8 +266,9 @@ test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () =
   const src = `
     const g = (x, y) => Math.max(x, y) * 3.0 + 1.0
     export let f = (k, n) => { let s = 0.0; for (let i = 0; i < n; i++) s = s + g(k, 2.5) + i; return s }`
-  const wat = compile(src, { wat: true, optimize: 'speed' })
-  ok(/\$__licm/.test(wat), 'watr licm hoists the inlined invariant (a $__licm local exists)')
+  const fn = findFunc(parse(src, 'speed'), '$f')
+  is(count(fn, n => n[0] === 'f64.max'), 1, 'the invariant is computed once')
+  is(loopCount(fn, n => n[0] === 'f64.max'), 0, 'its computation is outside the loop, regardless of local reuse')
   // Bit-exact: licm on === off across invariant-max branches and the zero-trip loop.
   const on = jz(src, { optimize: 'speed' }).exports.f
   const off = jz(src, { optimize: { level: 'speed', watrLicm: false } }).exports.f
@@ -396,6 +456,55 @@ test('LICM: self-referential tee induction in loop condition is not hoisted (rff
   is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
 })
 
+test('devirtSchemaReads: schemas with the same field slot share one dispatch arm', () => {
+  const src = `const rows = [{x:1,a:0}, {x:2,b:0}, {p:0,x:3}, {p:0,x:4,q:0}, {q:0,r:0,x:5}, {pad:9}, 7]
+    export function read(o) { return o.x }
+    export function f(i) { return read(rows[i]) }`
+  const w = compile(src, { wat: true, optimize: { level: 1, sourceInline: false, watr: false } })
+  const body = findFunc(parseWat(w), '$read')
+  ok(body, 'the dynamic read keeps its own body')
+  const ir = JSON.stringify(body)
+  ok(ir.includes('br_table'), 'the dense schema dispatch is exercised')
+  is((ir.match(/"i64.load"/g) || []).length, 3, 'five schemas use three distinct slot loads')
+  const ref = oracle(src).f
+  for (const level of levels(1, 2, 3, 'size')) {
+    const { f } = run(src, { optimize: { level, sourceInline: false } })
+    for (const i of [0, 1, 2, 3, 4, 5, 6, 0]) is(f(i), ref(i), `O${level}, row ${i}`)
+  }
+})
+
+test('devirtSchemaReads: empty branch and loop regions cannot leak cached reads', () => {
+  const src = `export function value(o,n) {
+    let s = 0
+    if (n > 0) s += o.x + o.x
+    if (n === 2) o.x += 3
+    for (let i = 0; i < n; i++) { s += o.x + o.x; o.x++ }
+    return s + o.x + o.x
+  }
+  export function f(n,k) { return value(k ? {x:3,p:2} : {p:2,x:4}, n) }`
+  ok(compile(src, { wat: true, optimize: { level: 1, sourceInline: false, watr: false } }).includes('__dsr'), 'the schema-read pass handles this receiver')
+  const ref = oracle(src).f
+  for (const level of levels(1, 2, 3, 'size')) {
+    const { f } = run(src, { optimize: { level, sourceInline: false } })
+    for (const n of [-1, 0, 1, 2, 3, 0]) for (const k of [0, 1]) is(f(n,k), ref(n,k), `O${level}, n=${n}, k=${k}`)
+  }
+})
+
+test('devirtSchemaReads: registered field slots remain isolated across compilations', () => {
+  const graphs = [
+    `const rows = [{x:1,y:2}, {pad:8,x:3,y:4}, {y:6}];`,
+    `const rows = [{pad:9,y:3,x:7}, {x:5,y:4}, {y:2,pad:8}];`,
+  ]
+  const body = `function get(o) { return (o.x === undefined ? -1 : o.x) + o.y }
+    export function f(i) { return get(rows[i % 3]) }`
+  for (const level of levels(1, 2, 3, 'size')) for (const graph of [0, 0, 1, 0]) {
+    const src = graphs[graph] + body
+    const { f } = run(src, { optimize: { level, sourceInline: false } })
+    const ref = oracle(src).f
+    for (const i of [0, 1, 2, 0]) is(f(i), ref(i), `O${level}, graph ${graph}, row ${i}`)
+  }
+})
+
 test('devirtSchemaReads: sparse fields remain specialized past 24 module schemas', () => {
   const src = `const rows=[{wanted:7},${Array.from({length:30}, (_,i)=>`{field${i}:${i}}`).join(',')},{padding:1,wanted:9}]
     function get(o){return o.wanted}
@@ -470,8 +579,9 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   ok(!/br_if[^\n]*\n?[^\n]*call \$__ptr_type/.test(geoWat), 'no per-read tag-guard call in the dispatches')
   let discriminant
   walk(parseWat(geoWat), n => {
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === '$s') discriminant = n[2]
+    if (!discriminant && (n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === '$s') discriminant = n[2]
   })
+  // Later writes may reuse s's dead slot; only its first definition is the discriminant.
   // The array-element argument can be absent. Its null check remains, but
   // the discriminant itself needs one slot load and no property dispatch.
   is(count(discriminant, n => n[0] === 'f64.load'), 1, 'discriminant reads one slot')
@@ -557,6 +667,42 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   ok(/\$__dsrm\d+/.test(geoSize), 'size mode retains duplicate-read reuse')
   ok(!/\$__dsr[os]\d+/.test(geoSize), 'size mode adds no schema dispatch arms or receiver cache')
   is(run(src, { optimize: 'size' }).f(), ref, 'shared size-mode lookup agrees with the specialized speed mode')
+})
+
+test('devirtSchemaReads: empty and populated branch memos preserve reads and writes', () => {
+  const read = '(call $__dyn_get_test (local.get $recv))'
+  const bodies = [
+    `(if (local.get $flag) (then (drop ${read}))) (i64.add ${read} ${read})`,
+    `(local.set $sum ${read}) (if (local.get $flag) (then (i64.store (i32.const 0) (i64.const 17)))) (i64.add (local.get $sum) ${read})`,
+    `(block $exit (br_if $exit (local.get $flag)) (local.set $sum (i64.add ${read} ${read}))) (i64.add (local.get $sum) ${read})`,
+    `(local.set $sum ${read}) (block $exit (loop $loop
+      (br_if $exit (i32.eqz (local.get $n)))
+      (local.set $sum (i64.add (local.get $sum) (i64.add ${read} ${read})))
+      (i64.store (i32.const 0) (i64.add ${read} (i64.const 1)))
+      (local.set $n (i32.sub (local.get $n) (i32.const 1))) (br $loop)))
+      (i64.add (local.get $sum) ${read})`,
+  ]
+  for (const body of bodies) {
+    compile('', { optimize: 'size' })
+    ctx.schema.list.push(['x'])
+    ctx.core.includes.add('__ptr_type')
+    const ast = parseWat(`(module (memory (export "memory") 1)
+      (func $__dyn_get_test (param i64) (result i64) (i64.load (i32.const 0)))
+      (func $f (export "f") (param $recv i64) (param $flag i32) (param $n i32)
+        (result i64) (local $sum i64) ${body}))`)
+    const bytes = encodeWat(ast)
+    const original = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports
+    const fn = findFunc(ast, '$f')
+    devirtSchemaReads(fn)
+    is(encodeWat(ast), bytes, 'an untagged function stays byte-identical')
+    walk(fn, n => { if (n[0] === 'call' && n[1] === '$__dyn_get_test') n.dvProp = 'x' })
+    devirtSchemaReads(fn)
+    const optimized = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+    for (const flag of [0, 1, 1, 0]) for (const n of [0, 1, 3]) {
+      for (const ex of [original, optimized]) new DataView(ex.memory.buffer).setBigInt64(0, 11n, true)
+      is(optimized.f(0n, flag, n), original.f(0n, flag, n), `flag ${flag}, count ${n}: ${body}`)
+    }
+  }
 })
 
 test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
@@ -1579,6 +1725,19 @@ test('sourceInline: value return folding keeps fallthrough scope and nested exit
     is(main(0), [0, 11])
     is(main(1), [5, 33])
     is(main(3), [20, 99])
+  }
+})
+
+test('size tier: shared scalar helpers remain outlined', () => {
+  const src = `function mix(x) { const y=x*x+3*x+7; return y*y-y+2 }
+    export function f(x) { return mix(x)+mix(x+1)+mix(x+2) }`
+  for (const optimize of levels('size', 2, 3)) {
+    const { f } = run(src, { optimize }), ref = oracle(src).f
+    for (const x of [0, 0, -1, 2, 0.5]) is(f(x), ref(x))
+    if (optimize === 'size' && !onKernel()) {
+      const wat = compile(src, { wat:true, optimize:{level:'size', watr:false} })
+      ok(/\(call \$mix\b/.test(wat), 'shared body survives source lowering')
+    }
   }
 })
 
@@ -3278,7 +3437,7 @@ test('for-bound snapshot: read-only builtin calls do not block the .length hoist
   // `callFree` used to disqualify ANY call in the loop body — a charCodeAt /
   // Math.imul body re-decoded the NaN-boxed string length every iteration
   // (≈3× slower on byte loops). Read-only builtins can't resize the receiver,
-  // so the bound must snapshot into a pre-loop i32 local (boundSafeCalls).
+  // so the proven immutable string bound can snapshot into a pre-loop local.
   const src = `export const main = (s) => {
     let h = 0x811c9dc5 | 0
     for (let i = 0; i < s.length; i++) {
@@ -3299,9 +3458,34 @@ test('for-bound snapshot: read-only builtin calls do not block the .length hoist
   is(main('hello world'), js('hello world'))
 })
 
+test('for-bound snapshot: aliases, helper arguments and captured bindings remain live', () => {
+  const sources = [
+    `function change(tag,a,i,n){if(i===0)a.length=n}
+     export function f(n){const a=[1,2];let count=0;
+       for(let i=0;i<a.length;i++){change('x',a,i,n);count++}return count}`,
+    `export function f(n){const a=[1,2],b=a;let count=0;
+       for(let i=0;i<a.length;i++){if(i===0)b.length=n;count++}return count}`,
+    `export function f(n){const a=[1,2];const change=()=>{a.length=n};let count=0;
+       for(let i=0;i<a.length;i++){if(i===0)change();count++}return count}`,
+    `export function f(n){let a=new Uint8Array(2);const change=()=>{a=new Uint8Array(n)};let count=0;
+       for(let i=0;i<a.length;i++){if(i===0)change();count++}return count}`,
+    `export function f(n){let a=new Uint8Array(2);let count=0;
+       for(let i=0;i<a.length;i++,a=new Uint8Array(n)){count++}return count}`,
+    `export function f(n){const a=[];let count=0;
+       for(let i=0;i<a.length;i++){a.length=n;count++}return count}`,
+  ]
+  for (const src of sources) {
+    const js = new Function(src.replace('export ', '') + ';return f')()
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { f } = jz(src, { optimize }).exports
+      for (const n of [0, 0, 4, 1, 2]) is(f(n), js(n), `${optimize}: ${src}`)
+    }
+  }
+})
+
 test('for-bound snapshot: a mutating call in the body still re-reads the bound', () => {
   // push() grows the array mid-loop — JS re-reads the bound every iteration,
-  // so the read-only whitelist must NOT claim this loop (2 elems + 1 pushed → 3 iters).
+  // so the mutable length must remain live (2 elems + 1 pushed → 3 iters).
   const src = `export const main = () => {
     let a = [1, 2]
     let n = 0
@@ -4629,6 +4813,43 @@ export let main = (g) => {
   ok(Number.isNaN(run(src, { optimize: 'speed' }).main(1)), 'g=1: OOB tail is NaN, matching JS (not raw reads, not undefined)')
 })
 
+test('interval walk: branch joins retain both arms through nested control flow', () => {
+  const src = `
+export function branch(n, flag, mode) {
+  const a = new Int32Array([11, 22, 33, 44])
+  let i = 1
+  if (mode === 0) { if (flag) i = n; else i = 3 }
+  else if (mode === 1) { flag ? (i = n) : (i = 3) }
+  else if (mode === 2) { flag && (i = n) }
+  else { flag || (i = n) }
+  return a[i]
+}
+export function loop(n, flag) {
+  const a = new Int32Array([11, 22, 33, 44])
+  let i = 0, j = 0
+  while (i < n) {
+    if (flag) {
+      if (i === 1) { j = 5; break }
+      j = i
+    } else {
+      j = i
+      if (i++ === 1) continue
+    }
+    i++
+  }
+  return a[j]
+}`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const ex = run(src, { optimize })
+    for (const flag of [0, 1]) for (const n of [-1, 0, 1, 3, 4, 7]) {
+      for (let mode = 0; mode < 4; mode++)
+        is(ex.branch(n, flag, mode), js.branch(n, flag, mode), `${optimize}: branch ${n}/${flag}/${mode}`)
+      is(ex.loop(n, flag), js.loop(n, flag), `${optimize}: loop ${n}/${flag}`)
+    }
+  }
+})
+
 test('interval walk: strided companion cursor + packed OR index erase codec bounds checks', () => {
   // A 3→4 codec loop has two coupled induction variables. The output cursor's
   // pre-increment window is [0, 12], while the two masked fields OR to [0,63].
@@ -4891,6 +5112,16 @@ test('decomposed charCodeAt unswitches SSO vs heap outside leaf byte loops', () 
   const ex = run(src, { optimize: 'speed' })
   is(ex.small(), 294, 'SSO loop version stays exact')
   is(ex.heap(), 3120, 'heap loop version stays exact')
+})
+
+test('checked typed reads preserve their index before a reused guard slot', () => {
+  const src = `const a=new Float64Array([4,1,-0,NaN]), out=new Float64Array(1)
+    export function f(i){if(a[i]>=3)return -1;return out[0]=a[i]}`
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const js = oracle(src), wasm = run(src, { optimize })
+    for (const i of [-1, 0, 1, 2, 3, 4, 2, 2, 1])
+      ok(Object.is(wasm.f(i), js.f(i)), `${optimize}: index ${i}, including missing, signed zero and NaN`)
+  }
 })
 
 test('a checked typed read used as an index carries its miss outward', () => {
@@ -5530,6 +5761,26 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   is((body.match(/\(call \$c[\s)]/g) || []).length, 2, 'c is called once per test')
   const ref = oracle(src).f
   for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
+})
+
+test('devirtSchemaReads: an empty inline cache cannot match zero or subnormal numbers', () => {
+  const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:0,x:${i}}`)
+  const src = `function mk(i) { switch(i%30) { ${shapes.map((s,i) => `case ${i}: return ${s};`).join('')} } return {x:-1,z:0} }
+    export function zero(n) { const o = n ? mk(n) : 0; return o.x }
+    export function tiny(n) { const o = n ? mk(n) : 5e-324; return o.x }`
+  for (const level of levels(1, 2, 3, 'size')) for (const snapshotInit of [false, true]) {
+    const r = jz(src, { optimize: { level, snapshotInit, sourceInline: false } })
+    for (const fn of [r.exports.zero, r.exports.tiny]) {
+      is(fn(0), undefined, 'the first primitive read misses an empty cache')
+      is(fn(0), undefined, 'a failed read does not fill the cache')
+      is(fn(4), 4, 'a real object fills the cache')
+      is(fn(0), undefined, 'a primitive still misses a populated cache')
+      is(fn(7), 7, 'a different schema refills it')
+    }
+    r.instance.exports._clear()
+    is(r.exports.zero(0), undefined, 'reset preserves the receiver guard')
+    is(r.exports.tiny(4), 4)
+  }
 })
 
 test('devirtSchemaReads: past the dispatch budget a read site keeps an inline cache', () => {

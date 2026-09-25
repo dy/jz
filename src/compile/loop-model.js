@@ -204,8 +204,10 @@ function secondaryCounters(init, step, body, iv, trips) {
   const moves = steps.map(counterStep)
   const written = new Set(moves.filter(Boolean).map(m => m.name))
   const out = []
-  for (const m of moves) {
+  for (let i = 0; i < moves.length; i++) {
+    const m = moves[i]
     if (!m || m.name === iv || moves.filter(x => x?.name === m.name).length !== 1 || isReassigned(body, m.name)) continue
+    if (steps.some((s, j) => j !== i && isReassigned(s, m.name))) continue
     if (typeof m.by === 'string' && (written.has(m.by) || isReassigned(body, m.by) || steps.some(x => isReassigned(x, m.by)))) continue
     if (typeof m.by !== 'string' && constIntExpr(m.by) == null && typeof m.by !== 'number') continue
     const from = counterInit(init, m.name)

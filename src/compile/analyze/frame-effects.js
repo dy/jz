@@ -58,8 +58,10 @@
  *
  * @module compile/analyze/frame-effects
  */
-import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, isFunctionNode } from '../../ast.js'
-import { K, tagOf, hasTag } from '../../summary/kind.js'
+import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode } from '../../ast.js'
+import { K, tagOf, hasTag, tagsOf, bitOf, valOf, core, NUMBER_OPS } from '../../summary/kind.js'
+import { COMPOUND_NUMERIC_OPS } from '../../kind-traits.js'
+import { TO_PRIMITIVE } from '../../ir.js'
 import { ctx } from '../../ctx.js'
 import { frameRoots } from '../../function.js'
 import { viewsOn } from '../../../module/schema.js'
@@ -114,6 +116,20 @@ const CALLBACK_METHODS = new Set(['forEach', 'map', 'filter', 'reduce', 'reduceR
 // Pure callees that call an argument back before they return, by its position:
 // `Array.from(src, mapFn)` runs mapFn in this frame, as `map` does.
 const CALLBACK_ARGS = new Map([['Array.from', 1]])
+
+// Converting a value to a primitive runs user code when the program defines toString or
+// valueOf: the conversion is a call to the ToPrimitive function it lowers to (ir/coerce.js
+// TO_PRIMITIVE, runtime roots only then). Operators converting their operands: ToNumber
+// (arithmetic, bitwise, relational) and ToPrimitive (`+`, templates, loose equality).
+const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', '`', '==', '!='])
+// Pure callees that convert no argument.
+const NON_CONVERTING = /^(Array\.(isArray|of|from)|Object\.(is|getPrototypeOf|isFrozen|keys|values|entries|getOwnPropertyNames)|Boolean|Date\.now|performance\.now)$/
+// Constructors that convert their arguments (a typed array each element of an array source).
+const CONVERTING_CTORS = /^(Date|String|Number|BigInt|(Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
+// Receiver methods that convert the receiver's elements (`[p].join()` runs p.toString).
+const CONVERTING_RECEIVER_METHODS = new Set(['join', 'toString', 'toLocaleString'])
+// Tags of values that convert without running user code.
+const PRIMITIVE_BITS = [K.NUMBER, K.STRING, K.BOOL, K.BIGINT, K.NULLISH, K.ABSENT].reduce((m, t) => m | bitOf(t), 0)
 
 // Receiver methods that write the receiver in place without changing its
 // storage: a write into outer storage, never a growth.
@@ -188,6 +204,37 @@ function scalarKind(view, e) {
   return !hasTag(k, K.STRING) && !hasTag(k, K.OBJECT) && !hasTag(k, K.ARRAY) && !hasTag(k, K.CLOSURE) &&
     !hasTag(k, K.MAP) && !hasTag(k, K.SET) && !hasTag(k, K.HASH) && !hasTag(k, K.TYPED) && !hasTag(k, K.BIGINT) &&
     !hasTag(k, K.DATE) && !hasTag(k, K.REGEX) && !hasTag(k, K.BUFFER) && tagOf(k) !== K.ANY
+}
+
+/** The summary proves the expression a primitive: converting it runs no user code. */
+function primitiveKind(view, e) {
+  if (!isArr(e) && !isName(e)) return true   // a number or bigint literal
+  if (isArr(e) && (e[0] == null || e[0] === 'str' || e[0] === 'bool')) return true
+  if (!view) return false
+  let k
+  try { k = view.kindOfExpr(e) } catch { return false }
+  return k != null && tagsOf(k) !== 0 && (tagsOf(k) & ~PRIMITIVE_BITS) === 0
+}
+
+/** Whether evaluating `node` itself, once its operands are values, may run a user
+ *  toString/valueOf: a converting operator (or key conversion) over an operand the
+ *  summary cannot prove primitive, in a program that defines those methods. */
+export function runsConversion(view, node) {
+  if (!isArr(node) || !ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)) return false
+  const op = node[0]
+  if (CONVERTING_OPS.has(op)) { for (let i = 1; i < node.length; i++) if (!primitiveKind(view, node[i])) return true; return false }
+  if ((op === '[]' || op === '?.[]') && node.length === 3) return !primitiveKind(view, node[2])   // ToPropertyKey
+  if (op === '=' && node[1]?.[0] === '[]' && mayBeTyped(view, node[1][1])) return !primitiveKind(view, node[2])
+  if (op === 'in') return !primitiveKind(view, node[1])
+  return false
+}
+
+/** The receiver may hold a typed array, whose element store converts the value. */
+function mayBeTyped(view, recv) {
+  if (!view) return true
+  let k
+  try { k = view.kindOfExpr(recv) } catch { return true }
+  return k == null || tagOf(k) === K.ANY || tagOf(k) === K.NONE || hasTag(k, K.TYPED)
 }
 
 /** The class functions a member reaches on the receiver's listed layouts: a
@@ -334,6 +381,9 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     return memberFunctions(view, recv, prop, slot, false)
   }
   const reaches = (fns) => { for (const fn of fns) out.callees.add(fn) }
+  const converts = ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)
+  const conversion = () => { out.callees.add(TO_PRIMITIVE.number); out.callees.add(TO_PRIMITIVE.string) }
+  const convert = (e) => { if (converts && e !== undefined && !primitiveKind(view, e)) conversion() }
 
   // A store into `recv`: fresh-local receivers are fresh memory; a nested
   // path below a fresh local (`o.a.b = v`) reaches storage the local's own
@@ -364,13 +414,20 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   const pure = (name, args) => {
     if (runsGetters(name)) return unknownCall('accessor ' + name)
     if (!SCALAR_CALLEES.test(name)) allocates()
-    const i = CALLBACK_ARGS.get(name), a = i == null ? undefined : argList(args)[i]
-    if (a !== undefined) callback(a, name)
+    const i = CALLBACK_ARGS.get(name), list = argList(args)
+    if (i != null && list[i] !== undefined) callback(list[i], name)
+    if (!NON_CONVERTING.test(name)) list.forEach((a, j) => { if (j !== i) convert(a) })
   }
   const call = (callee, args) => {
     if (isName(callee)) {
       const c = ctorOf(callee)
-      if (c !== null) { allocates(); if (knownFunc(c)) out.callees.add(c); else if (!FRESH_CTORS.test(c)) unknownCall('call ' + callee); return }
+      if (c !== null) {
+        allocates()
+        if (knownFunc(c)) out.callees.add(c)
+        else if (!FRESH_CTORS.test(c)) unknownCall('call ' + callee)
+        else if (CONVERTING_CTORS.test(c)) argList(args).forEach(convert)
+        return
+      }
       if (knownFunc(callee)) { out.callees.add(callee); return }
       if (localArrow(callee)) { scanArrow(arrows.get(callee)); return }
       if (PURE_CALLEES.test(callee)) return pure(callee, args)
@@ -388,24 +445,35 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       const fns = memberFunctions(view, recv, method, method, true)
       if (fns) { reaches(fns); return }
       if (accessorFunctions(method, recv, method + ACCESSOR_GET) !== NO_FUNCTIONS) return unknownCall('accessor ' + method)
+      // A method spelling is a builtin proof only on a builtin receiver whose
+      // own property cannot override it. Emission uses the same summary query.
+      const receiverKind = view?.kindOfExpr(recv)
+      const receiverTag = receiverKind == null ? K.ANY : tagOf(receiverKind)
+      if (receiverTag === K.ANY || receiverTag === K.NONE || receiverTag === K.OBJECT || receiverTag === K.HASH ||
+          ctx.summary?.memberMayBeOwnOn(method, valOf(core(receiverKind)))) return unknownCall('method ' + method)
       const hasClosureArg = argList(args).some(isFunctionNode)
       if (CALLBACK_METHODS.has(method)) {
         allocates()
         for (const a of argList(args)) if (callback(a, method)) return
-        if (method === 'sort') store(recv, null, false)
+        if (method === 'sort') { if (!argList(args).length) convert(recv); store(recv, null, false) }
         return
       }
       if (hasClosureArg) return unknownCall('closure argument to ' + method)
       if (GROW_METHODS.has(method)) {
         // `set` on a typed array copies numbers in place; on a Map it stores a
         // value and may relocate the table.
-        if (method === 'set' && typedRecv(recv)) return store(recv, null, false)
+        if (method === 'set' && typedRecv(recv)) { convert(argList(args)[0]); return store(recv, null, false) }
         if (method === 'delete' || method === 'clear' || method === 'pop' || method === 'shift') { if (!freshLocal(recv)) outer(); return }
         allocates()
         return store(recv, null, true)
       }
-      if (WRITE_METHODS.has(method)) return store(recv, method === 'fill' ? argList(args)[0] : null, false)
-      if (READ_METHODS.has(method)) { if (!SCALAR_METHODS.has(method)) allocates(); return }
+      if (WRITE_METHODS.has(method)) { argList(args).forEach(convert); return store(recv, method === 'fill' ? argList(args)[0] : null, false) }
+      if (READ_METHODS.has(method)) {
+        if (!SCALAR_METHODS.has(method)) allocates()
+        argList(args).forEach(convert)
+        if (CONVERTING_RECEIVER_METHODS.has(method)) convert(recv)
+        return
+      }
       return unknownCall('method ' + method)
     }
     return unknownCall('computed callee')
@@ -419,6 +487,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     if (isObjectLiteral(n) || op === '[' || op === '`') allocates()
     if (op === '+' && !scalarKind(view, n)) allocates()   // a concatenation
     if (op === 'yield' || op === 'await') unsafe(op)   // the frame is suspended: what runs meanwhile allocates too
+    if (op === '__tp_call') unknownCall('conversion method')   // an own toString/valueOf closure (emit/to-primitive.js)
+    if (runsConversion(view, n)) conversion()
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {
       const target = n[1], val = n[2]
       if (isName(target)) {
@@ -444,6 +514,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
         const fns = lit ? accessorFunctions(target[2][1], recv, target[2][1] + ACCESSOR_SET) : NO_FUNCTIONS
         if (fns === null) unsafe('accessor ' + target[2][1])
         else { reaches(fns); store(recv, val, !typedRecv(recv) && !(lit && view?.objectSidOfExpr?.(recv) != null)) }
+        if (op === '=' && mayBeTyped(view, recv)) convert(val)   // a typed element store converts its value
       } else if (isArr(target) && target[0] === '{}') {
         unsafe('destructuring assignment')   // targets may be member paths
       } else unsafe('assignment target')

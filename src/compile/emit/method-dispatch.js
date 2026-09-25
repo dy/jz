@@ -4,24 +4,24 @@
  * @module compile/emit/method-dispatch
  */
 
-import { positionArgs } from '../../bridge.js'
+import { positionArgs, storedValue } from '../../bridge.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
-import { K, tagOf, paramOf, isNullable, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../../summary/index.js'
 import { inBoundsArrIdx } from '../../type/canonical-bounds.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
 import { T, isLeaf, isReassigned } from '../../ast.js'
 import { includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, allocPtr, applyBigintRepresentationAction, asF64, asI32, asI64, bigintEraseErr, bigintStrict, block64, boolBoxIR, carrierF64, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
-import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
-import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../representation-plan.js'
+import { representationProgramHasBigint } from '../representation-plan.js'
 import { buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable } from './call-args.js'
-import { emit, emitIdentitySafe } from './dispatch.js'
+import { emit } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { copyReceiverFacts, stringOps } from './shared.js'
 
@@ -41,28 +41,6 @@ const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
 // It must fall through to dynamic dispatch, mirroring COLLECTION_METHODS' arity guard.
 const STR_INDEX_METHODS = new Set(['charCodeAt', 'charAt'])
 
-// THE represented-carrier chokepoint (research.md §Carrier invariant), same
-// definition as bridge.js's exported storedValue — duplicated here (not
-// imported) because emit.js already owns `emit`/`emitIdentitySafe` directly;
-// going through bridge.js would round-trip via ctx.bridge for no reason.
-// Boxed-value slots emit.js constructs directly need the FULL carrierF64
-// treatment `argIR` deliberately skips (coerceArg applies its own
-// valTypeOf===BOOL carrierF64 wrap on top of argIR's result — layering
-// carrierF64 here too would be a second, redundant application; harmless
-// since carrierF64 is idempotent on an already-boxed atom, but this file
-// keeps the two helpers distinct so each call site's contract stays legible).
-export const storedValue = (node) => {
-  if (hasAmbiguousBoolMerge(node)) return emitIdentitySafe(node)
-  const emitted = emit(node)
-  if (valTypeOf(node) === VAL.BOOL) return carrierF64(node, emitted)
-  const action = representationStorageWriteAction(ctx, node)
-  if (bigintStrict() && action === REP_EDGE_BOX)
-    bigintEraseErr('collection', typeof node === 'string' ? node : 'this expression')
-  return action === REP_EDGE_REJECT
-    ? carrierF64(node, emitted)
-    : asF64(applyBigintRepresentationAction(emitted, node, action))
-}
-
 // Leading method-call strategies (chain positions 1–4). Each is *context-free* —
 // it depends only on the parsed call, not on the receiver-type analysis (`vt` /
 // `callMethod`) that emitMethodCall computes below — so they factor out into an
@@ -70,7 +48,7 @@ export const storedValue = (node) => {
 // fall through to the next. (Positions 5–12 thread shared mid-function state and
 // stay inline.) New context-free strategies just push onto LEADING_STRATEGIES.
 
-// 1. SRoA flat object: `o.method(args)` — scanFlatObjects dissolved `o` into
+// 1. SRoA flat object: `o.method(args)` — flatObjectCandidate dissolved `o` into
 // `o#i` field locals and deleted `$o`, so the method closure lives in the field
 // local, not a heap slot. Read it directly and dispatch. Without this, every
 // path below loads from `local.get $o`, which no longer exists (watr then reports
@@ -256,7 +234,8 @@ const LEADING_STRATEGIES = [tryFlatObjectMethod, tryConcatBufCharCodeAt, tryChar
 
 // 5. Boxed object: delegate method to inner value (slot 0)
 function tryBoxedDelegate({ obj, method, callMethod }) {
-  if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
+  if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj) && !ctx.summary?.memberMayBeOwn(method)
+      && !ctx.schema.list[ctx.schema.idOf(obj)]?.includes(method)) {
     const innerVt = repOf(obj)?.val
     const innerEmitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
     if (innerEmitter) {
@@ -432,7 +411,7 @@ function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
 // slice) resolving through one ordered decision, STRING still checked first — a
 // separate fork would have to re-decide that priority itself and could invert it
 // for some method, silently misrouting a real string through the typed/generic arm.
-function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
+function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }) {
   const strKey = `.string:${method}`, genKey = `.${method}`, typedKey = `.typed:${method}`
   // VAL.ARRAY is structurally incompatible with PTR.STRING — no fork needed.
   // Only fork when vt is truly unknown (!vt), not for proven types.
@@ -445,76 +424,29 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     // exclusive paths. Re-emitting the AST minted a whole body (including its
     // nested closures) per arm. Expression arrows stay available for inlining.
     if (parsed.normal.some(arg => Array.isArray(arg) && arg[0] === '=>' && arg[2]?.[0] === '{}')) {
-      parsed = { ...parsed, normal: parsed.normal.map(arg =>
-        Array.isArray(arg) && arg[0] === '=>' && arg[2]?.[0] === '{}' ? emit(arg) : arg) }
+      parsed = { ...parsed, normal: parsed.normal.map(arg => {
+        if (!Array.isArray(arg) || arg[0] !== '=>' || arg[2]?.[0] !== '{}') return arg
+        const name = temp('callback'), value = emit(arg)
+        copyReceiverFacts(arg, name)
+        ctx.summary?.at(ctx.func.current).alias(name, arg)
+        // Keep the source kind visible to builtin overload selection. A bare
+        // WAT construction loses CLOSURE and replace treats it as text.
+        return [',', ['=', name, value], name]
+      }) }
       callMethod = (recv, emitter) => emitMethodCallSpread(recv, emitter, parsed, method)
     }
     const t = `${T}rt${freshId(ctx)}`, tt = `${T}rtt${freshId(ctx)}`
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
-    // A string/typed/array method is only valid on a NaN-boxed pointer. `f64.eq(t,t)`
-    // is true only for a non-NaN value, so guard the dispatch with it. A plain-number
-    // receiver dispatches the `.number:` emitter when the method has one (`x.toString(16)`
-    // on an untyped x — the kernel-L2 ratchet's data-segment corruption root: this used
-    // to yield `undefined`, and `'\\' + undefined.padStart(2,'0')` collapsed every escaped
-    // byte to \\00); methods numbers don't have keep yielding `undefined` (spec:
-    // `(5).indexOf` is undefined) instead of feeding number bits to `__ptr_type` → OOB.
-    // Every NaN-boxed receiver still reaches the ptr-type fork unchanged.
-    const numEmitter = ctx.core.emit[`.number:${method}`]
-    // Only a genuinely mayBeUndefined receiver pays for the
-    // nullish-receiver guard below — `censusMaybeUndefined` (kind.js), the
-    // SAME narrow, load-bearing predicate module/core.js's emitLengthAccess
-    // uses (see its own comment for why "vt is unknown" alone is far too
-    // broad — a real, measured SIZE-geomean regression across the size-
-    // sweep corpus, caught before landing). A plain kind-unresolved-but-
-    // never-null receiver takes the unchanged, unguarded generic arm.
-    const mayBeUndef = censusMaybeUndefined(obj)
-    // Not string (nor, now, typed) either: a real (non-nullish) pointer falls to the
-    // generic (array-shaped) emitter, unchanged. A genuinely nullish receiver here
-    // (e.g. `m.get('missing').slice()`, a STRING-census absent read — no proven vt,
-    // so it reached this fork at all) used to feed the nullish sentinel's bit pattern
-    // to the ARRAY-shaped emitter as if it were a real pointer — an OOB heap read
-    // (`RuntimeError: memory access out of bounds`). Real JS throws TypeError for a
-    // method call on null/undefined; the check is cheap and lands only on this
-    // already-dynamic fork, and only when the receiver is provably mayBeUndefined.
-    // Own-property shadow check (audit finding, agent/typed-decline-b): TYPED
-    // joining this fork widened its firing condition from "strEmitter exists"
-    // (5 method names: at/includes/indexOf/lastIndexOf/slice) to "strEmitter OR
-    // typedEmitter exists" (~20 more — map/filter/fill/forEach/…), so a plain
-    // OBJECT/ARRAY receiver with an OWN property of one of those names now
-    // reaches this fork's generic arm too, where it used to skip straight to
-    // strategy 10 (tryGenericEmitter)'s own shadow check. That check never ran
-    // here (this fork calls genEmitter directly) — confirmed regressed test/
-    // parser-bugs.js's "own prop shadows array builtin on unknown receiver
-    // (d.map)": `d.map(1)` on a `{ map: fn }`-shaped unknown-vt receiver called
-    // the Array builtin instead of `d`'s own `map`. Mirrors tryGenericEmitter's
-    // own probe exactly (same preconditions, same sidecarOverride shape) — a
-    // real (non-string, non-typed) receiver's own property still wins before
-    // the builtin runs. Not needed for the STRING arm (sidecarOverride's own
-    // doc: string property writes drop, so a string can never carry a shadowing
-    // own prop) or the TYPED arm (a PROVEN-typed receiver never shadow-checks
-    // either, via tryStaticDispatch above — same established rule this fork's
-    // TYPED case should stay consistent with, not invent a new one for).
-    // No generic (bare, non-kind-prefixed) emitter exists for this method —
-    // true for any TYPED/STRING-exclusive method with no generic-Array analog
-    // (e.g. `.subarray`: TypedArray-only by spec — kind-traits.js's own
-    // methodValType comment notes "no plain-array analog"). Requiring
-    // genEmitter used to gate this WHOLE runtime ptr-type fork off for such
-    // methods, so a receiver with an unproven `vt` that TURNS OUT to be a
-    // real typed/string value at runtime never reached `.typed:${method}` /
-    // `.string:${method}` at all — it fell through every remaining strategy
-    // to tryDynamicPropCall, which treats the method name as an arbitrary
-    // DYNAMIC OWN-PROPERTY key. That's sound for a genuinely user-defined
-    // closure property, but always wrong for a built-in prototype intrinsic
-    // no runtime value ever stores as an own hash-keyed property (silently
-    // yields `undefined` / an invalid call target instead of the real
-    // result — see .work/archive/literal-method-typed-index-notes.md). Falling back
-    // to the SAME dynamic-property-call / external-call strategies the chain
-    // would try next — rather than requiring a generic emitter to exist —
-    // keeps this fork's STRING/TYPED cases correct while the "genuinely
-    // neither" case degrades exactly like it would have if this fork had
-    // declined outright. Reuses `t` (already holds the once-evaluated
-    // receiver) as the receiver for both, so a non-pure `obj` expression is
-    // never re-evaluated.
+    // Finite numbers have no tag. Boxed primitives are selected below before
+    // any heap-backed builtin can read their payload as an object header.
+    const view = ctx.summary?.at(ctx.func.current), receiverKind = view?.kindOfExpr(obj)
+    // A union has no single valType, but its tag set still excludes families.
+    // Do not emit the typed-array machinery for an Array|String receiver.
+    const mayBe = kind => !receiverKind || hasTag(receiverKind, kind)
+    const numEmitter = mayBe(K.NUMBER) && ctx.core.emit[`.number:${method}`]
+    const mayBeUndef = view?.mayBeNullishExpr(obj) !== false
+    // A runtime tag must select the builtin's receiver family. Other objects
+    // use a property call; primitive payloads must never reach an array helper.
     const materializeBuiltinResult = (kind, value) => {
       value = materializeDeferredBigint(value)
       return methodValType(method, null, kind, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
@@ -528,25 +460,46 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
       ctx.summary?.builtinMemberMayBeOwn(method) ||
       ctx.schema.list.some(schema => schema.includes(method))
     if (canShadowProbe && ownMethodPossible) includeModule('collection')
-    const genericCall = genEmitter
-      ? (canShadowProbe
-          ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
-              (p, o) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed, false, typed(['local.get', `$${o}`], 'f64')),
-              () => materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
-          : materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter)))
-      : (tryDynamicPropCall({ obj: t, method, parsed, vt: null })
-          ?? externalMethodFallback({ obj: t, method, parsed }))
-    const generic = mayBeUndef ? typed(['if', ['result', 'f64'],
-      isNullish(typed(['local.get', `$${t}`], 'f64')),
-      ['then', throwTypeErrorIR()],
-      ['else', genericCall]], 'f64') : genericCall
+    const missing = optional ? undefExpr() : emitNonCallable(undefExpr(), parsed)
+    // Object-prototype emitters accept every non-null receiver, including
+    // primitives. Reuse their registration instead of treating them as arrays.
+    const objectMethod = genEmitter && (ctx.core.emit[`.${VAL.OBJECT}:${method}`] === genEmitter
+      || method === 'toString' || method === 'valueOf')
+    let generic
+    if (genEmitter) {
+      const families = COLLECTION_METHODS.has(method) ? [[PTR.MAP, K.MAP, VAL.MAP], [PTR.SET, K.SET, VAL.SET]]
+        : ['forEach', 'keys', 'values', 'entries'].includes(method) ? [[PTR.ARRAY, K.ARRAY, VAL.ARRAY], [PTR.MAP, K.MAP, VAL.MAP], [PTR.SET, K.SET, VAL.SET]] : [[PTR.ARRAY, K.ARRAY, VAL.ARRAY]]
+      const tags = [], specific = []
+      for (const [tag, kind, val] of families) {
+        if (!mayBe(kind)) continue
+        const emitter = ctx.core.emit[`.${val}:${method}`] ?? genEmitter
+        if (emitter === genEmitter) tags.push(tag)
+        else specific.push([tag, materializeBuiltinResult(val, callMethod(t, emitter))])
+      }
+      let inherited = missing
+      if (objectMethod || tags.length) {
+        const builtin = materializeBuiltinResult(VAL.ARRAY, callMethod(t, genEmitter))
+        const accepts = tags.map(tag => ['i32.eq', ['local.get', `$${tt}`], ['i32.const', tag]])
+          .reduce((a, b) => ['i32.or', a, b], ['i32.const', 0])
+        inherited = objectMethod ? builtin
+          : typed(['if', ['result', 'f64'], accepts, ['then', builtin], ['else', missing]], 'f64')
+      }
+      inherited = dispatchByPtrType(tt, specific, inherited)
+      // One override probe serves both builtin and plain-object receivers.
+      // No probe is needed when the summary proves this name is never stored.
+      generic = canShadowProbe && ownMethodPossible
+        ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
+            (p, o) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed, false, typed(['local.get', `$${o}`], 'f64')),
+            () => inherited)
+        : inherited
+    } else generic = tryDynamicPropCall({ obj: t, method, parsed, vt: null, optional }) ?? missing
     const cases = []
-    if (strEmitter) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
-    if (typedEmitter) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
+    if (strEmitter && mayBe(K.STRING)) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
+    if (typedEmitter && mayBe(K.TYPED)) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
     // A boxed BigInt receiver (`x.toString(16)` on a carrier the program
     // could not kind) takes the `.bigint:` emitter; `t` holds the box, so the
     // emitter's readI64 unboxes it (ir/bigint.js isTaggedLocal).
-    const bigintEmitter = representationProgramHasBigint(ctx) && ctx.core.emit[`.bigint:${method}`]
+    const bigintEmitter = mayBe(K.BIGINT) && representationProgramHasBigint(ctx) && ctx.core.emit[`.bigint:${method}`]
     if (bigintEmitter) {
       (ctx.func.taggedLocals ??= new Set()).add(t)
       cases.push([PTR.BIGINT, materializeBuiltinResult(VAL.BIGINT, callMethod(t, bigintEmitter))])
@@ -556,15 +509,23 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     // below (the ptr-type local this fork uses for its own STRING/TYPED
     // dispatch), so pass it through instead of paying for a second
     // `$__ptr_type` call.
-    const fallback = dateAuxFallback(t, method, callMethod, generic, tt)
-    return block64(
+    const fallback = mayBe(K.DATE) ? dateAuxFallback(t, method, callMethod, generic, tt) : generic
+    const primitive = numEmitter ? asF64(callMethod(t, numEmitter)) : objectMethod ? generic : missing
+    if (mayBe(K.NUMBER) || mayBe(K.BOOL) || mayBeUndef) cases.push([PTR.ATOM, primitive])
+    if (!bigintEmitter && mayBe(K.BIGINT)) cases.push([PTR.BIGINT, objectMethod ? generic : missing])
+    let boxed = dispatchByPtrType(tt, cases, fallback)
+    if (mayBeUndef) boxed = typed(['if', ['result', 'f64'],
+      isNullish(typed(['local.get', `$${t}`], 'f64')),
+      ['then', throwTypeErrorIR('read')], ['else', boxed]], 'f64')
+    // Each mutually exclusive use owns its IR, including shared callback setup.
+    const tagged = block64(
+      ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], boxed)
+    return typed(cloneIR(block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
-      ['if', ['result', 'f64'],
+      mayBe(K.NUMBER) ? ['if', ['result', 'f64'],
         ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
-        ['then', numEmitter ? asF64(callMethod(t, numEmitter)) : undefExpr()],
-        ['else', block64(
-          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-          dispatchByPtrType(tt, cases, fallback))]])
+        ['then', primitive],
+        ['else', tagged]] : tagged)), 'f64')
   }
 }
 
@@ -751,7 +712,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
 // ctx.module.demanded doc). `ctx.closure.call` itself stays the join's second
 // half: eager preload means it's callable even when demanded is empty, so the
 // IR-building code below is unaffected once this gate lets a real case through.
-function tryDynamicPropCall({ obj, method, parsed, vt, callMethod }) {
+function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = false }) {
   if (ctx.closure.call && ctx.module.demanded.has('fn')) {
     // A proven closure's unshadowed call is an invocation, not a property
     // dispatch. This includes protocol methods narrowed by typeof guards.
@@ -851,7 +812,8 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod }) {
         : []),
       ...(borrow ? setup : []),
       ['local.set', `$${propTmp}`, propRead],
-      ...(borrow ? [] : setup), dispatch)
+      ...(optional ? [['if', ['result', 'f64'], isNullish(typed(['local.get', `$${propTmp}`], 'f64')),
+        ['then', undefExpr()], ['else', block64(...(borrow ? [] : setup), dispatch)]]] : [...(borrow ? [] : setup), dispatch]))
   }
 }
 
@@ -964,7 +926,7 @@ function tryClassMethodCall(c) {
  *    11. Dynamic property closure call (with PTR.EXTERNAL fallback if non-wasi)
  *    12. External method fallback via __ext_call (or undefined under wasi)
  */
-export function emitMethodCall(callee, parsed, callArgs) {
+export function emitMethodCall(callee, parsed, callArgs, optional = false) {
   const [, obj, method] = callee
 
   // Strategies 1–4 (context-free, order-sensitive, first match wins).
@@ -991,7 +953,7 @@ export function emitMethodCall(callee, parsed, callArgs) {
   // Method-emitter shim — threads parsed/method through the shared dispatcher so
   // strategies keep the simple `callMethod(receiver, emitter)` shape.
   const c = {
-    obj, method, parsed, vt,
+    obj, method, parsed, vt, optional,
     callMethod: (objArg, methodEmitter) => {
       // A known kind does not prove presence. GetV rejects a missing receiver
       // before argument evaluation, for qualified and generic builtin handlers.

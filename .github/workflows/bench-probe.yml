@@ -4,7 +4,8 @@ name: bench-probe
 # a case's lead differs from the reference M4 numbers (wordcount/immutable/
 # shapes flipped to losses on the 07-14 EPYC snapshot while dispatch/strbuild
 # kept 2.5× leads on the same run — noise degrades everything, µarch picks
-# favorites). Prints per-round tables + cpuinfo; not a gate, writes nothing.
+# favorites). Prints paired measurements and uploads the JSON with machine metadata.
+# Diagnostic evidence only; this workflow does not update committed results.
 on:
   workflow_dispatch:
     inputs:
@@ -21,15 +22,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: npm install
       - name: machine
         run: |
           grep -m1 "model name" /proc/cpuinfo || true
           nproc; free -m | head -2
       - name: probe rounds
+        env:
+          CASES: ${{ inputs.cases }}
+          REPEATS: ${{ inputs.repeats }}
         run: |
-          for i in $(seq 1 ${{ inputs.repeats }}); do
-            echo "════ round $i ════"
-            node bench/bench.mjs --cases=${{ inputs.cases }} --targets=v8,jz 2>&1 | grep -E "\[run\]" || true
-          done
+          node bench/bench.mjs --cases="$CASES" --targets=jz,v8 --paired="$REPEATS" --json="$RUNNER_TEMP/probe.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-probe
+          path: ${{ runner.temp }}/probe.json
+          if-no-files-found: error

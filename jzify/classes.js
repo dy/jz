@@ -3,7 +3,7 @@
  * @module jzify/classes
  */
 
-import { extractParams as paramList, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T } from '../src/ast.js'
+import { extractParams, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T } from '../src/ast.js'
 import { ctx, err, warn } from '../src/ctx.js'
 
 export function createClassLowering({ transform, names, JC, constStrings, atModuleScope }) {
@@ -266,10 +266,10 @@ const recordAccessor = (key, dynamic) => {
   if (dynamic) (ctx.transform.dynamicAccessorNames ??= new Set()).add(key)
 }
 // [kind, key, params, body] → [slot, params, body] (a method entry)
-function accessorMethod(it, constStrings) {
+function accessorMethod(it, constStrings, dynamic = false) {
   const key = typeof it[1] === 'string' ? it[1] : constStringKey(it[1], constStrings)
   if (key == null) jzifyError(JC.computedMember)
-  recordAccessor(key, false)
+  recordAccessor(key, dynamic)
   return [accessorSlot(it[0], key), it[2] ?? null, it[3]]
 }
 
@@ -365,7 +365,7 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   const superVars = new Map([...superMethods].map(m => [m, base?.methods.get(m)]))
   for (const [m, fn] of superVars) if (!fn) jzifyError(`super.${m} is not available on the base class`)
   const rewrite = (node) => renameThis(rewriteSuperMethodCalls(node, superVars, self), self)
-  const selfList = (params) => { const list = paramList(arrowParams(params ?? null)); return list.length ? [',', self, ...list] : self }
+  const selfList = (params) => { const list = extractParams(arrowParams(params ?? null)); return list.length ? [',', self, ...list] : self }
   const withSelf = (params) => ['()', selfList(params)]
   // A method's function of the receiver, of the method's kind (an async or generator method as such).
   const fnOf = (kind, mparams, body) => transform(kind === 'gen' ? ['function*', null, selfList(mparams), body]
@@ -374,7 +374,7 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   // The methods, each a function of the receiver, and a binder for a method read as a value.
   for (const [mname, mparams, mbody, kind] of methods) {
     hoists.push(['let', ['=', methodFn(cls, mname), fnOf(kind, mparams, block(rewrite(mbody)))]])
-    const plist = paramList(arrowParams(mparams ?? null))
+    const plist = extractParams(arrowParams(mparams ?? null))
     const simple = plist.every(p => typeof p === 'string')
     const args = simple ? plist.map((_, i) => names.classSuperArg(i)) : [['...', names.classSuperArg(0)]]
     hoists.push(['let', ['=', methodFn(cls, mname) + BIND,
@@ -384,7 +384,7 @@ function lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, static
   // The initializer: the base's first, then the field initializers, then the constructor body.
   const split = base ? splitCtorSuper(ctorBody) : { args: null, body: ctorBody }
   const forwarded = ctorParams == null && base ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i)) : null
-  const ctorList = forwarded ?? (ctorParams == null ? [] : paramList(ctorParams))
+  const ctorList = forwarded ?? (ctorParams == null ? [] : extractParams(ctorParams))
   const initStmts = []
   if (base) {
     // `super(a, b)` passes its arguments; a constructor without one, or none, forwards its own
@@ -561,7 +561,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     const defaultArgs = ctorParams == null
       ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => names.classSuperArg(i))
       : null
-    const baseArgs = split.args ?? (defaultArgs ? [defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]] : paramList(ctorParams))
+    const baseArgs = split.args ?? (defaultArgs ? [defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]] : extractParams(ctorParams))
     stmts.push(['let', ['=', self, ['()', baseRef, ...baseArgs.map(transform)]]])
     const superMethodVars = new Map()
     let superIdx = 0
@@ -572,8 +572,11 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     }
     for (const [fname, init] of fields)
       stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars), self)) : UNDEF])
-    for (const [mname, mparams, mbody, kind] of methods)
+    for (const [mname, mparams, mbody, kind] of methods) {
+      if (mname.endsWith(ACCESSOR_GET) || mname.endsWith(ACCESSOR_SET)) recordAccessor(mname.slice(0, -ACCESSOR_GET.length), true)
       stmts.push(['=', ['.', self, mname], methodValue(mparams, rewriteSuperMethodCalls(mbody, superMethodVars), kind, self)])
+      stmts.push(['()', '__hide_member', [',', self, ['str', mname]]])
+    }
     ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars)
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {

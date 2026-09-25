@@ -19,6 +19,23 @@ const wat = (code) => jz.compile(code, { wat: true, optimize: { watr: false } })
 // The export thunk's boolean box: a select of the two atoms (boolBoxIR).
 const boxesResult = (code) => /\(func \$f\$exp[\s\S]*?\(select\s+\(f64\.const nan:0x7FF8000500000000\)\s+\(f64\.const nan:0x7FF8000400000000\)/.test(wat(code))
 
+test('bool identity: nullable accumulator retains boolean stores', () => {
+  for (const init of ['null', 'undefined']) {
+    const src = `export function f(n, fail) {
+      let value = ${init};
+      function update(i) { value = value !== false && i !== fail }
+      for (let i = 0; i < n; i++) update(i)
+      return [value, typeof value, value === true, value === false, value == null]
+    }`
+    const expected = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const f = run(src, {optimize}).f
+      for (const [n, fail] of [[0, -1], [3, -1], [3, -1], [3, 1], [0, 0], [3, -1]])
+        is(f(n, fail), expected(n, fail), `${init}: O${optimize}, n=${n}, fail=${fail}`)
+    }
+  }
+})
+
 // ============================================
 // Surface as a real boolean at the host boundary
 // ============================================

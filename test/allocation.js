@@ -5,9 +5,11 @@
 // runtime's ABI or in a closure's prologue is a leak the self-compile pays
 // on its own hot paths (a query view, a dynamic method call).
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { levels } from './_matrix.js'
+import { firstRefKind, MUTATE_OPS, extractParams, classifyParam, collectParamName, collectParamNames } from '../src/ast.js'
+import { findFreeVars } from '../src/compile/analyze-scans.js'
 
 const measure = (body, calls = 1000, warm = 10) => {
   const src = `${body}
@@ -21,6 +23,140 @@ export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0;
   return out
 }
 const zero = (out, what) => { for (const level in out) is(out[level], 0, `${what} allocates ${out[level]} bytes per call at O${level}`) }
+
+test('allocation: short numeric strings reclaim formatter scratch', () => {
+  zero(measure(`const values = new Float64Array([0, -0, 123.5, -12.5, 123456])
+    const run = i => String(values[i % values.length]).length`), 'short decimal formatting')
+  zero(measure(`const run = i => String((i % 10000) | 0).length`), 'signed-i32 formatting')
+  zero(measure(`const run = i => BigInt(i % 10000).toString(16).length`), 'short BigInt radix formatting')
+  zero(measure(`const run = i => (i % 10000).toString(16).length`), 'short Number radix formatting')
+})
+
+test('allocation: long numeric strings retain only their final payload', () => {
+  for (const [expr, text] of [
+    ['String(1234567 + (i & 1))', '1234567'],
+    ['String((-2147483648 + (i & 1)) | 0)', '-2147483648'],
+    ['BigInt(123456789 + (i & 1)).toString(16)', '75bcd15'],
+    ['(123456789 + (i & 1)).toString(16)', '75bcd15'],
+  ]) {
+    const bytes = (4 + text.length * 2 + 7) & ~7
+    const out = measure(`let saved; export const read = () => saved
+      const run = i => { saved = ${expr}; return saved.length }`, 40, 2)
+    for (const level in out) is(out[level], bytes, `O${level}: formatter retains only the aligned string payload`)
+  }
+})
+
+test('allocation: skipped closure branches do not allocate captured cells', () => {
+  const source = `let kept = () => -1
+    function choose(flag, x) {
+      if (flag) { let n = x; const next = () => ++n; kept = next; return next() + next() }
+      return x
+    }
+    export function probe(flag, count) {
+      const start = __heap_mark(); let total = 0
+      for (let i = 0; i < count; i++) total += choose(flag, i)
+      return [__heap_mark() - start, total]
+    }
+    export function read() { return kept() }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const ex = jz(source, { optimize }).exports
+    is(ex.probe(false, 0).join(','), '0,0', 'zero work allocates nothing')
+    is(ex.probe(false, 40).join(','), '0,780', 'a skipped branch leaves the heap untouched')
+    is(ex.read(), -1, 'a skipped branch does not create its closure')
+    for (const count of [1, 1, 4, 0, 1]) {
+      is(ex.probe(true, count)[1], count * (count - 1) + count * 3, 'taken calls share each captured counter')
+      if (count) is(ex.read(), count + 2, 'the last closure keeps its cell after returning')
+      is(ex.probe(false, 40).join(','), '0,780', 'taken → skipped keeps allocation lazy')
+    }
+  }
+})
+
+test('allocation: conditional reference scans do not copy each nested node', () => {
+  for (const [node, expected] of [
+    [null, null], [[], null], [[';'], null],
+    [['=', 'x', 1], 'write'], [['=', 'x', ['+', 'x', 1]], 'read'],
+    [['if', 'c', ['=', 'x', 1]], 'read'],
+    [['if', 'c', ['=', 'x', 1], ['=', 'x', 2]], 'write'],
+    [['=>', 'y', ['=', 'x', 1]], 'read'],
+  ]) is(firstRefKind(node, 'x'), expected, 'evaluation order and conditional writes keep their verdict')
+  let deep = 'x'
+  for (let i = 0; i < 16; i++) deep = ['+', 1, deep]
+  const source = `const MUTATE_OPS = new Set(${JSON.stringify([...MUTATE_OPS])})
+    ${firstRefKind.toString()}
+    const shallow = ['if', 'c', 'x'], deep = ${JSON.stringify(['if', 'c', deep])}
+    export function probe(d, n) {
+      const a = d ? deep : shallow, start = __heap_mark()
+      let reads = 0
+      for (let i = 0; i < n; i++) reads += firstRefKind(a, 'x') === 'read' ? 1 : 0
+      return reads === n ? __heap_mark() - start : -1
+    }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const ex = jz(source, { optimize }).exports
+    is(ex.probe(0, 0), 0, 'a zero-work scan allocates nothing')
+    const shallow = ex.probe(0, 40)
+    is(shallow >= 0, true, 'every scan finds the conditional read')
+    for (const depth of [1, 1, 0, 1])
+      is(ex.probe(depth, 40), shallow, `O${optimize}: nesting adds no temporary arrays`)
+  }
+})
+
+test('allocation: free-variable scans do not copy declaration lists', () => {
+  const source = `const PARAM_DEFAULT = 2
+    ${extractParams.toString()}
+    ${classifyParam.toString()}
+    const collectParamName = ${collectParamName.toString()}
+    ${collectParamNames.toString()}
+    const ctx = { func: { locals: new Map(), current: { params: [] } } }
+    const repOf = () => null
+    ${findFreeVars.toString()}
+    const nodes = [[';', 'a', 'b'], ['const', 'a', 'b'],
+      ['for', [';', 'a', 'b'], null, null, null], ['for', ['let', 'a', 'b'], null, null, null]]
+    const bound = new Set(['a', 'b']), scope = new Set(['a', 'b']), free = []
+    export function probe(k, n, explicit) {
+      const start = __heap_mark()
+      for (let i = 0; i < n; i++) findFreeVars(nodes[k], bound, free, explicit ? scope : null)
+      return free.length ? -1 : __heap_mark() - start
+    }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const ex = jz(source, { optimize }).exports
+    for (const explicit of [0, 1]) {
+      is(ex.probe(1, 0, explicit), 0, 'zero scans allocate nothing')
+      for (const [decl, control] of [[1, 0], [1, 0], [3, 2], [1, 0]])
+        is(ex.probe(decl, 40, explicit), ex.probe(control, 40, explicit),
+          `O${optimize}: declarations add no allocation to the same tree walk`)
+    }
+  }
+  const scope = new Set(['outer', 'last']), bound = new Set(), free = []
+  findFreeVars(['const', ['=', 'a', 'outer'], ['=', 'b', 'last']], bound, free, scope)
+  is(free.join(','), 'outer,last', 'all initializers retain their free references')
+  is([...bound].join(','), 'a,b', 'all declarations bind, including the last one')
+  is([...scope].join(','), 'outer,last,a,b', 'an explicit scope receives every declaration')
+  free.length = 0
+  findFreeVars(['for', ['let', ['=', 'i', 'outer'], ['=', 'j', 'last']], null, null, ['+', 'i', 'j']], bound, free, scope)
+  is(free.join(','), 'outer,last', 'loop declarations bind before the body is scanned')
+  findFreeVars(null, bound, free, scope)
+  findFreeVars([], bound, free, scope)
+  is(free.join(','), 'outer,last', 'empty input preserves the discovered references')
+})
+
+test('allocation: seeded collections apply their capacity floor without adding a reserve', () => {
+  const src = `let m = new Map(), s = new Set()
+    export function map(n) { const a = []; for (let i = 0; i < n; i++) a.push([i, i + 1]); const h = __heap_mark(); m = new Map(a); return __heap_mark() - h }
+    export function set(n) { const a = []; for (let i = 0; i < n; i++) a.push(i); const h = __heap_mark(); s = new Set(a); return __heap_mark() - h }
+    export function copy() { const h = __heap_mark(); m = new Map(m); return __heap_mark() - h }
+    export function read() { return JSON.stringify([[...m], [...s]]) }`
+  for (const level of levels(0, 1, 2, 3)) for (const floor of [2, 8]) for (const compact of [false, true]) {
+    const ex = jz(src, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
+    for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 16, 0, 4, 4]) {
+      const cap = Math.max(floor, 2 ** Math.ceil(Math.log2(Math.max(1, n * 2))))
+      const mapBytes = 16 + cap * (compact ? 24 : 28)
+      is(ex.map(n), mapBytes, `Map(${n}), floor ${floor}, compact ${compact}, O${level}`)
+      is(ex.set(n), 16 + cap * (compact ? 16 : 20), `Set(${n}), floor ${floor}, compact ${compact}, O${level}`)
+      is(ex.copy(), mapBytes, 'a dense copy allocates only its table')
+      is(ex.read(), JSON.stringify([Array.from({ length: n }, (_, i) => [i, i + 1]), Array.from({ length: n }, (_, i) => i)]), 'contents and insertion order survive copying and repeated construction')
+    }
+  }
+})
 
 test('allocation: closed destructuring records are reused', () => {
   zero(measure(`const a = [3, 5]
@@ -117,4 +253,41 @@ test('allocation: a queue reuses the head its shifts vacate', () => {
   // past the one doubling that settles the capacity at twice the length.
   zero(measure(`const a = []; for (let k = 0; k < 1000; k++) a.push(k)
 const run = (i) => { const v = a.shift(); a.push(v); return v }`, 3000, 1200), 'a shift then a push')
+})
+
+test('allocation: private string builders grow linearly', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { bytes, build } = jz(`
+      export function bytes(n) {
+        const h = __heap_mark(); let s = '';
+        for (let i = 0; i < n; i++) s += 'ab';
+        return __heap_mark() - h + (s.length === n * 2 ? 0 : 1000000)
+      }
+      export function build(n) { let s = ''; for (let i = 0; i < n; i++) s += 'ab'; return s }
+    `, { optimize }).exports
+    is(bytes(0), 0, `empty builder O${optimize}`)
+    for (const n of [100, 100, 1000]) {
+      ok(bytes(n) <= n * 4 + 32, `O${optimize}, ${n} appends stay within output bytes plus one header`)
+      is(build(n), 'ab'.repeat(n), `terminal return O${optimize}, n=${n}`)
+    }
+  }
+})
+
+test('allocation: copied concat results do not retain builder storage', () => {
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { run } = jz(`export function run(n) {
+      const h = __heap_mark(); let s = '';
+      for (let i = 0; i < n; i++) s += 'abcdefgh';
+      const copy = s + '!';
+      for (let i = 0; i < 8; i++) s += 'z';
+      return [__heap_mark() - h, s.length, copy.length, copy.charCodeAt(copy.length - 1)]
+    }`, { optimize }).exports
+    for (const n of [0, 100, 100, 1000]) {
+      const [bytes, len, copied, end] = run(n)
+      // Size mode merges the mutable/fresh helpers when both are needed.
+      // Every tier preserves text; O0–O3 also keep linear builder allocation.
+      if (optimize !== 'size') ok(bytes < n * 64 + 1024, `O${optimize}: copies and appends use linear storage`)
+      is([len, copied, end], [n * 8 + 8, n * 8 + 1, 33], `O${optimize}: the copied result stays unchanged`)
+    }
+  }
 })

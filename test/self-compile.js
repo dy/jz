@@ -16,7 +16,7 @@ import test from 'tst'
 import { ok, is, throws } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
 import { readMarks, phaseDeltas } from '../scripts/kernel-marks.mjs'
-import jz from '../index.js'   // native compiler — the correctness reference for the kernel's output
+import jz, { compile } from '../index.js'   // native compiler — the correctness reference for the kernel's output
 import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B } from './_optimizer-kernels.js'
 import { selfBytes } from './_self-build.js'
 
@@ -47,6 +47,8 @@ test('self-compile: build a fresh compiler', () => {
 // [label, source, expected-main()-result]. Picked to cover the major
 // emit paths (arith, calls, loops, strings, arrays, objects, closures).
 const SAMPLES = [
+  ['caught-typed-store-addresses', `function f(fail){const original=new Float64Array([3]),replacement=new Float64Array([5]);let a=[original,null][0],events=0;function rhs(){events=events*10+2;if(fail)throw new RangeError('rhs');return 7}try{const assigned=a[(events=events*10+1,a=replacement,0)]=rhs();return [assigned,events,original[0],replacement[0]]}catch(e){return [e.name,events,original[0],replacement[0]]}}export function main(){return [f(0),f(1),f(1),f(0)]}`, [[7,12,7,5],['RangeError',12,3,5],['RangeError',12,3,5],[7,12,7,5]]],
+  ['conditional-capture-cells', `let kept=()=>-1;function f(flag,x){if(flag){let n=x;const next=()=>++n;kept=next;return next()+next()}return x}export function main(){return [f(false,3),kept(),f(true,3),kept(),f(false,9),kept(),f(true,1),kept()]}`, [3,-1,9,6,9,7,5,4]],
   ['nested-cursor-declaration', `function scan(a,indices,n){let s=0;for(let i=0;i<n;i++){let t=0;while(t<2){const c=indices[t];s+=a[c];t++}}return s}function run(n,last){return scan(new Float64Array([7]),new Int32Array([0,last]),n)}export function main(){return [run(0,3),run(1,0),run(1,0),run(1,3),run(2,-1)]}`, [0,14,14,NaN,NaN]],
   ['growing-string-dictionary', `function count(n){const keys=['first'],d={};for(let i=0;i<n;i++){const k='word-'+i;keys.push(k);d[k]=(d[k]|0)+1}let s=0;for(let i=0;i<keys.length;i++)s+=d[keys[i]]|0;return s}export function main(){return [count(0),count(17),count(17),count(80)]}`, [0,17,17,80]],
   ['bounded-fractional-recurrence', `function f(flag){let p=0.25,s=0;for(let i=0;i<63;i++){s+=p|0;p+=0.5}return [s,p,flag?(p|0):9]}export function main(){return [f(0),f(1),f(0)]}`, [[961,31.75,9],[961,31.75,31],[961,31.75,9]]],
@@ -179,6 +181,48 @@ test('self-compile: schema index capacities and backward offsets retain all i64 
   }
 })
 
+test('self-compile: runtime exports tied with user functions keep native byte order', () => {
+  const sources = [
+    `export function props(k){const o={a:1,b:2,c:3};o.d=4;let s=0;for(const key in o)s+=o[key];return s+(k in o?100:0)}`,
+    `export function props(k){return k==='b'?7:9}`,
+  ]
+  for (const level of [1, 2]) {
+    const s = instantiate(selfBytes(), { memory: 8192 })
+    for (const i of [0, 0, 1, 0]) {
+      const src = sources[i], native = jz.compile(src, { optimize: level })
+      const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level })))
+      const bytes = new Uint8Array(s.memory.read(out))
+      ok(bytes.length === native.length && bytes.every((v, j) => v === native[j]), `O${level}: source ${i} matches native`)
+      const { props } = instantiate(bytes).exports
+      is(props('b'), i ? 7 : 110); is(props('z'), i ? 9 : 10)
+      s.instance.exports._clear()
+    }
+  }
+})
+
+test('self-compile: lazy arithmetic survives repeated speed and baseline compiles', () => {
+  const s = instantiate(selfBytes(), { memory: 8192 })
+  const src = `export const f = (x, a, b) => {
+    const v = (((((x + 1) * x + 2) * x + 3) * x + 4) * x + 5) * x + 6
+    const z = a > 0 ? v : b > 0 ? 0 - v : 7
+    return z * z
+  }`
+  const native = new Function(src.replace('export ', '') + '; return f')()
+  let first
+  for (const lazySelect of [true, true, false, true]) {
+    const opt = s.memory.String(JSON.stringify({ level: 'speed', watr: { lazySelect } }))
+    const out = s.exports.default(s.memory.String(src), 0, opt)
+    const bytes = new Uint8Array(s.memory.read(out)).slice()
+    if (!first) first = bytes
+    else if (lazySelect) is(bytes, first, 'reused compiler produces identical optimized bytes')
+    else ok(bytes.length < first.length, 'the speed-only duplication ran in the kernel')
+    const f = instantiate(bytes).exports.f
+    for (const x of [0, -0, 0.2, -0.7, Infinity, NaN])
+      for (const [a, b] of [[1, 0], [0, 1], [0, 0]])
+        ok(Object.is(f(x, a, b), native(x, a, b)), `lazy=${lazySelect}: f(${x}, ${a}, ${b})`)
+  }
+})
+
 // The SAMPLES above round-trip at optimize:false (compileViaSelf passes no optJSON),
 // so they never reach watr's single-call inliner. This pins the LEVEL-2 inliner path:
 // inlineOnce grew large enough that the self-compile kernel mis-compiled its `pinned` Set
@@ -290,9 +334,8 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
 // Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,
 // and pin byte-parity against a fresh instance compiling the same programs. Exercises
 // the caches that used to dangle across a warm `_clear` (all now reset/copy-on-tag
-// per compile): DOLLAR + stdlibParseCache (src/ir.js, src/wat/assemble.js — swap in a
-// fresh Map, not `.clear()`, since the old backing table is itself an arena
-// allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
+// per compile): DOLLAR (src/ir.js, with a new Map because the old backing
+// table is itself an arena allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
 // program-facts}.js — same fresh-instance-not-clear fix), the runtime __dyn_props /
 // __dyn_get_cache_off / __dyn_get_cache_props globals (module/core.js __clear, reset
 // alongside __heap), NULL_IR's missing `.slice()` before `typed()` (src/ir.js —
@@ -427,6 +470,22 @@ test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-acc
 // point starts from zero, and a failed call leaves the marks of the phases that
 // finished. test/kernel-marks.js drives the recorder on its own for the
 // allocation, overflow and rewind claims.
+test('self-compile: long literal decoding uses linear storage and preserves text', () => {
+  const s = getSelf(), long = 'λ🙂'.repeat(4000)
+  const cases = [['""', ''], [JSON.stringify(long), long],
+    [JSON.stringify(long), long], ['`' + long + '`', long],
+    ['"' + '\\u0061'.repeat(2000) + '"', 'a'.repeat(2000)], ['"other"', 'other']]
+  for (const [literal, expected] of cases) {
+    const source = `export function main(){return ${literal}}`
+    const before = s.instance.exports.__heap.value >>> 0
+    const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
+    const bytes = new Uint8Array(s.memory.read(out))
+    is(instantiate(bytes).exports.main(), expected, 'the decoded literal preserves every UTF-16 code unit')
+    ok(readMarks(s).heapFront - before < 2 * 1024 * 1024 + source.length * 16,
+      'literal decoding adds source-sized storage, not every growing prefix')
+  }
+})
+
 test('self-compile: heap marks name their phases, reset per call, and stay readable after a failed compile', () => {
   const s = getSelf()
   const src = 'let inc = x => x + 1; export let main = () => inc(10)'
@@ -480,7 +539,7 @@ test('self-compile: heap marks on empty work, an early failure, the other entry 
   s.exports.compileWat(s.memory.String(src), 0, s.memory.String('2'))
   const wat = readMarks(s)
   is(wat.phases.map(p => p.name).join(' '), whole.phases.map(p => p.name).join(' '), 'compileWat records the compile phases afresh')
-  is(wat.heapEmit, 0, 'compileWat marks no stage: it prints the IR')
+  ok(wat.heapEmit > 0 && wat.heapCheckpoint > 0, 'both output formats share the stages and checkpoint')
   s.exports.compileWarnings(s.memory.String(src), 0, s.memory.String('2'))
   is(readMarks(s).phasesDone, whole.phasesDone, 'compileWarnings the same')
   s.exports.compileDiag(s.memory.String(src), 0, s.memory.String('2'))
@@ -505,4 +564,21 @@ test('kernel marks: the reader reports the phases past the record capacity, not 
   const m = readMarks(fake)
   is(m.phases.length, 256); is(m.phasesDropped, 44); is(m.phases[255].name, 'p255'); is(m.phasesDone, 300)
   is(phaseDeltas(m).reduce((t, d) => t + d.bytes, 0), 255)
+})
+
+
+test('self-compile: WAT output shares checkpoints and bounds wide-node printer allocation', () => {
+  const s = instantiate(selfBytes(), {memory: 8192})
+  const source = 'export let f = x => x ** 2.4'
+  const options = {crPow: true}
+  const expected = compile(source, {wat: true, optimize: options})
+  for (const code of [source, source, 'export let f = () => 7', '']) {
+    s.exports._clear()
+    const out = s.memory.read(s.exports.compileWat(s.memory.String(code), 0, s.memory.String(JSON.stringify(options))))
+    const marks = readMarks(s)
+    ok(out === (code === source ? expected : compile(code, {wat: true, optimize: options})), 'native and kernel WAT are identical')
+    ok(marks.heapCheckpoint > 0, 'the printer consumes the checkpointed module')
+    const allocated = (s.exports.__heap.value >>> 0) - marks.heapCheckpoint
+    ok(allocated < 256 * 1024 * 1024, `printer allocation ${allocated} bytes stays below 256 MiB`)
+  }
 })

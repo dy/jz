@@ -51,7 +51,6 @@ export function createActiveFunction({
     i32HashLocals: null,
     leanHashDomains: null,
     preboxed: null,
-    preboxAt: null,
     preboxInits: null,
 
     stack: [],
@@ -149,7 +148,7 @@ export function isInactiveFunction(ctx) {
     emptyMap(frame.boxed) && unallocated(frame.capturedNames) && unallocated(frame.identityShadow) &&
     unallocated(frame.cellTypes) && unallocated(frame.flatObjects) &&
     unallocated(frame.sliceViews) && unallocated(frame.arrayViews) && frame.restView === null && unallocated(frame.leanHashLocals) && unallocated(frame.i32HashLocals) &&
-    unallocated(frame.leanHashDomains) && unallocated(frame.preboxed) && frame.preboxAt === null && frame.preboxInits === null &&
+    unallocated(frame.leanHashDomains) && unallocated(frame.preboxed) && frame.preboxInits === null &&
     Array.isArray(frame.stack) && frame.stack.length === 0 && frame.inTry === false &&
     frame.finallyStack === null && frame.pendingLabel === null && unallocated(frame.refinements) &&
     frame.flowValBlocked === null && frame.repsFrozen === false && unallocated(frame.p1Predicted) &&

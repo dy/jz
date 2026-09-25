@@ -1195,8 +1195,7 @@ export default (ctx) => {
 
   // Always-fresh tail: allocate a new buffer and copy both operands. Shared by the
   // bump-extend concats (reached when `a` is NOT heap-top) and the `_fresh` variants
-  // (which never bump-extend at all — emit routes a NON-self-accumulating `t = s + x`
-  // here so it can't mutate the live `s` the way the heap-top extend would).
+  // (used whenever the caller cannot prove that `a` has no live aliases).
   // [hash=0 u32][len u32][bytes] + STR_HCACHE_BIT: __str_hash fills the hash cell on
   // first hash so repeated keying of a built string skips the unit-FNV walk.
   const allocCopyTail = `
@@ -1277,8 +1276,8 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${STR_HCACHE_BIT}) (local.get $off)))`)
 
   // __str_concat / __str_concat_raw bump-EXTEND `a` in place when it is the heap-top own string
-  // (the O(N) accumulator path). Emit calls these ONLY when the source is a self-accumulation
-  // `x = x + …` (so the mutated `a` is dead-after-reassign) or when `a` is a provably-fresh
+  // (the O(N) accumulator path). Emit calls these ONLY for a proven private
+  // string builder, or when `a` is a provably-fresh
   // module-internal temporary; a plain `t = s + x` over a live `s` routes to the _fresh twins.
   wat('__str_concat', `(func $__str_concat (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
@@ -1310,8 +1309,8 @@ export default (ctx) => {
     ${concatFast}${allocCopyTail}`)
 
   // Non-mutating twins: same SSO-pair fast path, but NEVER bump-extend — always alloc+copy a fresh
-  // buffer, leaving `a` untouched. The default for emit's user-level `+` (any `t = s + x` where the
-  // result is not assigned straight back to `s`), so string immutability holds for live operands.
+  // buffer, leaving `a` untouched. The default for user-level `+`, including
+  // self-assignment when another reference can retain the previous value.
   wat('__str_concat_fresh', `(func $__str_concat_fresh (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $ki i32) (local $kc i32) (local $ksp i64) (local $kao i32) (local $kbo i32)

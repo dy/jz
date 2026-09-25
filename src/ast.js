@@ -6,6 +6,17 @@
  * @module ast
  */
 
+/** Rebuild only the spine above changed children; unchanged nodes keep their identity. */
+export const rewriteChildren = (node, visit, state) => {
+  let out = null
+  for (let i = 1; i < node.length; i++) {
+    const child = visit(node[i], state)
+    if (child !== node[i] && !out) out = node.slice(0, i)
+    if (out) out.push(child)
+  }
+  return out || node
+}
+
 /** Template placeholder in prepared AST (prepare.js). */
 export const T = '\uE000'
 
@@ -191,6 +202,24 @@ export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=
 /** Every op that writes its first operand: assignments plus ++/--. */
 export const MUTATE_OPS = new Set([...ASSIGN_OPS, '++', '--'])
 
+/** The value a compound assignment / inc-dec effectively stores — synthesized
+ *  so census value-analyses (isIntExpr, kind checks) see the real shape:
+ *  `o.n++` → `['+', o.n, 1]` (self-referential, resolved by the censuses' own
+ *  optimistic fixpoint), `o.f ||= x` → either arm. */
+export function effectiveWriteValue(op, lhs, rhs) {
+  if (op === '=') return rhs
+  if (op === '++' || op === '--') return [op === '++' ? '+' : '-', lhs, [null, 1]]
+  if (op === '&&=' || op === '||=' || op === '??=') return ['?:', lhs, lhs, rhs]
+  return [op.slice(0, -1), lhs, rhs]
+}
+
+// === Comparison ===
+
+export const RELATIONAL_OPS = new Set(['<', '<=', '>', '>='])
+export const EQUALITY_OPS = new Set(['==', '!=', '===', '!=='])
+/** Relational and equality operators: each always yields a boolean. */
+export const COMPARE_OPS = new Set([...RELATIONAL_OPS, ...EQUALITY_OPS])
+
 /** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
  *
  *  Emission-scoped memo: emit-time callers query this against the SAME enclosing
@@ -251,7 +280,11 @@ export function isReassigned(body, name) {
  *  Drives the uninit-`let` maybeNullish flag: only a first-ref 'write' proves
  *  the binding never reads its `undefined` init (`let s; while ((s = …) < K)`). */
 export function firstRefKind(n, name) {
-  const hasRef = (m) => m === name || (Array.isArray(m) && m.slice(1).some(hasRef))
+  const hasRef = (m) => {
+    if (m === name) return true
+    if (Array.isArray(m)) for (let i = 1; i < m.length; i++) if (hasRef(m[i])) return true
+    return false
+  }
   const condRef = (...parts) => parts.some(hasRef) ? 'read' : null
   const walk = (m) => {
     if (m === name) return 'read'
@@ -354,27 +387,6 @@ export function constLiteralHoistable(body, name) {
     for (let i = 1; i < node.length; i++) if (bad(node[i])) return true
     return false
   })(body)
-}
-
-// Sound over-approximation: could `name`'s array length change anywhere in `body`?
-// True if it is reassigned, has a length-mutating method called on it (push/pop/shift/
-// unshift/splice), is assigned through (`name.x = …` / `name[i] = …`, the latter may grow),
-// or is handed to a call as an argument (a callee might push to it). Lets a plain array's
-// `arr.length` loop bound be hoisted when this is false (see immutableLenBound).
-export function mutatesArrayLength(body, name) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (MUTATE_OPS.has(op) && body[1] === name) return true
-  // write through `name` (`name.x = …`, `name[i] = …` — index write may extend length)
-  if (ASSIGN_OPS.has(op) && Array.isArray(body[1]) && (body[1][0] === '.' || body[1][0] === '[]') && body[1][1] === name) return true
-  if (op === '()') {
-    // method call on `name` (`name.push(…)` etc.) — any method, to stay sound
-    if (Array.isArray(body[1]) && body[1][0] === '.' && body[1][1] === name) return true
-    // `name` passed as a call argument — the callee could mutate it
-    for (let i = 2; i < body.length; i++) if (body[i] === name) return true
-  }
-  for (let i = 1; i < body.length; i++) if (mutatesArrayLength(body[i], name)) return true
-  return false
 }
 
 /** Normalize a call's raw arg slot: null → [], comma-group → elems, else singleton. */
@@ -676,7 +688,6 @@ export function cloneNode(node) {
 // Share exact literal keys with watr's LICM. The recursive key distinguishes
 // BigInt, NaN, infinities and signed zero on both the host and self-hosted compiler;
 // JSON.stringify alone (or its unsupported in-kernel replacer) cannot do that.
-export { structuralKey as stableNodeKey } from 'watr/optimize'
 import { structuralKey as stableNodeKey } from 'watr/optimize'
 export function nodeEqual(a, b) {
   return stableNodeKey(a) === stableNodeKey(b)
@@ -746,9 +757,6 @@ export function someDeep(node, pred) {
   for (let i = 1; i < node.length; i++) if (someDeep(node[i], pred)) return true
   return false
 }
-
-/** Alias for {@link extractParams}. */
-export const paramList = extractParams
 
 
 /** Accessor slot suffixes: jzify lowers `get x()`/`set x(v)` to the methods

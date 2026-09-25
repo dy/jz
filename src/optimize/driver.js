@@ -13,7 +13,7 @@ import { DBG_INVARIANTS } from '../debug.js'
 import { ctx } from '../ctx.js'
 import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
-import { vectorizeLaneLocal } from './vectorize.js'
+import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistAddrBase } from './cse-address.js'
 import {
   boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite,
@@ -34,14 +34,14 @@ import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls }
  * @param fn  func IR node
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
  * @param globalTypes optional global name → wasm type map (for promoteGlobals)
- * @param volatileGlobals optional set of callee-mutable globals (see collectVolatileGlobals)
+ * @param reachableWrites optional collectReachableGlobalWrites result (for promoteGlobals)
  * (The former 'post' phase and its csePureExprLoop arm are deleted, and the
  * straight-line csePureExpr followed in the 2026-07 ablation sweeps — watr's
  * write-clock CSE reaches a smaller fixpoint on its own; jz's optimizer runs
  * exactly once, before watr. splitLoopPrivateScratch remains as the flag-gated
  * migration seed; see the splitScratch gate below.)
  */
-export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWrites) {
+export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // Entry verify attributes an invalid-IR failure to EMIT (already bad here)
   // vs an optimizer pass (bad only at the exit check) — the jzify free-name
   // `local.get $__it_drain` class was pinned this way. Debug-only cost.
@@ -88,7 +88,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
   // After the peephole walk: it matches the ToInt32 sinks in their final shape.
   if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
-  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites)
+  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
     // re-optimize). watr is the sole optimizer that runs after, and it preserves the

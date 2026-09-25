@@ -109,6 +109,10 @@ const copyFresh = (nodes) => {
   const names = new Set()
   for (const n of nodes) walkAst(n, { enter: (x) => { if (x[0] === 'let' || x[0] === 'const') collectAllBoundNames(x, names) } })
   const rename = new Map([...names].map(name => [name, `${T}sg${freshId(ctx)}_${name}`]))
+  // A copied binding has the original's possible values, including missing
+  // elements. Keep that summary kind when only its local name changes.
+  const view = ctx.summary?.at(ctx.func.current)
+  for (const [a, b] of rename) view?.alias(b, a, false)
   return nodes.map(n => cloneWithSubst(n, new Map(), rename))
 }
 

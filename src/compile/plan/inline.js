@@ -648,6 +648,9 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // one-off calls (bench beat()). Multi-caller exports stay outlined so V8 can
     // tier-up shared kernels.
     const soleCallerExport = isExported(func) && sites?.length === 1
+    // Size keeps shared/exported bodies shared. Single-use internal bodies
+    // still inline to expose their types without duplicating source.
+    if (cfg?.sourceInlineDup === false && (isExported(func) || sites?.length !== 1)) continue
     if (func.raw || !func.body || func.rest) continue
     if (isExported(func) && !soleCallerExport) continue
     if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport) continue
@@ -680,8 +683,6 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // inlined, some calls) makes duplicate pure subtrees structurally unequal.
     const leafSiteCap = (isTinyLeaf || isSmallLeaf || isSmallKernel) ? Math.max(8, Math.floor(360 / Math.max(1, size))) : 8
     if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !isSmallKernel && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
-    // Size tier: a looped kernel is spliced only where that duplicates nothing.
-    if (hasLoop && sites.length > 1 && cfg && cfg.sourceInlineDup === false) continue
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     if (some(func.body, n => n[0] === '=>')) continue

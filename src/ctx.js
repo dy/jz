@@ -16,7 +16,7 @@ import { createActiveFunction } from './compile/active-function.js'
 import { DBG_INVARIANTS, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from './debug.js'
 import { HOT_PASSES } from './passes.js'
 import { INTRINSIC_ARITY } from './builtin-signatures.js'
-export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, ssoBitI64Hex, sliceBitI64Hex, ptrNanHex, ptrBoxPrefixBigInt, encodePtrHi, decodePtrType, decodePtrAux, ATOM_HI, oobNanLiteral, oobNanIR, followForwardingWat } from '../layout.js'
+export { HEAP, LAYOUT, PTR, FORWARDING_MASK, ssoBitI64Hex, followForwardingWat } from '../layout.js'
 
 // === Carrier layout ===
 // Canonical bit layout lives in layout.js (compiler-free). Re-exported above for
@@ -114,7 +114,7 @@ function createFunctions() {
 
 /** Reset-hook registry: a subsystem that keeps MODULE-scope working state
  *  outside ctx for performance (prepare/index.js's working set,
- *  module/regex.js's literal parser, optimize/vectorize.js's why-not-simd
+ *  module/regex.js's literal parser, optimize/vectorize/'s why-not-simd
  *  arm/disarm flags) registers its own reset callback here once at module
  *  load, instead of wiring an independent reset point of its own. reset()
  *  (used by every entry point — beginSession AND raw-reset test harnesses
@@ -308,8 +308,8 @@ export function resolveIncludes(realize = true) {
     if (typeof text !== 'string') return (autoCache.set(name, []), [])
     found = []
     const seen = new Set()
-    for (const m of text.matchAll(/\$(__[A-Za-z0-9_]+)/g)) {
-      const d = m[1]
+    for (const ref of text.match(/\$__[A-Za-z0-9_]+/g) || []) {
+      const d = ref.slice(1)
       if (d !== name && stdlib[d] && !seen.has(d)) { seen.add(d); found.push(d) }
     }
     autoCache.set(name, found)
@@ -345,29 +345,13 @@ export function resolveIncludes(realize = true) {
 /**
  * Fact-store storage — see src/session.js's DEPS table for the full
  * per-slice contract (what each slice caches, what invalidates it).
- * Storage lives HERE rather than in session.js to avoid a module cycle:
- * program-facts.js / analyze.js / analyze-scans.js each read their slice, and
- * analyze.js is itself imported by wat/assemble.js, which session.js imports
- * (clearStdlibParseCache) — routing the accessor through session.js would
- * close analyze.js -> session.js -> wat/assemble.js -> analyze.js (jz's own
- * self-compile module resolver rejects import cycles outright, so this isn't
- * just a style question — it breaks `npm run build`). ctx.js is the one leaf
- * every one of those already depends on with nothing importing back, so
- * ownership of WHERE the store lives sits here.
- *
- * CompileSession field, not a second singleton (Slice B, .work/archive/compile-
- * session-design.md §1.1/§3): used to be its OWN module-scope `_factStore`
- * binding, sibling to `ctx` in lifecycle (reset()'s own resetFactStore()
- * call) but not a field of it — the one piece of compile-lifetime state that
- * lived outside `ctx`. Now built by `reset()` below as `ctx.facts`, same as
- * every other subtree; `getFactStore()` is an ALIAS (`() => ctx.facts`), same
- * return value, same identity per-session, zero call-site rewrite at any of
- * the 51 `getFactStore()` call sites.
+ * Analysis readers share this ctx-owned store without depending on session
+ * setup. reset() replaces it alongside the other per-compilation state.
  */
 function createFactStore() {
   return {
     externalIngress: null,
-    // The program revision: every rewrite of a function body or signature advances it through
+    // The program revision: every body rewrite or semantic input change advances it through
     // a mutation seam (compile/analyze/body-facts.js, program-facts/cache.js), so a fact
     // derived from the whole program is fresh while the revision it was built at is current.
     revision: 0,
@@ -691,6 +675,8 @@ export function reset(proto, globals, bridge) {
   ctx.closure = {
     types: null,
     table: null,
+    lengths: null,        // source arity per table slot, independent of body deduplication
+    lengthData: null,     // demand-built static byte table
     bodies: null,
     make: null,
     call: null,
@@ -874,7 +860,7 @@ export function reset(proto, globals, bridge) {
   // view-constructing EMIT handlers (`new.*`'s buffer-reinterpret/unknown-arg
   // branches, `.typed:subarray` — genuinely DEMAND-shaped, only known once
   // emission walks those call sites, past post-analyze). Its one reader,
-  // optimize/vectorize.js's SLP store-pairing bail, runs inside optimizeModule
+  // optimize/vectorize/'s SLP store-pairing bail, runs inside optimizeModule
   // — PHASE ORDERING VERIFIED: compile/index.js emits every function AND
   // closure body (emitFuncs/emitClosures/buildStartFn, the only writers) all
   // complete before assertCtxInvariants('pre-assemble'), which itself precedes
@@ -890,13 +876,14 @@ export function reset(proto, globals, bridge) {
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
+    hiddenMembers: false, // closure-lowered derived methods stored in property hashes
     f16: false,       // Float16Array construction anywhere.
     clamped: false,   // Uint8ClampedArray construction anywhere.
     typedView: false, // A typed-array VIEW (subarray / buffer-reinterpret / unknown-arg ctor
                       // that may zero-copy) exists somewhere in the program — set by
                       // analyze.js's typed tracker (`c.endsWith('.view')`) and by
                       // module/typedarray.js's view-constructing emit handlers. Read by
-                      // the SLP vectorizer (optimize/vectorize.js) to bail on cross-base
+                      // the SLP vectorizer (optimize/vectorize/) to bail on cross-base
                       // pairing when any view could alias. See the phase-ordering note
                       // above this object.
   }

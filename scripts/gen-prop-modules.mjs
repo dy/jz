@@ -47,7 +47,7 @@ import { ctx } from '../src/ctx.js'
 import { beginSession } from '../src/session.js'
 import { includeModule } from '../src/autoload.js'
 import * as mods from '../module/index.js'
-import { emitter, emit, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe } from '../src/compile/emit.js'
+import { emitter, emit, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 
 // Property-dispatch key shapes only (leading dot): `.method` or `.kind:method`.
@@ -78,7 +78,7 @@ const NON_METHOD_KEYS = new Set(['.', '.raw', '.typed:[]', '.typed:[]=', '.strin
 export function deriveMethodModules() {
   beginSession({
     emitter, globals: GLOBALS,
-    hooks: { emit, flat: emitVoid, body: emitBlockBody, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
+    hooks: { emit, bool: emitBoolStr, idx: emitIndex, spread: buildArrayWithSpreads, emitIdentitySafe },
   })
   const table = new Map() // method name -> Set<module name>
   const unmatched = []

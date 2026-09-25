@@ -81,9 +81,9 @@
  * @module prepare/pre-eval
  */
 
-import { extractParams, classifyParam, PARAM_NAME } from '../ast.js'
+import { COMPARE_OPS, extractParams, classifyParam, PARAM_NAME } from '../ast.js'
 import { ctx } from '../ctx.js'
-import { int32 } from '../static.js'
+import { int32, numBinOp } from '../static.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
 import * as bn from '../bignum.js'
 
@@ -310,24 +310,9 @@ function strictEqResult(a, b) {
   return a.v === b.v
 }
 
-function plainNumOp(op, a, b) {
-  switch (op) {
-    case '-': return a - b
-    case '*': return a * b
-    case '/': return a / b
-    case '%': return a % b
-    case '&': return int32(a) & int32(b)
-    case '|': return int32(a) | int32(b)
-    case '^': return int32(a) ^ int32(b)
-    case '<<': return int32(a) << int32(b)
-    case '>>': return int32(a) >> int32(b)
-    case '>>>': return int32(a) >>> int32(b)
-  }
-}
 const NUM_ONLY_OPS = new Set(['-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
 const RATIONAL_OPS = new Set(['-', '*', '/'])
-const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!=='])
-const BINARY_OPS = new Set([...NUM_ONLY_OPS, ...CMP_OPS])
+const BINARY_OPS = new Set([...NUM_ONLY_OPS, ...COMPARE_OPS])
 
 /** Numeric binary fold. Carries the exact Rational through +,-,*,/ when both operands
  *  still have one (state.rationalOn); falls back to plain per-op f64 otherwise. A ZERO
@@ -350,7 +335,7 @@ const BINARY_OPS = new Set([...NUM_ONLY_OPS, ...CMP_OPS])
  *  pre-overflow exact one. Fires only at the finite/±Infinity boundary itself — every
  *  sub-Infinity result (the documented "more accurate, never less" feature) is untouched. */
 function foldNumBinary(op, L, R, rationalOn) {
-  const plain = plainNumOp(op, L.v, R.v)
+  const plain = numBinOp(op, L.v, R.v)
   if (!rationalOn || !RATIONAL_OPS.has(op) || !L.r || !R.r) return numResult(plain)
   const rr = op === '-' ? ratSub(L.r, R.r) : op === '*' ? ratMul(L.r, R.r) : ratDiv(L.r, R.r)
   if (!rr) return numResult(plain)
@@ -394,9 +379,9 @@ function foldBinary(op, a, b, rationalOn) {
   if (NUM_ONLY_OPS.has(op)) {
     const L = toNumResult(a), R = toNumResult(b)
     if (!L || !R) return null
-    return op === '-' || op === '*' || op === '/' ? foldNumBinary(op, L, R, rationalOn) : numResult(plainNumOp(op, L.v, R.v))
+    return op === '-' || op === '*' || op === '/' ? foldNumBinary(op, L, R, rationalOn) : numResult(numBinOp(op, L.v, R.v))
   }
-  if (CMP_OPS.has(op)) {
+  if (COMPARE_OPS.has(op)) {
     switch (op) {
       case '<': return boolResult(toJSValue(a) < toJSValue(b))
       case '>': return boolResult(toJSValue(a) > toJSValue(b))

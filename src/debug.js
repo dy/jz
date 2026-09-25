@@ -18,7 +18,7 @@ export function resetInvariants(bridge) {
   _featureSnapshot = null
   _postAnalyze = false
   _preAssemble = false
-  for (const h of ['emit', 'flat', 'body', 'bool', 'idx', 'spread', 'emitIdentitySafe'])
+  for (const h of ['emit', 'bool', 'idx', 'spread', 'emitIdentitySafe'])
     if (typeof bridge?.[h] !== 'function') throw new Error(`reset: bridge hook '${h}' missing`)
 }
 

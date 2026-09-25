@@ -101,6 +101,27 @@ test('kernel gate: a kernel without the diagnostics ABI, one whose output is not
     ok(t.gates.sequences.cases.some(c => c.error?.includes('fixture compile failure') && c.failurePhase === 'front'), 'the thrown error and its phase are recorded')
     is(t.gates.sequences.cases.find(c => c.name === 'source error').status, 'green', 'a rejected source counts as the error it is')
 
+    const corrupt = compile(READERS + `import { corruptMarks } from './phase-marks.js'
+      export default () => { corruptMarks(); throw new Error('original compile failure') }`, {
+      modules: { './phase-marks.js': marks + '\nexport const corruptMarks = () => { counts[1] = -1 }' }, optimize: 1,
+    })
+    writeFileSync(join(dir, 'corrupt.wasm'), corrupt)
+    const damaged = run(['--kernel', join(dir, 'corrupt.wasm'), '--gate', 'sequences', '--json', join(dir, 'corrupt.json')])
+    is(damaged.status, 1)
+    const d = manifestOf(join(dir, 'corrupt.json')).gates.sequences.cases[0]
+    ok(d.error.includes('original compile failure') && d.error.includes('Invalid kernel heap diagnostic'), 'damaged diagnostics preserve the original compile error')
+    is(d.failurePhase, 'diagnostics unavailable'); is(d.completed, false)
+
+    const verbose = compile(READERS + `import { recordPhase } from './phase-marks.js'
+      export default () => { for(let i=0;i<256;i++) recordPhase('summary'); ${GARBAGE} }`, {
+      modules: { './phase-marks.js': marks }, optimize: 1,
+    })
+    writeFileSync(join(dir, 'verbose.wasm'), verbose)
+    const drained = run(['--kernel', join(dir, 'verbose.wasm'), '--gate', 'functional', '--corpus', 'medium', '--json', join(dir, 'verbose.json')])
+    is(drained.status, 1)
+    const v = manifestOf(join(dir, 'verbose.json')).gates.functional
+    ok(v.cases?.length > 0 && v.cases.every(c => c.phases.length === 256), 'the worker flushes its complete report before exiting, beyond pipe capacity')
+
     writeFileSync(join(dir, 'hang.wasm'), fixture('let i = 0; while (true) i++; return i'))
     const hang = run(['--kernel', join(dir, 'hang.wasm'), '--gate', 'sequences', '--timeout', '3000', '--json', join(dir, 'hang.json')])
     is(hang.status, 1); const h = manifestOf(join(dir, 'hang.json'))

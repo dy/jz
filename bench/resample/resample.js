@@ -5,7 +5,8 @@
 // irrational-ish step. Two stages (upsample then downsample) exercise both directions.
 // The profile: float-derived gather indices + a fractional accumulator — the pattern
 // that decides whether a compiler keeps typed loads on the fast path when the index
-// comes from float math. Pure + − × ÷, so output is bit-identical across languages.
+// comes from float math. Strict f64 evaluation gives bit-identical output;
+// native multiply-add fusion has independently verified checksum alternatives.
 //
 // Single source compiled by all targets and run directly by the JS engines.
 // Subset: const/let + arrows, typed arrays, no class/async/regex.

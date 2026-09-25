@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-09-05 20:47 UTC",
-  "commit": "0c61c6f3",
+  "date": "2026-09-24 17:47 UTC",
+  "commit": "07b75c20",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -9,11 +9,12 @@
   },
   "versions": {
    "jz": "0.9.2",
-   "watr": "5.10.1",
+   "watr": "5.11.3",
    "node": "v25.9.0",
    "asc": "Version 0.28.19",
    "porffor": "alpha 4 (a415d19 2026-08-29)",
    "scriptc": "0.0.30",
+   "perry": "perry 0.5.1520",
    "bun": "1.3.14",
    "deno": "deno 2.6.7 (stable, release, aarch64-apple-darwin)",
    "clang": "Homebrew clang version 19.1.6"
@@ -41,13 +42,14 @@
    "tinygo": "tinygo build -target=wasip1 -opt=2 <case>.go → node (V8 wasm)",
    "numpy": "python3 <case>.npy.py",
    "wat": "wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)",
-   "jz-w2c2": "jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off"
+   "jz-w2c2": "jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off",
+   "perry": "perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary"
   },
   "memory": "peak RSS per process run (/usr/bin/time -l)",
   "machineState": {
-   "swapUsedMB": 15830.94,
-   "uptimeDays": 56.93,
-   "load1": 8.65,
+   "swapUsedMB": 14738.81,
+   "uptimeDays": 75.8,
+   "load1": 10.04,
    "powermode": "AC"
   },
   "anchors": {
@@ -56,31 +58,31 @@
      "case": "mat4",
      "target": "c-wasm",
      "storedUs": 2502,
-     "freshUs": 2605,
-     "ratio": 1.0412,
+     "freshUs": 2566,
+     "ratio": 1.0256,
      "pass": true
     },
     {
      "case": "fft",
      "target": "c-wasm",
      "storedUs": 1086,
-     "freshUs": 1144,
-     "ratio": 1.0534,
+     "freshUs": 1162,
+     "ratio": 1.07,
      "pass": true
     },
     {
      "case": "synth",
      "target": "as",
      "storedUs": 2405,
-     "freshUs": 2489,
-     "ratio": 1.0349,
+     "freshUs": 2474,
+     "ratio": 1.0287,
      "pass": true
     }
    ],
    "ratios": {
-    "c-wasm×mat4": 1.0412,
-    "c-wasm×fft": 1.0534,
-    "as×synth": 1.0349
+    "c-wasm×mat4": 1.0256,
+    "c-wasm×fft": 1.07,
+    "as×synth": 1.0287
    },
    "pass": true
   },
@@ -226,9 +228,16 @@
      "memKb": 26720,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 238115,
+     "bytes": 14933752,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 43.1
+   "compileMs": 49.3
   },
   "aos": {
    "name": "AoS to SoA",
@@ -381,9 +390,16 @@
      "memKb": 15360,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 27972,
+     "bytes": 14950280,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 33.9
+   "compileMs": 40.1
   },
   "base64": {
    "name": "Base64 encode + decode",
@@ -524,9 +540,16 @@
      "memKb": 15312,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 431278,
+     "bytes": 14966800,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 34.9
+   "compileMs": 63.8
   },
   "bezfit": {
    "name": "bezfit",
@@ -627,9 +650,16 @@
      "memKb": 89456,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 45521,
+     "bytes": 15016336,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 615
+   "compileMs": 1074.9
   },
   "biquad": {
    "name": "biquad filter cascade",
@@ -780,9 +810,16 @@
     "wat": {
      "status": "fail",
      "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/biquad/biquad.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad-wat.was"
+    },
+    "perry": {
+     "medianUs": 304916,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 61.3
+   "compileMs": 61.6
   },
   "bitwise": {
    "name": "bitwise mix",
@@ -935,9 +972,16 @@
      "memKb": 14640,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 160018,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 19.2
+   "compileMs": 34.4
   },
   "blur": {
    "name": "blur",
@@ -1078,9 +1122,16 @@
      "memKb": 27056,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 1227474,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 84
+   "compileMs": 157.2
   },
   "bytebeat": {
    "name": "bytebeat",
@@ -1221,9 +1272,16 @@
      "memKb": 22592,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 97088,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 20.3
+   "compileMs": 36.8
   },
   "callback": {
    "name": "callback map",
@@ -1376,9 +1434,16 @@
      "memKb": 14560,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 38609,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 24.2
+   "compileMs": 30.6
   },
   "colorconv": {
    "name": "sRGB → Oklab batch",
@@ -1444,9 +1509,16 @@
      "memKb": 136176,
      "parity": "DIFF",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 75998,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "DIFF",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 34.2
+   "compileMs": 173.5
   },
   "colorlch": {
    "name": "sRGB → OkLCh (fused)",
@@ -1512,9 +1584,16 @@
      "memKb": 135872,
      "parity": "DIFF",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 169287,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "DIFF",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 40.1
+   "compileMs": 162.7
   },
   "colorlog": {
    "name": "ARRI LogC4 → XYZ",
@@ -1582,9 +1661,16 @@
      "memKb": 135888,
      "parity": "DIFF",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 52151,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 31.2
+   "compileMs": 112.5
   },
   "colorpq": {
    "name": "sRGB → JzAzBz (PQ)",
@@ -1651,9 +1737,16 @@
      "memKb": 136064,
      "parity": "DIFF",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 213917,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 109.2
+   "compileMs": 249.1
   },
   "conv2d": {
    "name": "int8 conv2d layer (NN inference)",
@@ -1794,9 +1887,16 @@
      "memKb": 15024,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 308707,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 110.7
+   "compileMs": 246.4
   },
   "crc32": {
    "name": "CRC-32 table hash",
@@ -1943,9 +2043,16 @@
      "memKb": 14320,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 280335,
+     "bytes": 14933768,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 25.6
+   "compileMs": 40
   },
   "delayline": {
    "name": "delayline",
@@ -2046,9 +2153,16 @@
      "memKb": 90880,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 22715,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 34.6,
+   "compileMs": 57,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -2143,9 +2257,16 @@
      "memKb": 97504,
      "parity": "DIFF",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 66626,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "DIFF",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 60.3
+   "compileMs": 93.4
   },
   "dict": {
    "name": "open-addressing hash table",
@@ -2286,9 +2407,16 @@
      "memKb": 15392,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 62702,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 24.6
+   "compileMs": 35.7
   },
   "dispatch": {
    "name": "function-table dispatch",
@@ -2429,9 +2557,16 @@
      "memKb": 14720,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 58414,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 27.7
+   "compileMs": 70
   },
   "dotprod": {
    "name": "dotprod",
@@ -2572,9 +2707,16 @@
      "memKb": 14496,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 8577,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 22.6
+   "compileMs": 32.7
   },
   "fft": {
    "name": "fft",
@@ -2715,9 +2857,16 @@
      "memKb": 17360,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 48247,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 72.8,
+   "compileMs": 88.9,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -2830,9 +2979,16 @@
      "memKb": 89328,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 61173,
+     "bytes": 14983344,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 141
+   "compileMs": 416
   },
   "glyfparse": {
    "name": "glyfparse",
@@ -2933,9 +3089,16 @@
      "memKb": 89808,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 211982,
+     "bytes": 14966800,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 76.2,
+   "compileMs": 172.5,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -3105,9 +3268,16 @@
      "memKb": 14400,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 434213,
+     "bytes": 14933752,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 21.3
+   "compileMs": 31.5
   },
   "hashjoin": {
    "name": "hashjoin",
@@ -3248,9 +3418,16 @@
      "memKb": 15648,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 225791,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 30.5
+   "compileMs": 46
   },
   "heat": {
    "name": "2-D heat diffusion (5-point stencil)",
@@ -3391,9 +3568,16 @@
      "memKb": 15632,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 275650,
+     "bytes": 14933752,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 24.7
+   "compileMs": 36.6
   },
   "immutable": {
    "name": "immutable-update particle step",
@@ -3534,9 +3718,16 @@
      "memKb": 15824,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 14414,
+     "bytes": 14950304,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 31.5
+   "compileMs": 74
   },
   "jessie": {
    "name": "jessie parser",
@@ -3590,6 +3781,11 @@
      "status": "fail",
      "reason": "exit 1: Uncaught TypeError: Cannot set property of null\n        0.17 real         0.00 user         0.00 sys\n             5095424  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared dat",
      "measuredAt": "0c61c6f3"
+    },
+    "perry": {
+     "status": "fail",
+     "reason": "timeout after 60000ms",
+     "measuredAt": "07b75c20"
     }
    }
   },
@@ -3731,9 +3927,16 @@
      "memKb": 17824,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 933,
+     "bytes": 14933736,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 94.8
+   "compileMs": 142.9
   },
   "levenshtein": {
    "name": "Levenshtein edit-distance DP",
@@ -3874,9 +4077,16 @@
      "memKb": 14592,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 127031,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 29.5
+   "compileMs": 47.7
   },
   "lorenz": {
    "name": "lorenz",
@@ -4017,9 +4227,16 @@
      "memKb": 15024,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 32811,
+     "bytes": 14933744,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 27.2
+   "compileMs": 41.8
   },
   "lz": {
    "name": "LZSS compress + inflate",
@@ -4160,9 +4377,16 @@
      "memKb": 15008,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 1931516,
+     "bytes": 14966792,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 88.2,
+   "compileMs": 134.3,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -4350,9 +4574,16 @@
      "memKb": 14736,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 20240,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 26.4
+   "compileMs": 45.1
   },
   "mat4": {
    "name": "mat4 multiply",
@@ -4503,9 +4734,16 @@
     "wat": {
      "status": "fail",
      "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/mat4/mat4.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4-wat.wasm\"\n/User"
+    },
+    "perry": {
+     "medianUs": 201923,
+     "bytes": 14933752,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 45.7
+   "compileMs": 66.6
   },
   "matmul": {
    "name": "matrix multiply (A·Bᵀ)",
@@ -4646,9 +4884,16 @@
      "memKb": 16160,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 218459,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 25.7
+   "compileMs": 35.7
   },
   "nbody": {
    "name": "nbody",
@@ -4789,9 +5034,16 @@
      "memKb": 15312,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 410326,
+     "bytes": 14966776,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 44.7
+   "compileMs": 68.2
   },
   "noise": {
    "name": "Perlin fBm noise field",
@@ -4932,9 +5184,16 @@
      "memKb": 15168,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 60946,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 111.8
+   "compileMs": 62.6
   },
   "nqueens": {
    "name": "N-Queens bitmask backtracking",
@@ -5082,9 +5341,16 @@
      "memKb": 1456,
      "parity": "ok",
      "measuredAt": "4ca94ca2"
+    },
+    "perry": {
+     "medianUs": 110664,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 21.5
+   "compileMs": 34.6
   },
   "particle": {
    "name": "particle",
@@ -5225,9 +5491,16 @@
      "memKb": 16672,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 1527742,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 28.6
+   "compileMs": 40
   },
   "poly": {
    "name": "polymorphic reduce",
@@ -5380,9 +5653,16 @@
      "memKb": 14528,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 9584,
+     "bytes": 14933752,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 21.7
+   "compileMs": 38.6
   },
   "provenance": {
    "name": "provenance",
@@ -5448,9 +5728,16 @@
      "memKb": 89216,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 69845,
+     "bytes": 14983344,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 151
+   "compileMs": 162.1
   },
   "qoi": {
    "name": "QOI image codec (encode + decode)",
@@ -5591,9 +5878,16 @@
      "memKb": 19344,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 870137,
+     "bytes": 14999816,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 77.7
+   "compileMs": 159.2
   },
   "radixsort": {
    "name": "LSD radix sort (u32 keys)",
@@ -5735,9 +6029,16 @@
      "memKb": 15232,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 708762,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 44.6,
+   "compileMs": 68.1,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -5925,9 +6226,16 @@
      "memKb": 18592,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 55503,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 99.5
+   "compileMs": 169.2
   },
   "resample": {
    "name": "resample",
@@ -6028,9 +6336,16 @@
      "memKb": 90432,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 50074,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 46.4
+   "compileMs": 49.4
   },
   "sdf": {
    "name": "sdf",
@@ -6131,9 +6446,16 @@
      "memKb": 90912,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 179444,
+     "bytes": 14966776,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 70.2,
+   "compileMs": 89.6,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -6303,9 +6625,16 @@
      "memKb": 16224,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 61619,
+     "bytes": 14966816,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 39.9,
+   "compileMs": 233.4,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -6493,9 +6822,16 @@
      "memKb": 18624,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 469568,
+     "bytes": 14933752,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 18.7
+   "compileMs": 28.7
   },
   "slices": {
    "name": "slices",
@@ -6596,9 +6932,16 @@
      "memKb": 93440,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 83743,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 36.1,
+   "compileMs": 50.6,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -6775,9 +7118,16 @@
      "memKb": 15264,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 75519,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 31.4
+   "compileMs": 46.1
   },
   "spmv": {
    "name": "sparse matrix×vector (CSR)",
@@ -6918,9 +7268,16 @@
      "memKb": 15552,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 82781,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 33.1
+   "compileMs": 49.4
   },
   "strbuild": {
    "name": "per-record string formatting",
@@ -7061,9 +7418,16 @@
      "memKb": 15968,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 12335,
+     "bytes": 14933760,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 27.9
+   "compileMs": 70.9
   },
   "synth": {
    "name": "synth",
@@ -7204,9 +7568,16 @@
      "memKb": 18944,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 10506,
+     "bytes": 14933752,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 31.6,
+   "compileMs": 45.8,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -7413,9 +7784,16 @@
      "memKb": 1504,
      "parity": "ok",
      "measuredAt": "4ca94ca2"
+    },
+    "perry": {
+     "medianUs": 2093,
+     "bytes": 14950272,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 36.1
+   "compileMs": 56
   },
   "trace": {
    "name": "trace",
@@ -7516,9 +7894,16 @@
      "memKb": 91360,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 146275,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 44,
+   "compileMs": 58.7,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -7688,9 +8073,16 @@
      "memKb": 14736,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 117693,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 28.1,
+   "compileMs": 45.1,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
@@ -7796,6 +8188,11 @@
      "memKb": 35952,
      "parity": "ok",
      "measuredAt": "57ad846d"
+    },
+    "perry": {
+     "status": "fail",
+     "reason": "exit null: SIGSEGV",
+     "measuredAt": "07b75c20"
     }
    }
   },
@@ -7938,9 +8335,16 @@
      "memKb": 16768,
      "parity": "ok",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "medianUs": 523584,
+     "bytes": 14950264,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 29.8
+   "compileMs": 46.3
   },
   "wordcount": {
    "name": "word-frequency map (string keys)",
@@ -8088,9 +8492,16 @@
      "memKb": 3520,
      "parity": "ok",
      "measuredAt": "4ca94ca2"
+    },
+    "perry": {
+     "medianUs": 58113,
+     "bytes": 14966832,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 58
+   "compileMs": 139.1
   },
   "jz": {
    "name": "jz JS compiler (self-compile)",
@@ -8137,6 +8548,11 @@
      "status": "fail",
      "reason": "exit 1: wasm://wasm/03f828de:1\n\n\nRuntimeError: unreachable\n    at wasm://wasm/03f828de:wasm-function[13]:0x106c6\n    at wasm://wasm/03f828de:wasm-function[14]:0x10816\n    at wasm://wasm/03f828de:wasm-function[110]:0x2c4af\n    at wasm://wasm/03f828d",
      "measuredAt": "e36aab3b"
+    },
+    "perry": {
+     "status": "fail",
+     "reason": "spawnSync /tmp/jz-perry-0.5.1520/package/bin/perry ETIMEDOUT",
+     "measuredAt": "07b75c20"
     }
    }
   },
@@ -8174,9 +8590,16 @@
      "memKb": 6656,
      "parity": "DIFF",
      "measuredAt": "0c61c6f3"
+    },
+    "perry": {
+     "medianUs": 2684,
+     "bytes": 14950304,
+     "memKb": null,
+     "parity": "ok",
+     "measuredAt": "07b75c20"
     }
    },
-   "compileMs": 67.6
+   "compileMs": 112.8
   },
   "webaudio": {
    "name": "Web Audio graph render (web-audio-api engine)",
@@ -8199,12 +8622,34 @@
      "memKb": 473168,
      "parity": "DIFF",
      "measuredAt": "0c61c6f3"
+    },
+    "perry": {
+     "status": "fail",
+     "reason": "exit 1: TypeError: Expected BaseAudioContext as first argument\n    at <anonymous>",
+     "measuredAt": "07b75c20"
     }
    },
    "samples": 44100,
    "stages": 2,
    "runs": 11,
    "ref": 2866527759
+  },
+  "entity": {
+   "name": "in-place entity field updates",
+   "samples": 16777216,
+   "stages": 256,
+   "runs": 21,
+   "ref": null,
+   "targets": {
+    "perry": {
+     "medianUs": 416254,
+     "bytes": 14966816,
+     "memKb": null,
+     "parity": "unclassified",
+     "measuredAt": "07b75c20"
+    }
+   },
+   "compileMs": 61.8
   }
  }
 }

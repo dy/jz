@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, tempI64, ptrTypeEq, truthyIR, readI64, isPlanRawBigint, materializeDeferredBigint, throwErrorIR, isNullish } from '../src/ir.js'
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, storedValue, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned, isUndefinedLiteral } from '../src/ast.js'
@@ -17,6 +17,7 @@ import { dataPush, dataAlign, dataLen, hexBytes } from '../src/static-data.js'
 import { stringBytes } from '../src/string-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
+import { K, core, tagOf, isNullable } from '../src/summary/kind.js'
 import { inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 
@@ -388,6 +389,7 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
 export default (ctx) => {
   deps({
     __mkstr: ['__alloc'],
+    __mkstr_scratch: ['__mkstr', '__alloc', '__mkptr'],
     // own edge: __static_str's body calls $__mkstr — without it the helper
     // rides the self-compile-unreliable auto-scan (test/self-compile-includes.js)
     __static_str: ['__mkstr'],
@@ -399,18 +401,18 @@ export default (ctx) => {
     __fmt_fixed: ['__ftoa', '__alloc', '__dec_scaled', '__mkstr'],
     __fmt_exp: ['__ftoa', '__alloc', '__dec_sig', '__dec_to_f64', '__fmt_exp_tail', '__mkstr'],
     __fmt_prec: ['__ftoa', '__alloc', '__dec_sig', '__fmt_exp_tail', '__mkstr'],
-    __ftoa_shortest: ['__mkstr', '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
+    __ftoa_shortest: ['__mkstr_scratch', '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
     __ryu_pow5: ['__umul128'],
     __dec_to_f64: ['__ryu_pow5', '__umul128', '__pow10'],
     __ryu_mulshift: ['__umul128'],
     __ryu_mulhi: [],
     __umul128: ['__ryu_mulhi'],
     __ryu_pow5div: [],
-    __i32_to_str: ['__itoa_s', '__mkstr'],
+    __i32_to_str: ['__itoa_s', '__mkstr_scratch'],
     __itoa_s: ['__itoa'],
     __ilen: [],
-    __radix_str: ['__mkstr'],
-    __num_radix: ['__ftoa', '__mkstr'],
+    __radix_str: ['__mkstr_scratch'],
+    __num_radix: ['__ftoa', '__mkstr_scratch'],
     __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux', '__is_object'],
     __number: ['__to_num', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
@@ -499,7 +501,7 @@ export default (ctx) => {
   ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
     (local $buf i32)
     (local.set $buf (call $__alloc (i32.const 24)))
-    (call $__mkstr (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))`
+    (call $__mkstr_scratch (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))`
 
   // __radix_str(val: i64, radix: i32) → f64 (NaN-boxed string)
   // Signed integer → radix string for BigInt.prototype.toString(radix). Digits go
@@ -511,7 +513,7 @@ export default (ctx) => {
     (local.set $buf (call $__alloc (i32.const 144)))
     (local.set $r (i64.extend_i32_s (local.get $radix)))
     (if (i64.eqz (local.get $val))
-      (then (i32.store16 (local.get $buf) (i32.const 48)) (return (call $__mkstr (local.get $buf) (i32.const 1)))))
+      (then (i32.store16 (local.get $buf) (i32.const 48)) (return (call $__mkstr_scratch (local.get $buf) (i32.const 1)))))
     (local.set $mag (local.get $val))
     (if (i64.lt_s (local.get $val) (i64.const 0))
       (then (local.set $neg (i32.const 1)) (local.set $mag (i64.sub (i64.const 0) (local.get $val)))))
@@ -527,7 +529,7 @@ export default (ctx) => {
         (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
     (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
     ${reverseUnitsWat()}
-    (call $__mkstr (local.get $buf) (local.get $pos)))`
+    (call $__mkstr_scratch (local.get $buf) (local.get $pos)))`
 
   // __num_radix(val: f64, radix: i32) → f64 (NaN-boxed string)
   // Number.prototype.toString(radix) for radix != 10. Non-finite values defer to
@@ -542,7 +544,7 @@ export default (ctx) => {
   // ensureThrowRuntime via stdlib scan, so callers do not need to flag throws.
   ctx.core.stdlib['__num_radix'] = `(func $__num_radix (param $val f64) (param $radix i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32) (local $iv i64) (local $r i64) (local $rf f64)
-    (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32) (local $rv f64)
+    (local $int f64) (local $frac f64) (local $dg i32) (local $i i32) (local $j i32) (local $tmp i32) (local $fn i32)
     (if (i32.or (i32.lt_s (local.get $radix) (i32.const 2)) (i32.gt_s (local.get $radix) (i32.const 36)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.NUMBER_RADIX)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.NUMBER_RADIX)}))))
     (if (i32.or (f64.ne (local.get $val) (local.get $val)) (f64.eq (f64.abs (local.get $val)) (f64.const inf)))
@@ -584,14 +586,25 @@ export default (ctx) => {
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (local.set $fn (i32.add (local.get $fn) (i32.const 1)))
           (br $fl)))))
-    ${!ctx.memory.shared ? `
-    ;; When __mkstr packed an SSO result it allocated nothing, so the digit scratch
-    ;; ($buf, at heap top) is dead — reclaim it so a heap-top accumulator stays on
-    ;; top and \`s += n.toString(r)\` bump-extends instead of reallocating (O(n)).
-    (local.set $rv (call $__mkstr (local.get $buf) (local.get $pos)))
+    (call $__mkstr_scratch (local.get $buf) (local.get $pos)))`
+
+
+  // The caller owns the complete temporary region from buf to heap top. SSO
+  // results retain no pointer into it; long strings replace it with their payload.
+  // Shared-memory allocators own their cursor, so they never rewind here.
+  ctx.core.stdlib['__mkstr_scratch'] = `(func $__mkstr_scratch (param $buf i32) (param $len i32) (result f64)
+    ${!ctx.memory.shared ? `(local $rv f64) (local $off i32)
+    (if (i32.gt_u (local.get $len) (i32.const 6))
+      (then
+        (global.set $__heap (local.get $buf))
+        (local.set $off (call $__alloc (i32.add (i32.const 4) (i32.shl (local.get $len) (i32.const 1)))))
+        (memory.copy (i32.add (local.get $off) (i32.const 4)) (local.get $buf) (i32.shl (local.get $len) (i32.const 1)))
+        (i32.store (local.get $off) (local.get $len))
+        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (i32.add (local.get $off) (i32.const 4))))))
+    (local.set $rv (call $__mkstr (local.get $buf) (local.get $len)))
     (if (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $rv)) (i64.const ${LAYOUT.AUX_SHIFT}))) (i32.const ${LAYOUT.SSO_BIT}))
       (then (global.set $__heap (local.get $buf))))
-    (local.get $rv)` : `(call $__mkstr (local.get $buf) (local.get $pos))`})`
+    (local.get $rv)` : `(call $__mkstr (local.get $buf) (local.get $len))`})`
 
   // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string.
   // Hot (~60M calls in watr self-compile via __ftoa). bulk memory.copy is ~10× faster than
@@ -1191,7 +1204,7 @@ export default (ctx) => {
     (if (f64.eq (local.get $val) (f64.const 0))
       (then
         (i32.store16 (local.get $buf) (i32.const 48))
-        (return (call $__mkstr (local.get $buf) (i32.const 1)))))
+        (return (call $__mkstr_scratch (local.get $buf) (i32.const 1)))))
     (local.set $bits (i64.reinterpret_f64 (local.get $val)))
     (if (i64.lt_s (local.get $bits) (i64.const 0))
       (then
@@ -1410,7 +1423,7 @@ export default (ctx) => {
             (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
             (local.set $pos (i32.add (local.get $pos)
               (call $__itoa (local.get $n) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))))))))))))
-    (call $__mkstr (local.get $buf) (local.get $pos)))`
+    (call $__mkstr_scratch (local.get $buf) (local.get $pos)))`
 
 
   // === Number constants ===
@@ -1461,15 +1474,10 @@ export default (ctx) => {
     ['i64.eq', ['local.get', bitsLocal], ['i64.const', NAN_BITS]],
     ['i64.eq', ['i64.and', ['local.get', bitsLocal], ['i64.const', '0xFFF0000000000000']], ['i64.const', '0xFFF0000000000000']]]
 
-  // maybeUndefined gate (.work/archive/todo.md §deletion-sweep §1/§4): a NUMBER claim
-  // sourced from a dict/map value census (censusMaybeUndefined) is really
-  // NUMBER|undefined — an absent key reads back UNDEF_NAN at runtime, a bit
-  // pattern that (unlike a genuine number-NaN) must NOT satisfy Number.isNaN.
-  // A non-census proven-NUMBER arg (loop counters, arithmetic results, schema
-  // slots) can never carry ANY boxed pointer/atom, so its bare self-compare
-  // stays exact and pays nothing extra — only census reads fall through to the
-  // tag-discriminating dynamic path below (already sound for kind-unknown args;
-  // reused as-is, no new coercion logic needed here).
+  // Proven numbers use a raw self-compare. Numeric unions with absence only
+  // exclude null/undefined; unknown values require full NaN-box discrimination.
+  // Map/dictionary number claims can include an absent key, so retain the
+  // summary's nullability proof even when the value-type census says NUMBER.
   const emitIsNaN = (x) => {
     const vt = valTypeOf(x)
     if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
@@ -1477,6 +1485,11 @@ export default (ctx) => {
     const t = temp('t')
     const raw = typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
     if (vt === VAL.NUMBER && !censusMaybeUndefined(x)) return raw
+    const kind = ctx.summary?.at(ctx.func.current).kindOfExpr(x)
+    // A numeric union with absence cannot contain a string/object box. Keep
+    // that proof instead of mistaking a numeric NaN payload for a heap tag.
+    if (kind != null && tagOf(core(kind)) === K.NUMBER && isNullable(kind))
+      return typed(['i32.and', raw, ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))]], 'i32')
     const bits = tempI64('b')
     return typed(['if', ['result', 'i32'], raw,
       ['then', ['block', ['result', 'i32'],

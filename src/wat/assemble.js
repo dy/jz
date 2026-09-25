@@ -22,12 +22,9 @@
 // Phase 1: build the synthetic `$__start` function (+ later simplify it).
 export { buildStartFn, hoistConstGlobalInits } from './assemble/start-fn.js'
 
-// Phase 2 (syncImports) and phase 5 (pullStdlib): stdlib template parse
-// cache, reachability, the late f64x2-vectorizer top-up, and import sync.
-export {
-  clearStdlibParseCache, stdlibParseCacheMap, setStdlibParseCacheMap,
-  appendLateStdlib, pullStdlib, syncImports,
-} from './assemble/stdlib-pull.js'
+// Phase 2 (syncImports) and phase 5 (pullStdlib): template parsing,
+// reachability and import sync.
+export { pullStdlib, syncImports } from './assemble/stdlib-pull.js'
 
 // Phases 3-4: closure-body dedup, then closure-table finalize + ABI shrink.
 export { dedupClosureBodies, finalizeClosureTable } from './assemble/closure-table.js'

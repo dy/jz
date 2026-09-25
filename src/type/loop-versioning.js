@@ -104,9 +104,12 @@ export function typedStaticLen(rhs) {
  *     which proves the fast copy's own access nodes. */
 export function typedIdxProven(recv, idx, node = null) {
   if (typeof recv !== 'string') return false
+  const ownNode = node != null && node[1] === recv && node[2] === idx
+  if (ownNode && getFactStore().guardProven.has(node)) return true
+  // Most literal and canonical-loop accesses need no whole-body interval walk.
+  if (typedIndexKnown(ctx, recv, idx)) return true
   const ip = intervalProvenIdx(ctx)
-  if (node != null && node[1] === recv && node[2] === idx && (ip.has(node) || getFactStore().guardProven.has(node))) return true
-  if (typedIndexKnown(ctx, recv, idx) || ip.has(idxKey(recv, idx))) return true
+  if (ownNode && ip.has(node) || ip.has(idxKey(recv, idx))) return true
   const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
     ?? ctx.func.localReps?.get(recv)?.arrayLen
   if (len == null) return false

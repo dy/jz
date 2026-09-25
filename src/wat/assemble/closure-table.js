@@ -33,6 +33,11 @@ const mixStr = (h, str) => {
   for (let i = 0; i < str.length; i++) h = mix(h, str.charCodeAt(i))
   return h
 }
+const numberBits = new DataView(new ArrayBuffer(8))
+const mixNumber = (h, n) => {
+  numberBits.setFloat64(0, n || 0, true) // -0 and +0 share the exact comparator's class
+  return mix(mix(mix(h, 11), numberBits.getUint32(0, true)), numberBits.getUint32(4, true))
+}
 
 export function dedupClosureBodies(closureFuncs, sec) {
   if (closureFuncs.length <= 1) return
@@ -40,35 +45,30 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // The previous key was JSON.stringify of every closure's fully-renamed tree
   // -- measured at 810.76 MB of transient string churn on the jz x jz
   // region-live self-compile, 99.2% of the buildStartFn window
-  // (.work/evidence.md 2026-08-19 attribution verdict). The hash walk
-  // allocates nothing and the exact comparator runs only within a hash
-  // bucket, so dedup GROUPS stay bit-identical while the churn dies.
+  // (.work/evidence.md 2026-08-19 attribution verdict). The hash walk copies
+  // no IR and hashes f64 words without formatting them; the exact comparator
+  // runs only within a hash bucket, preserving the dedup groups.
   // INVARIANT (grouping parity with the old stringify key): undefined, null,
   // NaN and +/-Infinity all serialized to the same JSON token 'null', so they
   // form ONE equivalence class in both the hash and the comparator below --
   // collapsing them differently would split/merge groups and change output.
   const localNamesOf = (fn) => {
-    const names = new Set()
+    const names = new Map()
     walkAst(fn, { enter: node => {
-      if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
-        names.add(node[1])
+      if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$' && !names.has(node[1]))
+        names.set(node[1], names.size)
     } })
     return names
   }
   const hashOf = (fn, locals) => {
-    let counter = 0
-    const ord = new Map()
     const walk = (node, h) => {
       if (typeof node === 'string') {
-        if (locals.has(node)) {
-          let r = ord.get(node)
-          if (r === undefined) { r = counter++; ord.set(node, r) }
-          return mix(mix(h, 5), r)
-        }
+        const ordinal = locals.get(node)
+        if (ordinal !== undefined) return mix(mix(h, 5), ordinal)
         return mixStr(mix(h, 7), node)
       }
       if (dedupIsSentinel(node)) return mix(h, -2)
-      if (typeof node === 'number') return mixStr(mix(h, 11), String(node))
+      if (typeof node === 'number') return mixNumber(h, node)
       if (typeof node === 'boolean') return mix(mix(h, 29), node ? 1 : 0)
       if (!Array.isArray(node)) return mixStr(mix(h, 17), String(node))
       h = mix(h, 19)
@@ -79,23 +79,17 @@ export function dedupClosureBodies(closureFuncs, sec) {
     for (let i = 2; i < fn.length; i++) h = walk(fn[i], h)
     return h
   }
-  // Exact alpha-rename-aware structural equality, string-free: locals must
-  // correspond by first-occurrence order on both sides (same relation the
-  // old rename-to-$_cN + stringify encoded).
+  // A local's declaration ordinal gives its canonical name. Alpha-equivalent
+  // trees have corresponding declarations, so hashing and exact equality can
+  // share that one map instead of allocating a renaming map for each walk.
   const equalBodies = (fa, la, fb, lb) => {
     if (fa.length !== fb.length) return false
-    const ma = new Map(), mb = new Map()
-    let counter = 0
     const eq = (a, b) => {
       const as = typeof a === 'string', bs = typeof b === 'string'
       if (as || bs) {
         if (!as || !bs) return false
-        const al = la.has(a), bl = lb.has(b)
-        if (al !== bl) return false
-        if (!al) return a === b
-        const ra = ma.get(a), rb = mb.get(b)
-        if (ra === undefined && rb === undefined) { ma.set(a, counter); mb.set(b, counter); counter++; return true }
-        return ra !== undefined && ra === rb
+        const ra = la.get(a), rb = lb.get(b)
+        return ra !== undefined || rb !== undefined ? ra === rb : a === b
       }
       const aa = Array.isArray(a), ba = Array.isArray(b)
       if (aa || ba) {

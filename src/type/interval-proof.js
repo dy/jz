@@ -36,18 +36,20 @@ const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
  *  Optional calls/stores collect scalar hulls under the supplied entry ranges.
  *  Those maps preseed requested AST nodes with undefined; null means unknown.
  *  Repeated structural keys join conservatively across every occurrence.
- *  `out` receives both: a key string proven at every occurrence, and each
+ *  When provided, `out` receives a key string proven at every occurrence and each
  *  access NODE proven at its own position. `misses`, when given, maps each
  *  unproven access node of known length to [lo, hi, L]: the hull of its index
  *  over the walk (null bounds where unknown), for a guard to test. */
 export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null, misses = null) {
-  const env = new Map(entry)   // name → [lo, hi] | null (unknown)
+  // Branches retain their completed map and resume the saved entry map.
+  // Range pairs are immutable, so unchanged bounds can be shared at joins.
+  let env = new Map(entry)   // name → [lo, hi] | null (unknown)
   // Structural keys survive lowering clones, but each occurrence must prove
   // its own bounds. One unchecked twin permanently rejects the shared proof.
   // The access node itself carries its own occurrence's proof: a clone made
   // after this walk is a different node and keeps to the key's verdict, so a
   // provable read keeps its proof beside an unprovable twin.
-  const rejected = new Set(), rejectedNodes = new Set()
+  const rejected = out ? new Set() : null, rejectedNodes = out ? new Set() : null
   let guardProofContext = 0
   const underGuardProof = (guarded, fn) => {
     if (!guarded) return fn()
@@ -173,14 +175,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const rT = refine(x, false), rE = refine(x, true)
       if (rT) env.set(rT[0], rT[1])
       const a = ev(e[2])
-      const afterThen = new Map(env)
-      env.clear(); for (const [name, v] of saved) env.set(name, v)
+      const afterThen = env
+      env = saved
       if (rE) env.set(rE[0], rE[1])
       const b = ev(e[3])
-      for (const name of new Set([...afterThen.keys(), ...env.keys()])) {
-        const t = afterThen.get(name), f = env.get(name)
-        env.set(name, t && f ? [Math.min(t[0], f[0]), Math.max(t[1], f[1])] : null)
-      }
+      hullInto(afterThen)
       return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
     }
     // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
@@ -420,10 +419,13 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // cross any number of frames, so they conservatively feed every open one.
   const loopStack = []   // { kind: 'loop' | 'switch', breaks: [], continues: [] }
   const hullInto = (snap) => {
-    for (const k2 of new Set([...env.keys(), ...snap.keys()])) {
+    // Join existing bindings in place, then add snapshot-only bindings as
+    // unknown. No temporary union of the two key sets is needed.
+    for (const k2 of env.keys()) {
       const a = env.get(k2), b = snap.get(k2)
-      env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+      if (a !== b) env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
     }
+    for (const k2 of snap.keys()) if (!env.has(k2)) env.set(k2, null)
   }
   // LOOP FIXPOINT over the loop HEAD, the state where the condition is
   // evaluated: entry ∪ back edges (2-round widening). Each pass restores a
@@ -467,12 +469,13 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // null: hull(entry, one step) can never contain step №2, so without the
     // widen every advancing cursor escapes to unknown.
     const joined = new Map()
-    for (const k2 of new Set([...entryEnv.keys(), ...env.keys()])) {
+    for (const k2 of entryEnv.keys()) {
       const a = entryEnv.get(k2), b = env.get(k2)
       joined.set(k2, a && b
         ? [b[0] < a[0] ? I32_MIN : Math.min(a[0], b[0]), b[1] > a[1] ? I32_MAX : Math.max(a[1], b[1])]
         : null)
     }
+    for (const k2 of env.keys()) if (!joined.has(k2)) joined.set(k2, null)
     // FIELD BOUNDS: a widened name may hold a bit-pattern invariant the linear
     // hull cannot express — `bit >>= 1` never leaves [0, bit₀], `j ^= bit`
     // never leaves the field below bit₀'s width — and the sentinel itself is
@@ -590,17 +593,18 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       const idxV = ev(n[2])
-      const L = lens(n[1]), k = idxKey(n[1], n[2])
+      const L = lens(n[1])
       const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
       if (!recording) return proven   // exploratory fixpoint pass: env effects only
+      const k = out || ranges ? idxKey(n[1], n[2]) : null
       if (!proven) {
-        rejected.add(k); out.delete(k); rejectedNodes.add(n); out.delete(n)
+        if (out) { rejected.add(k); out.delete(k); rejectedNodes.add(n); out.delete(n) }
         if (misses && L != null) {
           const prev = misses.get(n), lo = idxV ? idxV[0] : null, hi = idxV ? idxV[1] : null
           misses.set(n, prev ? [prev[0] == null || lo == null ? null : Math.min(prev[0], lo), prev[1] == null || hi == null ? null : Math.max(prev[1], hi), L] : [lo, hi, L])
         }
       }
-      else {
+      else if (out) {
         if (!rejected.has(k)) out.add(k)
         if (!rejectedNodes.has(n)) out.add(n)
       }
@@ -1114,21 +1118,17 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const thenRefs = thenDead ? [] : refineAll(c, namedGuard)
       for (const rT of thenRefs) if (!closureWrites.has(rT[0])) env.set(rT[0], rT[1])
       if (!thenDead) underGuardProof(namedGuard && thenRefs.length, () => visit(thenB))
-      const afterThen = new Map(env)
-      env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
+      const afterThen = env
+      env = save
       // the fall-through state refines by ¬cond whether or not an else arm exists
       // (`if (xi >= 64) xi = 63` leaves xi < 64 on the other path)
       const rE = elseDead ? null : refine(c, true)
       if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
       if (elseB !== undefined && !elseDead) visit(elseB)
       if (thenDead) return
-      if (elseDead) { env.clear(); for (const [k2, v2] of afterThen) env.set(k2, v2); return }
+      if (elseDead) { env = afterThen; return }
       // join: both arms merge (min lo, max hi); known-in-one-arm-only joins unknown
-      const keys = new Set([...afterThen.keys(), ...env.keys()])
-      for (const k2 of keys) {
-        const a = afterThen.get(k2), b = env.get(k2)
-        env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
-      }
+      hullInto(afterThen)
       return
     }
     if (op === '?:') { ev(n); return }
@@ -1143,12 +1143,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (op === '&&') { for (const r of refineAll(n[1])) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
       else { const r = refine(n[1], true); if (r && !closureWrites.has(r[0])) env.set(r[0], r[1]) }
       visit(n[2])
-      const after = new Map(env)
-      env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
-      for (const k2 of new Set([...after.keys(), ...env.keys()])) {
-        const a = after.get(k2), b = env.get(k2)
-        env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
-      }
+      hullInto(save)
       return
     }
     if (op === '()' && n.length === 2) { visit(n[1]); return }   // grouping, not a call
@@ -1245,7 +1240,7 @@ export function intervalMisses(ctx, body = ctx.func?.body) {
     ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
   const entry = new Map()
   for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
-  scanIntervalIdx(body, new Set(), lens, null, null, entry, null, misses)
+  scanIntervalIdx(body, null, lens, null, null, entry, null, misses)
   return misses
 }
 

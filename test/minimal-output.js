@@ -9,6 +9,7 @@ import { compile } from '../index.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
 import { oracle } from './util.js'
+import { ctx } from '../src/ctx.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
 // boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
@@ -244,7 +245,7 @@ test('minimal: function-local mutated array is fresh each call', () => {
 
 // === Small function-local literal arrays scalarize — no memory, no allocator ===
 // A non-escaping, fixed-length array of compile-time-constant values, indexed only by
-// static integers, dissolves into scalar `a#i` locals (scanFlatObjects, same machinery
+// static integers, dissolves into scalar `a#i` locals (flatObjectCandidate, same machinery
 // as flat objects). No heap, no `(memory)`, no allocator — `let a=[1,2,3]; a[0]+a[2]`
 // is just two local reads. Bounded to FLAT_ARRAY_MAX elements; a constant element only.
 const FLAT_ARRAYS = {
@@ -311,12 +312,49 @@ for (const [name, src] of Object.entries(NO_FOLD)) {
   })
 }
 
+test('minimal: aggregate scans distinguish every declaration in a list', () => {
+  for (const [init, read] of [['[3, 5]', 'x[1]'], ['{ a: 3, b: 5 }', 'x.b']]) {
+    const src = `const x = ${init}
+      export function f(n) { let before = n, x = ${init}, after = n + 1; ${read} = before + after; return ${read} }
+      export function g() { return ${read} }`
+    for (const optimize of levels(0, 2, 3)) {
+      const ex = jz(src, { optimize }).exports
+      for (const n of [0, 2, 2, -1, 0]) {
+        is(ex.f(n), 2 * n + 1, 'a non-leading local declaration owns its writes')
+        is(ex.g(), 5, 'the module aggregate keeps its own value')
+      }
+    }
+  }
+})
+
+test('minimal: failed static aggregate candidates emit each element once', () => {
+  const cases = [
+    ['[next(), [next(), x => x + n]]', '10 * a[0] + a[1][0] + a[1][1](x)'],
+    ['{ first: next(), inner: { second: next(), call: x => x + n } }', '10 * a.first + a.inner.second + a.inner.call(x)'],
+    ['{ first: next(), inner: [next(), x => x + n] }', '10 * a.first + a.inner[0] + a.inner[1](x)'],
+  ]
+  for (const [init, read] of cases) for (const optimize of levels(0, 1, 2, 3)) {
+    const src = `let n = 0
+      function next() { return ++n }
+      const a = ${init}
+      export function f(x) { return ${read} }
+      export function count() { return n }`
+    const ex = jz(src, { optimize }).exports
+    if (!onKernel()) is(ctx.closure.bodies.length, 1, 'one source closure is registered once, including speculative static construction')
+    is(ex.count(), 2, 'initializers run once, in source order')
+    for (const x of [0, 3, 3, -1, 0]) {
+      is(ex.f(x), x + 14, 'nested literals retain their evaluation order, stored values and callable')
+      is(ex.count(), 2, 'calls do not repeat module initialization')
+    }
+  }
+})
+
 // === Never-relocated arrays skip the realloc-forwarding follow ===
 // A fresh array literal whose every use is a pure read (`a[i]` / `a.length`) can never
 // be grown, so its index reads derive the base directly — no `__ptr_offset` forwarding
 // chase. The SAFETY INVARIANT is the converse: any array that COULD be relocated must
 // keep forwarding, or a read through a stale base corrupts memory. Both directions are
-// pinned (the second is memory-safety-critical — see scanNeverGrown's default-deny proof).
+// pinned (the second is memory-safety-critical — see neverGrownCandidate's default-deny proof).
 // Float elements stay a plain heap array (not promoted to a typed/int vector) and the
 // dynamic loop index keeps it from scalarizing — so this exercises the plain-array
 // never-grown read path specifically.

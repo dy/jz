@@ -107,6 +107,21 @@ const fnBody = (w, name) => {
   return m ? w.slice(m.index, m.index + 4000) : null
 }
 
+test('function length uses source parameters, including runtime keys and deduplicated bodies', () => {
+  const src = `function named(a,b,c){return 1}
+    export function f(k,n){let capture=9;const fs=[()=>1,a=>1,(a,b)=>1,(a,b=2,c)=>1,(a,...r)=>1,(...r)=>1,named,(a,b)=>capture];return fs[n][k]}`
+  for (const optimize of [0, 2, 'speed']) {
+    const f = jz(src, { optimize }).exports.f
+    for (const [i, n] of [0,1,2,1,1,0,3,2].entries()) is(f('length', i), n, `arity ${i}, ${optimize}`)
+    is(f('missing', 2), undefined, 'missing property')
+    is(f('length', 0), 0, 'repeat after another function')
+    is(jz('export function f(){let g=(a,b)=>a+b;return g.length}', { optimize }).exports.f(), 2, 'literal property')
+  }
+  const memory = new WebAssembly.Memory({ initial: 16, maximum: 256 })
+  const first = jz(src, { memory }).exports.f, second = jz(src, { memory }).exports.f
+  is([first('length', 4), second('length', 6), first('length', 7)], [1,3,2], 'arity bytes relocate with each module in shared memory')
+})
+
 const throws = (code, match, msg, opts) => {
   let error
   try { compile(code, opts) } catch (e) { error = e }
@@ -2097,4 +2112,65 @@ test('call and apply on a closure value invoke it with the remaining arguments',
 test('closures: a rest-parameter arrow stored as a function property packs its arguments when called', () => {
   const src = 'let C = () => 1; C.s = (...a) => a.length + 4; export let f = () => C.s() * 100 + C.s(1, 2)'
   is(jz(src).exports.f(), 406)
+})
+
+
+test('closures: conditional cell placement preserves shared, nested and recursive captures', () => {
+  const src = `let kept = () => -1
+    export function shared(flag, x) {
+      let n = x; const get = () => n
+      if (flag) n += 10
+      kept = () => ++n
+      return get()
+    }
+    export function nested(a, b, x) {
+      if (a) { if (b) { let n = x; kept = () => ++n; return kept() } }
+      else { let n = x * 2; kept = () => ++n; return kept() }
+      return -1
+    }
+    export function recursive(flag, x) {
+      if (flag) {
+        const even = n => n === 0 ? 1 : odd(n - 1)
+        const odd = n => n === 0 ? 0 : even(n - 1)
+        kept = () => even(x)
+        return odd(x)
+      }
+      return -1
+    }
+    export function throwing(flag, x) {
+      try {
+        if (flag) { let n = x; kept = () => ++n; throw x }
+        return -1
+      } catch (e) { return e + 1 }
+    }
+    export function loop(n) {
+      const fns = []
+      for (let i = 0; i < n; i++) { let x = i; fns.push(() => ++x) }
+      let total = 0
+      for (const fn of fns) total += fn() * 10 + fn()
+      return total
+    }
+    export function read() { return kept() }`
+  for (const optimize of levels(0, 1, 2, 3)) {
+    const ex = run(src, { optimize })
+    for (const flag of [false, true, true, false]) {
+      is(ex.shared(flag, 3), flag ? 13 : 3)
+      is(ex.read(), flag ? 14 : 4, 'a cell shared across the branch dominates both paths')
+    }
+    for (const [a, b, x, value] of [[1, 1, 3, 4], [1, 1, 3, 4], [0, 0, 4, 9], [1, 0, 0, -1]]) {
+      is(ex.nested(a, b, x), value)
+      is(ex.read(), value === -1 ? 11 : value + 1, 'nested and else-only cells survive a skipped branch')
+    }
+    is(ex.throwing(true, 7), 8, 'a taken branch throws into its handler')
+    is(ex.read(), 8, 'the closure retains its cell across the exception')
+    is(ex.throwing(false, 0), -1, 'a skipped branch does not throw')
+    is(ex.read(), 9, 'the skipped branch preserves the retained cell')
+    for (const n of [0, 1, 1, 4, 0]) {
+      is(ex.recursive(true, n), n % 2)
+      is(ex.read(), 1 - n % 2, 'mutual recursion captures both initialized cells')
+      is(ex.recursive(false, n), -1)
+      is(ex.read(), 1 - n % 2, 'skipping recursive declarations retains prior closures')
+      is(ex.loop(n), 11 * n * (n + 1) / 2 + n, 'loop captures retain independent iteration cells')
+    }
+  }
 })
