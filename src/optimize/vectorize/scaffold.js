@@ -65,7 +65,8 @@ export function simdBound(iv, bound, lanes, overread = 0) {
   const span = () => ['i32.sub', cloneNode(bound), start()]
   const end = ['i32.add', start(), ['i32.and',
     overread ? ['i32.sub', span(), ['i32.const', overread]] : span(), ['i32.const', -lanes]]]
-  if (isI32Const(bound) && constNum(bound) >= -0x80000000 + lanes + overread - 1) return end
+  if (isI32Const(bound) && typeof bound[1] === 'number' &&
+      bound[1] >= -0x80000000 + lanes + overread - 1 && bound[1] <= 0x7fffffff) return end
   const entered = ['i32.lt_s', start(), cloneNode(bound)]
   return ['select', end, start(), overread
     ? ['i32.and', entered, ['i32.ge_u', span(), ['i32.const', lanes + overread]]]

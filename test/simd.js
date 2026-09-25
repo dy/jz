@@ -27,12 +27,12 @@ const GATHER_OPT = { level: 'speed', sourceInline: false }
 test('SIMD strip bounds: signed limits preserve empty ranges and complete lane groups', () => {
   for (const lanes of [2, 4, 8, 16]) for (const overread of [0, 2]) {
     const points = [-2147483648, -2147483647, -2147483633, -1, 0, 1, 3, 31, 2147483646, 2147483647]
-    for (const literal of [null, ...points]) {
+    for (const literal of [null, ...points, 0x80000000, 0x80000001, '0x80000000', '2147483648']) {
       const mod = encodeWat(['module', ['func', '$bound', ['export', '"bound"'],
         ['param', '$i', 'i32'], ['param', '$n', 'i32'], ['result', 'i32'],
         simdBound('$i', literal === null ? ['local.get', '$n'] : ['i32.const', literal], lanes, overread)]])
       const bound = new WebAssembly.Instance(new WebAssembly.Module(mod)).exports.bound
-      for (const start of points) for (const end of literal === null ? points : [literal]) {
+      for (const start of points) for (const end of literal === null ? points : [Number(literal) | 0]) {
         const groups = Math.max(0, Math.floor((end - start - overread) / lanes))
         const limit = bound(start, end)
         if (groups) is(limit, start + groups * lanes, `${lanes}+${overread}: ${start}..${end}`)
