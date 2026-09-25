@@ -17,7 +17,7 @@ import { compile as compileWat } from 'watr'
 import { ctx, reset } from '../src/ctx.js'
 import { DBG_INVARIANTS, assertCtxInvariants, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from '../src/debug.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
-import { analyzeBody, reanalyzeBody, setFuncBody, invalidateAllBodyFacts } from '../src/compile/analyze.js'
+import { analyzeBody, reanalyzeBody, setFuncBody, clearBodyFacts } from '../src/compile/analyze.js'
 import { emit, emitter, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
 import { run, wat } from './util.js'
@@ -224,7 +224,7 @@ test('invariant: global fact invalidation includes anonymous body roots', () => 
   const anonymous = parse('let x = 1; x + 2')
   const before = analyzeBody(anonymous)
   ok(analyzeBody(anonymous) === before, 'anonymous root has a cached observation')
-  invalidateAllBodyFacts()
+  clearBodyFacts()
   ok(analyzeBody(anonymous) !== before, 'phase invalidation drops anonymous observations too')
 })
 
