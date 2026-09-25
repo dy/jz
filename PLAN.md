@@ -17,7 +17,7 @@ pass. The full core suite passes 4805 tests / 125310 assertions, and the full
 Wasm-hosted suite passes 3824 tests / 105287 assertions. Fresh release
 performance evidence and the Jessie/watr memory gaps remain open; no release
 cap was relaxed. The [strict reference CI run](https://github.com/dy/jz/actions/runs/36173446401)
-uses the repaired native adapters at 53257033; its evidence is pending. All four
+used the repaired native adapters at 53257033 and failed its claims gate. All four
 CI test-matrix legs, fuzz, self-compile, conformance and native smoke are green
 on that commit. The committed-evidence claims gate remains red.
 
@@ -29,7 +29,14 @@ green in CI. The full Wasm-hosted CI suite passes 3825 tests / 105423 assertions
 and differential fuzz passes all 5000 seeds. Local core passes 4807 / 125453;
 the remaining local matrix legs are running. CI opt0, opt3 and WASI are green.
 [Reference CI for 695a8b6b](https://github.com/dy/jz/actions/runs/36179691942)
-is measuring release speed and RSS; the older run remains a baseline diagnostic.
+finished measurement but failed 7 of 23 claims: peak RSS plus strict leadership
+and parity bands for Wasm, V8-family and Bun/JSC rivals. It records 15 strict
+Wasm losses, 11 V8-family losses and 14 non-exempt Bun/JSC losses. Size passes
+on all 51 comparable AssemblyScript cases (geomean 0.768×); peak RSS still
+loses on Jessie (1.118× V8), watr (1.306×) and Web Audio (1.161×).
+Its resample/SDF losses predate the focused optimizations below. The
+[reference run at 226fe198](https://github.com/dy/jz/actions/runs/36195103458)
+is measuring the updated compiler; no diagnostic rows have replaced the public snapshot.
 
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
@@ -154,6 +161,20 @@ The proof now requires independent initializers before joining loop hulls.
 Direct regressions cover both forms; all 62 corpus checksums and binary sizes
 are unchanged. The expanded performance sweep passes 62 tests / 1347 assertions.
 The full suite and final CI checks remain required for this correction.
+
+The [twenty-round repeat at 226fe198](https://github.com/dy/jz/actions/runs/36194596041)
+on EPYC 7763 wins every pair against every measured rival. Resample/JSC is
+0.9203 (range 0.9101–0.9244), SDF/JSC 0.9653 (0.9558–0.9774).
+Both cases now have 40/40 JSC wins across the latest 9V74 and 7763 probes.
+SDF's median lead over Rust-Wasm on 7763 is only 1.7%; these probes establish
+measured leadership, not a large hardware-independent margin.
+
+Final review reproduced another integer hull bug: a `continue` or short circuit
+can skip an opposing step, so net motion does not bound repeated iterations.
+The collector now bounds each direction separately and no longer computes a
+net delta. Direct tests cover positive, negative and fractional opposing steps,
+plus the short-circuit form; the fresh self-compile corpus pins the skipped
+decrement case. Full verification is running on this correction.
 
 Keep the published snapshot unchanged until the tree passes its gates and
 quiet measurements support a refresh.

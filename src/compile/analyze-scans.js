@@ -1316,24 +1316,24 @@ function findOuterDeclInit(root, exclude, name) {
 }
 
 /** Per-iteration motion: P/N bound all positive/negative steps, including
- *  intermediate values. D is the exact net step, or null for a bounded varying
- *  step. Nested loops, resets, shadows and differing conditional arms reject. */
+ *  intermediate values. Bound each direction separately: continue and short
+ *  circuits can skip an opposing step. Nested loops, resets and shadows reject. */
 function collectStepRange(node, name, rangeOf, unit = 1) {
-  if (!Array.isArray(node)) return { P: 0, N: 0, D: 0 }
+  if (!Array.isArray(node)) return { P: 0, N: 0 }
   const op = node[0]
   if (MUTATE_OPS.has(op) && node[1] === name) {
-    if (op === '++') return { P: unit, N: 0, D: unit }
-    if (op === '--') return { P: 0, N: unit, D: -unit }
+    if (op === '++') return { P: unit, N: 0 }
+    if (op === '--') return { P: 0, N: unit }
     if (op === '+=' || op === '-=') {
       const r = rangeOf(node[2])
       if (!r) return null
       const lo = op === '+=' ? r[0] : -r[1], hi = op === '+=' ? r[1] : -r[0]
-      return { P: Math.max(0, hi), N: Math.max(0, -lo), D: lo === hi ? lo : null }
+      return { P: Math.max(0, hi), N: Math.max(0, -lo) }
     }
     return null
   }
   if (op === 'let' || op === 'const') {
-    let P = 0, N = 0, D = 0
+    let P = 0, N = 0
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
       if (d === name) return null                                     // bare uninitialized shadow decl
@@ -1341,30 +1341,30 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
       if (Array.isArray(d) && d[0] === '=') {
         const s = collectStepRange(d[2], name, rangeOf, unit)
         if (s == null) return null
-        P += s.P; N += s.N; D = D == null || s.D == null ? null : D + s.D
+        P += s.P; N += s.N
       }
     }
-    return { P, N, D }
+    return { P, N }
   }
   if (op === 'if' || op === '?:') {
     const c = collectStepRange(node[1], name, rangeOf, unit)
     if (c == null || c.P || c.N) return null   // a write to `name` inside the CONDITION itself — reject, too exotic
     const t = collectStepRange(node[2], name, rangeOf, unit)
-    const e = node.length > 3 && node[3] !== undefined ? collectStepRange(node[3], name, rangeOf, unit) : { P: 0, N: 0, D: 0 }
+    const e = node.length > 3 && node[3] !== undefined ? collectStepRange(node[3], name, rangeOf, unit) : { P: 0, N: 0 }
     if (t == null || e == null) return null
-    if (t.D !== e.D || t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
+    if (t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
     return t
   }
   if (op === 'for' || op === 'for-in' || op === 'for-of' || op === 'while' || op === 'do'
       || op === 'switch' || op === 'try' || op === '=>')
-    return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0, D: 0 }
-  let P = 0, N = 0, D = 0
+    return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
+  let P = 0, N = 0
   for (let i = 1; i < node.length; i++) {
     const s = collectStepRange(node[i], name, rangeOf, unit)
     if (s == null) return null
-    P += s.P; N += s.N; D = D == null || s.D == null ? null : D + s.D
+    P += s.P; N += s.N
   }
-  return { P, N, D }
+  return { P, N }
 }
 
 // A name written inside any closure of `body` can change at any call.
@@ -1485,11 +1485,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
             if (adv != null && adv > 0) record(name, loopBody, initExpr, [initRange[0], initRange[1] + trips * adv])
             continue
           }
-          const { P, N, D } = delta
-          const lastStart = D * (trips - 1)
-          const lo = D == null ? initRange[0] - trips * N : Math.min(initRange[0], initRange[0] + lastStart) - N
-          const hi = D == null ? initRange[1] + trips * P : Math.max(initRange[1], initRange[1] + lastStart) + P
-          record(name, loopBody, initExpr, [lo, hi])
+          record(name, loopBody, initExpr, [initRange[0] - trips * delta.N, initRange[1] + trips * delta.P])
         }
       }
     }
