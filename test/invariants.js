@@ -34,11 +34,14 @@ import { hoistVars } from '../jzify/hoist-vars.js'
 import { foldStaticConstAggregates } from '../src/compile/plan/literals.js'
 
 test('invariant: WAT token parsing uses source-sized storage', () => {
-  const source = readFileSync(new URL(import.meta.resolve('watr/parse')), 'utf8')
+  const parser = readFileSync(new URL(import.meta.resolve('watr/parse')), 'utf8')
   const util = readFileSync(new URL('../node_modules/watr/src/util.js', import.meta.url), 'utf8')
+  const source = `import parse from './parse.js'; export default function tokenize(s) { return parse(s) }
+    export function locations(s) { const a = parse(s); return [a.loc, a[1].loc] }`
   const text = 'a😀'.repeat(4000)
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
-    const r = instantiate(compile(source, { optimize, modules: { './util.js': util } }))
+    const r = instantiate(compile(source, { optimize, modules: { './parse.js': parser, './util.js': util } }))
+    is(r.exports.locations(' (x (y))'), [1, 4], 'named source offsets survive inside the compiled parser')
     for (const token of ['', text, text, `"${text}"`, `$"${text}"`, `(;${text};)`, `;;${text}\n`, 'other', '']) {
       const input = r.memory.String(token), before = r.instance.exports.__heap.value >>> 0
       const output = r.exports.default(input)

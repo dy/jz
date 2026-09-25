@@ -168,7 +168,7 @@ Architecture
 
 Dependencies
 
-- subscript `b0e3a65` (on 10.8.0, bulk literal decoding) and watr `6ca0d5d` (on 5.11.3); 5.11.3 carries the two
+- subscript `b0e3a65` (on 10.8.0, bulk literal decoding) and watr `b08bad2` (on 5.11.3); 5.11.3 carries the two
   optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
   fold for base64, `ifset` declining a branchy condition for sort), so a clean
   install reproduces the standings.
@@ -400,21 +400,24 @@ Dependencies
    now slices completed source spans instead of concatenating each character.
    A 12000-unit token allocates 24 KB instead of 144 MB; its compiled parser
    shrinks by 2538 bytes. Quoted, ordinary and comment tokens share this path.
-   All-tier allocation checks pass 90 assertions, 20000 differential boundary
+   All-tier allocation and internal location checks pass 95 assertions, 20000 differential boundary
    cases match (including errors and locations), and Watr's full suite passes:
-   355 core, 31 propagation, 268 spec, 22 skips. Recursive and CI measurements
-   of this dependency revision are still pending.
+   355 core, 31 propagation, 268 spec, 22 skips on both JS and Wasm backends.
+   Kernel parity stays 20/20. Recursive compilation still reaches the 4 GiB
+   ceiling after startup (4.187 GB); assembly attribution is in progress.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 
-   Seven paired CI rounds at `7ea32282` measure watr's peak at 122692 KiB
-   (V8 76724), Jessie at 111608 KiB (V8 99896), and webaudio at 98572 KiB
-   (V8 79544). These memory gaps remain. JZ/V8 runtime medians are watr
-   1.259×, Jessie 0.769×, webaudio 1.449×, sort 1.049×, CRC32 1.020×,
-   SDF 0.947× and noise 0.605×. Every checksum matches. Watr's paired
+   Seven paired CI rounds at `04431ef2` on Intel Xeon 8573C measure watr's
+   peak at 121044 KiB (V8 76164), Jessie at 112356 KiB (V8 101056), and
+   webaudio at 97352 KiB (V8 79348). These memory gaps remain. JZ/V8
+   runtime medians are watr 1.114×, Jessie 0.719×, webaudio 1.538×,
+   sort 1.029×, CRC32 1.251×, SDF 1.205× and noise 0.600×. The previous
+   `7ea32282` run used AMD EPYC 7763, so its timing changes are not a clean
+   code comparison. Every checksum matches. Watr's paired
    timings vary widely; these diagnostic rows do not establish its speed
    parity or replace the required full reference dataset. Its size-tier
-   output is 311549 bytes, below the unchanged 320000-byte cap.
+   output is 311176 bytes, below the unchanged 320000-byte cap.
 
    Watr's code buffer now starts at 4 KB, using its existing geometric growth
    instead of reserving 64 KB for every assembly. The unchanged workload drops

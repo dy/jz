@@ -12,7 +12,7 @@ node bench/bench.mjs  # run benchmarks
 ### Shared watr optimizer
 
 `package.json` depends on subscript revision `b0e3a65` (on 10.8.0, with
-shared span decoding for strings and templates) and watr revision `6ca0d5d`
+shared span decoding for strings and templates) and watr revision `b08bad2`
 (on 5.11.3). This pin includes the scheduler fix that keeps result-producing
 calls at the end of folded blocks; effect purity alone does not prove a
 statement has no result. The WAT printer joins fragments once per node so wide
