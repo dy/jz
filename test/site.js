@@ -76,9 +76,9 @@ writeFileSync('bench/results-ci.json', process.env.SNAPSHOT)
     writeFileSync(join(dir, 'bin/git'), `#!/bin/sh
 echo "$*" >> "$GIT_LOG"
 case "$1" in
-  log) echo "$SOURCE_SHA source" ;;
   push) test "$PUSH_OK" = 1 ;;
-  diff) exit 1 ;;
+  merge-base) test "$HISTORY_OK" = 1 ;;
+  diff) if test "$2" = --cached; then exit 1; fi; test "$INPUTS_SAME" = 1 ;;
 esac
 `, { mode: 0o755 })
     const good = { cases: { alpha: { targets: { perry: { medianUs: 1, parity: 'ok' } } } } }
@@ -87,7 +87,7 @@ esac
       writeFileSync(log, '')
       const result = spawnSync('bash', ['-e', '-c', script], { cwd: dir, encoding: 'utf8',
         env: { ...process.env, PATH: join(dir, 'bin') + ':' + process.env.PATH,
-          GIT_LOG: log, GITHUB_SHA: 'source', SOURCE_SHA: 'source', PUSH_OK: '1', SNAPSHOT: JSON.stringify(snapshot), ...extra },
+          GIT_LOG: log, GITHUB_SHA: 'source', INPUTS_SAME: '1', HISTORY_OK: '1', PUSH_OK: '1', SNAPSHOT: JSON.stringify(snapshot), ...extra },
       })
       return { ...result, calls: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) }
     }
@@ -104,9 +104,11 @@ esac
     const exhausted = run(good, { PUSH_OK: '0' })
     is(exhausted.status, 1, 'exhausted retries fail CI')
     is(exhausted.calls.filter(c => c === 'push').length, 3, 'three publication attempts')
-    const stale = run(good, { SOURCE_SHA: 'newer' })
-    is(stale.status, 0, 'a superseded benchmark yields to the newer run')
-    is(stale.calls.includes('push'), false, 'stale evidence is never pushed')
+    for (const extra of [{ INPUTS_SAME: '0' }, { HISTORY_OK: '0' }]) {
+      const stale = run(good, extra)
+      is(stale.status, 0, 'changed inputs or history yield to the newer run')
+      is(stale.calls.includes('push'), false, 'stale evidence is never pushed')
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

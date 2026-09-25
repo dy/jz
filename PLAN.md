@@ -26,7 +26,8 @@ elements. The allocation sweep passes 16 tests / 1439 assertions, self-compile
 passes 76 / 2496, and all 62 non-self-host benchmark checksums match the control.
 Fresh functional, sequence and recursive attestation passes; conformance is
 green in CI. The full Wasm-hosted CI suite passes 3825 tests / 105423 assertions,
-and differential fuzz passes all 5000 seeds. Its full local matrix is running.
+and differential fuzz passes all 5000 seeds. Local core passes 4807 / 125453;
+the remaining local matrix legs are running. CI opt0, opt3 and WASI are green.
 [Reference CI for 695a8b6b](https://github.com/dy/jz/actions/runs/36179691942)
 is measuring release speed and RSS; the older run remains a baseline diagnostic.
 
@@ -520,6 +521,8 @@ Dependencies
    deleted inputs and rewritten history still prevent stale publication.
    The full tooling suite passes 24 tests / 206 assertions, including 20 direct
    assertions against the workflow's guard in an isolated Git repository.
+   The Pages publication fixture distinguishes a staged snapshot from changed
+   inputs; the full local site, headline, browser and guide smoke gate passes.
 
    The superseded reference run 36155865964 exposed two harness failures:
    a failed self-build was retried at its 600-second limit in every paired
