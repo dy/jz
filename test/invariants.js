@@ -454,6 +454,41 @@ test('architecture: typed emitters consume TypedStoragePlan, not live ctor maps'
   is(violations.join(','), '', 'emit-time ctor decisions must route through TypedStoragePlan')
 })
 
+test('layout: fixed masks are formatted once across repeated calls and resets', async () => {
+  const names = ['nanPrefixHex', 'nanPrefixMaskHex', 'ssoBitI64Hex', 'sliceBitI64Hex', 'hcacheBitI64Hex']
+  const layout = await import('../layout.js')
+  const expected = names.map(name => layout[name]())
+  const source = `import { ${names.join(',')} } from './layout.js';
+    export function mask(i) { ${names.map((name, i) => `if (i === ${i}) return ${name}();`).join('')} }`
+  const modules = { './layout.js': readFileSync(new URL('../layout.js', import.meta.url), 'utf8') }
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const r = instantiate(compile(source, { modules, optimize }))
+    for (let round = 0; round < 3; round++) {
+      const before = r.instance.exports.__heap.value >>> 0
+      for (const i of [0, 0, 1, 2, 3, 4, 0]) is(r.exports.mask(i), expected[i])
+      is(r.instance.exports.__heap.value >>> 0, before, 'fixed mask reads allocate nothing')
+      r.instance.exports._clear()
+    }
+  }
+})
+
+test('layout: fixed-width hex formatting needs no general radix scratch', () => {
+  const source = `import { i64Hex } from './layout.js';
+    export function hex(hi, lo) { return i64Hex((BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0)) }`
+  const modules = { './layout.js': readFileSync(new URL('../layout.js', import.meta.url), 'utf8') }
+  const words = [0, 1, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const r = instantiate(compile(source, { modules, optimize }))
+    for (const hi of words) for (const lo of words) {
+      const before = r.instance.exports.__heap.value >>> 0
+      const expected = '0x' + ((BigInt(hi) << 32n) | BigInt(lo)).toString(16).toUpperCase().padStart(16, '0')
+      is(r.exports.hex(hi, lo), expected)
+      ok((r.instance.exports.__heap.value >>> 0) - before < 512, 'fixed-width formatting has bounded scratch')
+      r.instance.exports._clear()
+    }
+  }
+})
+
 test('layout: i64Hex is self-compile-safe across the full 64-bit range', async () => {
   // Under self-compile, BigInts are raw SIGNED i64 bits (kind-erased), so any
   // formatting that routes through bits.toString(16) renders a bit-63-set

@@ -423,8 +423,23 @@ Dependencies
    A 1000-function parser probe allocates 193 KB instead of 409 KB. All-tier
    parser and helper-reuse checks pass 185 assertions with 28/28 sampled output
    rows byte-identical. Watr passes 356 core, 31 propagation and 268 spec tests
-   on both JS and Wasm backends. Recursive measurement and full JZ CI remain
-   pending for this last change.
+   on both JS and Wasm backends. The rebuilt kernel passes 20 parity cases
+   and 111 targeted assertions; Watr remains under its size cap at 311158 bytes.
+   Recursive compilation now completes helper parsing at 4.285 GB and reaches
+   schema-read optimization before exhausting memory. That optimizer now
+   consumes the registry's existing field/slot index instead of rebuilding it
+   per read; tag constants are formatted once. Seven affected tests pass
+   (100 assertions) and 12 comparison outputs remain byte-identical. The next
+   recursive measurement and full JZ CI remain pending.
+   Shared-index kernel parity is 20/20; 81 affected Wasm-hosted assertions pass.
+   Representative compiles save 153–417 KB, but recursion still exhausts memory
+   in optimization. Fixed layout masks now allocate once at initialization.
+   Variable i64 literals use eight hex digits per word: an isolated O1 formatter
+   shrinks from 17413 to 4129 bytes and 100 calls allocate 10400 instead of
+   86576 bytes. Formatting passes 378 all-tier assertions, coercion and JS-parity
+   pass 2964 assertions, 28 output comparisons remain identical, and the
+   instruction ratchet stays 10/10. The rebuilt kernel passes 20/20 parity
+   cases and 311 targeted assertions. The full recursive result is pending.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

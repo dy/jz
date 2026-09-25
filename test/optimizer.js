@@ -420,6 +420,21 @@ test('LICM: self-referential tee induction in loop condition is not hoisted (rff
   is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
 })
 
+test('devirtSchemaReads: registered field slots remain isolated across compilations', () => {
+  const graphs = [
+    `const rows = [{x:1,y:2}, {pad:8,x:3,y:4}, {y:6}];`,
+    `const rows = [{pad:9,y:3,x:7}, {x:5,y:4}, {y:2,pad:8}];`,
+  ]
+  const body = `function get(o) { return (o.x === undefined ? -1 : o.x) + o.y }
+    export function f(i) { return get(rows[i % 3]) }`
+  for (const level of levels(1, 2, 3, 'size')) for (const graph of [0, 0, 1, 0]) {
+    const src = graphs[graph] + body
+    const { f } = run(src, { optimize: { level, sourceInline: false } })
+    const ref = oracle(src).f
+    for (const i of [0, 1, 2, 0]) is(f(i), ref(i), `O${level}, graph ${graph}, row ${i}`)
+  }
+})
+
 test('devirtSchemaReads: sparse fields remain specialized past 24 module schemas', () => {
   const src = `const rows=[{wanted:7},${Array.from({length:30}, (_,i)=>`{field${i}:${i}}`).join(',')},{padding:1,wanted:9}]
     function get(o){return o.wanted}

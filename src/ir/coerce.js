@@ -24,6 +24,9 @@ import { isPlanTaggedBigint, isPlanRawBigint, materializeDeferredBigint, readI64
 import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
+const TAG_MASK_HEX = i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))
+const STRING_TAG_HEX = i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))
+
 /** ToPrimitive sidecar probe (ES2024 7.1.1): an own `valueOf`/`toString` data
  *  property shadows the builtin. Reads the dynamic-prop sidecar slot keyed by
  *  `nameIR` (an emitted i64 string key) off receiver `objIR`; if it holds a
@@ -48,8 +51,8 @@ export function sidecarOverride(objIR, nameIR, onOverride, onFallback) {
       ['i32.and',
         ['f64.ne', ['local.get', `$${o}`], ['local.get', `$${o}`]],
         ['i64.ne',
-          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['i64.const', i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))]],
-          ['i64.const', i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))]]],
+          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['i64.const', TAG_MASK_HEX]],
+          ['i64.const', STRING_TAG_HEX]]],
       ['then', ['f64.reinterpret_i64',
         ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], nameIR]]],
       ['else', undefExpr()]]],

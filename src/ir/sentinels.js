@@ -90,7 +90,7 @@ export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
 // an f64.eq(v,v) self-check has failed (so -Infinity is excluded, leaving
 // negative NaN). Pointers and atoms are emitted sign-clear (nanPrefixMaskHex,
 // layout.js), so a sign-bit-set NaN can only be a genuine float NaN.
-const NEG_NAN_MASK = 0xFFF0000000000000n
+const NEG_NAN_MASK = i64Hex(0xFFF0000000000000n)
 
 /** The NaN payload `get` (an f64 IR that failed `f64.eq(v, v)`) is the number
  *  NaN, not a box: the canonical box prefix (tag=ATOM aux=0, the one payload
@@ -100,8 +100,8 @@ const NEG_NAN_MASK = 0xFFF0000000000000n
 export function numberNanIR(get) {
   const bits = ['i64.reinterpret_f64', get]
   return ['i32.or',
-    ['i64.eq', bits, ['i64.const', i64Hex(LAYOUT.NAN_PREFIX_BITS)]],
-    ['i64.eq', ['i64.and', bits, ['i64.const', i64Hex(NEG_NAN_MASK)]], ['i64.const', i64Hex(NEG_NAN_MASK)]]]
+    ['i64.eq', bits, ['i64.const', nanPrefixHex()]],
+    ['i64.eq', ['i64.and', bits, ['i64.const', NEG_NAN_MASK]], ['i64.const', NEG_NAN_MASK]]]
 }
 
 export function boolBoxIR(e) {

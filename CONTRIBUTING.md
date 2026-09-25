@@ -151,6 +151,13 @@ named-property sidecars on every WAT node; public parsing retains source offsets
 and syntax errors retain offsets in both modes. WAT tokens retain source spans until committed,
 avoiding quadratic copying of names, quoted strings and comments.
 Helper-reference scans collect whole names without unused regex capture records.
+Schema-read dispatch consumes the registration index of fields and slots; it
+never rebuilds that index per read. The index is read-only to the optimizer,
+and its registration order supplies dispatch labels. Functions with no tagged
+reads leave after the existing assignment census. Fixed layout masks are
+formatted once and reused as immutable strings; every mutable IR node stays
+fresh. Variable i64 literals format each unsigned word as eight hex digits,
+with bounded string storage and no general radix-conversion scratch.
 Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy
 length can omit constants that the linked helpers read.
