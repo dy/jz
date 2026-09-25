@@ -21,6 +21,11 @@ uses the repaired native adapters at 53257033; its evidence is pending. All four
 CI test-matrix legs, fuzz, self-compile, conformance and native smoke are green
 on that commit. The committed-evidence claims gate remains red.
 
+The next memory candidate reduces the speed-tier array reserve from 16 to 4
+elements. The allocation sweep passes 16 tests / 1439 assertions, self-compile
+passes 76 / 2496, and all 62 non-self-host benchmark checksums match the control.
+Its full local matrix is running; its release speed and RSS evidence is pending.
+
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
 | Dependency | Official npm watr 5.11.8 and subscript 10.8.1, pinned by lockfile integrity; both installed as registry directories, not sibling links. | Keep the registry artifacts through final verification. |
@@ -450,15 +455,23 @@ Dependencies
    for individual temporary buffers, while preserving returned bytes and
    those persistent roots. Keep the dependency and benchmark input unchanged.
 
-   A diagnostic `arrayMinCap: 4` control reduces watr's requested allocation
+   The speed-tier candidate uses `arrayMinCap: 4`, reducing watr's requested allocation
    to 18940958 bytes (26.8%), with 286006 allocator calls; Jessie changes by
    only 96 bytes. Both checksums match. Eight alternating runtime pairs per
    case in normal and forced-optimized V8 give cap4/cap16 medians of
    1.023 / 0.994 for Jessie and 1.019 / 0.982 for watr. Watr peak RSS falls
    about 7–8 MB, but the noisy timings establish no reliable speed benefit.
-   Keep this global policy change out; focus on temporary-array lifetimes
-   and proven small builder sizes instead. Instrumented runs measure allocation
-   volume only; these local controls do not replace reference CI evidence.
+   This is a memory reduction, with its runtime tradeoff still subject to the
+   unchanged CI gates. All 62 non-self-host workload checksums match the old
+   reserve; 56 binaries are byte-identical, including all nine priority cases.
+   Entity, gainclass, Jessie, watr, Web Audio and wordcount change; none grows.
+   Self-compile passes 76 tests / 2496 assertions. The allocation regression
+   covers empty and zero-work builders, growth across 4 and 16 elements,
+   retained aliases, exact undefined holes and A → A → B → A construction.
+   Instrumented runs measure allocation volume only; these local controls do
+   not replace reference CI evidence. Jessie's copied lists still need a
+   general ownership/lifetime proof; neither aliases nor host-observable
+   properties may be discarded on the strength of the benchmark trace.
 
 3. **Reproducible speed, size and memory evidence.** `bench/results.json` is
    stale: timed above the 4096 MB swap-validity cap, only 43 comparable

@@ -221,8 +221,8 @@ Static aggregate probes retain their emitted field/element IR. If any value
 fails the static-data check, runtime construction reuses that IR; it never
 re-emits nested literals or registers their closures twice.
 
-Nonempty array literals reserve their stated length. Empty builders retain the
-speed tier's growth reserve, and proven builder bounds still preallocate enough
+Nonempty array literals reserve their stated length. Empty builders reserve four
+elements even at the speed tier, and proven builder bounds still preallocate enough
 capacity. `arrayLiteralMinCap` remains an explicit override for kernel builds;
 smaller initial storage uses the existing alias and named-property forwarding.
 Named-property sidecars start with two slots at every tier and grow on demand;

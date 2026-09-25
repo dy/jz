@@ -24,6 +24,47 @@ export let probe = (n) => { const h0 = __heap_mark(); let s = 0; for (let i = 0;
 }
 const zero = (out, what) => { for (const level in out) is(out[level], 0, `${what} allocates ${out[level]} bytes per call at O${level}`) }
 
+test('allocation: empty builders keep a small reserve and preserve aliases across growth', () => {
+  const source = `let a = [], alias = a, previous = a
+    export function empty(mode, count) {
+      const start = __heap_mark()
+      for (let i = 0; i < count; i++) { previous = a; a = mode ? new Array() : []; alias = a }
+      return __heap_mark() - start
+    }
+    export function append(count) {
+      for (let i = 0; i < count; i++) a.push(i * 3 - 7)
+      return JSON.stringify([a, alias, previous])
+    }
+    export function holes(count) {
+      previous = a; a = new Array(count); alias = a
+      a.length = count + 1
+      for (let i = 0; i <= count; i++) if (a[i] !== undefined) return 'bad hole'
+      a[count] = 31
+      return JSON.stringify([a, alias, previous])
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'speed')) {
+    const ex = jz(source, { optimize }).exports
+    for (const mode of [0, 0, 1, 0]) {
+      const before = ex.append(0)
+      is(ex.empty(mode, 0), 0, 'zero constructions leave the heap unchanged')
+      is(ex.append(0), before, 'zero constructions preserve all live arrays')
+      const bytes = ex.empty(mode, 40)
+      ok(bytes > 0 && bytes <= 40 * 48, `O${optimize}: empty builders retain at most 48 bytes each (${bytes})`)
+      is(ex.append(0), '[[],[],[]]', 'empty arrays have no visible reserve elements')
+      let values = []
+      for (const count of [1, 3, 1, 11, 1, 0]) {
+        values.push(...Array.from({ length: count }, (_, i) => i * 3 - 7))
+        is(ex.append(count), JSON.stringify([values, values, []]), 'growth preserves aliases and leaves the previous array alone')
+      }
+      for (const count of [0, 1, 4, 5, 16, 17, 1]) {
+        const next = [...Array(count).fill(null), 31]
+        is(ex.holes(count), JSON.stringify([next, next, values]), 'reserved and grown holes stay undefined; old arrays survive reuse')
+        values = next
+      }
+    }
+  }
+})
+
 test('allocation: short numeric strings reclaim formatter scratch', () => {
   zero(measure(`const values = new Float64Array([0, -0, 123.5, -12.5, 123456])
     const run = i => String(values[i % values.length]).length`), 'short decimal formatting')
