@@ -439,7 +439,19 @@ Dependencies
    86576 bytes. Formatting passes 378 all-tier assertions, coercion and JS-parity
    pass 2964 assertions, 28 output comparisons remain identical, and the
    instruction ratchet stays 10/10. The rebuilt kernel passes 20/20 parity
-   cases and 311 targeted assertions. The full recursive result is pending.
+   cases and 311 targeted assertions. This saves about 59 MB before optimization
+   (helper parsing ends at 4.222 GB), but recursive compilation still exhausts
+   memory in schema-read optimization. Scoped read memos now walk regions
+   directly, avoid empty snapshots and use the shared purity table. Dense
+   dispatches share one load arm per field offset: 8- and 31-shape probes shrink
+   by 144–285 bytes at O1–O3. The 10 affected tests pass 280 assertions and the
+   instruction ratchet stays 10/10. Review also reproduced a pre-existing
+   empty-cache hit on numeric zero with the a5296f8a kernel; an impossible
+   initial tag fixes it without another runtime check. Tests cover zero,
+   subnormals, refill, reset and snapshot initialization. The rebuilt kernel
+   passes 20/20 parity cases and 217 affected Wasm-hosted assertions; Watr
+   stays at 311158 bytes. Recursion reaches peephole optimization but still
+   exhausts 4 GiB (helper parsing finishes at 4.222 GB).
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

@@ -158,6 +158,11 @@ reads leave after the existing assignment census. Fixed layout masks are
 formatted once and reused as immutable strings; every mutable IR node stays
 fresh. Variable i64 literals format each unsigned word as eight hex digits,
 with bounded string storage and no general radix-conversion scratch.
+Dense schema dispatch shares one arm per field offset. Scoped read memos walk
+their region directly and copy only nonempty incoming maps. An empty inline
+cache starts with an impossible high-word sentinel: its low bits are nonzero,
+whereas every masked receiver has zero low bits. Numeric zero and subnormals
+must miss before the first object read as well as after a cache fill.
 Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy
 length can omit constants that the linked helpers read.

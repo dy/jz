@@ -420,6 +420,40 @@ test('LICM: self-referential tee induction in loop condition is not hoisted (rff
   is(main(1), 0)                        // 1 >>> 1 = 0 → zero iterations
 })
 
+test('devirtSchemaReads: schemas with the same field slot share one dispatch arm', () => {
+  const src = `const rows = [{x:1,a:0}, {x:2,b:0}, {p:0,x:3}, {p:0,x:4,q:0}, {q:0,r:0,x:5}, {pad:9}, 7]
+    export function read(o) { return o.x }
+    export function f(i) { return read(rows[i]) }`
+  const w = compile(src, { wat: true, optimize: { level: 1, sourceInline: false, watr: false } })
+  const body = findFunc(parseWat(w), '$read')
+  ok(body, 'the dynamic read keeps its own body')
+  const ir = JSON.stringify(body)
+  ok(ir.includes('br_table'), 'the dense schema dispatch is exercised')
+  is((ir.match(/"i64.load"/g) || []).length, 3, 'five schemas use three distinct slot loads')
+  const ref = oracle(src).f
+  for (const level of levels(1, 2, 3, 'size')) {
+    const { f } = run(src, { optimize: { level, sourceInline: false } })
+    for (const i of [0, 1, 2, 3, 4, 5, 6, 0]) is(f(i), ref(i), `O${level}, row ${i}`)
+  }
+})
+
+test('devirtSchemaReads: empty branch and loop regions cannot leak cached reads', () => {
+  const src = `export function value(o,n) {
+    let s = 0
+    if (n > 0) s += o.x + o.x
+    if (n === 2) o.x += 3
+    for (let i = 0; i < n; i++) { s += o.x + o.x; o.x++ }
+    return s + o.x + o.x
+  }
+  export function f(n,k) { return value(k ? {x:3,p:2} : {p:2,x:4}, n) }`
+  ok(compile(src, { wat: true, optimize: { level: 1, sourceInline: false, watr: false } }).includes('__dsr'), 'the schema-read pass handles this receiver')
+  const ref = oracle(src).f
+  for (const level of levels(1, 2, 3, 'size')) {
+    const { f } = run(src, { optimize: { level, sourceInline: false } })
+    for (const n of [-1, 0, 1, 2, 3, 0]) for (const k of [0, 1]) is(f(n,k), ref(n,k), `O${level}, n=${n}, k=${k}`)
+  }
+})
+
 test('devirtSchemaReads: registered field slots remain isolated across compilations', () => {
   const graphs = [
     `const rows = [{x:1,y:2}, {pad:8,x:3,y:4}, {y:6}];`,
@@ -5654,6 +5688,26 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   is((body.match(/\(call \$c[\s)]/g) || []).length, 2, 'c is called once per test')
   const ref = oracle(src).f
   for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
+})
+
+test('devirtSchemaReads: an empty inline cache cannot match zero or subnormal numbers', () => {
+  const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:0,x:${i}}`)
+  const src = `function mk(i) { switch(i%30) { ${shapes.map((s,i) => `case ${i}: return ${s};`).join('')} } return {x:-1,z:0} }
+    export function zero(n) { const o = n ? mk(n) : 0; return o.x }
+    export function tiny(n) { const o = n ? mk(n) : 5e-324; return o.x }`
+  for (const level of levels(1, 2, 3, 'size')) for (const snapshotInit of [false, true]) {
+    const r = jz(src, { optimize: { level, snapshotInit, sourceInline: false } })
+    for (const fn of [r.exports.zero, r.exports.tiny]) {
+      is(fn(0), undefined, 'the first primitive read misses an empty cache')
+      is(fn(0), undefined, 'a failed read does not fill the cache')
+      is(fn(4), 4, 'a real object fills the cache')
+      is(fn(0), undefined, 'a primitive still misses a populated cache')
+      is(fn(7), 7, 'a different schema refills it')
+    }
+    r.instance.exports._clear()
+    is(r.exports.zero(0), undefined, 'reset preserves the receiver guard')
+    is(r.exports.tiny(4), 4)
+  }
 })
 
 test('devirtSchemaReads: past the dispatch budget a read site keeps an inline cache', () => {
