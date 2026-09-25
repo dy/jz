@@ -584,6 +584,27 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
     const k1 = mk('c7', ['f64.const', 2])
     const k2 = mk('c8', ['f64.const', 3])
     is(run([k1, k2]), '$c7,$c8', 'distinct constants stay distinct')
+    is(run([]), '', 'empty input')
+    is(run([['func', '$empty']]), '$empty', 'one empty body')
+    is(run([['func', '$empty1'], ['func', '$empty2']]), '$empty1', 'empty bodies share one group')
+    const local = (name, p, q, last = p) => ['func', `$${name}`,
+      ['param', p, 'i32'], ['local', q, 'i32'], ['result', 'i32'],
+      ['local.set', q, ['local.get', p]], ['i32.sub', ['local.get', q], ['local.get', last]]]
+    is(run([local('a', '$p', '$q'), local('b', '$x', '$y'), local('c', '$z', '$w')]),
+      '$a', 'several comparisons reuse the canonical numbering')
+    is(ctx.closure.table.join(','), 'a,a,a', 'every duplicate table entry redirects')
+    is(run([local('a', '$p', '$q'), local('different', '$x', '$y', '$y')]),
+      '$a,$different', 'a different repeated local stays distinct on the next invocation')
+    for (const value of [0, -0, 0.1, -0.1, Number.MIN_VALUE, Number.MAX_VALUE, 2 ** 32, 2 ** 53])
+      is(run([mk('n1', ['f64.const', value]), mk('n2', ['f64.const', value])]), '$n1', `same numeric bits: ${value}`)
+    is(run([mk('z1', ['f64.const', 0]), mk('z2', ['f64.const', -0])]), '$z1', 'zero signs retain the existing grouping')
+    is(run([mk('lo', ['f64.const', 0.1]), mk('hi', ['f64.const', 0.10000000000000002])]), '$lo,$hi', 'adjacent doubles stay distinct')
+    const call = ['call', '$b'], untouched = ['call', '$elsewhere']
+    is(run([mk('a', ['f64.const', 1]), mk('b', ['f64.const', 1]), mk('use', ['f64.add', call, untouched])]),
+      '$a,$use', 'a direct caller survives duplicate removal')
+    is(call[1], '$a', 'the redirect retains the WAT name prefix')
+    is(untouched[1], '$elsewhere', 'unrelated names retain their identity')
+    is(ctx.closure.table.join(','), 'a,a,use', 'table names keep their bare-name contract')
   } finally { ctx.closure.table = savedTable }
 })
 

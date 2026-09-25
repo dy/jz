@@ -379,10 +379,13 @@ Dependencies
    their completed maps and share one hull join instead of copying both arms
    and materializing key unions. Its numeric-range phase allocates 93 MB, down
    from 183 MB. Named-function emission now ends at 3.349 GB, versus 4.064 GB
-   before these changes. Startup emission completes at 4.211 GB; closure
-   deduplication then exceeds 4 GiB. The recursive gate remains open. All 20
-   diagnostic kernel parity cases pass, and 28 representative outputs at
-   O1/O2/O3/size are byte-identical before and after the interval change.
+   before these changes. Startup emission completes at 4.211 GB. Closure
+   deduplication now shares local numbering, hashes numeric bits without
+   decimal strings, and redirects prefixed names without copying every local
+   name. The recursive trace advances into WAT printing during assembly but
+   still exceeds 4 GiB. All 20 kernel parity and nine reuse/error sequence
+   cases pass; 28 representative outputs at O1/O2/O3/size remain byte-identical
+   after the interval and deduplication changes. The recursive gate is open.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

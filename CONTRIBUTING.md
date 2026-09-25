@@ -162,6 +162,9 @@ own rank and invalidates enumeration caches. No collection entry grows.
 Function arity is source arity (before a default or rest parameter), indexed by
 closure table slot independently of body deduplication. Its byte table is linked
 only when a length reader is reachable.
+Closure deduplication assigns local ordinals once for hashing and exact
+comparison. Numeric hashes use a scratch bit view; redirects retain WAT names
+with their prefix, avoiding string copies for every local in the module.
 
 
 Array joining captures length before separator conversion and reads elements

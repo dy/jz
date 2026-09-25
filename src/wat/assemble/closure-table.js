@@ -36,39 +36,38 @@ const mixStr = (h, str) => {
 
 export function dedupClosureBodies(closureFuncs, sec) {
   if (closureFuncs.length <= 1) return
-  // Rename-invariant rolling hash + exact compare on hash collision.
-  // The previous key was JSON.stringify of every closure's fully-renamed tree
-  // -- measured at 810.76 MB of transient string churn on the jz x jz
-  // region-live self-compile, 99.2% of the buildStartFn window
-  // (.work/evidence.md 2026-08-19 attribution verdict). The hash walk
-  // allocates nothing and the exact comparator runs only within a hash
-  // bucket, so dedup GROUPS stay bit-identical while the churn dies.
+  // Stream a rename-invariant hash, then compare exactly within each bucket.
+  // Local ordinals are assigned once and reused by the exact comparator.
+  // Numeric literals hash their bits through one scratch cell, without strings.
   // INVARIANT (grouping parity with the old stringify key): undefined, null,
   // NaN and +/-Infinity all serialized to the same JSON token 'null', so they
   // form ONE equivalence class in both the hash and the comparator below --
   // collapsing them differently would split/merge groups and change output.
+  const number = new Float64Array(1), words = new Uint32Array(number.buffer)
   const localNamesOf = (fn) => {
-    const names = new Set()
+    const names = new Map()
     walkAst(fn, { enter: node => {
       if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
-        names.add(node[1])
+        names.set(node[1], -1)
     } })
     return names
   }
   const hashOf = (fn, locals) => {
     let counter = 0
-    const ord = new Map()
     const walk = (node, h) => {
       if (typeof node === 'string') {
-        if (locals.has(node)) {
-          let r = ord.get(node)
-          if (r === undefined) { r = counter++; ord.set(node, r) }
+        let r = locals.get(node)
+        if (r !== undefined) {
+          if (r === -1) { r = counter++; locals.set(node, r) }
           return mix(mix(h, 5), r)
         }
         return mixStr(mix(h, 7), node)
       }
       if (dedupIsSentinel(node)) return mix(h, -2)
-      if (typeof node === 'number') return mixStr(mix(h, 11), String(node))
+      if (typeof node === 'number') {
+        number[0] = node || 0   // equality treats both zero signs alike
+        return mix(mix(mix(h, 11), words[0]), words[1])
+      }
       if (typeof node === 'boolean') return mix(mix(h, 29), node ? 1 : 0)
       if (!Array.isArray(node)) return mixStr(mix(h, 17), String(node))
       h = mix(h, 19)
@@ -84,18 +83,12 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // old rename-to-$_cN + stringify encoded).
   const equalBodies = (fa, la, fb, lb) => {
     if (fa.length !== fb.length) return false
-    const ma = new Map(), mb = new Map()
-    let counter = 0
     const eq = (a, b) => {
       const as = typeof a === 'string', bs = typeof b === 'string'
       if (as || bs) {
         if (!as || !bs) return false
-        const al = la.has(a), bl = lb.has(b)
-        if (al !== bl) return false
-        if (!al) return a === b
-        const ra = ma.get(a), rb = mb.get(b)
-        if (ra === undefined && rb === undefined) { ma.set(a, counter); mb.set(b, counter); counter++; return true }
-        return ra !== undefined && ra === rb
+        const ra = la.get(a), rb = lb.get(b)
+        return ra === undefined && rb === undefined ? a === b : ra === rb
       }
       const aa = Array.isArray(a), ba = Array.isArray(b)
       if (aa || ba) {
@@ -114,7 +107,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
   for (const fn of closureFuncs) {
     const locals = localNamesOf(fn)
     const h = hashOf(fn, locals)
-    const name = fn[1].slice(1)
+    const name = fn[1]
     let bucket = buckets.get(h)
     if (!bucket) buckets.set(h, bucket = [])
     let canonical = null
@@ -127,7 +120,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
   if (!redirect.size) return
   const kept = sec.funcs.filter(fn => {
     if (!Array.isArray(fn) || fn[0] !== 'func') return true
-    const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+    const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1] : null
     return !name || !redirect.has(name)
   })
   // Retired onto walkAst (pipeline-minimality slice, `.work/archive/assemble-outliers.md`
@@ -140,10 +133,16 @@ export function dedupClosureBodies(closureFuncs, sec) {
   for (const fn of kept) walkAst(fn, { enter: n => {
     for (let i = 0; i < n.length; i++) {
       const c = n[i]
-      if (typeof c === 'string' && c[0] === '$' && redirect.has(c.slice(1))) n[i] = `$${redirect.get(c.slice(1))}`
+      if (typeof c === 'string' && c[0] === '$') {
+        const target = redirect.get(c)
+        if (target) n[i] = target
+      }
     }
   } })
-  ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
+  ctx.closure.table = ctx.closure.table.map(n => {
+    const target = redirect.get(`$${n}`)
+    return target ? target.slice(1) : n
+  })
   sec.funcs.length = 0
   sec.funcs.push(...kept)
 }
