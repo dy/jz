@@ -375,9 +375,14 @@ Dependencies
    it further to 566 MB. Carrier-only changes now retain the semantic
    summary; forwarding-only majority-kind clones are skipped using the binding
    census. Recursive compilation needs two summary solves instead of three.
-   Literal folding also preserves unchanged subtrees. Together these remove
-   about 590 MB before closure emission, which now completes at 4.178 GB;
-   startup emission still exceeds 4 GiB. The recursive gate remains open.
+   Literal folding also preserves unchanged subtrees. Interval branches retain
+   their completed maps and share one hull join instead of copying both arms
+   and materializing key unions. Its numeric-range phase allocates 93 MB, down
+   from 183 MB. Named-function emission now ends at 3.349 GB, versus 4.064 GB
+   before these changes. Startup emission completes at 4.211 GB; closure
+   deduplication then exceeds 4 GiB. The recursive gate remains open. All 20
+   diagnostic kernel parity cases pass, and 28 representative outputs at
+   O1/O2/O3/size are byte-identical before and after the interval change.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 
@@ -579,6 +584,11 @@ The string ownership fix passes 584 affected tests (10820 assertions), the
 five-tier alias/allocation sweep (987 assertions) and all ten instruction
 ratchets. Watr's size before the smaller dependency buffer is 311541 bytes,
 605 bytes smaller. Full CI must validate this follow-up.
+
+CI at `7ea32282` passes default, opt0, opt3, WASI, fuzz, conformance,
+self-compile round trips and the full Wasm-hosted suite. The self workflow
+fails only its recursive memory check; claims still rejects the stale benchmark
+evidence. The subsequent traversal and interval changes require full CI.
 
 ## Gate evidence, September 23
 

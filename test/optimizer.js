@@ -4691,6 +4691,43 @@ export let main = (g) => {
   ok(Number.isNaN(run(src, { optimize: 'speed' }).main(1)), 'g=1: OOB tail is NaN, matching JS (not raw reads, not undefined)')
 })
 
+test('interval walk: branch joins retain both arms through nested control flow', () => {
+  const src = `
+export function branch(n, flag, mode) {
+  const a = new Int32Array([11, 22, 33, 44])
+  let i = 1
+  if (mode === 0) { if (flag) i = n; else i = 3 }
+  else if (mode === 1) { flag ? (i = n) : (i = 3) }
+  else if (mode === 2) { flag && (i = n) }
+  else { flag || (i = n) }
+  return a[i]
+}
+export function loop(n, flag) {
+  const a = new Int32Array([11, 22, 33, 44])
+  let i = 0, j = 0
+  while (i < n) {
+    if (flag) {
+      if (i === 1) { j = 5; break }
+      j = i
+    } else {
+      j = i
+      if (i++ === 1) continue
+    }
+    i++
+  }
+  return a[j]
+}`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const ex = run(src, { optimize })
+    for (const flag of [0, 1]) for (const n of [-1, 0, 1, 3, 4, 7]) {
+      for (let mode = 0; mode < 4; mode++)
+        is(ex.branch(n, flag, mode), js.branch(n, flag, mode), `${optimize}: branch ${n}/${flag}/${mode}`)
+      is(ex.loop(n, flag), js.loop(n, flag), `${optimize}: loop ${n}/${flag}`)
+    }
+  }
+})
+
 test('interval walk: strided companion cursor + packed OR index erase codec bounds checks', () => {
   // A 3→4 codec loop has two coupled induction variables. The output cursor's
   // pre-increment window is [0, 12], while the two masked fields OR to [0,63].

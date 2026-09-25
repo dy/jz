@@ -41,7 +41,9 @@ const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
  *  unproven access node of known length to [lo, hi, L]: the hull of its index
  *  over the walk (null bounds where unknown), for a guard to test. */
 export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null, misses = null) {
-  const env = new Map(entry)   // name → [lo, hi] | null (unknown)
+  // Branches retain their completed map and resume the saved entry map.
+  // Range pairs are immutable, so unchanged bounds can be shared at joins.
+  let env = new Map(entry)   // name → [lo, hi] | null (unknown)
   // Structural keys survive lowering clones, but each occurrence must prove
   // its own bounds. One unchecked twin permanently rejects the shared proof.
   // The access node itself carries its own occurrence's proof: a clone made
@@ -173,14 +175,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const rT = refine(x, false), rE = refine(x, true)
       if (rT) env.set(rT[0], rT[1])
       const a = ev(e[2])
-      const afterThen = new Map(env)
-      env.clear(); for (const [name, v] of saved) env.set(name, v)
+      const afterThen = env
+      env = saved
       if (rE) env.set(rE[0], rE[1])
       const b = ev(e[3])
-      for (const name of new Set([...afterThen.keys(), ...env.keys()])) {
-        const t = afterThen.get(name), f = env.get(name)
-        env.set(name, t && f ? [Math.min(t[0], f[0]), Math.max(t[1], f[1])] : null)
-      }
+      hullInto(afterThen)
       return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
     }
     // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
@@ -420,10 +419,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // cross any number of frames, so they conservatively feed every open one.
   const loopStack = []   // { kind: 'loop' | 'switch', breaks: [], continues: [] }
   const hullInto = (snap) => {
-    for (const k2 of new Set([...env.keys(), ...snap.keys()])) {
+    for (const k2 of env.keys()) {
       const a = env.get(k2), b = snap.get(k2)
-      env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
+      if (a !== b) env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
     }
+    for (const k2 of snap.keys()) if (!env.has(k2)) env.set(k2, null)
   }
   // LOOP FIXPOINT over the loop HEAD, the state where the condition is
   // evaluated: entry ∪ back edges (2-round widening). Each pass restores a
@@ -1114,21 +1114,17 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const thenRefs = thenDead ? [] : refineAll(c, namedGuard)
       for (const rT of thenRefs) if (!closureWrites.has(rT[0])) env.set(rT[0], rT[1])
       if (!thenDead) underGuardProof(namedGuard && thenRefs.length, () => visit(thenB))
-      const afterThen = new Map(env)
-      env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
+      const afterThen = env
+      env = save
       // the fall-through state refines by ¬cond whether or not an else arm exists
       // (`if (xi >= 64) xi = 63` leaves xi < 64 on the other path)
       const rE = elseDead ? null : refine(c, true)
       if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
       if (elseB !== undefined && !elseDead) visit(elseB)
       if (thenDead) return
-      if (elseDead) { env.clear(); for (const [k2, v2] of afterThen) env.set(k2, v2); return }
+      if (elseDead) { env = afterThen; return }
       // join: both arms merge (min lo, max hi); known-in-one-arm-only joins unknown
-      const keys = new Set([...afterThen.keys(), ...env.keys()])
-      for (const k2 of keys) {
-        const a = afterThen.get(k2), b = env.get(k2)
-        env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
-      }
+      hullInto(afterThen)
       return
     }
     if (op === '?:') { ev(n); return }
@@ -1143,12 +1139,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (op === '&&') { for (const r of refineAll(n[1])) if (!closureWrites.has(r[0])) env.set(r[0], r[1]) }
       else { const r = refine(n[1], true); if (r && !closureWrites.has(r[0])) env.set(r[0], r[1]) }
       visit(n[2])
-      const after = new Map(env)
-      env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
-      for (const k2 of new Set([...after.keys(), ...env.keys()])) {
-        const a = after.get(k2), b = env.get(k2)
-        env.set(k2, a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null)
-      }
+      hullInto(save)
       return
     }
     if (op === '()' && n.length === 2) { visit(n[1]); return }   // grouping, not a call

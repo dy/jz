@@ -992,6 +992,8 @@ preserve writes to existing bindings and introduce only private temporary locals
 so changing loop arithmetic does not require rescanning all nested closures.
 
 The interval interpreter also supplies call-argument and typed-store bounds.
+Its branches retain completed environments and share one hull join. Range pairs
+are immutable, so unchanged bounds survive a join without another allocation.
 Compile-time bitwise and integer-store folds share exact ToInt32 conversion;
 large constants reduce modulo 2^32 before the compiler's runtime i64 boundary.
 Runtime typed stores, DataView, Atomics values and UTF-16 unit construction
