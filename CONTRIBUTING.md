@@ -125,7 +125,14 @@ See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
 Load reuse visits reads and writes in evaluation order. A shared load executes
 at its first occurrence, never before preceding operands; identity-observing
-uses retain undefined, while numeric-only uses normalize it. Index definitions
+uses retain undefined, while numeric-only uses normalize it. Mutable scalars
+retain their complete integer hull through scratch storage only when
+every writer is bounded. Missing reads, closure writes and unknown updates
+decline that proof. Unary numeric conversion preserves a known hull, and
+bounded products multiply before converting to floating point. Numeric
+conversion still honors a cached local's possible undefined value, even when
+its scratch initializer is zero.
+Index definitions
 come from the binding census and positive bounds apply only inside their strict
 loop guard. Every counter proof rejects additional writes in the loop step.
 Bounds queries use existing constant, mask, loop and occurrence proofs before

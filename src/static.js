@@ -133,6 +133,7 @@ export function intExprRange(n) {
   }
   if (!Array.isArray(n)) return null
   const op = n[0]
+  if (op === 'u+' && n.length === 2) return intExprRange(n[1])
   // A present typed element retains the all-writers hull proved for its
   // receiver. A possible miss is undefined, not an integer in that hull.
   if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {

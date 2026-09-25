@@ -18,7 +18,7 @@ import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN, kind } from '../../sum
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
-  scanObjectArrayFacts, isFreshArrayCtor, stampCoInductionRanges,
+  scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges,
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
@@ -440,12 +440,9 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
     withTypedElemOverlay(typedElems, () => {
     walk(body)
     for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)
-    // Co-induction accumulator fact (INDUCTION-VARIABLE FACT project,
-    // analyze-scans.js's own header doc): durably stamps a body-local
-    // accumulator's proven range BEFORE widenLocalTypes' Pass D runs, so its
-    // bare-escape check (e.g. `return op` after the loop) sees a real hull
-    // instead of blaming an unranged reassigned local into f64 storage.
-    stampCoInductionRanges(body, presentNodes, typedLens)
+    // Prove accumulator bounds and join every write to mutable scalars before
+    // widening: an observed local needs its complete hull, not just its init.
+    stampBodyRanges(body, presentNodes, typedLens)
     unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
       typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
     for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })

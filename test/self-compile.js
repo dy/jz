@@ -17,7 +17,7 @@ import { ok, is, throws } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
 import { readMarks, phaseDeltas } from '../scripts/kernel-marks.mjs'
 import jz, { compile } from '../index.js'   // native compiler — the correctness reference for the kernel's output
-import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B } from './_optimizer-kernels.js'
+import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B, GATHER_MAP_KERNEL } from './_optimizer-kernels.js'
 import { selfBytes } from './_self-build.js'
 
 // Reuse the compiler across samples; compileSelf resets its state per call.
@@ -304,6 +304,22 @@ test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late st
   // instantiate would throw "Unknown func $math.log_v" if appendLateStdlib were missing; the
   // |0 truncation in the kernel absorbs the f64x2 poly's sub-ULP lane noise, so the checksum is exact.
   is(instantiate(bytes, { memory: 256 }).exports.main(), native, 'kernel SIMD tone-map === native')
+})
+
+test('self-compile: checked gather maps pack lanes and preserve scalar tails across reuse', () => {
+  const s = getSelf(), options = s.memory.String(JSON.stringify({ level: 'speed', sourceInline: false }))
+  for (const length of [16, 16, 0, 16]) {
+    const src = GATHER_MAP_KERNEL.replace('Float64Array(16)', `Float64Array(${length})`)
+    const input = s.memory.String(src)
+    const wat = s.memory.read(s.exports.compileWat(input, 0, options))
+    if (length) ok(wat.includes('f64x2.replace_lane'), 'the wasm-hosted compiler runs the gather lift')
+    const bytes = s.memory.read(s.exports.default(input, 0, options)).slice()
+    const actual = instantiate(bytes).exports.probe
+    const expected = jz(src, { optimize: 'speed' }).exports.probe
+    for (const n of [0, 1, 2, 3, 7, 31]) for (const pick of [-1, 0, n - 1, n])
+      is(actual(n, 0.1, 0.7317314443021355, pick), expected(n, 0.1, 0.7317314443021355, pick),
+        `length ${length}, count ${n}, pick ${pick}`)
+  }
 })
 
 test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B state', () => {

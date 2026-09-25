@@ -510,7 +510,7 @@ export const arithmeticOps = {
     const peeled = (v) => Array.isArray(v) && (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') && v.length === 2 ? v[1]
       : isI32Num(v) && !widensUnsigned(v) ? v : null
     const pa = peeled(va), pb = peeled(vb)
-    if (pa && pb && i32Mag(pa) * i32Mag(pb) <= 0x7fffffff) return typed(['i32.mul', pa, pb], 'i32')
+    if (pa && pb && (i32Mag(pa) * i32Mag(pb) <= 0x7fffffff || mulRangeFitsI32(a, b))) return typed(['i32.mul', pa, pb], 'i32')
     const i32mul = tryI32Arith('i32.mul', '*', a, b, va, vb); if (i32mul) return i32mul
     return typed(['f64.mul', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },

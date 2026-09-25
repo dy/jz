@@ -9,6 +9,7 @@ import { run, wat, oracle, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
+import { GATHER_MAP_KERNEL as GATHER_MAP } from './_optimizer-kernels.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -20,21 +21,6 @@ const runVec = (code, opts) => jz(code, opts).exports
 const hasV128 = (w) =>
   /v128\.load|v128\.store|i32x4\.|i64x2\.|f32x4\.|f64x2\.|v128\.(and|or|xor)/.test(w)
 
-const GATHER_MAP = `function gather(a, b, n, phase, step) {
-  for (let i = 0; i < n; i++) {
-    const j = phase | 0, t = phase - j, x = a[j], y = a[j + 1]
-    b[i] = ((x * 0.5 + y * 1.5) * t + (x - y) * 2.5) * t
-      + (y - x * 0.5) * t + x * x - y * y
-    phase += step
-  }
-  return phase
-}
-export function probe(count, start, step, pick) {
-  const a = new Float64Array(16), b = new Float64Array(32)
-  for (let i = 0; i < a.length; i++) a[i] = (i - 4) * 0.125
-  const phase = gather(a, b, count & 31, +start, +step)
-  return pick < 0 ? phase : b[pick & 31]
-}`
 const GATHER_OPT = { level: 'speed', sourceInline: false }
 
 test('SIMD gather map: checked reads and floating recurrences retain exact lane order and tails', () => {

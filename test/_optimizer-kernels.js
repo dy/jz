@@ -31,3 +31,20 @@ export let main = () => {
   return ((x & 3) === 0 ? 17 : 19) + (0 === Math.imul(x, 5) ? 23 : 29)
 }
 `
+
+// Checked gather inputs feed a pure floating arithmetic suffix.
+export const GATHER_MAP_KERNEL = `function gather(a, b, n, phase, step) {
+  for (let i = 0; i < n; i++) {
+    const j = phase | 0, t = phase - j, x = a[j], y = a[j + 1]
+    b[i] = ((x * 0.5 + y * 1.5) * t + (x - y) * 2.5) * t
+      + (y - x * 0.5) * t + x * x - y * y
+    phase += step
+  }
+  return phase
+}
+export function probe(count, start, step, pick) {
+  const a = new Float64Array(16), b = new Float64Array(32)
+  for (let i = 0; i < a.length; i++) a[i] = (i - 4) * 0.125
+  const phase = gather(a, b, count & 31, +start, +step)
+  return pick < 0 ? phase : b[pick & 31]
+}`

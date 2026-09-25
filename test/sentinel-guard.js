@@ -58,6 +58,27 @@ const GUARDS_OFF = { level: 'speed', sentinelGuards: false }
 const missArms = (wat) => (wat.match(/\(else \(f64\.const nan\b/g) || []).length
 const kernelOf = (wat) => funcWat(wat, 'edt1d') || funcWat(wat, 'run') || funcWat(wat, 'run$exp')
 
+test('sentinel guard: a cached missing integer becomes numeric NaN before a floating store', () => {
+  const src = `function pop(f,v,z) {
+    let k=0;v[0]=0;z[0]=-1e20;z[1]=1e20
+    for(let q=1;q<2;q++) {
+      let s=((f[q]+q*q)-(f[v[k]]+v[k]*v[k]))/(2*q-2*v[k])
+      while(s<=z[k]) { k--;s=((f[q]+q*q)-(f[v[k]]+v[k]*v[k]))/(2*q-2*v[k]) }
+      k++;v[k]=q;z[k]=s;z[k+1]=1e20
+    }
+  }
+  export function probe(value) {
+    const f=new Float64Array([0,value]),v=new Int32Array(2),z=new Float64Array(3)
+    pop(f,v,z);return ''+z[0]
+  }`
+  const native = oracle(src).probe
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const probe = jz(src, { optimize }).exports.probe
+    for (const value of [-Infinity, -Infinity, 0, NaN, Infinity, -Infinity])
+      is(probe(value), native(value), `O${optimize}: ${value}`)
+  }
+})
+
 test('sentinel guard: the lower envelope matches the host with and without its sentinels', () => {
   const native = oracle(ENVELOPE).run
   for (const optimize of [...levels(0, 2, 3, 'size'), GUARDS_OFF]) {

@@ -12,7 +12,7 @@
 import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR_CLASS_NAMES, ERR, errorCodeLiteral } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
-import { VAL, repOf, numericStorage } from '../reps.js'
+import { VAL, repOf, numericStorage, mayBeUndefined } from '../reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied } from '../kind.js'
 import { intExprRange } from '../static.js'
 import { K, bitOf, hasTag, NULL_BITS, TAGS } from '../summary/kind.js'
@@ -245,7 +245,7 @@ export function toNumF64(node, v) {
     // the overwhelming hot-path case) pays zero new cost — same node object,
     // same asF64(v) call, no new branch taken.
     if ((vt === VAL.NUMBER || censusNum) &&
-        (typeof node === 'string' && ctx.func.maybeNullish?.has(node) || censusMaybeUndefined(node))) {
+        (typeof node === 'string' && (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node)) || censusMaybeUndefined(node))) {
       // A computed read can invoke a key's conversion hook; even a pure
       // Map/dictionary probe is costly to repeat. Evaluate every expression
       // once, then duplicate only its local read in the sentinel branches.

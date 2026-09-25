@@ -6,6 +6,7 @@ import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 import parseWat from 'watr/parse'
 import { parse as watTree, callsOutside, walk as walkWat } from '../scripts/wat-probe.mjs'
+import { oracle } from './util.js'
 
 // Helper: time N iterations, return ms
 function bench(fn, n) {
@@ -895,6 +896,35 @@ test('codegen: shared integer gathers do not acquire an artificial undefined ini
   const w = compile(src.replace('i<n', 'i<4'), { optimize: 'speed', wat: true })
   ok(!w.includes('i64.trunc_sat_f64_s'), 'present integer gather indices keep their i32 representation')
   ok(!w.includes('nan:0x7FF8000100000000'), 'numeric scratch introduces no null coercions')
+})
+
+test('codegen: mutable integer hulls include every writer and preserve missing values', () => {
+  const cases = [
+    ['bounded reads', 'let x=0;for(let i=0;i<(n&3);i++)x=a[i];return (+x)*(+x)'],
+    ['checked misses', 'let x=0;for(let i=0;i<n;i++)x=a[i];return (+x)*(+x)'],
+    ['uninitialized', 'let x;if(n)x=a[1];return (+x)*(+x)'],
+    ['wide writer', 'let x=0;if(n)x=a[1];if(n>1)x=65536;return (+x)*(+x)'],
+    ['fractional writer', 'let x=0;if(n)x=a[1];if(n>1)x=0.5;return (+x)*(+x)'],
+    ['closure writer', 'let x=0;const set=()=>{x=65536};if(n)x=a[1];if(n>1)set();return (+x)*(+x)'],
+    ['compound step', 'let x=0;if(n)x=a[1];x+=n*65536;return (+x)*(+x)'],
+    ['assignment step', 'let x=0;for(let i=0;i<n;i++)x=x+65536;return (+x)*(+x)'],
+    ['signed zero', 'let x=0;if(n)x=-a[1];const y=n>1?0:1;return 1/((+x)*(+y))'],
+    ['null writer', 'let x=0;if(n)x=a[1];if(n>1)x=null;return [x,(+x)*(+x)]'],
+    ['destructured writer', 'let x=0;if(n)x=a[1];if(n>1)[x]=[65536];return (+x)*(+x)'],
+    ['iterator writer', 'let x=0;if(n)x=a[1];if(n>1)for(x of [65536]){}return (+x)*(+x)'],
+  ]
+  for (const [name, body] of cases) {
+    const src = `export function f(n){const a=new Int32Array([0,3,7,11]);${body}}`
+    const native = oracle(src).f
+    for (const optimize of [0, 2, 'speed', 'size']) {
+      const f = jz(src, { optimize }).exports.f
+      for (const n of [0, 1, 3, 4, 5, 3, 0]) is(f(n), native(n), `${name}, O${optimize}, n=${n}`)
+    }
+    if (name === 'bounded reads' && !onKernel()) {
+      const w = compile(src, { optimize: 'speed', wat: true })
+      ok(w.includes('i32.mul') && !w.includes('f64.mul'), 'bounded mutable integers multiply before conversion')
+    }
+  }
 })
 
 test('codegen: Uint32Array arithmetic stays f64 — no i32 wrap at 2^32', () => {

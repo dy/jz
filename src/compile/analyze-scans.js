@@ -1370,7 +1370,7 @@ function collectStepRange(node, name, rangeOf) {
 // A name written inside any closure of `body` can change at any call.
 const closureWrites = (body, name) => some(body, n => n[0] === '=>' && isReassigned(n, name))
 
-export function stampCoInductionRanges(body, readPresent, typedLens) {
+export function stampBodyRanges(body, readPresent, typedLens) {
   const rangeOf = n => {
     if (Array.isArray(n) && typeof n[1] === 'string') {
       if (n[0] === '.' && n[2] === 'length') {
@@ -1389,7 +1389,12 @@ export function stampCoInductionRanges(body, readPresent, typedLens) {
     }
     return intExprRange(n)
   }
-  const regions = [body], proofs = new Map()
+  const regions = [body], proofs = new Map(), defs = new Map(), declared = new Set(), bad = new Set()
+  const addDef = (name, rhs) => {
+    if (typeof name !== 'string') return
+    if (!defs.has(name)) defs.set(name, [])
+    defs.get(name).push(rhs)
+  }
   const record = (name, loopBody, range) => {
     if (!Number.isFinite(range[0]) || !Number.isFinite(range[1])) return
     const prev = proofs.get(name)
@@ -1404,7 +1409,21 @@ export function stampCoInductionRanges(body, readPresent, typedLens) {
   // hulls, then require every write to belong to one of those regions.
   const loops = new Set(['for', 'for-in', 'for-of', 'while', 'do'])
   walkAst(body, { enter: node => {
-    if (node[0] === '=>') return false
+    if (node[0] === '=>') {
+      for (const name of collectAssignedNames(node, new Set())) bad.add(name)
+      return false
+    }
+    if (node[0] === 'let' || node[0] === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (typeof d === 'string') {
+          declared.add(d)
+          if (!node.some(x => Array.isArray(x) && x[0] === '=' && x[1] === d)) bad.add(d)
+        } else if (Array.isArray(d) && d[0] === '=') declared.add(d[1])
+      }
+    }
+    if (node[0] === '=') addDef(node[1], node[2])
+    else if (MUTATE_OPS.has(node[0]) && typeof node[1] === 'string') bad.add(node[1])
     if (node[0] === 'for' && node.length === 5) {
       const [, init, cond, step, loopBody] = node
       const counterName = guardCounterName(cond)
@@ -1437,6 +1456,26 @@ export function stampCoInductionRanges(body, readPresent, typedLens) {
   }, exit: node => { if (loops.has(node[0])) regions.pop() } })
   for (const [name, proof] of proofs)
     if (!writesOutsideLoop(body, proof.loops, name)) updateRep(name, { range: proof.range })
+  // A mutable scalar retains a closed hull only when EVERY write has one.
+  // Missing reads, uninitialized declarations, steps and closure writes
+  // disqualify it. Unknown dependencies defer; cycles never seed themselves.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, values] of defs) {
+      if (!declared.has(name) || bad.has(name) || repOf(name)?.range) continue
+      let lo = Infinity, hi = -Infinity, known = true
+      for (const rhs of values) {
+        const r = rangeOf(rhs)
+        if (!r) { known = false; break }
+        lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1])
+      }
+      if (known && Number.isFinite(lo) && Number.isFinite(hi)) {
+        updateRep(name, { range: [lo, hi] })
+        changed = true
+      }
+    }
+  }
 }
 
 const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
