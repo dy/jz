@@ -308,8 +308,8 @@ export function resolveIncludes(realize = true) {
     if (typeof text !== 'string') return (autoCache.set(name, []), [])
     found = []
     const seen = new Set()
-    for (const m of text.matchAll(/\$(__[A-Za-z0-9_]+)/g)) {
-      const d = m[1]
+    for (const ref of text.match(/\$__[A-Za-z0-9_]+/g) || []) {
+      const d = ref.slice(1)
       if (d !== name && stdlib[d] && !seen.has(d)) { seen.add(d); found.push(d) }
     }
     autoCache.set(name, found)

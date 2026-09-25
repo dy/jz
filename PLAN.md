@@ -405,6 +405,20 @@ Dependencies
    355 core, 31 propagation, 268 spec, 22 skips on both JS and Wasm backends.
    Kernel parity stays 20/20. Recursive compilation still reaches the 4 GiB
    ceiling after startup (4.187 GB); assembly attribution is in progress.
+   The trace attributes another 31 MB to closure deduplication and 41 MB to
+   helper reachability, leaving about 21 MB before helper parsing overflows.
+   Scanning helper references without capture records saves 0.2–0.6 MB on
+   representative compiler probes with identical bytes, but does not close
+   the recursive limit. Increasing the compiler's dynamic-constructor capacity
+   floor from two to four slots (leaving literal capacity unchanged) saves no
+   memory and is not retained.
+   Terminal character regex runs now omit impossible retries before capture-end
+   markers and non-multiline end anchors. This preserves backtracking for other
+   suffixes, lookarounds and multiline anchors; 684 targeted assertions pass
+   across all five tiers. All 84 regex tests and 10 loop-cost checks pass,
+   as do 414 targeted Wasm-hosted assertions and 20 kernel parity cases.
+   Watr's size build falls another 150 bytes to 311026. The recursive
+   compiler measurement and full CI for these final changes are pending.
    The scratch-set trial and optional transitive-callee-table idea did not
    explain enough allocation and were not retained.
 

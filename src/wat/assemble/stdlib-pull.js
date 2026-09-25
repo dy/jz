@@ -1,5 +1,6 @@
 /**
- * Stdlib template realization, reachability over the compiled output, the late f64x2-vectorizer stdlib top-up, and the main
+ * Stdlib template realization, reachability over the compiled output,
+ * the late f64x2-vectorizer stdlib top-up, and the main
  * pull-stdlib-and-decide-memory/allocator phase that rides on all three.
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
@@ -57,7 +58,7 @@ function reachableStdlib(sec) {
     const v = stdlib[stack.pop()]
     let text = ''
     try { text = typeof v === 'function' ? v() : v } catch { text = '' }
-    if (typeof text === 'string') for (const m of text.matchAll(/\$([A-Za-z_][A-Za-z0-9_.]*)/g)) add(m[1])
+    if (typeof text === 'string') for (const ref of text.match(/\$[A-Za-z_][A-Za-z0-9_.]*/g) || []) add(ref.slice(1))
   }
   return reach
 }

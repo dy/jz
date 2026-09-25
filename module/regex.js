@@ -404,6 +404,7 @@ export const compileRegex = (ast, name = 'regex_match') => {
 
 const GREEDY_OPS = new Set(['*', '+', '?', '{}'])
 const LAZY_OPS = new Set(['*?', '+?', '??', '{}?'])
+const CHAR_OPS = new Set(['[]', '[^]', '.', '\\d', '\\D', '\\w', '\\W', '\\s', '\\S'])
 
 const compileSeq = (items, c) => {
   for (let i = 0; i < items.length; i++) {
@@ -422,6 +423,14 @@ const compileSeq = (items, c) => {
     if (item[0] === '|') { compileAlt(item.slice(1), c, rest); return }
     // Greedy quantifier followed by more items → needs backtracking
     if (GREEDY_OPS.has(item[0])) {
+      // A character run cannot reach the end by giving characters back.
+      // Capture-end markers cannot fail; multiline anchors and other
+      // continuations retain the retry loop.
+      if ((typeof item[1] === 'string' || CHAR_OPS.has(item[1]?.[0])) &&
+          rest.every(n => Array.isArray(n) && (n[0] === 'captureEnd' || n[0] === '$' && !c.multiline))) {
+        compileNode(item, c)
+        continue
+      }
       compileGreedyBacktrack(item, rest, c)
       return
     }

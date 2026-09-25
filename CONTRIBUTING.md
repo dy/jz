@@ -125,6 +125,9 @@ owns separate IR at each branch. A BigInt representation describes the BigInt
 member of a value; call-edge boxing still requires the shared semantic proof.
 Regex alternatives retry the remaining sequence before committing a branch;
 capture boundaries remain inside that continuation.
+Terminal character runs omit retries when only capture-end markers and a
+non-multiline end anchor follow. Returning characters cannot satisfy that
+anchor; other continuations retain backtracking.
 Array searches capture the search value before iteration,
 even when empty. Shared diagnostic configuration serves both compiler hosts. Local shape facts are seeded before representation plans
 freeze, including closure bodies. Body-fact queries for another body use a scratch
@@ -145,6 +148,7 @@ Runtime helper templates own their freshly parsed IR. Each demanded helper is
 realized once; late helpers are added only when absent, so there is no parsed
 template cache or clone pass. WAT tokens retain source spans until committed,
 avoiding quadratic copying of names, quoted strings and comments.
+Helper-reference scans collect whole names without unused regex capture records.
 Runtime helper templates may emit string literals. Shared string-pool setup
 runs after their realization, before reachability; otherwise the pool's copy
 length can omit constants that the linked helpers read.

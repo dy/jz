@@ -176,6 +176,34 @@ test('regex: hex/unicode escapes', () => {
 
 // === Codegen tests ===
 
+test('regex: terminal character runs need no retry loop', () => {
+  for (const pattern of ['a+$', '[a-z]+$', '([a-z]+)$', '(?:[a-z]+|\\d+)$', '([^x]{1,4})$'])
+    is(compileRegex(parseRegex(pattern)).includes('$gbt_'), false, pattern)
+  for (const [pattern, flags] of [['a+ab', ''], ['a+(?=a)', ''], ['a+$', 'm'], ['(?:ab|a)+$', '']])
+    is(compileRegex(parseRegex(pattern, flags)).includes('$gbt_'), true, `retry retained: /${pattern}/${flags}`)
+})
+
+test('regex: terminal character runs preserve captures, bounds and anchors', () => {
+  const texts = ['', 'a', 'aaaa', 'baaaa', 'aaaab', 'aab', '12', '12345', 'ABC', 'ab\nx', 'ab\n', 'ab\r\n', 'xabc', '😀😀', '\ud800']
+  for (const [pattern, flags] of [
+    ['(a+)$', ''], ['([ab]*)$', ''], ['([a-z]{2,4})$', 'i'],
+    ['(\\d+)$', ''], ['(.+)$', 'su'], ['([^x]+)$', 'u'],
+    ['a+ab', ''], ['a+(?=a)', ''], ['(a+)$', 'm'],
+  ]) {
+    const native = new RegExp(pattern, flags)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const { match } = jz(`export function match(s) {
+        const m = /${pattern}/${flags}.exec(s)
+        return m ? [m.index, m[0], m[1]] : null
+      }`, { optimize }).exports
+      for (const text of texts) {
+        const m = native.exec(text)
+        is(match(text), m ? [m.index, m[0], m[1]] : null, `/${pattern}/${flags} O${optimize} ${JSON.stringify(text)}`)
+      }
+    }
+  }
+})
+
 test('regex: compile literal', () => {
   const ast = parseRegex('abc')
   const wat = compileRegex(ast)
