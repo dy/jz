@@ -36,7 +36,7 @@ import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './funct
 import { FIELD } from '../../layout.js'
 import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import {
-  structInlinePass, unionInlinePass, invalidateAllBodyFacts,
+  structInlinePass, unionInlinePass, clearBodyFacts,
 } from './analyze.js'
 import { invalidateBindingUsesCache, resetBindingUsesCache } from './analyze-scans.js'
 import { VAL } from '../reps.js'
@@ -134,7 +134,7 @@ function summaryInputs(ast, ids) {
     : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${k}=${data(v[k], d + 1)}`).join(',')}}`
     : JSON.stringify(v) ?? String(v)
   const funcs = ctx.funcs.list.map(f => [f.name, node(f.body), f.closure, f.rest, isExported(f),
-    data({ params: f.sig?.params?.map(p => [p.name, p.rest, p.boundaryTyped]), results: f.sig?.results, ptrKind: f.sig?.ptrKind, ptrAux: f.sig?.ptrAux, unsignedResult: f.sig?.unsignedResult, dispatcher: f.sig?.dispatcher }),
+    data({ params: f.sig?.params?.map(p => [p.name, p.rest, p.boundaryTyped]), dispatcher: f.sig?.dispatcher }),
     Object.entries(f.defaults ?? {}).map(([k, v]) => `${k}=${node(v)}`).join('&')].join('|'))
   return [node(ast), node(ctx.module.moduleInits), ...funcs,
     data(ctx.schema.list), data(ctx.schema.list.map((_, sid) => ctx.schema.brandOf(sid))), data(ctx.schema.vars), data(ctx.schema.poisoned), data(ctx.schema.hidden),
@@ -160,7 +160,7 @@ export function assemble(ast, profiler) {
   // The summary owns semantic facts; ctx also carries mutable lowering state.
   // Rebuild from explicit inputs after source rewrites, never from old facts, and
   // only when they changed. It is keyed by what it reads: the program by its
-  // revision (every rewrite of a body or a signature advances it through a mutation
+  // revision (every body rewrite or semantic input change advances it through a mutation
   // seam: compile/analyze/body-facts.js, plan's sweeps), the registries beside it
   // by content, which is cheap. A summary built under the current key is still the
   // program's; JZ_DEBUG_INVARIANTS checks each reuse against its full inputs.
@@ -379,7 +379,7 @@ export function assemble(ast, profiler) {
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-analyze')
   // FunctionPlans now own every named-function fact needed by emission. Drop
   // the duplicate bodyFacts cache; any genuinely late consumer recomputes.
-  invalidateAllBodyFacts()
+  clearBodyFacts()
   resetBindingUsesCache()
   // isReassigned memo window: emission is a pure projection of the frozen
   // post-analyze AST, so per-subtree assigned-name sets stay valid for the

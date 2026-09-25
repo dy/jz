@@ -27,7 +27,7 @@
  */
 
 import { ctx, getFactStore } from '../../ctx.js'
-import { invalidateAllBodyFacts } from '../analyze.js'
+import { clearBodyFacts } from '../analyze.js'
 import {
   collectProgramFacts, collectSlotConstants, analyzeSchemaSlotIntCertain, collectSlotWriteHazards, analyzeParamNeverGrown,
   synthesizeComputedDispatchCallSites, synthesizeMemberDispatchCallSites, readonlyParamReps, freezeCallSites,
@@ -273,7 +273,7 @@ export default function plan(ast, profiler, summarize) {
     paramReps: programFacts.paramReps, callSites: programFacts.callSites,
     addressTaken: programFacts.programIndex.addressTaken,
   }))
-  invalidateAllBodyFacts()
+  clearBodyFacts()
   strictBoundaryTypeCheck(programFacts)
   adviseProgram(programFacts)
   // RepresentationPlan v2 Slice 1: semantic call/kind facts and every

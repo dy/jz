@@ -1085,11 +1085,15 @@ dependency has an explicit invalidation owner:
 |---|---|---|
 | Function body or specialization AST | `setFuncBody` / `reanalyzeBody` | Source rewrite and specialization passes |
 | Current parameter/result signature | Live fingerprint; explicit seams during solving | `body-facts.js`, `narrow/results.js`, `narrow/param-abi.js` |
-| Function value/type/length overlays and caller facts | `reanalyzeBody`; `invalidateBodies` for affected callers | `narrow/caller-ctx.js`, `narrow/results.js`, `narrow/param-abi.js` |
-| Summary, global types/lengths, schema integer census | `invalidateAllBodyFacts` at publication/phase boundaries | `plan/index.js`, `compile/index.js` |
-| Compile session | New fact store / `resetBodyFactsCache` | `session.js` |
+| Function value/type/length overlays and caller facts | `reanalyzeBody`; `clearBodyFacts` for affected callers | `narrow/caller-ctx.js`, `narrow/results.js`, `narrow/param-abi.js` |
+| Summary, global types/lengths, schema integer census | `clearBodyFacts` at publication/phase boundaries | `plan/index.js`, `compile/index.js` |
+| Compile session | New fact store | `session.js` |
 
-Global invalidation clears the complete cache, including anonymous roots.
+Global eviction clears the complete body cache, including anonymous roots,
+without changing the semantic program revision. Physical carrier changes use
+this eviction; summary result contracts read their ABI from live signatures.
+Semantic input changes, such as an export's `boundaryTyped` contract, use
+`invalidateBodies` to invalidate both the body facts and the summary.
 Every rewriting seam, and every plan sweep that reports a change, also advances
 one program revision. The summary is keyed by it and by the contents of the
 registries beside the program (schemas, functions, globals, binding schemas),

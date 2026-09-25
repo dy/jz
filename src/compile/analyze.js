@@ -39,7 +39,7 @@
 
 export {
   analyzeBody, reanalyzeBody,
-  setFuncBody, invalidateBodies, invalidateAllBodyFacts,
+  setFuncBody, invalidateBodies, clearBodyFacts,
 } from './analyze/body-facts.js'
 
 export { analyzeValTypes, analyzeIntCertain } from './analyze/val-types.js'

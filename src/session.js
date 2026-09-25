@@ -147,7 +147,7 @@ export function targetProfileFor(host) {
  *                                read, not a separate invalidation path.
  *   revision                     the program revision: advanced by every
  *                                rewriting seam (setFuncBody, invalidateRewrittenBody,
- *                                invalidateBodies, invalidateAllBodyFacts,
+ *                                invalidateBodies,
  *                                invalidateProgramFactsCache). The summary is rebuilt
  *                                only when it moved (compile/index.js summarizeProgram);
  *                                JZ_DEBUG_INVARIANTS checks each reuse against its inputs.
@@ -161,9 +161,10 @@ export function targetProfileFor(host) {
  *                                this body fresh" into one call;
  *                                setFuncBody(func, node) fuses "rewrite this
  *                                body's AST" with dropping its cache entry;
- *                                invalidateBodies(bodies) /
- *                                invalidateAllBodyFacts() name the
- *                                phase-boundary bulk flush. The raw
+ *                                clearBodyFacts(bodies?) evicts derived facts
+ *                                without advancing the semantic revision;
+ *                                invalidateBodies(bodies) also invalidates
+ *                                the summary for changed semantic inputs. The raw
  *                                invalidateLocalsCache(body) primitive still
  *                                exists (the four seam functions are built on
  *                                it) but has NO direct pass-author call site:

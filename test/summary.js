@@ -900,3 +900,26 @@ test('summary: rebuilt only when the program changed', () => {
   ok(builds('const g = (a) => a + 1; export let f = (x) => { let s = 0; for (let i = 0; i < x; i++) s += g(i); return s }') > 1,
     'a program the plan rewrites is summarized again')
 })
+
+
+test('summary: carrier narrowing reuses semantics; typed ingress invalidates them', () => {
+  if (onKernel()) return   // the kernel keeps no phase profile
+  const cases = [
+    ['export function f(x) { return (x + 1) | 0 }', 1, 'f', 'i32', [0, 2147483647, -1]],
+    ['function make(n) { return new Float64Array(n) } export function f(n) { return make(n).length }',
+      1, 'make', 'ptr', [0, 3, 0]],
+    ['export function f(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }',
+      2, 'f', null, [[], [1.5, -2, 8], []]],
+  ]
+  // Reuse a compile session in A → A → B order, then come back to A. A carrier
+  // changes no kind; a typed export contract changes the incoming JS values.
+  for (const i of [0, 0, 1, 2, 0]) {
+    const [src, count, callee, carrier, args] = cases[i], profile = {}
+    const f = jz(src, { optimize: { level: 2, inlineFns: false }, profile }).exports.f
+    is(profile.entries.filter(e => e.name === 'summary').length, count, `case ${i}: semantic builds`)
+    if (carrier) is(ctx.summary.resultContract(callee).carrier, carrier, 'reused contract sees the narrowed ABI')
+    else is(tagOf(kindOf('f', 'a')), K.TYPED, 'new boundary contract reaches the summary')
+    const expected = oracle(src).f
+    for (const arg of args) is(f(arg), expected(arg), `case ${i}: ${arg}`)
+  }
+})

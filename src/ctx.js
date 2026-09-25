@@ -367,7 +367,7 @@ export function resolveIncludes(realize = true) {
 function createFactStore() {
   return {
     externalIngress: null,
-    // The program revision: every rewrite of a function body or signature advances it through
+    // The program revision: every body rewrite or semantic input change advances it through
     // a mutation seam (compile/analyze/body-facts.js, program-facts/cache.js), so a fact
     // derived from the whole program is fresh while the revision it was built at is current.
     revision: 0,

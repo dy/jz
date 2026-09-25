@@ -11,7 +11,7 @@
 import { ctx } from '../../ctx.js'
 import { withTypedElems } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
-import { analyzeBody, reanalyzeBody, invalidateAllBodyFacts } from '../analyze.js'
+import { analyzeBody, reanalyzeBody, clearBodyFacts } from '../analyze.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
 
@@ -139,7 +139,7 @@ export function createPhaseState() {
     },
 
     clearNarrowingBodyState() {
-      invalidateAllBodyFacts()
+      clearBodyFacts()
       elemCtx.clear()
     },
 
