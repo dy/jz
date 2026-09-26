@@ -152,6 +152,8 @@ export function rewriteBlocks(body, tryStmt) {
 //   iv, hull, step: the counter the guard tests, the range {lo, hi} it holds in the body, and
 //     its step per iteration. Hull and step only when the step alone moves the counter (the
 //     body never writes it), so the body runs at most ⌊(hi - lo) / step⌋ + 1 times per entry.
+//   test: the counter's range where the guard reads it — its initial value, or a body value
+//     one step on (`i + 3 <= n` stays integer when that range keeps the sum in i32).
 //   counters: the loop's other counters, `k` of `for (let j = 0, k = 0; …; j++, k += s)`: each
 //     moves by an invariant amount per pass, so in the body it holds k₀ + t·s for a pass t
 //     below the trip bound: [lo, hi] per counter. Only with a counter hull (the trip bound).
@@ -166,6 +168,7 @@ export function loopFacts(init, cond, step, body) {
   return Object.freeze({
     iv,
     hull: range ? Object.freeze({ lo: range[0], hi: range[1] }) : null,
+    test: range && Number.isFinite(range.test[0]) && Number.isFinite(range.test[1]) ? Object.freeze({ lo: range.test[0], hi: range.test[1] }) : null,
     step: range ? range.step : null,
     counters: range ? Object.freeze(secondaryCounters(init, step, body, iv, Math.floor((range[1] - range[0]) / range.step) + 1)) : [],
     guard,
@@ -180,6 +183,11 @@ export function counterRefinements(facts) {
   if (facts.hull) refs.set(facts.iv, { rlo: facts.hull.lo, rhi: facts.hull.hi })
   for (const { name, lo, hi } of facts.counters) refs.set(name, { rlo: lo, rhi: hi })
   return refs
+}
+
+/** The refinement a loop's facts give its guard: the counter's range at the test. */
+export function testRefinements(facts) {
+  return facts.test ? new Map([[facts.iv, { rlo: facts.test.lo, rhi: facts.test.hi }]]) : null
 }
 
 // A step that moves `name` by a fixed amount per pass: `x++`, `x--`, `x += S`, `x -= S`,

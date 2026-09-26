@@ -927,6 +927,29 @@ test('codegen: a cached in-bounds element stores as the Number it holds', () => 
   ok(!w.includes('0x7FF8000100000000'), 'proven cached elements store without a nullish fold')
 })
 
+test('codegen: a loop guard offset from its counter stays integer within its test range', () => {
+  const loop = (head) => `const a = new Int32Array(64)
+    export function f(x) { a[5] = x | 0; let s = 0, t = 0; for (${head}) { s = (s + a[i & 63]) | 0; t++ } return [s, t] }`
+  const heads = [
+    'let i = 0; i + 3 <= 48; i += 3',              // proven: the sum stays below 52
+    'let i = 1; i + 1 < 40; i++',
+    'let i = 30; i - 4 >= 0; i -= 4',              // decreasing: the test sees one step below the hull
+    'let i = x | 0; i + 1 <= 5; i++',              // any start: a zero-trip start above the bound
+    'let i = 2147483640; i + 3 <= 2147483647; i += 3', // the sum passes INT_MAX at the exit test
+  ]
+  for (const head of heads) {
+    const src = loop(head), native = oracle(src).f
+    for (const optimize of [0, 2, 'speed', 'size']) {
+      const f = jz(src, { optimize }).exports.f
+      for (const x of [0, 7, -3, 2147483647, 100]) is(f(x), native(x), `${head}, O${optimize}, x=${x}`)
+    }
+  }
+  if (onKernel()) return
+  const hot = compile(loop(heads[0]), { optimize: 'speed', wat: true })
+  ok(!/f64\.(le|lt|add)/.test(hot), 'a bounded offset guard compares in i32')
+  ok(/f64\.(le|lt)/.test(compile(loop(heads[4]), { optimize: 'speed', wat: true })), 'a guard sum that can pass INT_MAX keeps f64')
+})
+
 test('codegen: an element read keyed by an integer element stays a word', () => {
   // base64 decode: `dec[src[i]]` keys one table by another array's byte. The
   // table is built through a nested key and reaches the loop as a parameter.

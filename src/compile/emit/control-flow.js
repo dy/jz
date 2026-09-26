@@ -15,7 +15,7 @@ import {
 } from '../../ir.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { constIntExpr, intExprRange, intLiteralValue } from '../../static.js'
-import { loopFacts, counterRefinements } from '../loop-model.js'
+import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
   MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
 } from '../../type.js'
@@ -997,7 +997,8 @@ export const controlFlowOps = {
     if (condForLoop) extractRefinements(condForLoop, bodyRefs, true)
     const emitLoopBody = () => withRefinements(bodyRefs, body, () => emitVoid(body))
     const loopBody = []
-    if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz', toBool(condForLoop)]])
+    if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz',
+      withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop))]])
     loopBody.push(...freshBoxed)
     if (needsCont) loopBody.push(['block', cont, ...emitLoopBody()])
     else loopBody.push(...emitLoopBody())

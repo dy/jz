@@ -516,6 +516,8 @@ export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) 
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > hi) return null
   const result = [lo, hi]
   result.step = stepOK
+  // At the guard the counter holds its initial value or a body value one step on.
+  result.test = increasing ? [lo, Math.max(initRange[1], hi + stepOK)] : [Math.min(initRange[0], lo - stepOK), hi]
   return result
 }
 
