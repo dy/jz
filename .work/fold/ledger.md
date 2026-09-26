@@ -18,6 +18,10 @@ compiled byte, test and product metric equal or better. Branch `fold`, own workt
 | `npm test` (default leg) | 4837 tests, 131,189 assertions, all pass; 38.7 min on the loaded machine, peak RSS 2.6 GB |
 | widened oracle (`test/_hashes.mjs`), default leg | 16,144 compile keys |
 | `npm run test:opt0` | 4632 tests, 104,423 assertions, all pass |
+| `npm run test:opt3` | 4632 tests, 105,022 assertions, all pass |
+| `npm run test:wasi` | 4685 tests, 119,325 assertions, all pass |
+| `npm run test:262` | pass 3195, neg-reject 4045, neg-accept 0, fail 0, skip 16418, xfail 2 (4.5 min) |
+| `npm run test:262:builtins` | pass 880, fail 0, xfail 43, skip 8445 (1.6 min) |
 
 Where compile time goes (CPU profile, oracle corpus): watr's optimizer ~53 %;
 jz's single hottest function is the vectorizer's `liveOutOf` scan (8.3 s of
@@ -76,3 +80,11 @@ test/allocation.js, which compiles `firstRefKind.toString()` (edited by fold 7).
 | d323b3b2 (folds 7–8) | 4836/4837 | 0 | `clearInterval: stops interval` (statements.js) counted 2 ticks of 3 under machine load: wall-clock timers, passes on rerun |
 
 ## Rejections and owner decisions
+
+candidate | evidence | reason
+---|---|---
+`synthesizeComputedDispatchCallSites` + `synthesizeMemberDispatchCallSites` (walk-facts.js, ~210 lines) | oracle knockout: 0 diffs at every level, watr included | a test-suite knockout changes 7 outputs (HANDLER dispatch tables, `i32.parse`/`i64.parse` member calls; one becomes a compile error): load-bearing where the corpus has no instance
+Other corpus-inert passes and sweeps (`bindNestedRowLengths`, `laneRecordParams`, `scalarize*`, `promoteIntArrayLiterals`, `materializeAutoBoxSchemas`, `refineDynKeys`, `foldStaticConstAggregates`, `inplaceStore`, `maskedSuffixGuard`, `jsstring`, `hoistConstLit`, `tryGeneralStencil`, `tryGeneralReduce`) | oracle knockouts: 0 diffs; function coverage: their code runs in the suite | each has its own tests pinning the shape it produces; a corpus with no instance is not evidence of subsumption
+`link/fold` (optimize/fold.js) | 0 diffs at O0/O2/O3/size | 7 diffs at O1 and 'fast', where watr does not run after it
+Legacy option spellings (`optimize.experimental*`, top-level `stencil`/`outerStrip`/`toneMap`, `profile.names`) | aliases for renamed options | test/simd.js, test/examples.js and test/perf.js assert they still work: removing them changes what tests assert
+`ctx.plans.start` | written, never read by src | test/invariants.js and test/session-reentrancy.js read it
