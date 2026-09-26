@@ -50,7 +50,7 @@ import { invalidateRewrittenBody } from './analyze/body-facts.js'
 import { withBodyTypedFacts } from './flow-state.js'
 
 const isArr = Array.isArray
-const LOOPS = new Set(['for', 'while', 'do', 'for-of', 'for-in'])
+const LOOPS = new Set(['for', 'while', 'do'])
 const REL = new Set(['<', '<=', '>', '>='])
 const num = (v) => [null, v]
 

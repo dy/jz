@@ -26,7 +26,7 @@ const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[
 
 // Ops whose presence makes duplicating the body in place unsound (control that escapes the cell,
 // or a call that could alias/mutate `arr` or reorder side effects).
-const REJECT = new Set(['for', 'while', 'do', 'for-in', 'for-of', 'break', 'continue', 'return',
+const REJECT = new Set(['for', 'while', 'do', 'break', 'continue', 'return',
   'throw', 'switch', 'try', 'catch', 'finally', '=>', 'label'])
 const hasUnsafe = (n) => some(n, node => REJECT.has(node[0]) || (node[0] === '()' && typeof node[1] === 'string'))   // function call `f(args)`
 

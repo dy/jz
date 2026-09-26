@@ -1252,20 +1252,6 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
     return
   }
 
-  // for-of / for-in iteration: receiver position is `node[2]` (a bare name
-  // there would otherwise trigger escape). TYPED supports iteration, so
-  // allow the receiver but walk the body for other refs.
-  if (op === 'for-of' || op === 'for-in') {
-    // Walk decl (node[1]), iter (node[2]), body (node[3]); receiver as bare
-    // name is fine — only the body matters for further refs to the same name
-    // (but body refs would shadow or escape, which other rules catch).
-    for (let i = 1; i < node.length; i++) {
-      const child = node[i]
-      if (i === 2 && typeof child === 'string' && candidates.has(child)) continue
-      _disqualifyPromotion(child, candidates, disqualified, initSet, valTypes)
-    }
-    return
-  }
 
   // Generic — recurse into children. Bare-name refs at unhandled positions
   // hit the string-leaf branch above and disqualify on contact.

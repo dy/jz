@@ -466,7 +466,7 @@ export function analyzeValTypes(body) {
     if (op === '&&' || op === '||' || op === '??') { walk(node[1], cond); walk(node[2], true); return }
     // Loops and try: every part may run zero times (loop body / catch arm) or
     // stop mid-way (a throw skips the try body's tail) — all conditional.
-    if (op === 'while' || op === 'do' || op === 'for' || op === 'for-in' || op === 'for-of' || op === 'try') {
+    if (op === 'while' || op === 'do' || op === 'for' || op === 'try') {
       for (let i = 1; i < node.length; i++) walk(node[i], true)
       return
     }

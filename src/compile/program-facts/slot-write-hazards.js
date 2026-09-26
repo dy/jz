@@ -188,7 +188,7 @@ export function collectSlotWriteHazards(ast, opts) {
     paramUnionMemo.set(key, result)
     return result
   }
-  // dynKeyedRead/dynKeyedEnum's shared last-resort fallback: obj is a bare
+  // dynKeyedRead's last-resort fallback: obj is a bare
   // name, unresolved by sidOf, not provably non-OBJECT by kindOf — before
   // giving up to the whole-program 'ALL' sentinel, check whether it's a
   // PARAMETER of the function currently being walked (curParamIdx below) and,
@@ -301,17 +301,6 @@ export function collectSlotWriteHazards(ast, opts) {
     if (numericKey(key)) { hz.dynNumeric = true; return }
     markDynPointsToAll()
   }
-  // dynPointsTo feed for `for-in obj` — a REAL read dependency (see this
-  // function's own doc comment above), not merely conservative: no literal-key
-  // exemption applies (for-in has no key expression to fold away).
-  const dynKeyedEnum = (obj) => {
-    const sid = sidOf(obj)
-    if (sid != null) { addDynPointsTo(sid); return }
-    const vt = kindOf(obj)
-    if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
-    if (summaryReach(obj) || tryParamUnion(obj)) return
-    markDynPointsToAll()
-  }
   // Member targets buried in a destructuring pattern — written with values the
   // censuses can't see; hazard them like opaque writes.
   const patternTargets = (pat) => walkAst(pat, { enter: pat => {
@@ -398,8 +387,6 @@ export function collectSlotWriteHazards(ast, opts) {
       // safe direction as keyedWrite's own hz.pointsTo (a strict superset of
       // "genuinely read somewhere" is still sound, only more conservative).
       dynKeyedRead(node[1], node[2])
-    } else if (op === 'for-in') {
-      dynKeyedEnum(node[2])
     }
   } })
   // Per-body valTypes overlays (mirrors observeProgramSlots): receiver/key

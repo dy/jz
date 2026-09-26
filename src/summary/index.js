@@ -2472,7 +2472,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       collect(n[2], id)
       return
     }
-    else if (op === 'for-of' || op === 'for-in' || op === 'for-await') { const t = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]; if (typeof t === 'string') declareIn(scope, t) }
     else if (op === 'catch' && typeof n[2] === 'string') declareIn(scope, n[2])
     if (MUTATE_OPS.has(op) && typeof n[1] === 'string') writes.push([scope, n[1], null])
     // Writes make an empty literal a dictionary unless it has a materialized schema.
@@ -2581,13 +2580,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     }
     // A loop's test guards its body the way an `if` guards its branch.
     if (op === 'for') { loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0); const mark = rtop; if (n[2] != null) proves(n[2], true); stmt(n[4]); unwind(mark); selectedExpr(n[3], 0); branch--; return }
-    if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
-      loopAssigns(n)
-      const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
-      destructure(target, op === 'for-in' ? STRING : iterElemOf(it))
-      branch++; stmt(n[3]); branch--
-      return
-    }
     if (op === 'if') {
       selectedExpr(n[1], 0)
       const truth = decided(n[1])

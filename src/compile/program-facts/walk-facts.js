@@ -8,7 +8,7 @@
  * @module program-facts/walk-facts
  */
 import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, walkAst } from '../../ast.js'
-import { ctx, err, getFactStore } from '../../ctx.js'
+import { ctx, getFactStore } from '../../ctx.js'
 import { VAL } from '../../reps.js'
 import { nullishArm } from '../../kind.js'
 import { staticObjectProps } from '../../static.js'
@@ -206,9 +206,6 @@ export function observeNodeFacts(node, f) {
   } else if (op === '=' && Array.isArray(args[0]) && args[0][0] === '[]') {
     const [, obj, idx] = args[0]
     if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
-  } else if (op === 'for-in') {
-    f.anyDyn = true
-    if (typeof args[1] === 'string') f.dynVars.add(args[1])
   } else if (op === '{}') {
     f.hasSchemaLiterals = true
   } else if (op === '=>') {
@@ -304,7 +301,6 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     // callee is never nullish, so every census below treats both ops alike.
     const isCallOp = op === '()' || op === '?.()'
     observeNodeFacts(node, acc)
-    if (op === 'for-in' && ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
     if (op === '{}' && doSchema) {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) ctx.schema.register(parsed.names)

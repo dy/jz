@@ -91,8 +91,6 @@ export const declareWrittenKeys = (ast) => {
     else if (op === '()' && n[1] === 'Object.assign') { const t = Array.isArray(n[2]) && n[2][0] === ',' ? n[2][1] : n[2]; if (typeof t === 'string') dict.add(t) }
     else if (op === '=>') for (const p of collectParamNames(extractParams(n[1]))) other(p)
     else if (op === 'catch') { other(n[1]); other(n[2]) }
-    else if (op === 'for-of' || op === 'for-in' || op === 'for-await')
-      patternNames(Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1])
   } })
   census(ast)
   for (const init of ctx.module.moduleInits ?? []) census(init)
@@ -118,7 +116,7 @@ export const declareWrittenKeys = (ast) => {
   // deletion, or control flow that makes what follows conditional. A plain
   // definition or assignment of a value that holds none of these runs nothing.
   // `some` stops at an arrow: a function is not run by being defined.
-  const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'try', 'switch', 'for', 'for-of', 'for-in', 'for-await',
+  const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'try', 'switch', 'for',
     'while', 'do', '&&', '||', '??', 'await', 'yield', 'return', 'throw', 'break', 'continue'])
   // (a direct call is the one observer `blind` below can see through)
   const funcs = ctx.funcs?.map

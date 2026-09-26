@@ -853,7 +853,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
             return right ? norm([...left, ...right]) : null // RHS may be skipped
           }
           if (op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw') return null
-          if (op2 === 'while' || op2 === 'for' || op2 === 'do' || op2 === 'for-of' || op2 === 'for-in' ||
+          if (op2 === 'while' || op2 === 'for' || op2 === 'do' ||
               op2 === 'switch' || op2 === 'try' || op2 === 'catch' || op2 === 'finally')
             return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
           let out = xs
@@ -1089,7 +1089,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       return symWraps.length && symWraps.every(([nm, h]) => !isReassigned(c, nm) && boundInvariant(h.hiName, c)) &&
         !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
     }
-    if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'label'
+    if (op === 'do' || op === 'label'
         || op === 'switch' || op === 'try' || op === 'catch' || op === 'finally') {
       // ('try' is the parser shape; prepare lowers it to 'catch'/'finally' nodes,
       // which is what this walk actually receives)
@@ -1101,7 +1101,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // straight-line proofs (defined-before-use chains) still record.
       const killed = new Map(env)
       const fr = op === 'switch' ? { kind: 'switch', breaks: [], continues: [] }
-        : op === 'do' || op === 'for-of' || op === 'for-in' ? { kind: 'loop', breaks: [], continues: [] }
+        : op === 'do' ? { kind: 'loop', breaks: [], continues: [] }
         : null   // label/try: transparent — abrupt edges bind to enclosing frames
       if (fr) loopStack.push(fr)
       for (let k = 1; k < n.length; k++) {

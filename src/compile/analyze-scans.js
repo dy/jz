@@ -1354,7 +1354,7 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
     if (t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
     return t
   }
-  if (op === 'for' || op === 'for-in' || op === 'for-of' || op === 'while' || op === 'do'
+  if (op === 'for' || op === 'while' || op === 'do'
       || op === 'switch' || op === 'try' || op === '=>')
     return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
   let P = 0, N = 0
@@ -1474,7 +1474,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
   // A reduction inside an outer loop needs an initializer in that iteration.
   // Peeled regions may reuse binding names; join their independently proved
   // hulls, then require every write to belong to one of those regions.
-  const loops = new Set(['for', 'for-in', 'for-of', 'while', 'do'])
+  const loops = new Set(['for', 'while', 'do'])
   walkAst(body, { enter: node => {
     if (node[0] === '=>') {
       for (const name of collectAssignedNames(node, new Set())) bad.add(name)

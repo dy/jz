@@ -12,7 +12,7 @@ export function normalizeCaseBody(body) {
   return stmts.length === 0 ? null : stmts.length === 1 ? stmts[0] : [';', ...stmts]
 }
 
-const SWITCH_BREAK_BOUNDARIES = new Set(['for', 'for-in', 'for-of', 'while', 'do', 'switch', '=>', 'function', 'class'])
+const SWITCH_BREAK_BOUNDARIES = new Set(['for', 'while', 'do', 'switch', '=>', 'function', 'class'])
 
 function hasOwnSwitchBreak(node) {
   if (!Array.isArray(node)) return false
