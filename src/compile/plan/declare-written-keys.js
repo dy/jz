@@ -100,7 +100,7 @@ export const declareWrittenKeys = (ast) => {
   // and JSON all say so — and a store that may not have run yet made them
   // say so falsely. Definite: a statement-level `name.k = v` / `name['k'] = v`
   // in the same statement list as the binding, with nothing between them that
-  // could run other code — no call, no loop, no branch, no try — since without
+  // could run other code — no call, no loop, no branch — since without
   // a call no closure runs and no enumeration happens. A store anywhere else
   // is conditional, keeps its key out of the literal, and lands in the dyn
   // sidecar as before, which every observer already reads at runtime.
@@ -110,7 +110,7 @@ export const declareWrittenKeys = (ast) => {
   // deletion, or control flow that makes what follows conditional. A plain
   // definition or assignment of a value that holds none of these runs nothing.
   // `some` stops at an arrow: a function is not run by being defined.
-  const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'try', 'for',
+  const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'for',
     'while', 'do', '&&', '||', '??', 'return', 'throw', 'break', 'continue'])
   // (a direct call is the one observer `blind` below can see through)
   const funcs = ctx.funcs?.map

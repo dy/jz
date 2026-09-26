@@ -417,7 +417,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
       hoisted: [...(thenR?.hoisted || []), ...(elseR?.hoisted || [])],
     }
   }
-  if (op === 'try' || op === 'catch' || op === 'finally') {
+  if (op === 'catch' || op === 'finally') {
     let changed = false
     const next = [op]
     let hoisted = []

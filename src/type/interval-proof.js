@@ -852,7 +852,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           }
           if (op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw') return null
           if (op2 === 'while' || op2 === 'for' || op2 === 'do' ||
-              op2 === 'try' || op2 === 'catch' || op2 === 'finally')
+              op2 === 'catch' || op2 === 'finally')
             return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
           let out = xs
           for (let j = 1; j < n.length; j++) { out = walk(n[j], out); if (!out) return null }
@@ -1087,7 +1087,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
     }
     if (op === 'do' || op === 'label'
-        || op === 'try' || op === 'catch' || op === 'finally') {
+        || op === 'catch' || op === 'finally') {
       // ('try' is the parser shape; prepare lowers it to 'catch'/'finally' nodes,
       // which is what this walk actually receives)
       killAssigned(n)   // unknown trip count / branch selection: no interval survives entry

@@ -60,7 +60,7 @@ export function captureCallback(fn, name = temp('af'), thisArg) {
 const NOT_PURE_OPS = new Set([
   ';', '{}', 'let', 'const', '=>', 'return', 'throw',
   'if', 'for', 'while', 'do', 'break', 'continue',
-  'try', 'catch', 'finally', '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
+  'catch', 'finally', '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
   '<<=', '>>=', '>>>=', '||=', '&&=', '??=', '++', '--', 'delete',
 ])
 function isPureExpr(node) {

@@ -1354,8 +1354,7 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
     if (t.P !== e.P || t.N !== e.N) return null   // arms disagree — non-deterministic per-iteration motion
     return t
   }
-  if (op === 'for' || op === 'while' || op === 'do'
-      || op === 'try' || op === '=>')
+  if (op === 'for' || op === 'while' || op === 'do' || op === '=>')
     return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
   let P = 0, N = 0
   for (let i = 1; i < node.length; i++) {
