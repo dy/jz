@@ -17,6 +17,7 @@ compiled byte, test and product metric equal or better. Branch `fold`, own workt
 | supplementary oracle at O1 and 'fast' (watr off, `.work/fold-oracle-extra.mjs`) | 290 entries |
 | `npm test` (default leg) | 4837 tests, 131,189 assertions, all pass; 38.7 min on the loaded machine, peak RSS 2.6 GB |
 | widened oracle (`test/_hashes.mjs`), default leg | 16,144 compile keys |
+| `npm run test:opt0` | 4632 tests, 104,423 assertions, all pass |
 
 Where compile time goes (CPU profile, oracle corpus): watr's optimizer ~53 %;
 jz's single hottest function is the vectorizer's `liveOutOf` scan (8.3 s of
@@ -57,6 +58,20 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 8 | destructuring patterns in compile passes: prepare lowers every declaration and assignment pattern (pushPatternAssign), so the summary's `destructure`, the slot-hazard `patternTargets` and the written-keys `patternNames` never run | −48 | −1,099 | — | d323b3b2
 9 | state, constants and a knob nothing reads: `srcPtrAux`, `elemWidth`, `ctx.schema._byKey`, `ctx.schema.errorClassesUsed`, the never-written `ctx.types.loopGuardLo`, `bitEq`, `FINISH_SIGNIFICAND`, the removed auto-tuner's `AUTO_CFG_*`, the `valKindDominance` tuning key; `3` and `speed` share one preset | −36 | −445 | — | 09e8929a
 10 | the inference evidence registry: a sources list, a register call and a first-wins merge around the one evidence source left (`notStringEvidence`) | −27 | −187 | — | c137ffff
-11 | the `__is_map`/`__is_set`/`__is_typed` predicate emitters jzify synthesized for `instanceof` before 8182e465 made it a real node, with their autoload, kind-trait and refinement entries | −44 | −785 | — | this commit
+11 | the `__is_map`/`__is_set`/`__is_typed` predicate emitters jzify synthesized for `instanceof` before 8182e465 made it a real node, with their autoload, kind-trait and refinement entries | −44 | −785 | — | e096db89
+12 | index.js comments describing code that moved away (the U+E000 guard now in front.js, a watr-tail re-export that no longer exists), the removed auto-tuner's history, and a second copy of the no-post-watr-optimizer note | −25 | 0 | — | this commit
+
+## Validation runs (default leg, widened oracle against the baseline)
+
+Every run compares each compile's output hash for identical source and options.
+Keys that differ only in source are expected: fixtures embedding the worktree's
+absolute path, `scripts/phase-marks.js` (edited by fold 3), and
+test/allocation.js, which compiles `firstRefKind.toString()` (edited by fold 7).
+
+| through | tests | changed outputs | note |
+|---|---|---|---|
+| a28aa172 (folds 1–3) | 4837/4837 | 0 | |
+| 40e43f8b (folds 4–6) | 4837/4837 | 0 | |
+| d323b3b2 (folds 7–8) | 4836/4837 | 0 | `clearInterval: stops interval` (statements.js) counted 2 ticks of 3 under machine load: wall-clock timers, passes on rerun |
 
 ## Rejections and owner decisions

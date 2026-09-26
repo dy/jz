@@ -460,19 +460,6 @@ const setupCtx = (code, opts) => {
   }
 }
 
-// U+E000 (T) prefixes every jz-generated local. The JS spec forbids it in
-// identifiers, but subscript's parser is lenient and accepts it — so a user name
-// carrying it could silently alias a compiler temp. Reject it in identifier
-// position on the RAW parse (before jzify, which legitimately mints T-prefixed
-// temps of its own). String-literal nodes are `[null, …]` and skipped, so
-// `"……"` data is fine; only walked when the char is present in source.
-// (moved to src/front.js — the canonical front half owns the guard so the
-// self-compile kernel enforces it identically)
-
-// resolveWatrOpts + the post-watr proof repair moved to src/optimize/watr-tail.js
-// (ONE final-optimizer tail shared verbatim with the self-compile kernel — the two
-// pipelines previously drifted); re-exported above for scripts/audit-fixpoint.mjs.
-
 // One compilation at a time: the pipeline runs on the shared context, which a
 // nested compile() would reset under it. Advisories reach their callback once
 // the compilation is over (flushWarnings), so a callback may compile again.
@@ -503,14 +490,6 @@ const compilePipeline = (code, opts = {}) => {
     // pure registration with no output effect. Never set by real callers.
     eagerStdlib: opts._eagerStdlib,
   })
-
-  // Hidden AST-shape auto-configuration REMOVED (2026-07-22): the default tier
-  // silently flipped watr:false / retuned thresholds past size heuristics, so
-  // DEAD code changed the optimization of retained code (+30% output size
-  // measured at the threshold crossing) and "default" named no stable pipeline.
-  // Default now IS the level-2 preset, always. Compile budget is an explicit
-  // choice: `optimize: 'fast'` (level-2 shapes with watr off — the former auto
-  // behavior, ~2-3× faster compiles on large inputs, bigger/slower output).
 
   // opts.noSimd: force auto-vectorization off regardless of opt level — a
   // portability escape hatch for engines without the SIMD proposal (parallels
@@ -569,10 +548,6 @@ const compilePipeline = (code, opts = {}) => {
   // miscompiled (dropped a reassigned-param tee, corrupted divergent-escape
   // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
   const optimized = watrTail(module, cfg, { ...tailFacts(cfg), time })
-  // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
-  // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and
-  // runs exactly once. Re-running jz's leaf pipeline here dropped a reassigned-param local.tee and
-  // corrupted divergent-escape SIMD. The proof repair above is the deliberately narrow exception.
   // Snapshot the final, optimized module: run hermetic init once, bake its
   // globals/heap, and remove the spent start. With stable function indices the
   // probe's encoded bodies become the final binary; otherwise the baked AST
