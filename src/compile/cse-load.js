@@ -62,7 +62,7 @@ const idxVars = (e, out) => {
   else if (isArr(e)) for (let i = 1; i < e.length; i++) idxVars(e[i], out)
 }
 
-const CONTROL = new Set(['for', 'while', 'do', 'if', 'loop', 'block', 'switch', 'try', '=>', '&&', '||', '??', '?:', '?.()', '?.[]',
+const CONTROL = new Set(['for', 'while', 'do', 'if', 'loop', 'block', 'try', '=>', '&&', '||', '??', '?:', '?.()', '?.[]',
   'br', 'br_if', 'br_table', 'return', 'continue', 'break', 'throw', 'unreachable'])
 const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
 const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])

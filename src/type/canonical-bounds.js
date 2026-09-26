@@ -406,7 +406,7 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
       return trips == null ? null : head + trips * per
     }
     if (op === 'while' || op === 'for' || op === 'do' ||
-        op === 'switch' || op === 'try' || op === 'catch' || op === 'finally' ||
+        op === 'try' || op === 'catch' || op === 'finally' ||
         op === 'break' || op === 'continue' || op === 'return' || op === 'throw')
       return isReassigned(n, name) ? null : 0
     return seq(n.slice(1))

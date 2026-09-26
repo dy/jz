@@ -420,10 +420,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // edge — carrying the flow state AT the statement, which the fall-through walk
   // never sees (`if (c) { x = BIG; break } x = 0` exits with x = BIG). Loop walks
   // push a frame; break/continue snapshot env into it; exits/joins hull the
-  // snapshots in. Bare break binds to the innermost frame (a `switch` frame
-  // swallows it); bare continue to the innermost LOOP frame; labeled forms can
-  // cross any number of frames, so they conservatively feed every open one.
-  const loopStack = []   // { kind: 'loop' | 'switch', breaks: [], continues: [] }
+  // snapshots in. Bare break binds to the innermost frame; bare continue to the
+  // innermost LOOP frame; labeled forms can cross any number of frames, so they
+  // conservatively feed every open one.
+  const loopStack = []
   const hullInto = (snap) => {
     // Join existing bindings in place, then add snapshot-only bindings as
     // unknown. No temporary union of the two key sets is needed.
@@ -458,7 +458,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // every pass walks under a loop frame: continue edges are back-edges too,
     // so their snapshots hull into the pass-end state before any join/verify
     const walkPass = () => {
-      const lc = { kind: 'loop', breaks: [], continues: [] }
+      const lc = { breaks: [], continues: [] }
       loopStack.push(lc); walkFn(applyCond); loopStack.pop()
       for (const s of lc.continues) hullInto(s)
       return lc
@@ -689,15 +689,13 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     if (op === 'break' || op === 'continue') {
       if (typeof n[1] === 'string') {   // labeled: may cross frames — feed every open one
-        for (const fr of loopStack) if (fr.kind === 'loop') { fr.breaks.push(new Map(env)); fr.continues.push(new Map(env)) }
+        for (const fr of loopStack) { fr.breaks.push(new Map(env)); fr.continues.push(new Map(env)) }
       }
       else if (op === 'break') {
-        const fr = loopStack[loopStack.length - 1]
-        if (fr && fr.kind === 'loop') fr.breaks.push(new Map(env))
+        loopStack.at(-1)?.breaks.push(new Map(env))
       }
       else {
-        const fr = loopStack.findLast(f => f.kind === 'loop')
-        if (fr) fr.continues.push(new Map(env))
+        loopStack.at(-1)?.continues.push(new Map(env))
       }
       return
     }
@@ -854,7 +852,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           }
           if (op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw') return null
           if (op2 === 'while' || op2 === 'for' || op2 === 'do' ||
-              op2 === 'switch' || op2 === 'try' || op2 === 'catch' || op2 === 'finally')
+              op2 === 'try' || op2 === 'catch' || op2 === 'finally')
             return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
           let out = xs
           for (let j = 1; j < n.length; j++) { out = walk(n[j], out); if (!out) return null }
@@ -1089,18 +1087,17 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
     }
     if (op === 'do' || op === 'label'
-        || op === 'switch' || op === 'try' || op === 'catch' || op === 'finally') {
+        || op === 'try' || op === 'catch' || op === 'finally') {
       // ('try' is the parser shape; prepare lowers it to 'catch'/'finally' nodes,
       // which is what this walk actually receives)
       killAssigned(n)   // unknown trip count / branch selection: no interval survives entry
       // Each child walks from the killed entry state and the construct EXITS at
-      // it: case selection enters any child directly, an exception can leave a
-      // `try` child mid-statement, a `do` body can break out — so neither a
-      // sibling's nor the last child's flow state is the construct's. In-child
-      // straight-line proofs (defined-before-use chains) still record.
+      // it: an exception can leave a `try` child mid-statement, a `do` body can
+      // break out — so neither a sibling's nor the last child's flow state is the
+      // construct's. In-child straight-line proofs (defined-before-use chains)
+      // still record.
       const killed = new Map(env)
-      const fr = op === 'switch' ? { kind: 'switch', breaks: [], continues: [] }
-        : op === 'do' ? { kind: 'loop', breaks: [], continues: [] }
+      const fr = op === 'do' ? { breaks: [], continues: [] }
         : null   // label/try: transparent — abrupt edges bind to enclosing frames
       if (fr) loopStack.push(fr)
       for (let k = 1; k < n.length; k++) {

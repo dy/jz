@@ -276,7 +276,7 @@ export function isReassigned(body, name) {
  *  plain assignment reached before any read — definitely-assigned), 'read'
  *  (a read, a compound/inc write — those read first — or ANY reference inside
  *  conditionally-executed code: if/ternary/short-circuit arms, loop bodies and
- *  steps, switch cases, try/catch regions, closures), or null (no reference).
+ *  steps, try/catch regions, closures), or null (no reference).
  *  Drives the uninit-`let` maybeNullish flag: only a first-ref 'write' proves
  *  the binding never reads its `undefined` init (`let s; while ((s = …) < K)`). */
 export function firstRefKind(n, name) {
@@ -320,7 +320,6 @@ export function firstRefKind(n, name) {
     if (op === 'while') return walk(m[1]) ?? condRef(m[2])   // cond evaluates ≥ once
     if (op === 'for' && m.length === 5)                      // init + first cond eval run once
       return walk(m[1]) ?? walk(m[2]) ?? condRef(m[3], m[4])
-    if (op === 'switch') return walk(m[1]) ?? condRef(...m.slice(2))
     if (op === 'try' || op === 'catch' || op === 'finally' || op === '?.') return condRef(m)
     for (let k = 1; k < m.length; k++) { const r = walk(m[k]); if (r) return r }
     return null

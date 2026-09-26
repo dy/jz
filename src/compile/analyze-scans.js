@@ -1355,7 +1355,7 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
     return t
   }
   if (op === 'for' || op === 'while' || op === 'do'
-      || op === 'switch' || op === 'try' || op === '=>')
+      || op === 'try' || op === '=>')
     return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
   let P = 0, N = 0
   for (let i = 1; i < node.length; i++) {

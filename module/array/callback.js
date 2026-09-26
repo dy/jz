@@ -59,7 +59,7 @@ export function captureCallback(fn, name = temp('af'), thisArg) {
 // Inlining is only safe for these — anything else needs the full closure machinery.
 const NOT_PURE_OPS = new Set([
   ';', '{}', 'let', 'const', '=>', 'return', 'throw',
-  'if', 'for', 'while', 'do', 'switch', 'case', 'default', 'break', 'continue',
+  'if', 'for', 'while', 'do', 'break', 'continue',
   'try', 'catch', 'finally', '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
   '<<=', '>>=', '>>>=', '||=', '&&=', '??=', '++', '--', 'delete',
 ])

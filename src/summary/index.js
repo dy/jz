@@ -2580,10 +2580,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k, ABSENT)
       return
     }
-    if (op === 'switch') { selectedExpr(n[1], 0); branch++; for (let i = 2; i < n.length; i++) stmt(n[i]); branch--; return }
-    if (op === 'case') { selectedExpr(n[1], 0); for (let i = 2; i < n.length; i++) stmt(n[i]); return }
     if (op === 'label') { stmt(n[2]); return }
-    if (op === 'break' || op === 'continue' || op === 'default') return
+    if (op === 'break' || op === 'continue') return
     if (op === 'export') { for (let i = 1; i < n.length; i++) stmt(n[i]); return }
     selectedExpr(n, 0)
   }
