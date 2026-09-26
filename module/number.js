@@ -131,12 +131,6 @@ export const DEC_SIGNIFICAND = `
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $numLoop)))`
 
-// No significant digit seen → NaN; apply the deferred round; $mant → $result.
-const FINISH_SIGNIFICAND = `
-    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
-    (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
-    (local.set $result (f64.convert_i64_u (local.get $mant)))`
-
 // ExponentPart scan: 'e'/'E' + optional sign + digits → $exp / $expDigits.
 // `tail` runs inside the e/E branch — Number rejects an empty exponent ("1e")
 // as NaN, parseFloat ignores it, so each caller passes its own resolution.
@@ -199,7 +193,7 @@ const POW10_SCALE = `
           (else (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))))`
 
 // Eisel-Lemire correctly-rounded decimal-to-f64.
-// Used in place of FINISH_SIGNIFICAND + POW10_SCALE. Keeps $mant as i64 until after
+// Keeps $mant as i64 until after
 // sciExponent finalizes $decExp, then calls $__dec_to_f64 with both.
 // Falls back to f64.convert_i64_u + POW10_SCALE when EL returns NaN (ambiguous).
 // The caller handles sign INSIDE this fragment (so the final return is the signed result).

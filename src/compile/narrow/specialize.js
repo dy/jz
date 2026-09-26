@@ -199,7 +199,7 @@ export function specializeValKindDichotomy(programFacts) {
   // Landslide threshold — a pass-registry tuning key (src/passes.js
   // TUNING_KEYS), not a hidden local constant: a visible/overridable knob
   // like every other tuning key (e.g. scalarTypedArrayLen).
-  const DOMINANCE = ctx.transform.optimize?.valKindDominance ?? 0.9
+  const DOMINANCE = 0.9
 
   const sitesByCallee = new Map()
   for (const cs of callSites) {

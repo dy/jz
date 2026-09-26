@@ -94,17 +94,13 @@ function boundedHi(n) {
   if (gh != null && gh < hi) hi = gh
   return Number.isFinite(hi) ? hi : null
 }
-/** Symmetric lower-bound-only resolver (subtraction's mirror of boundedHi) — no
- *  loop-guard-hull consumer today (sort's surgery site is `+`), kept parallel
- *  for the `x - k` shape a `while(name > bound)`-style guard would feed. */
+/** Symmetric lower-bound-only resolver (subtraction's mirror of boundedHi). */
 function boundedLo(n) {
   if (typeof n !== 'string') { const r = intExprRange(n); return r ? r[0] : null }
   const rf = ctx.func?.refinements?.get(n)
   const rep = repOf(n)?.range
   let lo = rep ? rep[0] : -Infinity
   if (rf?.rlo != null && rf.rlo > lo) lo = rf.rlo
-  const gl = ctx.types.loopGuardLo?.get(n)
-  if (gl != null && gl > lo) lo = gl
   return Number.isFinite(lo) ? lo : null
 }
 // `X + k` (k a compile-time integer constant) can ONLY overflow i32 at the

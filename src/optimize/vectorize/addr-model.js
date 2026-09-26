@@ -506,7 +506,7 @@ function buildSiteAccess(body, ind, offsetTees) {
     const op = node[0]
     if (LOAD_OPS[op] || STORE_OPS[op]) {
       const m = matchLaneAddr(node[1], ind, undefined, offsetTees)
-      if (m) siteAccess.set(node, { base: m.base, strideLog2: m.strideLog2, pixelStride: m.pixelStride || 1, elemWidth: 1 << m.strideLog2, teeName: m.teeName || null })
+      if (m) siteAccess.set(node, { base: m.base, strideLog2: m.strideLog2, pixelStride: m.pixelStride || 1, teeName: m.teeName || null })
     }
   }
   for (const s of body) walkAst(s, { enter: recordSite })

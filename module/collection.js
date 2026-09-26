@@ -184,7 +184,6 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 const strEqG = keyEq('(call $__str_eq (i64.load offset=8 (local.get $slot)) (local.get $key))')
 const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))')
-const bitEq = '(i64.eq (i64.load offset=8 (local.get $slot)) (local.get $key))'
 
 import { collectionLaneBytes, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'

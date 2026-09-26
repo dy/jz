@@ -62,6 +62,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
+const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true })
 const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, watrProfile: 'speed', inlinePtrOffsetFast: false })
 
 const LEVEL_PRESETS = Object.freeze({
@@ -97,7 +98,7 @@ const LEVEL_PRESETS = Object.freeze({
   // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
   // constants for free. Measured −3% on jessie parse for +14% binary — exactly
   // the size↔speed trade 'speed' exists to make.
-  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true }),
+  3: L3_PRESET,
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).
   size: Object.freeze({
@@ -143,7 +144,7 @@ const LEVEL_PRESETS = Object.freeze({
   // (The stencil + outer-strip vectorizers are NOT level-gated here: they're bit-exact pure wins
   // like the base lane vectorizer, so they run whenever it does — default-on at level 2+ via
   // `cfg.stencil !== false` at the call site, not a speed-only size/precision trade.)
-  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true }),
+  speed: L3_PRESET,
 })
 
 /**

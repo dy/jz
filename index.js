@@ -362,20 +362,6 @@ export function _compileInProcess(code, opts = {}) {
   }
 }
 
-// =============================================================================
-// Optimization auto-tuning: scan prepared AST + ctx.funcs.list to infer program
-// properties, then emit per-pass overrides. When the user does not explicitly
-// configure individual passes, the result is merged in before resolveOptimize()
-// so the compiler self-tunes.
-// =============================================================================
-
-const AUTO_CFG_LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
-const AUTO_CFG_TYPED_CTORS = new Set([
-  'new.Float32Array', 'new.Float64Array', 'new.Int8Array', 'new.Int16Array',
-  'new.Int32Array', 'new.Uint8Array', 'new.Uint16Array', 'new.Uint32Array',
-  'new.Uint8ClampedArray',
-])
-
 // Test-matrix bridge: when JZ_TEST_* env vars are set, inject them as default
 // opts so the npm test suite can be re-run under varying configurations (opt
 // levels, host, jzify, …) without source changes. User-supplied opts always win

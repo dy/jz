@@ -57,7 +57,6 @@ export function boxPtrIR(i32node, ptrType, aux = 0) {
   // Carried instead under NEW, non-colliding names nothing else reads —
   // additive by construction, zero risk to the existing i32-only convention.
   if (i32node.ptrKind != null) result.srcPtrKind = i32node.ptrKind
-  if (i32node.ptrAux != null) result.srcPtrAux = i32node.ptrAux
   // .closureFuncIdx has no such collision (every existing reader treats it as
   // plain informational metadata, never as a type-implying dispatch tag), so
   // it copies forward under its own name unchanged. In practice this is a
