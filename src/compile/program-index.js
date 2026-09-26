@@ -5,7 +5,7 @@ import { classRootNames } from './emit/class-dispatch.js'
 
 // ProgramIndex member-target family (.work/archive/v1-architecture-campaign.md finish-order item 1).
 // This is the canonical, frozen, same-module resolver for a `.`-member call's
-// callee, mirroring closure-plan.js's ClosureEnvPlan idiom: a fact computed
+// callee: a fact computed
 // ONCE from the parsed program, before any analysis consumer, never mutated
 // afterward. Every existing callee-resolution site treats a bare-name call
 // (`f(x)`) as fully resolved via `ctx.funcs.map.get('f')` — trivial, since

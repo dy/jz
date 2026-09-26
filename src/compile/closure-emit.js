@@ -14,7 +14,6 @@ import { makeMapOverlay } from './map-overlay.js'
 import { unboxablePtrs, inheritPtrAliases, boxedCaptures, reanalyzeBody } from './analyze.js'
 import { restViewAliases } from './analyze-scans.js'
 import { inferLocals } from './infer.js'
-import { mintClosureEnvPlans } from './closure-plan.js'
 import {
   mintRepresentationPlan, representationProgramHasBigint, representationReturnAction,
 } from './representation-plan.js'
@@ -200,9 +199,6 @@ export function analyzeClosureBodyForEmit(cb) {
       }
     }
 
-    // Closure bodies never pass through analyzeFuncForEmit; mint their nested
-    // closure plans here under this body's final reps.
-    mintClosureEnvPlans(cb.body)
     const repSig = {
       name: cb.name,
       params: cb.params.map(name => ({ name, type: 'f64' })),

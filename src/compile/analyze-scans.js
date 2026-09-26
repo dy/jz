@@ -19,8 +19,7 @@ export function findFreeVars(node, bound, free, scope) {
   if (typeof node === 'string') {
     if (bound.has(node) || free.includes(node)) return
     // repOf(node)?.intConst: a name the CURRENT function itself received as a
-    // constant-folded capture (module/function.js's ctx.closure.make/
-    // legacyDerive, mirrored in src/compile/closure-plan.js's mintArrow) has
+    // constant-folded capture (module/function.js's ctx.closure.make) has
     // no entry in ctx.func.locals — folding it away IS the point, there's no
     // slot to declare. Without this arm, a closure nested inside THIS one
     // that references the same name reads as "not in scope" here and gets

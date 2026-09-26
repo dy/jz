@@ -19,7 +19,6 @@ import {
 import { inferLocals } from './infer.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { closureMutatedVars } from './loop-model.js'
-import { mintClosureEnvPlans } from './closure-plan.js'
 import { mintRepresentationPlan, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
@@ -443,11 +442,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     p.boundaryI64 = rv !== VAL.NUMBER && rv !== VAL.BOOL
   }
 
-  // ClosureEnvPlan pre-emission mint (Slice 1, .work/archive/closure-plan-design.md):
-  // last, so it sees this function's final AST and settled ctx.func.boxed;
-  // ctx.closure.make reads astClosurePlan back at each closure literal's own emission.
   seedSummaryLocals(summary)
-  mintClosureEnvPlans(body)
   // TypedStoragePlan snapshots the settled receiver/result/storage ctor facts.
   // Every typed emitter consumes this frozen plan rather than re-reading the
   // mutable inference maps with its own priority chain.
