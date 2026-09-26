@@ -246,7 +246,6 @@ const pureFlattenExpr = (n) => {
   if (!Array.isArray(n)) return false
   const op = n[0]
   if (op == null) return true                                       // boxed literal [null, v]
-  if (op === '()' && n.length === 2) return pureFlattenExpr(n[1])   // grouping parens
   // Native SIMD constructors/arithmetic are effect-free and non-trapping. Let
   // expression-bodied v128 wrappers flatten complex SIMD arguments just like
   // scalar arithmetic; this enables the normal statement inliner to reach a
@@ -436,7 +435,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null, hot = false) =>
 
 // Short-circuit operators: only the FIRST operand is unconditionally evaluated; a call in
 // a later operand might not run, so it can't be hoisted.
-const SHORT_CIRCUIT = new Set(['?:', '?', '&&', '||', '??'])
+const SHORT_CIRCUIT = new Set(['?:', '&&', '||', '??'])
 // Optional chaining: jz's own desugaring already tees the base to evaluate it once, and
 // the key/args run conditionally — so the hoist treats the WHOLE expression as opaque (no
 // operand, not even the base, is hoisted out) to avoid colliding with that desugaring.

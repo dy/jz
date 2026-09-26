@@ -42,6 +42,7 @@ Phantom AST ops `for-in`/`for-of`/`for-await`/`do-while`: 38 checks across 23 fi
 Destructuring patterns after prepare: summary `destructure` (+`entriesOf`), slot-write-hazards `patternTargets`, declare-written-keys `patternNames` | function coverage: none ran in the suite or corpus; a throwing probe in `destructure` never fired across 1005 destructuring-heavy tests; prepare's pushPatternAssign lowers every pattern | ~50 lines | 3 files | folded
 infer.js evidence registry (`SOURCES`, `registerEvidence`, the merge in `inferParams`) holding one source since the method-evidence rungs retired | one `registerEvidence` call in the tree | ~30 lines | infer.js | folded
 `__is_map`/`__is_set`/`__is_typed` emitters: nothing constructs these calls since instanceof became a node (8182e465); a user call to an undeclared `__is_map` is not valid JS | grep over jzify/prepare/src; function coverage: never ran | ~45 lines | 5 files | folded
+Raw parser forms after prepare: grouping `['()', x]` and `'?'` ternaries checked by summary, kind, type, plan and emit code (prepare strips grouping and rewrites `'?'`; no compile-stage code builds either; arrow parameter wrappers never reach these walkers) | knocked out: oracle CLEAN | ~45 lines, 1 KB | 12 files | folded; `static.js`, `ast.js` keep theirs (they also run during prepare)
 State nobody reads (`srcPtrAux`, `elemWidth`, `schema._byKey`, `schema.errorClassesUsed`, `types.loopGuardLo` never written), constants nobody references (`bitEq`, `FINISH_SIGNIFICAND`, `AUTO_CFG_*`), a tuning key nobody sets (`valKindDominance`) | `.work/fold-ctxfields.mjs`, `.work/fold-unrefconst.mjs`, grep; `ctx.plans.start` stays (tests read it) | ~40 lines | 10 files | folded
 Unused exports (knip): `intExprChecker`, `litBoundArrIdx`/`affineIdxOfIV`/`bodyAffineEnv` re-exports, `ENUM_SET`, `BINDING_USE_SELF`, `runsAccessor`, `seedSummaryShape` | `npm run audit:files` exports view | small | type.js, int-certain.js, … | pending
 Barrels (`narrow.js`, `analyze.js`, `representation-plan.js`, `program-facts.js`, `emit.js`, `ir.js`, `optimize/index.js`, `wat/assemble.js`, `kind.js`, `type.js`): re-export-only files kept so imports survived splits | 0 own exports each, ~500 lines | 10 files; touches most importers | many | pending, low rank (many files per concept)
@@ -64,7 +65,8 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 10 | the inference evidence registry: a sources list, a register call and a first-wins merge around the one evidence source left (`notStringEvidence`) | −27 | −187 | — | c137ffff
 11 | the `__is_map`/`__is_set`/`__is_typed` predicate emitters jzify synthesized for `instanceof` before 8182e465 made it a real node, with their autoload, kind-trait and refinement entries | −44 | −785 | — | e096db89
 12 | index.js comments describing code that moved away (the U+E000 guard now in front.js, a watr-tail re-export that no longer exists), the removed auto-tuner's history, and a second copy of the no-post-watr-optimizer note | −25 | 0 | — | 59d7f5a6
-13 | ctx.js comments naming fields' former homes, the deleted `varsBarred`, and an orphaned half-sentence about a `slotFacts` table that no longer exists | −8 | 0 | — | this commit
+13 | ctx.js comments naming fields' former homes, the deleted `varsBarred`, and an orphaned half-sentence about a `slotFacts` table that no longer exists | −8 | 0 | — | 555d22ab
+14 | raw parser forms after prepare: grouping parens `['()', x]` (prepare's `'()'` handler returns `prep(callee)`) and the `'?'` ternary (prepare rewrites it to `'?:'`), handled in 20 places across the summary, kinds, interval proof and plan | −42 | −924 | — | this commit
 
 ## Validation runs (default leg, widened oracle against the baseline)
 
@@ -78,6 +80,10 @@ test/allocation.js, which compiles `firstRefKind.toString()` (edited by fold 7).
 | a28aa172 (folds 1–3) | 4837/4837 | 0 | |
 | 40e43f8b (folds 4–6) | 4837/4837 | 0 | |
 | d323b3b2 (folds 7–8) | 4836/4837 | 0 | `clearInterval: stops interval` (statements.js) counted 2 ticks of 3 under machine load: wall-clock timers, passes on rerun |
+
+## Codegen candidates (output changes; logged, not landed)
+
+- `plan/lanes.js` PURE_OPS lists the raw `'?'` ternary, which never exists after prepare, but not `'?:'`: a record-lane function whose body has a ternary is treated as impure. Adding `'?:'` would widen lane records.
 
 ## Rejections and owner decisions
 

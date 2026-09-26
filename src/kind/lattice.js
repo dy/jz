@@ -31,24 +31,15 @@ export function literalTruthiness(expr) {
     if (op === 'bool') return literalTruthiness(expr[1])
     if (op === 'nan') return false
     if (op === 'str' && typeof expr[1] === 'string') return expr[1].length !== 0
-    if (op === '()' && expr.length === 2) return literalTruthiness(expr[1])
     if (BOOL_OPS.has(op)) {
       const result = literalBool(expr)
       if (result != null) return result
     }
-    if (op === '?:' || op === '?') {
+    if (op === '?:') {
       const truthy = literalTruthiness(expr[1])
       if (truthy != null) return literalTruthiness(truthy ? expr[2] : expr[3])
       const thenTruthy = literalTruthiness(expr[2])
       const elseTruthy = literalTruthiness(expr[3])
-      if (thenTruthy != null && thenTruthy === elseTruthy) return thenTruthy
-    }
-    if (op === '()' && Array.isArray(expr[1]) && expr[1][0] === '?') {
-      const ternary = expr[1]
-      const truthy = literalTruthiness(ternary[1])
-      if (truthy != null) return literalTruthiness(truthy ? ternary[2] : ternary[3])
-      const thenTruthy = literalTruthiness(ternary[2])
-      const elseTruthy = literalTruthiness(ternary[3])
       if (thenTruthy != null && thenTruthy === elseTruthy) return thenTruthy
     }
   }
@@ -66,7 +57,6 @@ function literalValue(expr) {
     const truthy = literalTruthiness(expr[1])
     return truthy == null ? undefined : truthy
   }
-  if (op === '()' && expr.length === 2) return literalValue(expr[1])
   return undefined
 }
 

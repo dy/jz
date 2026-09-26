@@ -214,7 +214,6 @@ export function summaryQueries(facts, internal = false) {
         for (const site of sitesByLayout.get(sid) ?? []) k = merge(k, kind(K.OBJECT, site))
         return k === K.NONE ? kind(K.OBJECT) : k
       }
-      if (op === '()' && n.length === 2) return kindOfExpr(n[1])
       if (op === '.' || op === '?.') {
         const r = kindOfExpr(n[1])
         if (op === '?.' && tagOf(core(r)) === K.NONE) return NULLISH
@@ -274,7 +273,7 @@ export function summaryQueries(facts, internal = false) {
         const r = kindOfExpr(t[1])
         return tagOf(r) === K.TYPED && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? typedStore(typedElemKind(r), v) : v
       }
-      if (op === '?' || op === '?:') return merge(kindOfExpr(n[2]), kindOfExpr(n[3]))
+      if (op === '?:') return merge(kindOfExpr(n[2]), kindOfExpr(n[3]))
       if (logical) return merge(selectedExpr(n[1], mask & logical), selectedExpr(n[2], mask))
       if (op === ',') return kindOfExpr(n[n.length - 1])
       if (isPostfixRecovery(op, n[1], n[2])) return kindOfExpr(n[1])

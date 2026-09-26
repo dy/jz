@@ -1024,8 +1024,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           const M = intLiteralValue(rhs[1]) ?? intLiteralValue(rhs[2])
           const inner = intLiteralValue(rhs[1]) != null ? rhs[2] : rhs[1]
           if (M == null || M < 0) continue
-          const grp = Array.isArray(inner) && inner[0] === '()' && inner.length === 2 ? inner[1] : inner
-          if (!(Array.isArray(grp) && grp[0] === '+' && (grp[1] === a2[1] || grp[2] === a2[1]))) continue
+          if (!(Array.isArray(inner) && inner[0] === '+' && (inner[1] === a2[1] || inner[2] === a2[1]))) continue
           const e0 = env.get(a2[1])
           if (!e0 || e0[0] < 0 || e0[1] > M) continue
           let writes = 0
@@ -1152,7 +1151,6 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       hullInto(save)
       return
     }
-    if (op === '()' && n.length === 2) { visit(n[1]); return }   // grouping, not a call
     if (op === '()' || op === 'new') {   // a call may reassign module globals
       if (calls?.has(n) && op === '()') {
         visit(n[1])

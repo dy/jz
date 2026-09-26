@@ -247,7 +247,6 @@ export const inferModuleIntGlobals = (ast) => {
     if (op === '&&' || op === '||' || op === '??') return producesFraction(e[1]) || producesFraction(e[2])
     if (op === '()') {
       const callee = e[1]
-      if (Array.isArray(callee) && callee[0] === '?') return producesFraction(callee[2]) || producesFraction(callee[3])
       if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && FRACTIONAL_MATH.has(callee[2])) return true
       if (fractionalMathKey(callee)) return true
       // Integer-valued but EXCEEDS the i32 range: epoch/monotonic-millisecond

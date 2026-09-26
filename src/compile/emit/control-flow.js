@@ -213,7 +213,7 @@ const foldedBodyCost = (body, name, value) => {
 function keysRoSrc(node) {
   if (!Array.isArray(node)) return null
   if (node[0] === '()' && node[1] === '__keys_ro') return node[2]
-  if (node[0] === '?:' || node[0] === '?') {
+  if (node[0] === '?:') {
     const last = node[node.length - 1]
     if (Array.isArray(last) && last[0] === '()' && last[1] === '__keys_ro') return last[2]
   }

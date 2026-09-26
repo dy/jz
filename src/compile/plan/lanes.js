@@ -36,7 +36,7 @@ const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
 const argsNode = (list) => list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]
 const MAX_LANES = 8
-const PURE_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '??', '?', 'str', 'bool'])
+const PURE_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '~', '!', '<', '<=', '>', '>=', '==', '!=', '===', '!==', '&&', '||', '??', 'str', 'bool'])
 
 /** An expression whose evaluation neither reads nor writes anything another
  *  expression's evaluation could change: names, literals, field reads of names,

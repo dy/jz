@@ -42,7 +42,6 @@ export function stableLoopNames(body, cond, step) {
       if (seen.has(root)) return false
       seen.add(root)
       return some(root, n => {
-        if (n[0] === '()' && n.length === 2) return false
         if (n[0] !== '()' && n[0] !== '?.()' && n[0] !== 'new') return false
         const callee = n[1], fn = typeof callee === 'string' && ctx.funcs.map?.get(callee)
         if (fn && !fn.raw) return frameRoots(fn).some(r => changes(r, fn.sig))

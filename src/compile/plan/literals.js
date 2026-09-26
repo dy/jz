@@ -1039,7 +1039,6 @@ const _numericCallbackBody = (fn) => {
     if (n[0] == null) return typeof n[1] === 'number' // number node — wrapper is null OR undefined in the live AST
     if (_NUM_OPS.has(n[0])) return n.slice(1).every(a => a == null || numeric(a))
     if (n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('Math.')) return true
-    if (n[0] === '?' && n.length === 4) return numeric(n[2]) && numeric(n[3])
     return false
   }
   // expression body only; block bodies ({…return…}) stay conservative
