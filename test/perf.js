@@ -2031,7 +2031,9 @@ golden('typed-array loop', `export let f = (arr) => {
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 1545)
+}`, 1645)
+// 1545→1645: the array arm converts each element (a nullish or boolean atom to
+// its number, any other box NaN) instead of copying the box into the Float64Array.
 // 1466→1545: the boundary copy's element dispatch inlines at level 2 (+65), and the
 // frame rewind saves and restores the heap pointer around the Float64Array copy (+14).
 // 930→1111: watr-HEAD codegen era (pre-dates every session-7 jz commit — measured 1113 at

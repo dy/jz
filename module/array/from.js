@@ -23,7 +23,7 @@ import { representationProgramHasBigint } from '../../src/compile/representation
 // IsCallable(mapfn) is false, throw a TypeError before iterating items.
 // An explicit `undefined` arrives as the literal node [null, undefined];
 // treat it as absent. Statically flag literal forms that can't be callable.
-const isUndefinedNode = (n) => n === undefined
+export const isUndefinedNode = (n) => n === undefined
   || (Array.isArray(n) && n[0] == null && n.length === 2 && n[1] === undefined)
 const isNonCallableMapFn = (n) => {
   if (!Array.isArray(n)) return false        // undefined / identifier — unknown
@@ -50,7 +50,7 @@ const nanPtrTypeEq = (value, type) => ['i32.and',
 
 // Dynamic callback values must be rejected before reading items.length, even
 // for a zero-length source. Literal arrows are callable by construction.
-const callbackSetup = cb => cb ? [
+export const callbackSetup = cb => cb ? [
   cb.setup,
   ...(cb.dynamic ? [[
     'if', ['i32.eqz', nanPtrTypeEq(cb.value, PTR.CLOSURE)],

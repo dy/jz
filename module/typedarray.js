@@ -14,7 +14,7 @@ import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS 
 import { emit, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { K, TAGS, NULL_BITS, hasTag } from '../src/summary/kind.js'
+import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf } from '../src/summary/kind.js'
 import { typedIdxProven, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -26,12 +26,15 @@ import { plannedTypedStorageCtor, plannedTypedStorageInfo } from '../src/compile
 import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { requireReceiverWat } from './core/error-object.js'
-import { captureCallback } from './array/callback.js'
+import { captureCallback, makeCallback, idxArg } from './array/callback.js'
+import { callbackSetup, isUndefinedNode } from './array/from.js'
 
 const _NAN_BITS = nanPrefixHex()
 
 
 const typedAux = (name, isView = false) => encodeTypedElemAux(name, isView)
+// Per constructor: copy an Array's elements into a fresh typed array.
+const fromArrayOf = new Map()
 import { STRIDE, SHIFT, LOAD, STORE } from './typedarray/elem-tables.js'
 // Every integer element store (SetValueInBuffer) converts through toInt32: exact
 // ES ToInt32 for any f64, the narrower store keeping the low bits — the
@@ -350,8 +353,8 @@ export default (ctx) => {
           out.ptr]
       }
       // Single arg array-like source: copy elements instead of treating the pointer as a length.
-      if (srcType === VAL.ARRAY && ctx.core.emit[`${name}.from`])
-        return ctx.core.emit[`${name}.from`](lenExpr)
+      if (srcType === VAL.ARRAY && fromArrayOf.has(name))
+        return fromArrayOf.get(name)(lenExpr)
       if (srcType === VAL.TYPED) {
         const src = temp('ts')
         // Build copyFromTyped's IR BEFORE emit(lenExpr) recurses into a sibling
@@ -379,11 +382,11 @@ export default (ctx) => {
       }
       // A Set or a Map iterates, any other object is an array-like (23.2.5.1
       // steps 6-8); both land in a fresh array the copy takes from there.
-      if ((srcType === VAL.SET || srcType === VAL.MAP) && ctx.core.emit[`${name}.from`])
-        return ctx.core.emit[`${name}.from`](['()', '__iter_arr', lenExpr])
-      if ((srcType === VAL.OBJECT || srcType === VAL.HASH) && ctx.core.emit[`${name}.from`])
-        return ctx.core.emit[`${name}.from`](['()', 'Array.from', lenExpr])
-      if (srcType == null && ctx.core.emit[`${name}.from`]) {
+      if ((srcType === VAL.SET || srcType === VAL.MAP) && fromArrayOf.has(name))
+        return fromArrayOf.get(name)(['()', '__iter_arr', lenExpr])
+      if ((srcType === VAL.OBJECT || srcType === VAL.HASH) && fromArrayOf.has(name))
+        return fromArrayOf.get(name)(['()', 'Array.from', lenExpr])
+      if (srcType == null && fromArrayOf.has(name)) {
         setLinkDemand('typedView')  // unknown arg: runtime may take the buffer zero-copy-view branch
 
         // Runtime dispatch: number → allocate; array/typed → copy elements; buffer → zero-copy view.
@@ -401,7 +404,7 @@ export default (ctx) => {
         // regardless of which runtime branch fires), so hoisting them earlier
         // changes nothing about which compile-time calls happen — only their
         // order relative to emit(lenExpr).
-        const fromArrIR = ctx.core.emit[`${name}.from`](src)
+        const fromArrIR = fromArrayOf.get(name)(src)
         const copyTypedIR = copyFromTyped(src)
         // The argument's kind decides (23.2.5.1): a number, or any primitive
         // (a string, a boolean, a nullish atom) sizes a fresh array through
@@ -1090,11 +1093,87 @@ export default (ctx) => {
   for (const [name, elemType] of Object.entries(TYPED_ELEM_CODE)) {
     const aux = typedAux(name)
     const stride = STRIDE[elemType], store = STORE[elemType]
-    ctx.core.emit[`${name}.from`] = (src) => {
-      setLinkDemand('typedarray')
-      if (name === 'Float16Array') setLinkDemand('f16')
-      if (name === 'Uint8ClampedArray') setLinkDemand('clamped')
-      const fl = { et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
+    const bigint = name.startsWith('Big')   // BigInt lanes share code 7; their values convert with ToBigInt
+    // TypedArray.from(source, mapfn, thisArg) (ECMA-262 23.2.2.1): arguments
+    // first, mapfn checked callable, the source's values taken as a list, then
+    // each value mapped and converted into its element in turn.
+    const fromMapped = (src, mapFn, thisArg, fl) => {
+      if (bigint) err(`${name}.from with a map function is not supported: its elements convert with ToBigInt`)
+      ctx.module.include('number')
+      inc('__ptr_offset', '__len', '__to_num')
+      const s = temp('tmsrc'), list = tempI32('tml'), n = tempI32('tmn'), i = tempI32('tmi')
+      const view = ctx.summary.at(ctx.func.current)
+      const srcIR = asF64(emit(src))
+      const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
+      view.alias(s, src, false)
+      let listIR
+      try { listIR = asF64(ctx.core.emit['Array.from'](s)) } finally { view.unalias(s) }
+      const out = allocPtr({ type: PTR.TYPED, aux, len: ['i32.mul', ['local.get', `$${n}`], ['i32.const', stride]], stride: 1, tag: 'tm' })
+      const item = typed(['f64.load', ['i32.add', ['local.get', `$${list}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]], 'f64')
+      const mapped = typed(['call', '$__to_num', ['i64.reinterpret_f64', asF64(cb.stored([item, idxArg(cb, i)]))]], 'f64')
+      const dst = ['i32.add', ['local.get', `$${out.local}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
+      const id = freshId(ctx)
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, srcIR],
+        ...callbackSetup(cb),
+        ['local.set', `$${list}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', listIR]]],
+        ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${list}`], ['i32.const', 8]]]],
+        out.init,
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+          elemStoreIR(fl, dst, mapped),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
+    // An Array's elements copied into a fresh typed array.
+    const copyArray = (src, fl, elemHint) => {
+      const srcL = temp('tfs')
+      const len = tempI32('tfl'), i = tempI32('tfi'), off = tempI32('tfo')
+      const out = allocPtr({ type: PTR.TYPED, aux,
+        len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
+      const t = out.local
+      const id = freshId(ctx)
+      // Each slot converts with ToNumber by what the summary knows of it: a
+      // Number copies, a nullish or boolean atom converts in place, a string or
+      // an object takes the full conversion. A slot of unknown kind (a host
+      // array) follows the constructor's length policy: the full conversion
+      // where the program links it already, else in place, every other box NaN.
+      // (BigInt lanes keep their raw copy.)
+      const view = ctx.summary.at(ctx.func.current), k = view.kindOfExpr(src)
+      const el = elemHint ?? (tagOf(k) === K.ARRAY ? view.elemOfKind(k) : null)
+      const tags = el == null ? 0 : tagsOf(el)
+      const atoms = bitOf(K.NUMBER) | bitOf(K.ABSENT) | bitOf(K.NULLISH) | bitOf(K.BOOL) | bitOf(K.ANY)
+      const numeric = bigint || el === NUMBER
+      const full = !numeric && ((tags & ~atoms) !== 0 || ctx.core.includes.has('__to_num'))
+      const v = temp('tfv')
+      const slot = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
+      if (full) { ctx.module.include('number'); inc('__to_num') }
+      const srcF64 = numeric ? slot
+        : full ? ['if', ['result', 'f64'], ['f64.eq', ['local.tee', `$${v}`, slot], ['local.get', `$${v}`]],
+          ['then', ['local.get', `$${v}`]], ['else', ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${v}`]]]]]
+        : ['block', ['result', 'f64'], ['local.set', `$${v}`, slot], coerceAtomsToNum(typed(['local.get', `$${v}`], 'f64'))]
+      const dstAddr = ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
+      const storeExprs = (fl.isF16 || fl.isClamped)
+        ? [elemStoreIR(fl, dstAddr, srcF64)]
+        : [[store, dstAddr, elemType <= 5 ? toInt32(srcF64) : elemType === 6 ? ['f32.demote_f64', srcF64] : srcF64]]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${srcL}`, asF64(emit(src))],
+        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
+        out.init,
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          ...storeExprs,
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
+    // An Array source (the constructor's copy, and from() once its source is
+    // one): a bare literal builds in place, any other copies its slots.
+    const fromArray = (src, fl, elemHint) => {
       // Bare array-literal source (`Int32Array.from([…])`, `new Int32Array([…])`): build the
       // typed array directly — alloc + one native-typed store per element — instead of
       // materializing an intermediate f64 ARRAY (every element a 9-byte f64.const) plus a
@@ -1120,45 +1199,47 @@ export default (ctx) => {
         for (let k = 0; k < elems.length; k++) {
           const addr = k === 0 ? ['local.get', `$${out.local}`]
             : ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * strideS]]
-          if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, asF64(emit(elems[k])))); continue }
+          // Each element converts with ToNumber first (free for a Number).
+          const num = (e) => bigint ? asF64(emit(e)) : asF64(toNumF64(e, emit(e)))
+          if (fl.isF16 || fl.isClamped) { body.push(elemStoreIR(fl, addr, num(elems[k]))); continue }
           if (elemTypeS <= 5) {
             // ES ToIntN, not saturation: a constant wraps exactly at compile time
             // (including magnitudes outside i64 during self-hosting; store8/16
             // keeps the narrower modulo); a runtime element converts exactly too.
-            const e = emit(elems[k])
-            body.push([storeS, addr, isLit(e) ? ['i32.const', int32(litVal(e))] : toInt32(asF64(e))])
+            const e = num(elems[k])
+            body.push([storeS, addr, isLit(e) ? ['i32.const', int32(litVal(e))] : toInt32(e)])
             continue
           }
-          const v = elemTypeS === 6 ? ['f32.demote_f64', asF64(emit(elems[k]))]
-            : asF64(emit(elems[k]))
+          const v = elemTypeS === 6 ? ['f32.demote_f64', num(elems[k])]
+            : num(elems[k])
           body.push([storeS, addr, v])
         }
         body.push(out.ptr)
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
-      const srcL = temp('tfs')
-      const len = tempI32('tfl'), i = tempI32('tfi'), off = tempI32('tfo')
-      const out = allocPtr({ type: PTR.TYPED, aux,
-        len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
-      const t = out.local
-      const id = freshId(ctx)
-      const srcF64 = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
-      const dstAddr = ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
-      const storeExprs = (fl.isF16 || fl.isClamped)
-        ? [elemStoreIR(fl, dstAddr, srcF64)]
-        : [[store, dstAddr, elemType <= 5 ? toInt32(srcF64) : elemType === 6 ? ['f32.demote_f64', srcF64] : srcF64]]
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${srcL}`, asF64(emit(src))],
-        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
-        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
-        out.init,
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$brk${id}`, ['loop', `$loop${id}`,
-          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          ...storeExprs,
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', `$loop${id}`]]],
-        out.ptr], 'f64')
+      return copyArray(src, fl, elemHint)
+    }
+    fromArrayOf.set(name, (src) => fromArray(src, { et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }))
+    ctx.core.emit[`${name}.from`] = (src, mapFn, thisArg) => {
+      setLinkDemand('typedarray')
+      if (name === 'Float16Array') setLinkDemand('f16')
+      if (name === 'Uint8ClampedArray') setLinkDemand('clamped')
+      const fl = { et: elemType, isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
+      if (!isUndefinedNode(mapFn)) return fromMapped(src, mapFn, thisArg, fl)
+      if (thisArg !== undefined) {
+        const s = temp('tfsrc'), value = asF64(emit(src)), ignored = asF64(emit(thisArg))
+        const view = ctx.summary.at(ctx.func.current)
+        view.alias(s, src, false)
+        try { return typed(['block', ['result', 'f64'], ['local.set', `$${s}`, value], ['drop', ignored], ctx.core.emit[`${name}.from`](s)], 'f64') }
+        finally { view.unalias(s) }
+      }
+      // An Array copies; any other source's values as Array.from lists them:
+      // a typed array's elements, a string's characters, an iterable's values.
+      const view = ctx.summary.at(ctx.func.current), kind = view.kindOfExpr(src)
+      if (bigint || tagOf(kind) === K.ARRAY && !isNullable(kind)) return fromArray(src, fl)
+      ctx.module.include('array')
+      const t = tagOf(kind)
+      return fromArray(['()', 'Array.from', src], fl, t === K.STRING ? STRING : t === K.TYPED ? view.elemOfKind(kind) : null)
     }
   }
 

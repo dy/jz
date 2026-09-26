@@ -2315,3 +2315,29 @@ test('.slice: a copy from a literal start reads its own positions', () => {
   }`)
   is(h(), 22, 'an end bound keeps the positions from the start')
 })
+
+test('TypedArray.from and construction: mapfn runs, every value converts with ToNumber', () => {
+  const bodies = [
+    'const b = Int16Array.from([1, 2, x], (v, i) => v * 1000 + i); return [b[0], b[2], b.length]',
+    "const b = Float64Array.from(['1.5', x, '7'], (v) => v); return [b[0], b[1], b[2]]",
+    'const b = Float32Array.from(new Int8Array([-1, 5, x]), (v, i) => v / 2 - i); return [b[0], b[1], b[2]]',
+    'const b = Uint8ClampedArray.from([300, -5, x], v => v * 1.5); return [b[0], b[1], b[2]]',
+    'const b = Int8Array.from([100, 200, x], v => v * 3); return [b[0], b[1], b[2]]',
+    'class B { constructor(v) { this.v = v } valueOf() { return this.v * 2 } } const b = Int32Array.from([1, 2], v => new B(v + x)); return [b[0], b[1]]',
+    'const b = Int16Array.from([1, 2, x], undefined); return [b[0], b[2]]',
+    "const b = Float64Array.from(['1.5', x, '7']); return [b[0], b[1], b[2]]",
+    "const b = Int32Array.from(['12', x, 'q']); return [b[0], b[1], b[2]]",
+    "const b = new Float64Array(['1.5', x, '7']); return [b[0], b[1], b[2]]",
+    "const a = ['1.5', x, '7']; const b = Float64Array.from(a); return [b[0], b[1], b[2]]",
+    'const b = Float32Array.from([null, undefined, x]); return [b[0], b[1], b[2]]',
+    'const b = Float32Array.from(new Int8Array([-1, 5, x])); return [b[0], b[1], b[2]]',
+    'const b = Int16Array.from(new Float64Array([1.7, -2.5, x])); return [b[0], b[1], b[2]]',
+    "const b = Uint8Array.from('123'); return [b[0], b[1], b[2], b.length]",
+    'const a = [1.5, x, 3]; const b = Float64Array.from(a); return [b[0], b[1], b[2]]',
+  ]
+  for (const body of bodies) {
+    const src = `export let f = (x) => { ${body} }`, native = oracle(src).f
+    for (const optimize of levels(0, 2, 'speed', 'size'))
+      for (const x of [9, -3.5]) is(jz(src, { optimize }).exports.f(x), native(x), `${body.slice(10, 60)}…, O${optimize}, x=${x}`)
+  }
+})
