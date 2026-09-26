@@ -59,7 +59,8 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 9 | state, constants and a knob nothing reads: `srcPtrAux`, `elemWidth`, `ctx.schema._byKey`, `ctx.schema.errorClassesUsed`, the never-written `ctx.types.loopGuardLo`, `bitEq`, `FINISH_SIGNIFICAND`, the removed auto-tuner's `AUTO_CFG_*`, the `valKindDominance` tuning key; `3` and `speed` share one preset | −36 | −445 | — | 09e8929a
 10 | the inference evidence registry: a sources list, a register call and a first-wins merge around the one evidence source left (`notStringEvidence`) | −27 | −187 | — | c137ffff
 11 | the `__is_map`/`__is_set`/`__is_typed` predicate emitters jzify synthesized for `instanceof` before 8182e465 made it a real node, with their autoload, kind-trait and refinement entries | −44 | −785 | — | e096db89
-12 | index.js comments describing code that moved away (the U+E000 guard now in front.js, a watr-tail re-export that no longer exists), the removed auto-tuner's history, and a second copy of the no-post-watr-optimizer note | −25 | 0 | — | this commit
+12 | index.js comments describing code that moved away (the U+E000 guard now in front.js, a watr-tail re-export that no longer exists), the removed auto-tuner's history, and a second copy of the no-post-watr-optimizer note | −25 | 0 | — | 59d7f5a6
+13 | ctx.js comments naming fields' former homes, the deleted `varsBarred`, and an orphaned half-sentence about a `slotFacts` table that no longer exists | −8 | 0 | — | this commit
 
 ## Validation runs (default leg, widened oracle against the baseline)
 
