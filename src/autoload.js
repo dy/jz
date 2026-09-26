@@ -212,10 +212,6 @@ const CALL_MODULES = dict({
   ...Object.fromEntries(TYPED_CTORS.filter(n => n.endsWith('Array')).map(n => [`${n}.from`, ['core', 'typedarray', 'array']])),
   'Array.of': ['core', 'array'],
   'ArrayBuffer.isView': ['core', 'typedarray'],
-  // instanceof Map / Set / TypedArray predicates (synthesized by jzify).
-  '__is_map': ['core', 'collection'],
-  '__is_set': ['core', 'collection'],
-  '__is_typed': ['core', 'typedarray'],
   '__park_write_str': ['core', 'string'],
   '__park_read_str': ['core', 'string'],
 })

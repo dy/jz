@@ -670,19 +670,6 @@ export default (ctx) => {
     return typed(['f64.convert_i32_s', ptrTypeEq(va, PTR.TYPED)], 'f64')
   }
 
-  // x instanceof Float64Array | Int32Array | … — typed-pointer predicate emitted
-  // by jzify. NaN-check first, then __ptr_type === PTR.TYPED. Aux-byte ctor
-  // discrimination (Float64 vs Int32) lives downstream in typedElem analysis —
-  // this predicate only asserts "is some TypedArray". Result i32 (boolean).
-  ctx.core.emit['__is_typed'] = (x) => {
-    if (x === undefined) return typed(['i32.const', 0], 'i32')
-    const v = asF64(emit(x))
-    const t = temp('ityp')
-    return typed(['i32.and',
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ptrTypeEq(['local.get', `$${t}`], PTR.TYPED)], 'i32')
-  }
-
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.
   // Dispatches statically for proven buffer receivers, including expressions.
   // Indices normalize through __clamp_idx (negative wraps from the end, then

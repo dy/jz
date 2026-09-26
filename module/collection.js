@@ -625,24 +625,6 @@ export default (ctx) => {
           ['i32.const', strHashLiteral('size')]]]]]], 'f64')
   })
 
-  // x instanceof Map / Set — typed-pointer predicates emitted by jzify. NaN-check
-  // first (non-pointer numbers must report false), then compare __ptr_type tag.
-  // Mirrors module/array.js's Array.isArray inline form. Result is i32 (boolean).
-  ctx.core.emit['__is_map'] = (x) => {
-    const v = asF64(emit(x))
-    const t = temp('imap')
-    return typed(['i32.and',
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ptrTypeEq(['local.get', `$${t}`], PTR.MAP)], 'i32')
-  }
-  ctx.core.emit['__is_set'] = (x) => {
-    const v = asF64(emit(x))
-    const t = temp('iset')
-    return typed(['i32.and',
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ptrTypeEq(['local.get', `$${t}`], PTR.SET)], 'i32')
-  }
-
   // Generated Set probe functions
   ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
   // Region-arena rebuild fix (.work/evidence.md §Region arena, front-boundary
