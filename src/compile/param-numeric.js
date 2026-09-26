@@ -266,11 +266,9 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
       if (!names.has(node[2])) walk(node[2])
       return
     }
-    if (op === '-' && node.length === 2) { numOperand(node[1]); return }  // unary negate
     if (op === '-' && node.length === 3) { numOperand(node[1]); numOperand(node[2]); return }
     // `u-`/`u+` are the normalized unary minus/plus (prepare rewrites `-x`/`+x`); both ToNumber.
     if ((op === 'u-' || op === 'u+') && node.length === 2) { numOperand(node[1]); return }
-    if (op === '+' && node.length === 2) { numOperand(node[1]); return }  // unary + = ToNumber
     if (op === '~' && node.length === 2) { numOperand(node[1]); return }
     for (let i = 1; i < node.length; i++) walk(node[i])  // bare param reaching here → rejected above
   }
@@ -452,7 +450,7 @@ export function paramValueOnly(body, name) {
     }
     if (op === 'typeof' && node.length === 2) { read(node[1]); return }
     if ((NUM_BIN_OPS.has(op) || RELATIONAL_OPS.has(op) || EQUALITY_OPS.has(op) || op === '+' || op === '-') && node.length === 3) { read(node[1]); read(node[2]); return }
-    if ((op === 'u-' || op === 'u+' || op === '~' || op === '!' || op === '-' || op === '+') && node.length === 2) { read(node[1]); return }
+    if ((op === 'u-' || op === 'u+' || op === '~' || op === '!') && node.length === 2) { read(node[1]); return }
     if (op === '()' && VALUE_CTORS.has(node[1]) && node.length === 3) { read(node[2]); return }
     if (op === 'strcat') { for (let i = 1; i < node.length; i++) read(node[i]); return }
     if (op === '?:' && node.length === 4) { test(node[1]); walk(node[2]); walk(node[3]); return }
@@ -526,7 +524,6 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
     const op = e[0]
     if (op == null) return typeof e[1] === 'number'
     if (op === 'u-' || op === 'u+' || op === '~') return numericIndex(e[1])
-    if (op === '-' && e.length === 2) return numericIndex(e[1])
     if ((NUM_BIN_OPS.has(op) || op === '+' || op === '-') && e.length === 3) return numericIndex(e[1]) && numericIndex(e[2])
     if (op === '.' && e[2] === 'length') return true
     if (op === '()' && ((typeof e[1] === 'string' && e[1].startsWith('math.')) || (Array.isArray(e[1]) && e[1][0] === '.' && e[1][1] === 'Math'))) return true

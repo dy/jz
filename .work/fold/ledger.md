@@ -68,7 +68,8 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 12 | index.js comments describing code that moved away (the U+E000 guard now in front.js, a watr-tail re-export that no longer exists), the removed auto-tuner's history, and a second copy of the no-post-watr-optimizer note | −25 | 0 | — | 59d7f5a6
 13 | ctx.js comments naming fields' former homes, the deleted `varsBarred`, and an orphaned half-sentence about a `slotFacts` table that no longer exists | −8 | 0 | — | 555d22ab
 14 | raw parser forms after prepare: grouping parens `['()', x]` (prepare's `'()'` handler returns `prep(callee)`) and the `'?'` ternary (prepare rewrites it to `'?:'`), handled in 20 places across the summary, kinds, interval proof and plan | −42 | −924 | — | f8e1f9f5
-15 | `var`, `function`, `yield` and `await` checks in compile-stage code: jzify lowers them and prepare rejects any survivor (op-policy.js REJECT_OPS) | −2 (37 checks narrowed) | −570 | — | this commit
+15 | `var`, `function`, `yield` and `await` checks in compile-stage code: jzify lowers them and prepare rejects any survivor (op-policy.js REJECT_OPS) | −2 (37 checks narrowed) | −570 | — | b1820926
+16 | raw unary `-x`/`+x` checks after prepare, which rewrites them to `u-`/`u+` (the normalized arms beside them stay) | −3 | −149 | — | this commit
 
 ## Validation runs (default leg, widened oracle against the baseline)
 
@@ -86,6 +87,8 @@ test/allocation.js, which compiles `firstRefKind.toString()` (edited by fold 7).
 ## Codegen candidates (output changes; logged, not landed)
 
 - `plan/lanes.js` PURE_OPS lists the raw `'?'` ternary, which never exists after prepare, but not `'?:'`: a record-lane function whose body has a ternary is treated as impure. Adding `'?:'` would widen lane records.
+
+- `compile/analyze/frame-effects.js:530` and `summary/query.js:272` recognize a literal element key by the parser's `[null, 'k']` form, but after prepare a literal key is `['str', 'k']` (prepare's `'[]'` handler). The frame-effects arm therefore never resolves an accessor setter for `o['k'] = v`: a possible soundness gap in the census that gates arena rewind and load CSE. Not a fold: fixing it changes output.
 
 ## Rejections and owner decisions
 
