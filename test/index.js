@@ -69,6 +69,8 @@ const TESTS = [
   'interval-proof',
   'flow-range',
   'store-merge',
+  'const-seed',
+  'unroll-cost',
   'sentinel-guard',
   'twin-locals',
   'carry-elements',

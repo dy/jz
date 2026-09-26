@@ -14,7 +14,7 @@ import {
   asF64, asI32, freshId, isBoundName, isLit, isNullish, litVal, loopTop, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
-import { constIntExpr, intExprRange, intLiteralValue } from '../../static.js'
+import { constIntExpr, constNumExpr, intExprRange, intLiteralValue } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
   MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
@@ -147,8 +147,11 @@ function unrollSmallConstFor(init, cond, step, body) {
   if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsDeclOf(body, name)) return null
   if (isReassigned(body, name)) return null
   // Copies of a large body cost more than the loop they save: noise's four
-  // octaves of an inlined perlin (444 nodes each) ran 3.6% faster rolled.
-  if (tripCount * forInBodyCost(body) > MAX_SMALL_FOR_UNROLL_COST) return null
+  // octaves of an inlined perlin (444 nodes each) ran 3.6% faster rolled. A
+  // copy is measured with its counter substituted: the index arithmetic over
+  // the counter folds to literals, so biquad's eight stages (153 nodes each,
+  // a third of them `s * 5 + k` addressing) copy out as what they emit.
+  if (tripCount * foldedBodyCost(body, name, values ? values[0] : 0) > MAX_SMALL_FOR_UNROLL_COST) return null
 
   const out = []
   const emitCopy = value => {
@@ -178,6 +181,31 @@ const forInBodyCost = (node) => {
   let n = 1
   for (let i = 1; i < node.length; i++) n += forInBodyCost(node[i])
   return n
+}
+// The nodes one copy of a counted body emits once its counter is the literal
+// `value`: a subtree that evaluates to a number, through the consts bound to
+// such values along the way, is one node.
+const foldedBodyCost = (body, name, value) => {
+  const env = new Map([[name, value]])
+  const resolve = id => env.has(id) ? env.get(id) : null
+  const cost = node => {
+    if (!Array.isArray(node)) return 1
+    if (node[0] === 'const') {
+      let n = 1
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        const v = Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? constNumExpr(d[2], resolve) : null
+        if (v != null) { env.set(d[1], v); n += 1 }
+        else n += cost(d)
+      }
+      return n
+    }
+    if (constNumExpr(node, resolve) != null) return 1
+    let n = 1
+    for (let i = 1; i < node.length; i++) n += cost(node[i])
+    return n
+  }
+  return cost(body)
 }
 
 // Pull the for-in source out of prepare's keys expression: either a bare
