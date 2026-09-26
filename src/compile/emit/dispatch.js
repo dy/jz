@@ -1083,7 +1083,7 @@ function setFlowVal(name, vt, expr, value) {
   else ctx.func.localValTypesOverlay.delete(name)
 }
 
-const FLOW_LOOP_OPS = new Set(['while', 'do', 'for'])
+const FLOW_LOOP_OPS = new Set(['while', 'for'])
 
 // Names assigned at a NESTED position within `node` (anything except a
 // top-level `name = rhs` statement head or top-level decl head, both

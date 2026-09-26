@@ -168,7 +168,7 @@ const safeScalarObjectUse = (node, name, keys, statement = false) => {
   for (let i = 1; i < node.length; i++) {
     const stmt = op === ';' || (op === '{}' && node.length === 2)
       || (op === 'for' && i === 4) || (op === 'while' && i === 2)
-      || (op === 'do' && i === 1) || (op === 'if' && i >= 2)
+      || (op === 'if' && i >= 2)
     if (!safeScalarObjectUse(node[i], name, keys, stmt)) return false
   }
   return true

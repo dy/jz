@@ -437,7 +437,7 @@ export function speculateTypedParams(programFacts, ast) {
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
   const hasLoop = (n) => Array.isArray(n)
-    && (n[0] === 'for' || n[0] === 'while' || n[0] === 'do' || n.some((c, i) => i > 0 && hasLoop(c)))
+    && (n[0] === 'for' || n[0] === 'while' || n.some((c, i) => i > 0 && hasLoop(c)))
 
   // ---- weak evidence engine (see doc above) ----
   const DBG2 = typeof process !== 'undefined' && !!process.env?.JZ_DBG_SPEC

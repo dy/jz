@@ -18,7 +18,7 @@ export const optimizing = () => { const c = ctx.transform.optimize; return !!c &
 
 /** Ops whose body opens a new loop scope. (`for-in`/`for-of` excluded — they
  *  bind a fresh per-iter local on each entry, so jz lowers them differently.) */
-export const LOOP_OPS = new Set(['for', 'while', 'do'])
+export const LOOP_OPS = new Set(['for', 'while'])
 
 const SIMPLE_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
 /** Inline-substitution argument check — pure, side-effect-free, captures nothing. */

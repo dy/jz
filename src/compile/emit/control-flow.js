@@ -381,7 +381,7 @@ const extractHoistableLiterals = (body) => {
  * `frame.loopFresh`). Returns the alloc IR to splice at loop-body entry.
  */
 // Nested scopes whose declarations are their own: a closure or an inner loop.
-const LOOP_FRESH_BOUNDARY_OPS = new Set(['=>', 'for', 'while', 'do'])
+const LOOP_FRESH_BOUNDARY_OPS = new Set(['=>', 'for', 'while'])
 function emitLoopFreshBoxed(body, frame) {
   if (!ctx.func.boxed?.size) return []
   const names = new Set()

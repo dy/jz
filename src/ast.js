@@ -544,7 +544,7 @@ export function hasOwnContinue(body) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do') return false
+  if (op === 'for' || op === 'while') return false
   for (let i = 1; i < body.length; i++) if (hasOwnContinue(body[i])) return true
   return false
 }
@@ -564,7 +564,7 @@ export function hasOwnBreakOrContinue(body) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'break' || op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do' || op === '=>') return false
+  if (op === 'for' || op === 'while' || op === '=>') return false
   for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
   return false
 }

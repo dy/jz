@@ -2563,7 +2563,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       branch--
       return
     }
-    if (op === 'while' || op === 'do') { loopAssigns(n); branch++; selectedExpr(n[1], 0); const mark = rtop; if (op === 'while') proves(n[1], true); stmt(n[2]); unwind(mark); branch--; return }
+    if (op === 'while') { loopAssigns(n); branch++; selectedExpr(n[1], 0); const mark = rtop; proves(n[1], true); stmt(n[2]); unwind(mark); branch--; return }
     // Prepared try statements: `['catch', tryBody, param?, handler]`, `['finally', inner, cleanup]`.
     if (op === 'catch') { branch++; stmt(n[1]); if (typeof n[2] === 'string') declare(n[2], ANY); stmt(n[3]); branch--; return }
     if (op === 'finally') { branch++; stmt(n[1]); stmt(n[2]); branch--; return }

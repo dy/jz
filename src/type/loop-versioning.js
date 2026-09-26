@@ -310,7 +310,7 @@ function maxCursorAdvance(n, c) {
     const eA = elseB !== undefined ? maxCursorAdvance(elseB, c) : 0
     return tA == null || eA == null ? null : cA + Math.max(tA, eA)
   }
-  if (op === 'for' || op === 'while' || op === 'do') return isReassigned(n, c) ? null : 0
+  if (op === 'for' || op === 'while') return isReassigned(n, c) ? null : 0
   if (op === '=>') return 0   // unreachable: containsNestedClosure already bailed the caller
   let sum = 0
   for (let k = 1; k < n.length; k++) {

@@ -591,7 +591,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     // Scalar analysis has explicit consumers. An unrelated loop contributes
     // only unknown writes; do not allocate widening states that nobody reads.
-    if (needed && !needed.has(n) && (op === 'for' || op === 'while' || op === 'do')) {
+    if (needed && !needed.has(n) && (op === 'for' || op === 'while')) {
       killAssigned(n)
       for (const name of env.keys()) if (ctx.scope?.globalTypes?.has(name)) { invalidateBool(name); env.set(name, null) }
       symEnv.clear(); coupledEnv.clear()
@@ -851,7 +851,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
             return right ? norm([...left, ...right]) : null // RHS may be skipped
           }
           if (op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw') return null
-          if (op2 === 'while' || op2 === 'for' || op2 === 'do' ||
+          if (op2 === 'while' || op2 === 'for' ||
               op2 === 'catch' || op2 === 'finally')
             return isReassigned(n, cursor) || isReassigned(n, credit) ? null : xs
           let out = xs
@@ -1086,25 +1086,20 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       return symWraps.length && symWraps.every(([nm, h]) => !isReassigned(c, nm) && boundInvariant(h.hiName, c)) &&
         !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
     }
-    if (op === 'do' || op === 'label'
-        || op === 'catch' || op === 'finally') {
+    if (op === 'label' || op === 'catch' || op === 'finally') {
       // ('try' is the parser shape; prepare lowers it to 'catch'/'finally' nodes,
       // which is what this walk actually receives)
-      killAssigned(n)   // unknown trip count / branch selection: no interval survives entry
+      killAssigned(n)   // branch selection: no interval survives entry
       // Each child walks from the killed entry state and the construct EXITS at
-      // it: an exception can leave a `try` child mid-statement, a `do` body can
-      // break out — so neither a sibling's nor the last child's flow state is the
-      // construct's. In-child straight-line proofs (defined-before-use chains)
-      // still record.
+      // it: an exception can leave a `try` child mid-statement — so neither a
+      // sibling's nor the last child's flow state is the construct's. In-child
+      // straight-line proofs (defined-before-use chains) still record.
       const killed = new Map(env)
-      const fr = op === 'do' ? { breaks: [], continues: [] }
-        : null   // label/try: transparent — abrupt edges bind to enclosing frames
-      if (fr) loopStack.push(fr)
+      // label/try: transparent — abrupt edges bind to enclosing frames
       for (let k = 1; k < n.length; k++) {
         visit(n[k])
         env.clear(); for (const [k2, v2] of killed) env.set(k2, v2)
       }
-      if (fr) loopStack.pop()
       return
     }
     if (op === 'if') {

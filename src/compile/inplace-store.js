@@ -223,7 +223,7 @@ export function scanInplaceStores(programFacts) {
         for (let i = 1; i < n.length; i++) walkVal(n[i], stmts, stmtIdx)
         return
       }
-      if (op === 'for' || op === 'while' || op === 'do' || op === 'if') {
+      if (op === 'for' || op === 'while' || op === 'if') {
         // for is flat post-prepare: ['for', init, cond, step, body]
         for (let i = 1; i < n.length; i++) walkStmt(n[i], stmts, stmtIdx)
         return

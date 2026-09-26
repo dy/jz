@@ -21,7 +21,7 @@ export function containsNestedClosure(body) {
 }
 
 export function containsNestedLoop(body) {
-  return some(body, n => n[0] === 'for' || n[0] === 'while' || n[0] === 'do')
+  return some(body, n => n[0] === 'for' || n[0] === 'while')
 }
 
 export function nestedSmallLoopBudget(body) {

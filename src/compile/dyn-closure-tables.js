@@ -249,7 +249,7 @@ function mentionsName(node, name) {
 function everyUseIsIndexedCallOrLiteralWrite(node, name, inLoop) {
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (op === 'for' || op === 'while' || op === 'do') inLoop = true
+  if (op === 'for' || op === 'while') inLoop = true
   if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]

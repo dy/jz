@@ -405,7 +405,7 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
       const trips = nestedTrips(n)
       return trips == null ? null : head + trips * per
     }
-    if (op === 'while' || op === 'for' || op === 'do' ||
+    if (op === 'while' || op === 'for' ||
         op === 'catch' || op === 'finally' ||
         op === 'break' || op === 'continue' || op === 'return' || op === 'throw')
       return isReassigned(n, name) ? null : 0
