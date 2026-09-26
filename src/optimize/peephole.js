@@ -297,6 +297,7 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
     if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, freshI64, freshF64, get, bigint, inlineTruthy)
   }
   clearFlowRanges(fn)
+  mergeByteStores(fn, bodyStart)
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
@@ -362,6 +363,117 @@ function boundedFloatLocal(name, writes, owners, params) {
     lo = Math.min(lo, low); hi = Math.max(hi, high)
   }
   return { lo, hi }
+}
+
+
+// The parts of a store: its offset memarg, address and value.
+const storeParts = n => {
+  let i = 1, offset = 0
+  for (; i < n.length && typeof n[i] === 'string'; i++) {
+    if (n[i].startsWith('offset=')) offset = +n[i].slice(7)
+    else if (!n[i].startsWith('align=')) return null
+  }
+  return n.length - i === 2 ? { offset, addr: n[i], value: n[i + 1] } : null
+}
+const localOf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'local.tee') && typeof n[1] === 'string' ? n[1] : null
+const unmask = (n, mask) => Array.isArray(n) && n[0] === 'i32.and' && n.length === 3 &&
+  Array.isArray(n[2]) && n[2][0] === 'i32.const' && n[2][1] === mask ? n[1] : n
+// An address as a pure base expression (keyed by its shape) plus a constant:
+// `out + ((op + 1) << 0)` is base `(<< $op 0)` under `$out`, offset 1.
+const addrKey = n => {
+  if (!Array.isArray(n)) return null
+  const op = n[0]
+  if (op === 'i32.const') return typeof n[1] === 'number' ? { key: null, offset: n[1], reads: [] } : null
+  if (op === 'local.get') return typeof n[1] === 'string' ? { key: n[1], offset: 0, reads: [n[1]] } : null
+  if (op === 'i32.add' && n.length === 3) {
+    const a = addrKey(n[1]), b = addrKey(n[2])
+    if (!a || !b) return null
+    const key = a.key && b.key ? `(+ ${a.key} ${b.key})` : a.key || b.key
+    return { key, offset: a.offset + b.offset, reads: [...a.reads, ...b.reads] }
+  }
+  if ((op === 'i32.shl' || op === 'i32.mul') && n.length === 3 && Array.isArray(n[2]) && n[2][0] === 'i32.const' && typeof n[2][1] === 'number') {
+    const a = addrKey(n[1]), c = n[2][1]
+    if (!a) return null
+    const scale = op === 'i32.shl' ? 2 ** (c & 31) : c
+    return { key: a.key && `(${op} ${a.key} ${c})`, offset: a.offset * scale, reads: a.reads }
+  }
+  return null
+}
+// A store statement, plain or as the emitter's `(block (local.set $t V) (store … (local.get $t)))`.
+const storeStmt = stmt => {
+  if (!Array.isArray(stmt)) return null
+  if (stmt[0] === 'block' && stmt.length === 3 && Array.isArray(stmt[1]) && stmt[1][0] === 'local.set' &&
+      Array.isArray(stmt[2]) && typeof stmt[1][1] === 'string') {
+    const parts = storeParts(stmt[2])
+    if (!parts || !isLocalGetOf(parts.value, stmt[1][1])) return null
+    return { node: stmt[2], parts: { ...parts, value: stmt[1][2] }, temp: stmt[1][1] }
+  }
+  const parts = storeParts(stmt)
+  return parts ? { node: stmt, parts, temp: null } : null
+}
+const isLocalGetOf = (n, name) => Array.isArray(n) && n[0] === 'local.get' && n[1] === name
+// A pure expression over locals and constants: evaluating it again between two
+// stores reads nothing the first store could have written.
+const PURE_RE = /^(?:local\.get|global\.get|select|(?:i32|i64|f32|f64)\.(?!load|store)[a-z0-9_]+)$/
+const pureExpr = n => Array.isArray(n)
+  ? PURE_RE.test(n[0]) && n.every((x, i) => i === 0 || typeof x === 'number' || typeof x === 'string' || pureExpr(x))
+  : typeof n === 'number' || typeof n === 'string'
+const localsOf = (n, out = []) => {
+  if (!Array.isArray(n)) return out
+  if (n[0] === 'local.get') out.push(n[1])
+  else for (let i = 1; i < n.length; i++) localsOf(n[i], out)
+  return out
+}
+// Byte `k` (of `width` bytes) of a word, as a store value: the word itself for
+// k = 0, else the word shifted down by k bytes; a mask of the byte is idle.
+// Returns the word expression, or null.
+const wordByte = (value, width, k) => {
+  const v = unmask(value, width === 1 ? 255 : 65535)
+  if (k === 0) return pureExpr(v) ? v : null
+  if (!Array.isArray(v) || (v[0] !== 'i32.shr_u' && v[0] !== 'i32.shr_s') || v.length !== 3) return null
+  if (!Array.isArray(v[2]) || v[2][0] !== 'i32.const' || v[2][1] !== 8 * width * k) return null
+  return pureExpr(v[1]) ? v[1] : null
+}
+
+/** (i32.store8 A W) (i32.store8 offset=1 A (i32.shr_u W 8)) → (i32.store16 A W):
+ *  consecutive stores of one word's bytes at consecutive addresses are the word's
+ *  little-endian store, which Wasm memory defines. Two byte stores make a store16,
+ *  four (or two halfword stores) a store32. The addresses share one pure base
+ *  expression and differ by the byte position; the values read one word local,
+ *  which a temp the emitter sets beside each store may carry. The first store
+ *  keeps its address and value expressions, so their tees stay, and the later
+ *  stores go; a temp's set stays as a dead pure assignment. */
+function mergeByteStores(list, start) {
+  for (let i = start; i < list.length; i++) {
+    const first = storeStmt(list[i])
+    if (!first || (first.node[0] !== 'i32.store8' && first.node[0] !== 'i32.store16')) continue
+    const width = first.node[0] === 'i32.store8' ? 1 : 2, kind = first.node[0]
+    const head = addrKey(first.parts.addr), word = wordByte(first.parts.value, width, 0)
+    if (!head || !head.key || !word) continue
+    const mask = width === 1 ? 255 : 65535, key = JSON.stringify(word)
+    // The locals the later stores re-evaluate: no temp of theirs may write one.
+    const fixed = new Set([...head.reads, ...localsOf(word)])
+    let run = 1
+    while (run < 4 / width && i + run < list.length) {
+      const next = storeStmt(list[i + run])
+      if (!next || next.node[0] !== kind || (next.temp && fixed.has(next.temp))) break
+      const a = addrKey(next.parts.addr)
+      if (!a || a.key !== head.key || a.offset + next.parts.offset !== head.offset + first.parts.offset + run * width) break
+      const w = wordByte(next.parts.value, width, run)
+      if (!w || JSON.stringify(w) !== key) break
+      run++
+    }
+    const bytes = run * width
+    if (bytes !== 2 && bytes !== 4) continue
+    const merged = [bytes === 2 ? 'i32.store16' : 'i32.store']
+    if (first.parts.offset) merged.push(`offset=${first.parts.offset}`)
+    merged.push(first.parts.addr, unmask(first.parts.value, mask))
+    if (first.temp) list[i][2] = merged
+    else list[i] = merged
+    const rest = []
+    for (let k = 1; k < run; k++) { const s = list[i + k]; if (s[0] === 'block') rest.push(s[1]) }
+    list.splice(i + 1, run - 1, ...rest)
+  }
 }
 
 function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTruthy) {
@@ -676,6 +788,11 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
         }
       }
     }
+  }
+  if (op === 'block' || op === 'loop' || op === 'then' || op === 'else') {
+    let start = 1
+    while (start < node.length && (typeof node[start] === 'string' || (Array.isArray(node[start]) && node[start][0] === 'result'))) start++
+    mergeByteStores(node, start)
   }
   return node
 }

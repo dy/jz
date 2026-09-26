@@ -1658,7 +1658,16 @@ literals, counters, `Math.floor` of a bounded product, a checked byte read) is
 `i32.wrap_i64(i64.trunc_sat_f64_s)` with no ±∞ guard, and the i64 form is
 kept on purpose: V8's arm64 lowering of `i32.trunc_sat_f64_s` adds a float
 round-trip and range checks (bytebeat 1521 → 1370 µs; a 5e7-iteration micro
-294 ns against 446). An unproven value keeps the guarded select. The
+294 ns against 446). An unproven value keeps the guarded select. The range
+is flow-sensitive (`optimize/flow-range.js`): a comparison bounds the local in
+the arm it guards, the arms hull at their join, and a loop's written locals
+are unknown at its head, so a clamp (`if (v > K) v = K; else if (v < L) v = L`)
+proves the `|0` after it; `f64Range` reads the same facts through an
+if-expression or select, and only under its NaN-admitting query, since the
+failed side of a comparison may hold NaN. Consecutive byte stores of one
+word's bytes at consecutive addresses (`o[k] = u & 0xff; o[k + 1] = u >>> 8`,
+`writeU32`) are the word's little-endian store16/store32 (`mergeByteStores`);
+wav's sample loop stores its truncation directly. The
 `__to_int32` helper stays a call where its argument is a checked read's
 Number|undefined: folding it to the inline truncation measured 17% slower on
 glyfparse (the representation of ToInt32-blind reads is the open lever there).
