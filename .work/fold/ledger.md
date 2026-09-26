@@ -45,10 +45,14 @@ infer.js evidence registry (`SOURCES`, `registerEvidence`, the merge in `inferPa
 Raw parser forms after prepare: grouping `['()', x]` and `'?'` ternaries checked by summary, kind, type, plan and emit code (prepare strips grouping and rewrites `'?'`; no compile-stage code builds either; arrow parameter wrappers never reach these walkers) | knocked out: oracle CLEAN | ~45 lines, 1 KB | 12 files | folded; `static.js`, `ast.js` keep theirs (they also run during prepare)
 `var`/`function`/`yield`/`await` in compile-stage checks (38 sites, 18 files): jzify lowers each and prepare rejects a survivor; nothing after prepare builds them | oracle CLEAN | ~0.6 KB | 18 files | folded
 State nobody reads (`srcPtrAux`, `elemWidth`, `schema._byKey`, `schema.errorClassesUsed`, `types.loopGuardLo` never written), constants nobody references (`bitEq`, `FINISH_SIGNIFICAND`, `AUTO_CFG_*`), a tuning key nobody sets (`valKindDominance`) | `.work/fold-ctxfields.mjs`, `.work/fold-unrefconst.mjs`, grep; `ctx.plans.start` stays (tests read it) | ~40 lines | 10 files | folded
-Unused exports (knip): `intExprChecker`, `litBoundArrIdx`/`affineIdxOfIV`/`bodyAffineEnv` re-exports, `ENUM_SET`, `BINDING_USE_SELF`, `runsAccessor`, `seedSummaryShape` | `npm run audit:files` exports view | small | type.js, int-certain.js, … | pending
-Barrels (`narrow.js`, `analyze.js`, `representation-plan.js`, `program-facts.js`, `emit.js`, `ir.js`, `optimize/index.js`, `wat/assemble.js`, `kind.js`, `type.js`): re-export-only files kept so imports survived splits | 0 own exports each, ~500 lines | 10 files; touches most importers | many | pending, low rank (many files per concept)
-Grouping parens after prepare: 20 post-prepare `op === '()' && n.length === 2` arms | prepare's `'()'` handler returns `prep(callee)` for a grouping | ~20 lines, one concept | summary, interval-proof, inline, … | pending coverage
+Unused exports (knip): `intExprChecker`, `litBoundArrIdx`/`affineIdxOfIV`/`bodyAffineEnv` re-exports, `ENUM_SET`, `BINDING_USE_SELF`, `runsAccessor`, `seedSummaryShape` | `npm run audit:files` exports view | small | type.js, int-certain.js, … | below threshold: an `export` keyword on a function the file itself uses is not a concept
+Barrels (`narrow.js`, `analyze.js`, `representation-plan.js`, `program-facts.js`, `emit.js`, `ir.js`, `optimize/index.js`, `wat/assemble.js`, `kind.js`, `type.js`): re-export-only files kept so imports survived splits | 0 own exports each, ~500 lines | 10 files; touches most importers | many | rejected: the large ones are import boundaries (ir.js 101 importers, kind.js 59, representation-plan.js 33, type.js 31); dissolving one moves its imports without removing a concept
+Grouping parens after prepare: 20 post-prepare `op === '()' && n.length === 2` arms | prepare's `'()'` handler returns `prep(callee)` for a grouping | ~20 lines, one concept | summary, interval-proof, inline, … | folded (fold 14)
 `LEVEL_PRESETS[3]` and `.speed` are the same literal twice | config.js | 1 line | config.js | folded with the row above
+
+Statement and literal forms prepare removes: `switch`/`case`/`default` (rejected in strict mode, lowered by jzify), `try` (becomes `catch`/`finally`), `do` (becomes a flag-guarded `while`), the parser's array literal `['[]', x]` (becomes `['[', …]`), for-of/for-in heads (lowered to index loops), templates (become `strcat`) | prepare's handlers; a probe at compile entry never saw them; each function edited checked for prepare-time callers (`observeNodeFacts`, `recordGlobalRep`, `findFreeVars`/`findMutations` run during prepare and keep theirs) | ~100 lines, ~1.5 KB | many | folds 19, 21–23; template checks feed the codegen fix below
+`JZ_DEBUG_INVARIANTS` assertions (`assertBodyModelSound`, `assertRepresentationPlan`, `verifyFn`, `assertLoopPlanAgrees`, `assertValKindConsistent`, `assertRepFields`, `summaryInputs`; 57 sites) | never run by the suite (no test sets the variable) | ~6 KB source, 0 dist (the release build bakes the flag false) | 23 files | rejected: a supported debug mode; test/self-compile-source.js asserts the debug build keeps more than 20 uses
+`optimize.inlinePureFns` (inline-pure.js `inlinePureFnsInFn`, optimize-module.js) | never ran in the suite or corpus: test/simd.js sets the option, but plan-level inlining removes its helper first; a single-call helper outside a loop reaches it and the output is unchanged | ~120 lines | 2 files | kept: the owner's recorded decision ("kept as the architectural home for semantic inlining … until a real case pays"); pin candidate
 
 ## Folds
 
@@ -90,6 +94,16 @@ test/allocation.js, which compiles `firstRefKind.toString()` (edited by fold 7).
 | a28aa172 (folds 1–3) | 4837/4837 | 0 | |
 | 40e43f8b (folds 4–6) | 4837/4837 | 0 | |
 | d323b3b2 (folds 7–8) | 4836/4837 | 0 | `clearInterval: stops interval` (statements.js) counted 2 ticks of 3 under machine load: wall-clock timers, passes on rerun |
+
+Merge with main (9b983689, folds 1–13 on main 36553d6f) against main's own tip, every leg run
+side by side on the same machine; keys differing only in source are the expected ones above:
+
+| leg | main 36553d6f | 9b983689 | changed outputs |
+|---|---|---|---|
+| default | 4840/4840, 1601 s | 4840/4840, 1578 s | 0 of 16,153 |
+| opt0 | 4635/4635, 400 s | 4635/4635, 394 s | 0 of 10,016 |
+| opt3 | 4635/4635, 4142 s | 4635/4635, 4134 s | 0 of 9,860 |
+| wasi | 4688/4688, 2023 s | 4688/4688, 2010 s | 0 of 14,555 |
 
 ## Codegen candidates (output changes; logged, not landed)
 
