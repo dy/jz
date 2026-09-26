@@ -57,6 +57,8 @@ Fixes after that reference, local M4 evidence only (CI pending):
 | base64 | An integer element used as a key keeps the gather in a word (6f2cacd5); an offset guard `i + K <= n` compares in i32 within the counter's test range (9c2ca91a) | 3.39 → 3.14 ms; paired JZ/C-Wasm 0.862, Rust-Wasm 0.882, AS 0.757, Bun 0.724 |
 | bytebeat | A loop-declared counter carries its test range into the body's typing; `x & y` with a bounded non-negative operand is bounded (b176bee6) | 1.42 → 0.69 ms, the loop vectorizes |
 | dispatch | watr d09bd06 (unpublished): converts hoist out of guard ifs; exact rings collapse across a shared scratch temp; select trees accept temps exclusive arms write before reading | 7.3 → 1.78 ms; Bun 2.4 ms locally |
+| radixsort | A local typed binding assigned only buffers of one length keeps that length across a swap (cd593751) | speed binary 3784 → 2464 B, size 1323 → 1231 B; checked reads 14 → 2; ≈2.5% faster |
+| construction | `TypedArray.from` runs its map function; `from` and `new T(array)` convert every element with ToNumber (9f0c601e). Before, `Int16Array.from([1, 2], v => v * 1000)` ignored the map, `Float64Array.from(['1.5'])` kept the string and `Uint8Array.from('123')` read garbage | correctness; watr +96 B, Web Audio +414 B, checksums unchanged |
 
 Across the 62-case corpus only these cases, hash (neutral) and bezfit, conv2d
 and synth (smaller, timing neutral) change bytes; every checksum is unchanged.
@@ -64,10 +66,13 @@ Open, with diagnosis: Web Audio's hottest paths run generic typed-array and
 length helpers (≈17% of Wasm time) because `AudioParam._tick` results join
 object layouts with typed arrays; biquad needs loop-invariant typed-slot
 promotion after its eight-stage unroll; wav's clamp remains an unpredictable
-branch (branchless form +2% locally, unproven on x86). Radixsort (1.13× Rust/Zig
-Wasm locally) swaps its buffers (`const t = a; a = b; b = t`), which drops both
-lengths: a minimal kernel keeps 11 checked reads per pass with the swap and none
-without it. Its prefix sum stores an f64 accumulator through `__to_int32`.
+branch (branchless form +2% locally, unproven on x86). Radixsort still trails
+Rust/Zig Wasm by ≈1.05–1.09× locally after the swap fix. Memory: the watr case's
+excess RSS over V8 (≈33 MB) is its whole Wasm heap (32 MB), because the timed
+loop cannot rewind its arena. `TypedArray.from` no longer blocks it (148c9180);
+two blockers remain: `assemble`'s `sizeOnly ? b.length : b` joins a number into
+the compile result, and `wasm.metadata = md` sets a dynamic property through
+`__dyn_set`, whose enumeration-epoch write the rewind census treats as an escape.
 
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
