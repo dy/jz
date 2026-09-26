@@ -121,7 +121,7 @@ export const foldOperandPure = (n) => typeof n === 'string' || !Array.isArray(n)
 
 // No writes, calls, closures or explicit throw. Loads, member reads and arithmetic
 // may still trap, so this does not prove an expression safe to speculate.
-const SIDE_EFFECT_OPS = new Set([...MUTATE_OPS, '()', '=>', 'throw', 'new', 'await', 'yield'])
+const SIDE_EFFECT_OPS = new Set([...MUTATE_OPS, '()', '=>', 'throw', 'new'])
 export const isSideEffectFree = (n) => {
   if (!Array.isArray(n)) return true
   if (typeof n[0] === 'string' && SIDE_EFFECT_OPS.has(n[0])) return false

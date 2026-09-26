@@ -40,7 +40,7 @@ const ESCAPE_SKIP = {
   '[]': new Set([0]),             // receiver safe; a bare INDEX name still marks (keys coerce so it's over-marking, but harmless)
   'in': new Set([1]),             // RHS receiver is queried, not exposed; the key (slot 0) remains a value read
   '=>': new Set([0]),             // params are bindings; a bare-name BODY is a returned value → marks
-  'let': true, 'const': true, 'var': true,  // decl heads; initializers are '='-nodes pre-registered below
+  'let': true, 'const': true,  // decl heads; initializers are '='-nodes pre-registered below
   'import': true, 'export': true, // module wiring: exported arrays are host/importer-reachable — see explicit mark below
 }
 
@@ -77,7 +77,7 @@ export function observeNodeFacts(node, f) {
   if (op === '()' && Array.isArray(args[0]) && (args[0][0] === '.' || args[0][0] === '?.') &&
       typeof args[0][1] === 'string' && ARR_RESIZE_METHODS.has(args[0][2]))
     f.arrResized.add(args[0][1])
-  if (op === 'let' || op === 'const' || op === 'var') {
+  if (op === 'let' || op === 'const') {
     // Pre-register decl '=' children: their slot-0 is a BINDING, not a reassignment,
     // so the '=' marking below must not flag the declared name as escaped.
     for (const d of args) {
@@ -95,7 +95,7 @@ export function observeNodeFacts(node, f) {
     for (const d of args) {
       if (typeof d === 'string') f.nameEscapes.add(d)
       else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') f.nameEscapes.add(d[1])
-      else if (Array.isArray(d) && (d[0] === 'let' || d[0] === 'const' || d[0] === 'var'))
+      else if (Array.isArray(d) && (d[0] === 'let' || d[0] === 'const'))
         for (const dd of d.slice(1)) { if (Array.isArray(dd) && dd[0] === '=' && typeof dd[1] === 'string') f.nameEscapes.add(dd[1]) }
     }
   }

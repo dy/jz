@@ -775,7 +775,7 @@ const ASSIGN_OR_UPDATE = (op) => MUTATE_OPS.has(op)
 // Module-scope binding ops. `var` survives to compile at module scope (jzify only
 // lowers it to `let` inside functions), so fold it too — the reassignment guard
 // below keeps a re-bound `var` heap-backed.
-const isDeclOp = (op) => op === 'let' || op === 'const' || op === 'var'
+const isDeclOp = (op) => op === 'let' || op === 'const'
 const declaresName = (node, name) => {
   if (!isDeclOp(node[0])) return false
   for (let i = 1; i < node.length; i++) {

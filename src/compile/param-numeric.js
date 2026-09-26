@@ -411,7 +411,7 @@ const VALUE_CTORS = new Set(['BigInt', 'Number', 'String', 'Boolean'])
  *  handle passed there would still mean something. */
 export function paramValueOnly(body, name) {
   if (body == null) return false
-  const declarators = (n) => (n[0] === 'let' || n[0] === 'const' || n[0] === 'var')
+  const declarators = (n) => (n[0] === 'let' || n[0] === 'const')
     ? n.slice(1).filter(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') : []
   const names = new Set([name])
   for (let grew = true; grew;) {
@@ -435,7 +435,7 @@ export function paramValueOnly(body, name) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op == null || op === 'str' || op === 'bigint') return
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') read(d[2])   // a copy is an alias, judged by its own uses
@@ -513,7 +513,7 @@ export function paramNumericArrayLike(body, name, _seen = new Set()) {
         if (ps.every(p => typeof p === 'string')) closures.set(n[1][1], { params: ps, body: init[2] })
       }
     }
-    if (n[0] === 'let' || n[0] === 'const' || n[0] === 'var')
+    if (n[0] === 'let' || n[0] === 'const')
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && numericIndex(d[2])) numericLocals.add(d[1])

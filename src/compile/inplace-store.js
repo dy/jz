@@ -264,7 +264,7 @@ export function scanInplaceStores(programFacts) {
   const impureBetween = (n, idxName, arrName) => {
     if (!Array.isArray(n)) return false
     const op = n[0]
-    if (op === '()' || op === 'new' || op === 'await' || op === 'yield') return true
+    if (op === '()' || op === 'new') return true
     if (op === '=' || op === '++' || op === '--' || (typeof op === 'string' && op.length > 1 && op.endsWith('=') && !op.endsWith('==') && op !== '>=' && op !== '<=')) {
       const t = n[1]
       if (t === idxName || t === arrName) return true

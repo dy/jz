@@ -784,7 +784,7 @@ export const devirtGlobalCalls = (ast) => {
       for (let i = 2; i < node.length; i++) walkStraightLine(node[i], onCall)
       return
     }
-    if (op === '=>' || op === 'function') return
+    if (op === '=>') return
     for (let i = 1; i < node.length; i++) walkStraightLine(node[i], onCall)
   }
   const reachable = new Set()

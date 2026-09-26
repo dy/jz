@@ -111,7 +111,7 @@ export const declareWrittenKeys = (ast) => {
   // definition or assignment of a value that holds none of these runs nothing.
   // `some` stops at an arrow: a function is not run by being defined.
   const OBSERVES = new Set(['()', 'new', 'in', '...', 'delete', 'if', '?:', 'try', 'switch', 'for',
-    'while', 'do', '&&', '||', '??', 'await', 'yield', 'return', 'throw', 'break', 'continue'])
+    'while', 'do', '&&', '||', '??', 'return', 'throw', 'break', 'continue'])
   // (a direct call is the one observer `blind` below can see through)
   const funcs = ctx.funcs?.map
   const observes = (n) => Array.isArray(n) && OBSERVES.has(n[0])
@@ -125,7 +125,7 @@ export const declareWrittenKeys = (ast) => {
   const bindingOf = (st) => {
     if (!Array.isArray(st)) return null
     if ((st[0] === '=' || st[0] === '??=') && typeof st[1] === 'string' && literalKeys(st[2])) return [st[1], st[2]]
-    if ((st[0] === 'let' || st[0] === 'const' || st[0] === 'var') && st.length === 2 && Array.isArray(st[1]) && st[1][0] === '=' && typeof st[1][1] === 'string' && literalKeys(st[1][2])) return [st[1][1], st[1][2]]
+    if ((st[0] === 'let' || st[0] === 'const') && st.length === 2 && Array.isArray(st[1]) && st[1][0] === '=' && typeof st[1][1] === 'string' && literalKeys(st[1][2])) return [st[1][1], st[1][2]]
     return null
   }
   // A statement between a literal and its store observes nothing when its only

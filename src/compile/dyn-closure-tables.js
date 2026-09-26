@@ -127,7 +127,7 @@ const isArrowArrayLit = (rhs) =>
 function everyUseIsIndexedCall(node, name) {
   if (!Array.isArray(node)) return true
   const op = node[0]
-  if (op === 'let' || op === 'const' || op === 'var') {
+  if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
       if (typeof d === 'string') continue                          // uninitialized decl
@@ -209,8 +209,8 @@ const isExportedName = (name) => {
 function mentionsName(node, name) {
   if (!Array.isArray(node)) return false
   const op = node[0]
-  if (op === '=>' || op === 'function') return false
-  if (op === 'let' || op === 'const' || op === 'var') {
+  if (op === '=>') return false
+  if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
       if (typeof d === 'string') continue                        // uninitialized decl — binding, not a use
@@ -250,7 +250,7 @@ function everyUseIsIndexedCallOrLiteralWrite(node, name, inLoop) {
   if (!Array.isArray(node)) return true
   const op = node[0]
   if (op === 'for' || op === 'while' || op === 'do') inLoop = true
-  if (op === 'let' || op === 'const' || op === 'var') {
+  if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
       if (typeof d === 'string') continue                          // uninitialized decl

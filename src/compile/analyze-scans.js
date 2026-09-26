@@ -861,7 +861,7 @@ export function restViewAliases(body, rest) {
       if (names.has(t)) return false
       if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && names.has(t[1])) return false
     }
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         if (!Array.isArray(d) || d[0] !== '=') continue

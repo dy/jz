@@ -346,7 +346,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   const scanDecls = (n, nested) => {
     if (!isArr(n)) return
     const op = n[0]
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (isName(d)) { note(d, undefined, nested, true); continue }
@@ -364,7 +364,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     if (op === '++' || op === '--') { if (isName(n[1])) note(n[1], null, nested, false) }
     if (op === 'for' && isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) {
       const head = n[1][1]
-      if (isArr(head) && (head[0] === 'const' || head[0] === 'let' || head[0] === 'var')) for (let i = 1; i < head.length; i++) { if (isName(head[i])) note(head[i], null, nested, true); else for (const nm of patternNames(head[i])) note(nm, null, nested, true) }
+      if (isArr(head) && (head[0] === 'const' || head[0] === 'let')) for (let i = 1; i < head.length; i++) { if (isName(head[i])) note(head[i], null, nested, true); else for (const nm of patternNames(head[i])) note(nm, null, nested, true) }
       else if (isName(head)) note(head, null, nested, false)
     }
     const inner = isFunctionNode(n)
@@ -504,7 +504,6 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     if (isFunctionNode(n)) { allocates(); return }   // its own frame; a call to it is counted at the call
     if (isObjectLiteral(n) || op === '[' || op === '`') allocates()
     if (op === '+' && !scalarKind(view, n)) allocates()   // a concatenation
-    if (op === 'yield' || op === 'await') unsafe(op)   // the frame is suspended: what runs meanwhile allocates too
     if (op === '__tp_call') unknownCall('conversion method')   // an own toString/valueOf closure (emit/to-primitive.js)
     if (runsConversion(view, n)) conversion()
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--') {

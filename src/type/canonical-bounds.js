@@ -315,7 +315,7 @@ export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites,
     const out = []
     const walk = (y) => {
       if (!Array.isArray(y)) return
-      if (y[0] === 'let' || y[0] === 'const' || y[0] === 'var') {
+      if (y[0] === 'let' || y[0] === 'const') {
         for (let i = 1; i < y.length; i++) if (Array.isArray(y[i]) && y[i][0] === '=') walk(y[i][2])
         return
       }

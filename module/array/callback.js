@@ -58,10 +58,10 @@ export function captureCallback(fn, name = temp('af'), thisArg) {
 // Pure-expression check: no statements, binders, control flow, or assignments.
 // Inlining is only safe for these — anything else needs the full closure machinery.
 const NOT_PURE_OPS = new Set([
-  ';', '{}', 'let', 'const', 'var', '=>', 'function', 'return', 'throw',
+  ';', '{}', 'let', 'const', '=>', 'return', 'throw',
   'if', 'for', 'while', 'do', 'switch', 'case', 'default', 'break', 'continue',
   'try', 'catch', 'finally', '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
-  '<<=', '>>=', '>>>=', '||=', '&&=', '??=', '++', '--', 'delete', 'yield', 'await',
+  '<<=', '>>=', '>>>=', '||=', '&&=', '??=', '++', '--', 'delete',
 ])
 function isPureExpr(node) {
   if (node == null || typeof node !== 'object' || !Array.isArray(node)) return true

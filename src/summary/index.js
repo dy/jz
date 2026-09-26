@@ -822,7 +822,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
           return
         }
         case '=>': for (const p of paramNames(n[1])) candidates.delete(p); walk(n[2], false); return
-        case 'let': case 'const': case 'var':
+        case 'let': case 'const':
           for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') candidates.delete(d); else if (Array.isArray(d) && d[0] === '=') candidates.delete(d[1]); if (Array.isArray(d) && d[0] === '=') walk(d[2], false); else walk(d, false) }
           return
         case 'catch': candidates.delete(n[1]); walk(n[2], false); return
@@ -2169,7 +2169,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (op === 'typeof') { selectedExpr(n[1], 0); return STRING }
     if (op === 'delete') { stmt(n); return BOOL }
     if (op === 'void') { selectedExpr(n[1], 0); return NULLISH }
-    if (op === 'await') return expr(n[1]) === K.NONE ? K.NONE : ANY
     // A spread reads its source's elements (an array's, a typed array's, a
     // string's characters); a source of another kind is iterated by code the summary does not model.
     // A spread of nothing, or of a nullish value (a TypeError), contributes no element.
@@ -2426,7 +2425,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const op = n[0]
     if (op === 'this') receiverScopes.add(scope)
     if (straight && scope === MODULE && (op === '=' || op === '??=') && typeof n[1] === 'string') initWrites.add(n[1])
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i], name = typeof d === 'string' ? d : d?.[0] === '=' ? d[1] : null
         if (typeof name === 'string') { declareIn(scope, name); writes.push([scope, name, typeof d === 'string' ? null : d[2]]) }
@@ -2538,7 +2537,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (typeof n === 'string') { expr(n); return }
     if (!Array.isArray(n)) return
     const op = n[0]
-    if (op === 'let' || op === 'const' || op === 'var') return decl(n)
+    if (op === 'let' || op === 'const') return decl(n)
     if (op === 'return') { if (current != null) raiseResult(current, n.length > 1 ? expr(n[1]) : NULLISH); return }
     if (op === ';' || op === '{}') {
       // A guard that leaves (`if (x == null) return`) proves its names for the statements after it.
@@ -2861,7 +2860,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       }
       return
     }
-    if (op === 'let' || op === 'const' || op === 'var') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
+    if (op === 'let' || op === 'const') { for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') useOf(d[2], FLOW, keyOf(d[1])); else demand(d[2]) } } return }
     if (op === '=') {
       const t = n[1]
       if (typeof t === 'string') { useOf(n[2], FLOW, keyOf(t)); return }

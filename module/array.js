@@ -1967,7 +1967,7 @@ export default (ctx) => {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
         if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') locals.add(decl[1])

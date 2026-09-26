@@ -222,7 +222,7 @@ function constPropAliases() {
   if (hit) return hit
   const out = new Map()
   walkAst(body, { enter: (n, parent) => {
-    if (parent !== null && (n[0] === '=>' || n[0] === 'function')) return false
+    if (parent !== null && n[0] === '=>') return false
     if (n[0] === 'const') for (let i = 1; i < n.length; i++) {
       const d = n[i]
       if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
@@ -305,7 +305,7 @@ export function inferSchemaBranch(body) {
   const byName = new Map()
   walkAst(body, { enter: n => {
     const op = n[0]
-    if (op === '=>' || op === 'function') return false
+    if (op === '=>') return false
     if (op === '.' && typeof n[1] === 'string' && typeof n[2] === 'string') {
       let row = byName.get(n[1])
       if (!row) byName.set(n[1], row = { props: new Set(), accesses: 0 })
