@@ -386,22 +386,6 @@ function nameShift(expr, name) {
   return null
 }
 
-// Literal-only integer read — deliberately NOT constIntExpr/intLiteralValue
-// (both consult repOf for a bare-name operand). linearIndexOf below composes
-// across a caller-body DECL HOP (colorlog's `const j = 3 * i`) at narrow.js's
-// whole-program plan-time walk, where no per-function ctx.func is installed
-// (see linearIndexOf's own doc) — a bare-name K operand there would read
-// whichever function's ctx.func.localReps happens to be installed, silently
-// wrong rather than failing closed. Scale/shift operands in practice are
-// always literal (index-arithmetic constants), so this restriction costs
-// nothing real.
-const pureIntLiteral = (e) => {
-  if (typeof e === 'number' && Number.isInteger(e)) return e
-  if (Array.isArray(e) && e.length === 2 && e[0] == null && typeof e[1] === 'number') return e[1]
-  if (Array.isArray(e) && e[0] === 'u-' && e.length === 2) { const v = pureIntLiteral(e[1]); return v == null ? null : -v }
-  return null
-}
-
 // Which name does a relational guard's LHS actually compare — bare, or
 // shifted by a compile-time constant (nameShift's own shapes)? Both
 // forCounterRange callers need this BEFORE they can even name which
