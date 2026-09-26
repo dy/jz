@@ -70,7 +70,8 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 14 | raw parser forms after prepare: grouping parens `['()', x]` (prepare's `'()'` handler returns `prep(callee)`) and the `'?'` ternary (prepare rewrites it to `'?:'`), handled in 20 places across the summary, kinds, interval proof and plan | −42 | −924 | — | f8e1f9f5
 15 | `var`, `function`, `yield` and `await` checks in compile-stage code: jzify lowers them and prepare rejects any survivor (op-policy.js REJECT_OPS) | −2 (37 checks narrowed) | −570 | — | b1820926
 16 | raw unary `-x`/`+x` checks after prepare, which rewrites them to `u-`/`u+` (the normalized arms beside them stay) | −3 | −149 | — | 6fb408ca
-17 | helpers whose last callers earlier folds deleted: `pureIntLiteral` (only `linearIndexOf`, fold 5, called it) and `containerValueKindSet` (only `dictValueKindSet`/`mapValueKindSet`, fold 5) | −20 | 0 (esbuild already dropped them) | — | this commit
+17 | helpers whose last callers earlier folds deleted: `pureIntLiteral` (only `linearIndexOf`, fold 5, called it) and `containerValueKindSet` (only `dictValueKindSet`/`mapValueKindSet`, fold 5) | −20 | 0 (esbuild already dropped them) | — | 0963bce8
+18 | local copies of the shared name scans: two `mentions` (func-entry.js, struct-inline.js) and `referencesAny` (const-fold.js) equal to ast.js `refsName`/`refsAny` under an existing option record, three `readsName` (outer-strip.js), `containsName` (unswitch.js) and `readsLocal` (recurse.js) equal to outer-scaffold.js `readsVar`; copies that differ (op-position scans, literal skips, function boundaries) stay | −45 | −1,035 | — | this commit
 
 ## Validation runs (default leg, widened oracle against the baseline)
 

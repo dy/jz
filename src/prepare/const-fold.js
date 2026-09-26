@@ -6,6 +6,8 @@
  * @module prepare/const-fold
  */
 
+import { refsAny, REFS_THROUGH_ARROWS } from '../ast.js'
+
 
 
 // In a pure boolean position (consumer reads only truthiness) `!!e` is exactly `e`.
@@ -59,12 +61,6 @@ const declNamesOf = (s, out) => {
     }
   }
 }
-const referencesAny = (node, names) => {
-  if (typeof node === 'string') return names.has(node)
-  if (!Array.isArray(node)) return false
-  for (let i = 1; i < node.length; i++) if (referencesAny(node[i], names)) return true
-  return false
-}
 export const truncateUnreachable = (list) => {
   for (let i = 0; i < list.length - 1; i++) {
     const s = list[i]
@@ -73,7 +69,7 @@ export const truncateUnreachable = (list) => {
       const declared = new Set()
       for (const t of tail) declNamesOf(t, declared)
       if (declared.size) {
-        for (let k = 0; k <= i; k++) if (referencesAny(list[k], declared)) return list
+        for (let k = 0; k <= i; k++) if (refsAny(list[k], declared, REFS_THROUGH_ARROWS)) return list
       }
       return list.slice(0, i + 1)
     }

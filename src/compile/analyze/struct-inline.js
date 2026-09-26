@@ -7,7 +7,7 @@
  *
  * @module compile/analyze/struct-inline
  */
-import { ASSIGN_OPS, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { forEachFunctionPlanRep, functionPlanRepField } from '../function-plan.js'
 import { staticArrayElems, objLiteralSchemaId, inplaceKey } from '../../static.js'
@@ -66,17 +66,6 @@ export function structInlinePass(programFacts) {
     return a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
   }
 
-  // `name` referenced anywhere as a value (skips `:`/`.` property-name slots).
-  const mentions = (node, name) => {
-    if (typeof node === 'string') return node === name
-    if (!Array.isArray(node)) return false
-    const op = node[0]
-    if (op === 'str') return false
-    if (op === ':') return mentions(node[2], name)
-    if (op === '.' || op === '?.') return mentions(node[1], name)
-    for (let i = 1; i < node.length; i++) if (mentions(node[i], name)) return true
-    return false
-  }
 
   // Poison every schema whose `Array<S>` could materialize inside an un-walked
   // subtree (closure body / module init): `.push({S})` args, `Array<S>`-returning
@@ -265,8 +254,8 @@ export function structInlinePass(programFacts) {
       const op = node[0]
       if (op === 'str') return
       if (op === '=>') {                       // closure — un-walked, poison
-        for (const n of arrName.keys()) if (mentions(node, n)) black.add(arrName.get(n))
-        for (const [n, s] of cursor) if (mentions(node, n)) black.add(s)
+        for (const n of arrName.keys()) if (refsName(node, n, REFS_IN_EXPR)) black.add(arrName.get(n))
+        for (const [n, s] of cursor) if (refsName(node, n, REFS_IN_EXPR)) black.add(s)
         poisonAll(node)
         return
       }

@@ -12,6 +12,7 @@ import { findBodyStart, nextLocalId, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { PTR, ATOM, atomNanHex, encodePtrHi, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_CLAMPED_FLAG, TYPED_ELEM_F16_FLAG } from '../../layout.js'
 import { matchExitBrIf, isLocalGet } from './vectorize/addr-model.js'
+import { readsVar } from './vectorize/outer-scaffold.js'
 
 // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering unswitchTypedParamLoop.
 const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSWITCH || null)
@@ -483,20 +484,12 @@ export function unswitchStringRepLoop(fn) {
   // operands are deliberately unvisited, see src/ast.js), which would undercount
   // this I-cache guard against the original threshold's calibration below.
   const size = n => !Array.isArray(n) ? 1 : 1 + n.slice(1).reduce((s, x) => s + size(x), 0)
-  const containsName = (n, name) => {
-    let found = false
-    walkAst(n, { enter: x => {
-      if (found) return false
-      if (x[0] === 'local.get' && x[1] === name) { found = true; return false }
-    } })
-    return found
-  }
   const match = n => {
     if (!Array.isArray(n) || n[0] !== 'select' || n.length !== 4) return null
     const c = n[3]
     if (!Array.isArray(c) || c[0] !== 'local.get' || typeof c[1] !== 'string' || !c[1].endsWith('$ccsso')) return null
     const stem = c[1].slice(0, -6)
-    if (!containsName(n[1], `${stem}$ccp64`) || !containsName(n[2], `${stem}$ccldb`)) return null
+    if (!readsVar(n[1], `${stem}$ccp64`) || !readsVar(n[2], `${stem}$ccldb`)) return null
     return c[1]
   }
   const hasCallOrWrite = (n, flag) => {

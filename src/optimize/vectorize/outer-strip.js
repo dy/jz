@@ -40,11 +40,6 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
 
   const id = freshIdRef.next++
   const nm = (s) => `$__os${id}_${s}`
-  const readsName = (n, name) => {
-    let found = false
-    walkAst(n, { enter: x => { if (found) return false; if (x[0] === 'local.get' && x[1] === name) { found = true; return false } } })
-    return found
-  }
 
   const laneMap = new Map()   // f64 lane-local (per-pixel-varying) name → its v128 shadow
   // Lift a scalar f64 expr to f64x2 (null = not liftable). pxVar → ramp; lane local → shadow;
@@ -67,7 +62,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
       // pixel-invariant load (address reads neither the pixel IV nor any per-pixel lane) is the
       // same value for both lanes → load once, splat. A per-pixel gather is not supported.
       const addr = typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1]
-      if (readsName(addr, pxVar) || [...laneMap.keys()].some(lv => readsName(addr, lv))) return null
+      if (readsVar(addr, pxVar) || [...laneMap.keys()].some(lv => readsVar(addr, lv))) return null
       return ['f64x2.splat', n]
     }
     if (op === 'call') {
@@ -106,7 +101,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
     const name = s[1], rhs = s[2]
     if (fnLocals.get(name) !== 'f64' || !isArr(rhs) || rhs[0] !== 'f64.add') continue
     const addend = isLocalGet(rhs[1], name) ? rhs[2] : isLocalGet(rhs[2], name) ? rhs[1] : null
-    if (addend != null && !readsName(addend, name)) { accNames.add(name); laneMap.set(name, nm('acc' + name.replace(/\W/g, ''))) }
+    if (addend != null && !readsVar(addend, name)) { accNames.add(name); laneMap.set(name, nm('acc' + name.replace(/\W/g, ''))) }
   }
   if (!accNames.size) return null
 
@@ -123,13 +118,13 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
       // The seed must be a FRESH per-pixel value, independent of the accumulator's own carry.
       // A seed that reads `name` (e.g. `acc = acc * decay`) propagates the previous pixel's
       // running value across pixels — that's a loop-carried recurrence, not a per-pixel reset.
-      if (readsName(s[2], name)) return null
+      if (readsVar(s[2], name)) return null
       const seed = liftOS(s[2])
       if (!seed) return null
       seededAccs.add(name)
       laneInit.push(['local.set', laneMap.get(name), seed]); continue
     }
-    if (fnLocals.get(name) === 'f64' && readsName(s[2], pxVar)) {   // per-pixel coord (cx = xi/W) → ramp lane
+    if (fnLocals.get(name) === 'f64' && readsVar(s[2], pxVar)) {   // per-pixel coord (cx = xi/W) → ramp lane
       const lane = liftOS(s[2])
       if (!lane) return null
       const sh = nm('p' + name.replace(/\W/g, ''))
@@ -161,7 +156,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
       if (!lifted) return null
       liftedInner.push(['local.set', laneMap.get(name), ['f64x2.add', ['local.get', laneMap.get(name)], lifted]]); continue
     }
-    if (readsName(rhs, name)) return null   // loop-carried non-accumulator → bail
+    if (readsVar(rhs, name)) return null   // loop-carried non-accumulator → bail
     const lifted = liftOS(rhs)
     if (!lifted) return null
     const sh = laneMap.get(name) || nm('t' + name.replace(/\W/g, ''))
@@ -243,11 +238,6 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const shadowOf = (v) => { let s = laneMap.get(v); if (!s) { s = nm(v.replace(/\W/g, '')); laneMap.set(v, s) } return s }
   let sawHeavy = false            // a transcendental lifted inside a loop → SIMD is worth it
 
-  const readsName = (n, name) => {
-    let found = false
-    walkAst(n, { enter: x => { if (found) return false; if (x[0] === 'local.get' && x[1] === name) { found = true; return false } } })
-    return found
-  }
   // Lane-invariant: reads no per-pixel lane local and no pixel IV → identical value in both lanes.
   const laneInvariant = (root) => {
     let found = false
@@ -286,7 +276,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
     if (op === 'global.get') return writesName(loopNode, n[1]) ? null : ['f64x2.splat', n]
     if (LOAD_OPS[op] === 'f64') {
       const addr = typeof n[1] === 'string' && n[1].startsWith('offset=') ? n[2] : n[1]
-      if (readsName(addr, pxVar) || [...laneMap.keys()].some(lv => readsName(addr, lv))) return null   // per-lane gather: unsupported
+      if (readsVar(addr, pxVar) || [...laneMap.keys()].some(lv => readsVar(addr, lv))) return null   // per-lane gather: unsupported
       return ['f64x2.splat', n]
     }
     if (op === 'call') {
@@ -360,7 +350,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
     if (isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3) {
       const name = s[1], rhs = s[2]
       if (fnLocals.get(name) === 'f64') {
-        if (readsName(rhs, name)) return null   // self-reading seed = carry across the OUTER loop → reject
+        if (readsVar(rhs, name)) return null   // self-reading seed = carry across the OUTER loop → reject
         const lifted = lift(rhs); if (!lifted) return null
         laneCompute.push(['local.set', shadowOf(name), lifted])
       } else { if (!laneInvariant(rhs)) return null; laneCompute.push(s) }   // scalar counter seed
@@ -423,19 +413,14 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (innerIdxs.length) return null  // body must be unrolled (no inner loop)
   // No impure calls — fact computed once at the dispatch (LoopPlan: matchOuterPixelLoop).
   if (outer.hasImpureCall) return null
-  const readsName = (n, name) => {
-    let found = false
-    walkAst(n, { enter: x => { if (found) return false; if (x[0] === 'local.get' && x[1] === name) { found = true; return false } } })
-    return found
-  }
 
   // Locals whose value depends on the column IV (transitively) — these address the per-pixel gather.
   const oxDep = new Set([pxVar])
   const allSets = []
   const collectSets = n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allSets.push([n[1], n[2]]) }
   for (const s of obody) walkAst(s, { enter: collectSets })
-  for (let changed = true; changed;) { changed = false; for (const [name, rhs] of allSets) if (!oxDep.has(name) && [...oxDep].some(d => readsName(rhs, d))) { oxDep.add(name); changed = true } }
-  const isGatherAddr = (addr) => [...oxDep].some(d => readsName(addr, d))
+  for (let changed = true; changed;) { changed = false; for (const [name, rhs] of allSets) if (!oxDep.has(name) && [...oxDep].some(d => readsVar(rhs, d))) { oxDep.add(name); changed = true } }
+  const isGatherAddr = (addr) => [...oxDep].some(d => readsVar(addr, d))
 
   // A byte tap operand: convert_i32_{s,u}(i32.load8_{s,u}(addr)). Returns { load, addr, signed }.
   const matchByteLoad = (n) => {
@@ -477,7 +462,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   for (let i = 0; i < obody.length; i++) { const s = obody[i]; if (isArr(s) && s[0] === 'local.set' && s[1] === accName && s.length === 3) accIdx.push(i) }
   if (accIdx.length < 4) return null
   const initIdx = accIdx[0], initRhs = obody[initIdx][2]
-  if (readsName(initRhs, accName)) return null                   // first write must not read acc
+  if (readsVar(initRhs, accName)) return null                   // first write must not read acc
 
   const id = freshIdRef.next++
   const nm = (s) => `$__cv${id}_${s}`
@@ -513,7 +498,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
       const prod = liftProduct(addend); if (!prod) return null
       laneCompute.push(...accStmts(prod)); continue
     }
-    if (readsName(s, accName)) return null                       // scalar setup must not touch acc
+    if (readsVar(s, accName)) return null                       // scalar setup must not touch acc
     laneCompute.push(s)
   }
 
