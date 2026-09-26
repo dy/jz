@@ -4,6 +4,7 @@
 //   JZ_HASHES=<out.json> node --import ./test/_hashes.mjs test/index.js
 //     records, for each in-process compile of the run, the sha256 of its output
 //     (or of its error) keyed by the source and options it was given.
+//     With JZ_MUTANT_EDITS set, the run is also a knockout (test/_mutant.mjs).
 //   node test/_hashes.mjs <before.json> <after.json>
 //     lists the keys whose outputs differ and exits 1 if any do.
 //
@@ -51,7 +52,10 @@ const record = (out) => {
   const index = fileURLToPath(new URL('../index.js', import.meta.url))
   const find = 'export function _compileInProcess(code, opts = {}) {'
   const wrap = `${find} return globalThis.__jzHash ? globalThis.__jzHash(code, opts, () => compileInProcess(code, opts)) : compileInProcess(code, opts) }\nfunction compileInProcess(code, opts = {}) {`
-  register('./_mutant-hooks.mjs', import.meta.url, { data: { edits: { [index]: [[find, wrap]] } } })
+  // One hook registration: JZ_MUTANT_EDITS (test/_mutant.mjs's format) rides along, so a
+  // knockout's outputs can be recorded against the unedited run's.
+  const mutant = process.env.JZ_MUTANT_EDITS ? JSON.parse(process.env.JZ_MUTANT_EDITS) : {}
+  register('./_mutant-hooks.mjs', import.meta.url, { data: { edits: { ...mutant, [index]: [[find, wrap]] } } })
   const entries = new Map()
   globalThis.__jzHash = (code, opts, run) => {
     const key = sha(`${typeof code === 'string' ? code : canon(code)}\0${canon(opts)}`)
