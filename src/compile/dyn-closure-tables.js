@@ -65,7 +65,7 @@ const safeTableUse = (u) =>
   (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] && u[BINDING_USE_COMPUTED])
 
 const isEmptyArrayLit = (rhs) =>
-  Array.isArray(rhs) && ((rhs[0] === '[' && rhs.length === 1) || (rhs[0] === '[]' && rhs.length <= 2))
+  Array.isArray(rhs) && rhs[0] === '[' && rhs.length === 1
 
 // Every top-level root: the entry module's `ast` plus one per bundled module
 // (imported files' top-level statements live in ctx.module.moduleInits, not `ast`).

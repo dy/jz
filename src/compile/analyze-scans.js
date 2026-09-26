@@ -885,7 +885,7 @@ export function restViewAliases(body, rest) {
 // (walk-count design A1) — factored out for the same reason as
 // flatObjectCandidate above.
 const freshArrayInit = (s) => s[BINDING_USE_DECLS] === 1 && Array.isArray(s[BINDING_USE_INIT])
-  && (s[BINDING_USE_INIT][0] === '[' || (s[BINDING_USE_INIT][0] === '[]' && s[BINDING_USE_INIT].length <= 2))
+  && s[BINDING_USE_INIT][0] === '['
 function neverGrownCandidate(s) {
   // Candidate: a single-declaration binding initialized from a fresh array literal.
   return freshArrayInit(s) && arrayUsesSafe(s)
@@ -923,15 +923,12 @@ export function scanObjectArrayFacts(body) {
   return [flatObjects || EMPTY_SCAN_MAP, sliceViews || EMPTY_SCAN_SET, neverGrown || EMPTY_SCAN_SET, ownCurrent || EMPTY_SCAN_SET]
 }
 
-// Both `Array(n)` and `new Array(n)` normalize to a `new.Array` call by prepare; an
-// empty literal stays `['[]', null]`. (Typed ctors become `new.Float64Array` etc. — the
-// exact-match on `new.Array` keeps them out.) A decl so initialized described its own
-// initial contents: the schema census's push observations may settle on it.
+// Both `Array(n)` and `new Array(n)` normalize to a `new.Array` call by prepare.
+// (Typed ctors become `new.Float64Array` etc. — the exact-match on `new.Array`
+// keeps them out.) A decl so initialized described its own initial contents: the
+// schema census's push observations may settle on it.
 export const isFreshArrayCtor = (rhs) =>
-  Array.isArray(rhs) && (
-    (rhs[0] === '[]' && rhs.length <= 2) ||             // empty `[]`
-    (rhs[0] === '()' && rhs[1] === 'new.Array')         // `Array(n)` / `new Array(n)` / `Array()`
-  )
+  Array.isArray(rhs) && rhs[0] === '()' && rhs[1] === 'new.Array'   // `Array(n)` / `new Array(n)` / `Array()`
 
 /**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
