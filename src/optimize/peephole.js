@@ -14,6 +14,7 @@ import { nanboxF64 } from '../abi/index.js'
 import { findBodyStart, isPureIR, hasExpensiveOp, f64Range, cloneIR, valueTruthyIR } from '../ir.js'
 import { foldIntCompare, narrowI32, int32Operand } from '../ir/numeric.js'
 import { isLeaf, walkAst } from '../ast.js'
+import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
 import { nanPrefixHex, atomNanHex, STR_INTERN_BIT } from '../../layout.js'
 const TWO_63 = 2 ** 63
 
@@ -289,10 +290,13 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
     if (!bounds.has(name)) bounds.set(name, boundedFloatLocal(name, defs.get(name), owners, params))
     return bounds.get(name)
   }
+  // Flow intervals for the range folds below, valid for this walk's tree only.
+  tagFlowRanges(fn, bodyStart, floatLocals)
   for (let i = bodyStart; i < fn.length; i++) {
     const c = fn[i]
     if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, freshI64, freshF64, get, bigint, inlineTruthy)
   }
+  clearFlowRanges(fn)
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 

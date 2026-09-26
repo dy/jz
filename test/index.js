@@ -67,6 +67,7 @@ const TESTS = [
   'reachability-mutants',
   'self-families',
   'interval-proof',
+  'flow-range',
   'sentinel-guard',
   'twin-locals',
   'carry-elements',

@@ -299,23 +299,64 @@ const convRange = (child, signed) => {
 // bounds describe only numeric outcomes; a NaN-only arm is an empty interval.
 // Other consumers keep the default finite-value contract.
 const NAN_RANGE = { lo: Infinity, hi: -Infinity }
+/** The facts a comparison `X <op> k` (or `k <op> X`) establishes for the f64
+ *  local X: `t` holds where the test is true, `f` where it is false. `X < k`
+ *  bounds X above by k on the true side and below by k on the false side;
+ *  strictness only shrinks a closed interval. The false side may also carry
+ *  NaN, which every NaN-admitting consumer already maps. Null for any other
+ *  condition. */
+export const compareFacts = c => {
+  if (!Array.isArray(c)) return null
+  const op = c[0]
+  if (op !== 'f64.lt' && op !== 'f64.gt' && op !== 'f64.le' && op !== 'f64.ge') return null
+  const name = x => Array.isArray(x) && (x[0] === 'local.get' || x[0] === 'local.tee') && typeof x[1] === 'string' ? x[1] : null
+  const konst = x => Array.isArray(x) && x[0] === 'f64.const' && typeof x[1] === 'number' ? x[1] : null
+  let x = name(c[1]), k = konst(c[2]), flipped = false
+  if (x == null || k == null) { x = name(c[2]); k = konst(c[1]); flipped = true }
+  if (x == null || k == null) return null
+  const below = (op === 'f64.lt' || op === 'f64.le') !== flipped   // X ≤ k where the test holds
+  const above = { name: x, lo: k, hi: Infinity }, under = { name: x, lo: -Infinity, hi: k }
+  return below ? { name: x, t: under, f: above } : { name: x, t: above, f: under }
+}
+
 export const f64Range = (n, get, allowNaN = false) => {
   const seen = get ? new Set() : null
-  const r = (n) => {
+  // What a comparison establishes for a local inside the arm it guards: a chain
+  // of { name, lo, hi, next } facts, one side possibly infinite, intersected on
+  // read.
+  const factsOf = (c, env) => {
+    const f = compareFacts(c)
+    return f ? [{ ...f.t, next: env }, { ...f.f, next: env }] : [env, env]
+  }
+  // A fact holds for the reads of an arm only while the arm leaves the local alone.
+  const writes = (n, x) => Array.isArray(n) && ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === x || n.some(m => writes(m, x)))
+  const arm = (a, env, refined) => r(a, refined !== env && writes(a, refined.name) ? env : refined)
+  const r = (n, env = null) => {
     if (!Array.isArray(n)) return null
     const op = n[0]
-    if (op === 'local.get' && get && typeof n[1] === 'string') {
-      if (seen.has(n[1])) return null               // loop-carried / cyclic def → unknown
-      const def = typeof get === 'function' ? get(n[1]) : get.get(n[1])
-      if (!def) return null
-      // The caller may supply a finite all-writes enclosure for a counted
-      // recurrence, instead of a single defining expression.
-      if (!Array.isArray(def)) return fin(Math.min(0, def.lo), Math.max(0, def.hi))
-      seen.add(n[1]); const rng = r(def); seen.delete(n[1])
-      // A conditional or skipped definition leaves the Wasm local at zero.
-      // Include it before composing arithmetic around the read, not only at
-      // the final conversion (zero plus an offset need not convert to zero).
-      return rng && fin(Math.min(0, rng.lo), Math.max(0, rng.hi))
+    if (op === 'local.tee' && n.length === 3) return r(n[2], env)
+    if (op === 'local.get' && typeof n[1] === 'string') {
+      let lo = -Infinity, hi = Infinity, fact = false
+      for (let e = env; e; e = e.next) if (e.name === n[1]) { fact = true; if (e.lo > lo) lo = e.lo; if (e.hi < hi) hi = e.hi }
+      // The flow interval the optimizer tagged at this read (optimize/flow-range.js);
+      // it admits NaN, so only a NaN-admitting query may use it.
+      if (allowNaN && n.range) { fact = true; if (n.range.lo > lo) lo = n.range.lo; if (n.range.hi < hi) hi = n.range.hi }
+      let rng = null
+      if (get && !seen.has(n[1])) {                  // a loop-carried / cyclic def is unknown
+        const def = typeof get === 'function' ? get(n[1]) : get.get(n[1])
+        // The caller may supply a finite all-writes enclosure for a counted
+        // recurrence, instead of a single defining expression.
+        if (def && !Array.isArray(def)) rng = fin(Math.min(0, def.lo), Math.max(0, def.hi))
+        else if (def) {
+          seen.add(n[1]); const d = r(def); seen.delete(n[1])
+          // A conditional or skipped definition leaves the Wasm local at zero.
+          // Include it before composing arithmetic around the read, not only at
+          // the final conversion (zero plus an offset need not convert to zero).
+          rng = d && fin(Math.min(0, d.lo), Math.max(0, d.hi))
+        }
+      }
+      if (!fact) return rng
+      return fin(Math.max(lo, rng ? rng.lo : -Infinity), Math.min(hi, rng ? rng.hi : Infinity))
     }
     if (op === 'f64.const') {
       if (allowNaN && (Number.isNaN(n[1]) || (typeof n[1] === 'string' && /^[-+]?nan(?::0x[0-9a-f]+)?$/i.test(n[1])))) return NAN_RANGE
@@ -323,39 +364,44 @@ export const f64Range = (n, get, allowNaN = false) => {
     }
     if (op === 'f64.convert_i32_s') return convRange(n[1], true)
     if (op === 'f64.convert_i32_u') return convRange(n[1], false)
-    if (op === 'f64.neg') { const a = r(n[1]); return a && fin(-a.hi, -a.lo) }
-    if (op === 'f64.abs') { const a = r(n[1]); return a && fin(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi)) }
-    if (op === 'f64.sqrt') { const a = r(n[1]); return a && a.lo >= 0 && fin(Math.sqrt(a.lo), Math.sqrt(a.hi)) }
+    if (op === 'f64.neg') { const a = r(n[1], env); return a && fin(-a.hi, -a.lo) }
+    if (op === 'f64.abs') { const a = r(n[1], env); return a && fin(a.lo > 0 ? a.lo : a.hi < 0 ? -a.hi : 0, Math.max(-a.lo, a.hi)) }
+    if (op === 'f64.sqrt') { const a = r(n[1], env); return a && a.lo >= 0 && fin(Math.sqrt(a.lo), Math.sqrt(a.hi)) }
     // Rounding ops preserve finiteness and are monotonic, so the range maps elementwise. This lets
     // `Math.floor(x)|0` over a bounded x (every grid/image/audio index: `px*scale`, perm[] lookups)
     // drop the +∞-guard + i64 round-trip in toI32 down to a single i32.trunc_sat_f64_s. `nearest`
     // (round-half-to-even) lands in {floor,ceil} so its bounds are floor(lo)..ceil(hi).
-    if (op === 'f64.floor') { const a = r(n[1]); return a && fin(Math.floor(a.lo), Math.floor(a.hi)) }
-    if (op === 'f64.ceil')  { const a = r(n[1]); return a && fin(Math.ceil(a.lo), Math.ceil(a.hi)) }
-    if (op === 'f64.trunc') { const a = r(n[1]); return a && fin(Math.trunc(a.lo), Math.trunc(a.hi)) }
-    if (op === 'f64.nearest') { const a = r(n[1]); return a && fin(Math.floor(a.lo), Math.ceil(a.hi)) }
-    if (op === 'f64.add') { const a = r(n[1]), b = r(n[2]); return a && b && fin(a.lo + b.lo, a.hi + b.hi) }
-    if (op === 'f64.sub') { const a = r(n[1]), b = r(n[2]); return a && b && fin(a.lo - b.hi, a.hi - b.lo) }
+    if (op === 'f64.floor') { const a = r(n[1], env); return a && fin(Math.floor(a.lo), Math.floor(a.hi)) }
+    if (op === 'f64.ceil')  { const a = r(n[1], env); return a && fin(Math.ceil(a.lo), Math.ceil(a.hi)) }
+    if (op === 'f64.trunc') { const a = r(n[1], env); return a && fin(Math.trunc(a.lo), Math.trunc(a.hi)) }
+    if (op === 'f64.nearest') { const a = r(n[1], env); return a && fin(Math.floor(a.lo), Math.ceil(a.hi)) }
+    if (op === 'f64.add') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(a.lo + b.lo, a.hi + b.hi) }
+    if (op === 'f64.sub') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(a.lo - b.hi, a.hi - b.lo) }
     if (op === 'f64.mul') {
-      const a = r(n[1]), b = r(n[2]); if (!a || !b) return null
+      const a = r(n[1], env), b = r(n[2], env); if (!a || !b) return null
       const p = [a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi]
       return fin(Math.min(...p), Math.max(...p))
     }
     if (op === 'f64.div') {
       const c = Array.isArray(n[2]) && n[2][0] === 'f64.const' && typeof n[2][1] === 'number' ? n[2][1] : null
       if (c == null || c === 0) return null               // variable / zero divisor → may be ±∞
-      const a = r(n[1]); if (!a) return null
+      const a = r(n[1], env); if (!a) return null
       const p = [a.lo / c, a.hi / c]
       return fin(Math.min(...p), Math.max(...p))
     }
     if (op === 'if' && n.length === 5 && n[1]?.[0] === 'result' && n[1][1] === 'f64' &&
         n[3]?.[0] === 'then' && n[3].length === 2 && n[4]?.[0] === 'else' && n[4].length === 2) {
-      const a = r(n[3][1]), b = r(n[4][1])
+      const [t, f] = factsOf(n[2], env)
+      const a = arm(n[3][1], env, t), b = arm(n[4][1], env, f)
       return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi))
     }
-    if (op === 'select' && n.length === 4) { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi)) }
-    if (op === 'f64.min') { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
-    if (op === 'f64.max') { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }
+    if (op === 'select' && n.length === 4) {
+      const [t, f] = factsOf(n[3], env)
+      const a = arm(n[1], env, t), b = arm(n[2], env, f)
+      return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi))
+    }
+    if (op === 'f64.min') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
+    if (op === 'f64.max') { const a = r(n[1], env), b = r(n[2], env); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }
     return null
   }
   return r(n)
