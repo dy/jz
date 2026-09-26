@@ -71,10 +71,10 @@ const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
 
 // Callees that read their arguments and receivers only, apart from a callback
-// CALLBACK_ARGS names. Mirrors the summary's PURE_BUILTINS (src/summary/index.js)
+// callbackArg names. Mirrors the summary's PURE_BUILTINS (src/summary/index.js)
 // plus the numeric/string globals whose results are fresh values or scalars.
 // `math.` is the prepared spelling of `Math.`.
-const PURE_CALLEES = /^(Object\.(keys|values|entries|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries)|JSON\.(stringify|parse)|Array\.(isArray|of|from)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse)$/
+const PURE_CALLEES = /^(Object\.(keys|values|entries|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries)|JSON\.(stringify|parse)|Array\.(isArray|of|from)|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.from|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse)$/
 // Pure callees that read a literal's getters (module/schema.js viewsOn) while
 // they list its properties; JSON.stringify also calls toJSON (emit/to-json.js).
 const ENUMERATING = /^(Object\.(values|entries)|JSON\.stringify|structuredClone)$/
@@ -114,8 +114,10 @@ const SCALAR_METHODS = new Set(['indexOf', 'lastIndexOf', 'includes', 'charCodeA
 // retain nothing: the callback body is part of this frame.
 const CALLBACK_METHODS = new Set(['forEach', 'map', 'filter', 'reduce', 'reduceRight', 'some', 'every', 'find', 'findIndex', 'findLast', 'findLastIndex', 'flatMap', 'sort', 'toSorted', 'replace', 'replaceAll'])
 // Pure callees that call an argument back before they return, by its position:
-// `Array.from(src, mapFn)` runs mapFn in this frame, as `map` does.
-const CALLBACK_ARGS = new Map([['Array.from', 1]])
+// `Array.from(src, mapFn)` runs mapFn in this frame, as `map` does; so does a
+// typed array's `from`.
+const callbackArg = (name) => name === 'Array.from' || TYPED_FROM.test(name) ? 1 : undefined
+const TYPED_FROM = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.from$/
 
 // Converting a value to a primitive runs user code when the program defines toString or
 // valueOf: the conversion is a call to the ToPrimitive function it lowers to (ir/coerce.js
@@ -126,6 +128,7 @@ const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELAT
 const NON_CONVERTING = /^(Array\.(isArray|of|from)|Object\.(is|getPrototypeOf|isFrozen|keys|values|entries|getOwnPropertyNames)|Boolean|Date\.now|performance\.now)$/
 // Constructors that convert their arguments (a typed array each element of an array source).
 const CONVERTING_CTORS = /^(Date|String|Number|BigInt|(Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
+const TYPED_CTORS = /^((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
 // Receiver methods that convert the receiver's elements (`[p].join()` runs p.toString).
 const CONVERTING_RECEIVER_METHODS = new Set(['join', 'toString', 'toLocaleString'])
 // Tags of values that convert without running user code.
@@ -207,6 +210,18 @@ function scalarKind(view, e) {
 }
 
 /** The summary proves the expression a primitive: converting it runs no user code. */
+/** An array or typed array the summary proves holds only primitives. */
+function primitiveElements(view, e) {
+  if (!view) return false
+  let k
+  try { k = view.kindOfExpr(e) } catch { return false }
+  const t = k == null ? null : tagOf(k)
+  if (t === K.TYPED) return true
+  if (t !== K.ARRAY) return false
+  const el = view.elemOfKind(k)
+  return el != null && tagsOf(el) !== 0 && (tagsOf(el) & ~PRIMITIVE_BITS) === 0
+}
+
 function primitiveKind(view, e) {
   if (!isArr(e) && !isName(e)) return true   // a number or bigint literal
   if (isArr(e) && (e[0] == null || e[0] === 'str' || e[0] === 'bool')) return true
@@ -299,7 +314,7 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * loop's condition, step and body), `declRoots` the nodes whose declarations
  * belong to the scope (the body), `params` the names bound by the function.
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
- * and CALLBACK_ARGS run synchronously and for local arrows called from this scope.
+ * and callbackArg run synchronously and for local arrows called from this scope.
  */
 function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   // A parameter the export boundary types (narrow/param-abi.js `boundaryTyped`)
@@ -384,6 +399,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
   const converts = ctx.funcs.runtimeRoots?.has(TO_PRIMITIVE.number)
   const conversion = () => { out.callees.add(TO_PRIMITIVE.number); out.callees.add(TO_PRIMITIVE.string) }
   const convert = (e) => { if (converts && e !== undefined && !primitiveKind(view, e)) conversion() }
+  // A typed array converts a source's elements: primitive elements run no user code.
+  const convertElements = (e) => { if (converts && e !== undefined && !primitiveKind(view, e) && !primitiveElements(view, e)) conversion() }
 
   // A store into `recv`: fresh-local receivers are fresh memory; a nested
   // path below a fresh local (`o.a.b = v`) reaches storage the local's own
@@ -410,13 +427,14 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     return false
   }
   // A pure callee allocates unless its result is a scalar, and runs the
-  // callback CALLBACK_ARGS names.
+  // callback callbackArg names.
   const pure = (name, args) => {
     if (runsGetters(name)) return unknownCall('accessor ' + name)
     if (!SCALAR_CALLEES.test(name)) allocates()
-    const i = CALLBACK_ARGS.get(name), list = argList(args)
+    const i = callbackArg(name), list = argList(args)
     if (i != null && list[i] !== undefined) callback(list[i], name)
-    if (!NON_CONVERTING.test(name)) list.forEach((a, j) => { if (j !== i) convert(a) })
+    if (TYPED_FROM.test(name)) { if (list[0] !== undefined) convertElements(list[0]) }
+    else if (!NON_CONVERTING.test(name)) list.forEach((a, j) => { if (j !== i) convert(a) })
   }
   const call = (callee, args) => {
     if (isName(callee)) {
@@ -425,7 +443,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
         allocates()
         if (knownFunc(c)) out.callees.add(c)
         else if (!FRESH_CTORS.test(c)) unknownCall('call ' + callee)
-        else if (CONVERTING_CTORS.test(c)) argList(args).forEach(convert)
+        else if (CONVERTING_CTORS.test(c)) argList(args).forEach(TYPED_CTORS.test(c) ? convertElements : convert)
         return
       }
       if (knownFunc(callee)) { out.callees.add(callee); return }

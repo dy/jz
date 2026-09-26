@@ -1074,6 +1074,31 @@ test('codegen: buffers swapped between passes keep their shared length', () => {
   ok(u && u.includes('i32.lt_u'), 'unequal buffers keep their checks')
 })
 
+test('codegen: a typed array built by from is a fresh typed array', () => {
+  // watr's assembler returns `Uint8Array.from(bytes)`: its consumer reads numbers,
+  // so the loop compiling and hashing it may rewind its arena every pass
+  const src = `class Box { constructor(v) { this.v = v } valueOf() { return this.v } }
+    const make = (n) => { const out = []; for (let i = 0; i < n; i++) out.push((i * 7) & 255); return Uint8Array.from(out) }
+    const mix = (h, x) => Math.imul(h ^ x, 16777619)
+    const sum = (buf) => { let h = 0; for (let i = 0; i < buf.length; i++) h = mix(h, buf[i]); return h >>> 0 }
+    export let main = (x) => { let h = 0; for (let k = 0; k < 40; k++) h = (h + sum(make(k + x))) | 0; return h }
+    export let mapped = (x) => { const b = Int16Array.from([1, 2, x], (v, i) => v * 1000 + i); return [b[0], b[2], b.length] }
+    export let boxed = (x) => { const b = Float32Array.from([new Box(x), new Box(1.5)]); return [b[0], b[1]] }`
+  const native = oracle(src)
+  for (const optimize of [0, 2, 'speed', 'size']) {
+    const m = jz(src, { optimize }).exports
+    for (const x of [0, 3, -9]) {
+      is(m.main(x), native.main(x), `main, O${optimize}, x=${x}`)
+      is(m.mapped(x), native.mapped(x), `mapped, O${optimize}, x=${x}`)
+      is(m.boxed(x), native.boxed(x), `boxed, O${optimize}, x=${x}`)
+    }
+  }
+  if (onKernel()) return
+  const declined = []
+  compile(src, { optimize: 'speed', whyNotRewind: (name, why) => declined.push(`${name}: ${why}`) })
+  ok(!declined.some(d => /^\$main:/.test(d)), 'the loop consuming a fresh from() rewinds: ' + declined.filter(d => /main|sum/.test(d)).join('; '))
+})
+
 test('codegen: mutable integer hulls include every writer and preserve missing values', () => {
   const cases = [
     ['bounded reads', 'let x=0;for(let i=0;i<(n&3);i++)x=a[i];return (+x)*(+x)'],

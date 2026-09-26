@@ -63,6 +63,8 @@ export const kindOfVal = v => { const t = VAL_OF.indexOf(v); return v == null ? 
 export const valsOf = k => { const out = []; for (let t = K.NUMBER; t < K.ANY; t++) if (t !== K.NULLISH && t !== K.ABSENT && hasTag(k, t)) out.push(VAL_OF[t]); return out }
 
 export const TYPED_CTOR = /^new\.(\w+Array)(\.view)?$/
+// A typed array constructor's static builder: `Uint8Array.from(src)`.
+export const TYPED_STATIC = /^((?:Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uint32|Float16|Float32|Float64|BigInt64|BigUint64)Array)\.from$/
 /** A generic TYPED kind includes DataView; only an element aux proves length. */
 const COUNT_PROPS = new Map([['length', [K.ARRAY, K.TYPED, K.STRING]], ['size', [K.MAP, K.SET]], ['byteLength', [K.TYPED, K.BUFFER]], ['byteOffset', [K.TYPED]]])
 export const isCount = (prop, k) => COUNT_PROPS.get(prop)?.includes(tagOf(k)) === true &&

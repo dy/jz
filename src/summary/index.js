@@ -62,7 +62,7 @@ export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 import {
   K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag, isNullable,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
-  valOf, kindOfVal, TYPED_CTOR, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
+  valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, isPostfixRecovery, logicalMask, selectKind,
 } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
@@ -1123,6 +1123,14 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         }
         if (callee === 'new.RegExp') return kind(K.REGEX)
         if (callee === 'new.ArrayBuffer' || callee === 'new.SharedArrayBuffer') return kind(K.BUFFER)
+      }
+      // A fresh typed array of the constructor's kind, holding converted copies
+      // of its source; a map callback runs over the source.
+      const tm = TYPED_STATIC.exec(callee)
+      if (tm) {
+        if (n > 1) escapeArgs(base, n)
+        const aux = encodeTypedElemAux(tm[1], false)
+        return kind(K.TYPED, aux == null ? UNKNOWN : aux)
       }
       // The builtin's trait first (kind-traits.js: `Number.isNaN` is a boolean), then the family.
       const traitVal = builtinCalleeVal(callee)
