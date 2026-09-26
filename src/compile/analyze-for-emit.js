@@ -503,16 +503,24 @@ function seedLocalIntConsts(body) {
       return false
     }
   } })
+  // A name declared more than once (a loop body copied per iteration keeps its
+  // block-scoped names; each copy binds `const sb = s * 4` to its own value)
+  // is one constant only when every declaration evaluates to the same value.
+  const byName = new Map()
+  for (const decl of decls) (byName.get(decl[1]) ?? byName.set(decl[1], []).get(decl[1])).push(decl)
   const seeded = new Set()
   let changed = true
   while (changed) {
     changed = false
-    for (const decl of decls) {
-      if (seeded.has(decl[1])) continue
-      const value = constIntExpr(decl[2])
-      if (value != null && Number.isInteger(value) && value >= I32_MIN && value <= I32_MAX) {
-        updateRep(decl[1], { intConst: value }); seeded.add(decl[1]); changed = true
+    for (const [name, group] of byName) {
+      if (seeded.has(name)) continue
+      let value = null
+      for (const decl of group) {
+        const v = constIntExpr(decl[2])
+        if (v == null || !Number.isInteger(v) || v < I32_MIN || v > I32_MAX || (value != null && v !== value)) { value = null; break }
+        value = v
       }
+      if (value != null) { updateRep(name, { intConst: value }); seeded.add(name); changed = true }
     }
   }
 }
