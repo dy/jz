@@ -72,11 +72,6 @@ export const declareWrittenKeys = (ast) => {
     if (!s) writes.set(name, s = new Set())
     s.add(key)
   }
-  // Every name a pattern binds (its property keys too: a harmless surplus).
-  const patternNames = (t) => {
-    if (typeof t === 'string') return other(t)
-    walkAst(t, { enter: n => { for (let i = 1; i < n.length; i++) other(n[i]) } })
-  }
   const census = (root) => walkAst(root, { enter: (n) => {
     const op = n[0]
     if (MUTATE_OPS.has(op)) {
@@ -85,7 +80,6 @@ export const declareWrittenKeys = (ast) => {
       else if (Array.isArray(t)) {
         if (t[0] === '.' && typeof t[1] === 'string' && typeof t[2] === 'string') write(t[1], t[2])
         else if (t[0] === '[]' && t.length === 3 && typeof t[1] === 'string') { if (isLiteralStr(t[2])) write(t[1], t[2][1]); else dict.add(t[1]) }
-        else if (t[0] === '{}' || (t[0] === '[]' && t.length !== 3)) patternNames(t)
       }
     }
     else if (op === '()' && n[1] === 'Object.assign') { const t = Array.isArray(n[2]) && n[2][0] === ',' ? n[2][1] : n[2]; if (typeof t === 'string') dict.add(t) }

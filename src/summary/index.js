@@ -2215,7 +2215,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
     if (typeof target === 'string') return assignName(target, v)
-    if (Array.isArray(target) && (target[0] === '{}' || target[0] === '[]') && !(target[0] === '[]' && target.length === 3)) { destructure(target, v); return v }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       // A store through a nullish receiver throws before storing.
@@ -2361,7 +2360,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make).
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])); else destructure(d[1], expr(d[2])) } } }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])) } } }
   // A `{}` declared into a name is allocated as the runtime allocates it
   // (module/object.js's `{}`): with the binding's schema when that holds every
   // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
@@ -2388,32 +2387,6 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const iterElemOf = (it) => !iterable(it) ? K.NONE : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY
   const rowOf = (src) => tagOf(src) === K.ARRAY && paramOf(src) !== UNKNOWN ? tuples.get(cell(paramOf(src))) : null
   const elemAt = (src, i) => { const row = rowOf(src); return row ? row[i] ?? ABSENT : orAbsent(iterElemOf(src)) }
-  const entriesOf = (p) => p == null ? [] : Array.isArray(p) && p[0] === ',' ? p.slice(1) : [p]
-  const destructure = (target, src) => {
-    if (typeof target === 'string') return assignName(target, src)
-    if (!Array.isArray(target)) return
-    const op = target[0]
-    if (op === '=') return destructure(target[1], merge(src, expr(target[2])))
-    if (op === '{}') {
-      for (const e of entriesOf(target[1])) {
-        if (typeof e === 'string') destructure(e, member('.', src, e))
-        else if (e[0] === '=' && typeof e[1] === 'string') destructure(e, member('.', src, e[1]))
-        else if (e[0] === ':' && typeof e[1] === 'string') destructure(e[2], member('.', src, e[1]))
-        else { if (e[0] === ':') expr(e[1]); escape(src); destructure(e[0] === ':' ? e[2] : e[1], ANY) }
-      }
-      return
-    }
-    if (op === '[]') {
-      let i = 0
-      for (const e of entriesOf(target[1])) {
-        if (e == null) { i++; continue }
-        if (Array.isArray(e) && e[0] === '...') destructure(e[1], cellOf(e, K.ARRAY, iterElemOf(src)))
-        else destructure(e, elemAt(src, i++))
-      }
-      return
-    }
-    escape(src)
-  }
 
   // Scopes: a function (its name), a closure (its id) or the module (null).
   // A scope declares its parameters, its `let`/`const`/`var` names, loop

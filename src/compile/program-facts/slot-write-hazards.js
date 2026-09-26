@@ -301,27 +301,12 @@ export function collectSlotWriteHazards(ast, opts) {
     if (numericKey(key)) { hz.dynNumeric = true; return }
     markDynPointsToAll()
   }
-  // Member targets buried in a destructuring pattern — written with values the
-  // censuses can't see; hazard them like opaque writes.
-  const patternTargets = (pat) => walkAst(pat, { enter: pat => {
-    const op = pat[0]
-    if (op === '.' || op === '?.') {
-      if (typeof pat[2] === 'string') {
-        const sid = sidOf(pat[1])
-        if (sid != null) addPointsTo(sid)
-        else hz.props.add(pat[2])
-      }
-      return false
-    }
-    if (op === '[]') { keyedWrite(pat[1], pat[2]); return false }
-  } })
   const visit = (node) => walkAst(node, { enter: node => {
     const op = node[0]
     if (MUTATE_OPS.has(op) && Array.isArray(node[1])) {
       const lhs = node[1]
       if ((lhs[0] === '.' || lhs[0] === '?.') && typeof lhs[2] === 'string') propWrite(lhs[1], lhs[2])
       else if (lhs[0] === '[]') keyedWrite(lhs[1], lhs[2])
-      else if (op === '=' && (lhs[0] === '{}' || lhs[0] === '[')) patternTargets(lhs)
     } else if (op === 'delete') {
       // prepare only lets computed-key deletes through (['delete', obj, key]);
       // __dyn_del's schema arm writes UNDEF into a matching slot.
