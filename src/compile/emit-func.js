@@ -1,10 +1,9 @@
 import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
 import parseWat from 'watr/parse'
 import { ctx, PTR, LAYOUT } from '../ctx.js'
-import { isBlockBody, isReassigned, returnExprs } from '../ast.js'
+import { isBlockBody, returnExprs } from '../ast.js'
 import { hasAmbiguousBoolMerge } from '../kind.js'
-import { VAL, updateRep } from '../reps.js'
-import { paramValTrustworthy } from '../param-reps.js'
+import { VAL } from '../reps.js'
 import { i64Hex } from '../../layout.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
@@ -21,7 +20,6 @@ import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits } from './fu
 import { isBoundaryWrapped } from './boundary-wrap.js'
 import { hoistUnionCursorUnbox } from './coercion-hoist.js'
 import { isExported } from './func-exports.js'
-import { frameNode } from '../function.js'
 
 /**
  * Phase: emit one user function to WAT IR.
@@ -38,7 +36,6 @@ export function emitFunc(func, functionPlan, programFacts) {
   const _reps = programFacts.programIndex.parameterAbiOf(func)
 
   const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
-  let schemaVarsPrev = null
   const prevEmitting = ctx.closure.emitting
   ctx.closure.emitting = name   // the owner of closures minted in this body (wasm name section only)
   try {
@@ -120,18 +117,6 @@ export function emitFunc(func, functionPlan, programFacts) {
   // settled. The active record owns the resulting overlay.
   if (!ctx.func.typedLen && ctx.scope.globalTypedLen) ctx.func.typedLen = makeMapOverlay(ctx.scope.globalTypedLen)
 
-  // D: Apply call-site param facts (only if body analysis didn't already set them).
-  // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
-  // hits the slot map. ctx.schema.vars is saved/restored so bindings don't leak.
-  // MapOverlay instead of a clone (same jz×jz-ceiling fix as typedElem/typedLen
-  // above and emitClosureBody's own doc): this used to be `new Map(ctx.schema.
-  // vars)` — an O(programSize) clone of the WHOLE-PROGRAM schema table, paid once
-  // per function in emitFuncs' driver loop. `own` starts empty; the `.set` calls
-  // below (unchanged) write this function's own param-schema bindings into it;
-  // restoring below is the identical "re-point the ctx field back" the overlay
-  // doc already establishes, now O(1) instead of O(programSize) either direction.
-  schemaVarsPrev = ctx.schema.vars
-  ctx.schema.vars = makeMapOverlay(schemaVarsPrev)
   if (_reps) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
@@ -139,54 +124,6 @@ export function emitFunc(func, functionPlan, programFacts) {
       // A missing argument carries the undefined atom; numeric uses must
       // produce numeric NaN rather than retaining that atom's payload bits.
       if (r.mayBeUndefined || r.missArg) (ctx.func.maybeNullish ??= new Set()).add(pname)
-      // Same entry-vs-body-reassignment hazard analyzeFuncForEmit guards against
-      // (see its comment): r.val/r.typedCtor/r.schemaId describe the CALLER's
-      // argument, sound only while the body never writes the name. This step
-      // duplicates that seeding (FunctionPlan.localReps already carries whatever
-      // analyzeFuncForEmit settled, guarded — but re-applying the UNGUARDED
-      // call-site fact here would undo it) so it needs the identical guard.
-      const reassigned = isReassigned(frameNode(func), pname)
-      // paramValTrustworthy: `r.val` and `r.possibleKinds` are independent
-      // lattices over the same call sites (param-reps.js's own header) — a
-      // parameter fed by a mix of easily-proven and unresolved-argument call
-      // sites (e.g. a compiler-internal helper whose receiver sometimes comes
-      // from a plain literal, sometimes from an array-element read whose own
-      // kind this fixpoint's `val` meet never got to observe) can settle
-      // `val` to a single, UNCHALLENGED kind from the one site that WAS
-      // provable, while `possibleKinds`' own wider census (closed coverage:
-      // every site enumerated) proves the parameter is genuinely polymorphic.
-      // Trusting `val` alone there hardcodes a receiver type tag
-      // (emitTypeTag, src/ir.js) that's wrong for every other-kinded call —
-      // fix/selfhost-hash-read's own root cause (a HASH-representation
-      // parameter compiled with an unconditionally-hardcoded PTR.OBJECT tag).
-      if (r.val && !reassigned && paramValTrustworthy(r) && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
-      // presentVal: mirrors the analyzeFuncForEmit seeding above (see its comment) —
-      // same guard, same duplication reason.
-      if (r.presentVal && !reassigned && !ctx.func.localReps?.get(pname)?.presentVal) updateRep(pname, { presentVal: r.presentVal })
-      // recvArrTyped: mirrors the analyzeFuncForEmit seeding above (see its comment).
-      if (r.recvArrTyped && !reassigned) updateRep(pname, { recvArrTyped: true })
-      if (r.typedCtor && !reassigned) {
-        if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
-        if (!ctx.func.typedElem.has(pname)) ctx.func.typedElem.set(pname, r.typedCtor)
-        if (!ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
-        if (r.typedLen != null) {
-          if (!ctx.func.typedLen) ctx.func.typedLen = new Map()
-          if (!ctx.func.typedLen.has(pname)) ctx.func.typedLen.set(pname, r.typedLen)
-        }
-      }
-      // lenBoundOf: mirrors the analyzeFuncForEmit seeding above (see its
-      // comment) — same "already validated, no extra reassigned guard
-      // needed" reasoning, same duplication reason.
-      if (r.lenBoundOf != null) {
-        const recvName = sig.params[r.lenBoundOf]?.name
-        if (recvName != null) {
-          if (!ctx.func.lenBoundOf) ctx.func.lenBoundOf = new Map()
-          if (!ctx.func.lenBoundOf.has(pname)) ctx.func.lenBoundOf.set(pname, recvName)
-        }
-      }
-      if (r.schemaId != null && !reassigned && !exported && !ctx.schema.vars.has(pname)) {
-        updateRep(pname, { schemaId: r.schemaId })
-      }
     }
   }
 
@@ -368,7 +305,6 @@ export function emitFunc(func, functionPlan, programFacts) {
   return fn
   } finally {
     ctx.closure.emitting = prevEmitting
-    if (schemaVarsPrev) ctx.schema.vars = schemaVarsPrev
     restoreActiveFunction(ctx, previousFrame)
   }
 }

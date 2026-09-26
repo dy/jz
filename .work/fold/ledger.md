@@ -15,6 +15,8 @@ compiled byte, test and product metric equal or better. Branch `fold`, own workt
 | compile budget (loaded machine, ±20 % noise) | jessie 3995 ms / 365 MB, watr 10474 ms / 524 MB |
 | jz-own compile time (total minus watr's optimizer and encoder, min of 9, `.work/fold-time.mjs`) | jessie 590 ms, watr 2992 ms |
 | supplementary oracle at O1 and 'fast' (watr off, `.work/fold-oracle-extra.mjs`) | 290 entries |
+| `npm test` (default leg) | 4837 tests, 131,189 assertions, all pass; 38.7 min on the loaded machine, peak RSS 2.6 GB |
+| widened oracle (`test/_hashes.mjs`), default leg | 16,144 compile keys |
 
 Where compile time goes (CPU profile, oracle corpus): watr's optimizer ~53 %;
 jz's single hottest function is the vectorizer's `liveOutOf` scan (8.3 s of
@@ -28,6 +30,7 @@ candidate | evidence | est. saving | files | status
 ClosureEnvPlan: a pre-emission record of what `ctx.closure.make` derives again at emission | plan and emission derivation asserted equal under DBG_INVARIANTS; `id`/`bindingId` never read; oracle CLEAN with the plan deleted | 1 file, 2 ctx fields, a walk and a free-var scan per arrow; ~280 lines, ~2 KB dist | closure-plan.js, function.js, analyze-for-emit.js, closure-emit.js, call.js, ctx.js | folded
 Vectorizer `liveOutOf` computed eagerly for every block | 8.3 s self time on the oracle corpus, 1.6 s of 3.8 s jz time on watr | ~10 % of jz compile time; not a concept | vectorize/index.js | done (cost)
 DictKindIndex (dict-kind-index.js): `resolveDictKind` has no caller since d6a219ca moved parameter kinds to the summary | `git log -S 'resolveDictKind('`; oracle CLEAN at all six levels with it deleted | 539 lines, a whole-program walk, a ctx field | dict-kind-index.js, plan/index.js, freeze.js, phase-marks.js | folded
+emitFunc re-applied the call-site parameter facts analyzeFuncForEmit had seeded into the FunctionPlan (its own comment: "duplicates that seeding"), and kept a ctx.schema.vars overlay no emission-time writer uses | knockout: oracle CLEAN at all six levels; only `maybeNullish` is seeded nowhere else, so it stays | ~65 lines | emit-func.js | folded
 ctx fields nobody reads: `types.loopGuardLo`, `plans.start`, `types.dictKinds`, `schema._byKey`, `schema.errorClassesUsed` | grep: written (or read) once, never the other | ~20 lines | ctx.js, i32-bounds.js, start-fn.js, plan/index.js, schema.js | pending
 Unused exports (knip): `intExprChecker`, `litBoundArrIdx`/`affineIdxOfIV`/`bodyAffineEnv` re-exports, `ENUM_SET`, `BINDING_USE_SELF`, `runsAccessor`, `seedSummaryShape` | `npm run audit:files` exports view | small | type.js, int-certain.js, … | pending
 Barrels (`narrow.js`, `analyze.js`, `representation-plan.js`, `program-facts.js`, `emit.js`, `ir.js`, `optimize/index.js`, `wat/assemble.js`, `kind.js`, `type.js`): re-export-only files kept so imports survived splits | 0 own exports each, ~500 lines | 10 files; touches most importers | many | pending, low rank (many files per concept)
@@ -40,6 +43,7 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 ---|---|---|---|---|---
 1 | ClosureEnvPlan, a second derivation of a closure's captures | −279 | −1,948 | noise (loaded machine) | 9d5d53d4
 2 | (cost) vectorizer live-out scan runs only when a recognizer asks | +3 | +41 | jz time on watr −30 % (2992 → 2092 ms), jessie ±0 | 022ef049
-3 | DictKindIndex, a whole-program per-key kind index nothing has read since the summary took over its one consumer (d6a219ca) | −561 | −6,822 | one whole-program walk less (4 ms on watr) | this commit
+3 | DictKindIndex, a whole-program per-key kind index nothing has read since the summary took over its one consumer (d6a219ca) | −561 | −6,822 | one whole-program walk less (4 ms on watr) | a28aa172
+4 | emission-time re-seeding of parameter facts the FunctionPlan already carries from analysis, and the empty schema-binding overlay it once needed | −64 | −828 | one per-parameter pass less per function | this commit
 
 ## Rejections and owner decisions
