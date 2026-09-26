@@ -6,7 +6,7 @@
  *
  * @module compile/analyze/trackers
  */
-import { isReassigned } from '../../ast.js'
+import { isReassigned, walkAst, MUTATE_OPS } from '../../ast.js'
 import { ctx, setLinkDemand } from '../../ctx.js'
 import { isGlobal } from '../../ir/vars.js'
 import { TYPED_CTOR_CONFLICT } from '../../typed-provenance.js'
@@ -74,4 +74,44 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen, body) =>
     if (ctor) return setOrInvalidate(ctor)
     if (typeof rhs === 'string') return
   }
+}
+
+/** A local typed binding assigned only arrays of one length keeps that length:
+ *  typed arrays never resize, so every value it holds is that long — the
+ *  ping-pong `const t = a; a = b; b = t` of two equal buffers. Solved
+ *  optimistically over the assignment cycle. Only a binding this body declares
+ *  with a value qualifies; any other write, a closure's write, or a value of
+ *  another or unknown length drops the name. */
+export function joinReassignedTypedLens(body, typed, lenOf, setLen) {
+  const defs = new Map(), declared = new Set(), bad = new Set()
+  const params = new Set((ctx.func.current?.params || []).map(p => p.name))
+  walkAst(body, { enter: (n, parent) => {
+    if (n[0] === '=>') { walkAst(n, { enter: m => { if (MUTATE_OPS.has(m[0]) && typeof m[1] === 'string') bad.add(m[1]) } }); return false }
+    if (n[0] === 'let' || n[0] === 'const')
+      for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string') bad.add(n[i])   // declared without a value
+    const decl = parent?.[0] === 'let' || parent?.[0] === 'const'
+    if (n[0] === '=' && typeof n[1] === 'string') {
+      if (typed(n[1])) (defs.get(n[1]) ?? defs.set(n[1], []).get(n[1])).push(n[2])
+      if (decl) declared.add(n[1])
+    } else if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string' && !decl) bad.add(n[1])
+  } })
+  const names = [...defs.keys()].filter(n => declared.has(n) && !bad.has(n) && !params.has(n) && !isGlobal(n) && lenOf(n) == null)
+  if (!names.length) return
+  const TOP = -1, len = new Map(names.map(n => [n, TOP]))
+  const rhsLen = (rhs) => typedStaticLen(rhs) ?? (typeof rhs === 'string' ? (len.has(rhs) ? len.get(rhs) : lenOf(rhs)) : null)
+  for (let changed = true; changed;) {
+    changed = false
+    for (const n of names) {
+      if (len.get(n) === null) continue
+      let v = TOP
+      for (const rhs of defs.get(n)) {
+        const l = rhsLen(rhs)
+        if (l === TOP) continue
+        if (l == null || (v !== TOP && v !== l)) { v = null; break }
+        v = l
+      }
+      if (v !== len.get(n)) { len.set(n, v); changed = true }
+    }
+  }
+  for (const [n, v] of len) if (v != null && v !== TOP) setLen(n, v)
 }

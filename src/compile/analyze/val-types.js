@@ -6,7 +6,7 @@ import { VAL, repOf, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMap } from '../../type.js'
-import { makeTypedTracker } from './trackers.js'
+import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
 import { analyzeBody } from './body-facts.js'
 import { K, tagOf, hasTag, valOf, core, ANY } from '../../summary/kind.js'
 
@@ -474,6 +474,9 @@ export function analyzeValTypes(body) {
   }
   const objAssignSites = []
   walk(body, false)
+  joinReassignedTypedLens(body, n => ctx.func.typedElem?.has(n) ?? false,
+    n => ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
+    (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l))
 
   // Slice-4 P3 predictor: `Object.assign(x, …)` onto a non-OBJECT binding
   // (boxed primitive / array carrier) allocates an `__inner__` record at emit;

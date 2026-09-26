@@ -22,7 +22,7 @@ import {
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
-import { makeTypedTracker } from './trackers.js'
+import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
 import { typedStorageNameCtor } from '../../typed-context.js'
 import { typedElementKey } from '../../typed-provenance.js'
 import { isPresentNumber } from '../../kind.js'
@@ -440,6 +440,8 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   withValueOverlay(valTypes, () =>
     withTypedElemOverlay(typedElems, () => {
     walk(body)
+    joinReassignedTypedLens(body, n => typedElems.has(n), n => typedLens?.get(n) ?? ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
+      (n, l) => { (typedLens ||= new Map()).set(n, l) })
     for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)
     // Prove accumulator bounds and join every write to mutable scalars before
     // widening: an observed local needs its complete hull, not just its init.

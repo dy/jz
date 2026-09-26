@@ -1033,6 +1033,47 @@ test('codegen: a loop-declared counter bounds the declarations its body types', 
   ok(w && /v128|i32x4/.test(w) && !w.includes('f64.mul'), 'the counter-bounded product vectorizes in words')
 })
 
+test('codegen: buffers swapped between passes keep their shared length', () => {
+  // radix sort's ping-pong: `const t = a; a = b; b = t` over equal buffers
+  const pingpong = (lenA, lenB, extra = '') => `const pass = (src, dst, k) => {
+      let a = src, b = dst
+      for (let p = 0; p < 3; p++) {
+        for (let i = 0; i < 16; i++) b[i] = (a[i] * 3 + k + p) | 0
+        ${extra}
+        const t = a; a = b; b = t
+      }
+      return a
+    }
+    export function f(x) {
+      const u = new Int32Array(${lenA}), v = new Int32Array(${lenB})
+      for (let i = 0; i < ${lenA}; i++) u[i] = i ^ x
+      pass(v, u, x)
+      const r = pass(u, v, x)
+      let h = 0
+      for (let i = 0; i < 16; i++) h = (h * 31 + (r[i] | 0)) | 0
+      return [h, u[3], v[5] | 0]
+    }`
+  const cases = [
+    ['equal', pingpong(16, 16)],
+    ['unequal', pingpong(16, 8)],                                       // reads past the short buffer stay checked
+    ['closure write', pingpong(16, 16, 'const grow = () => { b = new Int32Array(4) }; if (k === 99) grow()')],
+  ]
+  for (const [name, src] of cases) {
+    for (const optimize of [0, 2, 'speed', 'size']) {
+      const f = jz(src, { optimize }).exports.f, native = oracle(src).f
+      for (const x of [0, 5, 99, -7]) is(f(x), native(x), `${name}, O${optimize}, x=${x}`)
+    }
+  }
+  const param = `const pass = (a, b) => { for (let p = 0; p < 2; p++) { for (let i = 0; i < 8; i++) b[i] = a[i] + 1; const t = a; a = b; b = t } return a }
+    export function f(x) { const r = pass(new Float64Array(8).fill(x), new Float64Array(4)); return [r[0], r[5]] }`
+  for (const optimize of [0, 2, 'speed']) for (const x of [1, -2]) is(jz(param, { optimize }).exports.f(x), oracle(param).f(x), `reassigned params, O${optimize}, x=${x}`)
+  if (onKernel()) return
+  const w = funcWat(compile(pingpong(16, 16), { optimize: 'speed', wat: true }), 'f')
+  ok(w && !w.includes('i32.lt_u'), 'equal ping-pong buffers need no bounds checks')
+  const u = funcWat(compile(pingpong(16, 8), { optimize: 'speed', wat: true }), 'f')
+  ok(u && u.includes('i32.lt_u'), 'unequal buffers keep their checks')
+})
+
 test('codegen: mutable integer hulls include every writer and preserve missing values', () => {
   const cases = [
     ['bounded reads', 'let x=0;for(let i=0;i<(n&3);i++)x=a[i];return (+x)*(+x)'],
