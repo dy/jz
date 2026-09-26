@@ -375,7 +375,6 @@ const storeParts = n => {
   }
   return n.length - i === 2 ? { offset, addr: n[i], value: n[i + 1] } : null
 }
-const localOf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'local.tee') && typeof n[1] === 'string' ? n[1] : null
 const unmask = (n, mask) => Array.isArray(n) && n[0] === 'i32.and' && n.length === 3 &&
   Array.isArray(n[2]) && n[2][0] === 'i32.const' && n[2][1] === mask ? n[1] : n
 // An address as a pure base expression (keyed by its shape) plus a constant:

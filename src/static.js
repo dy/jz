@@ -402,37 +402,6 @@ const pureIntLiteral = (e) => {
   return null
 }
 
-// linearIndexOf(expr) — generalizes nameShift above from a pure +/- SHIFT of
-// `name` to a full linear form `K*name (+/- shift)`, K a compile-time
-// integer SCALE. Returns {name, scale, shift} or null (scale=1 covers
-// nameShift's own shape exactly). Needed by the co-induction bounds prover
-// (narrow.js's mayBeUndefined join, .work/archive/todo.md "colorlog — the co-
-// induction prover"): a loop-local index (`const j = 3 * i`) used at a call
-// site (`decode(src[j])`) is a SCALED reference to the enclosing loop's own
-// counter, not a bare shift of it — nameShift alone can't see through the
-// `j = 3*i` decl-hop. Pure (no repOf/ctx.func — see pureIntLiteral above),
-// safe to call from narrow.js's whole-program plan-time walk.
-function linearIndexOf(expr) {
-  if (typeof expr === 'string') return { name: expr, scale: 1, shift: 0 }
-  if (!Array.isArray(expr) || expr.length !== 3) return null
-  if (expr[0] === '*') {
-    if (typeof expr[1] === 'string') { const k = pureIntLiteral(expr[2]); if (k != null) return { name: expr[1], scale: k, shift: 0 } }
-    if (typeof expr[2] === 'string') { const k = pureIntLiteral(expr[1]); if (k != null) return { name: expr[2], scale: k, shift: 0 } }
-    return null
-  }
-  if (expr[0] === '+' || expr[0] === '-') {
-    const base = linearIndexOf(expr[1])
-    if (base) { const k = pureIntLiteral(expr[2]); if (k != null) return { name: base.name, scale: base.scale, shift: base.shift + (expr[0] === '+' ? k : -k) } }
-    if (expr[0] === '+') {
-      const base2 = linearIndexOf(expr[2])
-      const k2 = pureIntLiteral(expr[1])
-      if (base2 && k2 != null) return { name: base2.name, scale: base2.scale, shift: base2.shift + k2 }
-    }
-    return null
-  }
-  return null
-}
-
 // Which name does a relational guard's LHS actually compare — bare, or
 // shifted by a compile-time constant (nameShift's own shapes)? Both
 // forCounterRange callers need this BEFORE they can even name which

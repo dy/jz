@@ -441,9 +441,6 @@ const SHORT_CIRCUIT = new Set(['?:', '?', '&&', '||', '??'])
 // the key/args run conditionally — so the hoist treats the WHOLE expression as opaque (no
 // operand, not even the base, is hoisted out) to avoid colliding with that desugaring.
 const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
-// Mutating expression operators — evaluating one is an observable side effect.
-// Does evaluating this expression have an observable side effect (a call or assignment)?
-const containsEffect = (n) => some(n, n => (n[0] === '()' && !pureSIMDCall(n)) || n[0] === '?.()' || MUTATE_OPS.has(n[0]))
 
 // Hoist an unconditionally-evaluated NESTED call to a block-body candidate out to a
 // preceding `const __h = call(...)` temp. inlineInStmt folds block-body candidates only at

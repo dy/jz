@@ -234,25 +234,6 @@ function isLiteralNode(node) {
   const op = node[0]
   return op == null || op === 'str' || op === 'bool' || op === 'bigint'
 }
-/** Read an already-literal AST node into an EvalResult (no evaluation, just recognition).
- *  A `[null, n]` node's payload is UNCONDITIONALLY a genuine number — bigint literals are
- *  the distinct `['bigint', decimalStr]` node (parse.js), never this shape, so
- *  every literal number (subnormal included) folds with no magnitude heuristic here. */
-function literalOf(node) {
-  if (!Array.isArray(node)) return null
-  const op = node[0]
-  if (op == null) {
-    const v = node[1]
-    if (typeof v === 'number') return numResult(v)
-    if (v === null) return NULL_RESULT
-    if (v === undefined) return UNDEF_RESULT
-    if (typeof v === 'boolean') return boolResult(v)
-    return null
-  }
-  if (op === 'str' && typeof node[1] === 'string') return strResult(node[1])
-  if (op === 'bool') return boolResult(node[1])
-  return null
-}
 /** EvalResult -> literal AST node. The ONE place a Rational's exact value is rounded
  *  and forgotten — callers only reach here once a chain truly terminates. */
 function nodeOf(r) {

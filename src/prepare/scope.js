@@ -192,27 +192,3 @@ export function declareGlobal(name, user = true) {
   return name
 }
 
-/** True if `node` contains a `break`/`continue` that belongs to it — i.e. not
- *  one nested inside its own function. (Nested loops are intentionally counted:
- *  an over-detection only opts into the safe frame-carrying lowering below.) */
-const hasLoopJump = (node) => {
-  if (!Array.isArray(node)) return false
-  const op = node[0]
-  if (op === 'break' || op === 'continue') return true
-  if (op === '=>' || op === 'function') return false
-  return node.some(hasLoopJump)
-}
-
-/** Retarget a for-in iteration's *own* unlabeled `break`/`continue` to explicit
- *  block labels — `break` to the construct-wide label, `continue` to this
- *  iteration's label. Nested loops/functions own their jumps and are skipped;
- *  labeled jumps already name their target and are left untouched. */
-const retargetLoopJumps = (node, brkLabel, contLabel) => {
-  if (!Array.isArray(node)) return node
-  const op = node[0]
-  if (op === 'break' && node.length === 1) return ['break', brkLabel]
-  if (op === 'continue' && node.length === 1) return ['break', contLabel]
-  if (op === 'for' || op === 'for-in' || op === 'while' || op === 'do'
-      || op === '=>' || op === 'function') return node
-  return node.map(c => retargetLoopJumps(c, brkLabel, contLabel))
-}

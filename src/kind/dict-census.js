@@ -6,7 +6,6 @@ import { ctx } from '../ctx.js'
 import { KIND_UNIVERSE, repOf, numericStorage } from '../reps.js'
 import { K, tagOf, hasTag, valsOf, valOf, core } from '../summary/kind.js'
 
-function dictValueKindSet(name) { return containerValueKindSet(name, K.HASH) }
 export function dictValueKindOf(name) { return containerValueVal(name, K.HASH) }
 
 // Container cells join every write and alias in the program summary.
@@ -24,7 +23,6 @@ function containerValueVal(name, tag) {
   return k == null || hasTag(k, K.NULLISH) ? null : valOf(core(k))
 }
 
-function mapValueKindSet(name) { return containerValueKindSet(name, K.MAP) }
 export function mapValueKindOf(name) { return containerValueVal(name, K.MAP) }
 
 export const censusShapedNode = (node) =>
