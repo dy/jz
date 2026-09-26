@@ -57,18 +57,8 @@
  *  fix/string-method-guess's computed-dispatch-table synthesis: the raw
  *  `TABLE[key](args)` candidates `synthesizeComputedDispatchCallSites`
  *  resolves into real `callSites` entries — see that function's own doc)
- *  plus two staple-on keys `plan/index.js` adds afterward, both right after
- *  `buildProgramIndex`: `programIndex` itself (§7.1, at the time of that
- *  audit, grep-verified the ONLY such site) and `dictKinds`
- *  (`buildDictKindIndex`, dict-kind-index.js — added later, same
- *  fix/string-method-guess branch, same shape: a whole-program index built
- *  once and stapled on for emit.js/narrow.js to read via `ctx.types`, never
- *  read back off `programFacts` itself past this file's own return). `plan/
- *  index.js`'s own `assertProgramFactsShape` call sits BETWEEN the two
- *  staples (right after `programIndex`, before `dictKinds`), so it only ever
- *  checks the ProgramIndex-only snapshot today. `dictKinds` is listed here
- *  for the allowlist's own accuracy, not because any call currently checks a
- *  state where it's present. Any OTHER top-level key appearing on
+ *  plus `programIndex`, which `plan/index.js` adds afterward, right after
+ *  `buildProgramIndex`. Any OTHER top-level key appearing on
  *  `programFacts` is an undocumented producer that bypassed this file's own
  *  contract. */
 const FACT_KEYS = new Set([
@@ -76,7 +66,7 @@ const FACT_KEYS = new Set([
   'computedCallSites', 'memberCallSites', 'memberDispatchSites', 'memberValueReads',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
   'hasBigint', 'hasThrow', 'writtenProps', 'literalWriteKeys', 'arrResized',
-  'nameEscapes', 'typedRedefs', 'literalObjectVars', 'programIndex', 'dictKinds',
+  'nameEscapes', 'typedRedefs', 'literalObjectVars', 'programIndex',
 ])
 
 /** Read-only view of a `paramReps`-shaped `Map<funcName, Map<paramIdx, rep>>`
