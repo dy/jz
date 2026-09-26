@@ -18,7 +18,7 @@ import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN, kind } from '../../sum
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32,
-  scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges,
+  scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges, stampLoopCounterRanges,
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
@@ -436,6 +436,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin) {
   // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
   // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
   let unsignedLocals
+  stampLoopCounterRanges(body)
   withValueOverlay(valTypes, () =>
     withTypedElemOverlay(typedElems, () => {
     walk(body)

@@ -191,6 +191,12 @@ export function intExprRange(n) {
     // can be negative (x & 0x80000000 → 0 or -2^31) — only i31-safe masks
     // yield the [0, m] hull.
     if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
+    // A non-negative word operand bounds the result the same way: `&` only
+    // clears its bits (`x & (63 & y)` is [0, 63]).
+    const a = intExprRange(n[1]), b = intExprRange(n[2])
+    const ha = a && a[0] >= 0 && a[1] <= 0x7fffffff ? a[1] : Infinity
+    const hb = b && b[0] >= 0 && b[1] <= 0x7fffffff ? b[1] : Infinity
+    if (Math.min(ha, hb) !== Infinity) return [0, Math.min(ha, hb)]
   }
   if (op === '>>>' && n.length === 3) {
     const sh = constIntExpr(n[2])

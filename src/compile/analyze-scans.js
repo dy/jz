@@ -1370,6 +1370,37 @@ function collectStepRange(node, name, rangeOf, unit = 1) {
 // A name written inside any closure of `body` can change at any call.
 const closureWrites = (body, name) => some(body, n => n[0] === '=>' && isReassigned(n, name))
 
+/** A counter a `for` declares and only its step moves holds its guard's test
+ *  range wherever it is visible: the initial value, then a body value one step
+ *  on. Stamped before the body is typed, so its declarations see the bound. */
+export function stampLoopCounterRanges(body) {
+  let decls = null
+  walkAst(body, { enter: node => {
+    if (node[0] === '=>') return false   // a closure's loops are typed with its own body
+    if (node[0] !== 'for' || node.length !== 5) return
+    const [, init, cond, step, loopBody] = node
+    const name = guardCounterName(cond)
+    // declared by this loop's own `let`: scoped to the loop, so no later write
+    const lets = Array.isArray(init) && init[0] === ';' ? init.slice(1) : [init]
+    if (!name || !lets.some(d => Array.isArray(d) && d[0] === 'let' &&
+        d.some(x => x === name || Array.isArray(x) && x[0] === '=' && x[1] === name))) return
+    if (!decls) {
+      decls = new Map()
+      walkAst(body, { enter: n => {
+        if (n[0] !== 'let' && n[0] !== 'const') return
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i], id = typeof d === 'string' ? d : Array.isArray(d) && d[0] === '=' ? d[1] : null
+          if (typeof id === 'string') decls.set(id, (decls.get(id) ?? 0) + 1)
+        }
+      } })
+    }
+    if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(body, name)) return
+    const range = forCounterRange(init, cond, step, name)
+    if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
+    updateRep(name, { range: range.test })
+  } })
+}
+
 // Enclose repeated floating additions on an exact binary grid. Rounded
 // additions are monotone; integral grid endpoints plus outward-rounded steps
 // stay exact while their scaled magnitude fits the safe integer range. This

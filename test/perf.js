@@ -991,6 +991,48 @@ test('codegen: an element read keyed by an integer element stays a word', () => 
   ok(w && !/\(local \$\S+ f64\)/.test(w), 'present gathered bytes stay in i32 locals')
 })
 
+test('codegen: a loop-declared counter bounds the declarations its body types', () => {
+  // bytebeat: an inlined helper's `t * (mask)` fits a word once `t` carries its
+  // loop's test range and a computed non-negative mask bounds `&`
+  const beat = (bound) => `const sample = (t) => {
+      const v1 = (t * 5 & t >> 7) | (t * 3 & t >> 10)
+      const v2 = t * (((t >> 12) | (t >> 8)) & (63 & (t >> 4)))
+      return (v1 + v2) & 255
+    }
+    const render = (buf, n) => { for (let t = 0; t < n; t++) buf[t] = sample(t) }
+    export function f(x) {
+      const buf = new Uint8Array(4096)
+      render(buf, ${bound}); render(buf, ${bound})
+      let h = 0
+      for (let i = 0; i < 4096; i++) h = (h * 31 + buf[i]) | 0
+      return h + buf[x & 4095]
+    }`
+  for (const bound of ['4096', '(x & 4095) + 1']) {
+    const src = beat(bound), native = oracle(src).f
+    for (const optimize of [0, 2, 'speed', 'size']) {
+      const f = jz(src, { optimize }).exports.f
+      for (const x of [0, 7, 4095, 1234]) is(f(x), native(x), `bound ${bound}, O${optimize}, x=${x}`)
+    }
+  }
+  // the range stays sound: a start near INT_MAX, a closure write, a shared name,
+  // a descending counter, and a negative operand under a bounded mask
+  const edges = [
+    'let s = 0; for (let t = 2147483640; t < 2147483647; t++) s = (s + t * ((t >> 20) & (x & 3))) | 0; return s',
+    'let s = 0; let bump; for (let t = 0; t < 40; t++) { bump = () => { t += 3 }; if (t === x) bump(); s = (s + t * (t & (x & 63))) | 0 } return s',
+    'let s = 0; for (let t = 0; t < 10; t++) s += t * (t & 7); for (let t = 0; t < 100000; t++) s += t * (t & (x & 63)); return s',
+    'let s = 0; for (let t = 64; t >= 0; t -= 3) s = (s + t * ((t >> 1) & (x & 15))) | 0; return s',
+    'let s = 0; for (let t = 0; t < 30; t++) s = (s + ((x - 100) & (t & 31)) * 65536) | 0; return s',
+  ]
+  for (const body of edges) {
+    const src = `export function f(x) { ${body} }`, native = oracle(src).f
+    for (const optimize of [0, 2, 'speed', 'size'])
+      for (const x of [0, 5, 63, -1]) is(jz(src, { optimize }).exports.f(x), native(x), `${body.slice(0, 48)}…, O${optimize}, x=${x}`)
+  }
+  if (onKernel()) return
+  const w = funcWat(compile(beat('4096'), { optimize: 'speed', wat: true }), 'render')
+  ok(w && /v128|i32x4/.test(w) && !w.includes('f64.mul'), 'the counter-bounded product vectorizes in words')
+})
+
 test('codegen: mutable integer hulls include every writer and preserve missing values', () => {
   const cases = [
     ['bounded reads', 'let x=0;for(let i=0;i<(n&3);i++)x=a[i];return (+x)*(+x)'],
