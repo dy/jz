@@ -72,7 +72,8 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 16 | raw unary `-x`/`+x` checks after prepare, which rewrites them to `u-`/`u+` (the normalized arms beside them stay) | −3 | −149 | — | 6fb408ca
 17 | helpers whose last callers earlier folds deleted: `pureIntLiteral` (only `linearIndexOf`, fold 5, called it) and `containerValueKindSet` (only `dictValueKindSet`/`mapValueKindSet`, fold 5) | −20 | 0 (esbuild already dropped them) | — | 0963bce8
 18 | local copies of the shared name scans: two `mentions` (func-entry.js, struct-inline.js) and `referencesAny` (const-fold.js) equal to ast.js `refsName`/`refsAny` under an existing option record, three `readsName` (outer-strip.js), `containsName` (unswitch.js) and `readsLocal` (recurse.js) equal to outer-scaffold.js `readsVar`; copies that differ (op-position scans, literal skips, function boundaries) stay | −45 | −1,035 | — | 866ff63d
-19 | `switch` after prepare: jzify lowers every switch in default mode and prepare's `'switch'` handler rejects one in strict mode, so the `switch` emitter, interval-proof's switch frame (its frame `kind` field and three `kind === 'loop'` tests with it), the summary's `switch`/`case`/`default` arms and 11 op checks never ran | −28 | −855 | — | this commit
+19 | `switch` after prepare: jzify lowers every switch in default mode and prepare's `'switch'` handler rejects one in strict mode, so the `switch` emitter, interval-proof's switch frame (its frame `kind` field and three `kind === 'loop'` tests with it), the summary's `switch`/`case`/`default` arms and 11 op checks never ran | −28 | −855 | — | 2e33e2fa
+20 | val-types' conditional-position flag: `walk(node, cond)` threads `cond` through if/?:/&&/||/??/loop/try arms, but its one reader (the bigint param-write rule) went in 76e235fd; every arm now walks what the plain loop walks | −13 | -241 | — | this commit
 
 ## Validation runs (default leg, widened oracle against the baseline)
 
@@ -92,6 +93,10 @@ test/allocation.js, which compiles `firstRefKind.toString()` (edited by fold 7).
 - `plan/lanes.js` PURE_OPS lists the raw `'?'` ternary, which never exists after prepare, but not `'?:'`: a record-lane function whose body has a ternary is treated as impure. Adding `'?:'` would widen lane records.
 
 - `compile/analyze/frame-effects.js:530` and `summary/query.js:272` recognize a literal element key by the parser's `[null, 'k']` form, but after prepare a literal key is `['str', 'k']` (prepare's `'[]'` handler). The frame-effects arm therefore never resolves an accessor setter for `o['k'] = v`: a possible soundness gap in the census that gates arena rewind and load CSE. Not a fold: fixing it changes output.
+
+- `compile/analyze/frame-effects.js` names the parser's template op `` ` `` in CONVERTING_OPS and in walkExpr's allocation test, but prepare turns every template into `strcat` (or a folded string), so neither fires: a template's ToPrimitive call and its allocation are invisible to the frame census. Miscompile, O2 and O3 (O0/O1 correct): `a[0] = 1; const x = a[0]; const s = `${o}`; const y = a[0]; return x * 100 + y + s.length` with `o.toString()` writing `a[0] = 42` returns 102, Node 143 (the stale load is reused); the same program with `'' + o` returns 143. Fix: `strcat` where `` ` `` is (and in plan/scope.js `looksNonNumeric`, which also names only `` ` ``; no repro there). Output change: load CSE and arena rewind see the conversion and allocation.
+
+- `compile/plan/advise.js` `isHeapAlloc` counts the parser's array literal `['[]', x]`, which prepare turns into `['[', …]`, so the heap-growth advisory never counts an array literal. Fix changes warnings.
 
 ## Rejections and owner decisions
 
