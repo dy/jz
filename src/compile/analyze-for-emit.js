@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { T, isBlockBody, isReassigned, walkAst } from '../ast.js'
+import { T, isBlockBody, isReassigned, walkAst, MUTATE_OPS } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
@@ -29,6 +29,9 @@ import { cseLoads, UNTYPED } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
+import { withBodyTypedFacts } from './flow-state.js'
+import { typedIdxProven, receiverMayBeAbsent } from '../type/loop-versioning.js'
+import { invalidateIntervalProof } from '../type/interval-proof.js'
 import { arraySliceViews } from './array-view.js'
 import { invalidateLocalsCache } from './analyze/body-facts.js'
 import { runsConversion } from './analyze/frame-effects.js'
@@ -42,6 +45,16 @@ import { viewsOn } from '../../module/schema.js'
 const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
 // Kinds whose storage never holds typed elements: a store into one leaves cached typed loads intact.
 const UNTYPED_KINDS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.HASH, VAL.STRING, VAL.SET, VAL.MAP])
+// `value` is the only value ever written to `name` (its declaration aside).
+const soleWrite = (body, name, value) => {
+  let writes = 0, own = true
+  walkAst(body, { enter: (n, parent) => {
+    if (!MUTATE_OPS.has(n[0]) || n[1] !== name || parent?.[0] === 'let' || parent?.[0] === 'const') return
+    writes++
+    own &&= n[0] === '=' && n[2] === value
+  } })
+  return writes === 1 && own
+}
 
 export function analyzeFuncForEmit(func, programFacts) {
   const { paramReps } = programFacts
@@ -254,10 +267,12 @@ export function analyzeFuncForEmit(func, programFacts) {
   // that may run an object literal's accessor keeps its loads: the accessor may
   // store the element (analyze/frame-effects.js runsAccessor; a closure has no
   // census of its own).
+  const cseReads = []
   if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem) && !(func.frame ? func.frame.runsAccessor : viewsOn())
       && cseLoads(body, n => ctx.func.typedElem.get(n) ?? (UNTYPED_KINDS.has(valTypeOf(n)) ? UNTYPED : null), read => {
         const name = freshCseName()
         summary?.alias(name, read, false)
+        if (read[0] === '[]') cseReads.push([name, read])
         return name
       }, n => valTypeOf(n) === VAL.NUMBER,
         n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.map.get(n[1])?.frame?.writesOuter === false,
@@ -291,6 +306,15 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (block && _o && _o.carryElements !== false) {
     const carried = carryElements(body, bodyFacts, func.distinctParams, () => reanalyzeBody(body))
     if (carried) { bodyFacts = carried; ctx.func.locals = bodyFacts.locals }
+  }
+  // A cached load the body proves in bounds holds a Number, as the load itself
+  // would: its temp is present. Only while the temp's one write is that load;
+  // a versioned copy may write it from an unproven twin.
+  if (cseReads.length && bodyFacts) {
+    const present = withBodyTypedFacts(bodyFacts, () => cseReads.filter(([name, read]) =>
+      soleWrite(body, name, read) && !receiverMayBeAbsent(read[1], read[2]) && typedIdxProven(read[1], read[2], read)))
+    for (const [name, read] of present) summary?.alias(name, read, true)
+    invalidateIntervalProof(body)
   }
   if (bodyFacts?.valTypes) {
     for (const [name, vt] of bodyFacts.valTypes) updateRep(name, { val: vt })

@@ -898,6 +898,35 @@ test('codegen: shared integer gathers do not acquire an artificial undefined ini
   ok(!w.includes('nan:0x7FF8000100000000'), 'numeric scratch introduces no null coercions')
 })
 
+test('codegen: a cached in-bounds element stores as the Number it holds', () => {
+  // Load CSE caches `a[i]`/`a[c]` across the sift's compare and swap. A read the
+  // body proves in bounds is present, so its temp stores with no nullish fold;
+  // an unproven twin (`c < n`) still converts its miss to NaN.
+  const sift = (bound) => `const a = new Float64Array(8)
+    export function f(x, n) {
+      for (let k = 0; k < 8; k++) a[k] = k === 2 ? x : k
+      let i = 0, c = 1
+      while (c < ${bound}) {
+        if (c + 1 < ${bound} && a[c] < a[c + 1]) c++
+        if (a[i] >= a[c]) break
+        const t = a[i]; a[i] = a[c]; a[c] = t
+        i = c; c = 2 * i + 1
+      }
+      return [a[0], a[1], a[2], a[5], a[6], 1 / a[0]]
+    }`
+  for (const bound of ['8', 'n']) {
+    const src = sift(bound), native = oracle(src).f
+    for (const optimize of [0, 2, 'speed', 'size']) {
+      const f = jz(src, { optimize }).exports.f
+      for (const x of [100, -0, NaN, -Infinity, Infinity, 3.5]) for (const n of [8, 12])
+        is(f(x, n), native(x, n), `c < ${bound}, O${optimize}, x=${x}, n=${n}`)
+    }
+  }
+  if (onKernel()) return
+  const w = compile(sift('8'), { optimize: 'speed', wat: true })
+  ok(!w.includes('0x7FF8000100000000'), 'proven cached elements store without a nullish fold')
+})
+
 test('codegen: mutable integer hulls include every writer and preserve missing values', () => {
   const cases = [
     ['bounded reads', 'let x=0;for(let i=0;i<(n&3);i++)x=a[i];return (+x)*(+x)'],
