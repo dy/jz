@@ -34,9 +34,40 @@ and parity bands for Wasm, V8-family and Bun/JSC rivals. It records 15 strict
 Wasm losses, 11 V8-family losses and 14 non-exempt Bun/JSC losses. Size passes
 on all 51 comparable AssemblyScript cases (geomean 0.768×); peak RSS still
 loses on Jessie (1.118× V8), watr (1.306×) and Web Audio (1.161×).
-Its resample/SDF losses predate the focused optimizations below. The
-[reference run at 226fe198](https://github.com/dy/jz/actions/runs/36195103458)
-is measuring the updated compiler; no diagnostic rows have replaced the public snapshot.
+The [reference run at 15f7243f](https://github.com/dy/jz/actions/runs/36195665330)
+(EPYC 9V45; toolchain versions identical to the 695a8b6b run on EPYC 7763)
+clears resample and SDF but fails 9 of 23 claims. Strict Wasm leadership fails
+on 14 cases: sort 1.780× (AS), base64 1.466× (C), bytebeat 1.288× and biquad
+1.284× (Zig), fft 1.239× (TinyGo), wav 1.124× (C), trace 1.091×, bezfit 1.085×,
+delayline 1.062×, vm 1.057×, and radixsort, raytrace, lorenz and shapes inside
+the tie band. V8-family fails on 11 cases (watr 1.576×, Web Audio 1.472×), Bun/JSC
+on 12 (dispatch 5.623×, watr 1.541×, Web Audio 1.345×). Peak RSS still loses on
+Jessie 1.114×, watr 1.299×, Web Audio 1.161×. Porffor native beats lorenz by
+1.019×. jz-w2c trips its band on shapes (6.98×): V8 runs the shapes Wasm 7×
+faster on this CPU than on the 7763, while the native lowering does not follow.
+The CPU alone moves several ratios between runs (dispatch/JSC 1.39× → 5.62×),
+so every claim must hold on each runner CPU. No diagnostic rows have replaced
+the public snapshot.
+
+Fixes after that reference, local M4 evidence only (CI pending):
+
+| Case | General change | Local result |
+| --- | --- | --- |
+| sort | A load-CSE temp caching an in-bounds typed read is present, so swaps store it without nullish folds (25ba37ae) | 8.3 → 4.3 ms; 1748 → 1536 B speed, 1417 → 1288 B size |
+| base64 | An integer element used as a key keeps the gather in a word (6f2cacd5); an offset guard `i + K <= n` compares in i32 within the counter's test range (9c2ca91a) | 3.39 → 3.14 ms; paired JZ/C-Wasm 0.862, Rust-Wasm 0.882, AS 0.757, Bun 0.724 |
+| bytebeat | A loop-declared counter carries its test range into the body's typing; `x & y` with a bounded non-negative operand is bounded (b176bee6) | 1.42 → 0.69 ms, the loop vectorizes |
+| dispatch | watr d09bd06 (unpublished): converts hoist out of guard ifs; exact rings collapse across a shared scratch temp; select trees accept temps exclusive arms write before reading | 7.3 → 1.78 ms; Bun 2.4 ms locally |
+
+Across the 62-case corpus only these cases, hash (neutral) and bezfit, conv2d
+and synth (smaller, timing neutral) change bytes; every checksum is unchanged.
+Open, with diagnosis: Web Audio's hottest paths run generic typed-array and
+length helpers (≈17% of Wasm time) because `AudioParam._tick` results join
+object layouts with typed arrays; biquad needs loop-invariant typed-slot
+promotion after its eight-stage unroll; wav's clamp remains an unpredictable
+branch (branchless form +2% locally, unproven on x86). Radixsort (1.13× Rust/Zig
+Wasm locally) swaps its buffers (`const t = a; a = b; b = t`), which drops both
+lengths: a minimal kernel keeps 11 checked reads per pass with the swap and none
+without it. Its prefix sum stores an f64 accumulator through `__to_int32`.
 
 | Gate | Current evidence | Remaining action |
 | --- | --- | --- |
@@ -113,8 +144,8 @@ regression band, not a reason to stop optimizing these cases.
 
 | Case | Current diagnosis and next proof |
 | --- | --- |
-| resample | General gather-map SIMD retains checked scalar gathers and exact recurrence order, then lifts a profitable Float64 arithmetic suffix. Distinct owned parameters prove independence; aliases, views, live-out suffix locals and cheap suffixes decline. Odd tails stay scalar. Speed binary 2336 → 3492 bytes, size 1315 bytes, checksum unchanged. CI [36185720511](https://github.com/dy/jz/actions/runs/36185720511) on EPYC 7763 wins all ten JSC pairs (median JZ/JSC 0.9732). The complete rival repeat [36186532810](https://github.com/dy/jz/actions/runs/36186532810), EPYC 9V45, wins all twelve (median 0.8276, range 0.8082–0.9281): 22/22 across both CPUs. Repeat medians versus V8 0.8271, Bun 0.8288, C-Wasm 0.6732, Rust-Wasm 0.1839, AssemblyScript 0.6722. The sixteen-round follow-up [36189700369](https://github.com/dy/jz/actions/runs/36189700369), EPYC 9V74, also wins every JSC pair (median 0.9776, range 0.9749–0.9809): 38/38 across three CPUs. The CPUs differ in margin; retain paired evidence rather than claiming a universal percentage. |
-| sdf | Numeric load-CSE scratch and assignment-valued index bounds reduce the initial speed binary 3427 → 3185 bytes. The first CI probe wins all ten JSC pairs (median 0.9493); the second wins ten of twelve (median 0.9356, two losses at 1.0073 and 1.0271): 20/22 is not a moat. The second run leads V8, C-Wasm and AssemblyScript in every round; size 2001 bytes. A follow-up joins every bounded scalar writer and preserves ranges through unary plus and converted multiplication, removing floating arithmetic from the hot integer square/difference path. CI also exposed a real missing-value bug: conversion ignored the cached local's absent-value fact after its initializer became zero. The corrected fallback honors that fact; the two-element missing-gather regression and all sentinel tests pass. Current speed binary 3201 bytes, size 2015 bytes, checksum 1749682117. The sixteen-round follow-up [36189700369](https://github.com/dy/jz/actions/runs/36189700369) wins every pair against every measured rival: JZ/JSC median 0.8880 (range 0.8817–0.9146), Bun 0.9070, V8 0.6821, C-Wasm 0.8735, Rust-Wasm 0.9652, AssemblyScript 0.8613. All 62 corpus checksums and 77 fresh self-compile tests pass. Full CI and a repeat remain required before closing this row. |
+| resample | Checked gather-map SIMD preserves scalar address generation and each rounded phase addition, then packs the pure Float64 arithmetic suffix. Exact binary-grid bounds remove proven read checks without changing the recurrence. Distinct owned parameters and unconditional address caches prove independence; aliases, views, writes and live-out arithmetic retain scalar execution. Current speed binary 2290 bytes (2336 before this work; the initial SIMD candidate was 3492), size 1315 bytes, checksum 1711808418. Latest twenty-round probes win every pair against every measured rival on EPYC 9V74 and 7763; JZ/JSC medians 0.9566 and 0.9203. Full reference confirmation and a wider margin remain open. |
+| sdf | Numeric scratch initialization, assignment-valued bounds and complete scalar-writer hulls retain integer gather indices and bounded square/difference arithmetic. Cached reads still preserve missing-value conversion; the sentinel regressions pin NaN and undefined separately. Current speed binary 3215 bytes (3427 before this work), size 2015 bytes, checksum 1749682117. Latest twenty-round probes win every pair against every measured rival on EPYC 9V74 and 7763; JZ/JSC medians 0.8896 and 0.9653. The narrowest median lead is 1.7% over Rust-Wasm on 7763. Full reference confirmation and a wider margin remain open. |
 | spmv | Leads JSC in every round of both contests: earlier JZ/JSC 0.403–0.437, latest 0.421–0.481. Keep the indirect-gather path pinned and confirm on a quiet machine before refreshing the older public loss. |
 | synth | Implemented as lazySelect in published watr 5.11.5: defer costly pure initializers to exclusive value arms before local reuse. Fresh six normal and six forced-optimized pairs both give 0.740× runtime; checksum 41574153 is unchanged. Speed grows 1676 → 2509 bytes; default/size stay unchanged. Of 59 standalone cases, the other 58 are byte-identical with the pass off/on. Four engine rounds favor JZ (JZ/JSC 0.793, JZ/Bun 0.828); an isolated six-round repeat remains favorable on median (0.911 / 0.893) but includes losses, so stable JSC leadership is still unproven. Watr source/Wasm suites and all 71 self-compile tests pass. Review also fixed partial-operand stack handling in the shared guard, with regressions for lazy select, value numbering and scheduling. JZ now depends on published watr ^5.11.6; fresh builds of all 59 cases in both speed and size modes match the verified candidate byte for byte and retain every checksum. |
 | vm | Earlier near parity (JZ/JSC median 0.989; range 0.814–1.018); the latest four rounds lead at 0.863–0.950. The binary is unchanged by lazySelect. Keep dispatch and dependent operand loads under review; these noisy readings do not justify removing the claim exception. |
@@ -174,7 +205,11 @@ can skip an opposing step, so net motion does not bound repeated iterations.
 The collector now bounds each direction separately and no longer computes a
 net delta. Direct tests cover positive, negative and fractional opposing steps,
 plus the short-circuit form; the fresh self-compile corpus pins the skipped
-decrement case. Full verification is running on this correction.
+decrement case. The targeted sweep passes 920 assertions, self-compile passes
+79 tests / 2790 assertions, and all 62 corpus checksums and sizes are unchanged.
+Resample and SDF binaries are byte-identical to 226fe198, so the paired timing
+evidence above still applies. CI at 15f7243f passes all four matrix legs, fuzz,
+both conformance subsets and self-compile.
 
 Keep the published snapshot unchanged until the tree passes its gates and
 quiet measurements support a refresh.
