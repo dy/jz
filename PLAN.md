@@ -6,6 +6,72 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Release status, September 26
+
+**V1 is not ready to tag.** Two fresh reference runs now bracket the release
+claims on the two runner CPUs CI hands out, and every claim must hold on
+both. The [reference at c5f5c408](https://github.com/dy/jz/actions/runs/36248472545)
+(EPYC 7763, the nine fixes after 15f7243f included) fails 7 of 23 claims;
+the [reference at 15f7243f](https://github.com/dy/jz/actions/runs/36195665330)
+(EPYC 9V45) failed 9. The CPU moves whole cases between the lists: watr is
+1.55× behind every engine on the 9V45 and within 1.03× on the 7763; trace is
+1.04× behind C-Wasm on the 9V45 and 1.39× on the 7763; biquad loses to Zig
+by 1.28× on the 9V45 and wins on the 7763; Bun's dispatch time is 6× slower
+on the 7763 (9345 µs against 1549 µs), so jz trails it 1.39× there instead
+of 5.6×. The nine fixes hold on the 7763: bytebeat, radixsort and biquad
+leave the red lists, base64 moves from 1.47× to a 1.006× tie with C-Wasm,
+sort from 1.78× to 1.20× of AssemblyScript.
+
+Red on the 7763 (c5f5c408): peak RSS jessie 1.119×, watr 1.322×, Web Audio
+1.178×; Wasm rivals trace 1.386× (C), sort 1.197× (AS), fft 1.130× (TinyGo),
+wav 1.101× (Zig), qoi 1.095× (C), delayline 1.070× (Rust), vm 1.061× (Rust),
+bezfit 1.050× (Rust), and ties on lorenz, slices, crc32, base64, raytrace;
+V8-family Web Audio 1.451×, wav 1.119× (Deno), and ties on slices 1.046×,
+lorenz 1.044×, noise, watr, crc32; Bun/JSC Web Audio 1.414×, dispatch 1.391×
+(Bun), jessie 1.290× (JSC), wav 1.168× (JSC), provenance 1.097×, fftplan
+1.088×, and ties on bezfit, fft, watr. Porffor and the wasm2c band pass on
+this CPU. The union with the 9V45 list adds biquad (Zig), base64 (C, Rust,
+TinyGo, Zig), bytebeat, sort (C, Rust, Zig), watr (all engines), lorenz
+(Porffor 1.019×), shapes (wasm2c 6.98×) and the V8-family losses on bytebeat,
+delayline, sort and wav.
+
+Fixes on top of c5f5c408, local M4 evidence only (unpushed, so no x86 row):
+
+| Change | General form | Local result |
+| --- | --- | --- |
+| Flow facts for ToInt32 (3d3fe481) | A comparison bounds a local in the arm it guards, arms hull at their join, loop-written locals are unknown at the head (`optimize/flow-range.js`); `f64Range` reads the facts through if-expressions and selects under its NaN-admitting query | wav's sample loop and conv2d's requant lose their ±∞ guards (V8 x64 lowers the guarded form in 17 instructions against 9); checksums unchanged |
+| Byte-store merge (d98a122f) | Consecutive stores of one pure word's bytes at consecutive addresses become one store16/store32 (`mergeByteStores`) | wav 1338 → 1274 B, one `i64.store16` per sample; `writeU32` one store; 5.6 ms against 6.1 paired locally |
+| Const seeding (3281b66a) | A name declared more than once seeds an integer constant only when every declaration evaluates to the same value | Correctness: the O1/O2 scalar unroller copied `const sb = s * 4` under one name and every stage wrote stage zero's slot (a two-stage cascade returned -0.137 for -0.0065 at the default level); `test/const-seed.js` |
+| Unroll cost (ddd0625f) | A copy is measured with its counter substituted and its consts resolved, so addressing over the counter costs nothing | biquad's eight stages unroll into constant-address stages (7 loops, 78 loads); noise stays rolled; timing neutral on the M4, the 9V45 loss is the target |
+
+The full core suite passes 4840 tests / 131198 assertions on this tree,
+self-compile passes, the differential fuzzer passes 5000 programs at four
+levels, and every non-LAB corpus checksum matches. The x64 instruction
+selection was read from a V8 debug shell (jsvu `v8-debug`, mac64 under
+Rosetta): every f64→i32 conversion is 7–17 instructions where arm64 uses
+one, `f64.min`/`f64.max` are eight branchy instructions, and an f64 `select`
+is a branch, so integer-ness and range proofs matter more on x86 than the
+M4 shows.
+
+Pending your hand: publish watr 5.11.9 from d09bd06 (`npm version 5.11.9
+--no-git-tag-version && git commit -am 5.11.9 && npm publish && git push`
+in the watr checkout; its suite passes 268 tests, and jz's suite and
+self-compile pass with that optimizer patched in) and bump jz to `^5.11.9`
+for the dispatch select trees; push this tree; then probe the changed cases
+on both CPUs (`gh workflow run bench-probe.yml -f cases=wav,biquad,conv2d,
+base64,sort,dispatch,trace,qoi -f targets=jz,v8,bun,jsc,c-wasm,rust-wasm,
+zig-wasm,as -f repeats=6`) before the next reference run.
+
+Open, with diagnosis: biquad's unrolled stages still load and store every
+state slot per sample; a register promotion across the sample loop needs the
+emit-level twin of `carry-elements` (the source-level pass sees the rolled
+loop). wav's remaining gap is the clamp's two branches and the checksum's
+serial FNV chain that every target shares; the loop vectorizes only with
+if-conversion to f64x2 min/max and an f64 → u16 narrowing store, which the
+tone-map island does not cover. trace, qoi, fft, delayline, bezfit and vm
+lose on one CPU each by 5–39% and need x86 probes before any change. The
+memory rows and Web Audio are unchanged from the diagnosis below.
+
 ## Release status, September 25
 
 **V1 is not ready to tag.** Published watr 5.11.8 and subscript 10.8.1 are
