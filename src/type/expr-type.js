@@ -43,6 +43,12 @@ const isUnsignedI32Expr = (e, locals) => typeof e === 'string' ? !!repOf(e)?.uns
   (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true) ||
   (e[0] === '[]' && typeof e[1] === 'string' && (typedElemAux(typedElemCtorOf(e[1], locals)) & 7) === 5)
 )
+// An integer-family typed element read (Float16 shares a code, flagged 32).
+const intTypedRead = (e, locals) => {
+  if (!Array.isArray(e) || e[0] !== '[]' || typeof e[1] !== 'string') return false
+  const aux = typedElemAux(typedElemCtorOf(e[1], locals))
+  return aux != null && (aux & 7) <= 5 && !(aux & 32)
+}
 
 /**
  * Infer expression result type from AST (without emitting).
@@ -102,7 +108,10 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
         const scope = bodyRoot ?? ctx.func.current
         const elementOnly = ctx.summary?.typedPropertiesAbsent() &&
           core(ctx.summary.at(scope).kindOfExpr(expr[2])) === NUMBER
-        if (!present && !elementOnly && !typedElementKey(expr[2], isPresentNumber(ctx, expr[2], scope))) return 'f64'
+        // An integer element used as the key addresses an element when it is
+        // present: its absence is the same presence question as the read's own.
+        const keyNumber = isPresentNumber(ctx, expr[2], scope) || !readPresent && intTypedRead(expr[2], locals)
+        if (!present && !elementOnly && !typedElementKey(expr[2], keyNumber)) return 'f64'
         const aux = typedElemAux(ctor)
         // int family only — Float16Array shares code 3 with a flag; its elements are floats.
         // Payload classification only: a possible missing read still needs

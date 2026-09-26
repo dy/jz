@@ -6,7 +6,7 @@ import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 import parseWat from 'watr/parse'
 import { parse as watTree, callsOutside, walk as walkWat } from '../scripts/wat-probe.mjs'
-import { oracle } from './util.js'
+import { oracle, funcWat } from './util.js'
 
 // Helper: time N iterations, return ms
 function bench(fn, n) {
@@ -925,6 +925,47 @@ test('codegen: a cached in-bounds element stores as the Number it holds', () => 
   if (onKernel()) return
   const w = compile(sift('8'), { optimize: 'speed', wat: true })
   ok(!w.includes('0x7FF8000100000000'), 'proven cached elements store without a nullish fold')
+})
+
+test('codegen: an element read keyed by an integer element stays a word', () => {
+  // base64 decode: `dec[src[i]]` keys one table by another array's byte. The
+  // table is built through a nested key and reaches the loop as a parameter.
+  const src = (bound) => `const buildDec = (enc, dec) => {
+      for (let i = 0; i < 256; i++) dec[i] = 0
+      for (let i = 0; i < 64; i++) dec[enc[i]] = i
+    }
+    const decode = (src, n, dec, out) => {
+      let op = 0
+      for (let i = 0; i + 4 <= n; i += 4) {
+        const a = dec[src[i]], b = dec[src[i + 1]], c = dec[src[i + 2]], d = dec[src[i + 3]]
+        out[op] = (a << 2) | (b >>> 4); out[op + 1] = ((b & 15) << 4) | (c >>> 2); out[op + 2] = ((c & 3) << 6) | d
+        op += 3
+      }
+      return op
+    }
+    const run = (src, dec, out, n) => {
+      let h = 0
+      for (let it = 0; it < 3; it++) { decode(src, n, dec, out); h = (h + out[it]) | 0; src[it] = (src[it] + 1) & 255 }
+      return h
+    }
+    export function f(x) {
+      const src = new Uint8Array(12), dec = new Uint8Array(256), out = new Uint8Array(9), enc = new Uint8Array(64)
+      for (let i = 0; i < 64; i++) enc[i] = (i * 5 + 3) & 255
+      buildDec(enc, dec)
+      src[x & 7] = x
+      const h = run(src, dec, out, ${bound}) + run(src, dec, out, ${bound})
+      return [out[0], out[1], out[2], out[5], out[8], h]
+    }`
+  for (const bound of ['12', 'x & 15']) {
+    const s = src(bound), native = oracle(s).f
+    for (const optimize of [0, 2, 'speed', 'size']) {
+      const f = jz(s, { optimize }).exports.f
+      for (const x of [3, 200, 0, 16, 255, 13]) is(f(x), native(x), `bound ${bound}, O${optimize}, x=${x}`)
+    }
+  }
+  if (onKernel()) return
+  const w = funcWat(compile(src('12'), { optimize: 'speed', wat: true }), 'run')
+  ok(w && !/\(local \$\S+ f64\)/.test(w), 'present gathered bytes stay in i32 locals')
 })
 
 test('codegen: mutable integer hulls include every writer and preserve missing values', () => {
