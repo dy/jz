@@ -9,7 +9,7 @@ import { ctx, inc, LAYOUT } from '../../ctx.js'
 import { asF64, asI32, asI64, block64, emitNum, f64rem, isGlobal, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, valTypeOf } from '../../kind.js'
-import { VAL } from '../../reps.js'
+import { VAL, mayBeUndefined } from '../../reps.js'
 import { negRangeFitsI32 } from '../../static.js'
 import { K, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, isPostfixRecovery } from '../../summary/kind.js'
 import { exprType } from '../../type.js'
@@ -194,6 +194,14 @@ const objectMayPrimitiveMethod = (node) => {
 const stringishOperand = (vt, n) => vt != null && (STRINGISH_KINDS.has(vt) || (vt === VAL.OBJECT && !objectMayPrimitiveMethod(n)))
 const dynamicObjectOperand = (vt, n) => vt === VAL.OBJECT && objectMayPrimitiveMethod(n)
 
+// Whether `node` may evaluate to a missing value: a binding the summary lets be
+// absent or nullish, or an expression whose kind carries either.
+const mayBeMissing = (node) => {
+  if (typeof node === 'string') return !!ctx.func.maybeNullish?.has(node) || mayBeUndefined(node)
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
+  return k != null && (hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH))
+}
+
 // Unknown addition shares one coercion path. The numeric guard keeps ordinary
 // numbers inline; the helper owns ToPrimitive, string precedence and BigInts.
 const genericAdd = (a, b, slowOnly = false) => {
@@ -365,9 +373,15 @@ export const arithmeticOps = {
       // (__add_slow: ToPrimitive both, concat or add). Skipped when the side
       // is known-vt (raw carrier by design) or IR-shape numeric (isNumArm —
       // keeps floatbeat kernels at their box-free ratchet counts).
-      const numCheck = (t, e, node) => !e || isNumArm(e, node) ? null : ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]]
+      // A numeric shape names the kind of a value that is there: an operand the
+      // summary lets be missing keeps the guard, and takes the runtime `+` when it is.
+      const numCheck = (t, e, node) => !e || (isNumArm(e, node) && !mayBeMissing(node)) ? null : ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]]
       const cA = numCheck(tA, eA, a), cB = numCheck(tB, eB, b)
-      const fastAdd = ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
+      // A side of known kind enters raw, so the concatenation renders it as it
+      // is; the sum takes its number: a Number binding a missing element may
+      // have reached adds as NaN, not as the payload of its undefined.
+      const numSide = (t, e, node) => e ? ['local.get', `$${t}`] : toNumF64(node, typed(['local.get', `$${t}`], 'f64'))
+      const fastAdd = ['f64.add', numSide(tA, eA, a), numSide(tB, eB, b)]
       let add = fastAdd
       if (cA || cB) {
         inc('__add_slow')

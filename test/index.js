@@ -74,6 +74,7 @@ const TESTS = [
   'quantize',
   'prefilter',
   'present-init',
+  'missing-arith',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

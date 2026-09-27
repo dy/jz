@@ -6,7 +6,7 @@
 
 import { ctx, err } from '../../ctx.js'
 import {
-  asF64, asI32, boxBigInt, fromI64, rawBigInt, isConst, maybeUnboxBigInt, readI64, readVar, typed, writeVar,
+  asF64, asI32, boxBigInt, fromI64, rawBigInt, isConst, maybeUnboxBigInt, readI64, readVar, toNumF64, typed, writeVar,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -75,8 +75,10 @@ export const incdecOps = {
     const k = ctx.summary?.at(ctx.func.current).kindOfExpr(name)
     if (hasBigintDomain(name) || k != null && hasTag(k, K.BIGINT) && !unbounded(k))
       return writeVar(name, numericStep(name, fn), void_)
-    const one = v.type === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
-    return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)
+    // The step takes the binding's number: one that may hold a missing value
+    // steps from NaN, not from the payload of its undefined.
+    if (v.type !== 'i32') return writeVar(name, typed([`f64.${fn}`, toNumF64(name, v), ['f64.const', 1]], 'f64'), void_)
+    return writeVar(name, typed([`i32.${fn}`, v, ['i32.const', 1]], 'i32'), void_)
   }])),
 
   // Member `.`/`[]` increment/decrement's WRITE half — prepare's dedicated
