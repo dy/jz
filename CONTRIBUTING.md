@@ -287,10 +287,39 @@ Implicit ToNumber rejects BigInt. Explicit `Number()` accepts its payload and
 delegates all other parsing to the same helper. Unary plus and string positions
 use ToNumber; an unboxed object pointer is never a numeric proof. Excluding a
 BigInt tag does not prove a Number: unresolved addition uses the shared
-ToPrimitive/string/BigInt helper, with plain numbers kept inline. Present typed
+ToPrimitive/string/BigInt helper, with plain numbers kept inline. A side the
+summary holds to a number or a missing value (a field declared undefined and
+stored numbers) is no string and no object: with the other side a number the
+sum is numeric, the missing value converted behind a self-compare. Present typed
 BigInt reads retain their raw-payload fact, while checked reads box only the
 successful branch. Atomic value operations share the existing operation catalogue
 with the summary: their result is an element or an exception, never undefined.
+
+A kind names what a read finds, and a read that finds nothing answers
+undefined: an index past the end of an array, a typed array or a string, an
+empty array's `pop`, a `find` that matched nothing, a key a Map does not hold.
+The undefined box is a NaN whose payload f64 arithmetic carries to its result,
+which then reads as undefined again, so ToNumber (`toNumF64`) converts a value
+that may be the box before a number is made of it. A constant miss arm folds
+to NaN (`checkedNumRead`); a value whose IR may yield the box (`mayYieldUndef`:
+a constant arm, a runtime reader's result, a local the expression set to
+either) or whose expression the summary lets be missing takes one compare and
+a select (`missToNaN`); a value that is a number by construction (arithmetic, a
+conversion, a load made without a bounds test) converts nothing. The kind of
+a conditional joins what any arm may be on any path, so a conditional answers
+by its arms, each with its own value (`mayMissValue`): a binding by what it
+holds (one that normalizes on write, or that a guard or its definition holds
+present, is a number), an element by how the emitter loaded it, an operator by
+its own result (a sum's helper calls return the sum). `a[i] > m ? a[i] : m`
+over an index in range is two numbers and converts nothing, which the lane
+lifts read as the select they take. A
+Float32Array store converts its value as a Float64Array's does: the payload
+survives the demotion and the promotion of a read. A string's character past
+its end is absent in the summary (`orAbsent(STRING)`), so an identity test of
+it stays live, and `+` takes a string operand that may be missing for a string
+only beside a string that is there; beside anything else the run decides
+(`stringMayMiss`). `test/missing-read.js` holds every receiver against every
+binding form and use.
 
 Computed typed-element reads delegate their bounds check to the element reader.
 Checked integer-read locals stay in word storage when the binding-use census
@@ -414,7 +443,12 @@ top-level statement assigns it unconditionally (`initWrites`: initialized like
 a declaration, as `parse.comment ??= {…}` is), and `a ??= b` leaves the binding
 holding `core(a) ∪ b`. Definite initialization (a literal's `undefined` field
 that the following statements store before any other use) covers an
-assignment-bound literal and a bracket-string store too. A call through
+assignment-bound literal and a bracket-string store too. A statement that does
+not name the object runs between the stores (what a constructor computes
+before it assigns) unless it may return, a stored null or undefined counts
+like any other value, and the proof ends for a caller where a callee's
+statement ended it: a method the constructor calls reads the fields assigned
+after the call as undefined, its own class's and a derived class's. A call through
 a binding the fixpoint knows only as nullish so far, and a spread of a nullish
 value, contribute nothing rather than escaping their operands: both throw at
 run time, and an escape is permanent. A loop's test guards its body the way an
@@ -497,6 +531,10 @@ do not imply equal numbers across signed and unsigned domains.
 Checked reads share one lowering for integer conversion and comparison:
 conversion maps absence to zero; comparison keeps the answer for undefined.
 Dependent index reads use branches to avoid address clamps on serial load chains.
+A comparison that turns the branch-free read into a branch drops the clamp:
+the load runs under the guard, where the clamp selects the index
+(`mapCheckedRead`), and the bound is the constant of a length the binding
+fixes, as in the branch form, so the loop keeps no register for it.
 They also share exact integer expression narrowing, including conditionals;
 early conversion folding cannot hide those integer branches from SIMD lifting.
 Saturating integer conversions opt into the shared floating range query's
@@ -1279,6 +1317,13 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
 
 Current pipeline: `source → parse (subscript/jessie) → jzify (always on; the test-only `strict` option skips it) → prepare → compile → optimize → link → watr (WAT→binary)`
 
+The parser entry (`src/parse.js`) orders the operators of every first
+character longest first. subscript tries them newest-first and commits to the
+first whose text matches, and a one-character operator matches any text it
+begins: `>`, registered after `>>`, took the first character of a shift
+standing right of a comparison, so `a < b >> c` read `(a < b) >> c`
+(subscript 10.8.1; `test/shift-precedence.js`).
+
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
 The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
@@ -1361,6 +1406,9 @@ awaits tests at the top of `while (true)`. Class lowering (`jzify/classes.js`)
 takes `static async` methods on both of its paths and a bare `super()`, and the
 member census counts an optional method call (`o.m?.()`) as a read, since the
 call binds the method as a value first (`src/compile/emit/class-dispatch.js`).
+A derived constructor's statements before `super(…)` run before the base's
+initializer and may compute the call's arguments (`splitCtorSuper`); the
+derived class's field initializers follow the call, then the rest of the body.
 The schema lowering (a class as a layout with a brand and functions of the
 receiver) takes a base class of another module: prepare brings a module's
 imports in ahead of its lowering (`prepareImports`, in the order ES evaluates
@@ -1495,6 +1543,11 @@ A binding read only for truthiness or arithmetic keeps the raw carrier. The
 compile-time rejection remains for the one case a plan typed such a binding
 as one concrete non-Boolean kind.
 
+A typed array's `fill` converts its value once for a numeric array (`fill('12')`
+stores 12), writes the first element through the element writer and doubles
+the filled run with `memory.copy` (`__typed_fill`): one body for every element
+kind, log2(n) copies for n elements.
+
 Every array position argument (fill, copyWithin, slice, splice, with, the
 search methods' fromIndex) is captured and coerced through `positionArgs`
 (`src/bridge.js`): ToIntegerOrInfinity converts a string, reads a Boolean as
@@ -1563,6 +1616,21 @@ a cached load only when it cannot reach the element: storage that never holds ty
 elements, or the same element grid (the same binding, or two non-view typed arrays of
 one constructor) at a provably different index. A view or another element type over the
 same buffer shifts or splits the grid, so an index inequality proves nothing there.
+A loop's bound is positive inside its body when the counter its test names starts at
+zero or above and its step adds one, the one part of a comma step that writes it
+included (`j++, k += step` beside `j < half`: the fft butterfly's `re[a]` survives the
+store of `re[a + half]`). A short-circuit or a conditional runs its first operand always:
+a load read there is available after the expression and in its later operands, a load
+first read in a later operand is that operand's own, and what any operand invalidated
+is gone after it. A field of an object is cached like an element (`fieldOf`): the
+receiver a binding, the field a slot of every layout the summary lists for it, with no
+accessor of the name on any of them, and the first read the expression its statement
+evaluates first, so the cache is a `const` declared before that statement (an
+assignment inside an expression the emitter folds would be lost with it). A store of a field of that name through any
+receiver ends it (two bindings may hold one object), a computed-key store into a
+receiver that may be an object ends every field, and a call that may write outer
+storage, a user conversion or a reassignment of the receiver flushes as for elements;
+an element store into an array or a typed array leaves fields alone.
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration
@@ -1599,7 +1667,10 @@ pin the source's own functions).
 Generic reads in the self-compiled kernel cost helper entries, and the warm
 self-compile gate is paid in them. Five rules keep the common shapes inline:
 a typed array that may be unset indexes through its payload kind after the
-nullish check, and a key the summary cannot type still indexes directly once
+nullish check (a store through it as well: `plannedTypedPayloadInfo` answers
+the payload's constructor, and the store rejects the missing receiver after
+its key and value are evaluated; a BigInt element keeps the runtime writer,
+which boxes the value the assignment yields), and a key the summary cannot type still indexes directly once
 a runtime test proves it an integer the i32 index holds exactly (a typed
 array answers a number key from its elements alone; a property name, an
 undefined key or a huge integer keeps the dynamic get); an optional chain's
@@ -1634,12 +1705,27 @@ constant after the vector loop when any lane's BITS differ from that splat
 (`constantFlagStore`, `map.js`; a float compare read a NaN entry as changed).
 The typed-param unswitch
 (`src/optimize/unswitch.js`) looks through the inline array arm to the
-typed read it specializes. The summary keeps typed-array named properties
+typed read it specializes. The accesses it leaves to the helpers (a loop of
+several output receivers, a body too large to copy, a stored value of open
+kind) decode their receiver once before the loop (`src/optimize/typed-decode.js`):
+the element count, the data address and the float width in three locals, no
+elements for a receiver that is no Float32Array or Float64Array. Each access
+tests `i < n`, loads or stores directly inside, and calls the helper outside,
+which answers a missing receiver, another kind and an index past the end
+(speed tier: the helper call stays beside the direct path). The summary keeps typed-array named properties
 per element type (`typedPropsByAux`): a property stored on a `Uint8Array`
 never reaches a read of an `Int32Array`, and an escape opens no cell, since
 a typed array's properties come from stores the walk sees or from a builtin
 that writes its argument (`escapeObject`); the host holds a view of the
 elements alone.
+
+A remainder rebuilt from its shifted quotient is a mask
+(`src/optimize/shift-remainder.js`): `x - ((x >> k) << k)`, the fraction of a
+fixed-point split (`q = (x / 65536) | 0; r = x - q * 65536` once the emitter
+holds both in i32), is `x & (2^k - 1)` for either shift. The quotient may sit
+in a local: the fact holds from its write until it or `x` is written, ends at
+a loop's head and after any construct a branch may leave, and each arm of an
+`if` starts from what held after the condition.
 
 The export boundary is numeric for a parameter used only as a typed-array
 index or stored into a typed array (README, "Host boundary"): the usage scan
@@ -1678,6 +1764,13 @@ identity-observing use and a numeric one (the numeric use normalizes the
 temp): heapsort's sift compares and then swaps without reloading. A
 small-constant loop unrolls only within 1000 body nodes in total (trips ×
 body): noise's four octaves of an inlined perlin ran 3.6% faster rolled.
+The plan's unroll for a small typed array (`unrollTypedArrayLoops`,
+`compile/plan/literals.js`) copies a loop out only when its counter reaches
+an element index of such an array, itself or through a binding made from it
+(`indexesByCounter`): the copies are what turns the index into a literal. A
+loop whose counter reaches none is the same in every copy (bezfit's six
+passes over a 48-element scratch array wrote the whole nest out six times,
+16.4 kB for 3.8, and scalarized nothing).
 watr's `ifset` (one-armed `if` → `select`, the speed profile) leaves a
 condition that branches itself alone: heapsort's child pick `if (child + 1 <
 n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran

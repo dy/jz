@@ -22,6 +22,8 @@ import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, n
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { foldGuardedUpdates } from './guarded-update.js'
+import { hoistTypedDecode } from './typed-decode.js'
+import { foldShiftRemainder } from './shift-remainder.js'
 import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
 
@@ -83,6 +85,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if (cfg && cfg.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64 &&
       fn.some(n => Array.isArray(n) && n[0] === 'local' && typeof n[1] === 'string' && n[1].endsWith('$ccsso')))
     unswitchStringRepLoop(fn)
+  // After the peephole walk: the quotient and its scaling are in their i32 form.
+  if (!cfg || cfg.shiftRemainder !== false) foldShiftRemainder(fn)
   if (cfg && cfg.boolConvertToSelect === true) boolConvertToSelect(fn)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
@@ -127,6 +131,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   }
   // After the lift: the vectorizer reads a conditional update in its branch form.
   if (cfg && cfg.guardedUpdate === true) foldGuardedUpdates(fn)
+  // After the unswitch and the lift: the accesses they left to the helpers.
+  if (cfg && cfg.typedDecode === true) hoistTypedDecode(fn)
   // Preserve source-unrolled SSA scratch before propagation sinks its single
   // definition into a local.tee. The transform is gated while it matures; when
   // enabled, its moved invariants ride the normal LICM pass once more below.

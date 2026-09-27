@@ -172,12 +172,24 @@ export function plannedTypedStorageCtor(ctx, expr) {
   return plannedCtor(ctx, activeData(ctx), expr)
 }
 
-export function plannedTypedStorageInfo(ctx, expr) {
-  const data = activeData(ctx)
-  const ctor = plannedCtor(ctx, data, expr)
+const infoOf = (data, ctor) => {
   if (!ctor) return null
   const program = data.program
   let info = program.info.get(ctor)
   if (!info) { info = ctorInfo(ctor); if (info) program.info.set(ctor, info) }
   return info
+}
+
+export function plannedTypedStorageInfo(ctx, expr) {
+  const data = activeData(ctx)
+  return infoOf(data, plannedCtor(ctx, data, expr))
+}
+
+/** As plannedTypedStorageInfo, for an access that rejects a missing receiver
+ *  itself: a receiver the summary holds to one typed constructor or a missing
+ *  value answers with the constructor (an element of a list of channels, read
+ *  through an index that may pass its end). */
+export function plannedTypedPayloadInfo(ctx, expr) {
+  const data = activeData(ctx)
+  return infoOf(data, plannedCtor(ctx, data, expr) ?? ctx.summary?.at(ctx.func.current).typedPayloadCtorOfExpr(expr) ?? null)
 }

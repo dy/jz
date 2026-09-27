@@ -186,6 +186,9 @@ const hasTypedBoundsTemp = wat => /\$[^\s)]*tb[in]\d*/.test(wat)
 // when propagation merges that temp into the index local, by the guard itself:
 // an unsigned compare against the constant length around the store.
 const CHECKED_STORE = /\(i32\.lt_u[\s\S]{0,400}?\(i32\.const \d+\)\s*\)\s*\(then\s*\((?:f32|f64|i32|i64)\.store/
+// A checked read that decides a branch loads under its guard alone (ir/numeric.js mapCheckedRead):
+// the unsigned compare against the constant length, then the load in its hit arm.
+const CHECKED_READ = /\(if\s*\(result (?:f32|f64|i32|i64)\)\s*\(i32\.lt_u[\s\S]{0,200}?\(i32\.const \d+\)\s*\)\s*\(then[\s\S]{0,200}?\((?:f32|f64|i32|i64)\.load/
 
 test('interval proof: control-flow joins retain unknown and out-of-bounds paths', () => {
   for (const branch of [
@@ -206,7 +209,7 @@ test('interval proof: control-flow joins retain unknown and out-of-bounds paths'
   }
 })
 const userFuncs = wat => wat.split(/(?=\(func )/).filter(f => /^\(func \$(?!__)/.test(f)).join('\n')
-const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || CHECKED_STORE.test(userFuncs(wat))
+const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || CHECKED_STORE.test(userFuncs(wat)) || CHECKED_READ.test(userFuncs(wat))
 
 const tableWalk = (table, edit = '', length = 4) => `
 function fill(a, n) {

@@ -6,6 +6,140 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Release status, September 27
+
+**V1 is not ready to tag, and the claim reading is still September 26's.**
+Nothing after c5f5c408 has been measured on a reference CPU: this tree is
+unpushed. The M4 ran at load averages of 25 to 280 through this work (other
+sessions building on it), where one build's median moves 3× between runs, so
+no local timing below is evidence for a claim. What is recorded is what load
+does not move: emitted code, the x64 code V8 makes of it (jsvu `v8-debug`
+under Rosetta, `--print-wasm-code`), checksums, differential results against
+Node, and binary size.
+
+The ledger (209f67e0) is the record that ends the circling: `bench/ledger.jsonl`
+holds one line per measured run, `node scripts/ledger.mjs status` shows each
+case's worst claim ratio per machine, `show <case>` its history and `diff`
+what moved between two runs of one machine net of the rivals' drift. The
+`jz-base` target (e408a309) times the compiler of another checkout in the same
+alternating rounds, so jz/jz-base is a change's own effect whatever CPU the
+runner drew. A change counts as a win when a probe on a reference CPU says so;
+until then it is a candidate.
+
+Candidates on top of the September 26 table, general forms:
+
+| Change | General form | Evidence (M4 timings are diagnostics) |
+| --- | --- | --- |
+| Conjunct fold (911f0be2) | `if (A && B) x = V` with a data-dependent `B` keeps the bound `A` as the branch and folds `B` into a select | sort 0.86 of the c5f5c408 build |
+| Function-level flow facts (64bb366f) | Top-level statements thread range facts as blocks do | a clamp at function level bounds what follows |
+| Output cursor (673a38d7) | A cursor stepping beside the counter is the counter scaled and shifted; clamped lanes truncate as a vector | wav's sample loop converts two samples per step |
+| Sparse guard (8926a583) | A loop of one guarded statement over a typed element tests 4 to 16 elements per compare and runs the statement for the set bits | trace 739 → 392 µs, checksum intact |
+| Present binding (9bee5a75) | A binding initialized from an in-range typed load is a number for its block | no missing-value conversion on its uses |
+| Typed decode (H7) | A typed receiver of open element kind is decoded once per loop; each access tests `i < n`, loads or stores directly inside and calls the helper outside (speed tier) | a gain kernel over mixed Float32Array and Float64Array buffers: 2.05× of Node before, 0.97× after; Web Audio paired jz/jz-base median 0.772 |
+| Field cache (H10) | A field read a statement repeats is a `const` before the statement, ended by a store of that name through any receiver | Web Audio: 114 functions change, `getEventTime` 30 loads → 15, checksum 2866527759 unchanged |
+| Loop step (H9) | The counter of a comma step (`j++, k += step`) is found, so the load cache knows the bound positive | fft's butterfly keeps `re[a]` and `im[a]` across the store of `re[a + half]` |
+| Number or missing (H4) | `+` with a side the summary holds to a number or a missing value is `f64.add` behind a self-compare | field sums leave the generic helper |
+| Typed payload (H6) | A store through a typed binding that may be missing writes by the payload's constructor after rejecting the missing receiver | no generic writer |
+| Bulk fill (H5) | `fill` writes one element and doubles the run with `memory.copy` | log2(n) copies for n elements, every element kind |
+| Guarded read (H11) | A checked read that decides a branch loads under its guard, without the address clamp, against the length the binding fixes | vm on x64: 25 → 22 instructions an interpreted operation, Rust's build 21; the freed register keeps the program's base out of the stack |
+| Shift remainder (H12) | `x - ((x >> k) << k)` is `x & (2^k - 1)`, the quotient in a local or in place | delayline on x64: 46 → 44 instructions a sample, Rust's build 44 |
+| Scalar unroll (H13) | The plan copies a loop out for a small typed array only when its counter reaches an index of it | bezfit's speed binary 16351 → 3814 B: six identical copies of the nest gone, its kernel was 5832 x64 instructions against Rust's 975 |
+
+Correctness, each found by a differential sweep against Node at four levels
+and pinned by the sweep itself:
+
+| Class | Before | Pin |
+| --- | --- | --- |
+| A read that finds nothing, used as a number (H3, 0ea57ea1) | 747 of 10472 probes differed: the undefined box is a NaN whose payload arithmetic carries, so `a[n] + 1` read as undefined; a Float32Array store kept the payload too | `test/missing-read.js`, every receiver × binding form × use |
+| A shift right of a comparison (H8) | `a < b >> c` compiled as `(a < b) >> c`; 56 of 5490 operator-pair probes differed | `test/shift-precedence.js` |
+| Statements before `super(…)` (H1) | ran after the base's constructor | `test/super-order.js` |
+| A field read before its store (H2) | a method the constructor calls, or the base's constructor, read a later field as a number | `test/definite-init.js` |
+| `fill('12')` (H5) | stored NaN in a float array, 0 in an integer one | `test/typed-fill.js` |
+
+The shift error is subscript's (10.8.1 and its head f5506dc): the dispatcher
+tries a first character's operators newest first and commits on the first
+text match, and `>`, registered after `>>`, matches the text `>>` begins with.
+jz orders each character's operators longest first at its parser entry; the
+fix belongs in subscript's `register`.
+
+The core suite passes 4931 of 4936 tests (169356 assertions) on a private
+copy of this tree: web-smoke fails for the asset above, two bench-harness
+tests for the copy not being a git checkout, the interval-proof detector
+before it learned the guarded read (22 of 22 alone), and one timer test under
+a load of 40 (172 of 172 alone). Self-compile passes 79 of 79. Every corpus
+checksum matches its reference except the five color cases, which differ
+identically without these changes. `test/simd.js` passes 236 of 236, the
+op-count ratchet holds in every category (ring 53800 against a baseline of
+54040), and every pair of binary operators agrees with Node.
+
+What the x64 code says of the losses the M4 does not show: V8 has about
+eleven general registers to hand out there against arm64's thirty, and every
+value a loop keeps beyond them is a stack slot it reloads. jz's loops keep
+more than LLVM's do. qoi holds seven array bases in registers where the C
+source's static arrays are constant addresses (274 stack references in 1327
+instructions of the kernel against 79 in 734), and watr's `unroll2` writes
+its encode loop's whole body out twice. vm kept a register for a length the
+binding fixes. bezfit's kernel was six copies of itself. Where both
+compilers emit the same loop (delayline: 44 instructions each now) the ratio
+is the runner's noise around 1.000, and a strict bar of 1.000 passes or
+fails by it.
+
+Diagnoses, no change made:
+
+- **Array bases.** Typed arrays a function allocates in a row at constant
+  sizes lie at constant distances from each other (the bump allocator), and
+  an array allocated once in code that runs once lies at a constant address.
+  Either fact folds a base into the access's offset and frees its register:
+  the general form of what static arrays give C, Zig and Rust kernels, and
+  the largest lever the x64 listings show. Not built.
+- **Web Audio.** Its channel arrays are polymorphic by construction
+  (Float32Array views, Float32Array and Float64Array blocks written into one
+  `_channels` list), so the element kind is a run-time fact and the decode is
+  the tool. After it the profile is parameter automation, where V8 spends the
+  same time.
+- **Peak RSS.** Web Audio: 82.0 MB against V8's 74.8 MB with 9 MB of Wasm
+  memory; the rest is V8's own Wasm code memory (73.3 MB with the baseline
+  compiler alone), so the heap is not the lever. Jessie: 111.5 MB against
+  98.5 MB with 64 MB of Wasm memory, because the timed loop is not rewound.
+  The census declines it for a `charCodeAt` on a receiver it cannot type
+  (`hashNode`), a store of the source string into a module binding (`parse`:
+  the string exists before the iteration), the zero-argument host import
+  `performance.now`, and closure-valued callees (`parse.space`, `parse.step`,
+  the `lookup` table); the link pass also vetoes `call_indirect`. Four census
+  refinements are designed: a method name no program function or own property
+  can carry is its builtin; a stored value that exists before the scope is no
+  escape, with a per-parameter escape fact for callees; a closure value the
+  summary resolves (`view.calleeOf`) is a known callee; a zero-argument host
+  import receives no pointer. Each needs its own soundness pins.
+- **fft.** jz's vector butterfly is about 28 x64 instructions against clang's
+  25, with 8 spill reloads; the reloads of `re[a]` and `im[a]` are what the
+  loop-step fix removes. TinyGo does not build locally (Go 1.26 against its
+  1.19 to 1.23), so the 1.130× row is a CI question.
+- **lorenz.** A latency-bound recurrence: the spilled state and the
+  rematerialized constants sit off the critical path.
+
+Pending your hand, in order: land the site work that removes
+`assets/grid-life.js` (e408a309 took its deletion, staged in the shared index
+by that work, into an unrelated commit; `index.html` and `test/web-smoke.js`
+at this tree still name the file, so the tree fails web-smoke and the light
+theme's hero until the site work is committed); `git pull --rebase` (origin
+holds one CI refresh of `bench/results-ci.json` this tree lacks), `git push`;
+publish watr 5.11.9 from d09bd06 and bump jz to `^5.11.9`; then the A/B probe
+on each runner CPU:
+
+```
+gh workflow run bench-probe.yml -f base=c5f5c408 -f repeats=6 \
+  -f cases=webaudio,trace,sort,wav,fft,biquad,base64,dispatch,qoi,vm,delayline,bezfit \
+  -f targets=jz,v8,bun,jsc,c-wasm,rust-wasm,zig-wasm,as
+node scripts/ledger.mjs pull <run-id>
+node scripts/ledger.mjs status
+```
+
+Open: provenance, fftplan and jessie against JSC have no diagnosis yet. A
+call's result is not yet typed for `+` (the closure-table pins count the
+generic `+` it would remove). Whether `unroll2` pays on x64 is a probe of
+two builds, one with `watrOpts.unroll2 = false`.
+
 ## Release status, September 26
 
 **V1 is not ready to tag.** Two fresh reference runs now bracket the release

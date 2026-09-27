@@ -235,7 +235,7 @@ export function summaryQueries(facts, internal = false) {
         if (t === K.OBJECT && paramOf(r) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(r))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
         if (t === K.TYPED) return !typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) ? core(kindOfExpr(n[2])) === NUMBER ? orAbsent(merge(typedElemKind(r), typedPropsOf(r))) : ANY
           : typedReadPresent(scope, n) ? typedElemKind(r) : orAbsent(typedElemKind(r))
-        return t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? STRING : ANY
+        return t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? orAbsent(STRING) : ANY
       }
       if (op === '()' && typeof n[1] === 'string') {
         if (n[1].startsWith('new.') && TYPED_CTOR.test(n[1])) return builtinResult(n[1])

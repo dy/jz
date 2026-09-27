@@ -127,4 +127,22 @@ const digitWrapper = (a, b) => {
 }
 for (let c = 48; c <= 57; c++) lookup[c] = digitWrapper
 
+// The longest operator first, at every first character. subscript tries a
+// character's operators newest-first and commits to the first whose text
+// matches; a one-character operator matches any text it begins, so `>`,
+// registered after `>>`, took the first character of a shift wherever its own
+// precedence then ended the operand: `a < b >> c` read `(a < b) >> c`, and a
+// loop bound `k < n >> 1` never held. Operators of one length keep their order
+// (an override stays ahead of what it overrides); the pass over lengths needs
+// no stable sort.
+for (let c = 0; c < lookup.length; c++) {
+  const ops = lookup[c]?.ops
+  if (!ops || ops.length < 2) continue
+  let longest = 0
+  for (let i = 0; i < ops.length; i++) if (ops[i].l > longest) longest = ops[i].l
+  const ordered = []
+  for (let l = longest; l > 0; l--) for (let i = 0; i < ops.length; i++) if (ops[i].l === l) ordered.push(ops[i])
+  for (let i = 0; i < ordered.length; i++) ops[i] = ordered[i]
+}
+
 export { parse }

@@ -2072,7 +2072,8 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         if (row && Number.isInteger(i) && i >= 0) return row[i] ?? ABSENT
         return orAbsent(entryOf(recv, ik))
       }
-      if (t === K.STRING) return STRING
+      // A string's character, or nothing past its end.
+      if (t === K.STRING) return orAbsent(STRING)
       // A computed key on a known shape reads one of its slots (a dispatch table's member), or misses.
       if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(recv))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
       if (dictOrObject(recv)) {
@@ -2308,29 +2309,42 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // The member a store targets on `name`: `name.f` or `name['f']`.
   const storedMember = (t, name) => Array.isArray(t) && t[1] === name
     ? t[0] === '.' && typeof t[2] === 'string' ? t[2] : t[0] === '[]' && t.length === 3 ? literalKeyOf(t[2]) : null : null
+  // A statement that may leave its function before the statements after it run.
+  const leaves = (v) => Array.isArray(v) && (v[0] === 'return' || v[0] !== '=>' && v[0] !== 'function' && v[0] !== 'function*' && v.some(leaves))
   // The fields `name` is definitely assigned by the statements from `from`
   // on: a store `name.f = v` whose value does not read the object, or a call
   // `F(name, …)` to a function that so assigns its first parameter (a class
   // initializer, jzify/classes.js), until a statement uses `name` otherwise.
+  // A statement that does not name the object cannot read it and runs between
+  // the stores (the values a constructor computes before it assigns them),
+  // unless it may return. False when a statement ended the list: the object
+  // may have been read there, so a caller's later stores are not definite
+  // either (a base constructor that calls a method of the instance).
   const definiteStores = (list, from, name, assigned, seen) => {
     for (let i = from; i < list.length; i++) {
       const st = list[i]
-      if (!Array.isArray(st)) return
+      if (st == null) continue
+      if (!Array.isArray(st)) return false
       const member = st[0] === '=' ? storedMember(st[1], name) : null
       if (member !== null) {
-        if (mentions(st[2], name, assigned) || isNullishLit(st[2])) return
+        if (mentions(st[2], name, assigned)) return false
         assigned.add(member)
         continue
       }
       const f = st[0] === '()' && typeof st[1] === 'string' ? funcByName.get(st[1]) : undefined
       const as = f ? args(st[2]) : null
-      if (!f || as[0] !== name || seen.has(f) || as.slice(1).some(a => mentions(a, name, assigned))) return
-      const p0 = f.sig.params[0]
-      if (!p0 || p0.rest) return
-      seen.add(f)
-      const body = f.body, stmts = isBlock(body) ? (Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]) : []
-      definiteStores(stmts, 0, p0.name, assigned, seen)
+      if (f && as[0] === name) {
+        if (seen.has(f) || as.slice(1).some(a => mentions(a, name, assigned))) return false
+        const p0 = f.sig.params[0]
+        if (!p0 || p0.rest) return false
+        seen.add(f)
+        const body = f.body, stmts = isBlock(body) ? (Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]) : []
+        if (!definiteStores(stmts, 0, p0.name, assigned, seen)) return false
+        continue
+      }
+      if (mentions(st, name, assigned) || leaves(st)) return false
     }
+    return true
   }
   // Definite initialization is structural: a literal is examined once.
   const definiteSeen = new Set()
