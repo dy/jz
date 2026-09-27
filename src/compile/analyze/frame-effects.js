@@ -362,11 +362,6 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
       else if (isArr(n[1]) && (n[1][0] === '[]' || n[1][0] === '{}')) for (const nm of patternNames(n[1])) note(nm, null, nested, false)
     }
     if (op === '++' || op === '--') { if (isName(n[1])) note(n[1], null, nested, false) }
-    if (op === 'for' && isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) {
-      const head = n[1][1]
-      if (isArr(head) && (head[0] === 'const' || head[0] === 'let')) for (let i = 1; i < head.length; i++) { if (isName(head[i])) note(head[i], null, nested, true); else for (const nm of patternNames(head[i])) note(nm, null, nested, true) }
-      else if (isName(head)) note(head, null, nested, false)
-    }
     const inner = isFunctionNode(n)
     for (let i = 1; i < n.length; i++) scanDecls(n[i], nested || inner)
   }
@@ -564,7 +559,6 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES) {
     }
     if (op === '.') { const fns = accessorFunctions(n[2], n[1], n[2] + ACCESSOR_GET); if (fns === null) unsafe('accessor ' + n[2]); else reaches(fns) }
     if (runsAccessor(view, n)) { out.runsAccessor = true; unknownCall('accessor') }
-    if (op === 'for' && isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in')) allocates()   // an iterator record, key strings
     for (let i = 1; i < n.length; i++) walkExpr(n[i])
   }
   for (const r of roots) walkExpr(r)
@@ -578,7 +572,7 @@ function loopsOf(body) {
   const walk = (n) => {
     if (!isArr(n) || isFunctionNode(n)) return
     const op = n[0]
-    if (op === 'for' && n[4] !== undefined && !(isArr(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in'))) loops.push({ body: n[4], roots: [n[2], n[3], n[4]].filter(x => x != null) })
+    if (op === 'for' && n[4] !== undefined) loops.push({ body: n[4], roots: [n[2], n[3], n[4]].filter(x => x != null) })
     else if (op === 'while' && n[2] !== undefined) loops.push({ body: n[2], roots: [n[1], n[2]] })
     for (let i = 1; i < n.length; i++) walk(n[i])
   }
