@@ -23,6 +23,7 @@ import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { foldGuardedUpdates } from './guarded-update.js'
 import { hoistTypedDecode } from './typed-decode.js'
+import { foldShiftRemainder } from './shift-remainder.js'
 import { wideAccumulator } from './wide-accumulator.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
 
@@ -84,6 +85,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if (cfg && cfg.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64 &&
       fn.some(n => Array.isArray(n) && n[0] === 'local' && typeof n[1] === 'string' && n[1].endsWith('$ccsso')))
     unswitchStringRepLoop(fn)
+  // After the peephole walk: the quotient and its scaling are in their i32 form.
+  if (!cfg || cfg.shiftRemainder !== false) foldShiftRemainder(fn)
   if (cfg && cfg.boolConvertToSelect === true) boolConvertToSelect(fn)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)

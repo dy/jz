@@ -1719,6 +1719,14 @@ a typed array's properties come from stores the walk sees or from a builtin
 that writes its argument (`escapeObject`); the host holds a view of the
 elements alone.
 
+A remainder rebuilt from its shifted quotient is a mask
+(`src/optimize/shift-remainder.js`): `x - ((x >> k) << k)`, the fraction of a
+fixed-point split (`q = (x / 65536) | 0; r = x - q * 65536` once the emitter
+holds both in i32), is `x & (2^k - 1)` for either shift. The quotient may sit
+in a local: the fact holds from its write until it or `x` is written, ends at
+a loop's head and after any construct a branch may leave, and each arm of an
+`if` starts from what held after the condition.
+
 The export boundary is numeric for a parameter used only as a typed-array
 index or stored into a typed array (README, "Host boundary"): the usage scan
 (`src/compile/param-numeric.js`) counts those uses as numeric, reading the

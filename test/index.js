@@ -86,6 +86,7 @@ const TESTS = [
   'loop-step',
   'field-cse',
   'guarded-read',
+  'shift-remainder',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',
