@@ -2190,8 +2190,9 @@ export default (ctx) => {
     // is the one nullishness an in-range read of an array of objects carries.
     const receiverKind = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
     const inRange = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
+    // A name a statement of this block already checked is present (dispatch.js emitBlockBody).
     if (isNullable(inRange ? receiverKind & ~bitOf(K.ABSENT) : receiverKind) &&
-        !(typeof obj === 'string' && (repOf(obj)?.ptrKind != null || ctx.func.refinements?.get(obj)?.val != null))) {
+        !(typeof obj === 'string' && (repOf(obj)?.ptrKind != null || ctx.func.refinements?.get(obj)?.val != null || ctx.func.refinements?.get(obj)?.notNullish))) {
       // A dot read has no key expression between its receiver check and use.
       // Keep a plain local's identity so schema dispatch and load reuse share it.
       const receiver = emit(obj)
@@ -2199,6 +2200,8 @@ export default (ctx) => {
       // It cannot pass through the boxed receiver path without losing that layout.
       if (receiver.ptrKind == null) {
         const value = asF64(receiver)
+        // The block emitter holds a name checked here present past this statement.
+        if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
         if (typeof obj === 'string' && value[0] === 'local.get' && value[1] === `$${obj}`)
           return typed(['block', ['result', 'f64'],
             ['if', isNullish(value), ['then', ['drop', throwTypeErrorIR()]]],

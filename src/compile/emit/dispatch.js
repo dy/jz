@@ -1156,8 +1156,8 @@ function nestedWritesOf(node, loopWrites) {
 /** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitVoid per statement.
  *  Also drives early-return refinement: `if (!guard) return/throw` narrows `guard` for the
  *  rest of the enclosing block. Refinements added here are rolled back on block exit. */
-// The names a statement reads an element of or stores an element into on
-// every path through it, the stored ones marked: the operands an operator
+// The names a statement reads an element or a field of, or stores an element
+// into, on every path through it, the stored ones marked: the operands an operator
 // always evaluates, never an arm, a right side that may not run, a loop body
 // or a closure. A statement that leaves hands nothing to what follows it.
 const elementUses = (n, out) => {
@@ -1167,7 +1167,7 @@ const elementUses = (n, out) => {
   if (op === 'if' || op === '?:' || op === '?' || op === '&&' || op === '||' || op === '??' || op === '?.' || op === '?.()' || op === '?.[]' || op === 'while' || op === 'switch') return elementUses(n[1], out)
   if (op === 'for') { elementUses(n[1], out); return elementUses(n[2], out) }
   if (op === 'do' || op === 'for-of' || op === 'for-in' || op === 'for-await' || op === 'catch' || op === 'finally' || op === 'label') return out
-  if (op === '[]' && n.length === 3 && typeof n[1] === 'string' && !out.has(n[1])) out.set(n[1], false)
+  if ((op === '[]' && n.length === 3 || op === '.' && typeof n[2] === 'string') && typeof n[1] === 'string' && !out.has(n[1])) out.set(n[1], false)
   if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') out.set(n[1][1], true)
   for (let i = 1; i < n.length; i++) elementUses(n[i], out)
   return out

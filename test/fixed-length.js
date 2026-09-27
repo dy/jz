@@ -224,6 +224,25 @@ test('fixed length: a counted read of an array of one shape reads slots and cell
   ok(!warnings.entries.some(e => e.code === 'deopt-prop-read'), 'no dynamic property read')
 })
 
+// A name a statement checked (an element or a field read threw for a missing
+// receiver) holds an object for the rest of its block: the later reads check
+// nothing, and a missing receiver still throws where the first read is.
+test('present receiver: one check per block for the fields of a nullable element', () => {
+  const src = `const bones = []
+    for (let i = 0; i < 4; i++) bones.push({ start: [i, 0, 0], end: [i + 1, 0, 0], len: 1 })
+    export const f = (k, n) => { let s = 0; for (let i = 0; i < n; i++) { const b = bones[i]; const st = b.start; const en = b.end; s += st[0] * k + en[0] + b.len } return s }
+    export const g = (i) => { const b = bones[i]; try { return b.start[0] + b.end[0] } catch (e) { return e instanceof TypeError ? -1 : -2 } }`
+  for (const optimize of levels(0, 2, 3)) {
+    agree(src, 'f', [2, 4], { optimize }, `every bone at ${optimize}`)
+    agree(src, 'g', [1], { optimize }, `a bone that is there at ${optimize}`)
+    agree(src, 'g', [9], { optimize }, `a bone that is not at ${optimize}`)
+  }
+  for (const optimize of levels(2, 3)) {
+    const body = funcWat(wat(src, { optimize }), 'f')
+    ok((body.match(/__throw_property_nullish/g) || []).length <= 1, `at most one check per pass at ${optimize}`)
+  }
+})
+
 test('fixed length: the advisory names the first cause an array keeps its checks by', () => {
   const warnings = { entries: [] }
   compile(`const out = [0, 0, 0]\nexport const f = (k) => { out.push(k); return out[0] }`, { warnings, why: true })
