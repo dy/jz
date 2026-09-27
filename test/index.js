@@ -75,6 +75,7 @@ const TESTS = [
   'prefilter',
   'present-init',
   'missing-arith',
+  'fixed-length',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

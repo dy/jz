@@ -87,7 +87,7 @@ const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, 
  *  string (`JSON.parse(SRC)` parses it). An exported global keeps its kind: the host
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything. */
-export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, liftedProp = () => null }) {
+export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, liftedProp = () => null }) {
   // Layouts determine storage; construction sites determine aliasing. Keep
   // separate slot facts for unrelated objects with identical property names.
   schemas = schemas.map(props => props.slice())
@@ -437,6 +437,83 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const retainedArrays = new Set() // arrays reachable across calls, through globals or captures
   const hostClosures = new Set() // callable results the host can receive
   const tuples = new Map()       // cell root → positional kinds; null after mutation, union or a mixed read
+  // An array's length where it cannot change: every array of the cell is a
+  // literal of one count, nothing resizes or deletes from it, no store names
+  // an index the count does not hold, and no holder is out of the summary's
+  // sight. `lens` holds the count, LEN_OPEN once any of that fails; a cell
+  // built by anything but a literal has no entry and is as open. `stores`
+  // holds the greatest literal index stored at, read beside the count so the
+  // order the walk meets a store and its array in does not matter.
+  const LEN_OPEN = -1
+  const lens = new Map()         // cell root → count | LEN_OPEN
+  const stores = new Map()       // cell root → greatest literal index stored at
+  const lenCell = (arr) => tagOf(core(arr)) === K.ARRAY && paramOf(arr) !== UNKNOWN ? cell(paramOf(arr)) : -1
+  // A change of either fact asks for another round: a read kinded under a
+  // count that a later statement of the round opens is kinded again. The
+  // first cause a counted cell opens by is the advisory's (`onOpen`).
+  const setLen = (c, n, why) => {
+    const old = lens.get(c)
+    if (old === n) return
+    if (onOpen && old >= 0) onOpen(old, why, current, site)
+    lens.set(c, n); changed = true
+  }
+  const fixLen = (c, n) => { const old = lens.get(c); setLen(c, old === undefined || old === n ? n : LEN_OPEN, `built at ${n} elements elsewhere`) }
+  const openLen = (arr, why) => { const c = lenCell(arr); if (c >= 0) setLen(c, LEN_OPEN, why) }
+  /** The fixed length of the array `arr` holds, -1 where it may change or differ. */
+  const fixedLen = (arr) => { const c = lenCell(arr), n = c < 0 ? -1 : lens.get(c); return n >= 0 && !(stores.get(c) >= n) ? n : -1 }
+  // The integers an index can be, `[lo, hi]`: a literal, a constant, the
+  // counter of a counted loop while its body is walked, and sums, products,
+  // remainders and masks of those. null where the walk cannot bound it.
+  const ints = new Map()         // a name declared once as an integer literal → its value
+  const spans = new Map()        // the counters of the loops being walked → [lo, hi]
+  const spanOf = (e) => {
+    if (typeof e === 'number') return Number.isInteger(e) ? [e, e] : null
+    if (typeof e === 'string') { const v = ints.get(e); return v !== undefined ? [v, v] : spans.get(e) ?? null }
+    if (!Array.isArray(e)) return null
+    const op = e[0]
+    if (op == null) return Number.isInteger(e[1]) ? [e[1], e[1]] : null
+    if (op === '()' && e.length === 2) return spanOf(e[1])
+    if (e.length !== 3) return null
+    const a = spanOf(e[1]), b = spanOf(e[2])
+    if (!a || !b) return null
+    let lo, hi
+    if (op === '+') { lo = a[0] + b[0]; hi = a[1] + b[1] }
+    else if (op === '-') { lo = a[0] - b[1]; hi = a[1] - b[0] }
+    else if (op === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
+    else if (op === '%' && a[0] >= 0 && b[0] > 0) { lo = 0; hi = Math.min(a[1], b[1] - 1) }
+    else if (op === '&' && b[0] === b[1] && b[0] >= 0) { lo = 0; hi = b[0] }
+    else return null
+    return Number.isSafeInteger(lo) && Number.isSafeInteger(hi) ? [lo, hi] : null
+  }
+  /** A loop `for (let i = a; i < b; i += c)` whose body leaves `i` alone: the
+   *  counter and the integers it takes in the body; null for any other loop. */
+  const countedLoop = (n) => {
+    const init = n[1], test = n[2], step = n[3]
+    if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return null
+    const name = init[1][1], from = spanOf(init[1][2])
+    if (!from || !Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || test[1] !== name) return null
+    const to = spanOf(test[2])
+    if (!to || !Array.isArray(step) || step[1] !== name) return null
+    const by = step[0] === '++' ? 1 : step[0] === '+=' ? spanOf(step[2])?.[0] : null
+    if (!(by > 0) || assignedIn(n[4]).includes(name)) return null
+    return [name, from[0], test[0] === '<' ? to[1] - 1 : to[1]]
+  }
+  /** A store at `idx`: an index the count holds leaves the length alone; any other may extend it. */
+  const storeAt = (arr, idx) => {
+    const c = lenCell(arr)
+    if (c < 0) return
+    const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
+    if (!span || span[0] < 0) setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound')
+    else if (!(stores.get(c) >= span[1])) {
+      if (onOpen && lens.get(c) >= 0 && span[1] >= lens.get(c)) onOpen(lens.get(c), `stored at index ${span[1]}`, current, site)
+      stores.set(c, span[1]); changed = true
+    }
+  }
+  const literalCount = (node) => {
+    if (!Array.isArray(node) || node[0] !== '[') return LEN_OPEN
+    for (let i = 1; i < node.length; i++) if (Array.isArray(node[i]) && node[i][0] === '...') return LEN_OPEN
+    return node.length - 1
+  }
   const cellUp = []              // cell id → its parent; a root is its own
   // Typed elements have fixed widths; named properties keep ordinary values.
   // One cell per element type covers the typed receivers of that constructor;
@@ -480,7 +557,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     raiseElem(k, elem, true)
     return k
   }
-  const arrayOf = (node, elem) => cellOf(node, K.ARRAY, elem)
+  const arrayOf = (node, elem) => { const arr = cellOf(node, K.ARRAY, elem); if (paramOf(arr) !== UNKNOWN) fixLen(cell(paramOf(arr)), literalCount(node)); return arr }
   /** `new Set(iterable)`: a cell holding the iterable's members. */
   const setOf = (node, base, count) => {
     let value = K.NONE
@@ -555,6 +632,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     const ra = tuples.get(a), rb = tuples.get(b), rows = !!(ra && rb && ra.length === rb.length)
     if (!rows) { invalidateTuple(kind(K.ARRAY, a)); invalidateTuple(kind(K.ARRAY, b)) }
     cellUp[b] = a; changed = true
+    const la = lens.get(a) ?? LEN_OPEN, lb = lens.get(b) ?? LEN_OPEN
+    if (la !== lb) { if (onOpen && (la >= 0 || lb >= 0)) onOpen(Math.max(la, lb), lb < 0 || la < 0 ? 'joined with an array whose length may change' : `joined with an array of ${Math.min(la, lb)} elements`, current, site); lens.set(a, LEN_OPEN) }
+    if (stores.get(b) > (stores.get(a) ?? -1)) stores.set(a, stores.get(b))
     // The cells are one before the rows merge: a row that reaches itself ends here.
     if (rows) { tuples.set(b, null); for (let i = 0; i < ra.length; i++) { const nk = merge(ra[i], rb[i]); if (nk !== ra[i]) ra[i] = nk } }
     if (hostArrays.has(b)) hostArrays.add(a)
@@ -679,6 +759,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN) for (const id of membersOf(paramOf(k))) escapeId(id)
     // The cell goes to ANY before its elements escape: an array of itself ends there.
     if (celled(k)) {
+      openLen(k, losing ?? 'held where the summary cannot see')
       invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (setCells.has(id)) enumerateKeys(id); if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) }
       if (tagOf(k) === K.ARRAY || hasTag(k, K.HASH)) { const w = cellWild.get(id) ?? K.NONE; if (w !== ANY) { for (const pk of cellProps.get(id)?.values() ?? []) escape(pk); escape(w); raiseWild(k, ANY) } }
       if (cellShapes.has(id)) { for (const sid of cellShapes.get(id)) loseShape(sid); addCellLost(id) }
@@ -720,6 +801,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         for (const v of cellProps.get(c)?.values() ?? []) escapeToHost(v, seen)
         escapeToHost(cellWild.get(c) ?? K.NONE, seen)
         hostArrays.add(c)
+        setLen(c, LEN_OPEN, 'handed to the host')
         if (retainedArrays.has(c)) raiseElem(k, ANY)
       }
     }
@@ -1664,6 +1746,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
     if (t === K.BUFFER && name === 'slice') return kind(K.BUFFER)
     if (t === K.ARRAY) {
       if (name === 'pop' || name === 'shift' || name === 'sort' || name === 'reverse' || name === 'splice' || name === 'copyWithin') invalidateTuple(recv)
+      if (name === 'push' || name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, `resized by ${name}`)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
       if (name === 'push' || name === 'unshift') { for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i]); return NUMBER }
       // The searches compare by strict equality or SameValueZero and keep nothing of their argument.
@@ -2070,6 +2153,9 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         const row = paramOf(recv) === UNKNOWN ? null : tuples.get(cell(paramOf(recv)))
         const i = typeof idx === 'number' ? idx : Array.isArray(idx) && idx[0] == null ? idx[1] : null
         if (row && Number.isInteger(i) && i >= 0) return row[i] ?? ABSENT
+        // An index the fixed length holds reads an element, never past the end.
+        const span = spanOf(idx)
+        if (span && span[0] >= 0 && span[1] < fixedLen(recv)) return entryOf(recv, ik)
         return orAbsent(entryOf(recv, ik))
       }
       if (t === K.STRING) return STRING
@@ -2232,7 +2318,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
         dynamicProps.add(prop)
       }
       // A length store extends an array with holes (`a.length = n`: the new slots read undefined).
-      else if (t === K.ARRAY) { if (prop === 'length') raiseElem(recv, ABSENT); else if (paramOf(recv) !== UNKNOWN) raiseProp(recv, prop, v); else escape(v) }
+      else if (t === K.ARRAY) { if (prop === 'length') { openLen(recv, 'its length is stored to'); raiseElem(recv, ABSENT) } else if (paramOf(recv) !== UNKNOWN) { if (isArrayIndexKey(prop)) storeAt(recv, prop); raiseProp(recv, prop, v) } else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseProp(recv, prop, v); else escape(v) }
       else if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(prop)) raiseClosureProp(recv, prop, v)
       else if (builtinReceiverTag(t)) escape(v)
@@ -2244,7 +2330,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       if (literalKeyOf(idx) !== null) return assign(op, ['.', target[1], literalKeyOf(idx)], value)
       const ik = expr(idx)
       if (ik !== K.NONE && hasTag(recv, K.TYPED) && !typedElementKey(idx, ik === NUMBER)) raise(elems, typedPropsCellOf(recv), v)
-      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) raiseEntry(recv, ik, v); else escape(v) }
+      if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx); raiseEntry(recv, ik, v) } else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseWild(recv, v); else escape(v) }
       else if (dictOrObject(recv)) { const c = cell(paramOf(recv)); raiseWild(recv, v); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, v); raiseSideWild(sid, v) } if (cellLostObject.has(c)) poisonAll(recv, ik, v) }
       else if (t === K.TYPED) {
@@ -2361,7 +2447,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make).
-  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])); else destructure(d[1], expr(d[2])) } } }
+  const decl = (n) => { for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') declare(d, ABSENT); else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') { if (n[0] === 'const' && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1]); declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2])) } else destructure(d[1], expr(d[2])) } } }
   // A `{}` declared into a name is allocated as the runtime allocates it
   // (module/object.js's `{}`): with the binding's schema when that holds every
   // literal key (`let o = {}` then `o.a = 1` merges `a` into it), an empty one
@@ -2580,7 +2666,16 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       return
     }
     // A loop's test guards its body the way an `if` guards its branch.
-    if (op === 'for') { loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0); const mark = rtop; if (n[2] != null) proves(n[2], true); stmt(n[4]); unwind(mark); selectedExpr(n[3], 0); branch--; return }
+    if (op === 'for') {
+      loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0)
+      const mark = rtop, counted = countedLoop(n)
+      if (n[2] != null) proves(n[2], true)
+      if (counted) spans.set(counted[0], [counted[1], counted[2]])
+      stmt(n[4])
+      if (counted) spans.delete(counted[0])
+      unwind(mark); selectedExpr(n[3], 0); branch--
+      return
+    }
     if (op === 'for-of' || op === 'for-in' || op === 'for-await') {
       loopAssigns(n)
       const it = expr(n[2]), target = Array.isArray(n[1]) && (n[1][0] === 'let' || n[1][0] === 'const' || n[1][0] === 'var') ? n[1][1] : n[1]
@@ -2608,7 +2703,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
       // is rejected downstream; a computed key may remove any slot.
       const r = expr(n[1]), k = expr(n[2])
-      if (tagOf(r) === K.ARRAY) invalidateTuple(r)
+      if (tagOf(r) === K.ARRAY) { invalidateTuple(r); openLen(r, 'an element is deleted') }
       if (tagOf(r) === K.OBJECT && paramOf(r) !== UNKNOWN) for (const sid of shapesOf(paramOf(r))) deletable.add(sid)
       else if (dictOrObject(r)) { for (const sid of shapesInCell(cell(paramOf(r)))) deletable.add(sid); if (cellLostObject.has(cell(paramOf(r)))) deleteReach.unknown = true }
       else if (hasTag(r, K.OBJECT)) deleteReach.unknown = true
@@ -2794,7 +2889,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, cellProps, cellWild, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports),
     numeric, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, deletable, deleteReach,
@@ -3048,7 +3143,7 @@ export function summarize(ast, { inits = [], funcs, schemas, brandOf, boundSchem
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); opaqueSchemas.clear(); hostSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear()
+    tuples.clear(); lens.clear(); stores.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); deletable.clear(); deleteReach.unknown = false
     seed(seeded)
     fixpoint()

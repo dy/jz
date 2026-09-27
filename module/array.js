@@ -756,7 +756,8 @@ export default (ctx) => {
       // typed array that may be unset (`let x; … x = new Float64Array(n)`)
       // still indexes as a typed array, with an i32 index, not through the
       // generic keyed read.
-      const view = nullable ? ctx.summary?.at(ctx.func.current) : null
+      const scope = ctx.summary?.at(ctx.func.current)
+      const view = nullable ? scope : null
       const vtArr = valTypeOf(arr) ?? (view ? valOf(core(view.kindOfExpr(arr))) : null)
       const source = asF64(emit(arr))
       // A numeric name/literal key cannot change a direct local receiver.
@@ -789,9 +790,15 @@ export default (ctx) => {
         }
         setup.push(['if', isNullish(typed(['local.get', `$${h}`], 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
       }
-      const result = direct
-        ? withRefinements(new Map([[arr, { val: VAL.TYPED, notNullish: true }]]), key, () => ctx.core.emit['[]'](arr, key))
-        : ctx.core.emit['[]'](h, key)
+      // The capture is the receiver, past its check: the summary answers for
+      // it as for the expression (its cell, its fixed length).
+      if (!direct) scope?.alias(h, arr, true)
+      let result
+      try {
+        result = direct
+          ? withRefinements(new Map([[arr, { val: VAL.TYPED, notNullish: true }]]), key, () => ctx.core.emit['[]'](arr, key))
+          : ctx.core.emit['[]'](h, key)
+      } finally { if (!direct) scope?.unalias(h) }
       const wrapped = typed(['block', ['result', 'f64'], ...setup, asF64(result)], 'f64')
       if (result?.checkedNumRead) wrapped.checkedNumRead = true
       if (result?.indexValid) wrapped.indexValid = result.indexValid
@@ -1113,7 +1120,12 @@ export default (ctx) => {
       // runs through this name and writes the pointer back) is never stale
       // either, so its reads take the raw base too; its header may relocate
       // between reads, which only neverGrown rules out (no base hoists here).
-      const neverGrown = typeof arr === 'string' && ctx.func.localReps?.get(arr)?.neverGrown === true
+      // A receiver of fixed length (the summary's `lens`: every array it can hold
+      // is built at one count and nothing in the program resizes any of them)
+      // never relocates either, whatever names reach it: its base is the raw
+      // offset, its length the count.
+      const fixedLen = ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(arr) ?? null
+      const neverGrown = fixedLen != null || (typeof arr === 'string' && ctx.func.localReps?.get(arr)?.neverGrown === true)
       const arrBase = () => neverGrown || (typeof arr === 'string' && currentBinding(arr))
         ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptrExpr], ['i64.const', LAYOUT.OFFSET_MASK]]]
         : ctx.transform.optimize?.leanRuntime ? (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]])
@@ -1192,7 +1204,9 @@ export default (ctx) => {
       const staticProven = stLen != null && !!ctx.types.arrResized && !!ctx.types.nameEscapes
         && !ctx.types.arrResized.has(arr) && !ctx.types.nameEscapes.has(arr)
         && (range => range != null && range[0] >= 0 && range[1] < stLen)(intExprRange(idx))
-      const idxProvenInBounds = keyIsNum && typeof arr === 'string' && (staticProven ||
+      const fixedProven = keyIsNum && fixedLen != null
+        && (range => range != null && range[0] >= 0 && range[1] < fixedLen)(intExprRange(idx))
+      const idxProvenInBounds = fixedProven || keyIsNum && typeof arr === 'string' && (staticProven ||
         (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
         (ctx.func.localReps?.get(arr)?.arrayLen != null && typedIdxProven(arr, idx)))
       // Tag reads whose receiver folded to a compile-time constant box: when the
@@ -1233,10 +1247,10 @@ export default (ctx) => {
         const rd = typed(saTag(['if', ['result', 'f64'],
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
-            ['i32.load', ['i32.sub',
+            fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub',
               ['local.tee', `$${baseI32}`, arrBase()],
               ['i32.const', 8]]]],
-          ['then', ctx.abi.array.ops.load(['local.get', `$${baseI32}`], ['local.get', `$${idxI32}`])],
+          ['then', ctx.abi.array.ops.load(fixedLen != null ? arrBase() : ['local.get', `$${baseI32}`], ['local.get', `$${idxI32}`])],
           ['else', undefExpr()]]), 'f64')
         // Same number|undefined contract as the typed checked read — but ONLY
         // when the elements are PROVEN numeric (arrayElemValType): a plain

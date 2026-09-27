@@ -32,6 +32,7 @@ import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWrit
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
+import { durableArrSnapNode, hasDurableReset } from '../../module/collection/durable.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -81,6 +82,24 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
   if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
   body.push(['local.get', `$${valTmp}`])
   return block64(...body)
+}
+
+/** `arr[index] = value` where the receiver's length is fixed and holds the
+ *  index (the summary's `lens`): nothing in the program grows or relocates the
+ *  array, so the cell is at the raw base and the header is left alone. A
+ *  receiver that may be missing throws as the store would; a durable array is
+ *  saved for the reset before its first store of a round. */
+function storeFixedElement(arr, index, valueExpr, nullable) {
+  const base = tempI32('fb'), recv = nullable ? temp('fr') : null
+  const saved = hasDurableReset() ? [durableArrSnapNode(base)] : []
+  if (saved.length) inc('__durable_arr_snap')
+  const ptr = recv ? typed(['local.get', `$${recv}`], 'f64') : asF64(emit(arr))
+  return withTemp(valueExpr, t => [
+    ...(recv ? [['local.set', `$${recv}`, asF64(emit(arr))], ['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]] : []),
+    ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptr], ['i64.const', LAYOUT.OFFSET_MASK]]]],
+    ...saved,
+    ctx.abi.array.ops.store(['local.get', `$${base}`], index, ['local.get', `$${t}`]),
+    ['local.get', `$${t}`]])
 }
 
 /** Strict-mode guard for dynamic property writes — emitted in branches that
@@ -557,8 +576,14 @@ export function emitElementAssign(arr, idx, val, node = null) {
       })
     }
   }
-  // 3. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
+  // 3. A literal index inside a receiver of fixed length → the cell's own store.
+  const litIndex = arrIndex ?? (Array.isArray(idx) && idx[0] == null && Number.isInteger(idx[1]) && idx[1] >= 0 ? idx[1] : null)
+  if (litIndex != null) {
+    const view = ctx.summary?.at(ctx.func.current)
+    if (litIndex < view?.fixedLenOfExpr(arr)) return storeFixedElement(arr, litIndex, valueExpr, view.mayBeNullishExpr(arr))
+  }
+  // 3b. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
   if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY)
     return storeArrayPayload(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), valueExpr, persistBinding(arr))
 

@@ -627,10 +627,13 @@ test('summary: a literal is allocated as the runtime allocates it; emission read
 })
 
 test('summary: an absent tag joins a union without widening it; a callback drops its surplus arguments', () => {
-  summarize(`export const f = (i) => { const a = [4611686018427387903n]; a[0]++; const b = [1n, 2n]; const m = b.map(x => x + 1n); return a[0] + m[i] }`)
+  summarize(`export const f = () => { const a = [4611686018427387903n]; a[0]++; return a[0] }`)
+  const held = ctx.summary.at('f').kindOfExpr(['[]', binding('f', 'a'), 0])
+  ok(hasTag(held, K.BIGINT) && !hasTag(held, K.NUMBER) && !hasTag(held, K.ABSENT), 'inside the literal\'s count the element is there, and stays a BigInt')
+  summarize(`export const f = (i) => { const a = [4611686018427387903n]; a[i]++; const b = [1n, 2n]; const m = b.map(x => x + 1n); return a[i] + m[i] }`)
   const v = ctx.summary.at('f')
-  const read = v.kindOfExpr(['[]', binding('f', 'a'), 0])
-  ok(hasTag(read, K.NUMBER) && hasTag(read, K.BIGINT) && hasTag(read, K.ABSENT) && !hasTag(read, K.STRING), 'an element updated by ++ reads as Number, BigInt or absent')
+  const read = v.kindOfExpr(['[]', binding('f', 'a'), binding('f', 'i')])
+  ok(hasTag(read, K.NUMBER) && hasTag(read, K.BIGINT) && hasTag(read, K.ABSENT) && !hasTag(read, K.STRING), 'an element updated by ++ at an index that may miss reads as Number, BigInt or absent')
   is(tagOf(v.elemKindOf(binding('f', 'b'))), K.BIGINT, 'the receiver of map keeps its cell: the callback never sees the array it is not bound to')
   is(tagOf(v.elemKindOf(binding('f', 'm'))), K.BIGINT, 'and the mapped cell is the callback result')
 })

@@ -361,7 +361,7 @@ test('summary contract: prepare\'s postfix recovery keeps the operand\'s kind; a
   ]
   const summary = summarize([';', ['()', 'box', big], ['()', 'member', null], ['()', 'element', null], ['()', 'name', null], ['()', 'plain', null]], { funcs, schemas: [['n']], brandOf: () => null, imports: new Map(), exported: () => false })
   is(summary.resultContract('member').kind, kind(K.BIGINT), 'a member increment\'s old value is its own kind')
-  is(summary.resultContract('element').kind, join(kind(K.BIGINT), kind(K.NUMBER)), 'an absent-capable element reads undefined too, whose ToNumeric is NaN')
+  is(summary.resultContract('element').kind, kind(K.BIGINT), 'an element inside a literal\'s count is there: its own kind')
   is(summary.resultContract('name').kind, kind(K.BIGINT), 'a name decrement\'s old value too')
   is(summary.resultContract('plain').kind, K.NONE, 'a genuine BigInt - Number never completes')
   is(summary.at('member').kindOfExpr(['-', inc, one]), kind(K.BIGINT), 'the query reads the recovery as the solver does')

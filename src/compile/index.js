@@ -173,6 +173,8 @@ export function assemble(ast, profiler) {
     liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
     // `why`: the first cause the summary loses an object shape by (its reads and stores are dynamic from then on)
     onLose: ctx.warnings ? (sid, why, fn, site) => warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) }) : null,
+    // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
+    onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }) : null,
     moduleGlobals: ctx.scope.globals,
     constStrings: jsonShapeStrings,
     constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
