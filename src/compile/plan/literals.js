@@ -420,7 +420,35 @@ function scalarizeTypedArrayLiterals(node) {
   return rewriteChildren(node, scalarizeTypedArrayLiterals)
 }
 
-const containsTypedArrayAccess = (body, names) => some(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
+const mentionsAny = (node, names) => typeof node === 'string' ? names.has(node) : Array.isArray(node) && node.some((c, i) => i > 0 && mentionsAny(c, names))
+
+// The names a counter reaches in a body: itself, and every binding declared
+// from or assigned an expression that mentions one.
+const reachedBy = (body, counter) => {
+  const reached = new Set([counter])
+  const grow = n => {
+    if (n[0] === 'let' || n[0] === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && !reached.has(d[1]) && mentionsAny(d[2], reached)) return reached.add(d[1]), true
+      }
+      return false
+    }
+    return ASSIGN_OPS.has(n[0]) && typeof n[1] === 'string' && !reached.has(n[1]) && mentionsAny(n[2], reached) ? (reached.add(n[1]), true) : false
+  }
+  while (some(body, grow, { skipArrow: false })) { /* a binding reached lets the next be */ }
+  return reached
+}
+
+// A copy per value of the counter is what makes an element index a literal:
+// the body reads or writes an element of `names` at an index the counter
+// reaches. A body that never does is the same in every copy (bezfit's six
+// passes over a 48-element scratch array wrote the whole nest out six times
+// and scalarized nothing).
+const indexesByCounter = (body, names, counter) => {
+  const reached = reachedBy(body, counter)
+  return some(body, n => n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && names.has(n[1]) && mentionsAny(n[2], reached))
+}
 
 function smallScalarTypedForTrip(init, cond, step) {
   const end = smallConstForTripCount(init, cond, step, maxScalarTypedLoopUnroll())
@@ -459,7 +487,7 @@ const unrollTypedArrayLoops = (node, names) => {
   }
   if (node[0] === 'for') {
     const trip = smallScalarTypedForTrip(node[1], node[2], node[3])
-    if (trip && containsTypedArrayAccess(node[4], names) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
+    if (trip && indexesByCounter(node[4], names, trip.name) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
         !hasControlTransfer(node[4]) && !containsDeclOf(node[4], trip.name) && !isReassigned(node[4], trip.name)) {
       const out = [';']
       const bindings = new Set()

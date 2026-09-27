@@ -87,6 +87,7 @@ const TESTS = [
   'field-cse',
   'guarded-read',
   'shift-remainder',
+  'scalar-unroll',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',

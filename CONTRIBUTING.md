@@ -1764,6 +1764,13 @@ identity-observing use and a numeric one (the numeric use normalizes the
 temp): heapsort's sift compares and then swaps without reloading. A
 small-constant loop unrolls only within 1000 body nodes in total (trips ×
 body): noise's four octaves of an inlined perlin ran 3.6% faster rolled.
+The plan's unroll for a small typed array (`unrollTypedArrayLoops`,
+`compile/plan/literals.js`) copies a loop out only when its counter reaches
+an element index of such an array, itself or through a binding made from it
+(`indexesByCounter`): the copies are what turns the index into a literal. A
+loop whose counter reaches none is the same in every copy (bezfit's six
+passes over a 48-element scratch array wrote the whole nest out six times,
+16.4 kB for 3.8, and scalarized nothing).
 watr's `ifset` (one-armed `if` → `select`, the speed profile) leaves a
 condition that branches itself alone: heapsort's child pick `if (child + 1 <
 n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran
