@@ -1612,6 +1612,10 @@ a cached load only when it cannot reach the element: storage that never holds ty
 elements, or the same element grid (the same binding, or two non-view typed arrays of
 one constructor) at a provably different index. A view or another element type over the
 same buffer shifts or splits the grid, so an index inequality proves nothing there.
+A loop's bound is positive inside its body when the counter its test names starts at
+zero or above and its step adds one, the one part of a comma step that writes it
+included (`j++, k += step` beside `j < half`: the fft butterfly's `re[a]` survives the
+store of `re[a + half]`).
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration

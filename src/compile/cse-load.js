@@ -68,6 +68,20 @@ const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
 const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])
 const stableBinding = b => b && !b[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)
 
+// The counter a loop's step advances by one: the step itself, or the one part of
+// a comma step that writes the tested name (`j++, k += step` beside `j < half`).
+const stepCounter = (step, cond) => {
+  if (!isArr(step) || step[0] !== ',') return unitIncVar(step)
+  const name = isArr(cond) && isName(cond[1]) ? cond[1] : null
+  if (name == null) return null
+  let units = 0
+  for (let i = 1; i < step.length; i++) {
+    if (unitIncVar(step[i]) === name) units++
+    else if (isReassigned(step[i], name)) return null
+  }
+  return units === 1 ? name : null
+}
+
 /** Stable definitions from the binding census; positive bounds belong only to the guarded body. */
 export function indexFacts(body) {
   const bindings = scanBindingUses(body), def = new Map(), positive = new Map()
@@ -85,7 +99,7 @@ export function indexFacts(body) {
     if (n[0] === ';') positive.set(n, active)
     if (n[0] === 'for') {
       const [, init, cond, step, loopBody] = n
-      const iv = unitIncVar(step)
+      const iv = stepCounter(step, cond)
       const lo = iv && cval(counterInit(init, iv))
       if (lo != null && lo >= 0 && cond?.[0] === '<' && cond[1] === iv && isName(cond[2]) && stable(cond[2]) && !isReassigned(loopBody, iv))
         guards.set(loopBody, cond[2])

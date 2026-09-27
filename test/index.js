@@ -83,6 +83,7 @@ const TESTS = [
   'typed-payload',
   'typed-decode',
   'shift-precedence',
+  'loop-step',
   'unroll-cost',
   'sentinel-guard',
   'twin-locals',
