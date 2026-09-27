@@ -3,6 +3,62 @@
 Campaign: make the compiler smaller in concepts and cheaper to run with every
 compiled byte, test and product metric equal or better. Branch `fold`, own worktree.
 
+## Summary
+
+Twenty-five folds (two partly reverted after the full suite caught them) and one codegen
+fix landed on its own. No compiled byte changed: not in the corpus (oracle at six levels)
+and not in any of the ~50,000 compiles the four test legs make. The fix changes only
+programs of the shape it repairs.
+
+Against main 673a38d7 (after merging it), every row measured side by side:
+
+| metric | main 673a38d7 | fold 2e2d1e29 | Δ |
+|---|---|---|---|
+| dist/jz.js | 2,738,840 B | 2,717,989 B | −20,851 B (−0.76 %) |
+| dist/jz.js gzip -9 | 756,441 B | 750,101 B | −6,340 B |
+| dist/jz.wasm (self-compile) | 20,191,586 B | 20,025,631 B | −165,955 B (−0.82 %) |
+| dist/interop.js | 37,927 B | 37,927 B | 0 |
+| compiler source (src, module, jzify, index.js, vs 36553d6f) | 307 files | 305 files | 82 files changed, +205 −1,758 lines |
+| oracle O0/O2/O3/size + O1/fast | | | CLEAN, 870 entries |
+| default leg | 4848/4849 | 4849/4850 | 0 of 16,182 outputs changed |
+| opt0 leg | 4643/4644 | 4645/4645 | 0 of 10,032 |
+| opt3 leg | 4644/4644 | 4645/4645 | 0 of 9,878 |
+| wasi leg | 4697/4697 | 4698/4698 | 0 of 14,584 |
+| test:self, test:self:perf | | 79/79, 5/5 | |
+| test:262 | pass 3195, neg-reject 4045, fail 0, skip 16418, xfail 2 | identical | |
+| test:262:builtins | pass 880, fail 0, xfail 43, skip 8445 | identical | |
+| lint:imports, audit:files | | clean | |
+| compile time, watr / jessie (4 alternating runs, load ≈ 6) | 6515 / 1602 ms | 5847 / 1541 ms | −10.3 % / −3.8 %, faster in every paired round |
+| allocation, watr / jessie (scavenges at a fixed 16 MB young generation) | 1,685–1,689 / 401–405 | 1,278–1,281 / 369–373 | −24 % / −8 % |
+| peak RSS at a fixed young generation, watr / jessie | 801–816 / 443 MB | 708–797 / 406–433 MB | lower |
+
+The failures on the main side are main's own: web-smoke reads assets/grid-life.js, which
+e408a309 deleted (both sides fail it), and a wall-clock perf assertion ("spread concat
+14.9 ms < 5 ms") hit under a load average above 100 (0 changed outputs there). The one
+extra test on the fold side is the fix's regression test.
+
+compile-budget's own row flagged watr at +11 % peak RSS once; with V8's default young-
+generation sizing, identical code swings by up to 30 % between runs (822 and 1151 MB on
+the same head), and the fixed-size measurement above removes that heuristic.
+
+What went wrong and was caught: folds 14 and 15 were gated on the corpus oracle alone.
+A full-suite census of every node reaching the compiler then showed that
+test/summary-queries.js hands the parser's `'?'` to the summary (three failures from
+f8e1f9f5 on) and that a sloppy-mode `let yield;` carries `['yield', null]` into the
+compiler, which compiled one program differently. Both parts were restored (a382dc2b,
+03d1adbe); the rest of each fold stands, checked against the census. Every later batch
+ran the whole suite before merging.
+
+Found beyond the folds: a miscompile at O2 and O3 where load CSE reused a typed-array read
+across a template literal whose interpolated object's `toString` wrote it (the frame
+census named the parser's template op; prepared templates are `strcat`). Fixed in
+74822a57 with a regression test; all four legs pass and no other compile output changes.
+
+Stopped here: the remaining candidates (dead template tokens in the summary, five copies
+of the `for`/`while` loop set, unused `export` keywords) each save far under 1 KB and 50
+lines. Test runs were capped at 15 GB total by a watchdog after a machine reboot; the
+campaign's own peak was 7.1 GB.
+
 ## Baseline (d98a122f)
 
 | metric | value |
@@ -77,7 +133,7 @@ fold | concept | Δsrc lines | Δdist bytes | Δcompile time, RSS | commit
 17 | helpers whose last callers earlier folds deleted: `pureIntLiteral` (only `linearIndexOf`, fold 5, called it) and `containerValueKindSet` (only `dictValueKindSet`/`mapValueKindSet`, fold 5) | −20 | 0 (esbuild already dropped them) | — | 0963bce8
 18 | local copies of the shared name scans: two `mentions` (func-entry.js, struct-inline.js) and `referencesAny` (const-fold.js) equal to ast.js `refsName`/`refsAny` under an existing option record, three `readsName` (outer-strip.js), `containsName` (unswitch.js) and `readsLocal` (recurse.js) equal to outer-scaffold.js `readsVar`; copies that differ (op-position scans, literal skips, function boundaries) stay | −45 | −1,035 | — | 866ff63d
 19 | `switch` after prepare: jzify lowers every switch in default mode and prepare's `'switch'` handler rejects one in strict mode, so the `switch` emitter, interval-proof's switch frame (its frame `kind` field and three `kind === 'loop'` tests with it), the summary's `switch`/`case`/`default` arms and 11 op checks never ran | −28 | −855 | — | 2e33e2fa
-20 | val-types' conditional-position flag: `walk(node, cond)` threads `cond` through if/?:/&&/||/??/loop/try arms, but its one reader (the bigint param-write rule) went in 76e235fd; every arm now walks what the plain loop walks | −13 | −241 | — | 2f433206
+20 | val-types' conditional-position flag: `walk(node, cond)` threads `cond` through if/?:/&&/\|\|/??/loop/try arms, but its one reader (the bigint param-write rule) went in 76e235fd; every arm now walks what the plain loop walks | −13 | −241 | — | 2f433206
 21 | `try` after prepare: prepare's `'try'` handler returns `catch`/`finally` nodes, so 11 checks for the parser's `try` beside them never matched. Where `try` stood without `catch`/`finally` (collectStepRange, load-CSE CONTROL, written-keys OBSERVES) the prepared nodes are handled soundly as they are: step bounds sum every write, CSE tables are per statement list (probes against Node agree), and a throw past a store leaves only an unreachable literal | −1 | −91 | — | 99599a7d
 22 | `do` after prepare: prepare's `'do'` handler (and jzify in default mode) rewrites do/while into a flag-guarded `while`, so the 26 checks for `do` in compile-stage code, interval-proof's `do` frame and the summary's `do` arm never ran. walk-facts' `TEST_SLOTS` and ast.js's jzify tables keep theirs: `observeNodeFacts` and jzify see raw ASTs | −6 | −410 | — | f29dd8a9
 23 | the parser's array literal `['[]', x]` after prepare, which returns `['[', …]` for a literal and a three-element `['[]', obj, key]` for an access: dropped beside the prepared form in isEmptyArrayLit, freshArrayInit, isFreshArrayCtor (whose prepared empty literal staticArrayElems already covers) and looksNonNumeric. typedStaticLen keeps its: recordGlobalRep runs it during prepare | −3 | −116 | — | 7c5315ef
@@ -106,6 +162,17 @@ side by side on the same machine; keys differing only in source are the expected
 | opt0 | 4635/4635, 400 s | 4635/4635, 394 s | 0 of 10,016 |
 | opt3 | 4635/4635, 4142 s | 4635/4635, 4134 s | 0 of 9,860 |
 | wasi | 4688/4688, 2023 s | 4688/4688, 2010 s | 0 of 14,555 |
+
+Fold head 5c4b4f01 (folds 14–25 and the two restorations) against main 36553d6f, same way:
+oracle CLEAN (870); default 4840/4840 both, 0 of 16,153 changed; opt0 4635/4635, 0 of
+10,016; opt3 4635/4635, 0 of 9,860; wasi 4688/4688, 0 of 14,555; test:self 79/79,
+test:self:perf 5/5; test:262 and builtins identical; dist jz.js 2,733,405 → 2,712,541 B,
+jz.wasm 20,124,950 → 19,959,008 B.
+
+The codegen fix (74822a57) against 5c4b4f01: default 4841/4841, opt0 4636/4636, opt3
+4636/4636, wasi 4689/4689; 0 changed outputs in every leg, the new keys are its test's.
+
+Merged with main 673a38d7 (2e2d1e29): the Summary table above.
 
 ## Codegen candidates (output changes; logged, not landed)
 
